@@ -428,6 +428,67 @@ def test_format_group_message_no_source(english_config, mock_logger):
 
 
 @pytest.mark.unit
+def test_format_group_digest_russian_compact_single_message(sample_config, mock_logger):
+    """Grouped digest uses one compact Telegram-native document."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+    sections = [
+        (
+            "Предупреждения",
+            [
+                GroupedPoint(
+                    point="Напряжение 130–150 В вместо 220",
+                    source="Бердянск",
+                    source_url="https://t.me/berdiansk_me",
+                )
+            ],
+        ),
+        (
+            "Другое",
+            [
+                GroupedPoint(point="Отдают котят", source="Бердянск", source_url=""),
+                GroupedPoint(
+                    point="Снимут квартиру",
+                    source="Бердянск",
+                    source_url="https://t.me/berdiansk_me",
+                ),
+            ],
+        ),
+    ]
+
+    result = formatter.format_group_digest(sections, hours=24)
+
+    assert "Дайджест Бердянска ·" in result
+    assert "**📌 Предупреждения**" in result
+    assert "**📌 Другое**" in result
+    assert "• Напряжение 130–150 В вместо 220 [источник](https://t.me/berdiansk_me)" in result
+    assert "• Отдают котят" in result
+    assert "Бердянск" not in result
+    assert "📺" not in result
+    assert "---" not in result
+    assert "#" not in result
+    assert "*1 пункт · 24 часа*" in result
+    assert "*2 пункта · 24 часа*" in result
+
+
+@pytest.mark.unit
+def test_format_group_digest_omits_empty_sections_and_uses_requested_hours(
+    sample_config, mock_logger
+):
+    """Empty groups disappear and non-24-hour windows stay compact."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+
+    result = formatter.format_group_digest(
+        [("Новости", []), ("Другое", [GroupedPoint(point="Факт", source="")])],
+        hours=12,
+    )
+
+    assert "Новости" not in result
+    assert "**📌 Другое**" in result
+    assert "12 часов" not in result
+    assert formatter.format_group_digest([("Новости", [])], hours=24) == ""
+
+
+@pytest.mark.unit
 def test_format_group_summary_message(english_config, mock_logger):
     """format_group_summary_message produces expected header format."""
     formatter = DigestFormatter(english_config, mock_logger)
