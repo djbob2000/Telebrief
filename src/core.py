@@ -168,18 +168,15 @@ def _filter_valid_summaries(channel_summaries: dict) -> dict:
 
 def _format_group_messages(
     formatter: "DigestFormatter", grouped: dict, config: "Config", hours: int
-) -> list[tuple[str, str]]:
-    """Format each group into a message, ordered by config definition."""
-    result = []
+) -> str:
+    """Format ordered non-empty groups into one digest message."""
+    sections = []
     for name in _order_groups(grouped, config):
         points = grouped.get(name, [])
         if not points:
             continue
-        fmt = formatter.format_group_message(group_name=name, points=points, hours=hours)
-        if fmt:
-            for part in split_message(fmt, max_length=4000):
-                result.append((name, part))
-    return result
+        sections.append((name, points))
+    return formatter.format_group_digest(sections, hours=hours)
 
 
 def _order_groups(grouped: dict, config: "Config") -> list[str]:
@@ -227,7 +224,7 @@ def validate_hours(hours: int) -> None:
 
 def _join_parts(parts: list[tuple[str, str]], summary_message: str) -> str:
     """Join digest messages into one document, header first (matches send order)."""
-    return "\n\n".join([summary_message, *(text for _, text in parts)])
+    return "\n\n".join([text for text in [summary_message, *(text for _, text in parts)] if text])
 
 
 def _write_last_digest(text: str, hours: int, logger: logging.Logger) -> None:
@@ -285,20 +282,11 @@ async def _build_grouped_parts(
 
     logger.info("Formatting group messages")
     formatter = DigestFormatter(config, logger)
-    group_messages = _format_group_messages(formatter, grouped, config, hours)
-    if not group_messages:
+    group_digest = _format_group_messages(formatter, grouped, config, hours)
+    if not group_digest:
         logger.warning("No valid group messages to send")
         return None
-
-    total_points = sum(len(pts) for pts in grouped.values())
-    # Same group can appear in multiple chunks when its formatted message
-    # exceeds split_message threshold; dedupe while preserving order so the
-    # summary header lists each group exactly once.
-    group_names = list(dict.fromkeys(name for name, _ in group_messages))
-    summary_message = formatter.format_group_summary_message(
-        group_names=group_names, total_points=total_points, hours=hours
-    )
-    return group_messages, summary_message
+    return [("digest", group_digest)], ""
 
 
 async def _build_channel_parts(

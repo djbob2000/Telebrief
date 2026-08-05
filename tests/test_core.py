@@ -286,8 +286,7 @@ async def test_generate_and_send_digest_grouped_success(
 
         # Formatter
         mock_formatter = MagicMock()
-        mock_formatter.format_group_message = MagicMock(side_effect=["News msg", "Other msg"])
-        mock_formatter.format_group_summary_message = MagicMock(return_value="Summary header")
+        mock_formatter.format_group_digest = MagicMock(return_value="Combined digest")
         mock_formatter_class.return_value = mock_formatter
 
         # Sender
@@ -302,15 +301,23 @@ async def test_generate_and_send_digest_grouped_success(
 
         assert result is True
         mock_grouper.group_summaries.assert_called_once()
-        assert mock_formatter.format_group_message.call_count == 2
-        mock_formatter.format_group_summary_message.assert_called_once()
+        mock_formatter.format_group_digest.assert_called_once_with(
+            [
+                (
+                    "News",
+                    [GroupedPoint(point="Point A", source="Test Channel")],
+                ),
+                (
+                    "Other",
+                    [GroupedPoint(point="Point B", source="Test Channel")],
+                ),
+            ],
+            hours=24,
+        )
         mock_sender.send_channel_messages_with_tracking.assert_called_once()
-        # Verify the channel_messages tuples passed to sender
-        call_args = mock_sender.send_channel_messages_with_tracking.call_args
-        sent_messages = call_args[0][0]
-        assert len(sent_messages) == 2
-        assert sent_messages[0] == ("News", "News msg")
-        assert sent_messages[1] == ("Other", "Other msg")
+        mock_sender.send_channel_messages_with_tracking.assert_called_once_with(
+            [("digest", "Combined digest")], "", 123456789
+        )
 
 
 @pytest.mark.unit
@@ -353,8 +360,7 @@ async def test_generate_and_send_digest_grouped_skips_empty_groups(
         mock_grouper_class.return_value = mock_grouper
 
         mock_formatter = MagicMock()
-        mock_formatter.format_group_message = MagicMock(return_value="News msg")
-        mock_formatter.format_group_summary_message = MagicMock(return_value="Summary header")
+        mock_formatter.format_group_digest = MagicMock(return_value="Combined digest")
         mock_formatter_class.return_value = mock_formatter
 
         mock_sender = MagicMock()
@@ -367,10 +373,8 @@ async def test_generate_and_send_digest_grouped_skips_empty_groups(
         )
 
         assert result is True
-        # format_group_message called only for News (Sport was empty, skipped)
-        mock_formatter.format_group_message.assert_called_once_with(
-            group_name="News",
-            points=[GroupedPoint(point="Point A", source="Test Channel")],
+        mock_formatter.format_group_digest.assert_called_once_with(
+            [("News", [GroupedPoint(point="Point A", source="Test Channel")])],
             hours=24,
         )
 
@@ -406,8 +410,7 @@ async def test_digest_mode_uses_grouper(sample_config, mock_logger, sample_messa
         mock_grouper_class.return_value = mock_grouper
 
         mock_formatter = MagicMock()
-        mock_formatter.format_group_message = MagicMock(return_value="News msg")
-        mock_formatter.format_group_summary_message = MagicMock(return_value="Summary header")
+        mock_formatter.format_group_digest = MagicMock(return_value="Combined digest")
         mock_formatter_class.return_value = mock_formatter
 
         mock_sender = MagicMock()
@@ -926,8 +929,7 @@ async def test_summary_message_dedupes_split_group_names(
         mock_grouper_class.return_value = mock_grouper
 
         mock_formatter = MagicMock()
-        mock_formatter.format_group_message = MagicMock(return_value=long_news)
-        mock_formatter.format_group_summary_message = MagicMock(return_value="Summary")
+        mock_formatter.format_group_digest = MagicMock(return_value=long_news)
         mock_formatter_class.return_value = mock_formatter
 
         mock_sender = MagicMock()
@@ -937,8 +939,10 @@ async def test_summary_message_dedupes_split_group_names(
 
         await generate_and_send_digest(sample_config, mock_logger, hours=24, user_id=123456789)
 
-        call_kwargs = mock_formatter.format_group_summary_message.call_args.kwargs
-        assert call_kwargs["group_names"] == ["News"]
+        mock_formatter.format_group_digest.assert_called_once()
+        mock_sender.send_channel_messages_with_tracking.assert_called_once_with(
+            [("digest", long_news)], "", 123456789
+        )
 
 
 def _make_single_channel_collector(messages):
