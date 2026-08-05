@@ -45,10 +45,11 @@ async def test_send_digest_success(sample_config, mock_logger):
         mock_bot_class.return_value = mock_bot
 
         sender = DigestSender(sample_config, mock_logger)
-        result = await sender.send_digest("Test digest", user_id=123456789)
+    result = await sender.send_digest("Test digest", user_id=123456789)
 
     assert result is True
     assert mock_bot.send_message.called
+    assert mock_bot.send_message.call_args.kwargs["disable_web_page_preview"] is True
 
 
 @pytest.mark.unit

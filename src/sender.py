@@ -56,7 +56,7 @@ class DigestSender:
                 chat_id=chat_id,
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
-                disable_web_page_preview=False,
+                disable_web_page_preview=True,
             )
         except TelegramError as e:
             # If markdown parsing fails, try plain text
@@ -68,7 +68,7 @@ class DigestSender:
                     chat_id=chat_id,
                     text=text,
                     parse_mode=None,
-                    disable_web_page_preview=False,
+                    disable_web_page_preview=True,
                 )
             else:
                 raise
