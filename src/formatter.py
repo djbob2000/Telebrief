@@ -351,6 +351,74 @@ class DigestFormatter:
 
         return "\n".join(parts)
 
+    def format_group_digest(
+        self, grouped_sections: list[tuple[str, list[GroupedPoint]]], hours: int = 24
+    ) -> str:
+        """Format all topic groups as one compact Telegram message."""
+        sections = [(name, points) for name, points in grouped_sections if points]
+        if not sections:
+            return ""
+
+        date_str = self._format_date(datetime.now(timezone.utc))
+        title = (
+            f"Дайджест Бердянска · {date_str}"
+            if self._language == "Russian"
+            else f"{self._ui['daily_digest']} · {date_str}"
+        )
+        parts = [title]
+
+        for group_name, points in sections:
+            bullet_lines = []
+            for point in points:
+                line = f"• {point.point}"
+                if point.source_url and _CHANNEL_URL_RE.match(point.source_url):
+                    line += f" [источник]({point.source_url})"
+                bullet_lines.append(line)
+
+            parts.append(
+                "\n".join(
+                    [
+                        f"**📌 {group_name}**",
+                        "",
+                        *bullet_lines,
+                        "",
+                        f"*{self._compact_stats(len(points), hours)}*",
+                    ]
+                )
+            )
+
+        return "\n\n".join(parts)
+
+    def _compact_stats(self, count: int, hours: int) -> str:
+        """Return a localized compact count and time-window label."""
+        if self._language == "Russian":
+            count_mod100 = count % 100
+            count_mod10 = count % 10
+            if 11 <= count_mod100 <= 14:
+                count_word = "пунктов"
+            elif count_mod10 == 1:
+                count_word = "пункт"
+            elif 2 <= count_mod10 <= 4:
+                count_word = "пункта"
+            else:
+                count_word = "пунктов"
+
+            hours_mod100 = hours % 100
+            hours_mod10 = hours % 10
+            if 11 <= hours_mod100 <= 14:
+                hours_word = "часов"
+            elif hours_mod10 == 1:
+                hours_word = "час"
+            elif 2 <= hours_mod10 <= 4:
+                hours_word = "часа"
+            else:
+                hours_word = "часов"
+            return f"{count} {count_word} · {hours} {hours_word}"
+
+        item_word = self._ui["group_items_count"].format(count=count)
+        period_word = self._ui["last_hours"].format(hours=hours)
+        return f"{item_word} · {period_word.removeprefix('Last ').removeprefix('Últimas ').removeprefix('Letzte ')}"
+
     def format_group_summary_message(
         self, group_names: List[str], total_points: int, hours: int = 24
     ) -> str:

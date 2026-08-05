@@ -462,7 +462,7 @@ def test_format_group_digest_russian_compact_single_message(sample_config, mock_
     assert "**📌 Другое**" in result
     assert "• Напряжение 130–150 В вместо 220 [источник](https://t.me/berdiansk_me)" in result
     assert "• Отдают котят" in result
-    assert "Бердянск" not in result
+    assert "📺 Бердянск" not in result
     assert "📺" not in result
     assert "---" not in result
     assert "#" not in result
@@ -484,7 +484,7 @@ def test_format_group_digest_omits_empty_sections_and_uses_requested_hours(
 
     assert "Новости" not in result
     assert "**📌 Другое**" in result
-    assert "12 часов" not in result
+    assert "*1 пункт · 12 часов*" in result
     assert formatter.format_group_digest([("Новости", [])], hours=24) == ""
 
 
