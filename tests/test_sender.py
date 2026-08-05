@@ -333,6 +333,7 @@ async def test_send_channel_messages_with_tracking_no_summary(
     assert result is True
     # Should only send channel message, no summary
     assert mock_bot.send_message.call_count == 1
+    assert mock_bot.send_message.call_args.kwargs["disable_web_page_preview"] is True
 
 
 @pytest.mark.unit

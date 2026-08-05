@@ -301,7 +301,7 @@ class DigestSender:
                 chat_id=chat_id,
                 text=message_text,
                 parse_mode=ParseMode.MARKDOWN,
-                disable_web_page_preview=False,
+                disable_web_page_preview=True,
             )
             return message.message_id
         except TelegramError as e:
@@ -311,7 +311,7 @@ class DigestSender:
                     chat_id=chat_id,
                     text=message_text,
                     parse_mode=None,
-                    disable_web_page_preview=False,
+                    disable_web_page_preview=True,
                 )
                 return message.message_id
             raise
