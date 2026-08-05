@@ -14,6 +14,7 @@ from src.summarizer import ERROR_SUMMARY_PREFIX
 from src.ui_strings import get_month_names, get_ui_strings
 
 _CHANNEL_URL_RE = re.compile(r"^https://t\.me/(?:c/\d+|[^/]{2,})$")
+_INLINE_SOURCE_URL_RE = re.compile(r"https://t\.me/[^\s)\]]+")
 
 
 class DigestFormatter:
@@ -324,9 +325,19 @@ class DigestFormatter:
         for group_name, points in sections:
             bullet_lines = []
             for point in points:
-                line = f"• {point.point}"
-                if point.source_url and _CHANNEL_URL_RE.match(point.source_url):
-                    line += f" [источник]({point.source_url})"
+                point_text = point.point
+                inline_urls = _INLINE_SOURCE_URL_RE.findall(point_text)
+                source_url = inline_urls[0] if inline_urls else point.source_url
+                if inline_urls:
+                    point_text = _INLINE_SOURCE_URL_RE.sub("", point_text)
+                    point_text = re.sub(r"\s*(?:→|->|—|–)\s*$", "", point_text).rstrip()
+
+                line = f"• {point_text}"
+                if source_url and (
+                    _CHANNEL_URL_RE.match(source_url)
+                    or _INLINE_SOURCE_URL_RE.fullmatch(source_url)
+                ):
+                    line += f" [источник]({source_url})"
                 bullet_lines.append(line)
 
             parts.append(
@@ -335,43 +346,11 @@ class DigestFormatter:
                         f"**📌 {group_name}**",
                         "",
                         *bullet_lines,
-                        "",
-                        f"*{self._compact_stats(len(points), hours)}*",
                     ]
                 )
             )
 
         return "\n\n".join(parts)
-
-    def _compact_stats(self, count: int, hours: int) -> str:
-        """Return a localized compact count and time-window label."""
-        if self._language == "Russian":
-            count_mod100 = count % 100
-            count_mod10 = count % 10
-            if 11 <= count_mod100 <= 14:
-                count_word = "пунктов"
-            elif count_mod10 == 1:
-                count_word = "пункт"
-            elif 2 <= count_mod10 <= 4:
-                count_word = "пункта"
-            else:
-                count_word = "пунктов"
-
-            hours_mod100 = hours % 100
-            hours_mod10 = hours % 10
-            if 11 <= hours_mod100 <= 14:
-                hours_word = "часов"
-            elif hours_mod10 == 1:
-                hours_word = "час"
-            elif 2 <= hours_mod10 <= 4:
-                hours_word = "часа"
-            else:
-                hours_word = "часов"
-            return f"{count} {count_word} · {hours} {hours_word}"
-
-        item_word = self._ui["group_items_count"].format(count=count)
-        period_word = self._ui["last_hours"].format(hours=hours)
-        return f"{item_word} · {period_word.removeprefix('Last ').removeprefix('Últimas ').removeprefix('Letzte ')}"
 
     def _create_statistics(self, messages_by_channel: Dict[str, List[Message]], hours: int) -> str:
         """

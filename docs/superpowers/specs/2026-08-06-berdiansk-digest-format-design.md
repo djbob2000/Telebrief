@@ -19,7 +19,6 @@ Each non-empty topic group follows as a section:
 
 • Напряжение крайне нестабильно: 130–150 В вместо 220. Жителей просят не включать стиральные машины и бойлеры — техника может сгореть. [источник](https://t.me/berdiansk_me/123)
 
-1 пункт · 24 часа
 ```
 
 The final message may contain multiple sections in the existing group order. Each section has:
@@ -28,9 +27,9 @@ The final message may contain multiple sections in the existing group order. Eac
 - a blank line;
 - bullet points using `•`;
 - a clickable `[источник](...)` link when an original message link exists, with no channel name or `📺` attribution;
-- one compact italic statistics line: `{count} пунктов · 24 часа` (singular `пункт` for one item).
+- no per-section statistics footer or time-window line.
 
-The whole message has no separate overview/status message, no horizontal `---` separators, and no repeated global footer. The existing “Другое” section remains publishable. Empty sections are omitted.
+The whole message has no separate overview/status message, no horizontal `---` separators, and no statistics footer. The existing “Другое” section remains publishable. Empty sections are omitted.
 
 ## Architecture and data flow
 
@@ -45,10 +44,10 @@ The current grouped points and source URLs remain the source of truth. No new pe
 
 ## Formatting details
 
-- Use the existing configured output language for the title, date, count, and time-window wording.
+- Use the existing configured output language for the title and date.
 - Use Telegram-compatible Markdown already supported by the sender. Topic headings should use `**...**`; links should use `[источник](url)`.
 - Use the single general group marker (`📌`) for every topic heading in the approved Russian layout. Do not add per-point emojis automatically.
-- Normalize section whitespace so there is one blank line between title, sections, bullets, and compact statistics.
+- Normalize section whitespace so there is one blank line between title, sections, and bullets.
 - If a point has no valid source URL, omit the source suffix rather than displaying a channel label or placeholder.
 - Preserve the existing length guard and make truncation retain valid Markdown as far as practical.
 
@@ -68,7 +67,7 @@ Update formatter and sender tests to verify:
 - headings are bold and contain no visible `#`;
 - bullets use `•`;
 - source attribution contains only a clickable `источник` link and never a channel name or `📺`;
-- the compact footer uses correct singular/plural wording and contains no `---`;
+- sections contain no count or time-window footer and no `---`;
 - `Другое` remains included when it has points;
 - empty groups are omitted;
 - sender records and sends the combined digest as one message unless length splitting is required;

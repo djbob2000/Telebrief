@@ -15,7 +15,7 @@
 - Use the exact Russian title pattern `Дайджест Бердянска · <Russian date>`.
 - Use bold topic headings without a visible Markdown `#`.
 - Use `•` bullets and clickable `[источник](url)` links without channel names or `📺` attribution.
-- Use one compact italic section footer with localized singular/plural count and `24 часа` wording.
+- Do not render any per-section count or time-window footer.
 - Do not publish a separate overview/status message or horizontal `---` separators.
 - Preserve old-digest cleanup and message-ID tracking.
 - Do not use subagents; execute this plan inline because the repository explicitly forbids subagents.
@@ -64,8 +64,8 @@ def test_format_group_digest_russian_compact_single_message(sample_config, mock_
     assert "📺" not in result
     assert "---" not in result
     assert "#" not in result
-    assert "*1 пункт · 24 часа*" in result
-    assert "*2 пункта · 24 часа*" in result
+    assert "пункт" not in result
+    assert "24 часа" not in result
 
 
 def test_format_group_digest_omits_empty_sections_and_returns_empty_for_no_points(
@@ -134,10 +134,8 @@ Implement it as follows:
 4. Render every section heading as `**📌 {group_name}**`.
 5. Render each point as `• {point}` and append ` [источник](source_url)` only when `source_url` is non-empty and matches the formatter’s existing Telegram URL validation.
 6. Do not render `GroupedPoint.source`, `📺`, or per-point emoji attribution.
-7. Append one italic compact line per section using localized singular/plural count text and the existing last-hours string. For Russian, the output must be `*1 пункт · 24 часа*` or `*N пунктов · 24 часа*`.
+7. Do not append a count, time-window, italic footer, or any other statistics line.
 8. Join title and sections with exactly one blank line between logical blocks. Do not emit `#` or `---`.
-
-Add the required localized strings in `src/ui_strings.py` only if existing entries cannot express singular/plural compact counts without awkward grammar. Keep English, Russian, Spanish, German, and French dictionaries complete if a new shared key is introduced.
 
 - [ ] **Step 2: Run the focused tests and verify they pass**
 
@@ -321,7 +319,7 @@ Confirm all of the following in `@berdiansk_news`:
 - each section heading is bold with `📌`, with no visible `#`;
 - points use `•`;
 - only clickable source links remain, with no `📺 Бердянск` labels;
-- each section ends with a compact `N пункт(а/ов) · 24 часа` line;
+- sections have no count or time-window footer;
 - there is no `---` and no separate summary message;
 - `Другое` remains present when the grouper returns points for it.
 

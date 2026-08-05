@@ -418,8 +418,8 @@ def test_format_group_digest_russian_compact_single_message(sample_config, mock_
     assert "📺" not in result
     assert "---" not in result
     assert "#" not in result
-    assert "*1 пункт · 24 часа*" in result
-    assert "*2 пункта · 24 часа*" in result
+    assert "пункт" not in result
+    assert "24 часа" not in result
 
 
 @pytest.mark.unit
@@ -436,6 +436,33 @@ def test_format_group_digest_omits_empty_sections_and_uses_requested_hours(
 
     assert "Новости" not in result
     assert "**📌 Другое**" in result
-    assert "*1 пункт · 12 часов*" in result
+    assert "пункт" not in result
+    assert "12 часов" not in result
     assert formatter.format_group_digest([("Новости", [])], hours=24) == ""
 
+
+@pytest.mark.unit
+def test_format_group_digest_replaces_inline_source_url_with_source_link(
+    sample_config, mock_logger
+):
+    """Inline AI-provided URLs are rendered once as the source link."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+    message_url = "https://t.me/berdiansk_me/123"
+
+    result = formatter.format_group_digest(
+        [
+            (
+                "Новости",
+                [
+                    GroupedPoint(
+                        point=f"Важная новость → {message_url}",
+                        source="Бердянск",
+                        source_url="https://t.me/berdiansk_me",
+                    )
+                ],
+            )
+        ]
+    )
+
+    assert f"• Важная новость [источник]({message_url})" in result
+    assert result.count(message_url) == 1
