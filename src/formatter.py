@@ -305,52 +305,6 @@ class DigestFormatter:
         }
         return mapping.get(name_lower, "📌")
 
-    def format_group_message(
-        self, group_name: str, points: List[GroupedPoint], hours: int = 24
-    ) -> str:
-        """Format a single topic group as a Telegram message.
-
-        Args:
-            group_name: Name of the topic group
-            points: Classified bullet points with source attribution
-            hours: Time range covered
-
-        Returns:
-            Formatted message ready to send
-        """
-        if not points:
-            return ""
-
-        parts = []
-
-        # Header
-        date_str = self._format_date(datetime.now(timezone.utc))
-        emoji = self._pick_group_emoji(group_name)
-        parts.append(f"# {emoji} {group_name}\n*{date_str}*\n")
-
-        # Bullet points with source attribution
-        for p in points:
-            if p.source and p.source_url:
-                emoji = self._pick_emoji(p.source)
-                source_tag = f" ([{emoji} {p.source}]({p.source_url}))"
-            elif p.source:
-                emoji = self._pick_emoji(p.source)
-                source_tag = f" ({emoji} {p.source})"
-            else:
-                source_tag = ""
-            parts.append(f"- {p.point}{source_tag}")
-
-        # Stats footer
-        if self.include_stats:
-            count_str = self._ui["group_items_count"].format(count=len(points))
-            stats_icon = "📊 " if self.use_emojis else ""
-            time_icon = "⏱️ " if self.use_emojis else ""
-            parts.append(f"\n---\n{stats_icon}{count_str}")
-            if hours == 24:
-                parts.append(f"{time_icon}{self._ui['last_hours'].format(hours=hours)}")
-
-        return "\n".join(parts)
-
     def format_group_digest(
         self, grouped_sections: list[tuple[str, list[GroupedPoint]]], hours: int = 24
     ) -> str:
@@ -418,35 +372,6 @@ class DigestFormatter:
         item_word = self._ui["group_items_count"].format(count=count)
         period_word = self._ui["last_hours"].format(hours=hours)
         return f"{item_word} · {period_word.removeprefix('Last ').removeprefix('Últimas ').removeprefix('Letzte ')}"
-
-    def format_group_summary_message(
-        self, group_names: List[str], total_points: int, hours: int = 24
-    ) -> str:
-        """Format a summary header message listing active groups.
-
-        Args:
-            group_names: Names of groups that have content
-            total_points: Total number of classified points
-            hours: Time range covered
-
-        Returns:
-            Summary header message
-        """
-        now = datetime.now(timezone.utc)
-        date_str = self._format_date(now)
-        start_time = now - timedelta(hours=hours)
-
-        groups_list = ", ".join(f"{self._pick_group_emoji(name)} {name}" for name in group_names)
-
-        e = self.use_emojis
-        message = (
-            f"{'📊 ' if e else ''}**{self._ui['digest_completed']}** - {date_str}\n\n"
-            f"{'✅ ' if e else ''}{self._ui['groups_processed']}: {groups_list}\n"
-            f"{'📨 ' if e else ''}{self._ui['group_items_count'].format(count=total_points)}\n"
-            f"{'⏱️ ' if e else ''}{self._ui['period']}: "
-            f"{start_time.strftime('%d.%m %H:%M')} - {now.strftime('%d.%m %H:%M')} UTC\n"
-        )
-        return message
 
     def _create_statistics(self, messages_by_channel: Dict[str, List[Message]], hours: int) -> str:
         """

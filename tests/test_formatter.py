@@ -380,54 +380,6 @@ def test_pick_group_emoji_default(sample_config, mock_logger):
 
 
 @pytest.mark.unit
-def test_format_group_message_output(english_config, mock_logger):
-    """format_group_message produces expected format with source attribution."""
-    formatter = DigestFormatter(english_config, mock_logger)
-    points = [
-        GroupedPoint(point="Python 3.14 released", source="TechNews"),
-        GroupedPoint(point="New AI model announced", source="AIDaily"),
-    ]
-    msg = formatter.format_group_message("News", points, hours=24)
-
-    assert "📰 News" in msg
-    assert "Python 3.14 released" in msg
-    assert "TechNews" in msg
-    assert "New AI model announced" in msg
-    assert "AIDaily" in msg
-    assert "2 items" in msg
-
-
-@pytest.mark.unit
-def test_format_group_message_no_truncation(english_config, mock_logger):
-    """format_group_message returns full content; splitting is handled upstream in core.py."""
-    formatter = DigestFormatter(english_config, mock_logger)
-    points = [GroupedPoint(point="x" * 200, source="Ch") for _ in range(30)]
-    msg = formatter.format_group_message("News", points, hours=24)
-
-    # All points must be present — no content is dropped
-    assert msg.count("x" * 200) == 30
-
-
-@pytest.mark.unit
-def test_format_group_message_empty_points(english_config, mock_logger):
-    """format_group_message returns empty string for empty points list."""
-    formatter = DigestFormatter(english_config, mock_logger)
-    msg = formatter.format_group_message("News", [], hours=24)
-    assert msg == ""
-
-
-@pytest.mark.unit
-def test_format_group_message_no_source(english_config, mock_logger):
-    """format_group_message omits source tag when source is empty."""
-    formatter = DigestFormatter(english_config, mock_logger)
-    points = [GroupedPoint(point="Some point", source="")]
-    msg = formatter.format_group_message("News", points, hours=24)
-
-    assert "Some point" in msg
-    assert "from" not in msg
-
-
-@pytest.mark.unit
 def test_format_group_digest_russian_compact_single_message(sample_config, mock_logger):
     """Grouped digest uses one compact Telegram-native document."""
     formatter = DigestFormatter(sample_config, mock_logger)
@@ -487,34 +439,3 @@ def test_format_group_digest_omits_empty_sections_and_uses_requested_hours(
     assert "*1 пункт · 12 часов*" in result
     assert formatter.format_group_digest([("Новости", [])], hours=24) == ""
 
-
-@pytest.mark.unit
-def test_format_group_summary_message(english_config, mock_logger):
-    """format_group_summary_message produces expected header format."""
-    formatter = DigestFormatter(english_config, mock_logger)
-    msg = formatter.format_group_summary_message(
-        group_names=["Events", "News", "Other"],
-        total_points=42,
-        hours=24,
-    )
-
-    assert "Digest completed" in msg
-    assert "🎪 Events" in msg
-    assert "📰 News" in msg
-    assert "📌 Other" in msg
-    assert "42 items" in msg
-    assert "UTC" in msg
-
-
-@pytest.mark.unit
-def test_format_group_summary_message_russian(sample_config, mock_logger):
-    """format_group_summary_message respects output_language (Russian)."""
-    formatter = DigestFormatter(sample_config, mock_logger)
-    msg = formatter.format_group_summary_message(
-        group_names=["Events"],
-        total_points=10,
-        hours=24,
-    )
-
-    assert "Дайджест завершён" in msg
-    assert "Группы" in msg
