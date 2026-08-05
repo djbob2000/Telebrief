@@ -56,6 +56,7 @@ class Summarizer:
             provider_name=config.settings.ai_provider,
             logger=logger,
             openai_api_key=config.openai_api_key,
+            openai_base_url=config.openai_base_url,
             anthropic_api_key=config.anthropic_api_key,
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=config.settings.api_timeout,

@@ -210,7 +210,9 @@ __marimo__/
 # Telebrief specific
 sessions/*.session
 sessions/*.session-journal
+sessions/
 logs/*.log
+logs/
 backup/
 config.yaml
 

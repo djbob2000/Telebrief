@@ -19,6 +19,24 @@ def test_sender_initialization(sample_config, mock_logger):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_authorized_owner_sends_digest_to_configured_channel(sample_config, mock_logger):
+    """Owner authorization and the Telegram destination are independent."""
+    sample_config.settings.target_chat_id = "@berdiansk_news"
+
+    with patch("src.sender.Bot") as mock_bot_class:
+        mock_bot = MagicMock()
+        mock_bot.send_message = AsyncMock()
+        mock_bot_class.return_value = mock_bot
+
+        sender = DigestSender(sample_config, mock_logger)
+        result = await sender.send_digest("Test digest", user_id=123456789)
+
+    assert result is True
+    assert mock_bot.send_message.call_args.kwargs["chat_id"] == "@berdiansk_news"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_send_digest_success(sample_config, mock_logger):
     """Test successful digest sending."""
     with patch("src.sender.Bot") as mock_bot_class:

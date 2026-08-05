@@ -29,6 +29,20 @@ def test_create_provider_openai(mock_logger):
 
 
 @pytest.mark.unit
+def test_create_provider_openai_passes_custom_base_url(mock_logger):
+    """OpenAI-compatible providers can target a custom API endpoint."""
+    with patch("src.ai_providers.AsyncOpenAI") as mock_client:
+        create_provider(
+            provider_name="openai",
+            logger=mock_logger,
+            openai_api_key="sk-test",
+            openai_base_url="https://api.deepseek.com/v1",
+        )
+
+    assert mock_client.call_args.kwargs["base_url"] == "https://api.deepseek.com/v1"
+
+
+@pytest.mark.unit
 def test_create_provider_ollama(mock_logger):
     """Test creating Ollama provider."""
     provider = create_provider(

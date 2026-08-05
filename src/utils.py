@@ -115,7 +115,7 @@ def split_message(text: str, max_length: int = 4000) -> list[str]:
 MESSAGE_STORAGE_FILE = "data/digest_messages.json"
 
 
-def save_digest_message_ids(message_ids: List[int], user_id: int) -> None:
+def save_digest_message_ids(message_ids: List[int], user_id: str | int) -> None:
     """
     Save message IDs of sent digest messages for later cleanup.
 
@@ -148,7 +148,7 @@ def save_digest_message_ids(message_ids: List[int], user_id: int) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def get_digest_message_ids(user_id: int) -> List[int]:
+def get_digest_message_ids(user_id: str | int) -> List[int]:
     """
     Get stored message IDs for cleanup.
 
@@ -178,7 +178,7 @@ def get_digest_message_ids(user_id: int) -> List[int]:
     return []
 
 
-def clear_digest_message_ids(user_id: int) -> None:
+def clear_digest_message_ids(user_id: str | int) -> None:
     """
     Clear stored message IDs after cleanup.
 

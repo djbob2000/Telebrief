@@ -35,14 +35,15 @@ class DigestSender:
         self.logger = logger
         self.bot = Bot(token=config.telegram_bot_token)
         self.target_user_id = config.settings.target_user_id
+        self.target_chat_id = config.settings.target_chat_id or self.target_user_id
         self.formatter = DigestFormatter(config, logger)
 
-    async def _send_message_part(self, user_id: int, text: str, part_num: int) -> None:
+    async def _send_message_part(self, chat_id: str | int, text: str, part_num: int) -> None:
         """
         Send a single message part with markdown fallback.
 
         Args:
-            user_id: Target user ID
+            chat_id: Telegram destination chat ID
             text: Message text
             part_num: Part number for logging
 
@@ -52,7 +53,7 @@ class DigestSender:
         try:
             # Try with Markdown first
             await self.bot.send_message(
-                chat_id=user_id,
+                chat_id=chat_id,
                 text=text,
                 parse_mode=ParseMode.MARKDOWN,
                 disable_web_page_preview=False,
@@ -64,7 +65,7 @@ class DigestSender:
                     f"Markdown parse error in part {part_num}, falling back to plain text"
                 )
                 await self.bot.send_message(
-                    chat_id=user_id,
+                    chat_id=chat_id,
                     text=text,
                     parse_mode=None,
                     disable_web_page_preview=False,
@@ -102,7 +103,7 @@ class DigestSender:
 
             # Send each part
             for i, part in enumerate(parts, 1):
-                await self._send_message_part(user_id, part, i)
+                await self._send_message_part(self.target_chat_id, part, i)
 
                 if len(parts) > 1:
                     self.logger.info(f"Sent part {i}/{len(parts)}")
@@ -135,7 +136,12 @@ class DigestSender:
             self.logger.warning(f"Unauthorized send attempt to user {user_id}")
             return False
 
-        self.logger.info(f"Sending {len(channel_messages)} channel messages to user {user_id}")
+        self.logger.info(
+            "Sending %s channel messages to chat %s for user %s",
+            len(channel_messages),
+            self.target_chat_id,
+            user_id,
+        )
 
         success_count = 0
         failed_channels = []
@@ -152,11 +158,11 @@ class DigestSender:
                     # Split and send parts
                     parts = split_message(message_text, max_length=4000)
                     for part_num, part in enumerate(parts, 1):
-                        await self._send_message_part(user_id, part, part_num)
+                        await self._send_message_part(self.target_chat_id, part, part_num)
                         self.logger.info(f"Sent part {part_num}/{len(parts)} for {channel_name}")
                 else:
                     # Send as single message
-                    await self._send_message_part(user_id, message_text, 1)
+                    await self._send_message_part(self.target_chat_id, message_text, 1)
 
                 success_count += 1
                 self.logger.info(f"✅ Successfully sent message for {channel_name}")
@@ -187,7 +193,7 @@ class DigestSender:
 
         Args:
             text: Message text
-            user_id: Target user ID
+            chat_id: Telegram destination chat ID
 
         Returns:
             True if successful
@@ -199,7 +205,9 @@ class DigestSender:
             return False
 
         try:
-            await self.bot.send_message(chat_id=user_id, text=text, parse_mode=ParseMode.MARKDOWN)
+            await self.bot.send_message(
+                chat_id=self.target_chat_id, text=text, parse_mode=ParseMode.MARKDOWN
+            )
             return True
         except TelegramError as e:
             if "Can't parse entities" in str(e):
@@ -207,7 +215,9 @@ class DigestSender:
                     "Markdown parse error in send_message, falling back to plain text"
                 )
                 try:
-                    await self.bot.send_message(chat_id=user_id, text=text, parse_mode=None)
+                    await self.bot.send_message(
+                        chat_id=self.target_chat_id, text=text, parse_mode=None
+                    )
                     return True
                 except TelegramError as e2:
                     self.logger.error(f"Failed to send message (plain text fallback): {e2}")
@@ -234,7 +244,7 @@ class DigestSender:
             return False
 
         # Get stored message IDs
-        message_ids = get_digest_message_ids(user_id)
+        message_ids = get_digest_message_ids(self.target_chat_id)
 
         if not message_ids:
             self.logger.info("No previous digest messages to clean up")
@@ -247,7 +257,9 @@ class DigestSender:
 
         for message_id in message_ids:
             try:
-                await self.bot.delete_message(chat_id=user_id, message_id=message_id)
+                await self.bot.delete_message(
+                    chat_id=self.target_chat_id, message_id=message_id
+                )
                 deleted_count += 1
             except TelegramError as e:
                 # Message might already be deleted or not found
@@ -259,7 +271,7 @@ class DigestSender:
                     failed_count += 1
 
         # Clear stored message IDs
-        clear_digest_message_ids(user_id)
+        clear_digest_message_ids(self.target_chat_id)
 
         if failed_count == 0:
             self.logger.info(f"✅ Cleaned up {deleted_count} messages successfully")
@@ -271,13 +283,13 @@ class DigestSender:
             return deleted_count > 0
 
     async def _send_message_with_tracking(
-        self, user_id: int, message_text: str, channel_name: str
+        self, chat_id: str | int, message_text: str, channel_name: str
     ) -> Optional[int]:
         """
         Send a message with markdown fallback and return message ID.
 
         Args:
-            user_id: Target user ID
+            chat_id: Telegram destination chat ID
             message_text: Message text to send
             channel_name: Channel name for logging
 
@@ -286,7 +298,7 @@ class DigestSender:
         """
         try:
             message = await self.bot.send_message(
-                chat_id=user_id,
+                chat_id=chat_id,
                 text=message_text,
                 parse_mode=ParseMode.MARKDOWN,
                 disable_web_page_preview=False,
@@ -296,7 +308,7 @@ class DigestSender:
             if "Can't parse entities" in str(e):
                 self.logger.warning("Markdown parse error, falling back to plain text")
                 message = await self.bot.send_message(
-                    chat_id=user_id,
+                    chat_id=chat_id,
                     text=message_text,
                     parse_mode=None,
                     disable_web_page_preview=False,
@@ -306,14 +318,14 @@ class DigestSender:
 
     async def _send_summary_message(
         self,
-        user_id: int,
+        chat_id: str | int,
         summary_message: str,
     ) -> Optional[int]:
         """
         Send summary message and return message ID.
 
         Args:
-            user_id: Target user ID
+            chat_id: Telegram destination chat ID
             summary_message: Summary message text
 
         Returns:
@@ -321,7 +333,7 @@ class DigestSender:
         """
         try:
             message = await self.bot.send_message(
-                chat_id=user_id,
+                chat_id=chat_id,
                 text=summary_message,
                 parse_mode=ParseMode.MARKDOWN,
             )
@@ -331,7 +343,7 @@ class DigestSender:
             if "Can't parse entities" in str(e):
                 self.logger.warning("Markdown parse error in summary, falling back to plain text")
                 message = await self.bot.send_message(
-                    chat_id=user_id,
+                    chat_id=chat_id,
                     text=summary_message,
                     parse_mode=None,
                 )
@@ -364,7 +376,7 @@ class DigestSender:
         return success_count > 0
 
     async def _send_channel_messages_loop(
-        self, user_id: int, channel_messages: list[tuple[str, str]]
+        self, chat_id: str | int, channel_messages: list[tuple[str, str]]
     ) -> tuple[list[int], int, list[str]]:
         """
         Send messages for all channels.
@@ -385,7 +397,7 @@ class DigestSender:
                 self.logger.info(f"Sending message {i}/{len(channel_messages)}: {channel_name}")
 
                 message_id = await self._send_message_with_tracking(
-                    user_id, message_text, channel_name
+                    chat_id, message_text, channel_name
                 )
                 if message_id is not None:
                     sent_message_ids.append(message_id)
@@ -429,22 +441,29 @@ class DigestSender:
             self.logger.warning(f"Unauthorized send attempt to user {user_id}")
             return False
 
-        self.logger.info(f"Sending {len(channel_messages)} channel messages to user {user_id}")
+        self.logger.info(
+            "Sending %s channel messages to chat %s for user %s",
+            len(channel_messages),
+            self.target_chat_id,
+            user_id,
+        )
 
         # Send summary placeholder FIRST so it appears at the top of the chat
         summary_id = None
         if summary_message:
-            summary_id = await self._send_summary_message(user_id, summary_message)
+            summary_id = await self._send_summary_message(self.target_chat_id, summary_message)
 
         # Send all channel messages and collect their IDs
         sent_message_ids, success_count, failed_channels = await self._send_channel_messages_loop(
-            user_id, channel_messages
+            self.target_chat_id, channel_messages
         )
 
         if summary_id is not None and success_count == 0:
             # All channel sends failed; remove the orphaned placeholder
             try:
-                await self.bot.delete_message(chat_id=user_id, message_id=summary_id)
+                await self.bot.delete_message(
+                    chat_id=self.target_chat_id, message_id=summary_id
+                )
                 self.logger.info("🗑️ Removed orphaned summary placeholder (no channels succeeded)")
                 summary_id = None
             except TelegramError as e:
@@ -453,7 +472,7 @@ class DigestSender:
         # Save all message IDs for future cleanup (summary first for correct order)
         all_ids = ([summary_id] if summary_id else []) + sent_message_ids
         if all_ids:
-            save_digest_message_ids(all_ids, user_id)
+            save_digest_message_ids(all_ids, self.target_chat_id)
             self.logger.info(f"Saved {len(all_ids)} message IDs for cleanup")
 
         return self._log_and_return_result(success_count, len(channel_messages), failed_channels)

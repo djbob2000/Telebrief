@@ -85,6 +85,7 @@ class Settings:
     use_emojis: bool = True
     include_statistics: bool = True
     target_user_id: int = 0
+    target_chat_id: str | int | None = None
     auto_cleanup_old_digests: bool = True
     max_messages_per_channel: int = 500
     max_prompt_chars: int = 8000
@@ -112,6 +113,7 @@ class Config:
     telegram_bot_token: str
     openai_api_key: str
     log_level: str
+    openai_base_url: str = ""
     anthropic_api_key: str = ""
     storage: StorageConfig = field(default_factory=StorageConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
@@ -482,6 +484,7 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
     telegram_api_hash = os.getenv("TELEGRAM_API_HASH")
     telegram_bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     openai_api_key = os.getenv("OPENAI_API_KEY", "")
+    openai_base_url = os.getenv("OPENAI_BASE_URL", "")
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
     log_level = os.getenv("LOG_LEVEL", "INFO")
 
@@ -513,6 +516,7 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
         "telegram_api_hash": telegram_api_hash,
         "telegram_bot_token": telegram_bot_token,
         "openai_api_key": openai_api_key,
+        "openai_base_url": openai_base_url,
         "anthropic_api_key": anthropic_api_key,
         "log_level": log_level,
     }
@@ -575,6 +579,9 @@ def load_config(config_path: str = "config.yaml") -> Config:
         use_emojis=settings_dict.get("use_emojis", True),
         include_statistics=settings_dict.get("include_statistics", True),
         target_user_id=settings_dict.get("target_user_id", 0),
+        target_chat_id=settings_dict.get(
+            "target_chat_id", settings_dict.get("target_user_id", 0)
+        ),
         auto_cleanup_old_digests=settings_dict.get("auto_cleanup_old_digests", True),
         max_messages_per_channel=settings_dict.get("max_messages_per_channel", 500),
         max_prompt_chars=settings_dict.get("max_prompt_chars", 8000),

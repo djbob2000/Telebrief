@@ -61,11 +61,20 @@ class AIProvider(ABC):
 class OpenAIProvider(AIProvider):
     """OpenAI API provider."""
 
-    def __init__(self, api_key: str, logger: logging.Logger, timeout: int = 60):
-        self.client = AsyncOpenAI(
-            api_key=api_key,
-            timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
-        )
+    def __init__(
+        self,
+        api_key: str,
+        logger: logging.Logger,
+        timeout: int = 60,
+        base_url: str = "",
+    ):
+        client_kwargs = {
+            "api_key": api_key,
+            "timeout": httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+        }
+        if base_url:
+            client_kwargs["base_url"] = base_url
+        self.client = AsyncOpenAI(**client_kwargs)
         self.logger = logger
 
     async def chat_completion(  # pylint: disable=too-many-positional-arguments
@@ -330,6 +339,7 @@ def create_provider(
     logger: logging.Logger,
     *,
     openai_api_key: str = "",
+    openai_base_url: str = "",
     anthropic_api_key: str = "",
     ollama_base_url: str = "http://localhost:11434",
     api_timeout: int = 60,
@@ -356,7 +366,12 @@ def create_provider(
     if name == "openai":
         if not openai_api_key:
             raise ValueError("OPENAI_API_KEY is required for OpenAI provider")
-        return OpenAIProvider(api_key=openai_api_key, logger=logger, timeout=api_timeout)
+        return OpenAIProvider(
+            api_key=openai_api_key,
+            logger=logger,
+            timeout=api_timeout,
+            base_url=openai_base_url,
+        )
 
     if name == "ollama":
         ollama_timeout = max(api_timeout, 120)

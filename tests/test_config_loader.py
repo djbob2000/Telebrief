@@ -34,6 +34,36 @@ def test_load_config_success(temp_config_file, mock_env_vars):
 
 
 @pytest.mark.unit
+def test_load_config_reads_optional_openai_base_url(temp_config_file, mock_env_vars, monkeypatch):
+    """The OpenAI-compatible endpoint can be overridden for DeepSeek."""
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+
+    config = load_config(temp_config_file)
+
+    assert config.openai_base_url == "https://api.deepseek.com/v1"
+
+
+@pytest.mark.unit
+def test_load_config_reads_target_chat_id(tmp_path, mock_env_vars):
+    """The digest destination can be a public Telegram channel username."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        '''
+channels:
+  - id: "@source"
+    name: "Source"
+settings:
+  target_user_id: 123456789
+  target_chat_id: "@berdiansk_news"
+'''
+    )
+
+    config = load_config(str(config_file))
+
+    assert config.settings.target_chat_id == "@berdiansk_news"
+
+
+@pytest.mark.unit
 def test_load_config_custom_output_language(tmp_path, mock_env_vars):
     """Test config loading with custom output_language."""
     config_content = """
