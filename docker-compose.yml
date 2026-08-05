@@ -1,6 +1,6 @@
 services:
   telebrief:
-    image: ghcr.io/belaytzev/telebrief:latest
+    image: telebrief:local
     container_name: telebrief
     restart: unless-stopped
 
