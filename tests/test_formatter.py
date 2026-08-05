@@ -412,7 +412,7 @@ def test_format_group_digest_russian_compact_single_message(sample_config, mock_
     assert "Дайджест Бердянска ·" in result
     assert "**📌 Предупреждения**" in result
     assert "**📌 Другое**" in result
-    assert "• Напряжение 130–150 В вместо 220 [источник](https://t.me/berdiansk_me)" in result
+    assert "• Напряжение 130–150 В вместо 220 [↗](https://t.me/berdiansk_me)" in result
     assert "• Отдают котят" in result
     assert "📺 Бердянск" not in result
     assert "📺" not in result
@@ -464,6 +464,6 @@ def test_format_group_digest_replaces_inline_source_url_with_source_link(
         ]
     )
 
-    assert f"• Важная новость [источник]({message_url})" in result
+    assert f"• Важная новость [↗]({message_url})" in result
     assert "🖇️" not in result
     assert result.count(message_url) == 1

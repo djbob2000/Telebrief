@@ -338,7 +338,7 @@ class DigestFormatter:
                     _CHANNEL_URL_RE.match(source_url)
                     or _INLINE_SOURCE_URL_RE.fullmatch(source_url)
                 ):
-                    line += f" [источник]({source_url})"
+                    line += f" [↗]({source_url})"
                 bullet_lines.append(line)
 
             parts.append(
