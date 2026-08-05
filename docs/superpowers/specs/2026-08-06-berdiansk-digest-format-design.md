@@ -15,7 +15,7 @@ The single published message begins with:
 Each non-empty topic group follows as a section:
 
 ```text
-📌 Предупреждения
+**📌 Предупреждения**
 
 • Напряжение крайне нестабильно: 130–150 В вместо 220. Жителей просят не включать стиральные машины и бойлеры — техника может сгореть. [источник](https://t.me/berdiansk_me/123)
 
@@ -47,7 +47,7 @@ The current grouped points and source URLs remain the source of truth. No new pe
 
 - Use the existing configured output language for the title, date, count, and time-window wording.
 - Use Telegram-compatible Markdown already supported by the sender. Topic headings should use `**...**`; links should use `[источник](url)`.
-- Use a single general group marker (`📌`) for the approved Russian layout unless the existing group-emoji mapping provides a deliberate, readable alternative. Do not add per-point emojis automatically.
+- Use the single general group marker (`📌`) for every topic heading in the approved Russian layout. Do not add per-point emojis automatically.
 - Normalize section whitespace so there is one blank line between title, sections, bullets, and compact statistics.
 - If a point has no valid source URL, omit the source suffix rather than displaying a channel label or placeholder.
 - Preserve the existing length guard and make truncation retain valid Markdown as far as practical.
@@ -63,7 +63,7 @@ The current grouped points and source URLs remain the source of truth. No new pe
 
 Update formatter and sender tests to verify:
 
-- the title is exactly `Дайджест Бердянска · <date>` for Russian output;
+- the title starts with `Дайджест Бердянска ·` and uses the existing Russian date format;
 - the result is one combined digest string containing multiple topic sections;
 - headings are bold and contain no visible `#`;
 - bullets use `•`;
