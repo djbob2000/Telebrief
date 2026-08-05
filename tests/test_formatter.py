@@ -455,7 +455,7 @@ def test_format_group_digest_replaces_inline_source_url_with_source_link(
                 "Новости",
                 [
                     GroupedPoint(
-                        point=f"Важная новость → {message_url}",
+                        point=f"Важная новость 🖇️ → {message_url}",
                         source="Бердянск",
                         source_url="https://t.me/berdiansk_me",
                     )
@@ -465,4 +465,5 @@ def test_format_group_digest_replaces_inline_source_url_with_source_link(
     )
 
     assert f"• Важная новость [источник]({message_url})" in result
+    assert "🖇️" not in result
     assert result.count(message_url) == 1

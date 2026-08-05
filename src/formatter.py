@@ -331,6 +331,7 @@ class DigestFormatter:
                 if inline_urls:
                     point_text = _INLINE_SOURCE_URL_RE.sub("", point_text)
                     point_text = re.sub(r"\s*(?:→|->|—|–)\s*$", "", point_text).rstrip()
+                    point_text = re.sub(r"\s*(?:🖇️|🔗)\s*$", "", point_text).rstrip()
 
                 line = f"• {point_text}"
                 if source_url and (
