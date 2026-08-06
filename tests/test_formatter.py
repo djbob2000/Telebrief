@@ -470,9 +470,7 @@ def test_format_group_digest_replaces_inline_source_url_with_source_link(
 
 
 @pytest.mark.unit
-def test_format_group_digest_normalizes_markdown_wrapped_source_link(
-    sample_config, mock_logger
-):
+def test_format_group_digest_normalizes_markdown_wrapped_source_link(sample_config, mock_logger):
     """Markdown-wrapped Telegram sources render as one compact arrow link."""
     formatter = DigestFormatter(sample_config, mock_logger)
     message_url = "https://t.me/Brd24discord/208708"
@@ -498,3 +496,30 @@ def test_format_group_digest_normalizes_markdown_wrapped_source_link(
     assert f"• Бердянск снова остался без света. [↗]({message_url})" in result
     assert "[t.me/Brd24discord/208708](" not in result
     assert result.count(message_url) == 1
+
+
+@pytest.mark.unit
+def test_format_group_digest_removes_source_markers_and_duplicate_bullets(
+    sample_config, mock_logger
+):
+    """Service source markers and repeated list prefixes do not leak into output."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+
+    result = formatter.format_group_digest(
+        [
+            (
+                "Новости",
+                [
+                    GroupedPoint(
+                        point="• • 💧 Вода пропадает в Мелитополе 🖇️ 🖇️ 🖇️",
+                        source="Бердянск",
+                        source_url="https://t.me/berdiansk_me/123",
+                    )
+                ],
+            )
+        ]
+    )
+
+    assert "• 💧 Вода пропадает в Мелитополе [↗](https://t.me/berdiansk_me/123)" in result
+    assert "🖇️" not in result
+    assert "• •" not in result

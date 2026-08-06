@@ -16,6 +16,8 @@ from src.ui_strings import get_month_names, get_ui_strings
 _CHANNEL_URL_RE = re.compile(r"^https://t\.me/(?:c/\d+|[^/]{2,})$")
 _INLINE_SOURCE_URL_RE = re.compile(r"https://t\.me/[^\s)\]]+")
 _MARKDOWN_SOURCE_LINK_RE = re.compile(r"\[([^\]]+)\]\((https://t\.me/[^)\s]+)\)")
+_LEADING_BULLET_RE = re.compile(r"^\s*(?:(?:[•●▪◦*-]+|\d+[.)])\s*)+")
+_SOURCE_MARKER_RE = re.compile(r"\s*(?:🖇️|🔗)\s*")
 
 
 class DigestFormatter:
@@ -343,9 +345,7 @@ class DigestFormatter:
                     )
                     source_url = label_url if label_is_message_url else destination_url
                     replacement = "" if label_url.startswith("https://t.me/") else visible_label
-                    point_text = _MARKDOWN_SOURCE_LINK_RE.sub(
-                        replacement, point_text, count=1
-                    )
+                    point_text = _MARKDOWN_SOURCE_LINK_RE.sub(replacement, point_text, count=1)
 
                 inline_urls = _INLINE_SOURCE_URL_RE.findall(point_text)
                 if inline_urls:
@@ -353,13 +353,13 @@ class DigestFormatter:
                 if inline_urls:
                     point_text = _INLINE_SOURCE_URL_RE.sub("", point_text)
                     point_text = re.sub(r"\s*(?:→|->|—|–)\s*$", "", point_text).rstrip()
-                    point_text = re.sub(r"\s*(?:🖇️|🔗)\s*$", "", point_text).rstrip()
+                point_text = _SOURCE_MARKER_RE.sub(" ", point_text)
+                point_text = _LEADING_BULLET_RE.sub("", point_text)
                 point_text = re.sub(r"[ \t]{2,}", " ", point_text).strip()
 
                 line = f"• {point_text}"
                 if source_url and (
-                    _CHANNEL_URL_RE.match(source_url)
-                    or _INLINE_SOURCE_URL_RE.fullmatch(source_url)
+                    _CHANNEL_URL_RE.match(source_url) or _INLINE_SOURCE_URL_RE.fullmatch(source_url)
                 ):
                     line += f" [↗]({source_url})"
                 bullet_lines.append(line)
