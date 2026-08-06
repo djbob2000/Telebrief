@@ -15,6 +15,7 @@ from src.ui_strings import get_month_names, get_ui_strings
 
 _CHANNEL_URL_RE = re.compile(r"^https://t\.me/(?:c/\d+|[^/]{2,})$")
 _INLINE_SOURCE_URL_RE = re.compile(r"https://t\.me/[^\s)\]]+")
+_MARKDOWN_SOURCE_LINK_RE = re.compile(r"\[([^\]]+)\]\((https://t\.me/[^)\s]+)\)")
 
 
 class DigestFormatter:
@@ -326,12 +327,34 @@ class DigestFormatter:
             bullet_lines = []
             for point in points:
                 point_text = point.point
+                markdown_source = _MARKDOWN_SOURCE_LINK_RE.search(point_text)
+                source_url = point.source_url
+                if markdown_source:
+                    destination_url = markdown_source.group(2)
+                    visible_label = markdown_source.group(1).strip()
+                    label_url = (
+                        visible_label
+                        if visible_label.startswith("https://")
+                        else f"https://{visible_label}"
+                    )
+                    label_is_message_url = bool(
+                        _INLINE_SOURCE_URL_RE.fullmatch(label_url)
+                        and re.search(r"/\d+$", label_url)
+                    )
+                    source_url = label_url if label_is_message_url else destination_url
+                    replacement = "" if label_url.startswith("https://t.me/") else visible_label
+                    point_text = _MARKDOWN_SOURCE_LINK_RE.sub(
+                        replacement, point_text, count=1
+                    )
+
                 inline_urls = _INLINE_SOURCE_URL_RE.findall(point_text)
-                source_url = inline_urls[0] if inline_urls else point.source_url
+                if inline_urls:
+                    source_url = inline_urls[0]
                 if inline_urls:
                     point_text = _INLINE_SOURCE_URL_RE.sub("", point_text)
                     point_text = re.sub(r"\s*(?:→|->|—|–)\s*$", "", point_text).rstrip()
                     point_text = re.sub(r"\s*(?:🖇️|🔗)\s*$", "", point_text).rstrip()
+                point_text = re.sub(r"[ \t]{2,}", " ", point_text).strip()
 
                 line = f"• {point_text}"
                 if source_url and (

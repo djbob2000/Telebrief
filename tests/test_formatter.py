@@ -467,3 +467,34 @@ def test_format_group_digest_replaces_inline_source_url_with_source_link(
     assert f"• Важная новость [↗]({message_url})" in result
     assert "🖇️" not in result
     assert result.count(message_url) == 1
+
+
+@pytest.mark.unit
+def test_format_group_digest_normalizes_markdown_wrapped_source_link(
+    sample_config, mock_logger
+):
+    """Markdown-wrapped Telegram sources render as one compact arrow link."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+    message_url = "https://t.me/Brd24discord/208708"
+
+    result = formatter.format_group_digest(
+        [
+            (
+                "Другое",
+                [
+                    GroupedPoint(
+                        point=(
+                            "Бердянск снова остался без света. "
+                            f"[t.me/Brd24discord/208708](https://t.me/Brd24discord)"
+                        ),
+                        source="Бердянск",
+                        source_url="https://t.me/Brd24discord",
+                    )
+                ],
+            )
+        ]
+    )
+
+    assert f"• Бердянск снова остался без света. [↗]({message_url})" in result
+    assert "[t.me/Brd24discord/208708](" not in result
+    assert result.count(message_url) == 1
