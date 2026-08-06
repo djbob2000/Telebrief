@@ -370,6 +370,44 @@ async def test_openai_provider_omits_reasoning_effort_when_none(mock_logger):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_deepseek_provider_uses_thinking_and_native_max_tokens(mock_logger):
+    """DeepSeek receives explicit thinking controls and its native token field."""
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = OpenAIProvider(
+            api_key="sk-test",
+            logger=mock_logger,
+            base_url="https://api.deepseek.com",
+        )
+        mock_choice = MagicMock()
+        mock_choice.message.content = '{"items": []}'
+        mock_choice.message.refusal = None
+        mock_choice.finish_reason = "stop"
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        mock_response.usage.total_tokens = 15
+        provider.client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        await provider.chat_completion(
+            messages=[{"role": "user", "content": "Extract"}],
+            model="deepseek-v4-flash",
+            temperature=0.1,
+            max_tokens=500,
+            reasoning_effort=None,
+            thinking=False,
+            response_format={"type": "json_object"},
+        )
+
+        call_kwargs = provider.client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["max_tokens"] == 500
+        assert "max_completion_tokens" not in call_kwargs
+        assert call_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert call_kwargs["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_openai_provider_falls_back_when_reasoning_effort_rejected(mock_logger):
     """When the API rejects reasoning_effort (BadRequestError), the provider retries without it."""
     import httpx

@@ -282,6 +282,8 @@ class TestGrouperTemperatureOverride:
         # Temperature should be 0.1, not the global config value (0.7)
         temp = call_kwargs.kwargs.get("temperature") or call_kwargs[1].get("temperature")
         assert temp == 0.1
+        assert call_kwargs.kwargs["thinking"] is False
+        assert call_kwargs.kwargs["response_format"] == {"type": "json_object"}
 
 
 class TestStripChannelHeader:
@@ -326,7 +328,9 @@ class TestStripBroaderNoise:
 
     def test_strips_numbered_emoji_prefix(self):
         """Leading 1️⃣-9️⃣ section numbering is removed from each line."""
-        out = _strip_channel_summary_noise("1️⃣ 🤖 First fact\n2️⃣ 📈 Second fact\n3️⃣ ⚠️ Third fact")
+        out = _strip_channel_summary_noise(
+            "1️⃣ 🤖 First fact\n2️⃣ 📈 Second fact\n3️⃣ ⚠️ Third fact"
+        )
         # Numbered emoji prefix gone, content survives
         assert "1️⃣" not in out
         assert "2️⃣" not in out

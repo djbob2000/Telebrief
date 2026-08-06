@@ -41,6 +41,8 @@ class AIProvider(ABC):
         temperature: float,
         max_tokens: int,
         reasoning_effort: str | None = None,
+        thinking: bool | None = None,
+        response_format: Dict[str, Any] | None = None,
     ) -> str:
         """
         Generate a chat completion.
@@ -52,6 +54,8 @@ class AIProvider(ABC):
             max_tokens: Maximum tokens in response
             reasoning_effort: Optional reasoning effort hint passed to the API when not None.
                 Supported by some providers (e.g. OpenAI). Ignored by others.
+            thinking: Optional DeepSeek thinking-mode toggle.
+            response_format: Optional structured-output format for compatible providers.
 
         Returns:
             Generated text content
@@ -76,6 +80,7 @@ class OpenAIProvider(AIProvider):
             client_kwargs["base_url"] = base_url
         self.client = AsyncOpenAI(**client_kwargs)
         self.logger = logger
+        self.base_url = base_url.lower()
 
     async def chat_completion(  # pylint: disable=too-many-positional-arguments
         self,
@@ -84,15 +89,24 @@ class OpenAIProvider(AIProvider):
         temperature: float,
         max_tokens: int,
         reasoning_effort: str | None = None,
+        thinking: bool | None = None,
+        response_format: Dict[str, Any] | None = None,
     ) -> str:
+        is_deepseek = "deepseek" in self.base_url or model.startswith("deepseek-")
         create_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
-            "max_completion_tokens": max_tokens,
+            ("max_tokens" if is_deepseek else "max_completion_tokens"): max_tokens,
         }
         if reasoning_effort is not None:
             create_kwargs["reasoning_effort"] = reasoning_effort
+        if is_deepseek and thinking is not None:
+            create_kwargs["extra_body"] = {
+                "thinking": {"type": "enabled" if thinking else "disabled"}
+            }
+        if response_format is not None:
+            create_kwargs["response_format"] = response_format
 
         try:
             response = await self.client.chat.completions.create(**create_kwargs)
@@ -162,12 +176,14 @@ class OpenAIProvider(AIProvider):
             except OpenAIBadRequestError as exc2:
                 self.logger.debug("retry without reasoning_effort also rejected: %s", exc2)
                 # fall through to max_tokens fallback
-        self.logger.debug(
-            "max_completion_tokens rejected by model, retrying with max_tokens: %s",
-            original_exc,
-        )
-        create_kwargs["max_tokens"] = create_kwargs.pop("max_completion_tokens")
-        return await self.client.chat.completions.create(**create_kwargs)
+        if "max_completion_tokens" in create_kwargs:
+            self.logger.debug(
+                "max_completion_tokens rejected by model, retrying with max_tokens: %s",
+                original_exc,
+            )
+            create_kwargs["max_tokens"] = create_kwargs.pop("max_completion_tokens")
+            return await self.client.chat.completions.create(**create_kwargs)
+        raise original_exc
 
 
 class OllamaProvider(AIProvider):
@@ -185,6 +201,10 @@ class OllamaProvider(AIProvider):
         temperature: float,
         max_tokens: int,
         reasoning_effort: str | None = None,  # noqa: ARG002 — accepted, not used by Ollama
+        thinking: bool | None = None,  # noqa: ARG002 — accepted, not used by Ollama
+        response_format: (
+            Dict[str, Any] | None
+        ) = None,  # noqa: ARG002 — accepted, not used by Ollama
     ) -> str:
         url = f"{self.base_url}/api/chat"
         payload: Dict[str, Any] = {
@@ -267,6 +287,10 @@ class AnthropicProvider(AIProvider):
         temperature: float,
         max_tokens: int,
         reasoning_effort: str | None = None,  # noqa: ARG002 — accepted, not used by Anthropic
+        thinking: bool | None = None,  # noqa: ARG002 — accepted, not used by Anthropic
+        response_format: (
+            Dict[str, Any] | None
+        ) = None,  # noqa: ARG002 — accepted, not used by Anthropic
     ) -> str:
         # Extract system message and user messages
         system_text = ""

@@ -239,6 +239,8 @@ Messages (total: {actual_count}):
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                reasoning_effort="low",
+                thinking=True,
             )
         except TokenBudgetExhaustedError:
             retry_max_tokens = self.max_tokens * 3
@@ -254,6 +256,7 @@ Messages (total: {actual_count}):
                     temperature=self.temperature,
                     max_tokens=retry_max_tokens,
                     reasoning_effort="low",
+                    thinking=True,
                 )
             except Exception as retry_exc:
                 self.logger.error(
@@ -308,6 +311,8 @@ Messages (total: {actual_count}):
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
+                reasoning_effort="low",
+                thinking=True,
             )
         except Exception as e:
             self.logger.error("Length-reduction retry failed for %s: %s", channel_name, e)

@@ -374,6 +374,10 @@ async def test_summarize_channel_no_retry_on_success(sample_config, mock_logger,
         assert result == "Success summary"
         assert summarizer.provider.chat_completion.call_count == 1
 
+        call_kwargs = summarizer.provider.chat_completion.call_args.kwargs
+        assert call_kwargs["thinking"] is True
+        assert call_kwargs["reasoning_effort"] == "low"
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio

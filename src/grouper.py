@@ -241,8 +241,8 @@ class DigestGrouper:
             "- Section header lines like '📌 Key points:', '📎 Also:'\n"
             "- Section numbering like '1️⃣', '2️⃣' as a standalone prefix — strip the prefix, "
             "keep the bullet content if it survives the rules above\n\n"
-            "Output ONLY a valid JSON array in this exact format:\n"
-            '[{"point": "bullet text"}, {"point": "another bullet"}]\n\n'
+            "Output ONLY a valid JSON object in this exact format:\n"
+            '{"items": [{"point": "bullet text"}, {"point": "another bullet"}]}\n\n'
             "Extraction rules (apply only to bullets that pass the QUALITY GATE):\n"
             "- Each surviving input bullet becomes one output entry\n"
             "- Preserve emojis at the start of each bullet\n"
@@ -312,6 +312,8 @@ class DigestGrouper:
             model=self.model,
             temperature=0.1,
             max_tokens=self.config.settings.max_tokens_per_summary,
+            thinking=False,
+            response_format={"type": "json_object"},
         )
         return self._parse_extracted_response(response, channel_name, source_url)
 
@@ -326,8 +328,13 @@ class DigestGrouper:
         except json.JSONDecodeError as exc:
             self.logger.warning("Extractor JSON parse failed for %s: %s", channel_name, exc)
             return []
+        if isinstance(data, dict):
+            if "items" not in data:
+                self.logger.warning("Extractor for %s returned object without items", channel_name)
+                return []
+            data = data.get("items", [])
         if not isinstance(data, list):
-            self.logger.warning("Extractor for %s returned non-list", channel_name)
+            self.logger.warning("Extractor for %s returned non-list items", channel_name)
             return []
         result: List[ExtractedBullet] = []
         for item in data:
@@ -384,6 +391,8 @@ class DigestGrouper:
             model=self.model,
             temperature=0.1,
             max_tokens=self.max_tokens,
+            thinking=False,
+            response_format={"type": "json_object"},
         )
         valid_group_names = {g.name for g in groups}
         urls = {b.source: b.source_url for b in bullets if b.source_url}
