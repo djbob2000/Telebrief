@@ -252,6 +252,14 @@ class TestPromptInjectionMitigation:
             or "tags" in system_prompt.lower()
         )
 
+    def test_extractor_system_prompt_requires_configured_output_language(self, grouper):
+        """Extractor translates surviving points into the configured digest language."""
+        messages = grouper._build_extractor_prompt(channel_name="Ch", summary="Summary")
+        system_prompt = messages[0]["content"]
+        assert "Russian" in system_prompt
+        assert "translate" in system_prompt.lower()
+        assert "preserve the original language" not in system_prompt.lower()
+
     def test_classifier_system_prompt_contains_data_isolation_instruction(self, grouper):
         """Classifier system prompt treats input bullets as DATA only."""
         groups = grouper._build_group_definitions()
