@@ -554,16 +554,15 @@ def test_format_group_digest_removes_standalone_trailing_arrow(
 
 
 @pytest.mark.unit
-def test_format_group_digest_labels_scheduled_edition(sample_config, mock_logger):
-    """Scheduled editions identify whether they are morning or evening."""
+def test_format_group_digest_has_one_generic_title(sample_config, mock_logger):
+    """The digest title has no morning/evening edition label."""
     formatter = DigestFormatter(sample_config, mock_logger)
 
-    result = formatter.format_group_digest(
-        [("Новости", [GroupedPoint(point="Факт", source="")])],
-        edition_label="evening",
-    )
+    result = formatter.format_group_digest([("Новости", [GroupedPoint(point="Факт", source="")])])
 
-    assert result.startswith("Вечерний дайджест Бердянска · ")
+    assert result.startswith("Дайджест Бердянска · ")
+    assert "Вечерний" not in result
+    assert "Утренний" not in result
 
 
 @pytest.mark.unit

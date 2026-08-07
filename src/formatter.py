@@ -316,7 +316,6 @@ class DigestFormatter:
         self,
         grouped_sections: list[tuple[str, list[GroupedPoint]]],
         hours: int = 24,
-        edition_label: str = "",
     ) -> str:
         """Format all topic groups as one compact Telegram message."""
         sections = [(name, points) for name, points in grouped_sections if points]
@@ -324,22 +323,10 @@ class DigestFormatter:
             return ""
 
         date_str = self._format_date(datetime.now(timezone.utc))
-        edition_names = {
-            "morning": "Утренний" if self._language == "Russian" else "Morning",
-            "evening": "Вечерний" if self._language == "Russian" else "Evening",
-        }
-        title_prefix = edition_names.get(edition_label, "")
         if self._language == "Russian":
-            title = (
-                f"{title_prefix + ' ' if title_prefix else ''}дайджест Бердянска · {date_str}"
-            )
-            if not title_prefix:
-                title = f"Дайджест Бердянска · {date_str}"
+            title = f"Дайджест Бердянска · {date_str}"
         else:
-            title = (
-                f"{title_prefix + ' ' if title_prefix else ''}"
-                f"{self._ui['daily_digest']} · {date_str}"
-            )
+            title = f"{self._ui['daily_digest']} · {date_str}"
         parts = [title]
 
         for group_name, points in sections:
@@ -431,7 +418,6 @@ class DigestFormatter:
     def format_group_rich_digest(
         self,
         grouped_sections: list[tuple[str, list[GroupedPoint]]],
-        edition_label: str = "",
     ) -> dict:
         """Build one Telegram Rich Message document for grouped news."""
         sections = [(name, points) for name, points in grouped_sections if points]
@@ -439,23 +425,10 @@ class DigestFormatter:
             return {"rich_message": {"blocks": []}}
 
         date_str = self._format_date(datetime.now(timezone.utc))
-        edition_names = {
-            "morning": "Утренний" if self._language == "Russian" else "Morning",
-            "evening": "Вечерний" if self._language == "Russian" else "Evening",
-        }
-        title_prefix = edition_names.get(edition_label, "")
         if self._language == "Russian":
-            title = (
-                f"{title_prefix + ' ' if title_prefix else ''}"
-                f"дайджест Бердянска · {date_str}"
-            )
-            if not title_prefix:
-                title = f"Дайджест Бердянска · {date_str}"
+            title = f"Дайджест Бердянска · {date_str}"
         else:
-            title = (
-                f"{title_prefix + ' ' if title_prefix else ''}"
-                f"{self._ui['daily_digest']} · {date_str}"
-            )
+            title = f"{self._ui['daily_digest']} · {date_str}"
 
         blocks = [{"type": "heading", "size": 2, "text": title}]
         for group_name, points in sections:

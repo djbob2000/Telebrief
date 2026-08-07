@@ -114,38 +114,35 @@ class BotCommandHandler:
             update: Telegram update
             context: Bot context
         """
+        await self._handle_digest_window(update, hours=24, command_name="digest")
+
+    async def _handle_digest_window(self, update: Update, hours: int, command_name: str):
+        """Authorize, rate-limit, generate, and report one manual digest window."""
         if update.effective_user is None or update.message is None:
             return
 
         user_id = update.effective_user.id
-
-        # Security check
         if not self.is_authorized(user_id):
-            self.logger.warning(f"Unauthorized /digest attempt from user {user_id}")
-            return  # Silently ignore
+            self.logger.warning(f"Unauthorized /{command_name} attempt from user {user_id}")
+            return
 
         if self._is_rate_limited(user_id):
             await update.message.reply_text(self._ui["rate_limited"])
             return
 
-        self.logger.info(f"Manual digest requested by user {user_id}")
-
-        # Send "processing" message
-        await update.message.reply_text(self._ui["generating_digest"])
+        self.logger.info(f"Manual /{command_name} digest requested by user {user_id} ({hours}h)")
+        processing_message = self._ui["generating_digest"]
+        await update.message.reply_text(processing_message)
 
         try:
-            # Generate and send digest
             success = await generate_and_send_digest(
-                config=self.config, logger=self.logger, hours=24, user_id=user_id
+                config=self.config, logger=self.logger, hours=hours, user_id=user_id
             )
-
-            if success:
-                await update.message.reply_text(self._ui["digest_done"])
-            else:
-                await update.message.reply_text(self._ui["digest_error"])
-
+            await update.message.reply_text(
+                self._ui["digest_done"] if success else self._ui["digest_error"]
+            )
         except Exception as e:
-            self.logger.error(f"Error in /digest command: {e}", exc_info=True)
+            self.logger.error(f"Error in /{command_name} command: {e}", exc_info=True)
             await update.message.reply_text(self._ui["digest_exception"])
 
     async def handle_cleanup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -267,7 +264,11 @@ class BotCommandHandler:
             f"/help - {self._ui['cmd_help_desc']}\n\n"
             f"{self._ui['help_auto_mode']}\n"
             + self._ui["help_auto_desc"].format(
-                schedule=self.config.settings.schedule_time + " UTC"
+                schedule=(
+                    self.scheduler.get_schedule_description()
+                    if self.scheduler
+                    else self.config.settings.schedule_time + " UTC"
+                )
             )
             + f"\n\n{self._ui['help_features']}\n"
             + self._ui["help_features_list"].format(

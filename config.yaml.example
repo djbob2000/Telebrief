@@ -6,6 +6,9 @@ channels:
     # prompt_extra: ""         # optional — append extra instructions to this channel's AI prompt
     # lookback_hours: null     # optional — override global lookback_hours for this channel
     # filters: null            # optional — null=use global filters, []=no filters, list=override
+    # topics:                  # optional — for Telegram forum groups, collect only these topics
+    #   - id: 12345
+    #     name: "Selected topic"
   # Add your channels here
   # Format for public channels: "@channelname" (string with quotes)
   # Format for private channels/groups: -1001234567890 (integer, NO quotes!)
@@ -21,9 +24,9 @@ channels:
 # Application settings
 settings:
   # Scheduling
-  schedule_time: "08:00"   # UTC time for daily digest
+  schedule_time: "09:00"   # One daily digest
   timezone: "UTC"
-  lookback_hours: 24       # Message collection window
+  lookback_hours: 24       # Global collection window
 
   # AI Provider: "openai", "ollama", or "anthropic"
   # Required env vars per provider:
@@ -43,7 +46,7 @@ settings:
   # Legacy OpenAI settings (used as fallback if ai_model not set)
   openai_model: "gpt-5-nano"
   openai_temperature: 1.0
-  max_tokens_per_summary: 1500
+  max_tokens_per_summary: 96000
 
   # Ollama settings (only used when ai_provider is "ollama")
   ollama_base_url: "http://localhost:11434"

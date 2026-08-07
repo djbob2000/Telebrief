@@ -186,7 +186,6 @@ def _format_group_messages(
     grouped: dict,
     config: "Config",
     hours: int,
-    edition_label: str = "",
 ) -> str:
     """Format ordered non-empty groups into one digest message."""
     sections = []
@@ -195,10 +194,6 @@ def _format_group_messages(
         if not points:
             continue
         sections.append((name, points))
-    if edition_label:
-        return formatter.format_group_digest(
-            sections, hours=hours, edition_label=edition_label
-        )
     return formatter.format_group_digest(sections, hours=hours)
 
 
@@ -281,7 +276,7 @@ def read_last_digest() -> Optional[dict]:
 
 
 async def _build_grouped_parts(
-    config: Config, logger: logging.Logger, hours: int, edition_label: str = ""
+    config: Config, logger: logging.Logger, hours: int
 ) -> Optional[tuple[list[tuple[str, str]], str, dict]]:
     """Build topic-grouped digest messages. Returns None if there is nothing to send."""
     messages_by_channel = await _collect_messages(config, logger, hours)
@@ -305,7 +300,7 @@ async def _build_grouped_parts(
 
     logger.info("Formatting group messages")
     formatter = DigestFormatter(config, logger)
-    group_digest = _format_group_messages(formatter, grouped, config, hours, edition_label)
+    group_digest = _format_group_messages(formatter, grouped, config, hours)
     if not group_digest:
         logger.warning("No valid group messages to send")
         return None
@@ -314,9 +309,7 @@ async def _build_grouped_parts(
         for name in _order_groups(grouped, config)
         if grouped.get(name)
     ]
-    rich_document = formatter.format_group_rich_digest(
-        sections, edition_label=edition_label
-    )
+    rich_document = formatter.format_group_rich_digest(sections)
     return [("digest", group_digest)], "", rich_document
 
 
@@ -353,7 +346,7 @@ async def _build_channel_parts(
 
 
 async def _build_digest_parts(
-    config: Config, logger: logging.Logger, hours: int, edition_label: str = ""
+    config: Config, logger: logging.Logger, hours: int
 ) -> Optional[tuple[list[tuple[str, str]], str, Optional[dict]]]:
     """Collect, summarize and format the digest according to the configured digest_mode.
 
@@ -370,7 +363,7 @@ async def _build_digest_parts(
         logger.info(f"Starting {mode!r} digest build for last {hours} hours")
 
         if mode == "digest":
-            built = await _build_grouped_parts(config, logger, hours, edition_label)
+            built = await _build_grouped_parts(config, logger, hours)
         else:
             built = await _build_channel_parts(config, logger, hours)
 
@@ -485,14 +478,14 @@ async def collect_channel_messages(
 
 
 async def build_digest(
-    config: Config, logger: logging.Logger, hours: int = 24, edition_label: str = ""
+    config: Config, logger: logging.Logger, hours: int = 24
 ) -> str:
     """Build the digest as a single Markdown document without sending it.
 
     Returns:
         The digest text, or an empty string when there was nothing to report
     """
-    built = await _build_digest_parts(config, logger, hours, edition_label)
+    built = await _build_digest_parts(config, logger, hours)
     return "" if built is None else _join_parts(built[0], built[1])
 
 
@@ -501,7 +494,6 @@ async def generate_and_send_digest(
     logger: logging.Logger,
     hours: int = 24,
     user_id: Optional[int] = None,
-    edition_label: str = "",
 ) -> bool:
     """
     Build the digest according to the configured digest_mode and send it to Telegram.
@@ -521,7 +513,7 @@ async def generate_and_send_digest(
     validate_hours(hours)
 
     try:
-        built = await _build_digest_parts(config, logger, hours, edition_label)
+        built = await _build_digest_parts(config, logger, hours)
         if built is None:
             return False
         parts, summary_message, rich_document = built

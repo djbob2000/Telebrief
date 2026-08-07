@@ -49,8 +49,12 @@ class TelebriefApp:
             for ch in self.config.channels:
                 self.logger.info(f"  • {ch.name} ({ch.id})")
 
+            schedule = (
+                f"daily {self.config.settings.schedule_time} "
+                f"({self.config.settings.lookback_hours}h)"
+            )
             self.logger.info(
-                f"Schedule: Daily at {self.config.settings.schedule_time} {self.config.settings.timezone}"
+                f"Schedule: {schedule} {self.config.settings.timezone}"
             )
             self.logger.info(f"Target user: {self.config.settings.target_user_id}")
             self.logger.info(
@@ -129,6 +133,7 @@ class TelebriefApp:
         self.logger.info("")
         self.logger.info("Available commands in Telegram:")
         self.logger.info("  /digest - Generate digest instantly")
+        self.logger.info("  /cleanup - Delete old digests")
         self.logger.info("  /status - Show status")
         self.logger.info("  /help - Show help")
         self.logger.info("")

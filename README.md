@@ -24,7 +24,7 @@
 - 🔒 **Private Channel Support** - Access your private chats and channels
 - 📑 **Digest Modes** - Group by channel (default) or by AI-detected topics like News, Events, Sport
 - 🎨 **Smart Formatting** - Markdown with emojis, bullet points, and clickable channel links
-- 📨 **Long Message Splitting** - Digests that exceed Telegram's 4096-character limit are automatically split into sequential messages instead of being truncated
+- 📨 **Long Message Splitting** - Digests that exceed Telegram's 32768-character bot-message limit are automatically split into sequential messages instead of being truncated
 - 🔐 **Secure** - Single-user only, credentials stored safely
 - 🧹 **Auto-cleanup** - Automatically removes old digest messages
 - 🔌 **MCP Server** - Optional built-in MCP endpoint so AI agents can pull digests instead of reading Telegram
@@ -152,6 +152,19 @@ Messages that don't match any defined group are placed into an automatic "Other"
 
 > All labels (header, statistics, bot commands) follow the configured `output_language`. The example above uses English; set `output_language: "Russian"` (or any other language) to change the output.
 
+### Daily digest schedule
+
+Telebrief runs one automatic digest per day using the configured local time and global lookback window:
+
+```yaml
+settings:
+  timezone: "Europe/Kyiv"
+  schedule_time: "09:00"
+  lookback_hours: 24
+```
+
+Individual channels may override the global collection window with their own `lookback_hours`. The removed `schedule_jobs` setting is rejected with an explicit configuration error.
+
 ### `dedup_topics` — cross-channel deduplication
 
 When multiple channels cover the same event, the grouper normally produces one bullet point per channel. Enable `dedup_topics` to instruct the AI to keep only the most informative description and merge the source attributions:
@@ -174,6 +187,23 @@ With deduplication enabled, if `TechCrunch` and `HackerNews` both report the sam
 ## ⚙️ Per-Channel Configuration
 
 Each channel entry supports two optional overrides in addition to the required `id` and `name` fields.
+
+### `topics` — selected Telegram forum topics
+
+For a Telegram forum group, add an optional `topics` list to collect only selected topics. The topic ID is the ID of the topic's creation message. Sources without `topics` continue to collect the whole chat.
+
+```yaml
+channels:
+  - id: "@Berdyansk_drb"
+    name: "Бердянск Свежие Объявления"
+    topics:
+      - id: 235525
+        name: "Проблемы ЖКХ"
+      - id: 43339
+        name: "Новости Бердянска"
+```
+
+Each selected topic is summarized as a separate logical source. Messages from other forum topics are not fetched or sent to the AI.
 
 ### `lookback_hours` — per-channel lookback window
 

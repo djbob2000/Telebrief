@@ -8,11 +8,47 @@ import pytest
 from src.config_loader import (
     DigestGroupConfig,
     FilterSpec,
+    ForumTopicConfig,
     McpConfig,
     PromptsConfig,
     StorageConfig,
     load_config,
 )
+
+
+@pytest.mark.unit
+def test_load_config_parses_forum_topics(tmp_path, mock_env_vars):
+    """A channel may restrict collection to named Telegram forum topics."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@Berdyansk_drb"
+    name: "Бердянск Свежие Объявления"
+    topics:
+      - id: 235525
+        name: "Проблемы ЖКХ"
+      - id: 43339
+        name: "Новости Бердянска"
+settings:
+  target_user_id: 123456789
+"""
+    )
+
+    config = load_config(str(config_file))
+
+    assert config.channels[0].topics == [
+        ForumTopicConfig(id=235525, name="Проблемы ЖКХ"),
+        ForumTopicConfig(id=43339, name="Новости Бердянска"),
+    ]
+
+
+@pytest.mark.unit
+def test_load_config_defaults_topics_to_empty(temp_config_file, mock_env_vars):
+    """Sources without a topics block retain whole-source collection behavior."""
+    config = load_config(temp_config_file)
+
+    assert config.channels[0].topics == []
 
 
 @pytest.mark.unit
@@ -308,7 +344,7 @@ settings:
 
 @pytest.mark.unit
 def test_load_config_default_max_tokens_per_summary(tmp_path, mock_env_vars):
-    """Test that max_tokens_per_summary defaults to 1500 when not specified."""
+    """Test that max_tokens_per_summary defaults to 96000 when not specified."""
     config_content = """
 channels:
   - id: "@test"
@@ -322,7 +358,7 @@ settings:
 
     config = load_config(str(config_file))
 
-    assert config.settings.max_tokens_per_summary == 1500
+    assert config.settings.max_tokens_per_summary == 96000
 
 
 @pytest.mark.unit
@@ -604,6 +640,32 @@ settings:
     config_file.write_text(config_content)
 
     with pytest.raises(ValueError, match="lookback_hours must be positive"):
+        load_config(str(config_file))
+
+
+@pytest.mark.unit
+def test_load_config_rejects_removed_schedule_jobs(tmp_path, mock_env_vars):
+    """The removed multi-schedule setting fails with an actionable error."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@news"
+    name: "News"
+settings:
+  schedule_time: "09:00"
+  timezone: "UTC"
+  lookback_hours: 24
+  target_user_id: 123456789
+  schedule_jobs:
+    - name: evening
+      time: "21:00"
+      lookback_hours: 12
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="schedule_jobs.*no longer supported"):
         load_config(str(config_file))
 
 

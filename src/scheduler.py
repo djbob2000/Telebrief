@@ -34,13 +34,8 @@ class DigestScheduler:
             self.logger.warning("Scheduler already running")
             return
 
-        # Parse schedule time
-        hour, minute = self._parse_schedule_time()
-
-        # Create cron trigger for daily execution
+        hour, minute = self._parse_schedule_time(self.config.settings.schedule_time)
         trigger = CronTrigger(hour=hour, minute=minute, timezone=self.config.settings.timezone)
-
-        # Add job
         self.scheduler.add_job(
             func=self._scheduled_digest_job,
             trigger=trigger,
@@ -67,14 +62,16 @@ class DigestScheduler:
             self.logger.info("Scheduler stopped")
 
     async def _scheduled_digest_job(self):
-        """Scheduled job that runs daily."""
+        """Run the one configured daily digest."""
         self.logger.info("=" * 60)
         self.logger.info("📅 SCHEDULED DIGEST JOB STARTED")
         self.logger.info("=" * 60)
 
         try:
             success = await generate_and_send_digest(
-                config=self.config, logger=self.logger, hours=self.config.settings.lookback_hours
+                config=self.config,
+                logger=self.logger,
+                hours=self.config.settings.lookback_hours,
             )
 
             if success:
@@ -85,14 +82,13 @@ class DigestScheduler:
         except Exception as e:
             self.logger.error(f"❌ Scheduled digest job failed: {e}", exc_info=True)
 
-    def _parse_schedule_time(self) -> tuple[int, int]:
+    def _parse_schedule_time(self, time_str: str) -> tuple[int, int]:
         """
         Parse schedule time from config.
 
         Returns:
             Tuple of (hour, minute)
         """
-        time_str = self.config.settings.schedule_time
         try:
             hour, minute = map(int, time_str.split(":"))
             return hour, minute
@@ -114,6 +110,10 @@ class DigestScheduler:
         if job and job.next_run_time:
             return str(job.next_run_time.strftime("%Y-%m-%d %H:%M:%S %Z"))
         return "No job scheduled"
+
+    def get_schedule_description(self) -> str:
+        """Return configured run times for user-facing status/help text."""
+        return f"{self.config.settings.schedule_time} ({self.config.settings.lookback_hours}h)"
 
 
 async def main():

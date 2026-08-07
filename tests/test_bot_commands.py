@@ -44,6 +44,7 @@ async def test_setup_bot_menu_uses_output_language(english_config, mock_logger):
 
     assert "Start the bot" in descriptions
     assert "Generate digest for 24 hours" in descriptions
+    assert all("evening" not in description.lower() for description in descriptions)
     assert "Delete old digests" in descriptions
     # No Russian
     assert "Начать" not in joined
@@ -53,6 +54,23 @@ async def test_setup_bot_menu_uses_output_language(english_config, mock_logger):
 # ---------------------------------------------------------------------------
 # handle_digest
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_setup_application_does_not_register_removed_edition_commands(
+    english_config, mock_logger
+):
+    """Only the single digest command remains for generation."""
+    handler = BotCommandHandler(english_config, mock_logger)
+    app = handler.setup_application()
+    command_names = [
+        handler.callback.__name__
+        for handler in app.handlers[0]
+        if hasattr(handler, "callback")
+    ]
+    assert "handle_morning" not in command_names
+    assert "handle_evening" not in command_names
 
 
 @pytest.mark.unit

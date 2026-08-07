@@ -21,6 +21,14 @@ class FilterSpec:
 
 
 @dataclass
+class ForumTopicConfig:
+    """A selected forum topic within a Telegram group."""
+
+    id: int
+    name: str
+
+
+@dataclass
 class ChannelConfig:
     """Configuration for a single Telegram channel/chat."""
 
@@ -30,6 +38,7 @@ class ChannelConfig:
     prompt_extra: str = ""  # appended to system prompt when summarizing this channel
     filters: list[FilterSpec] | None = None  # None=use global, []=explicit no-op
     group: str | None = None  # must reference digest_groups[*].name, "Other", or None
+    topics: list[ForumTopicConfig] = field(default_factory=list)
 
 
 @dataclass
@@ -81,7 +90,7 @@ class Settings:
     openai_model: str
     openai_temperature: float
     temperature: float = 0.7
-    max_tokens_per_summary: int = 1500
+    max_tokens_per_summary: int = 96000
     use_emojis: bool = True
     include_statistics: bool = True
     target_user_id: int = 0
@@ -277,6 +286,26 @@ def _validate_channel_group(i: int, ch: dict) -> str | None:
     return group.strip()
 
 
+def _validate_channel_topics(i: int, ch: dict) -> list[ForumTopicConfig]:
+    raw_topics = ch.get("topics", [])
+    if not isinstance(raw_topics, list):
+        raise ValueError(f"channels[{i}].topics must be a list, got {type(raw_topics).__name__}")
+
+    topics: list[ForumTopicConfig] = []
+    for topic_index, raw_topic in enumerate(raw_topics):
+        path = f"channels[{i}].topics[{topic_index}]"
+        if not isinstance(raw_topic, dict):
+            raise ValueError(f"{path} must be a mapping, got {type(raw_topic).__name__}")
+        topic_id = raw_topic.get("id")
+        if not isinstance(topic_id, int) or isinstance(topic_id, bool) or topic_id <= 0:
+            raise ValueError(f"{path}.id must be a positive int, got {topic_id!r}")
+        topic_name = raw_topic.get("name")
+        if not isinstance(topic_name, str) or not topic_name.strip():
+            raise ValueError(f"{path}.name must be a non-empty string, got {topic_name!r}")
+        topics.append(ForumTopicConfig(id=topic_id, name=topic_name.strip()))
+    return topics
+
+
 def _validate_channel_id_name(i: int, ch: dict) -> None:
     for required in ("id", "name"):
         if required not in ch:
@@ -313,6 +342,7 @@ def _parse_channel_entry(i: int, ch: object) -> ChannelConfig:
         prompt_extra=prompt_extra,
         filters=channel_filters,
         group=_validate_channel_group(i, ch),
+        topics=_validate_channel_topics(i, ch),
     )
 
 
@@ -560,6 +590,11 @@ def load_config(config_path: str = "config.yaml") -> Config:
 
     # Parse settings
     settings_dict = yaml_config.get("settings", {})
+    if "schedule_jobs" in settings_dict:
+        raise ValueError(
+            "settings.schedule_jobs is no longer supported; "
+            "use schedule_time and lookback_hours for one daily digest"
+        )
     ai_provider, ai_model = _resolve_ai_settings(settings_dict)
     digest_mode, digest_groups, output_language = _parse_digest_settings(settings_dict)
     raw_global_filters = settings_dict.get("filters")
@@ -575,7 +610,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         openai_model=settings_dict.get("openai_model", "gpt-5-nano"),
         openai_temperature=settings_dict.get("openai_temperature", 0.7),
         temperature=settings_dict.get("temperature", settings_dict.get("openai_temperature", 0.7)),
-        max_tokens_per_summary=settings_dict.get("max_tokens_per_summary", 1500),
+        max_tokens_per_summary=settings_dict.get("max_tokens_per_summary", 96000),
         use_emojis=settings_dict.get("use_emojis", True),
         include_statistics=settings_dict.get("include_statistics", True),
         target_user_id=settings_dict.get("target_user_id", 0),
