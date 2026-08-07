@@ -1,5 +1,7 @@
 """Tests for formatter module."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from src.formatter import DigestFormatter
@@ -206,8 +208,8 @@ def test_overview_section_label_uses_output_language(english_config, mock_logger
 def test_truncation_message_uses_output_language(english_config, mock_logger, sample_messages):
     """Truncation suffix in format_channel_message respects output_language."""
     formatter = DigestFormatter(english_config, mock_logger)
-    # Long summary ensures total message exceeds 4096 chars and triggers truncation
-    long_summary = "word " * 1000
+    # Long summary ensures total message exceeds 32768 chars and triggers truncation
+    long_summary = "word " * 7000
     msg = formatter.format_channel_message("Ch", long_summary, sample_messages, hours=24)
 
     assert "truncated due to length limit" in msg
@@ -523,3 +525,144 @@ def test_format_group_digest_removes_source_markers_and_duplicate_bullets(
     assert "• 💧 Вода пропадает в Мелитополе [↗](https://t.me/berdiansk_me/123)" in result
     assert "🖇️" not in result
     assert "• •" not in result
+
+
+@pytest.mark.unit
+def test_format_group_digest_removes_standalone_trailing_arrow(
+    sample_config, mock_logger
+):
+    """A standalone AI arrow is removed when the source URL is already attached."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+
+    result = formatter.format_group_digest(
+        [
+            (
+                "Банки и финансы",
+                [
+                    GroupedPoint(
+                        point="🏦 Наличные: банкоматы работают. → ↗",
+                        source="Бердянск",
+                        source_url="https://t.me/berdiansk_me/123",
+                    )
+                ],
+            )
+        ]
+    )
+
+    assert "работают. [↗](https://t.me/berdiansk_me/123)" in result
+    assert " →" not in result
+
+
+@pytest.mark.unit
+def test_format_group_digest_labels_scheduled_edition(sample_config, mock_logger):
+    """Scheduled editions identify whether they are morning or evening."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+
+    result = formatter.format_group_digest(
+        [("Новости", [GroupedPoint(point="Факт", source="")])],
+        edition_label="evening",
+    )
+
+    assert result.startswith("Вечерний дайджест Бердянска · ")
+
+
+@pytest.mark.unit
+def test_format_group_rich_digest_uses_native_headings_and_unordered_lists(
+    sample_config, mock_logger
+):
+    """Rich digest uses Telegram heading and unordered-list blocks."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+
+    result = formatter.format_group_rich_digest(
+        [
+            (
+                "Предупреждения",
+                [
+                    GroupedPoint(
+                        point="Напряжение нестабильно",
+                        source="Бердянск",
+                        source_url="https://t.me/berdiansk_me/123",
+                    ),
+                    GroupedPoint(point="Воды нет", source="Бердянск", source_url=""),
+                ],
+            )
+        ]
+    )
+
+    blocks = result["rich_message"]["blocks"]
+    assert blocks[0] == {
+        "type": "heading",
+        "size": 2,
+        "text": "Дайджест Бердянска · " + formatter._format_date(datetime.now(timezone.utc)),
+    }
+    assert blocks[1] == {"type": "heading", "size": 3, "text": "📌 Предупреждения"}
+    assert blocks[2]["type"] == "list"
+    assert all("value" not in item for item in blocks[2]["items"])
+    assert blocks[2]["items"][0]["blocks"][0]["text"][-1] == {
+        "type": "url",
+        "text": "↗",
+        "url": "https://t.me/berdiansk_me/123",
+    }
+
+
+@pytest.mark.unit
+def test_format_group_rich_digest_removes_duplicate_markers_and_empty_groups(
+    sample_config, mock_logger
+):
+    """Rich digest keeps cleaned text and omits groups without points."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+
+    result = formatter.format_group_rich_digest(
+        [
+            ("Пустая группа", []),
+            (
+                "Новости",
+                [
+                    GroupedPoint(
+                        point="• • 💧 Вода пропадает 🖇️ 🖇️ → ↗",
+                        source="Бердянск",
+                        source_url="https://t.me/berdiansk_me/456",
+                    )
+                ],
+            ),
+        ]
+    )
+
+    blocks = result["rich_message"]["blocks"]
+    assert len(blocks) == 3
+    item_text = blocks[2]["items"][0]["blocks"][0]["text"]
+    assert item_text[0] == "💧 Вода пропадает"
+    assert "Пустая группа" not in str(result)
+
+
+@pytest.mark.unit
+def test_split_group_rich_digest_keeps_group_heading_with_its_list(
+    sample_config, mock_logger
+):
+    """Rich splitting never leaves a group heading without its list."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+    document = {
+        "rich_message": {
+            "blocks": [
+                {"type": "heading", "size": 2, "text": "Дайджест"},
+                {"type": "heading", "size": 3, "text": "📌 Первая"},
+                {"type": "list", "items": [{"blocks": [{"type": "paragraph", "text": "A"}]}]},
+                {"type": "heading", "size": 3, "text": "📌 Вторая"},
+                {"type": "list", "items": [{"blocks": [{"type": "paragraph", "text": "B"}]}]},
+            ]
+        }
+    }
+
+    parts = formatter.split_group_rich_digest(document, max_length=180)
+
+    assert len(parts) == 2
+    assert [block["type"] for block in parts[0]["rich_message"]["blocks"]] == [
+        "heading",
+        "heading",
+        "list",
+    ]
+    assert [block["type"] for block in parts[1]["rich_message"]["blocks"]] == [
+        "heading",
+        "heading",
+        "list",
+    ]

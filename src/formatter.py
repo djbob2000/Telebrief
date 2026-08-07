@@ -3,6 +3,7 @@ Markdown formatter for digest output.
 """
 
 import logging
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -12,6 +13,7 @@ from src.config_loader import Config
 from src.grouper import GroupedPoint
 from src.summarizer import ERROR_SUMMARY_PREFIX
 from src.ui_strings import get_month_names, get_ui_strings
+from src.utils import TELEGRAM_MAX_MESSAGE_CHARS, TELEGRAM_SAFE_MESSAGE_CHARS
 
 _CHANNEL_URL_RE = re.compile(r"^https://t\.me/(?:c/\d+|[^/]{2,})$")
 _INLINE_SOURCE_URL_RE = re.compile(r"https://t\.me/[^\s)\]]+")
@@ -255,13 +257,14 @@ class DigestFormatter:
 
         message = "\n".join(parts)
 
-        # Verify length doesn't exceed Telegram limit
-        if len(message) > 4096:
+        # Verify length doesn't exceed Telegram's current bot-message limit
+        if len(message) > TELEGRAM_MAX_MESSAGE_CHARS:
             self.logger.warning(
-                f"Channel message for '{channel_name}' exceeds 4096 chars ({len(message)}), truncating..."
+                f"Channel message for '{channel_name}' exceeds {TELEGRAM_MAX_MESSAGE_CHARS} chars "
+                f"({len(message)}), truncating..."
             )
-            # Truncate to 4000 to leave room for ellipsis
-            truncated = message[:4000].rsplit("\n", 1)[0]
+            # Leave a small safety margin for Telegram entity parsing.
+            truncated = message[:TELEGRAM_SAFE_MESSAGE_CHARS].rsplit("\n", 1)[0]
             message = truncated + f"\n\n{self._ui['truncated']}"
 
         self.logger.info(f"Formatted message for {channel_name}: {len(message)} characters")
@@ -310,7 +313,10 @@ class DigestFormatter:
         return mapping.get(name_lower, "📌")
 
     def format_group_digest(
-        self, grouped_sections: list[tuple[str, list[GroupedPoint]]], hours: int = 24
+        self,
+        grouped_sections: list[tuple[str, list[GroupedPoint]]],
+        hours: int = 24,
+        edition_label: str = "",
     ) -> str:
         """Format all topic groups as one compact Telegram message."""
         sections = [(name, points) for name, points in grouped_sections if points]
@@ -318,11 +324,22 @@ class DigestFormatter:
             return ""
 
         date_str = self._format_date(datetime.now(timezone.utc))
-        title = (
-            f"Дайджест Бердянска · {date_str}"
-            if self._language == "Russian"
-            else f"{self._ui['daily_digest']} · {date_str}"
-        )
+        edition_names = {
+            "morning": "Утренний" if self._language == "Russian" else "Morning",
+            "evening": "Вечерний" if self._language == "Russian" else "Evening",
+        }
+        title_prefix = edition_names.get(edition_label, "")
+        if self._language == "Russian":
+            title = (
+                f"{title_prefix + ' ' if title_prefix else ''}дайджест Бердянска · {date_str}"
+            )
+            if not title_prefix:
+                title = f"Дайджест Бердянска · {date_str}"
+        else:
+            title = (
+                f"{title_prefix + ' ' if title_prefix else ''}"
+                f"{self._ui['daily_digest']} · {date_str}"
+            )
         parts = [title]
 
         for group_name, points in sections:
@@ -355,6 +372,9 @@ class DigestFormatter:
                     point_text = re.sub(r"\s*(?:→|->|—|–)\s*$", "", point_text).rstrip()
                 point_text = _SOURCE_MARKER_RE.sub(" ", point_text)
                 point_text = _LEADING_BULLET_RE.sub("", point_text)
+                # The AI may emit a visible link arrow even when the URL is
+                # already carried by source_url and will be rendered below.
+                point_text = re.sub(r"(?:\s*(?:→|↗))+\s*$", "", point_text).rstrip()
                 point_text = re.sub(r"[ \t]{2,}", " ", point_text).strip()
 
                 line = f"• {point_text}"
@@ -375,6 +395,142 @@ class DigestFormatter:
             )
 
         return "\n\n".join(parts)
+
+    def _clean_group_point(self, point: GroupedPoint) -> tuple[str, str]:
+        """Normalize one grouped point and resolve its Telegram source URL."""
+        point_text = point.point
+        markdown_source = _MARKDOWN_SOURCE_LINK_RE.search(point_text)
+        source_url = point.source_url
+        if markdown_source:
+            destination_url = markdown_source.group(2)
+            visible_label = markdown_source.group(1).strip()
+            label_url = (
+                visible_label
+                if visible_label.startswith("https://")
+                else f"https://{visible_label}"
+            )
+            label_is_message_url = bool(
+                _INLINE_SOURCE_URL_RE.fullmatch(label_url)
+                and re.search(r"/\d+$", label_url)
+            )
+            source_url = label_url if label_is_message_url else destination_url
+            replacement = "" if label_url.startswith("https://t.me/") else visible_label
+            point_text = _MARKDOWN_SOURCE_LINK_RE.sub(replacement, point_text, count=1)
+
+        inline_urls = _INLINE_SOURCE_URL_RE.findall(point_text)
+        if inline_urls:
+            source_url = inline_urls[0]
+            point_text = _INLINE_SOURCE_URL_RE.sub("", point_text)
+            point_text = re.sub(r"\s*(?:→|->|—|–)\s*$", "", point_text).rstrip()
+        point_text = _SOURCE_MARKER_RE.sub(" ", point_text)
+        point_text = _LEADING_BULLET_RE.sub("", point_text)
+        point_text = re.sub(r"(?:\s*(?:→|↗))+\s*$", "", point_text).rstrip()
+        point_text = re.sub(r"[ \t]{2,}", " ", point_text).strip()
+        return point_text, source_url
+
+    def format_group_rich_digest(
+        self,
+        grouped_sections: list[tuple[str, list[GroupedPoint]]],
+        edition_label: str = "",
+    ) -> dict:
+        """Build one Telegram Rich Message document for grouped news."""
+        sections = [(name, points) for name, points in grouped_sections if points]
+        if not sections:
+            return {"rich_message": {"blocks": []}}
+
+        date_str = self._format_date(datetime.now(timezone.utc))
+        edition_names = {
+            "morning": "Утренний" if self._language == "Russian" else "Morning",
+            "evening": "Вечерний" if self._language == "Russian" else "Evening",
+        }
+        title_prefix = edition_names.get(edition_label, "")
+        if self._language == "Russian":
+            title = (
+                f"{title_prefix + ' ' if title_prefix else ''}"
+                f"дайджест Бердянска · {date_str}"
+            )
+            if not title_prefix:
+                title = f"Дайджест Бердянска · {date_str}"
+        else:
+            title = (
+                f"{title_prefix + ' ' if title_prefix else ''}"
+                f"{self._ui['daily_digest']} · {date_str}"
+            )
+
+        blocks = [{"type": "heading", "size": 2, "text": title}]
+        for group_name, points in sections:
+            items = []
+            for point in points:
+                point_text, source_url = self._clean_group_point(point)
+                text_parts: list[object] = [point_text]
+                if source_url and (
+                    _CHANNEL_URL_RE.match(source_url)
+                    or _INLINE_SOURCE_URL_RE.fullmatch(source_url)
+                ):
+                    text_parts.extend(
+                        [
+                            " ",
+                            {"type": "url", "text": "↗", "url": source_url},
+                        ]
+                    )
+                items.append(
+                    {
+                        "blocks": [
+                            {
+                                "type": "paragraph",
+                                "text": text_parts,
+                            }
+                        ]
+                    }
+                )
+            blocks.extend(
+                [
+                    {"type": "heading", "size": 3, "text": f"📌 {group_name}"},
+                    {"type": "list", "items": items},
+                ]
+            )
+
+        return {"rich_message": {"blocks": blocks}}
+
+    def split_group_rich_digest(
+        self,
+        document: dict,
+        max_length: int = TELEGRAM_SAFE_MESSAGE_CHARS,
+    ) -> list[dict]:
+        """Split a Rich digest only between complete group/list blocks."""
+        blocks = document.get("rich_message", {}).get("blocks", [])
+        if not blocks:
+            return []
+        title = blocks[0]
+        parts: list[dict] = []
+        current = [title]
+
+        def encoded_size(candidate: list[dict]) -> int:
+            return len(
+                json.dumps(
+                    {"rich_message": {"blocks": candidate}},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            )
+
+        content_blocks = blocks[1:]
+        units = [
+            content_blocks[index : index + 2]
+            for index in range(0, len(content_blocks), 2)
+        ]
+        for unit in units:
+            candidate = current + unit
+            if len(current) > 1 and encoded_size(candidate) > max_length:
+                parts.append({"rich_message": {"blocks": current}})
+                current = [title, *unit]
+            else:
+                current = candidate
+        if len(current) > 1:
+            parts.append({"rich_message": {"blocks": current}})
+        if not parts:
+            parts.append({"rich_message": {"blocks": blocks}})
+        return parts
 
     def _create_statistics(self, messages_by_channel: Dict[str, List[Message]], hours: int) -> str:
         """

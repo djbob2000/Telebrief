@@ -4,9 +4,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.config_loader import ChannelConfig, FilterSpec, StorageConfig
+from src.config_loader import ChannelConfig, FilterSpec, ForumTopicConfig, StorageConfig
 from src.core import (
     _apply_filters,
+    _channel_config_for_name,
     _collect_messages,
     _resolve_channel,
     build_digest,
@@ -15,6 +16,20 @@ from src.core import (
     read_last_digest,
     validate_hours,
 )
+
+
+@pytest.mark.unit
+def test_channel_config_for_name_resolves_forum_topic(sample_config):
+    """Collected topic names still resolve to their parent channel config."""
+    sample_config.channels = [
+        ChannelConfig(
+            id="@source",
+            name="Source",
+            topics=[ForumTopicConfig(id=235525, name="Проблемы ЖКХ")],
+        )
+    ]
+
+    assert _channel_config_for_name(sample_config, "Source — Проблемы ЖКХ") is sample_config.channels[0]
 from src.grouper import GroupedPoint
 
 
@@ -287,11 +302,15 @@ async def test_generate_and_send_digest_grouped_success(
         # Formatter
         mock_formatter = MagicMock()
         mock_formatter.format_group_digest = MagicMock(return_value="Combined digest")
+        mock_formatter.format_group_rich_digest = MagicMock(
+            return_value={"rich_message": {"blocks": []}}
+        )
         mock_formatter_class.return_value = mock_formatter
 
         # Sender
         mock_sender = MagicMock()
         mock_sender.cleanup_old_digests = AsyncMock()
+        mock_sender.send_rich_digest = AsyncMock(return_value=True)
         mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=True)
         mock_sender_class.return_value = mock_sender
 
@@ -314,9 +333,10 @@ async def test_generate_and_send_digest_grouped_success(
             ],
             hours=24,
         )
-        mock_sender.send_channel_messages_with_tracking.assert_called_once()
-        mock_sender.send_channel_messages_with_tracking.assert_called_once_with(
-            [("digest", "Combined digest")], "", 123456789
+        mock_sender.send_rich_digest.assert_called_once_with(
+            {"rich_message": {"blocks": []}},
+            user_id=123456789,
+            fallback_text="Combined digest",
         )
 
 
@@ -361,10 +381,14 @@ async def test_generate_and_send_digest_grouped_skips_empty_groups(
 
         mock_formatter = MagicMock()
         mock_formatter.format_group_digest = MagicMock(return_value="Combined digest")
+        mock_formatter.format_group_rich_digest = MagicMock(
+            return_value={"rich_message": {"blocks": []}}
+        )
         mock_formatter_class.return_value = mock_formatter
 
         mock_sender = MagicMock()
         mock_sender.cleanup_old_digests = AsyncMock()
+        mock_sender.send_rich_digest = AsyncMock(return_value=True)
         mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=True)
         mock_sender_class.return_value = mock_sender
 
@@ -411,10 +435,14 @@ async def test_digest_mode_uses_grouper(sample_config, mock_logger, sample_messa
 
         mock_formatter = MagicMock()
         mock_formatter.format_group_digest = MagicMock(return_value="Combined digest")
+        mock_formatter.format_group_rich_digest = MagicMock(
+            return_value={"rich_message": {"blocks": []}}
+        )
         mock_formatter_class.return_value = mock_formatter
 
         mock_sender = MagicMock()
         mock_sender.cleanup_old_digests = AsyncMock()
+        mock_sender.send_rich_digest = AsyncMock(return_value=True)
         mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=True)
         mock_sender_class.return_value = mock_sender
 
@@ -930,18 +958,24 @@ async def test_summary_message_dedupes_split_group_names(
 
         mock_formatter = MagicMock()
         mock_formatter.format_group_digest = MagicMock(return_value=long_news)
+        mock_formatter.format_group_rich_digest = MagicMock(
+            return_value={"rich_message": {"blocks": []}}
+        )
         mock_formatter_class.return_value = mock_formatter
 
         mock_sender = MagicMock()
         mock_sender.cleanup_old_digests = AsyncMock()
+        mock_sender.send_rich_digest = AsyncMock(return_value=True)
         mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=True)
         mock_sender_class.return_value = mock_sender
 
         await generate_and_send_digest(sample_config, mock_logger, hours=24, user_id=123456789)
 
         mock_formatter.format_group_digest.assert_called_once()
-        mock_sender.send_channel_messages_with_tracking.assert_called_once_with(
-            [("digest", long_news)], "", 123456789
+        mock_sender.send_rich_digest.assert_called_once_with(
+            {"rich_message": {"blocks": []}},
+            user_id=123456789,
+            fallback_text=long_news,
         )
 
 

@@ -17,6 +17,8 @@ from src.utils import (
     get_digest_message_ids,
     save_digest_message_ids,
     split_message,
+    TELEGRAM_MAX_MESSAGE_CHARS,
+    TELEGRAM_SAFE_MESSAGE_CHARS,
 )
 
 
@@ -96,7 +98,7 @@ class DigestSender:
 
         try:
             # Split message if too long
-            parts = split_message(digest, max_length=4000)
+            parts = split_message(digest, max_length=TELEGRAM_SAFE_MESSAGE_CHARS)
 
             if len(parts) > 1:
                 self.logger.info(f"Digest split into {len(parts)} messages")
@@ -114,6 +116,79 @@ class DigestSender:
         except TelegramError as e:
             self.logger.error(f"❌ Failed to send digest: {e}")
             return False
+
+    async def _send_rich_message(
+        self, chat_id: str | int, rich_message: dict
+    ) -> int:
+        """Send a structured message through Telegram's Rich Messages API."""
+        response = await self.bot._post(
+            "sendRichMessage",
+            data={
+                "chat_id": chat_id,
+                "rich_message": rich_message,
+            },
+        )
+        if not isinstance(response, dict) or not response.get("message_id"):
+            raise TelegramError("Rich Message API returned no message_id")
+        return int(response["message_id"])
+
+    @staticmethod
+    def _rich_message_to_plain_text(rich_message: dict) -> str:
+        """Create a readable fallback from a Rich Message document."""
+        lines: list[str] = []
+        for block in rich_message.get("blocks", []):
+            block_type = block.get("type")
+            if block_type == "heading":
+                lines.append(str(block.get("text", "")))
+            elif block_type == "list":
+                for item in block.get("items", []):
+                    for item_block in item.get("blocks", []):
+                        text = item_block.get("text", "")
+                        if isinstance(text, list):
+                            text = "".join(
+                                part
+                                if isinstance(part, str)
+                                else str(part.get("text", ""))
+                                for part in text
+                            )
+                        lines.append(f"• {text}")
+        return "\n\n".join(line for line in lines if line)
+
+    async def send_rich_digest(
+        self,
+        document: dict,
+        user_id: Optional[int] = None,
+        fallback_text: Optional[str] = None,
+    ) -> bool:
+        """Send a combined Rich Message digest and track its message ID."""
+        if user_id is None:
+            user_id = self.target_user_id
+        if user_id != self.target_user_id:
+            self.logger.warning(f"Unauthorized send attempt to user {user_id}")
+            return False
+
+        rich_message = document.get("rich_message", document)
+        try:
+            documents = self.formatter.split_group_rich_digest(
+                {"rich_message": rich_message}
+            )
+            if not documents:
+                self.logger.warning("Rich digest has no blocks")
+                return False
+            message_ids = []
+            for part in documents:
+                message_ids.append(
+                    await self._send_rich_message(
+                        self.target_chat_id, part["rich_message"]
+                    )
+                )
+            save_digest_message_ids(message_ids, self.target_chat_id)
+            self.logger.info("✅ Rich digest sent successfully (%s message(s))", len(message_ids))
+            return True
+        except Exception as error:
+            self.logger.warning(f"Rich Message send failed, using Markdown fallback: {error}")
+            text = fallback_text or self._rich_message_to_plain_text(rich_message)
+            return await self.send_digest(text, user_id=user_id)
 
     async def send_channel_messages(
         self, channel_messages: list[tuple[str, str]], user_id: Optional[int] = None
@@ -151,12 +226,13 @@ class DigestSender:
                 self.logger.info(f"Sending message {i}/{len(channel_messages)}: {channel_name}")
 
                 # Verify message length
-                if len(message_text) > 4096:
+                if len(message_text) > TELEGRAM_MAX_MESSAGE_CHARS:
                     self.logger.error(
-                        f"Message for '{channel_name}' exceeds 4096 chars ({len(message_text)}), splitting..."
+                        f"Message for '{channel_name}' exceeds {TELEGRAM_MAX_MESSAGE_CHARS} chars "
+                        f"({len(message_text)}), splitting..."
                     )
                     # Split and send parts
-                    parts = split_message(message_text, max_length=4000)
+                    parts = split_message(message_text, max_length=TELEGRAM_SAFE_MESSAGE_CHARS)
                     for part_num, part in enumerate(parts, 1):
                         await self._send_message_part(self.target_chat_id, part, part_num)
                         self.logger.info(f"Sent part {part_num}/{len(parts)} for {channel_name}")

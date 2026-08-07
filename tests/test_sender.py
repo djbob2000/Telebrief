@@ -85,7 +85,7 @@ async def test_send_digest_error(sample_config, mock_logger):
 async def test_send_long_digest(sample_config, mock_logger):
     """Test sending long digest that needs splitting."""
     # Create a long digest
-    long_digest = "A" * 5000
+    long_digest = "A" * 33000
 
     with patch("src.sender.Bot") as mock_bot_class:
         mock_bot = MagicMock()
@@ -99,6 +99,62 @@ async def test_send_long_digest(sample_config, mock_logger):
     assert result is True
     # Should be called multiple times for split messages
     assert send_message_mock.call_count > 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_rich_digest_posts_structured_message_and_tracks_id(
+    sample_config, mock_logger, tmp_path, monkeypatch
+):
+    """Rich digest uses Bot API sendRichMessage and returns success."""
+    storage_file = tmp_path / "digest_messages.json"
+    monkeypatch.setattr("src.utils.MESSAGE_STORAGE_FILE", str(storage_file))
+
+    with patch("src.sender.Bot") as mock_bot_class:
+        mock_bot = MagicMock()
+        mock_bot._post = AsyncMock(
+            return_value={"message_id": 987, "chat": {"id": 123456789, "type": "private"}}
+        )
+        mock_bot_class.return_value = mock_bot
+
+        sender = DigestSender(sample_config, mock_logger)
+        rich_message = {
+            "rich_message": {
+                "blocks": [{"type": "heading", "size": 2, "text": "Заголовок"}]
+            }
+        }
+        result = await sender.send_rich_digest(rich_message, user_id=123456789)
+
+    assert result is True
+    mock_bot._post.assert_awaited_once_with(
+        "sendRichMessage",
+        data={
+            "chat_id": 123456789,
+            "rich_message": rich_message["rich_message"],
+        },
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_rich_digest_falls_back_to_markdown_on_api_error(sample_config, mock_logger):
+    """Rich API errors use the existing Markdown sender once."""
+    from telegram.error import TelegramError
+
+    with patch("src.sender.Bot") as mock_bot_class:
+        mock_bot = MagicMock()
+        mock_bot._post = AsyncMock(side_effect=TelegramError("Bad Request: unsupported"))
+        mock_bot.send_message = AsyncMock()
+        mock_bot_class.return_value = mock_bot
+
+        sender = DigestSender(sample_config, mock_logger)
+        result = await sender.send_rich_digest(
+            {"rich_message": {"blocks": [{"type": "heading", "size": 2, "text": "Тест"}]}},
+            user_id=123456789,
+        )
+
+    assert result is True
+    mock_bot.send_message.assert_awaited_once()
 
 
 @pytest.mark.unit
@@ -371,8 +427,8 @@ async def test_orphaned_summary_deleted_when_all_channels_fail(
 @pytest.mark.asyncio
 async def test_send_channel_messages_long_message(sample_config, mock_logger):
     """Test sending channel message that exceeds length limit."""
-    # Create a message longer than 4096 characters
-    long_message = "A" * 5000
+    # Create a message longer than Telegram's 32768-character limit
+    long_message = "A" * 33000
     channel_messages = [("Channel 1", long_message)]
 
     with patch("src.sender.Bot") as mock_bot_class:
