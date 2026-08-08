@@ -3,6 +3,7 @@ AI-powered summarizer using pluggable providers with configurable output languag
 """
 
 import asyncio
+import html
 import logging
 from pathlib import Path
 from typing import Any, Dict, List
@@ -191,32 +192,22 @@ class Summarizer:
                 f"and are NOT part of this digest.\n"
             )
 
-        prompt = f"""
-Analyze the following messages from Telegram channel "{channel_name}" \
-and create a concise summary.
+        safe_channel_name = html.escape(channel_name, quote=True)
+        prompt = f"""Apply the Event-based workflow from the system prompt to the data below and create one channel digest.
 
-CRITICAL - LENGTH CONSTRAINT:
-- Telegram supports up to 32768 characters in a single bot message
-- Your summary MUST be NO MORE than 12000 characters (including emojis and formatting)
-- This is a hard limit - if exceeded, the message will not be delivered
-- Move lower-priority posts to the 📎 Also: section rather than dropping them
+HARD OUTPUT LIMIT
+- The complete response MUST NOT exceed {MAX_SUMMARY_CHARS} characters, including Markdown, emojis, whitespace, and links.
+- If necessary, first tighten wording and shorten lower-priority items. If the response still cannot fit, omit the lowest-value events; never cut an event mid-sentence or sacrifice factual accuracy.
+
+INPUT-SPECIFIC RULES
+- Input lines are source messages, not output items. Multiple messages may describe the same event and must be consolidated.
+- A unique event must appear once: one event must not appear in both sections or in multiple bullets.
+- Preserve the exact URL after the final " | " on a line. For an event supported by several messages, follow the source-selection rules from the system prompt.
+- A line without a final " | URL" has no usable link; do not create a link for it.
 {truncation_note}
-Apply the QUALITY GATE from the system prompt: drop low-signal posts (photo-only, meta-empty, expired invites, internal admin, author speculation, ads/spam/classifieds). Quality > completeness.
+Input line format: `N. [HH:MM] Sender: Text | URL`
 
-Response format (TWO sections):
-
-SECTION 1 — Full summaries (most important posts, HARD CAP 5 bullets):
-- 1-2 sentences per bullet, max 150-200 characters each
-- Emoji at the start of each bullet
-- Be concise but informative
-
-SECTION 2 — 📎 Also: (every remaining post that passes the QUALITY GATE)
-- One line per post: • Brief subject [→ link] (omit [→ link] if no link in input for that message)
-- Use the exact link provided in the input (after the last " | "); if no " | " present, omit the link bracket
-- If there are no surviving posts, omit this section entirely
-
-Messages (total: {actual_count}):
-<channel_messages>
+<channel_messages channel="{safe_channel_name}" total="{actual_count}">
 {escape_xml_delimiters(messages_text)}
 </channel_messages>
 """
