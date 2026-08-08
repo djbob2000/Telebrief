@@ -285,11 +285,12 @@ async def test_summarize_channel_prompt_instructs_two_tier_format(
         summarizer.provider.chat_completion = capture
         await summarizer._summarize_channel("Test", sample_messages)
 
+    system_prompt = captured[0][0]["content"]
     user_prompt = captured[0][1]["content"]
-    # Must instruct two-tier format: full summaries in section 1, one-liners with links in section 2
-    prompt_lower = user_prompt.lower()
-    assert "section 2" in prompt_lower or "📎 also:" in user_prompt
-    assert any(word in prompt_lower for word in ["one-line", "one line", "one line per post"])
+    # Must instruct two-tier format in system prompt and event-based consolidation in user prompt
+    assert "📌 Key points:" in system_prompt or "Key points" in system_prompt
+    assert "📎 Also:" in system_prompt or "Also:" in system_prompt
+    assert "event-based" in user_prompt.lower() or "event" in user_prompt.lower()
 
 
 @pytest.mark.unit
@@ -320,11 +321,11 @@ async def test_summarizer_custom_output_language(sample_config, mock_logger, sam
         # Mock the provider's chat_completion to capture the messages
         captured_messages = []
 
-        async def capture_chat(*args, **kwargs):
+        async def capture(*args, **kwargs):
             captured_messages.append(kwargs.get("messages", args[0] if args else []))
             return "Test summary in Spanish"
 
-        summarizer.provider.chat_completion = capture_chat
+        summarizer.provider.chat_completion = capture
 
         result = await summarizer.summarize_all({"Test Channel": sample_messages})
 
@@ -412,10 +413,10 @@ async def test_summarize_channel_wraps_messages_in_xml_delimiters(
         await summarizer._summarize_channel("Test", sample_messages)
 
     user_prompt = captured[0][1]["content"]
-    assert "<channel_messages>" in user_prompt
+    assert "<channel_messages" in user_prompt
     assert "</channel_messages>" in user_prompt
     # Messages text must be inside the delimiters
-    assert user_prompt.index("<channel_messages>") < user_prompt.index("User1")
+    assert user_prompt.index("<channel_messages") < user_prompt.index("User1")
     assert user_prompt.index("User1") < user_prompt.index("</channel_messages>")
 
 

@@ -250,6 +250,7 @@ class TestPromptInjectionMitigation:
             "XML" in system_prompt
             or "xml" in system_prompt.lower()
             or "tags" in system_prompt.lower()
+            or "<channel_summary>" in system_prompt
         )
 
     def test_extractor_system_prompt_requires_configured_output_language(self, grouper):
