@@ -390,8 +390,6 @@ async def test_summarize_channel_no_retry_on_success(sample_config, mock_logger,
         assert call_kwargs["reasoning_effort"] == "high"
 
 
-@pytest.mark.unit
-@pytest.mark.asyncio
 # --- Task 1: Prompt injection mitigation tests ---
 
 

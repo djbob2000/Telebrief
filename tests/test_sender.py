@@ -119,9 +119,7 @@ async def test_send_rich_digest_posts_structured_message_and_tracks_id(
 
         sender = DigestSender(sample_config, mock_logger)
         rich_message = {
-            "rich_message": {
-                "blocks": [{"type": "heading", "size": 2, "text": "Заголовок"}]
-            }
+            "rich_message": {"blocks": [{"type": "heading", "size": 2, "text": "Заголовок"}]}
         }
         result = await sender.send_rich_digest(rich_message, user_id=123456789)
 

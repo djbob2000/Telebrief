@@ -620,9 +620,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         use_emojis=settings_dict.get("use_emojis", True),
         include_statistics=settings_dict.get("include_statistics", True),
         target_user_id=settings_dict.get("target_user_id", 0),
-        target_chat_id=settings_dict.get(
-            "target_chat_id", settings_dict.get("target_user_id", 0)
-        ),
+        target_chat_id=settings_dict.get("target_chat_id", settings_dict.get("target_user_id", 0)),
         auto_cleanup_old_digests=settings_dict.get("auto_cleanup_old_digests", True),
         max_messages_per_channel=settings_dict.get("max_messages_per_channel", 500),
         max_prompt_chars=settings_dict.get("max_prompt_chars", 8000),

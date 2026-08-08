@@ -53,4 +53,3 @@
 ## Источник API
 
 Используется официальный метод Telegram Bot API `sendRichMessage` и типы `InputRichBlockSectionHeading`, `InputRichBlockList`, `InputRichBlockListItem`, `RichTextUrl`.
-

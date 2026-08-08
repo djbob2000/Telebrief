@@ -528,9 +528,7 @@ def test_format_group_digest_removes_source_markers_and_duplicate_bullets(
 
 
 @pytest.mark.unit
-def test_format_group_digest_removes_standalone_trailing_arrow(
-    sample_config, mock_logger
-):
+def test_format_group_digest_removes_standalone_trailing_arrow(sample_config, mock_logger):
     """A standalone AI arrow is removed when the source URL is already attached."""
     formatter = DigestFormatter(sample_config, mock_logger)
 
@@ -592,7 +590,8 @@ def test_format_group_rich_digest_uses_native_headings_and_unordered_lists(
     assert blocks[0] == {
         "type": "heading",
         "size": 2,
-        "text": f"{formatter._ui['daily_digest']} · " + formatter._format_date(datetime.now(timezone.utc)),
+        "text": f"{formatter._ui['daily_digest']} · "
+        + formatter._format_date(datetime.now(timezone.utc)),
     }
     assert blocks[1] == {"type": "heading", "size": 3, "text": "Предупреждения"}
     assert blocks[2]["type"] == "list"
@@ -635,9 +634,7 @@ def test_format_group_rich_digest_removes_duplicate_markers_and_empty_groups(
 
 
 @pytest.mark.unit
-def test_split_group_rich_digest_keeps_group_heading_with_its_list(
-    sample_config, mock_logger
-):
+def test_split_group_rich_digest_keeps_group_heading_with_its_list(sample_config, mock_logger):
     """Rich splitting never leaves a group heading without its list."""
     formatter = DigestFormatter(sample_config, mock_logger)
     document = {
@@ -668,9 +665,7 @@ def test_split_group_rich_digest_keeps_group_heading_with_its_list(
 
 
 @pytest.mark.unit
-def test_format_group_rich_digest_parses_markdown_bold_subheadings(
-    sample_config, mock_logger
-):
+def test_format_group_rich_digest_parses_markdown_bold_subheadings(sample_config, mock_logger):
     """Rich digest converts **bold title** in points into native bold rich text spans."""
     formatter = DigestFormatter(sample_config, mock_logger)
 
@@ -710,4 +705,3 @@ def test_format_group_rich_digest_parses_markdown_bold_subheadings(
     second_item_text = items[1]["blocks"][0]["text"]
     assert second_item_text[0] == {"type": "bold", "text": "Репрессии в Токмаке"}
     assert second_item_text[1] == ": подробности дела"
-

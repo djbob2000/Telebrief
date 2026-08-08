@@ -69,4 +69,3 @@ Add tests covering:
 
 Update `config.yaml.example` and README provider/environment documentation with
 the Google provider, model example, endpoint behavior, and `GEMINI_API_KEY`.
-

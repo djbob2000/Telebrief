@@ -65,9 +65,7 @@ async def test_setup_application_does_not_register_removed_edition_commands(
     handler = BotCommandHandler(english_config, mock_logger)
     app = handler.setup_application()
     command_names = [
-        handler.callback.__name__
-        for handler in app.handlers[0]
-        if hasattr(handler, "callback")
+        handler.callback.__name__ for handler in app.handlers[0] if hasattr(handler, "callback")
     ]
     assert "handle_morning" not in command_names
     assert "handle_evening" not in command_names

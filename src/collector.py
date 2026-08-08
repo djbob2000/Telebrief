@@ -105,63 +105,12 @@ class MessageCollector:
             lookback_time = now - timedelta(hours=channel_hours)
 
             if channel_config.topics:
-                try:
-                    entity = await self.client.get_entity(channel_config.id)
-                    for topic in channel_config.topics:
-                        logical_name = f"{channel_config.name} — {topic.name}"
-                        try:
-                            messages = await self._fetch_topic_messages(
-                                entity, channel_config, topic, lookback_time
-                            )
-                            all_messages[logical_name] = messages
-                            self.logger.info(f"✓ {logical_name}: {len(messages)} messages")
-                        except Exception as topic_error:
-                            self.logger.error(
-                                f"✗ {logical_name}: Error fetching topic: {topic_error}"
-                            )
-                except ChannelPrivateError:
-                    self.logger.warning(
-                        f"✗ {channel_config.name}: Channel is private or not accessible"
-                    )
-                except Exception as e:
-                    self.logger.error(f"✗ {channel_config.name}: Error fetching topics: {e}")
-                continue
-
-            try:
-                messages = await self.fetch_channel_messages(channel_config, lookback_time)
-                all_messages[channel_config.name] = messages
-                self.logger.info(f"✓ {channel_config.name}: {len(messages)} messages")
-            except ChannelPrivateError:
-                self.logger.warning(
-                    f"✗ {channel_config.name}: Channel is private or not accessible"
+                topic_messages = await self._fetch_topics_for_channel(channel_config, lookback_time)
+                all_messages.update(topic_messages)
+            else:
+                all_messages[channel_config.name] = await self._fetch_channel_with_retries(
+                    channel_config, lookback_time
                 )
-                all_messages[channel_config.name] = []
-            except FloodWaitError as e:
-                self.logger.warning(
-                    f"✗ {channel_config.name}: Rate limited, need to wait {e.seconds}s"
-                )
-                await asyncio.sleep(e.seconds)
-                # Retry once
-                try:
-                    messages = await self.fetch_channel_messages(channel_config, lookback_time)
-                    all_messages[channel_config.name] = messages
-                except Exception as retry_error:
-                    self.logger.error(f"Retry failed for {channel_config.name}: {retry_error}")
-                    all_messages[channel_config.name] = []
-            except ValueError as e:
-                # Entity resolution error
-                if "Could not find the input entity" in str(e):
-                    self.logger.error(
-                        f"✗ {channel_config.name}: Channel not found. "
-                        f"Make sure you've joined this channel with your Telegram account "
-                        f"and the channel ID ({channel_config.id}) is correct."
-                    )
-                else:
-                    self.logger.error(f"✗ {channel_config.name}: {e}")
-                all_messages[channel_config.name] = []
-            except Exception as e:
-                self.logger.error(f"✗ {channel_config.name}: Error fetching messages: {e}")
-                all_messages[channel_config.name] = []
 
         total_messages = sum(len(msgs) for msgs in all_messages.values())
         self.logger.info(f"Total messages collected: {total_messages}")
@@ -208,6 +157,64 @@ class MessageCollector:
 
         messages.sort(key=lambda m: m.timestamp)
         return messages
+
+    async def _fetch_channel_with_retries(
+        self, channel_config: ChannelConfig, lookback_time: datetime
+    ) -> List[Message]:
+        """Fetch messages from a single channel with error handling and retry on flood wait."""
+        try:
+            messages = await self.fetch_channel_messages(channel_config, lookback_time)
+            self.logger.info(f"✓ {channel_config.name}: {len(messages)} messages")
+            return messages
+        except ChannelPrivateError:
+            self.logger.warning(f"✗ {channel_config.name}: Channel is private or not accessible")
+            return []
+        except FloodWaitError as e:
+            self.logger.warning(f"✗ {channel_config.name}: Rate limited, need to wait {e.seconds}s")
+            await asyncio.sleep(e.seconds)
+            try:
+                messages = await self.fetch_channel_messages(channel_config, lookback_time)
+                self.logger.info(f"✓ {channel_config.name}: {len(messages)} messages")
+                return messages
+            except Exception as retry_error:
+                self.logger.error(f"Retry failed for {channel_config.name}: {retry_error}")
+                return []
+        except ValueError as e:
+            if "Could not find the input entity" in str(e):
+                self.logger.error(
+                    f"✗ {channel_config.name}: Channel not found. "
+                    f"Make sure you've joined this channel with your Telegram account "
+                    f"and the channel ID ({channel_config.id}) is correct."
+                )
+            else:
+                self.logger.error(f"✗ {channel_config.name}: {e}")
+            return []
+        except Exception as e:
+            self.logger.error(f"✗ {channel_config.name}: Error fetching messages: {e}")
+            return []
+
+    async def _fetch_topics_for_channel(
+        self, channel_config: ChannelConfig, lookback_time: datetime
+    ) -> Dict[str, List[Message]]:
+        """Fetch messages from forum topics within a channel."""
+        topic_messages: Dict[str, List[Message]] = {}
+        try:
+            entity = await self.client.get_entity(channel_config.id)
+            for topic in channel_config.topics:
+                logical_name = f"{channel_config.name} — {topic.name}"
+                try:
+                    messages = await self._fetch_topic_messages(
+                        entity, channel_config, topic, lookback_time
+                    )
+                    topic_messages[logical_name] = messages
+                    self.logger.info(f"✓ {logical_name}: {len(messages)} messages")
+                except Exception as topic_error:
+                    self.logger.error(f"✗ {logical_name}: Error fetching topic: {topic_error}")
+        except ChannelPrivateError:
+            self.logger.warning(f"✗ {channel_config.name}: Channel is private or not accessible")
+        except Exception as e:
+            self.logger.error(f"✗ {channel_config.name}: Error fetching topics: {e}")
+        return topic_messages
 
     async def _fetch_topic_messages(
         self,

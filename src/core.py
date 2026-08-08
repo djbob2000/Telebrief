@@ -20,7 +20,6 @@ from src.sender import DigestSender
 from src.storage import create_storage
 from src.summarizer import ERROR_SUMMARY_PREFIX, Summarizer
 from src.ui_strings import get_ui_strings
-from src.utils import split_message
 
 _CHANNEL_URL_RE = re.compile(r"^https://t\.me/(?:c/\d+|[^/]{2,})$")
 
@@ -305,9 +304,7 @@ async def _build_grouped_parts(
         logger.warning("No valid group messages to send")
         return None
     sections = [
-        (name, grouped[name])
-        for name in _order_groups(grouped, config)
-        if grouped.get(name)
+        (name, grouped[name]) for name in _order_groups(grouped, config) if grouped.get(name)
     ]
     rich_document = formatter.format_group_rich_digest(sections)
     return [("digest", group_digest)], "", rich_document
@@ -362,6 +359,7 @@ async def _build_digest_parts(
         start_time = datetime.now(timezone.utc)
         logger.info(f"Starting {mode!r} digest build for last {hours} hours")
 
+        built: Optional[tuple[list[tuple[str, str]], str, Optional[dict]]] = None
         if mode == "digest":
             built = await _build_grouped_parts(config, logger, hours)
         else:
@@ -476,9 +474,7 @@ async def collect_channel_messages(
     return messages[-limit:], "telegram"
 
 
-async def build_digest(
-    config: Config, logger: logging.Logger, hours: int = 24
-) -> str:
+async def build_digest(config: Config, logger: logging.Logger, hours: int = 24) -> str:
     """Build the digest as a single Markdown document without sending it.
 
     Returns:

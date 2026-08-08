@@ -13,12 +13,12 @@ from telegram.error import TelegramError
 from src.config_loader import Config
 from src.formatter import DigestFormatter
 from src.utils import (
+    TELEGRAM_MAX_MESSAGE_CHARS,
+    TELEGRAM_SAFE_MESSAGE_CHARS,
     clear_digest_message_ids,
     get_digest_message_ids,
     save_digest_message_ids,
     split_message,
-    TELEGRAM_MAX_MESSAGE_CHARS,
-    TELEGRAM_SAFE_MESSAGE_CHARS,
 )
 
 
@@ -117,9 +117,7 @@ class DigestSender:
             self.logger.error(f"❌ Failed to send digest: {e}")
             return False
 
-    async def _send_rich_message(
-        self, chat_id: str | int, rich_message: dict
-    ) -> int:
+    async def _send_rich_message(self, chat_id: str | int, rich_message: dict) -> int:
         """Send a structured message through Telegram's Rich Messages API."""
         response = await self.bot._post(
             "sendRichMessage",
@@ -146,9 +144,7 @@ class DigestSender:
                         text = item_block.get("text", "")
                         if isinstance(text, list):
                             text = "".join(
-                                part
-                                if isinstance(part, str)
-                                else str(part.get("text", ""))
+                                part if isinstance(part, str) else str(part.get("text", ""))
                                 for part in text
                             )
                         lines.append(f"• {text}")
@@ -169,18 +165,14 @@ class DigestSender:
 
         rich_message = document.get("rich_message", document)
         try:
-            documents = self.formatter.split_group_rich_digest(
-                {"rich_message": rich_message}
-            )
+            documents = self.formatter.split_group_rich_digest({"rich_message": rich_message})
             if not documents:
                 self.logger.warning("Rich digest has no blocks")
                 return False
             message_ids = []
             for part in documents:
                 message_ids.append(
-                    await self._send_rich_message(
-                        self.target_chat_id, part["rich_message"]
-                    )
+                    await self._send_rich_message(self.target_chat_id, part["rich_message"])
                 )
             save_digest_message_ids(message_ids, self.target_chat_id)
             self.logger.info("✅ Rich digest sent successfully (%s message(s))", len(message_ids))
@@ -333,9 +325,7 @@ class DigestSender:
 
         for message_id in message_ids:
             try:
-                await self.bot.delete_message(
-                    chat_id=self.target_chat_id, message_id=message_id
-                )
+                await self.bot.delete_message(chat_id=self.target_chat_id, message_id=message_id)
                 deleted_count += 1
             except TelegramError as e:
                 # Message might already be deleted or not found
@@ -537,9 +527,7 @@ class DigestSender:
         if summary_id is not None and success_count == 0:
             # All channel sends failed; remove the orphaned placeholder
             try:
-                await self.bot.delete_message(
-                    chat_id=self.target_chat_id, message_id=summary_id
-                )
+                await self.bot.delete_message(chat_id=self.target_chat_id, message_id=summary_id)
                 self.logger.info("🗑️ Removed orphaned summary placeholder (no channels succeeded)")
                 summary_id = None
             except TelegramError as e:

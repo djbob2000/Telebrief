@@ -394,8 +394,7 @@ class DigestFormatter:
                 else f"https://{visible_label}"
             )
             label_is_message_url = bool(
-                _INLINE_SOURCE_URL_RE.fullmatch(label_url)
-                and re.search(r"/\d+$", label_url)
+                _INLINE_SOURCE_URL_RE.fullmatch(label_url) and re.search(r"/\d+$", label_url)
             )
             source_url = label_url if label_is_message_url else destination_url
             replacement = "" if label_url.startswith("https://t.me/") else visible_label
@@ -453,8 +452,7 @@ class DigestFormatter:
                 point_text, source_url = self._clean_group_point(point)
                 text_parts: list[object] = self._parse_rich_text_spans(point_text)
                 if source_url and (
-                    _CHANNEL_URL_RE.match(source_url)
-                    or _INLINE_SOURCE_URL_RE.fullmatch(source_url)
+                    _CHANNEL_URL_RE.match(source_url) or _INLINE_SOURCE_URL_RE.fullmatch(source_url)
                 ):
                     text_parts.extend(
                         [
@@ -504,10 +502,7 @@ class DigestFormatter:
             )
 
         content_blocks = blocks[1:]
-        units = [
-            content_blocks[index : index + 2]
-            for index in range(0, len(content_blocks), 2)
-        ]
+        units = [content_blocks[index : index + 2] for index in range(0, len(content_blocks), 2)]
         for unit in units:
             candidate = current + unit
             if len(current) > 1 and encoded_size(candidate) > max_length:

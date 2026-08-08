@@ -103,9 +103,7 @@ settings:
 
 
 @pytest.mark.unit
-def test_load_config_google_provider_requires_gemini_key(
-    tmp_path, mock_env_vars, monkeypatch
-):
+def test_load_config_google_provider_requires_gemini_key(tmp_path, mock_env_vars, monkeypatch):
     """Google provider reports a missing Gemini API key clearly."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     config_file = tmp_path / "config.yaml"
@@ -130,14 +128,14 @@ def test_load_config_reads_target_chat_id(tmp_path, mock_env_vars):
     """The digest destination can be a public Telegram channel username."""
     config_file = tmp_path / "config.yaml"
     config_file.write_text(
-        '''
+        """
 channels:
   - id: "@source"
     name: "Source"
 settings:
   target_user_id: 123456789
   target_chat_id: "@berdiansk_news"
-'''
+"""
     )
 
     config = load_config(str(config_file))

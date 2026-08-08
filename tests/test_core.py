@@ -16,6 +16,7 @@ from src.core import (
     read_last_digest,
     validate_hours,
 )
+from src.grouper import GroupedPoint
 
 
 @pytest.mark.unit
@@ -29,8 +30,10 @@ def test_channel_config_for_name_resolves_forum_topic(sample_config):
         )
     ]
 
-    assert _channel_config_for_name(sample_config, "Source — Проблемы ЖКХ") is sample_config.channels[0]
-from src.grouper import GroupedPoint
+    assert (
+        _channel_config_for_name(sample_config, "Source — Проблемы ЖКХ")
+        is sample_config.channels[0]
+    )
 
 
 @pytest.fixture(autouse=True)

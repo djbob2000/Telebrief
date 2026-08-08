@@ -215,4 +215,3 @@ git status --short
 
 Confirm that only the planned files changed in the feature diff and unrelated
 pre-existing worktree modifications remain untouched.
-

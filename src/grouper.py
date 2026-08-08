@@ -16,12 +16,12 @@ chokepoint kill duplicates the prompt was unreliable at catching.
 """
 
 import asyncio
-from difflib import SequenceMatcher
 import html
 import json
 import logging
 import re
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Dict, List, Optional
 
 from src.ai_providers import AIProvider, create_provider
@@ -119,10 +119,7 @@ def _qg_has_concrete_entity(point: str) -> bool:
 
 def _is_commercial_advertisement(point: str) -> bool:
     """Detect private service offers without blocking ordinary factual updates."""
-    return bool(
-        _QG_COMMERCIAL_CONTACT_RE.search(point)
-        and _QG_COMMERCIAL_OFFER_RE.search(point)
-    )
+    return bool(_QG_COMMERCIAL_CONTACT_RE.search(point) and _QG_COMMERCIAL_OFFER_RE.search(point))
 
 
 def _quality_gate_filter(bullets: List["ExtractedBullet"]) -> List["ExtractedBullet"]:

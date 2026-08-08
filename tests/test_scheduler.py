@@ -30,9 +30,9 @@ async def test_scheduled_job_uses_global_lookback(sample_config, mock_logger):
     """The scheduled job uses the global lookback window."""
     scheduler = DigestScheduler(sample_config, mock_logger)
 
-    with patch("src.scheduler.generate_and_send_digest", new=AsyncMock(return_value=True)) as generate:
+    with patch(
+        "src.scheduler.generate_and_send_digest", new=AsyncMock(return_value=True)
+    ) as generate:
         await scheduler._scheduled_digest_job()
 
-    generate.assert_awaited_once_with(
-        config=sample_config, logger=mock_logger, hours=24
-    )
+    generate.assert_awaited_once_with(config=sample_config, logger=mock_logger, hours=24)

@@ -119,13 +119,11 @@ class OpenAIProvider(AIProvider):
         timeout: int = 60,
         base_url: str = "",
     ):
-        client_kwargs = {
-            "api_key": api_key,
-            "timeout": httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
-        }
-        if base_url:
-            client_kwargs["base_url"] = base_url
-        self.client = AsyncOpenAI(**client_kwargs)
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url or None,
+            timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+        )
         self.logger = logger
         self.base_url = base_url.lower()
 

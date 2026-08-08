@@ -132,7 +132,7 @@ Implement it as follows:
 2. Return `""` when no sections remain.
 3. Build the title from `_format_date(datetime.now(timezone.utc))` as `Дайджест Бердянска · {date}` for Russian, with an equivalent localized title for other configured languages.
 4. Render every section heading as `**📌 {group_name}**`.
-5. Render each point as `• {point}` and append ` [источник](source_url)` only when `source_url` is non-empty and matches the formatter’s existing Telegram URL validation.
+5. Render each point as `• {point}` and append `[источник](source_url)` only when `source_url` is non-empty and matches the formatter’s existing Telegram URL validation.
 6. Do not render `GroupedPoint.source`, `📺`, or per-point emoji attribution.
 7. Do not append a count, time-window, italic footer, or any other statistics line.
 8. Join title and sections with exactly one blank line between logical blocks. Do not emit `#` or `---`.
