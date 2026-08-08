@@ -291,7 +291,8 @@ class TestGrouperTemperatureOverride:
         # Temperature should be 0.1, not the global config value (0.7)
         temp = call_kwargs.kwargs.get("temperature") or call_kwargs[1].get("temperature")
         assert temp == 0.1
-        assert call_kwargs.kwargs["thinking"] is False
+        assert call_kwargs.kwargs["thinking"] is True
+        assert call_kwargs.kwargs["reasoning_effort"] == "high"
         assert call_kwargs.kwargs["response_format"] == {"type": "json_object"}
 
 

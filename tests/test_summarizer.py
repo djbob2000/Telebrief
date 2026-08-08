@@ -502,17 +502,17 @@ def test_system_prompt_contains_never_invent_urls():
 # --- Task 3: Output validation layer tests ---
 
 
-MAX_SUMMARY_CHARS = 12000
+MAX_SUMMARY_CHARS = 30000
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_summarize_channel_detects_output_over_12000_chars(
+async def test_summarize_channel_detects_output_over_30000_chars(
     sample_config, mock_logger, sample_messages
 ):
-    """Summarizer detects when AI output exceeds 12000 characters and retries."""
-    long_output = "A" * 13000  # Over 12000
-    short_output = "B" * 11000  # Under 12000
+    """Summarizer detects when AI output exceeds 30000 characters and retries."""
+    long_output = "A" * 31000  # Over 30000
+    short_output = "B" * 29000  # Under 30000
 
     with patch("src.ai_providers.AsyncOpenAI"):
         summarizer = Summarizer(sample_config, mock_logger)
@@ -531,8 +531,8 @@ async def test_summarize_channel_retry_includes_shorten_instruction(
     sample_config, mock_logger, sample_messages
 ):
     """Retry prompt includes instruction to shorten with the actual character count."""
-    long_output = "A" * 13000
-    short_output = "B" * 11000
+    long_output = "A" * 31000
+    short_output = "B" * 29000
 
     with patch("src.ai_providers.AsyncOpenAI"):
         summarizer = Summarizer(sample_config, mock_logger)
@@ -552,8 +552,8 @@ async def test_summarize_channel_retry_includes_shorten_instruction(
         retry_messages = captured_calls[1]["messages"]
         # There should be an additional message asking to shorten
         last_msg = retry_messages[-1]["content"]
-        assert "13000" in last_msg  # mentions actual char count
-        assert "12000" in last_msg  # mentions the limit
+        assert "31000" in last_msg  # mentions actual char count
+        assert "30000" in last_msg  # mentions the limit
 
 
 @pytest.mark.unit
@@ -562,8 +562,8 @@ async def test_summarize_channel_truncates_at_sentence_boundary_as_fallback(
     sample_config, mock_logger, sample_messages
 ):
     """When retry still exceeds limit, truncate at last complete sentence."""
-    long_output = "A" * 13000
-    still_long = "First sentence. Second sentence. " + "C" * 12500
+    long_output = "A" * 31000
+    still_long = "First sentence. Second sentence. " + "C" * 30500
 
     with patch("src.ai_providers.AsyncOpenAI"):
         summarizer = Summarizer(sample_config, mock_logger)
@@ -585,7 +585,7 @@ async def test_summarize_channel_length_retry_exception_falls_through_to_truncat
     sample_config, mock_logger, sample_messages
 ):
     """When length-reduction retry raises, fall through to sentence-boundary truncation."""
-    long_output = "First sentence. Second sentence. " + "C" * 13000
+    long_output = "First sentence. Second sentence. " + "C" * 31000
 
     with patch("src.ai_providers.AsyncOpenAI"):
         summarizer = Summarizer(sample_config, mock_logger)
@@ -606,7 +606,7 @@ async def test_summarize_channel_length_retry_exception_falls_through_to_truncat
 async def test_summarize_channel_no_retry_when_under_limit(
     sample_config, mock_logger, sample_messages
 ):
-    """No retry or truncation when output is within 12000 chars."""
+    """No retry or truncation when output is within 30000 chars."""
     short_output = "Short summary. Only 30 chars."
 
     with patch("src.ai_providers.AsyncOpenAI"):

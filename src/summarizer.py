@@ -16,7 +16,7 @@ from src.extensions.prompts import DefaultComposer, PromptComposer
 from src.xml_escape import escape_xml_delimiters
 
 ERROR_SUMMARY_PREFIX = "Error processing channel"
-MAX_SUMMARY_CHARS = 12000
+MAX_SUMMARY_CHARS = 30000
 _MINOR_OVERAGE_CHARS = 200  # truncate directly without retry for small overages
 
 

@@ -217,7 +217,8 @@ async def main() -> None:
                 model=config.settings.ai_model,
                 temperature=0.1,
                 max_tokens=DEEPSEEK_MAX_OUTPUT_TOKENS,
-                thinking=False,
+                reasoning_effort="high",
+                thinking=True,
                 response_format={"type": "json_object"},
             )
             reports.append(
@@ -238,7 +239,7 @@ async def main() -> None:
         model=config.settings.ai_model,
         temperature=0.1,
         max_tokens=DEEPSEEK_MAX_OUTPUT_TOKENS,
-        reasoning_effort="low",
+        reasoning_effort="high",
         thinking=True,
         response_format={"type": "json_object"},
     )

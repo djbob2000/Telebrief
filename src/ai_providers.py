@@ -209,7 +209,7 @@ class GoogleProvider(AIProvider):
         temperature: float,  # noqa: ARG002 — Gemini 3 uses model defaults
         max_tokens: int,
         reasoning_effort: str | None = None,
-        thinking: bool | None = None,  # noqa: ARG002 — not a Gemini request field
+        thinking: bool | None = None,  # noqa: ARG002 — accepted, reasoning_effort used for Gemini
         response_format: Dict[str, Any] | None = None,
     ) -> str:
         """Generate text with Gemini-compatible Chat Completions parameters."""
@@ -225,9 +225,8 @@ class GoogleProvider(AIProvider):
             "model": model,
             "messages": messages,
             "max_completion_tokens": output_tokens,
+            "reasoning_effort": reasoning_effort if reasoning_effort is not None else "high",
         }
-        if reasoning_effort is not None:
-            create_kwargs["reasoning_effort"] = reasoning_effort
         if response_format is not None:
             create_kwargs["response_format"] = response_format
 

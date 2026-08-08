@@ -392,7 +392,8 @@ class DigestGrouper:
             model=self.model,
             temperature=0.1,
             max_tokens=self.config.settings.max_tokens_per_summary,
-            thinking=False,
+            reasoning_effort="high",
+            thinking=True,
             response_format={"type": "json_object"},
         )
         return self._parse_extracted_response(response, channel_name, source_url)
@@ -471,7 +472,8 @@ class DigestGrouper:
             model=self.model,
             temperature=0.1,
             max_tokens=self.max_tokens,
-            thinking=False,
+            reasoning_effort="high",
+            thinking=True,
             response_format={"type": "json_object"},
         )
         valid_group_names = {g.name for g in groups}
