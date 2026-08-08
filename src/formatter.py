@@ -18,7 +18,7 @@ from src.utils import TELEGRAM_MAX_MESSAGE_CHARS, TELEGRAM_SAFE_MESSAGE_CHARS
 _CHANNEL_URL_RE = re.compile(r"^https://t\.me/(?:c/\d+|[^/]{2,})$")
 _INLINE_SOURCE_URL_RE = re.compile(r"https://t\.me/[^\s)\]]+")
 _MARKDOWN_SOURCE_LINK_RE = re.compile(r"\[([^\]]+)\]\((https://t\.me/[^)\s]+)\)")
-_LEADING_BULLET_RE = re.compile(r"^\s*(?:(?:[•●▪◦*-]+|\d+[.)])\s*)+")
+_LEADING_BULLET_RE = re.compile(r"^\s*(?:(?:[•●▪◦]+|\*(?!\*)|-+|\d+[.)])\s*)+")
 _SOURCE_MARKER_RE = re.compile(r"\s*(?:🖇️|🔗)\s*")
 
 
@@ -371,7 +371,7 @@ class DigestFormatter:
             parts.append(
                 "\n".join(
                     [
-                        f"**📌 {group_name}**",
+                        f"**{group_name}**",
                         "",
                         *bullet_lines,
                     ]
@@ -412,6 +412,28 @@ class DigestFormatter:
         point_text = re.sub(r"[ \t]{2,}", " ", point_text).strip()
         return point_text, source_url
 
+    def _parse_rich_text_spans(self, text: str) -> list[object]:
+        """Parse inline markdown formatting (e.g. **bold**) into Rich Text spans."""
+        if "**" not in text:
+            return [text] if text else []
+        parts: list[object] = []
+        last_idx = 0
+        for match in re.finditer(r"\*\*(.+?)\*\*", text):
+            start, end = match.span()
+            if start > last_idx:
+                prefix = text[last_idx:start]
+                if prefix:
+                    parts.append(prefix)
+            bold_content = match.group(1).strip()
+            if bold_content:
+                parts.append({"type": "bold", "text": bold_content})
+            last_idx = end
+        if last_idx < len(text):
+            suffix = text[last_idx:]
+            if suffix:
+                parts.append(suffix)
+        return parts if parts else [text]
+
     def format_group_rich_digest(
         self,
         grouped_sections: list[tuple[str, list[GroupedPoint]]],
@@ -429,7 +451,7 @@ class DigestFormatter:
             items = []
             for point in points:
                 point_text, source_url = self._clean_group_point(point)
-                text_parts: list[object] = [point_text]
+                text_parts: list[object] = self._parse_rich_text_spans(point_text)
                 if source_url and (
                     _CHANNEL_URL_RE.match(source_url)
                     or _INLINE_SOURCE_URL_RE.fullmatch(source_url)
@@ -452,7 +474,7 @@ class DigestFormatter:
                 )
             blocks.extend(
                 [
-                    {"type": "heading", "size": 3, "text": f"📌 {group_name}"},
+                    {"type": "heading", "size": 3, "text": group_name},
                     {"type": "list", "items": items},
                 ]
             )

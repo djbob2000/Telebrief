@@ -412,8 +412,8 @@ def test_format_group_digest_russian_compact_single_message(sample_config, mock_
     result = formatter.format_group_digest(sections, hours=24)
 
     assert f"{formatter._ui['daily_digest']} ·" in result
-    assert "**📌 Предупреждения**" in result
-    assert "**📌 Другое**" in result
+    assert "**Предупреждения**" in result
+    assert "**Другое**" in result
     assert "• Напряжение 130–150 В вместо 220 [↗](https://t.me/berdiansk_me)" in result
     assert "• Отдают котят" in result
     assert "📺 Бердянск" not in result
@@ -437,7 +437,7 @@ def test_format_group_digest_omits_empty_sections_and_uses_requested_hours(
     )
 
     assert "Новости" not in result
-    assert "**📌 Другое**" in result
+    assert "**Другое**" in result
     assert "пункт" not in result
     assert "12 часов" not in result
     assert formatter.format_group_digest([("Новости", [])], hours=24) == ""
@@ -594,7 +594,7 @@ def test_format_group_rich_digest_uses_native_headings_and_unordered_lists(
         "size": 2,
         "text": f"{formatter._ui['daily_digest']} · " + formatter._format_date(datetime.now(timezone.utc)),
     }
-    assert blocks[1] == {"type": "heading", "size": 3, "text": "📌 Предупреждения"}
+    assert blocks[1] == {"type": "heading", "size": 3, "text": "Предупреждения"}
     assert blocks[2]["type"] == "list"
     assert all("value" not in item for item in blocks[2]["items"])
     assert blocks[2]["items"][0]["blocks"][0]["text"][-1] == {
@@ -665,3 +665,49 @@ def test_split_group_rich_digest_keeps_group_heading_with_its_list(
         "heading",
         "list",
     ]
+
+
+@pytest.mark.unit
+def test_format_group_rich_digest_parses_markdown_bold_subheadings(
+    sample_config, mock_logger
+):
+    """Rich digest converts **bold title** in points into native bold rich text spans."""
+    formatter = DigestFormatter(sample_config, mock_logger)
+
+    result = formatter.format_group_rich_digest(
+        [
+            (
+                "Предупреждения",
+                [
+                    GroupedPoint(
+                        point="⚡ **Критические перепады напряжения**: В большинстве районов города",
+                        source="Бердянск",
+                        source_url="https://t.me/berdiansk_me/123",
+                    ),
+                    GroupedPoint(
+                        point="**Репрессии в Токмаке**: подробности дела",
+                        source="Бердянск",
+                        source_url="",
+                    ),
+                ],
+            )
+        ]
+    )
+
+    items = result["rich_message"]["blocks"][2]["items"]
+    # First item: "⚡ ", {"type": "bold", "text": "Критические перепады напряжения"}, ": В большинстве районов города", " ", {"type": "url", ...}
+    first_item_text = items[0]["blocks"][0]["text"]
+    assert first_item_text[0] == "⚡ "
+    assert first_item_text[1] == {"type": "bold", "text": "Критические перепады напряжения"}
+    assert first_item_text[2] == ": В большинстве районов города"
+    assert first_item_text[-1] == {
+        "type": "url",
+        "text": "↗",
+        "url": "https://t.me/berdiansk_me/123",
+    }
+
+    # Second item starts directly with bold span
+    second_item_text = items[1]["blocks"][0]["text"]
+    assert second_item_text[0] == {"type": "bold", "text": "Репрессии в Токмаке"}
+    assert second_item_text[1] == ": подробности дела"
+
