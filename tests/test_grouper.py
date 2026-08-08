@@ -422,6 +422,42 @@ class TestQualityGateFilter:
         out = _quality_gate_filter(bullets)
         assert out == bullets
 
+    def test_drops_private_regular_bus_advertisement(self):
+        """Private recurring transport offers with booking contacts are ads."""
+        bullets = [
+            ExtractedBullet(
+                point=(
+                    "🚐 Регулярные автобусы: Бердянск—Краснодар и Бердянск—Ростов "
+                    "ежедневно, бронь +79900292947; рейсы в Москву и СПб через "
+                    "Мариуполь (15–17 ч в пути); поездки из Бердянска и района в "
+                    "Украину и Европу каждые 5 дней, без загранпаспорта, @bluderetikoff."
+                ),
+                source="Бердянск",
+            ),
+            ExtractedBullet(
+                point="🚌 Автовокзал изменил время отправления рейса Бердянск—Мелитополь",
+                source="Бердянск",
+            ),
+        ]
+
+        out = _quality_gate_filter(bullets)
+
+        assert len(out) == 1
+        assert "Автовокзал" in out[0].point
+
+    def test_keeps_official_transport_update(self):
+        """Official route changes are news, not private classifieds."""
+        bullets = [
+            ExtractedBullet(
+                point="🚌 Автовокзал изменил время отправления рейса Бердянск—Мелитополь",
+                source="Официальный канал",
+            )
+        ]
+
+        out = _quality_gate_filter(bullets)
+
+        assert out == bullets
+
 
 class TestStripSectionTwo:
     """Tests for stripping Section 2 (📎 Also/Также) from channel summaries before extraction."""
@@ -625,6 +661,35 @@ class TestDedupExtracted:
         ]
         result = _dedup_extracted(bullets)
         assert len(result) == 2
+
+    def test_semantically_same_blackout_reports_merge(self):
+        """Different wording of the same blackout report becomes one bullet."""
+        bullets = [
+            ExtractedBullet(
+                point=(
+                    "⚡ На ТОТ Запорожской области, включая Бердянск, почти постоянно "
+                    "блекауты: нет света, воды, мобильной связи и интернета. Балицкий "
+                    "признал, что его команда с такими вызовами ещё не сталкивалась "
+                    "(по данным «Бердянск 24», официального подтверждения нет)"
+                ),
+                source="Бердянск",
+            ),
+            ExtractedBullet(
+                point=(
+                    "⚡️ На ТОТ Запорожской области, включая Бердянск, почти постоянно "
+                    "блекауты: нет света, воды, мобильной связи и интернета. Гауляйтер "
+                    "Балицкий признал, что его команда впервые столкнулась с таким вызовом."
+                ),
+                source="Группа -1001574129080",
+            ),
+        ]
+
+        result = _dedup_extracted(bullets)
+
+        assert len(result) == 1
+        assert "официального подтверждения нет" in result[0].point
+        assert "Бердянск" in result[0].source
+        assert "Группа -1001574129080" in result[0].source
 
 
 class TestClassifyBullets:

@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List
 
-from src.ai_providers import AIProvider, TokenBudgetExhaustedError, create_provider
+from src.ai_providers import AIProvider, create_provider
 from src.collector import Message
 from src.config_loader import ChannelConfig, Config, DigestGroupConfig
 from src.extensions.loader import load_class
@@ -15,7 +15,7 @@ from src.extensions.prompts import DefaultComposer, PromptComposer
 from src.xml_escape import escape_xml_delimiters
 
 ERROR_SUMMARY_PREFIX = "Error processing channel"
-MAX_SUMMARY_CHARS = 3500
+MAX_SUMMARY_CHARS = 12000
 _MINOR_OVERAGE_CHARS = 200  # truncate directly without retry for small overages
 
 
@@ -58,6 +58,7 @@ class Summarizer:
             openai_api_key=config.openai_api_key,
             openai_base_url=config.openai_base_url,
             anthropic_api_key=config.anthropic_api_key,
+            google_api_key=config.google_api_key,
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=config.settings.api_timeout,
         )
@@ -65,7 +66,12 @@ class Summarizer:
         self.temperature = config.settings.temperature
         self.max_tokens = config.settings.max_tokens_per_summary
         self.output_language = config.settings.output_language
-        self._channels_by_name = {ch.name: ch for ch in config.channels}
+        self._channels_by_name = {}
+        for channel in config.channels:
+            self._channels_by_name[channel.name] = channel
+            for topic in channel.topics:
+                logical_name = f"{channel.name} — {topic.name}"
+                self._channels_by_name[logical_name] = channel
 
         # Resolve template path; use absolute bundled default when config holds the sentinel value
         template_path = (
@@ -79,9 +85,13 @@ class Summarizer:
         groups_by_name: dict[str, DigestGroupConfig] = {
             g.name: g for g in config.settings.digest_groups
         }
-        self._channel_to_group: dict[str, DigestGroupConfig | None] = {
-            ch.name: groups_by_name.get(ch.group) if ch.group else None for ch in config.channels
-        }
+        self._channel_to_group: dict[str, DigestGroupConfig | None] = {}
+        for channel in config.channels:
+            group = groups_by_name.get(channel.group) if channel.group else None
+            self._channel_to_group[channel.name] = group
+            for topic in channel.topics:
+                logical_name = f"{channel.name} — {topic.name}"
+                self._channel_to_group[logical_name] = group
 
         # Instantiate composer (custom dotted-path or built-in DefaultComposer)
         if config.prompts.composer:
@@ -186,12 +196,12 @@ Analyze the following messages from Telegram channel "{channel_name}" \
 and create a concise summary.
 
 CRITICAL - LENGTH CONSTRAINT:
-- Telegram has a 4096 character limit per message
-- Your summary MUST be NO MORE than 3500 characters (including emojis and formatting)
+- Telegram supports up to 32768 characters in a single bot message
+- Your summary MUST be NO MORE than 12000 characters (including emojis and formatting)
 - This is a hard limit - if exceeded, the message will not be delivered
 - Move lower-priority posts to the 📎 Also: section rather than dropping them
 {truncation_note}
-Apply the QUALITY GATE from the system prompt: drop low-signal posts (photo-only, meta-empty, expired invites, internal admin, author speculation). Quality > completeness.
+Apply the QUALITY GATE from the system prompt: drop low-signal posts (photo-only, meta-empty, expired invites, internal admin, author speculation, and private commercial offers/classifieds). Keep official transport announcements and route changes. Quality > completeness.
 
 Response format (TWO sections):
 
@@ -225,47 +235,23 @@ Messages (total: {actual_count}):
             {"role": "user", "content": prompt},
         ]
 
-        summary = await self._call_ai_with_retry(channel_name, chat_messages)
+        summary = await self._call_ai(channel_name, chat_messages)
         summary = await self._enforce_length_limit(channel_name, summary, chat_messages)
 
         self.logger.debug(f"Summary for {channel_name}: {len(summary)} chars")
         return summary
 
-    async def _call_ai_with_retry(self, channel_name: str, chat_messages: list) -> str:
-        """Call AI provider, retrying with higher token budget on exhaustion."""
+    async def _call_ai(self, channel_name: str, chat_messages: list) -> str:
+        """Call the AI provider once with the configured full token budget."""
         try:
             return await self.provider.chat_completion(
                 messages=chat_messages,
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
-                reasoning_effort="low",
+                reasoning_effort="high",
                 thinking=True,
             )
-        except TokenBudgetExhaustedError:
-            retry_max_tokens = self.max_tokens * 3
-            self.logger.warning(
-                "Token budget exhausted for %s; retrying with max_tokens=%d",
-                channel_name,
-                retry_max_tokens,
-            )
-            try:
-                return await self.provider.chat_completion(
-                    messages=chat_messages,
-                    model=self.model,
-                    temperature=self.temperature,
-                    max_tokens=retry_max_tokens,
-                    reasoning_effort="low",
-                    thinking=True,
-                )
-            except Exception as retry_exc:
-                self.logger.error(
-                    "Retry also failed for %s (max_tokens=%d): %s",
-                    channel_name,
-                    retry_max_tokens,
-                    retry_exc,
-                )
-                raise
         except Exception as e:
             self.logger.error(f"AI provider error for {channel_name}: {e}")
             raise
@@ -311,7 +297,7 @@ Messages (total: {actual_count}):
                 model=self.model,
                 temperature=self.temperature,
                 max_tokens=self.max_tokens,
-                reasoning_effort="low",
+                reasoning_effort="high",
                 thinking=True,
             )
         except Exception as e:

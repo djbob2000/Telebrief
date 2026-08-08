@@ -28,10 +28,11 @@ settings:
   timezone: "UTC"
   lookback_hours: 24       # Global collection window
 
-  # AI Provider: "openai", "ollama", or "anthropic"
+  # AI Provider: "openai", "ollama", "anthropic", or "google"
   # Required env vars per provider:
   #   openai    -> OPENAI_API_KEY in .env
   #   anthropic -> ANTHROPIC_API_KEY in .env
+  #   google    -> GEMINI_API_KEY in .env
   #   ollama    -> no API key needed
   ai_provider: "openai"
 
@@ -39,6 +40,7 @@ settings:
   # OpenAI: "gpt-5-nano", "gpt-4o-mini", etc.
   # Ollama: "llama3", "mistral", "gemma2", etc.
   # Anthropic: "claude-sonnet-4-5-20250929", etc.
+  # Google: "gemini-3.6-flash"
   ai_model: "gpt-5-nano"
   # For DeepSeek via the OpenAI-compatible API use:
   # ai_model: "deepseek-v4-flash"

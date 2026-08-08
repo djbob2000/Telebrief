@@ -378,7 +378,6 @@ async def _build_digest_parts(
         return built
 
 
-<<<<<<< HEAD
 async def _channel_from_storage(
     config: Config,
     logger: logging.Logger,

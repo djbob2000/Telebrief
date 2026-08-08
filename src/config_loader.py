@@ -122,6 +122,7 @@ class Config:
     telegram_bot_token: str
     openai_api_key: str
     log_level: str
+    google_api_key: str = ""
     openai_base_url: str = ""
     anthropic_api_key: str = ""
     storage: StorageConfig = field(default_factory=StorageConfig)
@@ -131,11 +132,12 @@ class Config:
 
 SUPPORTED_LANGUAGES = ("English", "Russian", "Spanish", "German", "French")
 
-_SUPPORTED_PROVIDERS = {"openai", "ollama", "anthropic"}
+_SUPPORTED_PROVIDERS = {"openai", "ollama", "anthropic", "google"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-5-nano",
     "anthropic": "claude-sonnet-4-5-20250929",
     "ollama": "llama3",
+    "google": "gemini-3.6-flash",
 }
 
 
@@ -516,6 +518,7 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
     openai_api_key = os.getenv("OPENAI_API_KEY", "")
     openai_base_url = os.getenv("OPENAI_BASE_URL", "")
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    google_api_key = os.getenv("GEMINI_API_KEY", "")
     log_level = os.getenv("LOG_LEVEL", "INFO")
 
     missing_vars = []
@@ -530,6 +533,8 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
         missing_vars.append("OPENAI_API_KEY")
     elif ai_provider == "anthropic" and not anthropic_api_key:
         missing_vars.append("ANTHROPIC_API_KEY")
+    elif ai_provider == "google" and not google_api_key:
+        missing_vars.append("GEMINI_API_KEY")
 
     if missing_vars:
         raise ValueError(
@@ -548,6 +553,7 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
         "openai_api_key": openai_api_key,
         "openai_base_url": openai_base_url,
         "anthropic_api_key": anthropic_api_key,
+        "google_api_key": google_api_key,
         "log_level": log_level,
     }
 

@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List
 
-from telethon import TelegramClient
+from telethon import TelegramClient, functions, types
 from telethon.errors import ChannelPrivateError, FloodWaitError
 from telethon.tl.types import Message as TelegramMessage
 
-from src.config_loader import ChannelConfig, Config
+from src.config_loader import ChannelConfig, Config, ForumTopicConfig
 from src.ui_strings import get_ui_strings
 
 
@@ -103,6 +103,30 @@ class MessageCollector:
                 hours if channel_config.lookback_hours is None else channel_config.lookback_hours
             )
             lookback_time = now - timedelta(hours=channel_hours)
+
+            if channel_config.topics:
+                try:
+                    entity = await self.client.get_entity(channel_config.id)
+                    for topic in channel_config.topics:
+                        logical_name = f"{channel_config.name} — {topic.name}"
+                        try:
+                            messages = await self._fetch_topic_messages(
+                                entity, channel_config, topic, lookback_time
+                            )
+                            all_messages[logical_name] = messages
+                            self.logger.info(f"✓ {logical_name}: {len(messages)} messages")
+                        except Exception as topic_error:
+                            self.logger.error(
+                                f"✗ {logical_name}: Error fetching topic: {topic_error}"
+                            )
+                except ChannelPrivateError:
+                    self.logger.warning(
+                        f"✗ {channel_config.name}: Channel is private or not accessible"
+                    )
+                except Exception as e:
+                    self.logger.error(f"✗ {channel_config.name}: Error fetching topics: {e}")
+                continue
+
             try:
                 messages = await self.fetch_channel_messages(channel_config, lookback_time)
                 all_messages[channel_config.name] = messages
@@ -172,35 +196,11 @@ class MessageCollector:
                 if message.date < lookback_time:
                     break
 
-                # Skip messages without text
-                if not message.text:
-                    # Handle media-only messages
-                    if message.media:
-                        media_type = self._get_media_type(message)
-                        text = f"[{media_type}]"
-                    else:
-                        continue
-                else:
-                    text = message.text
-                    media_type = self._get_media_type(message) if message.media else ""
-
-                # Get sender name
-                sender = await self._get_sender_name(message)
-
-                # Generate message link
-                link = await self._generate_message_link(entity, message.id)
-
-                messages.append(
-                    Message(
-                        text=text,
-                        sender=sender,
-                        timestamp=message.date,
-                        link=link,
-                        channel_name=channel_config.name,
-                        has_media=message.media is not None,
-                        media_type=media_type or "",
-                    )
+                project_message = await self._to_project_message(
+                    entity, channel_config.name, message
                 )
+                if project_message is not None:
+                    messages.append(project_message)
 
         except Exception as e:
             self.logger.error(f"Error fetching from {channel_config.name}: {e}")
@@ -208,6 +208,68 @@ class MessageCollector:
 
         messages.sort(key=lambda m: m.timestamp)
         return messages
+
+    async def _fetch_topic_messages(
+        self,
+        entity,
+        channel_config: ChannelConfig,
+        topic: ForumTopicConfig,
+        lookback_time: datetime,
+    ) -> List[Message]:
+        """Fetch only messages belonging to one Telegram forum topic."""
+        now = datetime.now(timezone.utc)
+        response = await self.client(
+            functions.messages.SearchRequest(
+                peer=entity,
+                q="",
+                filter=types.InputMessagesFilterEmpty(),
+                min_date=lookback_time,
+                max_date=now,
+                offset_id=0,
+                add_offset=0,
+                limit=self.config.settings.max_messages_per_channel,
+                max_id=0,
+                min_id=0,
+                hash=0,
+                top_msg_id=topic.id,
+            )
+        )
+
+        logical_name = f"{channel_config.name} — {topic.name}"
+        messages: List[Message] = []
+        for message in response.messages:
+            if message.date < lookback_time:
+                continue
+            project_message = await self._to_project_message(entity, logical_name, message)
+            if project_message is not None:
+                messages.append(project_message)
+
+        messages.sort(key=lambda m: m.timestamp)
+        return messages
+
+    async def _to_project_message(self, entity, channel_name: str, message) -> Message | None:
+        """Convert a Telethon message to the project model, skipping empty service posts."""
+        if not message.text:
+            if message.media:
+                media_type = self._get_media_type(message)
+                text = f"[{media_type}]"
+            else:
+                return None
+        else:
+            text = message.text
+            media_type = self._get_media_type(message) if message.media else ""
+
+        sender = await self._get_sender_name(message)
+        link = await self._generate_message_link(entity, message.id)
+        return Message(
+            text=text,
+            sender=sender,
+            timestamp=message.date,
+            link=link,
+            channel_name=channel_name,
+            has_media=message.media is not None,
+            media_type=media_type or "",
+        )
 
     def _get_media_type(self, message: TelegramMessage) -> str:
         """

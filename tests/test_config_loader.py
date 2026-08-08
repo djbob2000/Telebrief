@@ -80,6 +80,52 @@ def test_load_config_reads_optional_openai_base_url(temp_config_file, mock_env_v
 
 
 @pytest.mark.unit
+def test_load_config_google_provider_uses_gemini_key(tmp_path, mock_env_vars, monkeypatch):
+    """Google provider resolves its default model and separate API key."""
+    monkeypatch.setenv("GEMINI_API_KEY", "google-test-key")
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@test_channel"
+    name: "Test Channel"
+settings:
+  target_user_id: 123456789
+  ai_provider: "google"
+"""
+    )
+
+    config = load_config(str(config_file))
+
+    assert config.settings.ai_provider == "google"
+    assert config.settings.ai_model == "gemini-3.6-flash"
+    assert config.google_api_key == "google-test-key"
+
+
+@pytest.mark.unit
+def test_load_config_google_provider_requires_gemini_key(
+    tmp_path, mock_env_vars, monkeypatch
+):
+    """Google provider reports a missing Gemini API key clearly."""
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@test_channel"
+    name: "Test Channel"
+settings:
+  target_user_id: 123456789
+  ai_provider: "google"
+"""
+    )
+
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+            load_config(str(config_file))
+
+
+@pytest.mark.unit
 def test_load_config_reads_target_chat_id(tmp_path, mock_env_vars):
     """The digest destination can be a public Telegram channel username."""
     config_file = tmp_path / "config.yaml"

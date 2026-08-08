@@ -9,6 +9,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
+TELEGRAM_MAX_MESSAGE_CHARS = 32768
+TELEGRAM_SAFE_MESSAGE_CHARS = 32000
+
 
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
     """

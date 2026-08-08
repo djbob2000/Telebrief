@@ -16,6 +16,7 @@ chokepoint kill duplicates the prompt was unreliable at catching.
 """
 
 import asyncio
+from difflib import SequenceMatcher
 import html
 import json
 import logging
@@ -33,6 +34,7 @@ _EXTRACTOR_CONCURRENCY = 10
 _LEADING_ROCKET_HEADER_RE = re.compile(r"^🚀[^\n]*\n?")
 _SECTION_TWO_SPLIT_RE = re.compile(r"📎\s*(?:Also|Также)\s*:")
 _DEDUP_NORMALIZE_RE = re.compile(r"\s+")
+_DEDUP_TOKEN_RE = re.compile(r"[a-zа-яё0-9]{3,}", re.IGNORECASE)
 _KEY_POINTS_HEADER_RE = re.compile(
     r"^\s*📌\s*(?:Key points|Ключевые моменты|Puntos clave|Schlüsselpunkte|Points clés)\s*:\s*\n?",
     re.IGNORECASE | re.MULTILINE,
@@ -93,6 +95,16 @@ _QG_ENTITY_DIGIT_RE = re.compile(r"\d")
 _QG_ENTITY_AT_RE = re.compile(r"@\w")
 _QG_ENTITY_URL_RE = re.compile(r"https?://|t\.me/")
 _QG_ENTITY_PROPER_RE = re.compile(r"\b(?:[A-ZА-ЯЁ][\w’'-]{1,}\b.*?){2,}|[A-ZА-Я]{3,}")
+_QG_COMMERCIAL_CONTACT_RE = re.compile(
+    r"(?:\+\d[\d\s().-]{7,}|\b(?:тел|телефон|звон(?:ите|ить)?|пишите)\b|@[a-zа-яё0-9_]+)",
+    re.IGNORECASE,
+)
+_QG_COMMERCIAL_OFFER_RE = re.compile(
+    r"\b(?:брон(?:ь|ировать|и)?|забронировать|такси|трансфер|перевоз(?:ки|ка)|"
+    r"поездк(?:а|и)|регулярн(?:ый|ые|о)|рейс(?:ы|а)?|услуг(?:а|и)|доставк(?:а|и)|"
+    r"продам|куплю|сдам|сниму|требуется|ваканси(?:я|и)|заказ(?:ать)?|места)\b",
+    re.IGNORECASE,
+)
 
 
 def _qg_has_concrete_entity(point: str) -> bool:
@@ -102,6 +114,14 @@ def _qg_has_concrete_entity(point: str) -> bool:
         or _QG_ENTITY_AT_RE.search(point)
         or _QG_ENTITY_URL_RE.search(point)
         or _QG_ENTITY_PROPER_RE.search(point)
+    )
+
+
+def _is_commercial_advertisement(point: str) -> bool:
+    """Detect private service offers without blocking ordinary factual updates."""
+    return bool(
+        _QG_COMMERCIAL_CONTACT_RE.search(point)
+        and _QG_COMMERCIAL_OFFER_RE.search(point)
     )
 
 
@@ -116,6 +136,7 @@ def _quality_gate_filter(bullets: List["ExtractedBullet"]) -> List["ExtractedBul
     - Meta-empty ("без деталей", "no details")
     - Short bullets (<30 chars) lacking any concrete entity (digits, @, URL, proper name)
     - Speculation/hedging without a concrete entity to anchor it
+    - Private commercial offers with a booking/contact signal
     """
     survivors: List[ExtractedBullet] = []
     for b in bullets:
@@ -123,6 +144,8 @@ def _quality_gate_filter(bullets: List["ExtractedBullet"]) -> List["ExtractedBul
         if not text:
             continue
         if any(p.search(text) for p in _QG_DROP_PATTERNS):
+            continue
+        if _is_commercial_advertisement(text):
             continue
         has_entity = _qg_has_concrete_entity(text)
         if len(text) < 30 and not has_entity:
@@ -152,33 +175,66 @@ class GroupedPoint:
 
 
 def _dedup_extracted(bullets: List["ExtractedBullet"]) -> List["ExtractedBullet"]:
-    """Deterministic chokepoint: merge bullets with same normalized point text.
+    """Deterministic chokepoint: merge exact and near-identical point texts.
 
-    When two channels report the same story, their bullets normalize to the
-    same key. We keep the longest variant of the point text and join their
-    source channel names into a comma-separated list.
+    When two channels report the same story, their bullets either normalize to
+    the same key or have a high lexical overlap after punctuation and emoji
+    are removed. We keep the longest variant and join source names.
     """
-    by_key: Dict[str, ExtractedBullet] = {}
+    by_key: Dict[str, int] = {}
+    deduped: List[ExtractedBullet] = []
     for b in bullets:
         key = _normalize_point(b.point)
         if not key:
             continue
-        existing = by_key.get(key)
-        if existing is None:
-            by_key[key] = b
+        match_index = by_key.get(key)
+        if match_index is None:
+            match_index = next(
+                (
+                    index
+                    for index, existing in enumerate(deduped)
+                    if _semantically_same_point(existing.point, b.point)
+                ),
+                None,
+            )
+        if match_index is None:
+            by_key[key] = len(deduped)
+            deduped.append(b)
             continue
+        existing = deduped[match_index]
         # Merge: keep longer point text, join sources without duplicates
         existing_sources = [s.strip() for s in existing.source.split(",") if s.strip()]
         new_sources = [s.strip() for s in b.source.split(",") if s.strip()]
         merged_sources = existing_sources + [s for s in new_sources if s not in existing_sources]
         merged_source = ", ".join(merged_sources)
         longer_point = b.point if len(b.point) > len(existing.point) else existing.point
-        by_key[key] = ExtractedBullet(
+        merged = ExtractedBullet(
             point=longer_point,
             source=merged_source,
             source_url=existing.source_url or b.source_url,
         )
-    return list(by_key.values())
+        deduped[match_index] = merged
+        by_key[key] = match_index
+        by_key[_normalize_point(merged.point)] = match_index
+    return deduped
+
+
+def _semantic_dedup_text(point: str) -> str:
+    """Keep words and numbers while removing emoji and punctuation for comparison."""
+    return " ".join(_DEDUP_TOKEN_RE.findall(point.lower()))
+
+
+def _semantically_same_point(left: str, right: str) -> bool:
+    """Identify long, near-identical reports with different wording."""
+    left_text = _semantic_dedup_text(left)
+    right_text = _semantic_dedup_text(right)
+    if min(len(left_text), len(right_text)) < 80:
+        return False
+    left_tokens = set(left_text.split())
+    right_tokens = set(right_text.split())
+    overlap = len(left_tokens & right_tokens) / min(len(left_tokens), len(right_tokens))
+    similarity = SequenceMatcher(None, left_text, right_text).ratio()
+    return overlap >= 0.78 and similarity >= 0.70
 
 
 class DigestGrouper:
@@ -198,6 +254,7 @@ class DigestGrouper:
             openai_api_key=config.openai_api_key,
             openai_base_url=config.openai_base_url,
             anthropic_api_key=config.anthropic_api_key,
+            google_api_key=config.google_api_key,
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=grouper_timeout,
         )
@@ -241,6 +298,9 @@ class DigestGrouper:
             "- Photo/sticker-only posts (no caption, just describes the media existed)\n"
             "- Author speculation about other content with no concrete entity "
             "('probably', 'maybe', 'похоже', 'вероятно' + no name/number/URL)\n"
+            "- Private commercial offers, classifieds, and recurring transport ads "
+            "with booking instructions, a phone number, or a contact handle; keep "
+            "official transport announcements, delays, cancellations, and route changes\n"
             "- Section header lines like '📌 Key points:', '📎 Also:'\n"
             "- Section numbering like '1️⃣', '2️⃣' as a standalone prefix — strip the prefix, "
             "keep the bullet content if it survives the rules above\n\n"

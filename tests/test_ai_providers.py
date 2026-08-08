@@ -8,6 +8,7 @@ from src.ai_providers import (  # isort: skip
     _redact_url,
     AnthropicProvider,
     create_provider,
+    GoogleProvider,
     OllamaProvider,
     OpenAIProvider,
     TokenBudgetExhaustedError,
@@ -62,6 +63,31 @@ def test_create_provider_anthropic(mock_logger):
         anthropic_api_key="sk-ant-test",
     )
     assert isinstance(provider, AnthropicProvider)
+
+
+@pytest.mark.unit
+def test_create_provider_google(mock_logger):
+    """Test creating the Google Gemini provider with its official endpoint."""
+    with patch("src.ai_providers.AsyncOpenAI") as mock_client:
+        provider = create_provider(
+            provider_name="google",
+            logger=mock_logger,
+            google_api_key="google-test-key",
+        )
+
+    assert isinstance(provider, GoogleProvider)
+    assert mock_client.call_args.kwargs["api_key"] == "google-test-key"
+    assert (
+        mock_client.call_args.kwargs["base_url"]
+        == "https://generativelanguage.googleapis.com/v1beta/openai/"
+    )
+
+
+@pytest.mark.unit
+def test_create_provider_google_missing_key(mock_logger):
+    """Test that Google requires its own API key."""
+    with pytest.raises(ValueError, match="GEMINI_API_KEY is required"):
+        create_provider(provider_name="google", logger=mock_logger)
 
 
 @pytest.mark.unit
@@ -124,6 +150,38 @@ async def test_openai_provider_chat_completion(mock_logger):
         assert "max_completion_tokens" in call_kwargs
         assert "max_tokens" not in call_kwargs
         assert call_kwargs["max_completion_tokens"] == 500
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_google_provider_request_uses_gemini_compatible_parameters(mock_logger):
+    """Google requests omit sampling and DeepSeek-only thinking parameters."""
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = GoogleProvider(api_key="google-test-key", logger=mock_logger)
+
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(message=MagicMock(content="Test response"), finish_reason="stop")
+        ]
+        mock_response.usage = None
+        provider.client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        result = await provider.chat_completion(
+            messages=[{"role": "user", "content": "Hello"}],
+            model="gemini-3.6-flash",
+            temperature=0.7,
+            max_tokens=96_000,
+            reasoning_effort="high",
+            thinking=True,
+        )
+
+    assert result == "Test response"
+    call_kwargs = provider.client.chat.completions.create.call_args.kwargs
+    assert call_kwargs["model"] == "gemini-3.6-flash"
+    assert call_kwargs["max_completion_tokens"] == 65_536
+    assert call_kwargs["reasoning_effort"] == "high"
+    assert "temperature" not in call_kwargs
+    assert "extra_body" not in call_kwargs
 
 
 @pytest.mark.unit

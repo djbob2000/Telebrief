@@ -10,7 +10,7 @@
   [![Python 3.14+](https://img.shields.io/badge/python-3.14+-blue.svg)](https://www.python.org/downloads/)
   [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-  Telebrief collects messages from your Telegram channels (in any language), generates AI-powered summaries, and delivers beautiful daily digests directly to your Telegram account. Group digests by channel or by **AI-detected topics**. Supports multiple AI providers: **OpenAI**, **Ollama** (local), and **Anthropic**. Output language is configurable (default: Russian).
+  Telebrief collects messages from your Telegram channels (in any language), generates AI-powered summaries, and delivers beautiful daily digests directly to your Telegram account. Group digests by channel or by **AI-detected topics**. Supports multiple AI providers: **OpenAI**, **Google Gemini**, **Ollama** (local), and **Anthropic**. Output language is configurable (default: Russian).
 </div>
 
 ---
@@ -19,7 +19,7 @@
 
 - 🌐 **Multi-language Support** - Reads channels in ANY language (English, Russian, Ukrainian, Chinese, etc.)
 - 🌍 **Configurable Output Language** - All UI labels, summaries, and bot messages in any language (default: Russian)
-- 🤖 **Multi-Provider AI** - Supports OpenAI, Ollama (local), and Anthropic for summarization
+- 🤖 **Multi-Provider AI** - Supports OpenAI, Google Gemini, Ollama (local), and Anthropic for summarization
 - ⏰ **Scheduled & On-Demand** - Daily automatic digests + instant generation via bot commands
 - 🔒 **Private Channel Support** - Access your private chats and channels
 - 📑 **Digest Modes** - Group by channel (default) or by AI-detected topics like News, Events, Sport
@@ -46,8 +46,13 @@ Before you begin, you'll need:
 
 4. **AI Provider API Key** (one of the following):
    - **OpenAI**: [Get from platform.openai.com](https://platform.openai.com)
+   - **Google Gemini**: [Get from Google AI Studio](https://aistudio.google.com/apikey)
    - **Anthropic**: [Get from console.anthropic.com](https://console.anthropic.com)
    - **Ollama**: No API key needed - [install locally](https://ollama.ai)
+
+   Select the provider explicitly in `config.yaml` with `settings.ai_provider`.
+   For Google use `ai_provider: "google"`, set `ai_model: "gemini-3.6-flash"`,
+   and store the key in `.env` as `GEMINI_API_KEY`.
 
 5. **Your Telegram User ID** - Get from [@userinfobot](https://t.me/userinfobot)
    - Send `/start` to get your ID
@@ -565,7 +570,7 @@ A: Set `digest_mode: "digest"` in `config.yaml` and define your `digest_groups`.
 A: Yes! Edit `src/formatter.py` to change Markdown structure, emojis, and sections.
 
 **Q: How much does it cost to run?**
-A: With OpenAI GPT-5-nano: ~$0.30/month. With Ollama: free (runs locally). Anthropic pricing varies by model.
+A: With OpenAI GPT-5-nano: ~$0.30/month. Google Gemini pricing varies by model and usage. With Ollama: free (runs locally). Anthropic pricing varies by model.
 
 **Q: Can I use a local AI model?**
 A: Yes! Set `ai_provider: "ollama"` in config.yaml and install [Ollama](https://ollama.ai) on your machine.
@@ -594,6 +599,7 @@ This project is licensed under the [MIT License](LICENSE).
 - [Telethon](https://github.com/LonamiWebs/Telethon) - Telegram User API
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot) - Bot API
 - [OpenAI API](https://openai.com) - AI Summarization (OpenAI provider)
+- [Google Gemini API](https://ai.google.dev/) - AI Summarization (Google provider)
 - [Ollama](https://ollama.ai) - Local AI Summarization
 - [Anthropic API](https://anthropic.com) - AI Summarization (Anthropic provider)
 - [APScheduler](https://github.com/agronholm/apscheduler) - Task Scheduling

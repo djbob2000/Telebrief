@@ -1,8 +1,4 @@
-"""
-AI provider abstraction for multiple LLM backends.
-
-Supports OpenAI, Ollama, and Anthropic providers.
-"""
+"""AI provider abstraction for multiple LLM backends."""
 
 import logging
 from abc import ABC, abstractmethod
@@ -13,6 +9,9 @@ import aiohttp
 import httpx
 from openai import AsyncOpenAI
 from openai import BadRequestError as OpenAIBadRequestError
+
+GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+GOOGLE_MAX_OUTPUT_TOKENS = 65_536
 
 
 def _redact_url(url: str) -> str:
@@ -60,6 +59,54 @@ class AIProvider(ABC):
         Returns:
             Generated text content
         """
+
+
+def _extract_chat_completion_text(response: Any, logger: logging.Logger, provider: str) -> str:
+    """Extract visible text from an OpenAI-compatible chat response."""
+    if not response.choices:
+        raise RuntimeError(f"{provider} returned no choices in response")
+
+    choice = response.choices[0]
+    finish_reason = choice.finish_reason
+    refusal = getattr(choice.message, "refusal", None)
+    usage = response.usage
+
+    logger.debug(
+        "%s response: finish_reason=%s prompt_tokens=%s " "completion_tokens=%s total_tokens=%s",
+        provider,
+        finish_reason,
+        usage.prompt_tokens if usage else None,
+        usage.completion_tokens if usage else None,
+        usage.total_tokens if usage else None,
+    )
+
+    if refusal:
+        logger.warning("%s model refusal: %s", provider, refusal)
+
+    content = choice.message.content
+    text = content.strip() if content else ""
+    if not text:
+        if finish_reason == "length":
+            raise TokenBudgetExhaustedError(
+                f"{provider} returned empty content with finish_reason=length — the model "
+                f"exhausted its token budget (possibly in reasoning) without producing output. "
+                f"Consider increasing max_tokens_per_summary in config.yaml. "
+                f"(prompt_tokens={usage.prompt_tokens if usage else 'N/A'}, "
+                f"completion_tokens={usage.completion_tokens if usage else 'N/A'})"
+            )
+        raise RuntimeError(
+            f"{provider} returned empty content "
+            f"(finish_reason={finish_reason}, "
+            f"prompt_tokens={usage.prompt_tokens if usage else 'N/A'}, "
+            f"completion_tokens={usage.completion_tokens if usage else 'N/A'})"
+        )
+    if finish_reason == "length":
+        logger.warning(
+            "%s response was truncated (finish_reason=length); returning partial content. "
+            "Consider increasing max_tokens_per_summary in config.yaml.",
+            provider,
+        )
+    return text
 
 
 class OpenAIProvider(AIProvider):
@@ -113,49 +160,7 @@ class OpenAIProvider(AIProvider):
         except OpenAIBadRequestError as exc:
             response = await self._handle_bad_request(create_kwargs, exc, reasoning_effort)
 
-        if not response.choices:
-            raise RuntimeError("OpenAI returned no choices in response")
-
-        choice = response.choices[0]
-        finish_reason = choice.finish_reason
-        refusal = getattr(choice.message, "refusal", None)
-        usage = response.usage
-
-        self.logger.debug(
-            "OpenAI response: finish_reason=%s prompt_tokens=%s "
-            "completion_tokens=%s total_tokens=%s",
-            finish_reason,
-            usage.prompt_tokens if usage else None,
-            usage.completion_tokens if usage else None,
-            usage.total_tokens if usage else None,
-        )
-
-        if refusal:
-            self.logger.warning("OpenAI model refusal: %s", refusal)
-
-        content = choice.message.content
-        text = content.strip() if content else ""
-        if not text:
-            if finish_reason == "length":
-                raise TokenBudgetExhaustedError(
-                    f"OpenAI returned empty content with finish_reason=length — the model "
-                    f"exhausted its token budget (possibly in reasoning) without producing output. "
-                    f"Consider increasing max_tokens_per_summary in config.yaml. "
-                    f"(prompt_tokens={usage.prompt_tokens if usage else 'N/A'}, "
-                    f"completion_tokens={usage.completion_tokens if usage else 'N/A'})"
-                )
-            raise RuntimeError(
-                f"OpenAI returned empty content "
-                f"(finish_reason={finish_reason}, "
-                f"prompt_tokens={usage.prompt_tokens if usage else 'N/A'}, "
-                f"completion_tokens={usage.completion_tokens if usage else 'N/A'})"
-            )
-        if finish_reason == "length":
-            self.logger.warning(
-                "OpenAI response was truncated (finish_reason=length); returning partial content. "
-                "Consider increasing max_tokens_per_summary in config.yaml."
-            )
-        return text
+        return _extract_chat_completion_text(response, self.logger, "OpenAI")
 
     async def _handle_bad_request(
         self,
@@ -184,6 +189,50 @@ class OpenAIProvider(AIProvider):
             create_kwargs["max_tokens"] = create_kwargs.pop("max_completion_tokens")
             return await self.client.chat.completions.create(**create_kwargs)
         raise original_exc
+
+
+class GoogleProvider(AIProvider):
+    """Google Gemini provider through Google's OpenAI-compatible endpoint."""
+
+    def __init__(self, api_key: str, logger: logging.Logger, timeout: int = 60):
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=GOOGLE_BASE_URL,
+            timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+        )
+        self.logger = logger
+
+    async def chat_completion(  # pylint: disable=too-many-positional-arguments
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,  # noqa: ARG002 — Gemini 3 uses model defaults
+        max_tokens: int,
+        reasoning_effort: str | None = None,
+        thinking: bool | None = None,  # noqa: ARG002 — not a Gemini request field
+        response_format: Dict[str, Any] | None = None,
+    ) -> str:
+        """Generate text with Gemini-compatible Chat Completions parameters."""
+        output_tokens = min(max_tokens, GOOGLE_MAX_OUTPUT_TOKENS)
+        if max_tokens > GOOGLE_MAX_OUTPUT_TOKENS:
+            self.logger.debug(
+                "Capping Google output budget from %s to Gemini limit %s",
+                max_tokens,
+                GOOGLE_MAX_OUTPUT_TOKENS,
+            )
+
+        create_kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_completion_tokens": output_tokens,
+        }
+        if reasoning_effort is not None:
+            create_kwargs["reasoning_effort"] = reasoning_effort
+        if response_format is not None:
+            create_kwargs["response_format"] = response_format
+
+        response = await self.client.chat.completions.create(**create_kwargs)
+        return _extract_chat_completion_text(response, self.logger, "Google Gemini")
 
 
 class OllamaProvider(AIProvider):
@@ -365,6 +414,7 @@ def create_provider(
     openai_api_key: str = "",
     openai_base_url: str = "",
     anthropic_api_key: str = "",
+    google_api_key: str = "",
     ollama_base_url: str = "http://localhost:11434",
     api_timeout: int = 60,
 ) -> AIProvider:
@@ -372,10 +422,11 @@ def create_provider(
     Factory function to create an AI provider.
 
     Args:
-        provider_name: One of 'openai', 'ollama', 'anthropic'
+        provider_name: One of 'openai', 'ollama', 'anthropic', 'google'
         logger: Logger instance
         openai_api_key: OpenAI API key (required for 'openai' provider)
         anthropic_api_key: Anthropic API key (required for 'anthropic' provider)
+        google_api_key: Gemini API key (required for 'google' provider)
         ollama_base_url: Ollama server URL (for 'ollama' provider)
         api_timeout: HTTP request timeout in seconds
 
@@ -406,7 +457,12 @@ def create_provider(
             raise ValueError("ANTHROPIC_API_KEY is required for Anthropic provider")
         return AnthropicProvider(api_key=anthropic_api_key, logger=logger, timeout=api_timeout)
 
+    if name == "google":
+        if not google_api_key:
+            raise ValueError("GEMINI_API_KEY is required for Google provider")
+        return GoogleProvider(api_key=google_api_key, logger=logger, timeout=api_timeout)
+
     raise ValueError(
         f"Unknown AI provider: '{provider_name}'. "
-        f"Supported providers: openai, ollama, anthropic"
+        f"Supported providers: openai, ollama, anthropic, google"
     )
