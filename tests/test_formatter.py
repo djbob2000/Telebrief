@@ -411,7 +411,7 @@ def test_format_group_digest_russian_compact_single_message(sample_config, mock_
 
     result = formatter.format_group_digest(sections, hours=24)
 
-    assert "Дайджест Бердянска ·" in result
+    assert f"{formatter._ui['daily_digest']} ·" in result
     assert "**📌 Предупреждения**" in result
     assert "**📌 Другое**" in result
     assert "• Напряжение 130–150 В вместо 220 [↗](https://t.me/berdiansk_me)" in result
@@ -485,7 +485,7 @@ def test_format_group_digest_normalizes_markdown_wrapped_source_link(sample_conf
                     GroupedPoint(
                         point=(
                             "Бердянск снова остался без света. "
-                            f"[t.me/Brd24discord/208708](https://t.me/Brd24discord)"
+                            "[t.me/Brd24discord/208708](https://t.me/Brd24discord)"
                         ),
                         source="Бердянск",
                         source_url="https://t.me/Brd24discord",
@@ -560,7 +560,7 @@ def test_format_group_digest_has_one_generic_title(sample_config, mock_logger):
 
     result = formatter.format_group_digest([("Новости", [GroupedPoint(point="Факт", source="")])])
 
-    assert result.startswith("Дайджест Бердянска · ")
+    assert result.startswith(f"{formatter._ui['daily_digest']} · ")
     assert "Вечерний" not in result
     assert "Утренний" not in result
 
@@ -592,7 +592,7 @@ def test_format_group_rich_digest_uses_native_headings_and_unordered_lists(
     assert blocks[0] == {
         "type": "heading",
         "size": 2,
-        "text": "Дайджест Бердянска · " + formatter._format_date(datetime.now(timezone.utc)),
+        "text": f"{formatter._ui['daily_digest']} · " + formatter._format_date(datetime.now(timezone.utc)),
     }
     assert blocks[1] == {"type": "heading", "size": 3, "text": "📌 Предупреждения"}
     assert blocks[2]["type"] == "list"

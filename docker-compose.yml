@@ -1,6 +1,6 @@
 services:
   telebrief:
-    image: telebrief:local
+    image: ghcr.io/djbob2000/telebrief:latest
     container_name: telebrief
     restart: unless-stopped
 

@@ -16,10 +16,10 @@ QUALITY GATE — drop low-signal posts (do NOT include them in any section):
 - Photo/sticker/voice/video posts with no caption (no text content to summarize).
 - Posts shorter than ~30 characters that contain no facts, names, numbers, or links.
 - Meta-empty posts that admit they have nothing ("без подробностей", "no details", "just a poll", "external link without explanation", "лайк/реакция").
-- Expired one-off local invitations (e.g. "join us today at 12:00" — value gone next day).
+- Expired one-off invitations (e.g. "join us today at 12:00" — value gone next day).
 - Internal admin chatter (office logistics, payroll, "new members joined the chat").
 - Author speculation about other content ("probably a photo report", "maybe a visual update") — if you cannot describe the content, drop it.
-- Private commercial offers and classifieds, including recurring private transport offers with booking instructions, phone numbers, prices, or contact handles. Keep official transport announcements, route changes, delays, and cancellations.
+- Commercial ads, spam, and private classifieds.
 
 Quality > completeness. Better to drop a weak post than dilute the digest.
 

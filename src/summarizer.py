@@ -201,7 +201,7 @@ CRITICAL - LENGTH CONSTRAINT:
 - This is a hard limit - if exceeded, the message will not be delivered
 - Move lower-priority posts to the 📎 Also: section rather than dropping them
 {truncation_note}
-Apply the QUALITY GATE from the system prompt: drop low-signal posts (photo-only, meta-empty, expired invites, internal admin, author speculation, and private commercial offers/classifieds). Keep official transport announcements and route changes. Quality > completeness.
+Apply the QUALITY GATE from the system prompt: drop low-signal posts (photo-only, meta-empty, expired invites, internal admin, author speculation, ads/spam/classifieds). Quality > completeness.
 
 Response format (TWO sections):
 

@@ -2,8 +2,8 @@
 Markdown formatter for digest output.
 """
 
-import logging
 import json
+import logging
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -323,10 +323,7 @@ class DigestFormatter:
             return ""
 
         date_str = self._format_date(datetime.now(timezone.utc))
-        if self._language == "Russian":
-            title = f"Дайджест Бердянска · {date_str}"
-        else:
-            title = f"{self._ui['daily_digest']} · {date_str}"
+        title = f"{self._ui['daily_digest']} · {date_str}"
         parts = [title]
 
         for group_name, points in sections:
@@ -425,10 +422,7 @@ class DigestFormatter:
             return {"rich_message": {"blocks": []}}
 
         date_str = self._format_date(datetime.now(timezone.utc))
-        if self._language == "Russian":
-            title = f"Дайджест Бердянска · {date_str}"
-        else:
-            title = f"{self._ui['daily_digest']} · {date_str}"
+        title = f"{self._ui['daily_digest']} · {date_str}"
 
         blocks = [{"type": "heading", "size": 2, "text": title}]
         for group_name, points in sections:
