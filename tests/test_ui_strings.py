@@ -87,7 +87,7 @@ def test_get_ui_strings_russian():
     """Russian returns Russian strings for key labels."""
     s = get_ui_strings("Russian")
 
-    assert s["daily_digest"] == "Ежедневный дайджест"
+    assert s["daily_digest"] == "Дайджест"
     assert s["overview"] == "Краткий обзор"
     assert s["stats_header"] == "Статистика"
     assert s["enabled"] == "Включена"

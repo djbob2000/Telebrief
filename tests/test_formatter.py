@@ -42,7 +42,7 @@ def test_create_digest(sample_config, mock_logger, sample_messages):
         hours=24,
     )
 
-    assert "Ежедневный дайджест" in digest
+    assert "Дайджест" in digest
     assert overview in digest
     assert "Test point 1" in digest
     assert "Test Channel" in digest
@@ -55,7 +55,7 @@ def test_create_header(sample_config, mock_logger):
     formatter = DigestFormatter(sample_config, mock_logger)
     header = formatter._create_header(24)
 
-    assert "Ежедневный дайджест" in header
+    assert "Дайджест" in header
     assert "📊" in header  # Emoji should be included
 
 
@@ -145,7 +145,7 @@ def test_create_header_uses_output_language(english_config, mock_logger):
     header = formatter._create_header(24)
 
     assert "Daily Digest" in header
-    assert "Ежедневный дайджест" not in header
+    assert "Дайджест" not in header
 
 
 @pytest.mark.unit

@@ -163,7 +163,7 @@ _STRINGS: dict[str, dict[str, str]] = {
         "media_geo": "Геолокация",
         "media_other": "Медиа",
         # formatter.py
-        "daily_digest": "Ежедневный дайджест",
+        "daily_digest": "Дайджест",
         "overview": "Краткий обзор",
         "open_channel": "Открыть канал",
         "stats_header": "Статистика",
