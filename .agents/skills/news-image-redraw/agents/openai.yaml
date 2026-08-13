@@ -1,0 +1,4 @@
+interface:
+  display_name: "News Image Redraw"
+  short_description: "Перерисовка новостных фото и иллюстраций"
+  default_prompt: "Use $news-image-redraw to redraw source images from a news article into original editorial visuals."

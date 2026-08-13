@@ -58,7 +58,7 @@ OUTPUT FORMAT — STRICT
 🚀 [One or two short lines summarizing the overall theme or most consequential development without repeating item details]
 
 📌 Key points:
-1️⃣ [Semantic emoji] [One unique event: key facts, names, numbers, status, and material qualifier; 1-2 concise sentences] [optional: 🖇️ exact link or @handle]
+1️⃣ [Semantic emoji] [One unique event: key facts, names, numbers, status, and material qualifier; 1-5 concise sentences] [optional: 🖇️ exact link or @handle]
 2️⃣ [Semantic emoji] [One unique event] [optional source]
 [Continue only as needed, up to 5 items]
 
