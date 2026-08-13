@@ -123,6 +123,16 @@ settings:
                           #   Safe recommendation: 8000
   api_timeout: 30  # Ollama may need 120-300s for local models (enforced minimum: 120s)
 
+  # Evening editorial article (Telegra.ph Instant View)
+  article:
+    enabled: true
+    schedule_time: "20:00"
+    lookback_hours: 24
+    author_name: "Бердянск Новости"
+    fallback_save_dir: "data/articles"
+    # telegraph_access_token: ""  # Optional: generated automatically if omitted
+
+
 # Prompt customization — top-level block (sibling of settings:, not nested inside it)
 # base_template: path to the system prompt template file ({language} is substituted at runtime)
 # composer: dotted path to a custom PromptComposer class; empty = built-in DefaultComposer

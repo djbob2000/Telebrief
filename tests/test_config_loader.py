@@ -6,6 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from src.config_loader import (
+    ArticleConfig,
     DigestGroupConfig,
     FilterSpec,
     ForumTopicConfig,
@@ -14,6 +15,51 @@ from src.config_loader import (
     StorageConfig,
     load_config,
 )
+
+
+@pytest.mark.unit
+def test_article_config_defaults(temp_config_file, mock_env_vars):
+    """Article settings default to enabled, 20:00 schedule, and 24 lookback hours."""
+    config = load_config(temp_config_file)
+    assert config.settings.article == ArticleConfig(
+        enabled=True,
+        schedule_time="20:00",
+        lookback_hours=24,
+        author_name="Бердянск Новости",
+        fallback_save_dir="data/articles",
+        telegraph_access_token=None,
+    )
+
+
+@pytest.mark.unit
+def test_article_config_custom_values(tmp_path, mock_env_vars):
+    """Custom article settings are parsed and validated properly."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@test"
+    name: "Test Channel"
+settings:
+  target_user_id: 123456789
+  article:
+    enabled: false
+    schedule_time: "21:30"
+    lookback_hours: 12
+    author_name: "Редакция"
+    fallback_save_dir: "custom/articles"
+    telegraph_access_token: "tok_secret"
+"""
+    )
+    config = load_config(str(config_file))
+    assert config.settings.article == ArticleConfig(
+        enabled=False,
+        schedule_time="21:30",
+        lookback_hours=12,
+        author_name="Редакция",
+        fallback_save_dir="custom/articles",
+        telegraph_access_token="tok_secret",
+    )
 
 
 @pytest.mark.unit

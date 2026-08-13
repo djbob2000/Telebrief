@@ -81,6 +81,18 @@ class McpConfig:
 
 
 @dataclass
+class ArticleConfig:
+    """Configuration for daily editorial article generation."""
+
+    enabled: bool = True
+    schedule_time: str = "20:00"
+    lookback_hours: int = 24
+    author_name: str = "Бердянск Новости"
+    fallback_save_dir: str = "data/articles"
+    telegraph_access_token: str | None = None
+
+
+@dataclass
 class Settings:
     """Application settings."""
 
@@ -107,6 +119,7 @@ class Settings:
     digest_groups: List[DigestGroupConfig] = field(default_factory=list)
     filters: list[FilterSpec] = field(default_factory=list)
     dedup_topics: bool = False
+    article: ArticleConfig = field(default_factory=ArticleConfig)
 
 
 @dataclass
@@ -223,6 +236,66 @@ def _parse_digest_settings(
         )
 
     return digest_mode, digest_groups, output_language
+
+
+def _parse_article_config(settings_dict: dict) -> ArticleConfig:
+    """Parse article settings from settings dict.
+
+    Raises:
+        ValueError: If settings.article has invalid types or negative lookback_hours.
+    """
+    raw = settings_dict.get("article")
+    if raw is None:
+        return ArticleConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(f"settings.article must be a mapping, got {type(raw).__name__}")
+
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"settings.article.enabled must be a bool, got {type(enabled).__name__}")
+
+    schedule_time = raw.get("schedule_time", "20:00")
+    if not isinstance(schedule_time, str) or not schedule_time.strip():
+        raise ValueError(
+            f"settings.article.schedule_time must be a string, got {type(schedule_time).__name__}"
+        )
+
+    lookback_hours = raw.get("lookback_hours", 24)
+    if (
+        not isinstance(lookback_hours, int)
+        or isinstance(lookback_hours, bool)
+        or lookback_hours <= 0
+    ):
+        raise ValueError(
+            f"settings.article.lookback_hours must be a positive int, got {lookback_hours!r}"
+        )
+
+    author_name = raw.get("author_name", "Бердянск Новости")
+    if not isinstance(author_name, str) or not author_name.strip():
+        raise ValueError(
+            f"settings.article.author_name must be a non-empty string, got {author_name!r}"
+        )
+
+    fallback_save_dir = raw.get("fallback_save_dir", "data/articles")
+    if not isinstance(fallback_save_dir, str) or not fallback_save_dir.strip():
+        raise ValueError(
+            f"settings.article.fallback_save_dir must be a non-empty string, got {fallback_save_dir!r}"
+        )
+
+    token = raw.get("telegraph_access_token")
+    if token is not None and not isinstance(token, str):
+        raise ValueError(
+            f"settings.article.telegraph_access_token must be a string or null, got {type(token).__name__}"
+        )
+
+    return ArticleConfig(
+        enabled=enabled,
+        schedule_time=schedule_time.strip(),
+        lookback_hours=lookback_hours,
+        author_name=author_name.strip(),
+        fallback_save_dir=fallback_save_dir.strip(),
+        telegraph_access_token=token.strip() if token else None,
+    )
 
 
 def _validate_dotted_path(value: str, label: str) -> str:
@@ -633,6 +706,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         digest_groups=digest_groups,
         filters=global_filters,
         dedup_topics=bool(settings_dict.get("dedup_topics", False)),
+        article=_parse_article_config(settings_dict),
     )
 
     if settings.target_user_id == 0:
