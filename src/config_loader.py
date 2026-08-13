@@ -89,6 +89,7 @@ class ArticleConfig:
     lookback_hours: int = 24
     author_name: str = "Бердянск Новости"
     fallback_save_dir: str = "data/articles"
+    prompt_template: str = ".agents/skills/news-style/SKILL.md"
     telegraph_access_token: str | None = None
 
 
@@ -282,6 +283,12 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
             f"settings.article.fallback_save_dir must be a non-empty string, got {fallback_save_dir!r}"
         )
 
+    prompt_template = raw.get("prompt_template", ".agents/skills/news-style/SKILL.md")
+    if not isinstance(prompt_template, str) or not prompt_template.strip():
+        raise ValueError(
+            f"settings.article.prompt_template must be a non-empty string, got {prompt_template!r}"
+        )
+
     token = raw.get("telegraph_access_token")
     if token is not None and not isinstance(token, str):
         raise ValueError(
@@ -294,6 +301,7 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
         lookback_hours=lookback_hours,
         author_name=author_name.strip(),
         fallback_save_dir=fallback_save_dir.strip(),
+        prompt_template=prompt_template.strip(),
         telegraph_access_token=token.strip() if token else None,
     )
 

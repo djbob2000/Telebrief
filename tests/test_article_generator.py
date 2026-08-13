@@ -14,16 +14,38 @@ from src.config_loader import Config, Settings
 
 
 @pytest.mark.unit
-def test_article_prompt_template_exists_and_contains_rules():
-    """System prompt file must exist and contain core editorial rules."""
-    prompt_path = Path("src/prompts/article_news_style.txt")
-    assert prompt_path.exists()
-    content = prompt_path.read_text(encoding="utf-8")
-    assert "{language}" in content
-    assert "Бердянск" in content
-    assert "Напомним" in content
-    assert "##" in content
+def test_article_skill_template_exists_and_is_loaded_by_generator():
+    """Skill file must exist and ArticleGenerator should load it directly."""
+    skill_path = Path(".agents/skills/news-style/SKILL.md")
+    assert skill_path.exists()
+    content = skill_path.read_text(encoding="utf-8")
+    assert "news-style" in content
     assert "pro.berdyansk.biz" in content
+    assert "Напомним" in content
+
+    settings = Settings(
+        schedule_time="09:00",
+        timezone="Europe/Kyiv",
+        lookback_hours=24,
+        openai_model="gpt-5-nano",
+        openai_temperature=0.7,
+        output_language="Russian",
+        target_user_id=123,
+    )
+    config = Config(
+        channels=[],
+        settings=settings,
+        telegram_api_id=123,
+        telegram_api_hash="hash",
+        telegram_bot_token="token",
+        openai_api_key="key",
+        log_level="INFO",
+    )
+    logger = MagicMock()
+    generator = ArticleGenerator(config, logger)
+    system_prompt = generator._compose_system_prompt()
+    assert "pro.berdyansk.biz" in system_prompt
+    assert "Russian" in system_prompt
 
 
 @pytest.mark.unit
