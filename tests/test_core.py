@@ -1124,3 +1124,32 @@ async def test_collect_channel_messages_rejects_bad_limit(sample_config, mock_lo
             await collect_channel_messages(sample_config, mock_logger, "Test Channel", limit=limit)
 
         mock_create.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_and_publish_article_workflow(sample_config, mock_logger):
+    """Test the complete generate_and_publish_article orchestration workflow."""
+    from src.core import generate_and_publish_article
+
+    with (
+        patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
+        patch(
+            "src.article_generator.ArticleGenerator.generate_article", new_callable=AsyncMock
+        ) as mock_gen,
+        patch("src.telegraph.TelegraphPublisher.create_page", new_callable=AsyncMock) as mock_page,
+        patch(
+            "src.sender.DigestSender.send_article_instant_view", new_callable=AsyncMock
+        ) as mock_send,
+    ):
+        mock_collect.return_value = {"Test Channel": [MagicMock()]}
+        mock_gen.return_value = ("Заголовок", "Лид", "# Заголовок\n\nТекст статьи.")
+        mock_page.return_value = "https://telegra.ph/Sample-08-14"
+        mock_send.return_value = True
+
+        success = await generate_and_publish_article(sample_config, mock_logger, hours=24)
+        assert success is True
+        mock_collect.assert_called_once()
+        mock_gen.assert_called_once()
+        mock_page.assert_called_once()
+        mock_send.assert_called_once()

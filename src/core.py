@@ -528,3 +528,76 @@ async def generate_and_send_digest(
     except Exception as e:
         logger.error(f"Digest generation failed: {e}", exc_info=True)
         return False
+
+
+async def generate_and_publish_article(
+    config: Config,
+    logger: logging.Logger,
+    hours: int = 24,
+    user_id: Optional[int] = None,
+) -> bool:
+    """Collect messages, generate long-form editorial article, publish to Telegra.ph,
+
+    and broadcast Instant View announcement to Telegram.
+
+    Args:
+        config: Application configuration
+        logger: Logger instance
+        hours: Lookback window in hours
+        user_id: Target user ID
+
+    Returns:
+        True if generation and delivery succeeded, False otherwise
+    """
+    validate_hours(hours)
+    start_time = datetime.now(timezone.utc)
+    logger.info(f"Starting evening editorial article workflow for last {hours} hours")
+
+    messages_by_channel = await _collect_messages(config, logger, hours)
+    total_messages = sum(len(msgs) for msgs in messages_by_channel.values())
+    if total_messages == 0:
+        logger.warning("No messages collected for article generation")
+        return False
+
+    from src.article_generator import ArticleGenerator
+    from src.telegraph import TelegraphPublisher
+
+    try:
+        generator = ArticleGenerator(config, logger)
+        title, lead, markdown_body = await generator.generate_article(messages_by_channel)
+
+        # Fallback local save in case Telegraph is unreachable
+        fallback_dir = Path(config.settings.article.fallback_save_dir)
+        try:
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
+            fallback_file = fallback_dir / f"{now_str}_editorial.md"
+            fallback_file.write_text(markdown_body, encoding="utf-8")
+            logger.info(f"Saved local fallback copy of article to {fallback_file}")
+        except Exception as e:
+            logger.warning(f"Could not save local article backup: {e}")
+
+        publisher = TelegraphPublisher(
+            access_token=config.settings.article.telegraph_access_token,
+            logger=logger,
+        )
+        telegraph_url = await publisher.create_page(
+            title=title,
+            content_markdown=markdown_body,
+            author_name=config.settings.article.author_name,
+        )
+        logger.info(f"Published article to Telegra.ph: {telegraph_url}")
+
+        sender = DigestSender(config, logger)
+        success = await sender.send_article_instant_view(
+            title=title,
+            lead=lead,
+            telegraph_url=telegraph_url,
+            user_id=user_id,
+        )
+        duration = (datetime.now(timezone.utc) - start_time).total_seconds()
+        logger.info(f"Article workflow finished in {duration:.1f}s (success={success})")
+        return success
+    except Exception as e:
+        logger.error(f"Article generation/publishing failed: {e}", exc_info=True)
+        return False
