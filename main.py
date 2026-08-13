@@ -6,16 +6,18 @@ Main entry point for the application.
 Starts the scheduler and bot command handler.
 """
 
+import argparse
 import asyncio
+from contextlib import suppress
 import signal
 import sys
-from contextlib import suppress
 
-from src.config_loader import load_config
-from src.utils import setup_logging
-from src.scheduler import DigestScheduler
 from src.bot_commands import BotCommandHandler
+from src.config_loader import load_config
 from src.mcp_server import build_server
+from src.scheduler import DigestScheduler
+from src.utils import setup_logging
+
 
 
 class TelebriefApp:
@@ -178,11 +180,48 @@ class TelebriefApp:
 
 async def main():
     """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="Telebrief - Telegram Digest and Editorial Article Generator"
+    )
+    parser.add_argument(
+        "--article",
+        action="store_true",
+        help="Generate and publish editorial article immediately and exit",
+    )
+    parser.add_argument(
+        "--digest",
+        action="store_true",
+        help="Generate and send digest immediately and exit",
+    )
+    parser.add_argument(
+        "--hours",
+        type=int,
+        default=None,
+        help="Lookback hours for on-demand generation",
+    )
+    args = parser.parse_args()
+
     app = TelebriefApp()
 
     # Initialize
     if not await app.initialize():
         sys.exit(1)
+
+    if args.article:
+        from src.core import generate_and_publish_article
+
+        hours = args.hours or app.config.settings.article.lookback_hours
+        app.logger.info(f"Triggering on-demand article generation ({hours}h)...")
+        success = await generate_and_publish_article(app.config, app.logger, hours=hours)
+        sys.exit(0 if success else 1)
+
+    if args.digest:
+        from src.core import generate_and_send_digest
+
+        hours = args.hours or app.config.settings.lookback_hours
+        app.logger.info(f"Triggering on-demand digest generation ({hours}h)...")
+        success = await generate_and_send_digest(app.config, app.logger, hours=hours)
+        sys.exit(0 if success else 1)
 
     # Set up signal handlers for graceful shutdown
     loop = asyncio.get_running_loop()
@@ -204,6 +243,7 @@ async def main():
         # Ensure clean shutdown
         if not app.shutdown_event.is_set():
             await app.shutdown()
+
 
 
 if __name__ == "__main__":

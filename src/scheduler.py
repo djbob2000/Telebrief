@@ -44,6 +44,21 @@ class DigestScheduler:
             replace_existing=True,
         )
 
+        if self.config.settings.article.enabled:
+            art_hour, art_min = self._parse_schedule_time(
+                self.config.settings.article.schedule_time
+            )
+            art_trigger = CronTrigger(
+                hour=art_hour, minute=art_min, timezone=self.config.settings.timezone
+            )
+            self.scheduler.add_job(
+                func=self._scheduled_article_job,
+                trigger=art_trigger,
+                id="daily_article",
+                name="Daily Editorial Article",
+                replace_existing=True,
+            )
+
         # Start scheduler
         self.scheduler.start()
         self.is_running = True
@@ -53,6 +68,12 @@ class DigestScheduler:
         self.logger.info(
             f"⏰ Next digest scheduled for: {next_run} {self.config.settings.timezone}"
         )
+        if self.config.settings.article.enabled:
+            art_job = self.scheduler.get_job("daily_article")
+            if art_job and art_job.next_run_time:
+                self.logger.info(
+                    f"📰 Next article scheduled for: {art_job.next_run_time} {self.config.settings.timezone}"
+                )
 
     def stop(self):
         """Stop the scheduler."""
@@ -81,6 +102,29 @@ class DigestScheduler:
 
         except Exception as e:
             self.logger.error(f"❌ Scheduled digest job failed: {e}", exc_info=True)
+
+    async def _scheduled_article_job(self):
+        """Run the configured daily editorial article workflow."""
+        self.logger.info("=" * 60)
+        self.logger.info("📰 SCHEDULED ARTICLE JOB STARTED")
+        self.logger.info("=" * 60)
+
+        try:
+            from src.core import generate_and_publish_article
+
+            success = await generate_and_publish_article(
+                config=self.config,
+                logger=self.logger,
+                hours=self.config.settings.article.lookback_hours,
+            )
+
+            if success:
+                self.logger.info("✅ Scheduled article completed successfully")
+            else:
+                self.logger.error("❌ Scheduled article failed to publish/send")
+
+        except Exception as e:
+            self.logger.error(f"❌ Scheduled article job failed: {e}", exc_info=True)
 
     def _parse_schedule_time(self, time_str: str) -> tuple[int, int]:
         """
