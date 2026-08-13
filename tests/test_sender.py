@@ -482,3 +482,31 @@ async def test_summary_sent_before_channel_messages(
 
     third_call_kwargs = mock_bot.send_message.call_args_list[2][1]
     assert third_call_kwargs.get("text") == "Message 2"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_article_instant_view(sample_config, mock_logger):
+    """Test sending editorial article link with Instant View enabled."""
+    sample_config.settings.target_chat_id = "@berdiansk_news"
+
+    with patch("src.sender.Bot") as mock_bot_class:
+        mock_bot = MagicMock()
+        mock_bot.send_message = AsyncMock()
+        mock_bot_class.return_value = mock_bot
+
+        sender = DigestSender(sample_config, mock_logger)
+        success = await sender.send_article_instant_view(
+            title="В Бердянске ликвидируют последствия происшествий",
+            lead="Краткий лид статьи о ситуации в городе за последние 24 часа.",
+            telegraph_url="https://telegra.ph/V-Berdyanske-08-14",
+            user_id=123456789,
+        )
+
+    assert success is True
+    mock_bot.send_message.assert_called_once()
+    kwargs = mock_bot.send_message.call_args.kwargs
+    assert kwargs["disable_web_page_preview"] is False
+    assert "https://telegra.ph/V-Berdyanske-08-14" in kwargs["text"]
+    assert "В Бердянске ликвидируют последствия происшествий" in kwargs["text"]
+    assert kwargs["chat_id"] == "@berdiansk_news"

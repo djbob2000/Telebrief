@@ -541,6 +541,53 @@ class DigestSender:
 
         return self._log_and_return_result(success_count, len(channel_messages), failed_channels)
 
+    async def send_article_instant_view(
+        self,
+        title: str,
+        lead: str,
+        telegraph_url: str,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Send an editorial article announcement with Telegram Instant View preview.
+
+        Args:
+            title: Headline of the article
+            lead: Short introductory lead text
+            telegraph_url: Telegra.ph page URL
+            user_id: Optional target user or chat ID
+
+        Returns:
+            True if message was sent successfully
+        """
+        if user_id is None:
+            user_id = self.target_user_id
+
+        if user_id != self.target_user_id:
+            self.logger.warning(f"Unauthorized send attempt to user {user_id}")
+            return False
+
+        destination_chat = self.target_chat_id or user_id
+
+        lead_part = f"{lead.strip()}\n\n" if lead.strip() else ""
+        message_text = (
+            f"📰 *{title.strip()}*\n\n"
+            f"{lead_part}"
+            f"⚡️ [Читать полностью в Instant View]({telegraph_url})\n"
+            f"{telegraph_url}"
+        )
+        try:
+            await self.bot.send_message(
+                chat_id=destination_chat,
+                text=message_text,
+                parse_mode=ParseMode.MARKDOWN,
+                disable_web_page_preview=False,
+            )
+            self.logger.info(f"Sent article Instant View to {destination_chat}")
+            return True
+        except TelegramError as e:
+            self.logger.error(f"Failed to send article Instant View: {e}")
+            return False
+
 
 async def main():
     """Test sender."""
