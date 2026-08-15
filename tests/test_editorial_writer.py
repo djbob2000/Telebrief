@@ -322,3 +322,26 @@ def test_writer_prompt_contains_3_tier_scale_hierarchy_and_corpus_boundary(mock_
     assert "majority" in system_prompt.lower()
     assert "corpus absence" in system_prompt.lower()
     assert "доступных" in system_prompt.lower()
+
+
+@pytest.mark.unit
+def test_article_draft_normalizes_leading_hashes_in_headings():
+    draft = ArticleDraft.from_dict(
+        {
+            "headline": "# Заголовок статьи",
+            "lead": "Лид статьи.",
+            "paragraphs": [],
+            "sections": [
+                {
+                    "heading": "## Глава 1: События",
+                    "paragraphs": ["Текст главы."],
+                }
+            ],
+        }
+    )
+    assert draft.headline == "Заголовок статьи"
+    assert draft.sections[0].heading == "Глава 1: События"
+    markdown = draft.to_markdown()
+    assert markdown.startswith("# Заголовок статьи\n\nЛид статьи.\n\n## Глава 1: События")
+    assert "## ##" not in markdown
+    assert "# #" not in markdown

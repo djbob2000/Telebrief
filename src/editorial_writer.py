@@ -65,7 +65,7 @@ class ArticleDraft:
                     }
                 )
             sections = converted_sections
-        if not isinstance(headline, str) or not headline.strip():
+        if not isinstance(headline, str) or not headline.strip().lstrip("#").strip():
             raise ValueError("article draft headline must be non-empty")
         if not isinstance(lead, str) or not lead.strip():
             raise ValueError("article draft lead must be non-empty")
@@ -81,15 +81,22 @@ class ArticleDraft:
                 raise ValueError("article section must be an object")
             heading = section.get("heading", "")
             section_paragraphs = section.get("paragraphs", [])
-            if not isinstance(heading, str) or not heading.strip():
+            if not isinstance(heading, str) or not heading.strip().lstrip("#").strip():
                 raise ValueError("article section heading must be non-empty")
             if not isinstance(section_paragraphs, list) or not all(
                 isinstance(item, str) and item.strip() for item in section_paragraphs
             ):
                 raise ValueError("article section paragraphs must be non-empty strings")
-            parsed_sections.append(ArticleSection(heading.strip(), section_paragraphs))
+            parsed_sections.append(
+                ArticleSection(heading.strip().lstrip("#").strip(), section_paragraphs)
+            )
         normalized_paragraphs = [] if parsed_sections else list(paragraphs)
-        return cls(headline.strip(), lead.strip(), normalized_paragraphs, parsed_sections)
+        return cls(
+            headline=headline.strip().lstrip("#").strip(),
+            lead=lead.strip(),
+            paragraphs=normalized_paragraphs,
+            sections=parsed_sections,
+        )
 
     @classmethod
     def from_json(cls, text: str) -> "ArticleDraft":
@@ -115,10 +122,12 @@ class ArticleDraft:
         }
 
     def to_markdown(self) -> str:
-        blocks = [f"# {self.headline}", self.lead]
+        clean_headline = self.headline.strip().lstrip("#").strip()
+        blocks = [f"# {clean_headline}", self.lead]
         if self.sections:
             for section in self.sections:
-                blocks.append(f"## {section.heading}")
+                clean_heading = section.heading.strip().lstrip("#").strip()
+                blocks.append(f"## {clean_heading}")
                 blocks.extend(section.paragraphs)
         else:
             blocks.extend(self.paragraphs)
