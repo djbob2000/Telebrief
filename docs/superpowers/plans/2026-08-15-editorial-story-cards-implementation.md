@@ -24,6 +24,7 @@
 - A substantive local result must use the main or degraded editorial path; only empty/unsafe/technically impossible input may skip publication.
 - Preserve the existing morning digest, Telegraph delivery, Instant View delivery, provider keys and provider cascade behavior.
 - Preserve existing uncommitted user changes; do not reset, stage unrelated files, or commit generated secrets.
+- Before every `git add`, inspect the target file for pre-existing user changes; stage only intended files/hunks and never silently include unrelated work.
 
 ---
 
@@ -46,6 +47,7 @@
 - `Message.topic_id: int | None = None`
 - Add `SOURCE_TYPES = ("news", "community", "official", "classifieds", "mixed")`.
 - Add `effective_source_type(channel: ChannelConfig, topic: ForumTopicConfig | None = None) -> str`.
+- Add `SourceRoleResolver(channels: list[ChannelConfig])` with `resolve(channel_name: str, topic_id: int | None = None) -> str`.
 
 - [ ] **Step 1: Write failing configuration tests**
 
@@ -99,6 +101,8 @@ uv run --with pyyaml --with pytest pytest -q tests/test_config_loader.py tests/t
 
 Expected: PASS, with old tests unchanged except for new assertions.
 
+The same task must test `SourceRoleResolver.resolve()` for whole-channel keys, logical `channel — topic` keys and topic IDs. The resolver is the only component that converts configured channel/topic roles into the effective role used by editorial input preparation; roles are never inferred from a raw channel name.
+
 - [ ] **Step 7: Commit the isolated metadata/config change**
 
 ```bash
@@ -123,6 +127,7 @@ git commit -m "feat: add editorial source roles and message context metadata"
 - `Uncertainty(text: str, basis: str, related_source_refs: list[str])`
 - `StoryCard(id: str, topic: str, importance: str, summary: str, story_kind: str = "", timeframe: str = "", current_status: str = "", next_known_step: str = "", editorial_angle: dict | None = None, hard_facts: list[StoryElement] = ..., community_observations: list[StoryElement] = ..., useful_details: list[StoryElement] = ..., uncertainties: list[Uncertainty] = ...)`
 - `EditorialAnalysis(cards: list[StoryCard], labels: dict[str, dict], excluded_refs: list[str] = ...)`
+- `EditorialInputBuilder(role_resolver: SourceRoleResolver)`
 - `EditorialInputBuilder.build(messages_by_channel: dict[str, list[Message]]) -> PreparedBundle`
 
 Card validation must enforce `importance in {high, medium, low}` and item status in `{established, attributed, disputed}`. `story_kind` is free-form. Every card element ref must resolve to a `PreparedBundle.records` entry.
@@ -228,7 +233,7 @@ git commit -m "feat: add editorial story analysis and context fallback"
 
 **Interfaces:**
 
-- `ArticleDraft(headline: str, lead: str, sections: list[ArticleSection])`
+- `ArticleDraft(headline: str, lead: str, paragraphs: list[str], sections: list[ArticleSection])`
 - `ArticleSection(heading: str, paragraphs: list[str])`
 - `AuditUnitLocator(unit_id: str, path: tuple[str, ...], text: str)`
 - `EditorialWriter(provider: AIProvider, model: str, skill_instructions: str, logger: logging.Logger)`
@@ -243,13 +248,14 @@ The writer response is strict JSON, never Markdown. The required shape is:
 {
   "headline": "...",
   "lead": "...",
+  "paragraphs": ["...", "..."],
   "sections": [
     {"heading": "...", "paragraphs": ["...", "..."]}
   ]
 }
 ```
 
-The local `ArticleDraft` parser validates this JSON, assigns audit units (`TITLE`, `LEAD`, `P001`, `P002`, …), and creates Markdown only in `to_markdown()`.
+The local `ArticleDraft` parser validates this JSON, assigns audit units (`TITLE`, `LEAD`, `P001`, `H001`, `P002`, …), and creates Markdown only in `to_markdown()`. A quiet day may use top-level `paragraphs` with `sections: []`; a developed article may use both. An empty `heading` is never used to fake a section.
 
 - [ ] **Step 1: Write writer prompt tests**
 
@@ -257,11 +263,11 @@ Assert the prompt explicitly says Story Cards are reporting notes, permits natur
 
 - [ ] **Step 2: Write draft parsing/preflight tests**
 
-Test a normal article with lead and H2 sections, a thin article without artificial sections, malformed JSON, missing headline and deterministic audit-unit locators. Assert that `TITLE`, `LEAD` and all body paragraphs have unique structural paths, including two equal-text paragraphs. Ensure `to_markdown()` produces one headline and valid paragraphs.
+Test a normal article with lead and H2 sections, a thin article with top-level paragraphs and no sections, malformed JSON, missing headline and deterministic audit-unit locators. Assert that `TITLE`, `LEAD`, all top-level/body paragraphs and every H2 have unique structural paths, including two equal-text paragraphs. Ensure `to_markdown()` produces one headline and valid paragraphs.
 
 - [ ] **Step 3: Implement writer and draft model**
 
-Use the loaded `SKILL.md`, Story Cards and only relevant original source excerpts. Ask for the strict JSON shape above; never ask the writer to emit Markdown. Let the writer choose section names from real material. Do not force 900–1800 words or 4–7 sections. Preserve contradictions and modality. Implement structural locators so a repair can target `TITLE`, `LEAD` or an exact section/paragraph path without searching by text.
+Use the loaded `SKILL.md`, Story Cards and only relevant original source excerpts. Ask for the strict JSON shape above; never ask the writer to emit Markdown. Let the writer choose section names from real material. Do not force 900–1800 words or 4–7 sections. Preserve contradictions and modality. Implement structural locators so a repair can target `TITLE`, `LEAD`, any `H###` or an exact section/paragraph path without searching by text.
 
 - [ ] **Step 4: Run writer tests and commit**
 
@@ -289,7 +295,7 @@ git commit -m "feat: add free-form Story Card article writer"
 
 - [ ] **Step 1: Write status and issue tests**
 
-Assert deterministic status normalization: any FIX wins over WARN, WARN wins over PASS, and PASS with issues is normalized to WARN/FIX according to issue severity. Test `unit_id` lookup for `TITLE`, `LEAD` and body units, plus missing/duplicate IDs.
+Assert deterministic status normalization: any FIX wins over WARN, WARN wins over PASS, and PASS with issues is normalized to WARN/FIX according to issue severity. Test `unit_id` lookup for `TITLE`, `LEAD`, every `H###` and body units, plus missing/duplicate IDs.
 
 - [ ] **Step 2: Write audit policy tests**
 
@@ -297,15 +303,15 @@ Use a fixture containing community synthesis, unsupported sales, unsupported tec
 
 - [ ] **Step 3: Implement audit prompt and parser**
 
-Compare the whole draft with cards and raw source records. Check new numbers, prices, dates, names, official actions, causes, mechanisms, damage, sales, medical/legal/military claims, casualties and precise scale. Permit ordinary contextual synthesis. Assign stable audit units before the audit: `TITLE`, `LEAD`, `P001`, `P002`, and so on. H2 headings are included in the audit context and receive a unit ID only when they contain a factual assertion.
+Compare the whole draft with cards and raw source records. Check new numbers, prices, dates, names, official actions, causes, mechanisms, damage, sales, medical/legal/military claims, casualties and precise scale. Permit ordinary contextual synthesis. Assign stable audit units before the audit: `TITLE`, `LEAD`, `P001`, `H001`, `P002`, and so on. Every H2 receives a locator; neutral headings simply receive no issue, while factual headings can receive `FIX`.
 
 - [ ] **Step 4: Implement one-call batched repair**
 
-Send all current FIX issues in one repair request. Return a replacement map keyed by audit unit ID. Include surrounding paragraphs only as context. Apply replacements through the structural locator (`TITLE`, `LEAD` or exact section/paragraph path); preserve unaffected units byte-for-byte where practical.
+Send all current FIX issues in one repair request. Return a replacement map keyed by audit unit ID. Include surrounding paragraphs only as context. Apply replacements through the structural locator (`TITLE`, `LEAD`, `H###` or exact section/paragraph path); preserve unaffected units byte-for-byte where practical.
 
 - [ ] **Step 5: Implement second-pass and unresolved-FIX policy**
 
-Recheck repaired fragments only. Run a second repair call only for remaining/new FIX issues. After two passes, do not call a third AI repair: remove only the unsupported sentence or the whole affected unit when safe separation is impossible; always remove an unsafe high-risk fragment. For a systemic issue, regenerate once from the same Story Cards, run preflight and one new full light fact check, then use the thematic fallback if the central issue remains.
+Recheck repaired fragments only. Run a second repair call only for remaining/new FIX issues. After two passes, do not call a third AI repair: remove only the unsupported sentence or the whole affected unit when safe separation is impossible; always remove an unsafe high-risk fragment. For a systemic issue, regenerate once from the same Story Cards, run preflight and one new full light fact check. If the central systemic problem is gone but isolated local FIXes remain, remove or conservatively neutralize those units deterministically without starting another repair cycle. If the central unsafe problem remains, use the thematic fallback.
 
 - [ ] **Step 6: Implement preflight and audit-failure behavior**
 
@@ -375,7 +381,9 @@ git commit -m "feat: add deterministic thematic article fallback"
   `prepare -> editorial analysis -> (context batches only when explicitly required) -> writer -> preflight -> audit -> repair -> publish`
 - On analysis failure: `DeterministicStoryCardBuilder -> StoryCardRenderer`.
 - On writer failure after successful analysis: `StoryCardRenderer` over AI Story Cards.
-- On unresolved central unsafe issue: one systemic regeneration, then thematic fallback.
+- On unresolved central unsafe issue: one systemic regeneration, preflight and one new full audit; then deterministic local cleanup or thematic fallback.
+
+`ArticleGenerator` constructs `SourceRoleResolver(config.channels)` once and passes it to `EditorialInputBuilder`; the public `generate_article(messages_by_channel)` signature remains unchanged.
 
 - [ ] **Step 1: Replace obsolete claim-registry tests with orchestration tests**
 
