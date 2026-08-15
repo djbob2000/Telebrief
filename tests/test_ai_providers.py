@@ -7,6 +7,8 @@ import pytest
 from src.ai_providers import (  # isort: skip
     _redact_url,
     AnthropicProvider,
+    ProviderCascade,
+    ProviderCascadeError,
     create_provider,
     GoogleProvider,
     OllamaProvider,
@@ -88,6 +90,121 @@ def test_create_provider_google_missing_key(mock_logger):
     """Test that Google requires its own API key."""
     with pytest.raises(ValueError, match="GEMINI_API_KEY is required"):
         create_provider(provider_name="google", logger=mock_logger)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_switches_after_primary_error(mock_logger):
+    """A quota or transport failure moves the request to the next provider slot."""
+    primary = MagicMock()
+    primary.chat_completion = AsyncMock(side_effect=RuntimeError("quota exceeded"))
+    backup = MagicMock()
+    backup.chat_completion = AsyncMock(return_value="backup response")
+    cascade = ProviderCascade([("google-primary", primary), ("google-backup", backup)], mock_logger)
+
+    result = await cascade.chat_completion(
+        messages=[], model="gemini-3.6-flash", temperature=0.2, max_tokens=100
+    )
+
+    assert result == "backup response"
+    primary.chat_completion.assert_awaited_once()
+    backup.chat_completion.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_reports_all_slot_failures(mock_logger):
+    """Exhausting the cascade raises one actionable error with provider names."""
+    primary = MagicMock()
+    primary.chat_completion = AsyncMock(side_effect=RuntimeError("quota exceeded"))
+    backup = MagicMock()
+    backup.chat_completion = AsyncMock(side_effect=RuntimeError("timeout"))
+    cascade = ProviderCascade(
+        [("google-primary", primary), ("openrouter-free", backup)], mock_logger
+    )
+
+    with pytest.raises(ProviderCascadeError, match="google-primary.*openrouter-free"):
+        await cascade.chat_completion(
+            messages=[], model="gemini-3.6-flash", temperature=0.2, max_tokens=100
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_does_not_expose_provider_exception_text(mock_logger):
+    """Aggregate failover errors remain safe even if an SDK error contains a secret."""
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(side_effect=RuntimeError("request key=sk-secret-value"))
+    cascade = ProviderCascade([("google-primary", provider)], mock_logger)
+
+    with pytest.raises(ProviderCascadeError) as exc_info:
+        await cascade.chat_completion(
+            messages=[], model="gemini-3.6-flash", temperature=0.2, max_tokens=100
+        )
+
+    assert "sk-secret-value" not in str(exc_info.value)
+    assert "RuntimeError" in str(exc_info.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_classifies_context_failures_without_secrets(mock_logger):
+    """Context-only failures are distinguishable from quota and transport errors."""
+    first = MagicMock()
+    first.chat_completion = AsyncMock(
+        side_effect=RuntimeError("context_length_exceeded key=secret")
+    )
+    second = MagicMock()
+    second.chat_completion = AsyncMock(side_effect=ValueError("maximum context window exceeded"))
+    cascade = ProviderCascade([("google-1", first), ("google-2", second)], mock_logger)
+
+    with pytest.raises(ProviderCascadeError) as exc_info:
+        await cascade.chat_completion([], "model", 0.2, 10)
+
+    error = exc_info.value
+    assert error.context_only is True
+    assert error.failure_kinds == ("context_size", "context_size")
+    assert "secret" not in str(error)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_context_only_is_false_for_mixed_failures(mock_logger):
+    """A quota or timeout failure prevents accidental context batching."""
+    first = MagicMock()
+    first.chat_completion = AsyncMock(side_effect=RuntimeError("context length exceeded"))
+    second = MagicMock()
+    second.chat_completion = AsyncMock(side_effect=RuntimeError("quota exceeded"))
+    cascade = ProviderCascade([("google-1", first), ("google-2", second)], mock_logger)
+
+    with pytest.raises(ProviderCascadeError) as exc_info:
+        await cascade.chat_completion([], "model", 0.2, 10)
+
+    assert exc_info.value.context_only is False
+    assert exc_info.value.failure_kinds == ("context_size", "quota")
+
+
+@pytest.mark.unit
+def test_create_google_provider_builds_google_and_openrouter_fallback_slots(mock_logger):
+    """The Google factory keeps the configured order and appends OpenRouter last."""
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = create_provider(
+            provider_name="google",
+            logger=mock_logger,
+            google_api_key="google-1",
+            google_api_keys=["google-2", "google-3"],
+            openrouter_api_key="openrouter-key",
+            openrouter_model="openrouter/free",
+        )
+
+    assert isinstance(provider, ProviderCascade)
+    assert [slot[0] for slot in provider.providers] == [
+        "google-1",
+        "google-2",
+        "google-3",
+        "openrouter-free",
+    ]
+    assert provider.providers[-1][2] == "openrouter/free"
 
 
 @pytest.mark.unit

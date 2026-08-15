@@ -1,8 +1,9 @@
 """AI provider abstraction for multiple LLM backends."""
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Sequence
 from urllib.parse import urlparse, urlunparse
 
 import aiohttp
@@ -12,6 +13,7 @@ from openai import BadRequestError as OpenAIBadRequestError
 
 GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GOOGLE_MAX_OUTPUT_TOKENS = 65_536
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 def _redact_url(url: str) -> str:
@@ -27,6 +29,62 @@ def _redact_url(url: str) -> str:
 
 class TokenBudgetExhaustedError(RuntimeError):
     """Raised when a provider exhausts its token budget without producing visible output."""
+
+
+class ProviderCascadeError(RuntimeError):
+    """Raised when every provider slot in a fallback cascade fails."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_kinds: Sequence[str] = (),
+        failure_labels: Sequence[str] = (),
+    ):
+        super().__init__(message)
+        self.failure_kinds = tuple(failure_kinds)
+        self.failure_labels = tuple(failure_labels)
+
+    @property
+    def context_only(self) -> bool:
+        """Whether every attempted slot rejected the request for its size."""
+        return bool(self.failure_kinds) and all(
+            kind == "context_size" for kind in self.failure_kinds
+        )
+
+
+def _classify_provider_failure(exc: BaseException) -> str:
+    """Classify an SDK failure without retaining provider error text."""
+    text = str(exc).lower()
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timeout" in text:
+        return "timeout"
+    if any(
+        token in text
+        for token in (
+            "context_length",
+            "context length",
+            "context window",
+            "prompt too long",
+            "request too large",
+        )
+    ):
+        return "context_size"
+    if any(
+        token in text
+        for token in ("quota", "rate limit", "rate_limit", "resource exhausted", "429")
+    ):
+        return "quota"
+    if any(
+        token in text
+        for token in ("unauthorized", "authentication", "invalid api key", "401", "403")
+    ):
+        return "auth"
+    if any(
+        token in text
+        for token in ("server error", "internal server", " 500", " 502", " 503", " 504")
+    ):
+        return "server"
+    return "other"
 
 
 class AIProvider(ABC):
@@ -59,6 +117,69 @@ class AIProvider(ABC):
         Returns:
             Generated text content
         """
+
+
+class ProviderCascade(AIProvider):
+    """Try compatible providers in order until one returns a non-empty response."""
+
+    def __init__(
+        self,
+        providers: Sequence[tuple[str, AIProvider] | tuple[str, AIProvider, str]],
+        logger: logging.Logger,
+    ):
+        self.providers = [
+            (slot[0], slot[1], slot[2] if len(slot) == 3 else None) for slot in providers
+        ]
+        self.logger = logger
+
+    async def chat_completion(  # pylint: disable=too-many-positional-arguments
+        self,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+        reasoning_effort: str | None = None,
+        thinking: bool | None = None,
+        response_format: Dict[str, Any] | None = None,
+    ) -> str:
+        failures: list[str] = []
+        failure_kinds: list[str] = []
+        failure_labels: list[str] = []
+        for slot_index, (label, provider, model_override) in enumerate(self.providers):
+            selected_model = model_override or model
+            try:
+                self.logger.info("Trying AI provider slot %s (model=%s)", label, selected_model)
+                response = await provider.chat_completion(
+                    messages=messages,
+                    model=selected_model,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    reasoning_effort=reasoning_effort,
+                    thinking=thinking,
+                    response_format=response_format,
+                )
+                if not isinstance(response, str) or not response.strip():
+                    raise RuntimeError("provider returned an empty response")
+                return response
+            except Exception as exc:  # every provider error is eligible for failover
+                # Do not propagate provider exception text: SDK errors can contain request
+                # metadata or credentials. Slot names and exception classes are sufficient
+                # for diagnostics while keeping the aggregate error safe to log.
+                failures.append(f"{label} ({type(exc).__name__})")
+                failure_labels.append(label)
+                failure_kinds.append(_classify_provider_failure(exc))
+                if slot_index < len(self.providers) - 1:
+                    self.logger.warning("AI provider slot %s failed; switching to next slot", label)
+                else:
+                    self.logger.warning("AI provider slot %s failed; no slots remain", label)
+
+        if not failures:
+            raise ProviderCascadeError("AI provider cascade has no configured slots")
+        raise ProviderCascadeError(
+            "All AI provider slots failed: " + "; ".join(failures),
+            failure_kinds=failure_kinds,
+            failure_labels=failure_labels,
+        )
 
 
 def _extract_chat_completion_text(response: Any, logger: logging.Logger, provider: str) -> str:
@@ -404,7 +525,7 @@ class AnthropicProvider(AIProvider):
         return text
 
 
-def create_provider(
+def create_provider(  # noqa: C901
     provider_name: str,
     logger: logging.Logger,
     *,
@@ -412,6 +533,10 @@ def create_provider(
     openai_base_url: str = "",
     anthropic_api_key: str = "",
     google_api_key: str = "",
+    google_api_keys: list[str] | tuple[str, ...] | None = None,
+    openrouter_api_key: str = "",
+    openrouter_base_url: str = OPENROUTER_BASE_URL,
+    openrouter_model: str = "openrouter/free",
     ollama_base_url: str = "http://localhost:11434",
     api_timeout: int = 60,
 ) -> AIProvider:
@@ -424,6 +549,10 @@ def create_provider(
         openai_api_key: OpenAI API key (required for 'openai' provider)
         anthropic_api_key: Anthropic API key (required for 'anthropic' provider)
         google_api_key: Gemini API key (required for 'google' provider)
+        google_api_keys: Optional additional Gemini keys used as failover slots
+        openrouter_api_key: Optional OpenRouter key used as the final failover slot
+        openrouter_base_url: OpenRouter-compatible API base URL
+        openrouter_model: Model used by the OpenRouter failover slot
         ollama_base_url: Ollama server URL (for 'ollama' provider)
         api_timeout: HTTP request timeout in seconds
 
@@ -455,11 +584,49 @@ def create_provider(
         return AnthropicProvider(api_key=anthropic_api_key, logger=logger, timeout=api_timeout)
 
     if name == "google":
+        keys: list[str] = []
+        for key in [google_api_key, *(google_api_keys or [])]:
+            if key and key not in keys:
+                keys.append(key)
         if not google_api_key:
-            raise ValueError("GEMINI_API_KEY is required for Google provider")
-        return GoogleProvider(api_key=google_api_key, logger=logger, timeout=api_timeout)
+            raise ValueError("GEMINI_API_KEY is required as the primary Google provider key")
+
+        slots: list[tuple[str, AIProvider, str]] = [
+            (
+                f"google-{index}",
+                GoogleProvider(api_key=key, logger=logger, timeout=api_timeout),
+                "",
+            )
+            for index, key in enumerate(keys, start=1)
+        ]
+        if openrouter_api_key:
+            slots.append(
+                (
+                    "openrouter-free",
+                    OpenAIProvider(
+                        api_key=openrouter_api_key,
+                        logger=logger,
+                        timeout=api_timeout,
+                        base_url=openrouter_base_url,
+                    ),
+                    openrouter_model,
+                )
+            )
+        if len(slots) == 1:
+            return slots[0][1]
+        return ProviderCascade(slots, logger)
+
+    if name == "openrouter":
+        if not openrouter_api_key:
+            raise ValueError("OPENROUTER_API_KEY is required for OpenRouter provider")
+        return OpenAIProvider(
+            api_key=openrouter_api_key,
+            logger=logger,
+            timeout=api_timeout,
+            base_url=openrouter_base_url,
+        )
 
     raise ValueError(
         f"Unknown AI provider: '{provider_name}'. "
-        f"Supported providers: openai, ollama, anthropic, google"
+        f"Supported providers: openai, ollama, anthropic, google, openrouter"
     )
