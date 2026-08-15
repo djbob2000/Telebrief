@@ -8,7 +8,7 @@ from collections import defaultdict
 from typing import cast
 
 from src.ai_providers import AIProvider, ProviderCascadeError, TokenBudgetExhaustedError
-from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord
+from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord, StoryCard
 
 
 class EditorialAnalysisError(RuntimeError):
@@ -140,9 +140,37 @@ or mechanism. Keep story_kind free-form and do not invent missing details. {comp
         payload, response_chars = self._decode_response(response)
         self._validate_response_shape(payload, response_chars)
         try:
+            if isinstance(payload, dict) and "cards" in payload:
+                payload = self._drop_malformed_cards(payload, response_chars)
             return EditorialAnalysis.from_dict(cast(dict[str, object], payload))
         except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
             raise self._failure("story_card_parse", self._safe_reason(exc), response_chars) from exc
+
+    def _drop_malformed_cards(
+        self, payload: dict[str, object], response_chars: int
+    ) -> dict[str, object]:
+        raw_cards = payload.get("cards", [])
+        if not isinstance(raw_cards, list):
+            return payload
+        valid_cards: list[dict[str, object]] = []
+        for index, raw_card in enumerate(raw_cards):
+            try:
+                card = StoryCard.from_dict(raw_card)
+            except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+                self.logger.warning(
+                    "Skipping malformed editorial Story Card index=%d: %s",
+                    index,
+                    self._safe_reason(exc),
+                )
+                continue
+            valid_cards.append(card.to_dict())
+        if raw_cards and not valid_cards:
+            raise self._failure(
+                "story_card_parse", "all returned Story Cards are malformed", response_chars
+            )
+        normalized = dict(payload)
+        normalized["cards"] = valid_cards
+        return normalized
 
     def _decode_response(self, response: object) -> tuple[object, int]:
         response_chars = len(response) if isinstance(response, str) else 0

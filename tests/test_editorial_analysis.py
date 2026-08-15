@@ -259,6 +259,33 @@ async def test_editorial_analyzer_reports_story_card_parse_stage(mock_logger):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_editorial_analyzer_keeps_valid_cards_when_one_card_is_malformed(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps(
+            {
+                "cards": [
+                    {
+                        "id": "SC001",
+                        "topic": "Вода",
+                        "importance": "high",
+                        "summary": "Воду отключили.",
+                        "hard_facts": [],
+                    },
+                    {"id": "SC002", "topic": "", "importance": "medium", "summary": ""},
+                ]
+            }
+        )
+    )
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    analysis = await analyzer.analyze(_bundle())
+
+    assert [card.id for card in analysis.cards] == ["SC001"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_editorial_analyzer_keeps_last_raw_response_for_debug_artifact(mock_logger):
     raw = '{"cards": ['
     provider = MagicMock()

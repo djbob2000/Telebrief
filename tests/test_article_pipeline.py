@@ -174,6 +174,46 @@ async def test_token_budget_switches_to_compact_analysis_and_reaches_writer():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_malformed_analysis_response_switches_to_compact_retry():
+    generator = _generator()
+    parse_error = EditorialAnalysisError("malformed story card")
+    parse_error.stage = "story_card_parse"
+    parse_error.reason = "StoryCard id, topic and summary must be non-empty"
+    compact_analysis = EditorialAnalysis(
+        cards=[
+            StoryCard(
+                id="SC001",
+                topic="Свет",
+                importance="high",
+                summary="Жители сообщили о перебоях со светом.",
+                community_observations=[
+                    StoryElement(
+                        "Жители сообщили о перебоях со светом.",
+                        ["S000001"],
+                        "attributed",
+                    )
+                ],
+            )
+        ]
+    )
+    generator.analyzer.analyze = AsyncMock(side_effect=[parse_error, compact_analysis])
+    generator.writer.write = AsyncMock(
+        return_value=ArticleDraft("Перебои со светом", "Лид", ["Абзац"], [])
+    )
+    generator.fact_checker.check = AsyncMock(return_value=FactCheckResult("PASS", False, []))
+
+    title, _, body = await generator.generate_article(
+        {"Source": [_message("Жители сообщили о перебоях со светом")]}
+    )
+
+    assert title == "Перебои со светом"
+    assert "Абзац" in body
+    assert generator.analyzer.analyze.call_args_list[0].kwargs == {"compact": False}
+    assert generator.analyzer.analyze.call_args_list[1].kwargs == {"compact": True}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_context_rejection_uses_batching_without_compact_retry():
     generator = _generator()
     analysis = EditorialAnalysis(cards=[])

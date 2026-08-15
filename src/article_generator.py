@@ -139,10 +139,10 @@ class ArticleGenerator:
                     exc.reason,
                     exc.response_chars if exc.response_chars is not None else "unknown",
                 )
-                if self._is_token_budget_error(exc) and not compact_attempted:
+                if self._should_retry_compact(exc, compact_attempted):
                     compact_attempted = True
                     self.logger.warning(
-                        "Editorial analysis token budget exhausted; retrying full bundle "
+                        "Editorial analysis response was not usable; retrying full bundle "
                         "in compact-analysis mode"
                     )
                     continue
@@ -166,11 +166,18 @@ class ArticleGenerator:
         raise RuntimeError("Editorial analysis exhausted retries")
 
     @staticmethod
-    def _is_token_budget_error(error: EditorialAnalysisError) -> bool:
+    def _should_retry_compact(error: EditorialAnalysisError, compact_attempted: bool) -> bool:
+        if compact_attempted:
+            return False
         reason = f"{error.reason} {error}".lower()
-        return error.stage == "provider_call" and (
-            "token_budget" in reason or "tokenbudgetexhausted" in reason
-        )
+        if error.stage == "provider_call":
+            return "token_budget" in reason or "tokenbudgetexhausted" in reason
+        return error.stage in {
+            "empty_response",
+            "json_parse",
+            "response_shape",
+            "story_card_parse",
+        }
 
     def _select_writer_bundle(
         self, analysis: EditorialAnalysis, bundle: PreparedBundle
