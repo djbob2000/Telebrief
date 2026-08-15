@@ -88,7 +88,8 @@ class ArticleDraft:
             ):
                 raise ValueError("article section paragraphs must be non-empty strings")
             parsed_sections.append(ArticleSection(heading.strip(), section_paragraphs))
-        return cls(headline.strip(), lead.strip(), list(paragraphs), parsed_sections)
+        normalized_paragraphs = [] if parsed_sections else list(paragraphs)
+        return cls(headline.strip(), lead.strip(), normalized_paragraphs, parsed_sections)
 
     @classmethod
     def from_json(cls, text: str) -> "ArticleDraft":
@@ -115,10 +116,12 @@ class ArticleDraft:
 
     def to_markdown(self) -> str:
         blocks = [f"# {self.headline}", self.lead]
-        blocks.extend(self.paragraphs)
-        for section in self.sections:
-            blocks.append(f"## {section.heading}")
-            blocks.extend(section.paragraphs)
+        if self.sections:
+            for section in self.sections:
+                blocks.append(f"## {section.heading}")
+                blocks.extend(section.paragraphs)
+        else:
+            blocks.extend(self.paragraphs)
         return "\n\n".join(block.strip() for block in blocks if block.strip())
 
     def audit_units(self) -> dict[str, AuditUnitLocator]:
@@ -128,23 +131,25 @@ class ArticleDraft:
         }
         paragraph_number = 1
         heading_number = 1
-        for index, paragraph in enumerate(self.paragraphs):
-            unit_id = f"P{paragraph_number:03d}"
-            units[unit_id] = AuditUnitLocator(unit_id, ("paragraphs", str(index)), paragraph)
-            paragraph_number += 1
-        for section_index, section in enumerate(self.sections):
-            heading_id = f"H{heading_number:03d}"
-            units[heading_id] = AuditUnitLocator(
-                heading_id, ("sections", str(section_index), "heading"), section.heading
-            )
-            heading_number += 1
-            for paragraph_index, paragraph in enumerate(section.paragraphs):
-                unit_id = f"P{paragraph_number:03d}"
-                units[unit_id] = AuditUnitLocator(
-                    unit_id,
-                    ("sections", str(section_index), "paragraphs", str(paragraph_index)),
-                    paragraph,
+        if self.sections:
+            for section_index, section in enumerate(self.sections):
+                heading_id = f"H{heading_number:03d}"
+                units[heading_id] = AuditUnitLocator(
+                    heading_id, ("sections", str(section_index), "heading"), section.heading
                 )
+                heading_number += 1
+                for paragraph_index, paragraph in enumerate(section.paragraphs):
+                    unit_id = f"P{paragraph_number:03d}"
+                    units[unit_id] = AuditUnitLocator(
+                        unit_id,
+                        ("sections", str(section_index), "paragraphs", str(paragraph_index)),
+                        paragraph,
+                    )
+                    paragraph_number += 1
+        else:
+            for index, paragraph in enumerate(self.paragraphs):
+                unit_id = f"P{paragraph_number:03d}"
+                units[unit_id] = AuditUnitLocator(unit_id, ("paragraphs", str(index)), paragraph)
                 paragraph_number += 1
         return units
 
@@ -198,11 +203,12 @@ You may synthesize an editorial angle supported by several messages, but may not
 new independently verifiable fact absent from the Story Cards and referenced source material.
 Preserve attribution, uncertainty, contradiction, modality and source roles. Do not emit
 internal identifiers, source refs, Markdown or commentary. Return strict JSON only with
-headline, lead, paragraphs, and sections. Use sections only when real material supports them
-(usually 3–5 thematic chapters). Usually write 8–12 substantive paragraphs. Aim for about
-900–1500 words on a busy day, allow up to about 1800 words when the material genuinely supports
-it, and accept 600–900 words on a thin day. These are editorial targets, not validation limits;
-never pad length.
+headline, lead, paragraphs, and sections. When structuring into chapters/sections, leave
+top-level paragraphs as empty [] to maintain a single canonical body. Use sections only
+when real material supports them (usually 3–5 thematic chapters). Usually write 8–12 substantive paragraphs.
+Aim for about 900–1500 words on a busy day, allow up to about 1800 words when the
+material genuinely supports it, and accept 600–900 words on a thin day. These are editorial
+targets, not validation limits; never pad length.
 """
         user = (
             "STORY CARDS:\n"

@@ -64,15 +64,18 @@ def test_article_draft_assigns_structural_units_to_duplicate_text_and_h2():
     draft = ArticleDraft(
         headline="Заголовок",
         lead="Лид",
-        paragraphs=["Одинаковый текст", "Одинаковый текст"],
-        sections=[ArticleSection("Свет", ["Одинаковый текст"])],
+        paragraphs=[],
+        sections=[
+            ArticleSection("Свет", ["Одинаковый текст", "Одинаковый текст"]),
+        ],
     )
 
     units = draft.audit_units()
 
-    assert units["P001"].path != units["P002"].path
     assert units["H001"].path == ("sections", "0", "heading")
-    assert units["P003"].path == ("sections", "0", "paragraphs", "0")
+    assert units["P001"].path == ("sections", "0", "paragraphs", "0")
+    assert units["P002"].path == ("sections", "0", "paragraphs", "1")
+    assert units["P001"].path != units["P002"].path
     assert len({locator.path for locator in units.values()}) == len(units)
 
 
@@ -227,3 +230,70 @@ def test_news_style_skill_file_contains_approved_composition_contract():
     assert "3–5" in content or "3-5" in content
     assert "жители" in content.lower() or "resident" in content.lower()
     assert "causality" in content.lower() or "причинн" in content.lower()
+
+
+def test_to_markdown_renders_only_sections_when_sections_present():
+    draft = ArticleDraft(
+        headline="Городской заголовок",
+        lead="Городской лид.",
+        paragraphs=["Дублирующий абзац 1", "Дублирующий абзац 2"],
+        sections=[
+            ArticleSection("Раздел 1", ["Абзац раздела 1"]),
+            ArticleSection("Раздел 2", ["Абзац раздела 2"]),
+        ],
+    )
+
+    markdown = draft.to_markdown()
+
+    assert markdown == (
+        "# Городской заголовок\n\n"
+        "Городской лид.\n\n"
+        "## Раздел 1\n\n"
+        "Абзац раздела 1\n\n"
+        "## Раздел 2\n\n"
+        "Абзац раздела 2"
+    )
+    assert "Дублирующий" not in markdown
+
+
+def test_to_markdown_renders_paragraphs_when_sections_empty():
+    draft = ArticleDraft(
+        headline="Короткая заметка",
+        lead="Лид заметки.",
+        paragraphs=["Единственный абзац статьи."],
+        sections=[],
+    )
+
+    markdown = draft.to_markdown()
+
+    assert markdown == ("# Короткая заметка\n\n" "Лид заметки.\n\n" "Единственный абзац статьи.")
+
+
+def test_audit_units_does_not_duplicate_paragraphs_when_sections_present():
+    draft = ArticleDraft(
+        headline="Заголовок",
+        lead="Лид",
+        paragraphs=["Параграф"],
+        sections=[ArticleSection("Глава", ["Параграф главы"])],
+    )
+
+    units = draft.audit_units()
+
+    assert set(units.keys()) == {"TITLE", "LEAD", "H001", "P001"}
+    assert units["H001"].text == "Глава"
+    assert units["P001"].text == "Параграф главы"
+    assert units["P001"].path == ("sections", "0", "paragraphs", "0")
+
+
+def test_article_draft_from_dict_normalizes_empty_paragraphs_when_sections_present():
+    payload = {
+        "headline": "Заголовок",
+        "lead": "Лид",
+        "paragraphs": ["Параграф 1", "Параграф 2"],
+        "sections": [{"heading": "Глава 1", "paragraphs": ["Параграф 1", "Параграф 2"]}],
+    }
+
+    draft = ArticleDraft.from_dict(payload)
+
+    assert draft.paragraphs == []
+    assert len(draft.sections) == 1

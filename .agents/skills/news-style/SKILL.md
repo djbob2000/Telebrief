@@ -53,7 +53,7 @@ For the daily city article («Чем жил Бердянск за последн
 
 1. **Headline:** captures the key supported event, condition, or theme of the day. Collective mood or emotional state may appear only when directly supported by source material.
 2. **Lead:** 1–2 sentences highlighting 2–3 prominent themes of the 24-hour period (avoid an exhaustive inventory of all categories).
-3. **Thematic Chapters:** usually 3–5 narrative story chapters with descriptive journalistic headings (`## [Тематический заголовок]`, e.g. `## Перебои со светом и поиск зарядки: что обсуждали в районах`).
+3. **Thematic Chapters:** usually 3–5 narrative story chapters with descriptive journalistic headings (`## [Тематический заголовок]`, e.g. `## Перебои со светом и поиск зарядки: что обсуждали в районах`). These sections form the single canonical body of the article; top-level paragraphs are not duplicated before chapters.
 4. **Resident Observation Synthesis:** synthesize resident observations across districts into coherent narrative paragraphs with visible attribution (`по сообщениям жителей`, `в районных чатах отмечали`). Resident comments are valuable editorial material reflecting the lived reality of the city.
 5. **Contextual Grouping without Causal Leaps:** cover related same-day developments (e.g. power outages, residents searching for power, local venues offering free charging) within the same chapter without manufacturing unsupported causal bridges (`из-за`, `вследствие` require direct evidence).
 6. **Adaptive Dominance:** when one major event or condition clearly dominates the day's reporting, give it proportionally more space as the primary chapter without enforcing a rigid percentage.
