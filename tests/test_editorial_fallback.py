@@ -120,6 +120,22 @@ def test_fallback_does_not_publish_single_unknown_message_as_city_life():
         DeterministicStoryCardBuilder().build(_bundle([("Кто знает, что это было?", "community")]))
 
 
+def test_fallback_does_not_reapply_mixed_filter_to_official_records():
+    cards = DeterministicStoryCardBuilder().build(
+        _bundle(
+            [
+                (
+                    "По вопросам ремонта обращайтесь по телефону диспетчерской "
+                    "+7 (990) 123-45-67",
+                    "official",
+                )
+            ]
+        )
+    )
+
+    assert cards[0].all_source_refs() == {"S000001"}
+
+
 def test_fallback_remains_compact_for_many_repeated_candidates():
     cards = DeterministicStoryCardBuilder().build(
         _bundle(

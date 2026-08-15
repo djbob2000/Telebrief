@@ -135,3 +135,20 @@ def test_input_builder_keeps_amounts_and_official_dispatch_phone():
     bundle = builder.build({"Source": [payout], "Utility": [utility]})
 
     assert {record.message.message_id for record in bundle.records.values()} == {1, 2}
+
+
+def test_input_builder_filters_financial_rate_spam_but_keeps_ticket_notice():
+    messages = [
+        _message(
+            "О Б Н А Л И Ч И В А Н И Е. Продажа. #Покупка. " "синий 85, белый 83, евро 99",
+            1,
+        ),
+        _message("Продажа билетов временно приостановлена", 2),
+    ]
+    builder = EditorialInputBuilder(
+        SourceRoleResolver([ChannelConfig(id="@source", name="Source")])
+    )
+
+    bundle = builder.build({"Source": messages})
+
+    assert [record.message.message_id for record in bundle.records.values()] == [2]

@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
-from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import PreparedBundle, SourceRecord, StoryCard, StoryElement
 from src.editorial_writer import ArticleDraft, ArticleSection
 
@@ -75,8 +74,6 @@ class DeterministicStoryCardBuilder:
         grouped: dict[str, list[tuple[str, SourceRecord]]] = defaultdict(list)
         unclassified: list[tuple[str, SourceRecord]] = []
         for ref, record in bundle.records.items():
-            if EditorialInputBuilder._is_noise(record.message.text):
-                continue
             topic = self._topic_for(record.message.text)
             if topic is None:
                 unclassified.append((ref, record))

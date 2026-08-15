@@ -14,6 +14,9 @@ _CURRENCY_ANNOUNCEMENT = re.compile(
     r"(?:курс\s+(?:доллара|евро|гривн)|обмен\s+валют|\b(?:usd|eur|uah)\b)",
     re.IGNORECASE,
 )
+_FINANCIAL_ACTION = re.compile(r"(?:обналичиван|продаж|покупк)", re.IGNORECASE)
+_CURRENCY_UNIT = re.compile(r"(?:евро|доллар|гривн|usd|eur|uah)", re.IGNORECASE)
+_RATE_NUMBER = re.compile(r"\b\d{2,}(?:[.,]\d+)?\b")
 _EXPLICIT_COMMERCIAL = re.compile(
     r"(?:реклама|продам|куплю|аренда|сдам|сниму|обмен\s+валют|"
     r"курс\s+(?:доллара|евро)|заправк(?:а|и)\s+автокондиционер|"
@@ -105,7 +108,15 @@ class EditorialInputBuilder:
             return True
         if _CURRENCY_ANNOUNCEMENT.search(stripped):
             return True
+        if EditorialInputBuilder._is_financial_rate_spam(stripped):
+            return True
         return EditorialInputBuilder._looks_commercial(stripped, source_type)
+
+    @staticmethod
+    def _is_financial_rate_spam(text: str) -> bool:
+        compact = re.sub(r"[\W_]+", "", text.lower())
+        has_action = bool(_FINANCIAL_ACTION.search(text)) or "обналичиван" in compact
+        return bool(has_action and _CURRENCY_UNIT.search(text) and _RATE_NUMBER.search(text))
 
     @staticmethod
     def _looks_commercial(text: str, source_type: str = "mixed") -> bool:
