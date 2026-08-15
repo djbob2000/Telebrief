@@ -458,6 +458,7 @@ class SourceRecord:
     source_type: str
     parent_ref: str | None = None
     context_text: str = ""
+    city_context: Any = None
 
 
 @dataclass
@@ -466,3 +467,4 @@ class PreparedBundle:
     prompt_text: str
     total_messages: int
     candidate_count: int
+    story_contexts: dict[str, Any] = field(default_factory=dict)

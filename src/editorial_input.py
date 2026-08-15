@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable
+from typing import Any
 
 from src.collector import Message
 from src.config_loader import SourceRoleResolver
@@ -49,8 +50,13 @@ _MUTUAL_AID_MARKERS = re.compile(
 class EditorialInputBuilder:
     """Build source records and prompt text without imposing a fixed message cap."""
 
-    def __init__(self, role_resolver: SourceRoleResolver):
+    def __init__(
+        self,
+        role_resolver: SourceRoleResolver,
+        city_context_resolver: Any | None = None,
+    ):
         self.role_resolver = role_resolver
+        self.city_context_resolver = city_context_resolver
 
     def build(
         self,
@@ -75,15 +81,21 @@ class EditorialInputBuilder:
             if message.reply_to_id is not None:
                 parent_ref = ref_by_message.get((message.channel_name, message.reply_to_id))
             context_text = self._context_for(message, parent_ref, records)
+            city_context = (
+                self.city_context_resolver.resolve(message.text)
+                if self.city_context_resolver is not None
+                else None
+            )
             records[ref] = SourceRecord(
                 ref=ref,
                 message=message,
                 source_type=source_type,
                 parent_ref=parent_ref,
                 context_text=context_text,
+                city_context=city_context,
             )
 
-        prompt_text = self._render_prompt(records)
+        prompt_text = self.render_records(records)
         if max_chars is not None and len(prompt_text) > max_chars:
             prompt_text = prompt_text[:max_chars]
         return PreparedBundle(
@@ -181,8 +193,8 @@ class EditorialInputBuilder:
                 return f'reply_to: "{parent}"'
         return ""
 
-    @staticmethod
-    def _render_prompt(records: dict[str, SourceRecord]) -> str:
+    @classmethod
+    def render_records(cls, records: dict[str, SourceRecord]) -> str:
         blocks: list[str] = []
         for ref, record in records.items():
             message = record.message
@@ -193,5 +205,39 @@ class EditorialInputBuilder:
             ]
             if record.context_text:
                 lines.append(record.context_text)
+            local_ctx = render_local_context(record.city_context)
+            if local_ctx:
+                lines.append(local_ctx)
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
+
+    @classmethod
+    def _render_prompt(cls, records: dict[str, SourceRecord]) -> str:
+        return cls.render_records(records)
+
+
+def _format_entity_str(entity: Any) -> str:
+    if entity.kind == "place":
+        parts = []
+        if entity.municipal_areas:
+            m_areas = ",".join(c.area_id for c in entity.municipal_areas)
+            parts.append(f"municipal:{m_areas}")
+        if entity.colloquial_area_ids:
+            c_areas = ",".join(entity.colloquial_area_ids)
+            parts.append(f"colloquial:{c_areas}")
+        if parts:
+            return f"{entity.entity_id} -> {'; '.join(parts)}"
+        return str(entity.entity_id)
+    if entity.kind in {"area", "provider", "route"}:
+        return f"{entity.kind}:{entity.entity_id}"
+    return f"{entity.kind}:{entity.entity_id}"
+
+
+def render_local_context(annotation: Any | None) -> str | None:
+    """Format city context entities into compact prompt line."""
+    if not annotation or not getattr(annotation, "entities", None):
+        return None
+    entity_strs = [_format_entity_str(e) for e in annotation.entities]
+    if entity_strs:
+        return f"local_context: {'; '.join(entity_strs)}"
+    return None

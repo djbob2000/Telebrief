@@ -241,3 +241,30 @@ def test_editorial_input_builder_never_mutates_source_type():
     bundle = builder.build({"test_channel": [msg]})
     assert "S000001" in bundle.records
     assert bundle.records["S000001"].source_type == "community"
+
+
+def test_editorial_input_builder_with_city_context_resolver():
+    from src.city_context import CityContextResolver
+
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+    role_resolver = SourceRoleResolver(
+        [ChannelConfig(id="@source", name="Source", source_type="community")]
+    )
+    builder = EditorialInputBuilder(role_resolver, city_context_resolver=resolver)
+
+    messages = [
+        _message("На ул. Шевченко нет света", 1),
+        _message("В центре дали воду", 2),
+    ]
+    bundle = builder.build({"Source": messages})
+
+    assert bundle.records["S000001"].city_context is not None
+    assert any(
+        e.entity_id == "street:Шевченка" for e in bundle.records["S000001"].city_context.entities
+    )
+    assert bundle.records["S000002"].city_context is not None
+    assert any(e.entity_id == "center" for e in bundle.records["S000002"].city_context.entities)
+
+    # Verify rendered local_context line in prompt_text
+    assert "local_context: street:Шевченка" in bundle.prompt_text
+    assert "local_context: area:center" in bundle.prompt_text

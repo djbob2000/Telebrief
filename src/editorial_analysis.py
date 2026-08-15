@@ -69,7 +69,8 @@ class EditorialAnalyzer:
 3. Evidence-Position & Corpus Boundary: Use hard_facts for sufficiently supported factual reporting from appropriate news/official evidence. Resident reports, anonymous technical claims, guesses and rumors remain attributed observations/uncertainties or are omitted. Do not treat source_type alone as proof. Absence from the supplied corpus does not establish absence in the outside world: do not encode corpus absence as an established hard fact, summary, current_status, or editorial_angle. Use scoped wording such as "no official schedule appears in the supplied records" unless a source explicitly states that no schedule exists.
 4. Commercial & Scale Demarcation: Commercial/classified messages may supply a practical detail, but cannot by themselves establish a trend, public behavior, shortage, migration pattern, demand increase, or major story. Scale claims require evidence supporting the claimed denominator or sufficiently broad coverage: several independent observations establish geographic spread (e.g. across several districts), but do not automatically establish a majority without evidence supporting the denominator.
 5. Cardinality & Quota Independence: Return {card_target} significant local Story Cards. One or two strong local stories are fully valid when material exists. Return zero cards when no publishable local story remains. Never create weak, external, commercial, or redundant cards to reach a minimum quota.
-6. Informative Uncertainty: Do not discard information merely because it is unverified. Distinguish unsupported noise from newsworthy uncertainty. A rumor, estimate, or anonymous claim may be retained in uncertainties or community_observations when its subject materially affects Berdyansk residents and knowing that the claim is circulating adds useful context. Preserve who said it, what basis they claimed to have, whether there is independent corroboration, and what remains unverified. Omit low-value speculation with no identifiable basis, repetition, practical relevance, or explanatory value. Never promote an unverified version into hard_facts."""
+6. Informative Uncertainty: Do not discard information merely because it is unverified. Distinguish unsupported noise from newsworthy uncertainty. A rumor, estimate, or anonymous claim may be retained in uncertainties or community_observations when its subject materially affects Berdyansk residents and knowing that the claim is circulating adds useful context. Preserve who said it, what basis they claimed to have, whether there is independent corroboration, and what remains unverified. Omit low-value speculation with no identifiable basis, repetition, practical relevance, or explanatory value. Never promote an unverified version into hard_facts.
+7. Local Context Interpretation: LOCAL CONTEXT annotations are deterministic interpretation aids. They may establish that a source observation came from a broader known area or refers to a known provider/route. They do not establish that the reported phenomenon affected the whole broader area, and they never establish a current event without the attached source record."""
 
         system = f"""You are the editorial analyst for a local daily newsroom in Berdyansk.
 Return JSON with a required cards array and optional labels/excluded_refs.
@@ -392,16 +393,6 @@ class EditorialInputLike:
 
     @staticmethod
     def render(records: dict[str, SourceRecord]) -> str:
-        blocks = []
-        for ref, record in records.items():
-            blocks.append(
-                "\n".join(
-                    [
-                        f"[{ref}] source_type={record.source_type} channel={record.message.channel_name}",
-                        f"time={record.message.timestamp.isoformat()} sender={record.message.sender}",
-                        f"text: {record.message.text}",
-                        record.context_text,
-                    ]
-                ).rstrip()
-            )
-        return "\n\n".join(blocks)
+        from src.editorial_input import EditorialInputBuilder
+
+        return EditorialInputBuilder.render_records(records)

@@ -527,3 +527,72 @@ def test_analyzer_prompts_contain_scale_hierarchy_and_corpus_boundary(compact, m
     assert "denominator" in system_prompt.lower()
     assert "corpus" in system_prompt.lower()
     assert "supplied records" in system_prompt.lower() or "supplied corpus" in system_prompt.lower()
+    assert "LOCAL CONTEXT" in system_prompt
+
+
+@pytest.mark.unit
+def test_split_bundle_preserves_local_context(mock_logger):
+    from src.city_context_models import AreaCandidate, CityContextAnnotation, ResolvedEntity
+
+    analyzer = EditorialAnalyzer(MagicMock(), "model", mock_logger)
+
+    msg1 = Message(
+        text="На ул. Шевченко нет света",
+        sender="u1",
+        timestamp=datetime(2026, 8, 14, 12, tzinfo=timezone.utc),
+        link="",
+        channel_name="ch1",
+        has_media=False,
+        media_type="",
+        message_id=1,
+    )
+    cand = AreaCandidate(
+        area_set="municipal_neighborhood_committees_2021",
+        area_id="center",
+        area_name="Центр",
+        confidence="high",
+        coverage_kind="whole_object",
+        source_ref="gazetteer",
+    )
+    entity = ResolvedEntity(
+        kind="place",
+        entity_id="street:Шевченка",
+        matched_text="ул. Шевченко",
+        canonical_name="вулиця Шевченка",
+        object_type="street",
+        municipal_areas=(cand,),
+    )
+    rec1 = SourceRecord(
+        ref="S000001",
+        message=msg1,
+        source_type="community",
+        city_context=CityContextAnnotation(entities=(entity,)),
+    )
+
+    msg2 = Message(
+        text="На Лисках воды нет",
+        sender="u2",
+        timestamp=datetime(2026, 8, 14, 13, tzinfo=timezone.utc),
+        link="",
+        channel_name="ch2",
+        has_media=False,
+        media_type="",
+        message_id=2,
+    )
+    rec2 = SourceRecord(
+        ref="S000002",
+        message=msg2,
+        source_type="community",
+    )
+
+    bundle = PreparedBundle(
+        records={"S000001": rec1, "S000002": rec2},
+        prompt_text="",
+        total_messages=2,
+        candidate_count=2,
+    )
+
+    batches = analyzer._split_bundle(bundle)
+    assert len(batches) == 2
+    b1 = next(b for b in batches if "S000001" in b.records)
+    assert "local_context: street:Шевченка" in b1.prompt_text
