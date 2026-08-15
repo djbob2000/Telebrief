@@ -107,14 +107,14 @@ settings:
   target_user_id: 123456789
   article:
     editorial_max_output_tokens: 65536
-    editorial_api_timeout: 180
+    editorial_api_timeout: 300
 """
     )
 
     config = load_config(str(config_file))
 
     assert config.settings.article.editorial_max_output_tokens == 65536
-    assert config.settings.article.editorial_api_timeout == 180
+    assert config.settings.article.editorial_api_timeout == 300
 
 
 @pytest.mark.unit

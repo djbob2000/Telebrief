@@ -135,4 +135,4 @@ settings:
     editorial_writer_max_output_tokens: 65536
     editorial_audit_max_output_tokens: 16384
     editorial_repair_max_output_tokens: 8192
-    editorial_api_timeout: 180
+    editorial_api_timeout: 300

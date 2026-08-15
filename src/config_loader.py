@@ -103,7 +103,7 @@ class ArticleConfig:
     editorial_writer_max_output_tokens: int = 65_536
     editorial_audit_max_output_tokens: int = 16_384
     editorial_repair_max_output_tokens: int = 8_192
-    editorial_api_timeout: int = 180
+    editorial_api_timeout: int = 300
     telegraph_access_token: str | None = None
     save_debug_artifacts: bool = False
     debug_artifact_dir: str = "data/debug/editorial"
@@ -408,7 +408,7 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
         "editorial_repair_max_output_tokens", min(editorial_audit_max_output_tokens, 8_192)
     )
 
-    editorial_api_timeout = raw.get("editorial_api_timeout", 180)
+    editorial_api_timeout = raw.get("editorial_api_timeout", 300)
     if (
         isinstance(editorial_api_timeout, bool)
         or not isinstance(editorial_api_timeout, int)
