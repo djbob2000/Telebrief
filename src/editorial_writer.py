@@ -50,16 +50,20 @@ class ArticleDraft:
             ]
             converted_sections = []
             for section in sections:
-                if isinstance(section, dict) and isinstance(section.get("heading"), dict):
-                    converted_sections.append(
-                        {
-                            "heading": section["heading"].get("text", ""),
-                            "paragraphs": [
-                                item.get("text", "") if isinstance(item, dict) else item
-                                for item in section.get("paragraphs", [])
-                            ],
-                        }
-                    )
+                if not isinstance(section, dict):
+                    continue
+                heading = section.get("heading", "")
+                if isinstance(heading, dict):
+                    heading = heading.get("text", "")
+                converted_sections.append(
+                    {
+                        "heading": heading,
+                        "paragraphs": [
+                            item.get("text", "") if isinstance(item, dict) else item
+                            for item in section.get("paragraphs", [])
+                        ],
+                    }
+                )
             sections = converted_sections
         if not isinstance(headline, str) or not headline.strip():
             raise ValueError("article draft headline must be non-empty")

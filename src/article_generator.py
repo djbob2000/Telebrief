@@ -180,7 +180,20 @@ class ArticleGenerator:
             for ref in sorted(card.all_source_refs()):
                 if ref not in refs:
                     refs.append(ref)
-        return self.input_builder.select_records(bundle, refs)
+        # The analyzer is instructed to keep refs representative, but do not silently
+        # discard evidence if a valid card contains more than the normal 96-ref budget.
+        return self.input_builder.select_records(bundle, refs, max_refs=max(96, len(refs)))
+
+    async def _render_story_card_fallback(
+        self, analysis: EditorialAnalysis, reason: str
+    ) -> Tuple[str, str, str]:
+        """Render validated AI Story Cards when the free-form writer is unavailable."""
+        self.logger.warning("Using validated Story Card render: %s", reason)
+        draft = self.fallback_renderer.render(analysis.cards)
+        markdown = draft.to_markdown()
+        deterministic_preflight(markdown)
+        self._save_debug_artifact("story_card_fallback.md", markdown)
+        return self._parse_article_response(markdown)
 
     async def _fallback(self, bundle: PreparedBundle, reason: str) -> Tuple[str, str, str]:
         self.logger.warning("Editorial pipeline entered degraded path: %s", reason)
@@ -292,7 +305,7 @@ class ArticleGenerator:
         self.logger.warning("Removed %d unresolved local FIX fragment(s)", len(unresolved))
         return current
 
-    async def generate_article(
+    async def generate_article(  # noqa: C901
         self, messages_by_channel: Dict[str, List[Message]]
     ) -> Tuple[str, str, str]:
         """Generate the main article or a thematic fallback for substantive input."""
@@ -322,7 +335,14 @@ class ArticleGenerator:
             deterministic_preflight(draft.to_markdown())
             self._save_debug_artifact("writer_draft.json", draft.to_dict())
         except Exception as exc:
-            return await self._fallback(bundle, f"writer unavailable: {type(exc).__name__}")
+            reason = f"writer unavailable: {type(exc).__name__}"
+            try:
+                return await self._render_story_card_fallback(analysis, reason)
+            except Exception as card_exc:
+                self.logger.warning(
+                    "Validated Story Card render failed: %s", type(card_exc).__name__
+                )
+                return await self._fallback(bundle, reason)
 
         try:
             draft = await self._repair_and_check(draft, analysis, writer_bundle)

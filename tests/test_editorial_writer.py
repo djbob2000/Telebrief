@@ -107,6 +107,21 @@ def test_article_draft_rejects_malformed_writer_shape():
         ArticleDraft.from_dict({"lead": "Лид", "paragraphs": [], "sections": []})
 
 
+def test_article_draft_preserves_sections_with_string_headings():
+    draft = ArticleDraft.from_dict(
+        {
+            "headline": "Город за сутки",
+            "lead": "Главные темы дня.",
+            "paragraphs": ["Лидирующие детали."],
+            "sections": [{"heading": "Вода", "paragraphs": ["Подачу воды временно отключали."]}],
+        }
+    )
+
+    assert draft.sections[0].heading == "Вода"
+    assert draft.sections[0].paragraphs == ["Подачу воды временно отключали."]
+    assert "## Вода" in draft.to_markdown()
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_writer_prompt_allows_synthesis_without_claim_ids():

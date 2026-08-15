@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -50,7 +50,7 @@ def _message(text: str, message_id: int = 1) -> Message:
     return Message(
         text=text,
         sender="Источник",
-        timestamp=datetime(2026, 8, 15, 10, message_id, tzinfo=timezone.utc),
+        timestamp=datetime(2026, 8, 15, 10, tzinfo=timezone.utc) + timedelta(minutes=message_id),
         link=f"https://t.me/source/{message_id}",
         channel_name="Source",
         has_media=False,
@@ -218,6 +218,33 @@ async def test_analysis_without_resolvable_refs_uses_complete_bundle_fallback():
 
 
 @pytest.mark.unit
+def test_writer_bundle_keeps_all_representative_refs_from_story_card():
+    generator = _generator()
+    records = {}
+    refs = []
+    for index in range(120):
+        ref = f"S{index + 1:06d}"
+        refs.append(ref)
+        records[ref] = SourceRecord(ref, _message(f"Наблюдение {index}", index + 1), "community")
+    bundle = PreparedBundle(records, "", 120, 120)
+    analysis = EditorialAnalysis(
+        cards=[
+            StoryCard(
+                id="SC001",
+                topic="Город",
+                importance="medium",
+                summary="Большой сюжет.",
+                community_observations=[StoryElement("Наблюдения жителей.", refs, "attributed")],
+            )
+        ]
+    )
+
+    selected = generator._select_writer_bundle(analysis, bundle)
+
+    assert set(selected.records) == set(refs)
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_analysis_failure_uses_thematic_fallback_not_raw_latest_messages():
     generator = _generator()
@@ -237,6 +264,41 @@ async def test_analysis_failure_uses_thematic_fallback_not_raw_latest_messages()
     assert "Курс доллара" not in body
     assert "Реклама" not in body
     assert "последние сообщения" not in body.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_writer_failure_renders_validated_story_cards_before_full_fallback():
+    generator = _generator()
+    generator.analyzer.analyze = AsyncMock(
+        return_value=EditorialAnalysis(
+            cards=[
+                StoryCard(
+                    id="SC001",
+                    topic="Вода",
+                    importance="high",
+                    summary="Воду временно отключали.",
+                    hard_facts=[
+                        StoryElement(
+                            "Источник сообщил об отключении водоснабжения.",
+                            ["S000001"],
+                            "established",
+                        )
+                    ],
+                )
+            ]
+        )
+    )
+    generator.writer.write = AsyncMock(side_effect=RuntimeError("writer down"))
+
+    title, _, body = await generator.generate_article(
+        {"Source": [_message("Источник сообщил об отключении воды")]}
+    )
+
+    assert title == "Что происходило в городе за сутки"
+    assert "Источник сообщил об отключении водоснабжения." in body
+    assert "Вода" in body
+    generator.writer.write.assert_awaited_once()
 
 
 @pytest.mark.unit
