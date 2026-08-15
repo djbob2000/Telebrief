@@ -33,13 +33,34 @@ class ArticleDraft:
     sections: list[ArticleSection] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ArticleDraft":
+    def from_dict(cls, data: dict[str, Any]) -> "ArticleDraft":  # noqa: C901
         if not isinstance(data, dict):
             raise ValueError("article draft must be an object")
         headline = data.get("headline")
         lead = data.get("lead")
         paragraphs = data.get("paragraphs", [])
         sections = data.get("sections", [])
+        if isinstance(headline, dict):
+            headline = headline.get("text")
+        if isinstance(lead, dict):
+            lead = lead.get("text")
+        if isinstance(headline, str) and isinstance(lead, str):
+            paragraphs = [
+                item.get("text", "") if isinstance(item, dict) else item for item in paragraphs
+            ]
+            converted_sections = []
+            for section in sections:
+                if isinstance(section, dict) and isinstance(section.get("heading"), dict):
+                    converted_sections.append(
+                        {
+                            "heading": section["heading"].get("text", ""),
+                            "paragraphs": [
+                                item.get("text", "") if isinstance(item, dict) else item
+                                for item in section.get("paragraphs", [])
+                            ],
+                        }
+                    )
+            sections = converted_sections
         if not isinstance(headline, str) or not headline.strip():
             raise ValueError("article draft headline must be non-empty")
         if not isinstance(lead, str) or not lead.strip():

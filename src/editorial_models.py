@@ -161,6 +161,41 @@ class EditorialAnalysis:
     def from_dict(cls, data: dict[str, Any]) -> "EditorialAnalysis":
         if not isinstance(data, dict):
             raise ValueError("editorial analysis must be an object")
+        # Compatibility with one previously persisted claim-registry response. New
+        # analysis prompts never emit this shape, but accepting it keeps old dry-run
+        # artifacts readable while the Story Card pipeline is rolled out.
+        if "cards" not in data and isinstance(data.get("claims"), list):
+            cards = []
+            for index, claim in enumerate(data["claims"], start=1):
+                if not isinstance(claim, dict) or not claim.get("claim"):
+                    continue
+                refs = [
+                    str(item.get("source_id"))
+                    for item in claim.get("evidence", [])
+                    if isinstance(item, dict) and item.get("source_id")
+                ]
+                refs = [
+                    ref if not ref.startswith("S") or len(ref) >= 7 else f"S{int(ref[1:]):06d}"
+                    for ref in refs
+                ]
+                status = claim.get("status", "attributed")
+                if status == "unknown":
+                    status = "attributed"
+                element = StoryElement(
+                    text=str(claim["claim"]),
+                    source_refs=refs or ["legacy-source"],
+                    status=status,
+                )
+                cards.append(
+                    StoryCard(
+                        id=str(claim.get("id", f"SC{index:03d}")),
+                        topic=str(claim.get("event_key", "local news")),
+                        importance="medium",
+                        summary=str(claim["claim"]),
+                        hard_facts=[element],
+                    )
+                )
+            return cls(cards=cards)
         cards = [StoryCard.from_dict(item) for item in data.get("cards", [])]
         return cls(
             cards=cards,
