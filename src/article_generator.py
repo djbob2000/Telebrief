@@ -53,6 +53,26 @@ def _load_skill_instructions(path: str) -> str:
     return content
 
 
+RUN_DEBUG_ARTIFACTS = (
+    "prepared_input.txt",
+    "story_cards.json",
+    "editorial_analysis_raw.txt",
+    "writer_bundle.txt",
+    "writer_input.txt",
+    "writer_bundle.json",
+    "writer_draft.json",
+    "story_card_fallback.md",
+    "fallback_reason.txt",
+    "fallback_story_cards.json",
+    "fact_check_raw.txt",
+    "fact_check_initial.json",
+    "fact_check_final.json",
+    "fact_check.json",
+    "fact_check_failure.json",
+    "final_article.md",
+)
+
+
 class ArticleGenerator:
     """Generate a readable article, repairing locally and never dumping raw messages."""
 
@@ -244,6 +264,22 @@ class ArticleGenerator:
         )
         return self._parse_article_response(markdown)
 
+    def _clear_debug_artifacts(self) -> None:
+        """Clear stale editorial debug artifacts before a fresh generation run."""
+        article_config = self.config.settings.article
+        if not getattr(article_config, "save_debug_artifacts", False):
+            return
+        directory = Path(getattr(article_config, "debug_artifact_dir", "data/debug/editorial"))
+        if not directory.exists():
+            return
+        for name in RUN_DEBUG_ARTIFACTS:
+            target = directory / name
+            if target.exists():
+                try:
+                    target.unlink()
+                except Exception as exc:
+                    self.logger.warning("Could not clear stale debug artifact %s: %s", name, exc)
+
     def _save_debug_artifact(self, filename: str, content: Any) -> None:
         """Persist opt-in diagnostics without affecting publication."""
         article_config = self.config.settings.article
@@ -369,8 +405,11 @@ class ArticleGenerator:
         self, draft: ArticleDraft, result: FactCheckResult
     ) -> ArticleDraft:
         unresolved = [issue for issue in result.issues if issue.severity == "fix"]
-        if any(issue.unit_id in {"TITLE", "LEAD"} for issue in unresolved):
-            raise UnsafeDraftError("unresolved FIX remains in headline or lead")
+        if any(
+            issue.unit_id in {"TITLE", "LEAD"} or issue.unit_id.startswith("H")
+            for issue in unresolved
+        ):
+            raise UnsafeDraftError("unresolved FIX remains in headline, lead, or section heading")
         high_risk_codes = (
             "medical",
             "casualty",
@@ -393,6 +432,7 @@ class ArticleGenerator:
         self, messages_by_channel: Dict[str, List[Message]]
     ) -> Tuple[str, str, str]:
         """Generate the main article or a thematic fallback for substantive input."""
+        self._clear_debug_artifacts()
         bundle = self._build_bundle(messages_by_channel)
         self._save_debug_artifact("prepared_input.txt", bundle.prompt_text)
         try:

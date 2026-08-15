@@ -900,3 +900,146 @@ async def test_fact_check_lifecycle_keeps_last_parsed_result_when_recheck_unavai
     assert initial_data["status"] == "FIX"
     assert final_data["status"] == "FIX"
     assert failure_data["stage"] == "json_parse"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_article_clears_stale_failure_on_successful_pass(
+    sample_config, mock_logger, tmp_path
+):
+    sample_config.settings.article.save_debug_artifacts = True
+    sample_config.settings.article.debug_artifact_dir = str(tmp_path)
+
+    # Pre-create stale failure artifact
+    stale_failure = tmp_path / "fact_check_failure.json"
+    stale_failure.write_text(json.dumps({"stage": "old", "error": "old"}), encoding="utf-8")
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "cards": [
+                        {
+                            "id": "SC001",
+                            "topic": "T",
+                            "importance": "high",
+                            "summary": "S",
+                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                        }
+                    ]
+                }
+            ),
+            json.dumps({"headline": "H", "lead": "L", "paragraphs": ["P"], "sections": []}),
+            json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
+        ]
+    )
+    messages = {
+        "ch1": [
+            Message(
+                text="T",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="u",
+                message_id=1,
+                link="l",
+                has_media=False,
+                media_type="",
+            )
+        ]
+    }
+
+    await generator.generate_article(messages)
+
+    assert not stale_failure.exists()
+    assert (tmp_path / "fact_check_initial.json").exists()
+    assert (tmp_path / "fact_check_final.json").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_article_clears_stale_pass_on_audit_failure(
+    sample_config, mock_logger, tmp_path
+):
+    sample_config.settings.article.save_debug_artifacts = True
+    sample_config.settings.article.debug_artifact_dir = str(tmp_path)
+
+    # Pre-create stale initial and final artifacts
+    stale_initial = tmp_path / "fact_check_initial.json"
+    stale_final = tmp_path / "fact_check_final.json"
+    stale_initial.write_text(json.dumps({"status": "PASS", "issues": []}), encoding="utf-8")
+    stale_final.write_text(json.dumps({"status": "PASS", "issues": []}), encoding="utf-8")
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "cards": [
+                        {
+                            "id": "SC001",
+                            "topic": "T",
+                            "importance": "high",
+                            "summary": "S",
+                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                        }
+                    ]
+                }
+            ),
+            json.dumps({"headline": "H", "lead": "L", "paragraphs": ["P"], "sections": []}),
+            "invalid json on initial audit",
+        ]
+    )
+    messages = {
+        "ch1": [
+            Message(
+                text="T",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="u",
+                message_id=1,
+                link="l",
+                has_media=False,
+                media_type="",
+            )
+        ]
+    }
+
+    await generator.generate_article(messages)
+
+    assert not stale_initial.exists()
+    assert not stale_final.exists()
+    assert (tmp_path / "fact_check_failure.json").exists()
+
+
+@pytest.mark.unit
+def test_remove_unresolved_local_fixes_raises_unsafe_on_h_unit(sample_config, mock_logger):
+    from src.article_generator import UnsafeDraftError
+    from src.editorial_audit import AuditIssue, FactCheckResult
+    from src.editorial_writer import ArticleDraft, ArticleSection
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+    draft = ArticleDraft(
+        headline="Заголовок",
+        lead="Лид",
+        paragraphs=[],
+        sections=[ArticleSection("Глава", ["Текст"])],
+    )
+    result = FactCheckResult(
+        status="FIX",
+        systemic_problem=False,
+        issues=[
+            AuditIssue(
+                unit_id="H001",
+                severity="fix",
+                code="unsupported",
+                original_excerpt="Глава",
+                reason="Unsupported heading",
+                suggested_direction="Fix heading",
+                source_refs=[],
+            )
+        ],
+    )
+
+    with pytest.raises(UnsafeDraftError, match="headline, lead, or section heading"):
+        generator._remove_unresolved_local_fixes(draft, result)
