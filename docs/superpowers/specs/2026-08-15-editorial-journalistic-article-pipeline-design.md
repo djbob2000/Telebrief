@@ -14,6 +14,7 @@ The output must read like an article written by a local newsroom journalist who 
    - The pipeline must robustly deserialize and normalize varied LLM output shapes (e.g., strings inside element lists, missing optional fields like `Uncertainty.basis`, alternative key names).
    - The pipeline must **never** invent substantive facts, causes, emotions, or source linkages.
    - Validation must be granular: drop an invalid element without dropping the card; drop an invalid card without failing the whole 15k-character analysis. Fallback to deterministic template is used **only** if zero valid cards remain after normalization.
+   - After normalization and sanitization, every retained `source_ref` must resolve to `PreparedBundle.records`. Unknown refs are never substituted or guessed; they are removed locally.
 
 2. **Resident Comments as Full Editorial Material**:
    - Dozens of localized comments (e.g., *"no power in AKZ"*, *"did Koloniya get power back?"*, *"where to charge phones?"*) are legitimate reporting material for journalistic collective synthesis (e.g., *"Перебои с электричеством оставались одной из главных тем городских обсуждений..."*).
@@ -25,11 +26,11 @@ The output must read like an article written by a local newsroom journalist who 
    - Useful public assistance and mutual aid (free device charging, water distribution, neighborhood help) are preserved in the bundle by preventing false-positive commercial spam filtering.
 
 4. **Composition Contract**:
-   - **Headline**: Captures the key mood/event of the day.
+   - **Headline**: Captures the key supported event, condition, or theme of the day. Collective mood or emotional state may appear only when directly supported by source material.
    - **Lead**: 1–2 sentences highlighting 2–3 prominent themes of the day (no exhaustive laundry list of all categories).
    - **Body**: 3–5 thematic story chapters with engaging journalistic headings (e.g., `## Перебои со светом и поиск зарядки: что обсуждали жители районов`).
    - **Card-to-Story Flexibility**: Story Cards are reporting notes. The writer may combine related cards into single narrative blocks.
-   - **Adaptive Dominance**: If one event or crisis objectively dominates the day, it receives focal treatment (expanded story), followed by concise coverage of other city topics.
+   - **Adaptive Dominance**: When one event clearly dominates the available reporting material, give it proportionally more space and treat it as the main chapter. Do not enforce a fixed percentage.
    - **Internal Chronology**: Chronological sequencing is used inside individual storylines where it clarifies event progression, not as a rigid global timeline.
 
 ---
@@ -46,9 +47,10 @@ The output must read like an article written by a local newsroom journalist who 
                                       v
 +-----------------------------------------------------------------------------------+
 | 2. Story Card Extraction & Tolerant Normalization (editorial_models.py / analysis)|
+|    - Explicit representative_source_refs on StoryCard data model                  |
 |    - Tolerant schema deserialization (strings -> StoryElement, missing basis -> "")|
 |    - Granular provenance checking: invalid element dropped, card kept if valid    |
-|    - Strict ref verification: every S###### must exist in PreparedBundle          |
+|    - Sanitization: unknown refs stripped; element/card dropped only if 0 refs left|
 +-----------------------------------------------------------------------------------+
                                       |
                                       v
@@ -73,45 +75,52 @@ The output must read like an article written by a local newsroom journalist who 
 
 ### Component 1: Tolerant Normalization & Data Models (`src/editorial_models.py`, `src/editorial_analysis.py`)
 
-#### 1.1 `StoryElement` Deserialization
+#### 1.1 `StoryCard` Model with Canonical `representative_source_refs`
+
+- Add `representative_source_refs: list[str] = field(default_factory=list)` to the `StoryCard` dataclass.
+- Aliases in JSON payloads (`source_refs`, `sources`, `refs`, `evidence`) are normalized into `representative_source_refs`.
+- `StoryCard.all_source_refs()` returns the set union of `representative_source_refs` and all references in `hard_facts`, `community_observations`, `useful_details`, and `uncertainties`.
+- Cards with a valid `summary` and `representative_source_refs` retain explicit, inspectable provenance even if element lists are empty.
+
+#### 1.2 `StoryElement` Deserialization
 
 - `from_dict(data, card_refs=None)`:
-  - If `data` is a `str`: transforms to `StoryElement(text=data.strip(), source_refs=card_refs or [], status="attributed")`. If `card_refs` is empty, this element lacks provenance and is dropped.
+  - If `data` is a `str`: transforms to `StoryElement(text=data.strip(), source_refs=list(card_refs or []), status="attributed")`. If `card_refs` is empty, this element lacks provenance and is dropped.
   - If `data` is a `dict`:
     - `text`: non-empty string.
-    - `source_refs`: extracted from `source_refs`, `sources`, `refs`, or fallback to `card_refs`.
+    - `source_refs`: extracted from `source_refs`, `sources`, `refs`, or fallback to `card_refs or []`.
     - `status`: validated against `{"established", "attributed", "disputed"}`, defaults to `"attributed"`.
     - `attribution`: string, defaults to `""`.
     - `areas`: list of strings, defaults to `[]`.
-  - Rejection: if `text` is empty or `source_refs` is empty after fallback, raise `ValueError` (caught locally to drop only this element).
+  - Rejection: if `text` is empty or `source_refs` is empty after fallback, raise `ValueError` (caught locally during card normalization to drop only this element).
 
-#### 1.2 `Uncertainty` Deserialization
+#### 1.3 `Uncertainty` Deserialization
 
 - `from_dict(data, card_refs=None)`:
-  - If `data` is a `str`: transforms to `Uncertainty(text=data.strip(), basis="unspecified", related_source_refs=card_refs or [])`.
+  - If `data` is a `str`: transforms to `Uncertainty(text=data.strip(), basis="unspecified", related_source_refs=list(card_refs or []))`.
   - If `data` is a `dict`:
     - `text`: non-empty string.
     - `basis`: string, defaults to `"unspecified"`.
-    - `related_source_refs`: list of strings, defaults to `card_refs or []`.
+    - `related_source_refs`: list of strings, defaults to `list(card_refs or [])`.
   - Note: `"unspecified"` is an internal technical placeholder and must never be rendered as a semantic justification by the writer.
 
-#### 1.3 `StoryCard` and Granular Normalization
+#### 1.4 Granular Card Normalization (`_normalize_card_payload`)
 
-- `_normalize_card_payload(raw_card, index)`:
-  - Extracts canonical card fields (`id`, `topic`, `importance`, `summary`, `story_kind`, `timeframe`, `current_status`, `next_known_step`, `editorial_angle`).
-  - Collects card-level `source_refs` for element inheritance.
-  - Normalizes lists: `hard_facts`, `community_observations`, `useful_details`, `uncertainties`.
-  - For each element in a list: attempt deserialization. If an element is invalid (empty text or missing refs), log debug/warning and drop **only that element**.
-  - Checks remaining card elements: if a card has at least one valid element with valid `source_refs` (or a valid summary with card-level `source_refs`), the card is preserved.
-  - If a card has no remaining valid elements and no valid refs, drop **only that card**.
+- Extracts canonical card fields (`id`, `topic`, `importance`, `summary`, `story_kind`, `timeframe`, `current_status`, `next_known_step`, `editorial_angle`).
+- Populates `representative_source_refs` from card-level ref aliases.
+- Normalizes lists: `hard_facts`, `community_observations`, `useful_details`, `uncertainties`, passing `representative_source_refs` as default provenance for string elements.
+- For each element in a list: attempt deserialization. If an element is invalid (empty text or missing refs), log debug/warning and drop **only that element**.
+- Checks remaining card elements: if a card has at least one valid element with valid `source_refs` (or a valid summary with `representative_source_refs`), the card is preserved.
+- If a card has no remaining valid elements and no valid refs, drop **only that card**.
 
-#### 1.4 Granular Analysis Reference Validation (`EditorialAnalysis.validate_refs`)
+#### 1.5 Granular Analysis Reference Validation (`EditorialAnalysis.validate_refs`)
 
 - Validate every `source_ref` against `PreparedBundle.records`.
 - If an individual element has an unknown ref:
   - Remove that unknown ref from the element's `source_refs`.
   - If the element has no remaining valid refs, drop that element.
-- If a card has no remaining valid elements and no valid refs, drop that card.
+- If `representative_source_refs` contains unknown refs, remove them.
+- If a card has no remaining valid elements and no valid `representative_source_refs`, drop that card.
 - If at least one valid `StoryCard` remains in the analysis, return the sanitized `EditorialAnalysis`.
 - Only if **all** cards are dropped does the pipeline raise `EditorialAnalysisError` to fall back.
 
@@ -122,15 +131,15 @@ The output must read like an article written by a local newsroom journalist who 
 #### 2.1 Updated News Style Guidelines
 
 - **Article Structure**:
-  - Main headline (`# ...`)
+  - Main headline (`# ...`) capturing key supported event/condition/theme.
   - Lead paragraph highlighting 2–3 central topics of the 24h cycle.
   - 3–5 substantive chapters with markdown headings (`## [Тематический заголовок]`).
   - No generic categorical headings like `## Электроснабжение` or `## Прочее`. Headings must be descriptive and journalistic.
 - **Synthesizing Resident Observations**:
   - Synthesizing resident reports across districts (e.g. power, water, mobile carriers, public transport) into narrative paragraphs with visible attribution (`по сообщениям жителей`, `в районных чатах отмечали`, `жители нескольких районов писали`).
-  - Combining related micro-events (e.g. power cut -> search for charging -> cafe offering charging) into a continuous story of daily life.
+  - Related same-day observations such as outages, residents looking for charging options, and local venues offering free charging may be covered in one chapter when the sources support their editorial relationship. Do not turn temporal proximity into unsupported causality.
 - **Adaptive Dominance Rule**:
-  - When one major event occurs, it forms an extensive main chapter (~50–60% of body), followed by 2–3 concise chapters on other urban topics.
+  - When one event clearly dominates the available reporting material, give it proportionally more space and treat it as the main chapter. Do not enforce a fixed percentage.
 - **Internal Chronology**:
   - Use timeline progression within a chapter when it helps explain an unfolding situation.
 
@@ -163,7 +172,7 @@ The output must read like an article written by a local newsroom journalist who 
     2. False causal claims (e.g., claiming a blackout was caused by an explosion when sources only report them as separate events).
     3. Severe loss of critical attribution (turning an unverified resident rumour into an established official fact).
     4. Dangerous escalation of high-risk claims (casualties, weapons, legal/financial allegations).
-    5. Emotional assertions about collective psychological states (*"горожане были в панике/ярости"*) without explicit evidence in messages.
+    5. Emotional assertions about collective psychological states (*"горожане были в панике/ярости"*) without explicit direct evidence in messages.
 
 ---
 
@@ -172,16 +181,18 @@ The output must read like an article written by a local newsroom journalist who 
 ### Automated Tests
 
 1. **Unit & Regression Tests (`tests/test_editorial_models.py`, `tests/test_editorial_analysis.py`)**:
-   - Deserialization of string-based `hard_facts` and `community_observations` into `StoryElement(status="attributed")`.
+   - `representative_source_refs` field on `StoryCard` and proper extraction from aliases (`sources`, `refs`, `evidence`).
+   - Deserialization of string-based `hard_facts` and `community_observations` into `StoryElement(status="attributed")` inheriting card refs.
    - Deserialization of `Uncertainty` without `basis` (defaults to `"unspecified"`).
    - Partial malformed elements / cards: one invalid ref or empty element does not drop valid cards.
    - Analysis with 1 bad card + 3 good cards preserves the 3 good cards without fallback.
+   - **Dry-run failure regression**: A model response containing multiple Story Cards where `hard_facts`/`community_observations` are strings, `Uncertainty.basis` is absent, and one element contains an invalid ref must still produce usable Story Cards and proceed to the writer; it must not trigger compact retry or deterministic fallback while valid cards remain.
 2. **Filtering Tests (`tests/test_editorial_input.py`)**:
    - Verification that messages offering free gadget charging or water delivery are not filtered out by `_looks_commercial`.
    - Verification that `source_type` is never mutated by the filter.
 3. **Audit Tests (`tests/test_editorial_audit.py`)**:
    - Collective synthesis is not flagged as `FIX`.
-   - Invented numbers or lost attribution are flagged as `FIX`.
+   - Invented numbers, false causation, or lost attribution are flagged as `FIX`.
 4. **End-to-End Pipeline Verification**:
    - Run full test suite: `uv run pytest`.
    - Run dry-run fixture simulation with realistic multi-channel dataset.
