@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.ai_providers import ProviderCascadeError, TokenBudgetExhaustedError
 from src.collector import Message
 from src.editorial_audit import (
     AuditIssue,
@@ -367,3 +368,85 @@ def test_compact_story_cards_minimal_mode_retains_summaries_only():
     assert c["source_refs"] == ["S000001", "S000002"]
     assert "hard_facts" not in c
     assert "uncertainties" not in c
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_checker_compact_retry_triggers_only_on_token_budget_exhaustion(mock_logger):
+    """Token budget exhaustion triggers exactly one compact retry with minimal card summaries."""
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        side_effect=[
+            TokenBudgetExhaustedError("token budget exhausted"),
+            json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
+        ]
+    )
+    checker = LightFactChecker(provider, "model", mock_logger)
+    card = StoryCard(
+        id="SC001",
+        topic="Power disruption",
+        importance="high",
+        summary="Power outage in central city.",
+        hard_facts=[StoryElement(text="Substation damaged", source_refs=["S000001"])],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    result = await checker.check(_draft(), analysis, _bundle())
+
+    assert result.status == "PASS"
+    assert provider.chat_completion.call_count == 2
+    assert checker.last_stage is None
+    assert checker.last_reason is None
+
+    second_payload = json.loads(
+        provider.chat_completion.await_args_list[1].kwargs["messages"][1]["content"]
+    )
+    assert set(second_payload) == {"audit_units", "story_cards", "source_records"}
+    for c in second_payload["story_cards"]:
+        assert set(c) == {"id", "topic", "summary", "source_refs"}
+        assert "hard_facts" not in c
+        assert "community_observations" not in c
+        assert "useful_details" not in c
+        assert "uncertainties" not in c
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        TimeoutError(),
+        ProviderCascadeError("quota error", failure_kinds=("quota",)),
+        ProviderCascadeError("auth error", failure_kinds=("auth",)),
+    ],
+)
+async def test_fact_checker_does_not_retry_on_non_token_budget_errors(error, mock_logger):
+    """Non-token-budget errors fail immediately without triggering a compact retry."""
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(side_effect=error)
+    checker = LightFactChecker(provider, "model", mock_logger)
+
+    with pytest.raises(FactCheckUnavailableError):
+        await checker.check(_draft(), EditorialAnalysis([]), _bundle())
+
+    assert provider.chat_completion.call_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_checker_second_token_budget_failure_raises_unavailable(mock_logger):
+    """A second consecutive token budget failure raises FactCheckUnavailableError without looping."""
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        side_effect=[
+            TokenBudgetExhaustedError("first exhaustion"),
+            TokenBudgetExhaustedError("second exhaustion"),
+        ]
+    )
+    checker = LightFactChecker(provider, "model", mock_logger)
+
+    with pytest.raises(FactCheckUnavailableError):
+        await checker.check(_draft(), EditorialAnalysis([]), _bundle())
+
+    assert provider.chat_completion.call_count == 2
+    assert checker.last_stage == "provider_call"
+    assert checker.last_reason is not None

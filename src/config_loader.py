@@ -101,7 +101,7 @@ class ArticleConfig:
     editorial_analysis_max_output_tokens: int = 65_536
     editorial_analysis_compact_max_output_tokens: int = 16_384
     editorial_writer_max_output_tokens: int = 65_536
-    editorial_audit_max_output_tokens: int = 16_384
+    editorial_audit_max_output_tokens: int = 32_768
     editorial_repair_max_output_tokens: int = 8_192
     editorial_api_timeout: int = 300
     telegraph_access_token: str | None = None
@@ -402,7 +402,7 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
         "editorial_writer_max_output_tokens", editorial_max_output_tokens
     )
     editorial_audit_max_output_tokens = _positive_budget(
-        "editorial_audit_max_output_tokens", min(editorial_writer_max_output_tokens, 16_384)
+        "editorial_audit_max_output_tokens", 32_768
     )
     editorial_repair_max_output_tokens = _positive_budget(
         "editorial_repair_max_output_tokens", min(editorial_audit_max_output_tokens, 8_192)

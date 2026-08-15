@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.ai_providers import AIProvider
+from src.ai_providers import AIProvider, is_token_budget_error
 from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, AuditUnitLocator
 
@@ -203,6 +203,45 @@ class LightFactChecker:
             compact_cards.append(base)
         return compact_cards
 
+    async def _run_check_request(
+        self,
+        payload: dict[str, Any],
+        units: dict[str, AuditUnitLocator],
+        *,
+        compact_retry: bool = False,
+    ) -> FactCheckResult:
+        system = self._build_system_prompt()
+        if compact_retry:
+            system += "\n\nCOMPACT RETRY: Return only a minimal JSON object with status and substantive issues."
+        user = json.dumps(payload, ensure_ascii=False)
+        self.last_stage = "provider_call"
+        response = await self.provider.chat_completion(
+            messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+            model=self.model,
+            temperature=0.1,
+            max_tokens=self.max_output_tokens,
+            response_format={"type": "json_object"},
+        )
+        self.last_raw_response = response
+        self.last_response_chars = len(response) if response is not None else 0
+        parsed = self._parse_payload(response)
+        self.last_stage = "result_parse"
+        try:
+            result = FactCheckResult.from_dict(parsed)
+        except Exception as exc:
+            self.last_reason = f"failed to parse FactCheckResult: {exc}"
+            raise FactCheckUnavailableError(f"failed to parse FactCheckResult: {exc}") from exc
+
+        unknown_units = sorted(set(issue.unit_id for issue in result.issues) - set(units))
+        if unknown_units:
+            self.last_reason = (
+                f"fact-check returned unknown audit units: {', '.join(unknown_units)}"
+            )
+            raise ValueError(f"fact-check returned unknown audit units: {', '.join(unknown_units)}")
+        self.last_stage = None
+        self.last_reason = None
+        return result
+
     async def check(
         self,
         draft: ArticleDraft,
@@ -216,53 +255,41 @@ class LightFactChecker:
         self.last_response_chars = None
 
         units = audit_units or draft.audit_units()
-        system = self._build_system_prompt()
-        user = json.dumps(
-            {
-                "audit_units": {
-                    unit_id: {"path": locator.path, "text": locator.text}
-                    for unit_id, locator in units.items()
-                },
-                "story_cards": self._compact_story_cards(analysis, minimal=False),
-                "source_records": bundle.prompt_text,
+        normal_payload = {
+            "audit_units": {
+                unit_id: {"path": locator.path, "text": locator.text}
+                for unit_id, locator in units.items()
             },
-            ensure_ascii=False,
-        )
-        self.last_stage = "provider_call"
+            "story_cards": self._compact_story_cards(analysis, minimal=False),
+            "source_records": bundle.prompt_text,
+        }
         try:
-            response = await self.provider.chat_completion(
-                messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                model=self.model,
-                temperature=0.1,
-                max_tokens=self.max_output_tokens,
-                response_format={"type": "json_object"},
-            )
+            return await self._run_check_request(normal_payload, units, compact_retry=False)
         except Exception as exc:
+            if is_token_budget_error(exc) or (
+                isinstance(exc, FactCheckUnavailableError)
+                and is_token_budget_error(exc.__cause__ or exc)
+            ):
+                self.logger.warning(
+                    "Light fact-check token budget exhausted; retrying compact audit"
+                )
+                minimal_payload = {
+                    "audit_units": {
+                        unit_id: {"path": locator.path, "text": locator.text}
+                        for unit_id, locator in units.items()
+                    },
+                    "story_cards": self._compact_story_cards(analysis, minimal=True),
+                    "source_records": bundle.prompt_text,
+                }
+                try:
+                    return await self._run_check_request(minimal_payload, units, compact_retry=True)
+                except Exception as retry_exc:
+                    self.last_reason = str(retry_exc)
+                    raise FactCheckUnavailableError(
+                        f"compact audit retry failed: {retry_exc}"
+                    ) from retry_exc
             self.last_reason = str(exc)
-            raise FactCheckUnavailableError(f"provider_call failed: {exc}") from exc
-
-        self.last_raw_response = response
-        self.last_response_chars = len(response) if response is not None else 0
-
-        payload = self._parse_payload(response)
-
-        self.last_stage = "result_parse"
-        try:
-            result = FactCheckResult.from_dict(payload)
-        except Exception as exc:
-            self.last_reason = f"failed to parse FactCheckResult: {exc}"
-            raise FactCheckUnavailableError(f"failed to parse FactCheckResult: {exc}") from exc
-
-        unknown_units = sorted(set(issue.unit_id for issue in result.issues) - set(units))
-        if unknown_units:
-            self.last_reason = (
-                f"fact-check returned unknown audit units: {', '.join(unknown_units)}"
-            )
-            raise ValueError(f"fact-check returned unknown audit units: {', '.join(unknown_units)}")
-
-        self.last_stage = None
-        self.last_reason = None
-        return result
+            raise FactCheckUnavailableError(f"fact-check unavailable: {exc}") from exc
 
     async def repair(
         self,

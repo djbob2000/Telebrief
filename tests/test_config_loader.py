@@ -34,6 +34,13 @@ def test_article_config_defaults(temp_config_file, mock_env_vars):
 
 
 @pytest.mark.unit
+def test_article_audit_output_budget_defaults_to_32768(temp_config_file, mock_env_vars):
+    """Article audit output budget defaults to 32768 tokens independently of other stages."""
+    config = load_config(temp_config_file)
+    assert config.settings.article.editorial_audit_max_output_tokens == 32768
+
+
+@pytest.mark.unit
 def test_message_collection_default_limit_is_5000(temp_config_file, mock_env_vars):
     """A daily collection does not stop at the old 500-message cap."""
     config = load_config(temp_config_file)
