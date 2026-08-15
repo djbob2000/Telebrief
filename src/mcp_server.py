@@ -102,7 +102,7 @@ def build_server(config: Config, logger: logging.Logger) -> MCPServer:
         Args:
             channel: Channel name or id as configured under channels[*] in config.yaml
             hours: How many hours back to look, 1 to 168 (default 24)
-            limit: Maximum messages to return, 1 to 500, newest kept (default 200)
+            limit: Maximum messages to return, 1 to 5000, newest kept (default 200)
         """
         messages, source = await collect_channel_messages(config, logger, channel, hours, limit)
         if not messages:

@@ -93,7 +93,7 @@ settings:
   auto_cleanup_old_digests: true  # Automatically delete previous digest messages
 
   # Safety limits
-  max_messages_per_channel: 500
+  max_messages_per_channel: 5000
   max_prompt_chars: 8000  # Max characters of message content fed to AI per channel.
                           # Keeps the most recent messages that fit. Increase for models with
                           # large context windows; decrease if you hit "empty content + finish_reason=length".
@@ -130,6 +130,8 @@ settings:
     lookback_hours: 24
     author_name: "Бердянск Новости"
     fallback_save_dir: "data/articles"
+    generation_retries: 2  # Additional model attempts after a transient/error response.
+    generation_retry_delay: 1.0  # Seconds between attempts.
     # telegraph_access_token: ""  # Optional: generated automatically if omitted
 
 

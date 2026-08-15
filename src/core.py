@@ -25,7 +25,7 @@ _CHANNEL_URL_RE = re.compile(r"^https://t\.me/(?:c/\d+|[^/]{2,})$")
 
 _DIGEST_CACHE_PATH = Path("data/last_digest.json")
 MAX_DIGEST_HOURS = 168  # one week; guards against a caller asking for a year of history
-MAX_CHANNEL_MESSAGES = 500  # guards against a caller pulling a whole archive into the context
+MAX_CHANNEL_MESSAGES = 5000  # safety ceiling; normal collection is bounded by the time window
 
 # ponytail: one process-wide lock, not per-source; the scheduler, the bot and the
 # MCP server all build digests, and concurrent runs fight over the single
@@ -530,11 +530,35 @@ async def generate_and_send_digest(
         return False
 
 
+def _build_fallback_article(messages_by_channel: dict[str, list[Message]]) -> tuple[str, str, str]:
+    """Build a transparent source-based article when the model is unavailable."""
+    candidates: list[tuple[datetime, str, Message]] = []
+    for channel_name, messages in messages_by_channel.items():
+        for message in messages:
+            text = " ".join(str(message.text or "").split())
+            if text:
+                candidates.append((message.timestamp, channel_name, message))
+    if not candidates:
+        raise ValueError("Cannot build fallback article without source messages")
+
+    candidates.sort(key=lambda item: item[0], reverse=True)
+    selected = candidates[:5]
+    title = "Краткая сводка сообщений за последние 24 часа"
+    lead = "Редакционная генерация временно недоступна. Ниже собраны последние сообщения из источников."
+    parts = [
+        f"**{channel}**, {message.timestamp:%H:%M}: {message.text.strip()}"
+        for _, channel, message in selected
+    ]
+    body = f"# {title}\n\n{lead}\n\n" + "\n\n".join(parts)
+    return title, lead, body
+
+
 async def generate_and_publish_article(
     config: Config,
     logger: logging.Logger,
     hours: int = 24,
     user_id: Optional[int] = None,
+    dry_run: bool = False,
 ) -> bool:
     """Collect messages, generate long-form editorial article, publish to Telegra.ph,
 
@@ -545,13 +569,16 @@ async def generate_and_publish_article(
         logger: Logger instance
         hours: Lookback window in hours
         user_id: Target user ID
+        dry_run: If True, generate and print/save article without publishing or sending
 
     Returns:
         True if generation and delivery succeeded, False otherwise
     """
     validate_hours(hours)
     start_time = datetime.now(timezone.utc)
-    logger.info(f"Starting evening editorial article workflow for last {hours} hours")
+    logger.info(
+        f"Starting evening editorial article workflow for last {hours} hours (dry_run={dry_run})"
+    )
 
     messages_by_channel = await _collect_messages(config, logger, hours)
     total_messages = sum(len(msgs) for msgs in messages_by_channel.values())
@@ -564,18 +591,48 @@ async def generate_and_publish_article(
 
     try:
         generator = ArticleGenerator(config, logger)
-        title, lead, markdown_body = await generator.generate_article(messages_by_channel)
+        try:
+            title, lead, markdown_body = await generator.generate_article(messages_by_channel)
+        except Exception as exc:
+            logger.warning(
+                "Primary article generation failed; using source-based fallback: %s", exc
+            )
+            title, lead, markdown_body = _build_fallback_article(messages_by_channel)
 
-        # Fallback local save in case Telegraph is unreachable
+        # Fallback / preview local save
         fallback_dir = Path(config.settings.article.fallback_save_dir)
         try:
             fallback_dir.mkdir(parents=True, exist_ok=True)
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
-            fallback_file = fallback_dir / f"{now_str}_editorial.md"
+            fallback_file = (
+                fallback_dir / "preview_editorial.md"
+                if dry_run
+                else fallback_dir / f"{now_str}_editorial.md"
+            )
             fallback_file.write_text(markdown_body, encoding="utf-8")
-            logger.info(f"Saved local fallback copy of article to {fallback_file}")
+            logger.info(f"Saved article copy to {fallback_file}")
         except Exception as e:
             logger.warning(f"Could not save local article backup: {e}")
+
+        if dry_run:
+            print("\n" + "=" * 70)
+            print("📰 ТЕСТОВОЕ ПРЕВЬЮ СТАТЬИ (DRY-RUN)")
+            print("=" * 70)
+            print(f"Заголовок: {title}")
+            print(f"Лид: {lead}\n")
+            print("--- ПОЛНЫЙ ТЕКСТ СТАТЬИ ДЛЯ TELEGRA.PH ---")
+            print(markdown_body)
+            print("\n--- КАК ЭТО БУДЕТ ВЫГЛЯДЕТЬ В TELEGRAM-КАНАЛЕ ---")
+            lead_part = f"{lead.strip()}\n\n" if lead.strip() else ""
+            mock_url = "https://telegra.ph/Primer-stati-08-14"
+            print(
+                f"📰 *{title.strip()}*\n\n"
+                f"{lead_part}"
+                f"⚡️ [Читать полностью в Instant View]({mock_url})\n"
+                f"{mock_url}"
+            )
+            print("=" * 70 + "\n")
+            return True
 
         publisher = TelegraphPublisher(
             access_token=config.settings.article.telegraph_access_token,

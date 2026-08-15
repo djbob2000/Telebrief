@@ -4,6 +4,7 @@ Loads settings from config.yaml and environment variables.
 """
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from typing import Any, List
@@ -90,6 +91,8 @@ class ArticleConfig:
     author_name: str = "Бердянск Новости"
     fallback_save_dir: str = "data/articles"
     prompt_template: str = ".agents/skills/news-style/SKILL.md"
+    generation_retries: int = 2
+    generation_retry_delay: float = 1.0
     telegraph_access_token: str | None = None
 
 
@@ -109,7 +112,7 @@ class Settings:
     target_user_id: int = 0
     target_chat_id: str | int | None = None
     auto_cleanup_old_digests: bool = True
-    max_messages_per_channel: int = 500
+    max_messages_per_channel: int = 5000
     max_prompt_chars: int = 8000
     api_timeout: int = 30
     ai_provider: str = "openai"
@@ -239,7 +242,7 @@ def _parse_digest_settings(
     return digest_mode, digest_groups, output_language
 
 
-def _parse_article_config(settings_dict: dict) -> ArticleConfig:
+def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
     """Parse article settings from settings dict.
 
     Raises:
@@ -289,6 +292,23 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
             f"settings.article.prompt_template must be a non-empty string, got {prompt_template!r}"
         )
 
+    generation_retries = raw.get("generation_retries", 2)
+    if (
+        isinstance(generation_retries, bool)
+        or not isinstance(generation_retries, int)
+        or not 0 <= generation_retries <= 5
+    ):
+        raise ValueError("settings.article.generation_retries must be an integer between 0 and 5")
+
+    generation_retry_delay = raw.get("generation_retry_delay", 1.0)
+    if (
+        isinstance(generation_retry_delay, bool)
+        or not isinstance(generation_retry_delay, (int, float))
+        or not math.isfinite(float(generation_retry_delay))
+        or generation_retry_delay < 0
+    ):
+        raise ValueError("settings.article.generation_retry_delay must be a non-negative number")
+
     token = raw.get("telegraph_access_token")
     if token is not None and not isinstance(token, str):
         raise ValueError(
@@ -302,6 +322,8 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
         author_name=author_name.strip(),
         fallback_save_dir=fallback_save_dir.strip(),
         prompt_template=prompt_template.strip(),
+        generation_retries=generation_retries,
+        generation_retry_delay=float(generation_retry_delay),
         telegraph_access_token=token.strip() if token else None,
     )
 
@@ -703,7 +725,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         target_user_id=settings_dict.get("target_user_id", 0),
         target_chat_id=settings_dict.get("target_chat_id", settings_dict.get("target_user_id", 0)),
         auto_cleanup_old_digests=settings_dict.get("auto_cleanup_old_digests", True),
-        max_messages_per_channel=settings_dict.get("max_messages_per_channel", 500),
+        max_messages_per_channel=settings_dict.get("max_messages_per_channel", 5000),
         max_prompt_chars=settings_dict.get("max_prompt_chars", 8000),
         api_timeout=int(settings_dict.get("api_timeout", 30)),
         ai_provider=ai_provider,

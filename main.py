@@ -199,6 +199,11 @@ async def main():
         default=None,
         help="Lookback hours for on-demand generation",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Generate without publishing to Telegra.ph or sending to Telegram",
+    )
     args = parser.parse_args()
 
     app = TelebriefApp()
@@ -211,9 +216,14 @@ async def main():
         from src.core import generate_and_publish_article
 
         hours = args.hours or app.config.settings.article.lookback_hours
-        app.logger.info(f"Triggering on-demand article generation ({hours}h)...")
-        success = await generate_and_publish_article(app.config, app.logger, hours=hours)
+        app.logger.info(
+            f"Triggering on-demand article generation ({hours}h, dry_run={args.dry_run})..."
+        )
+        success = await generate_and_publish_article(
+            app.config, app.logger, hours=hours, dry_run=args.dry_run
+        )
         sys.exit(0 if success else 1)
+
 
     if args.digest:
         from src.core import generate_and_send_digest

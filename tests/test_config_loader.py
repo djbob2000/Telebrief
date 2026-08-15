@@ -32,6 +32,14 @@ def test_article_config_defaults(temp_config_file, mock_env_vars):
 
 
 @pytest.mark.unit
+def test_message_collection_default_limit_is_5000(temp_config_file, mock_env_vars):
+    """A daily collection does not stop at the old 500-message cap."""
+    config = load_config(temp_config_file)
+
+    assert config.settings.max_messages_per_channel == 5000
+
+
+@pytest.mark.unit
 def test_article_config_custom_values(tmp_path, mock_env_vars):
     """Custom article settings are parsed and validated properly."""
     config_file = tmp_path / "config.yaml"
@@ -60,6 +68,29 @@ settings:
         fallback_save_dir="custom/articles",
         telegraph_access_token="tok_secret",
     )
+
+
+@pytest.mark.unit
+def test_article_config_parses_generation_retry_settings(tmp_path, mock_env_vars):
+    """Retry count and delay are configurable for resilient article generation."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@test"
+    name: "Test Channel"
+settings:
+  target_user_id: 123456789
+  article:
+    generation_retries: 4
+    generation_retry_delay: 0.25
+"""
+    )
+
+    config = load_config(str(config_file))
+
+    assert config.settings.article.generation_retries == 4
+    assert config.settings.article.generation_retry_delay == 0.25
 
 
 @pytest.mark.unit

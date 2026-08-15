@@ -38,7 +38,7 @@ def sample_config():
         include_statistics=True,
         target_user_id=123456789,
         auto_cleanup_old_digests=True,
-        max_messages_per_channel=500,
+        max_messages_per_channel=5000,
         max_prompt_chars=8000,
         api_timeout=30,
         ai_provider="openai",
@@ -124,7 +124,7 @@ settings:
   include_statistics: true
   target_user_id: 123456789
   auto_cleanup_old_digests: true
-  max_messages_per_channel: 500
+  max_messages_per_channel: 5000
   api_timeout: 30
 """
     config_file = tmp_path / "config.yaml"

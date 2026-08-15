@@ -1116,7 +1116,7 @@ async def test_collect_channel_messages_keeps_newest_within_limit(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-@pytest.mark.parametrize("limit", [0, -1, 501, True, 2.5, "10"])
+@pytest.mark.parametrize("limit", [0, -1, 5001, True, 2.5, "10"])
 async def test_collect_channel_messages_rejects_bad_limit(sample_config, mock_logger, limit):
     """An out-of-range limit fails before any storage or Telegram work happens."""
     with patch("src.core.create_storage", new_callable=AsyncMock) as mock_create:
@@ -1153,3 +1153,50 @@ async def test_generate_and_publish_article_workflow(sample_config, mock_logger)
         mock_gen.assert_called_once()
         mock_page.assert_called_once()
         mock_send.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_and_publish_article_uses_fallback_when_model_fails(
+    sample_config, mock_logger, tmp_path
+):
+    """A model failure still yields a source-based article for publication."""
+    from datetime import datetime, timezone
+
+    from src.collector import Message
+    from src.core import generate_and_publish_article
+
+    sample_config.settings.article.fallback_save_dir = str(tmp_path)
+    fallback_message = Message(
+        text="Коммунальная служба сообщила о временном отключении воды",
+        sender="Редакция",
+        timestamp=datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc),
+        link="https://t.me/test/1",
+        channel_name="Test Channel",
+        has_media=False,
+        media_type="",
+    )
+
+    with (
+        patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
+        patch(
+            "src.article_generator.ArticleGenerator.generate_article", new_callable=AsyncMock
+        ) as mock_gen,
+        patch("src.telegraph.TelegraphPublisher.create_page", new_callable=AsyncMock) as mock_page,
+        patch(
+            "src.sender.DigestSender.send_article_instant_view", new_callable=AsyncMock
+        ) as mock_send,
+    ):
+        mock_collect.return_value = {"Test Channel": [fallback_message]}
+        mock_gen.side_effect = RuntimeError("provider unavailable")
+        mock_page.return_value = "https://telegra.ph/Sample-08-15"
+        mock_send.return_value = True
+
+        success = await generate_and_publish_article(sample_config, mock_logger, hours=24)
+
+        assert success is True
+        mock_page.assert_called_once()
+        page_content = mock_page.call_args.kwargs["content_markdown"]
+        assert "временном отключении воды" in page_content
+        mock_send.assert_called_once()
+        assert list(tmp_path.glob("*_editorial.md"))

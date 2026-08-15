@@ -1,4 +1,4 @@
 interface:
   display_name: "News Style"
-  short_description: "Generate local news in this editorial voice"
-  default_prompt: "Use $news-style to draft an original local news article in the pro.berdyansk.biz style."
+  short_description: "Draft and edit accurate regional news copy"
+  default_prompt: "Use $news-style to draft, translate, fact-check, or edit accurate local news copy."
