@@ -5,7 +5,7 @@
 **Goal:** Transform the daily editorial article generation into a cohesive, high-quality publication («Чем жил Бердянск за последние сутки») with tolerant syntax normalization, granular ref sanitization, assistance-aware filtering, synthesis-aware auditing, and a 3–5 chapter journalistic composition contract.
 
 **Architecture:**
-- **Tolerant Model & Provenance Layer** (`src/editorial_models.py`): Dataclass support for `representative_source_refs`, string element coercion with `status="attributed"`, optional `Uncertainty.basis` defaulting to `"unspecified"`, robust nested list item error isolation, and pure `sanitized_against_refs()` methods.
+- **Tolerant Model & Provenance Layer** (`src/editorial_models.py`): Dataclass support for `representative_source_refs`, string element coercion with `status="attributed"`, optional `Uncertainty.basis` defaulting to `"unspecified"`, robust nested list item error isolation without logger dependencies, and pure `sanitized_against_refs()` methods.
 - **Resilient Analysis Parser** (`src/editorial_analysis.py`): Granular element and card sanitization in `EditorialAnalyzer` ensuring valid cards reach the writer and raising `EditorialAnalysisError` only if 0 cards remain.
 - **Assistance-Aware Input Filtering** (`src/editorial_input.py`): Preservation of mutual aid and community support messages (charging, water, heating) in `EditorialInputBuilder._looks_commercial` without mutating `source_type`.
 - **Journalistic Writer & Style Contract** (`.agents/skills/news-style/SKILL.md`, `src/editorial_writer.py`): Narrative 3–5 chapter composition, lead with 2–3 themes, adaptive dominance, and collective observation synthesis.
@@ -129,7 +129,7 @@ In `src/editorial_models.py`:
   - In `from_dict`: extract `representative_source_refs` from `representative_source_refs`, `source_refs`, `sources`, `refs`, `evidence` (preserving order, removing duplicates).
   - Normalize nested list fields (`hard_facts`, `community_observations`, `useful_details`, `uncertainties`):
     - Handle `None` as `[]`.
-    - Iterate each item in list: try `StoryElement.from_dict(item, card_refs=rep_refs)` / `Uncertainty.from_dict(item, card_refs=rep_refs)`. Catch `(AttributeError, TypeError, ValueError)` locally, log debug/warning, and skip only that malformed item.
+    - Iterate each item in list: try `StoryElement.from_dict(item, card_refs=rep_refs)` / `Uncertainty.from_dict(item, card_refs=rep_refs)`. Catch `(AttributeError, TypeError, ValueError)` locally and skip only that malformed item (keeping model layer pure without logger dependencies).
   - In `all_source_refs()`: include `self.representative_source_refs` in the returned set.
 
 - [ ] **Step 1.4: Run tests to verify Step 1.3 passes**
@@ -353,9 +353,8 @@ In `src/editorial_input.py`:
 - Add `_MUTUAL_AID_MARKERS = re.compile(r"(?:бесплатно\s+(?:зарядить|набрать|разда)|подвоз\s+(?:питьев|техническ)?воды|раздач[аеи]\s+воды|пункт\s+обогрев|помощь\s+сосед|поделит[ьс]ся\s+генератор)", re.IGNORECASE)`
 - In `_looks_commercial(text: str, source_type: str = "mixed") -> bool`:
   - Preserve existing explicit commercial/financial predicates.
-  - Check explicit financial/commercial spam (`_EXPLICIT_COMMERCIAL`, `_FINANCIAL_ACTION`). If found -> return `True`.
-  - Check `_MUTUAL_AID_MARKERS`. If found and no explicit commercial spam -> return `False`.
-  - Continue standard commercial marker heuristics.
+  - If explicit commercial spam matches (`_EXPLICIT_COMMERCIAL`), return `True`.
+  - Otherwise allow `_MUTUAL_AID_MARKERS` to exempt genuine assistance before continuing standard commercial heuristics. Do not introduce a new financial helper unless required by a failing test.
 
 - [ ] **Step 2.4: Run all tests in `test_editorial_input.py`**
 
@@ -381,7 +380,7 @@ git commit -m "feat: preserve community mutual aid and assistance messages in ed
 
 - [ ] **Step 3.0: Mandatory skill editing protocol**
 
-Before modifying `.agents/skills/news-style/SKILL.md`, invoke the `writing-skills` skill and follow its instructions. Preserve the approved editorial contract; do not redesign it.
+Before modifying `.agents/skills/news-style/SKILL.md`, invoke `skill-creator` and follow its instructions. Preserve the approved editorial contract; do not redesign it.
 
 - [ ] **Step 3.1: Write failing tests for news style skill content and writer prompt composition contract**
 
