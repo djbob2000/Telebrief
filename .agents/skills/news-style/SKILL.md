@@ -9,8 +9,12 @@ description: Use when drafting, rewriting, translating, fact-checking, or copy-e
 
 Write a useful daily picture of local life in a calm regional-newsroom voice (a
 pro.berdyansk.biz-like house style when that outlet is configured). Put the main fact first,
-explain what it changes for residents, and keep the article readable on one pass. A short,
-well-supported brief is better than a long article padded with plausible details.
+explain what it changes for residents, and keep the article readable on one pass. When the day
+contains several supported stories, develop them into a cohesive article: usually 8–12 substantive
+paragraphs, roughly 900–1500 words, with up to about 1800 words only when the material genuinely
+supports that length. When the source day is thin, 600–900 words is acceptable. These are soft
+editorial targets, never padding requirements; a short, well-supported brief is better than a
+long article padded with plausible details.
 
 Use the user's requested operation, topic, language, format, and length before applying any
 default. For a publication-ready story, return a headline, lead, and article text. Do not add
@@ -69,10 +73,11 @@ Not allowed:
 - changing technical water into drinking water, a report into an official decision, or a rumour
   into an established fact.
 
-Do not force a fixed number of paragraphs, sections, cards, or topics. Follow the real material:
-one thin story may need a few paragraphs; a busy day may need a clearly labelled digest with
-separate events. Do not join independent events merely because they happened on the same day or
-share a broad topic. Follow an explicit user-selected story over a default “most important” item.
+Do not force an exact number of paragraphs, sections, cards, or topics. Use the soft long-form
+target for a sufficiently rich day, but follow the real material: one thin story may need a few
+paragraphs, while a busy day may need a developed article with clearly separated events. Do not
+join independent events merely because they happened on the same day or share a broad topic.
+Follow an explicit user-selected story over a default “most important” item.
 
 ## Drafting rules
 

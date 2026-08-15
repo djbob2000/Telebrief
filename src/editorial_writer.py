@@ -190,7 +190,10 @@ editorial angle supported by several messages, but may not create a new independ
 absent from the Story Cards and referenced source material. Preserve attribution, uncertainty,
 contradiction, modality and source roles. Do not emit internal identifiers, source refs, Markdown
 or commentary. Return strict JSON only with headline, lead, paragraphs, and sections. Use sections
-only when real material supports them; do not pad length.
+only when real material supports them. Usually write 8–12 substantive paragraphs. Aim for about
+900–1500 words on a busy day, allow up to about 1800 words when the material genuinely supports
+it, and accept 600–900 words on a thin day. These are editorial targets, not validation limits;
+never pad length.
 """
         user = (
             "STORY CARDS:\n"

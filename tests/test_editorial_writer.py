@@ -132,3 +132,20 @@ async def test_writer_prompt_allows_synthesis_without_claim_ids():
     assert "new independently verifiable fact" in combined.lower()
     assert "claim id" not in combined.lower()
     assert "S000001" in combined
+    assert "8–12 substantive paragraphs" in combined
+    assert "900–1500 words" in combined
+
+
+def test_writer_prompt_uses_selected_source_excerpts_only():
+    writer = EditorialWriter(MagicMock(), "model", "SKILL: precise local news", MagicMock())
+    selected = PreparedBundle(
+        records={"S000001": _bundle().records["S000001"]},
+        prompt_text="[S000001] Жители сообщили о перебоях с водой.",
+        total_messages=2,
+        candidate_count=1,
+    )
+
+    _, user_prompt = writer.build_prompt(_analysis(), selected)
+
+    assert "Жители сообщили о перебоях с водой" in user_prompt
+    assert "S000002" not in user_prompt
