@@ -12,7 +12,9 @@ from src.config_loader import (
     ForumTopicConfig,
     McpConfig,
     PromptsConfig,
+    SourceRoleResolver,
     StorageConfig,
+    effective_source_type,
     load_config,
 )
 
@@ -121,6 +123,60 @@ settings:
 
 
 @pytest.mark.unit
+def test_source_type_precedence_and_mixed_default(tmp_path, mock_env_vars):
+    """Topic roles override channel roles, while omitted roles default to mixed."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@source"
+    name: "Source"
+    source_type: community
+    topics:
+      - id: 123
+        name: "News"
+        source_type: news
+  - id: "@unknown"
+    name: "Unknown"
+settings:
+  target_user_id: 123456789
+"""
+    )
+
+    config = load_config(str(config_file))
+
+    assert config.channels[0].source_type == "community"
+    assert config.channels[0].topics[0].source_type == "news"
+    assert effective_source_type(config.channels[0], config.channels[0].topics[0]) == "news"
+    assert config.channels[1].source_type == "mixed"
+    assert effective_source_type(config.channels[1]) == "mixed"
+
+    resolver = SourceRoleResolver(config.channels)
+    assert resolver.resolve("Source", topic_id=123) == "news"
+    assert resolver.resolve("Source", topic_id=999) == "community"
+    assert resolver.resolve("Unknown") == "mixed"
+
+
+@pytest.mark.unit
+def test_source_type_rejects_unknown_value(tmp_path, mock_env_vars):
+    """Unknown editorial roles fail configuration validation."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@source"
+    name: "Source"
+    source_type: officialish
+settings:
+  target_user_id: 123456789
+"""
+    )
+
+    with pytest.raises(ValueError, match="source_type"):
+        load_config(str(config_file))
+
+
+@pytest.mark.unit
 def test_load_config_defaults_topics_to_empty(temp_config_file, mock_env_vars):
     """Sources without a topics block retain whole-source collection behavior."""
     config = load_config(temp_config_file)
@@ -177,6 +233,34 @@ settings:
     assert config.settings.ai_provider == "google"
     assert config.settings.ai_model == "gemini-3.6-flash"
     assert config.google_api_key == "google-test-key"
+
+
+@pytest.mark.unit
+def test_load_config_reads_google_and_openrouter_fallback_keys(
+    tmp_path, mock_env_vars, monkeypatch
+):
+    """Optional backup Google keys and OpenRouter credentials are loaded separately."""
+    monkeypatch.setenv("GEMINI_API_KEY", "google-test-key")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "google-backup-2")
+    monkeypatch.setenv("GEMINI_API_KEY_3", "google-backup-3")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-test-key")
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@test_channel"
+    name: "Test Channel"
+settings:
+  target_user_id: 123456789
+  ai_provider: "google"
+"""
+    )
+
+    config = load_config(str(config_file))
+
+    assert config.google_api_key_2 == "google-backup-2"
+    assert config.google_api_key_3 == "google-backup-3"
+    assert config.openrouter_api_key == "openrouter-test-key"
 
 
 @pytest.mark.unit

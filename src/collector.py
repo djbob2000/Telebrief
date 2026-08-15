@@ -28,6 +28,9 @@ class Message:
     channel_name: str
     has_media: bool
     media_type: str
+    message_id: int | None = None
+    reply_to_id: int | None = None
+    topic_id: int | None = None
 
 
 class MessageCollector:
@@ -247,14 +250,18 @@ class MessageCollector:
         for message in response.messages:
             if message.date < lookback_time:
                 continue
-            project_message = await self._to_project_message(entity, logical_name, message)
+            project_message = await self._to_project_message(
+                entity, logical_name, message, topic_id=topic.id
+            )
             if project_message is not None:
                 messages.append(project_message)
 
         messages.sort(key=lambda m: m.timestamp)
         return messages
 
-    async def _to_project_message(self, entity, channel_name: str, message) -> Message | None:
+    async def _to_project_message(
+        self, entity, channel_name: str, message, topic_id: int | None = None
+    ) -> Message | None:
         """Convert a Telethon message to the project model, skipping empty service posts."""
         if not message.text:
             if message.media:
@@ -268,6 +275,8 @@ class MessageCollector:
 
         sender = await self._get_sender_name(message)
         link = await self._generate_message_link(entity, message.id)
+        reply_to = getattr(message, "reply_to", None)
+        reply_to_id = getattr(reply_to, "reply_to_msg_id", None) if reply_to else None
         return Message(
             text=text,
             sender=sender,
@@ -276,6 +285,9 @@ class MessageCollector:
             channel_name=channel_name,
             has_media=message.media is not None,
             media_type=media_type or "",
+            message_id=getattr(message, "id", None),
+            reply_to_id=reply_to_id,
+            topic_id=topic_id,
         )
 
     def _get_media_type(self, message: TelegramMessage) -> str:

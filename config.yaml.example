@@ -2,6 +2,7 @@
 channels:
   - id: "@channelname"
     name: "Example Channel"
+    # source_type: mixed # news|community|official|classifieds|mixed; editorial role, not trust
     # group: Jobs              # optional — bind to a digest_groups entry (or "Other")
     # prompt_extra: ""         # optional — append extra instructions to this channel's AI prompt
     # lookback_hours: null     # optional — override global lookback_hours for this channel
@@ -9,6 +10,7 @@ channels:
     # topics:                  # optional — for Telegram forum groups, collect only these topics
     #   - id: 12345
     #     name: "Selected topic"
+    #     source_type: news # optional topic override
   # Add your channels here
   # Format for public channels: "@channelname" (string with quotes)
   # Format for private channels/groups: -1001234567890 (integer, NO quotes!)
@@ -28,11 +30,12 @@ settings:
   timezone: "UTC"
   lookback_hours: 24       # Global collection window
 
-  # AI Provider: "openai", "ollama", "anthropic", or "google"
+  # AI Provider: "openai", "ollama", "anthropic", "google", or "openrouter"
   # Required env vars per provider:
   #   openai    -> OPENAI_API_KEY in .env
   #   anthropic -> ANTHROPIC_API_KEY in .env
-  #   google    -> GEMINI_API_KEY in .env
+  #   google    -> GEMINI_API_KEY (+ optional _2/_3 backups) in .env
+  #   openrouter -> OPENROUTER_API_KEY in .env
   #   ollama    -> no API key needed
   ai_provider: "openai"
 
@@ -41,6 +44,7 @@ settings:
   # Ollama: "llama3", "mistral", "gemma2", etc.
   # Anthropic: "claude-sonnet-4-5-20250929", etc.
   # Google: "gemini-3.6-flash"
+  # OpenRouter: "openrouter/free" (used as the final Google fallback)
   ai_model: "gpt-5-nano"
   # For DeepSeek via the OpenAI-compatible API use:
   # ai_model: "deepseek-v4-flash"

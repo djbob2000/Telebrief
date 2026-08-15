@@ -17,7 +17,25 @@ def _telegram_message(message_id: int, text: str = "Новость"):
     message.text = text
     message.media = None
     message.sender = None
+    message.reply_to = None
     return message
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_to_project_message_preserves_context_metadata(sample_config, mock_logger):
+    """Telegram IDs and reply metadata survive conversion to the project model."""
+    collector = _collector(sample_config, mock_logger)
+    message = _telegram_message(42)
+    message.reply_to = SimpleNamespace(reply_to_msg_id=41)
+    entity = SimpleNamespace(id=123, username="source")
+
+    result = await collector._to_project_message(entity, "Source", message, topic_id=99)
+
+    assert result is not None
+    assert result.message_id == 42
+    assert result.reply_to_id == 41
+    assert result.topic_id == 99
 
 
 def _collector(config, logger):

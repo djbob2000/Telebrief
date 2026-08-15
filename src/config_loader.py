@@ -27,6 +27,7 @@ class ForumTopicConfig:
 
     id: int
     name: str
+    source_type: str | None = None
 
 
 @dataclass
@@ -40,6 +41,7 @@ class ChannelConfig:
     filters: list[FilterSpec] | None = None  # None=use global, []=explicit no-op
     group: str | None = None  # must reference digest_groups[*].name, "Other", or None
     topics: list[ForumTopicConfig] = field(default_factory=list)
+    source_type: str = "mixed"
 
 
 @dataclass
@@ -140,6 +142,11 @@ class Config:
     openai_api_key: str
     log_level: str
     google_api_key: str = ""
+    google_api_key_2: str = ""
+    google_api_key_3: str = ""
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_model: str = "openrouter/free"
     openai_base_url: str = ""
     anthropic_api_key: str = ""
     storage: StorageConfig = field(default_factory=StorageConfig)
@@ -148,13 +155,60 @@ class Config:
 
 
 SUPPORTED_LANGUAGES = ("English", "Russian", "Spanish", "German", "French")
+SOURCE_TYPES = ("news", "community", "official", "classifieds", "mixed")
 
-_SUPPORTED_PROVIDERS = {"openai", "ollama", "anthropic", "google"}
+
+def _normalize_source_type(value: object, label: str, *, allow_none: bool = False) -> str | None:
+    """Normalize and validate an editorial source role."""
+    if value is None and allow_none:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        suffix = " or null" if allow_none else ""
+        raise ValueError(f"{label} must be one of {', '.join(SOURCE_TYPES)}{suffix}")
+    normalized = value.strip().lower()
+    if normalized not in SOURCE_TYPES:
+        raise ValueError(f"{label} must be one of {', '.join(SOURCE_TYPES)}, got {value!r}")
+    return normalized
+
+
+def effective_source_type(channel: ChannelConfig, topic: ForumTopicConfig | None = None) -> str:
+    """Return the configured editorial role using topic > channel > mixed precedence."""
+    return (topic.source_type if topic and topic.source_type else channel.source_type) or "mixed"
+
+
+class SourceRoleResolver:
+    """Resolve configured editorial roles without inferring them from names."""
+
+    def __init__(self, channels: list[ChannelConfig]):
+        self._channels = channels
+
+    def resolve(self, channel_name: str, topic_id: int | None = None) -> str:
+        for channel in self._channels:
+            logical_prefix = f"{channel.name} — "
+            if channel_name != channel.name and not channel_name.startswith(logical_prefix):
+                continue
+
+            topic_name = (
+                channel_name[len(logical_prefix) :]
+                if channel_name.startswith(logical_prefix)
+                else None
+            )
+            for topic in channel.topics:
+                if (topic_id is not None and topic.id == topic_id) or (
+                    topic_name is not None and topic.name == topic_name
+                ):
+                    return effective_source_type(channel, topic)
+            return effective_source_type(channel)
+        return "mixed"
+
+
+_SUPPORTED_PROVIDERS = {"openai", "ollama", "anthropic", "google", "openrouter"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-5-nano",
     "anthropic": "claude-sonnet-4-5-20250929",
     "ollama": "llama3",
     "google": "gemini-3.6-flash",
+    "openrouter": "openrouter/free",
 }
 
 
@@ -391,6 +445,14 @@ def _validate_channel_group(i: int, ch: dict) -> str | None:
     return group.strip()
 
 
+def _validate_channel_source_type(i: int, ch: dict) -> str:
+    """Validate a channel's optional editorial source role."""
+    return (
+        _normalize_source_type(ch.get("source_type", "mixed"), f"channels[{i}].source_type")
+        or "mixed"
+    )
+
+
 def _validate_channel_topics(i: int, ch: dict) -> list[ForumTopicConfig]:
     raw_topics = ch.get("topics", [])
     if not isinstance(raw_topics, list):
@@ -407,7 +469,16 @@ def _validate_channel_topics(i: int, ch: dict) -> list[ForumTopicConfig]:
         topic_name = raw_topic.get("name")
         if not isinstance(topic_name, str) or not topic_name.strip():
             raise ValueError(f"{path}.name must be a non-empty string, got {topic_name!r}")
-        topics.append(ForumTopicConfig(id=topic_id, name=topic_name.strip()))
+        topic_source_type = _normalize_source_type(
+            raw_topic.get("source_type"), f"{path}.source_type", allow_none=True
+        )
+        topics.append(
+            ForumTopicConfig(
+                id=topic_id,
+                name=topic_name.strip(),
+                source_type=topic_source_type,
+            )
+        )
     return topics
 
 
@@ -448,6 +519,7 @@ def _parse_channel_entry(i: int, ch: object) -> ChannelConfig:
         filters=channel_filters,
         group=_validate_channel_group(i, ch),
         topics=_validate_channel_topics(i, ch),
+        source_type=_validate_channel_source_type(i, ch),
     )
 
 
@@ -621,7 +693,12 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
     openai_api_key = os.getenv("OPENAI_API_KEY", "")
     openai_base_url = os.getenv("OPENAI_BASE_URL", "")
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    google_api_key = os.getenv("GEMINI_API_KEY", "")
+    google_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+    google_api_key_2 = os.getenv("GEMINI_API_KEY_2") or os.getenv("GOOGLE_API_KEY_2", "")
+    google_api_key_3 = os.getenv("GEMINI_API_KEY_3") or os.getenv("GOOGLE_API_KEY_3", "")
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
+    openrouter_base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
+    openrouter_model = os.getenv("OPENROUTER_MODEL") or "openrouter/free"
     log_level = os.getenv("LOG_LEVEL", "INFO")
 
     missing_vars = []
@@ -638,6 +715,8 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
         missing_vars.append("ANTHROPIC_API_KEY")
     elif ai_provider == "google" and not google_api_key:
         missing_vars.append("GEMINI_API_KEY")
+    elif ai_provider == "openrouter" and not openrouter_api_key:
+        missing_vars.append("OPENROUTER_API_KEY")
 
     if missing_vars:
         raise ValueError(
@@ -657,6 +736,11 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
         "openai_base_url": openai_base_url,
         "anthropic_api_key": anthropic_api_key,
         "google_api_key": google_api_key,
+        "google_api_key_2": google_api_key_2,
+        "google_api_key_3": google_api_key_3,
+        "openrouter_api_key": openrouter_api_key,
+        "openrouter_base_url": openrouter_base_url,
+        "openrouter_model": openrouter_model,
         "log_level": log_level,
     }
 
