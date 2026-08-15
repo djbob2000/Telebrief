@@ -217,7 +217,9 @@ backup/
 config.yaml
 
 # Message ID storage
-data/
+data/*
+!data/city_profiles/
+!data/city_profiles/**
 
 # Index file
 PROJECT_INDEX.md
@@ -234,6 +236,3 @@ CLAUDE.md
 
 # Serena
 .serena/
-
-# Superpowers docs
-docs/superpowers/
