@@ -318,3 +318,54 @@ def test_story_context_enricher_counts_all_card_source_refs():
 
     assert ctx.scale.observed_count == 2
     assert ctx.scale.geographic_spread is True
+
+
+def test_story_context_enricher_same_area_deduplication():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+    enricher = StoryContextEnricher(resolver)
+
+    # S000001 on Shevchenko St (inferred Center), S000002 directly in Center, S000003 in Liski
+    rec1 = SourceRecord(
+        ref="S000001",
+        message=_message("На ул. Шевченко нет света", 1),
+        source_type="community",
+        city_context=resolver.resolve("На ул. Шевченко нет света"),
+    )
+    rec2 = SourceRecord(
+        ref="S000002",
+        message=_message("В центре нет света", 2),
+        source_type="community",
+        city_context=resolver.resolve("В центре нет света"),
+    )
+    rec3 = SourceRecord(
+        ref="S000003",
+        message=_message("На Лисках нет света", 3),
+        source_type="community",
+        city_context=resolver.resolve("На Лисках нет света"),
+    )
+    bundle = PreparedBundle(
+        records={"S000001": rec1, "S000002": rec2, "S000003": rec3},
+        prompt_text="",
+        total_messages=3,
+        candidate_count=3,
+    )
+    card = StoryCard(
+        id="SC001",
+        topic="Отключения света",
+        importance="high",
+        summary="Отключения света",
+        representative_source_refs=["S000001", "S000002", "S000003"],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+
+    story_contexts = enricher.enrich(analysis, bundle)
+    ctx = story_contexts["SC001"]
+
+    # 3 messages from 2 unique areas (Center and Liski)
+    assert len(ctx.municipal_areas) == 2
+    center_area = next(a for a in ctx.municipal_areas if a.area_id == "center")
+    assert center_area.source_refs == ("S000001", "S000002")
+    assert center_area.direct_area_refs == ("S000002",)
+    assert center_area.inferred_from_place_refs == ("S000001",)
+    assert ctx.scale.observed_count == 2
+    assert ctx.scale.geographic_spread is True

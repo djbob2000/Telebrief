@@ -663,13 +663,13 @@ git commit -m "feat: use Berdyansk context across editorial pipeline"
 
 ---
 
-### Task 6: End-to-end regressions and live dry-run verification
+### Task 6: End-to-end regressions and live dry-run verification (COMPLETED)
 
 **Files:**
 - Modify: `tests/test_article_generator.py`
 - Modify: `tests/test_city_context.py`
 
-- [ ] **Step 1: Add end-to-end regressions in `tests/test_city_context.py` and `tests/test_article_generator.py`**
+- [x] **Step 1: Add end-to-end regressions in `tests/test_city_context.py` and `tests/test_article_generator.py`**
 
 - Same-area regression: `S1` (Shevchenko), `S2` (Center), `S3` (Liski) $\rightarrow$ 2 unique municipal areas, Center has 2 refs.
 - Ambiguity scale safety regression: ambiguous multi-area street does not inflate `observed_count`.
@@ -677,7 +677,7 @@ git commit -m "feat: use Berdyansk context across editorial pipeline"
 - Collision regression: `улица Шевченко` vs `бульвар Шевченко` are distinct entities with distinct area memberships.
 - Provider/Route recognition: `Юпитер`, `Поинт`, `+7Телеком`, `МирТелеком`, `маршрут 15` recognized as local entities without operational status leaking as current-day events.
 
-- [ ] **Step 2: Run full verification suite**
+- [x] **Step 2: Run full verification suite**
 
 ```bash
 uv run pytest -q --no-cov
@@ -688,7 +688,7 @@ git diff --check
 
 Expected: all checks PASS.
 
-- [ ] **Step 3: Run live dry-run**
+- [x] **Step 3: Run live dry-run**
 
 ```bash
 uv run python main.py --article --dry-run
@@ -696,9 +696,9 @@ uv run python main.py --article --dry-run
 
 Inspect generated `data/articles/preview_editorial.md` and debug artifacts.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
-git add tests/test_article_generator.py tests/test_city_context.py
+git add tests/test_article_generator.py tests/test_city_context.py config.yaml docs/superpowers/plans/2026-08-15-city-context-resolver.md
 git commit -m "test: cover Berdyansk city context integration"
 ```
