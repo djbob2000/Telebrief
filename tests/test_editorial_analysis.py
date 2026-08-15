@@ -8,7 +8,11 @@ import pytest
 
 from src.ai_providers import ProviderCascadeError
 from src.collector import Message
-from src.editorial_analysis import ContextSizeRejectedError, EditorialAnalyzer
+from src.editorial_analysis import (
+    ContextSizeRejectedError,
+    EditorialAnalysisError,
+    EditorialAnalyzer,
+)
 from src.editorial_models import PreparedBundle, SourceRecord
 
 
@@ -108,6 +112,22 @@ async def test_editorial_analyzer_exposes_context_rejection_for_caller(mock_logg
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_editorial_analyzer_reports_provider_failure_kind(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        side_effect=ProviderCascadeError("all slots failed", failure_kinds=("quota", "timeout"))
+    )
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(EditorialAnalysisError) as error:
+        await analyzer.analyze(_bundle())
+
+    assert error.value.stage == "provider_call"
+    assert error.value.reason == "quota,timeout"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_editorial_analyzer_rejects_story_card_refs_outside_bundle(mock_logger):
     provider = MagicMock()
     provider.chat_completion = AsyncMock(
@@ -133,5 +153,76 @@ async def test_editorial_analyzer_rejects_story_card_refs_outside_bundle(mock_lo
     )
     analyzer = EditorialAnalyzer(provider, "model", mock_logger)
 
-    with pytest.raises(ValueError, match="S999999"):
+    with pytest.raises(EditorialAnalysisError, match="S999999") as error:
         await analyzer.analyze(_bundle())
+
+    assert error.value.stage == "invalid_source_ref"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_reports_json_parse_stage(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value='{"cards": [')
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(EditorialAnalysisError) as error:
+        await analyzer.analyze(_bundle())
+
+    assert error.value.stage == "json_parse"
+    assert error.value.response_chars == len('{"cards": [')
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", ["", "[]", '{"cards": {}}'])
+async def test_editorial_analyzer_reports_empty_or_invalid_shape(mock_logger, response):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value=response)
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(EditorialAnalysisError) as error:
+        await analyzer.analyze(_bundle())
+
+    assert error.value.stage in {"empty_response", "response_shape"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_reports_story_card_parse_stage(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps(
+            {
+                "cards": [
+                    {
+                        "id": "SC001",
+                        "topic": "Вода",
+                        "importance": "urgent",
+                        "summary": "Тема",
+                    }
+                ]
+            }
+        )
+    )
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(EditorialAnalysisError) as error:
+        await analyzer.analyze(_bundle())
+
+    assert error.value.stage == "story_card_parse"
+    assert error.value.response_chars is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_keeps_last_raw_response_for_debug_artifact(mock_logger):
+    raw = '{"cards": ['
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value=raw)
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(EditorialAnalysisError):
+        await analyzer.analyze(_bundle())
+
+    assert analyzer.last_raw_response == raw

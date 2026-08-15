@@ -11,7 +11,11 @@ from typing import Any, Dict, List, Tuple
 from src.ai_providers import AIProvider, create_provider
 from src.collector import Message
 from src.config_loader import Config, SourceRoleResolver
-from src.editorial_analysis import ContextSizeRejectedError, EditorialAnalyzer
+from src.editorial_analysis import (
+    ContextSizeRejectedError,
+    EditorialAnalysisError,
+    EditorialAnalyzer,
+)
 from src.editorial_audit import (
     FactCheckResult,
     FactCheckUnavailableError,
@@ -125,6 +129,19 @@ class ArticleGenerator:
                     "Editorial analysis exceeded model context; using explicit context batching"
                 )
                 return await self.analyzer.analyze_batched(bundle)
+            except EditorialAnalysisError as exc:
+                self.logger.warning(
+                    "Editorial analysis attempt %d failed: stage=%s reason=%s response_chars=%s",
+                    attempt + 1,
+                    exc.stage,
+                    exc.reason,
+                    exc.response_chars if exc.response_chars is not None else "unknown",
+                )
+                if attempt >= retries:
+                    raise
+                if delay:
+                    await asyncio.sleep(delay * (attempt + 1))
+                self.logger.warning("Editorial analysis attempt %d failed; retrying", attempt + 1)
             except Exception as exc:
                 self.logger.warning(
                     "Editorial analysis attempt %d failed: %s",
@@ -258,6 +275,7 @@ class ArticleGenerator:
             analysis = await self._analyze(bundle)
             self._save_debug_artifact("story_cards.json", analysis.to_dict())
         except Exception as exc:
+            self._save_debug_artifact("editorial_analysis_raw.txt", self.analyzer.last_raw_response)
             return await self._fallback(
                 bundle, f"editorial analysis unavailable: {type(exc).__name__}"
             )

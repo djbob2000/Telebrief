@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
+from typing import cast
 
 from src.ai_providers import AIProvider, ProviderCascadeError
 from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord
@@ -12,6 +13,10 @@ from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord
 
 class EditorialAnalysisError(RuntimeError):
     """Base error for invalid or unavailable editorial analysis."""
+
+    stage: str = "unknown"
+    reason: str = ""
+    response_chars: int | None = None
 
 
 class ContextSizeRejectedError(EditorialAnalysisError):
@@ -25,6 +30,7 @@ class EditorialAnalyzer:
         self.provider = provider
         self.model = model
         self.logger = logger
+        self.last_raw_response = ""
 
     def build_prompt(self, bundle: PreparedBundle) -> tuple[str, str]:
         system = """You are the editorial analyst for a local daily newsroom.
@@ -48,25 +54,33 @@ mechanism. Keep story_kind free-form and do not invent missing details.
         """Analyze the full bundle once; expose context-only rejection to the caller."""
         try:
             analysis = await self._call_analysis(bundle)
-            analysis.validate_refs(set(bundle.records))
-            return analysis
         except ProviderCascadeError as exc:
             if exc.context_only:
-                raise ContextSizeRejectedError(
-                    "editorial bundle rejected for context size"
+                raise self._annotated_error(
+                    ContextSizeRejectedError,
+                    "editorial bundle rejected for context size",
+                    stage="provider_call",
+                    reason="context_size",
                 ) from exc
-            raise EditorialAnalysisError("editorial analysis provider failed") from exc
+            raise self._failure("provider_call", self._provider_reason(exc)) from exc
+        try:
+            analysis.validate_refs(set(bundle.records))
+        except ValueError as exc:
+            raise self._failure("invalid_source_ref", self._safe_reason(exc)) from exc
+        return analysis
 
     async def analyze_batched(self, bundle: PreparedBundle) -> EditorialAnalysis:
         """Analyze batches and merge them only after explicit context rejection."""
         batches = self._split_bundle(bundle)
         if len(batches) == 1:
-            return await self._call_analysis(batches[0])
+            analysis = await self._call_analysis(batches[0])
+            self._validate_refs(analysis, set(batches[0].records), "invalid_source_ref")
+            return analysis
 
         batch_analyses: list[EditorialAnalysis] = []
         for batch in batches:
             analysis = await self._call_analysis(batch)
-            analysis.validate_refs(set(batch.records))
+            self._validate_refs(analysis, set(batch.records), "invalid_source_ref")
             batch_analyses.append(analysis)
 
         merge_payload = json.dumps(
@@ -80,7 +94,7 @@ mechanism. Keep story_kind free-form and do not invent missing details.
             "against the complete source bundle.\n\n" + merge_payload
         )
         analysis = await self._call_messages(system, user)
-        analysis.validate_refs(set(bundle.records))
+        self._validate_refs(analysis, set(bundle.records), "merge_validation")
         return analysis
 
     async def _call_analysis(self, bundle: PreparedBundle) -> EditorialAnalysis:
@@ -102,14 +116,96 @@ mechanism. Keep story_kind free-form and do not invent missing details.
         except ProviderCascadeError:
             raise
         except Exception as exc:
-            raise EditorialAnalysisError("editorial analysis provider failed") from exc
+            raise self._failure("provider_call", type(exc).__name__) from exc
+        return self._parse_response(response)
+
+    def _parse_response(self, response: object) -> EditorialAnalysis:
+        payload, response_chars = self._decode_response(response)
+        self._validate_response_shape(payload, response_chars)
         try:
-            payload = json.loads(
-                response.strip().removeprefix("```json").removesuffix("```").strip()
+            return EditorialAnalysis.from_dict(cast(dict[str, object], payload))
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+            raise self._failure("story_card_parse", self._safe_reason(exc), response_chars) from exc
+
+    def _decode_response(self, response: object) -> tuple[object, int]:
+        response_chars = len(response) if isinstance(response, str) else 0
+        if isinstance(response, str):
+            self.last_raw_response = response
+        if not isinstance(response, str) or not response.strip():
+            raise self._failure("empty_response", "empty model response", response_chars)
+        cleaned = response.strip().removeprefix("```json").removesuffix("```").strip()
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise self._failure(
+                "json_parse", f"{exc.msg} at position {exc.pos}", response_chars
+            ) from exc
+        return payload, response_chars
+
+    def _validate_response_shape(self, payload: object, response_chars: int) -> None:
+        if not isinstance(payload, dict):
+            raise self._failure(
+                "response_shape", "top-level JSON value is not an object", response_chars
             )
-            return EditorialAnalysis.from_dict(payload)
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise EditorialAnalysisError("editorial analysis returned invalid JSON") from exc
+        if "cards" in payload:
+            if not isinstance(payload["cards"], list):
+                raise self._failure("response_shape", "cards is not an array", response_chars)
+        elif "claims" in payload and isinstance(payload["claims"], list):
+            # Accept the legacy registry shape while persisted prompts and dry-run
+            # fixtures are migrated to Story Cards.
+            pass
+        else:
+            raise self._failure("response_shape", "missing cards array", response_chars)
+
+    def _validate_refs(
+        self, analysis: EditorialAnalysis, available_refs: set[str], stage: str
+    ) -> None:
+        try:
+            analysis.validate_refs(available_refs)
+        except ValueError as exc:
+            raise self._failure(stage, self._safe_reason(exc)) from exc
+
+    def _failure(
+        self, stage: str, reason: str, response_chars: int | None = None
+    ) -> EditorialAnalysisError:
+        safe_reason = self._safe_reason(reason)
+        self.logger.warning(
+            "Editorial analysis failed: stage=%s reason=%s response_chars=%s",
+            stage,
+            safe_reason,
+            response_chars if response_chars is not None else "unknown",
+        )
+        return self._annotated_error(
+            EditorialAnalysisError,
+            f"{stage}: {safe_reason}",
+            stage=stage,
+            reason=safe_reason,
+            response_chars=response_chars,
+        )
+
+    @staticmethod
+    def _annotated_error(
+        error_type: type[EditorialAnalysisError],
+        message: str,
+        *,
+        stage: str,
+        reason: str,
+        response_chars: int | None = None,
+    ) -> EditorialAnalysisError:
+        error = error_type(message)
+        error.stage = stage
+        error.reason = reason
+        error.response_chars = response_chars
+        return error
+
+    @staticmethod
+    def _safe_reason(reason: object) -> str:
+        return " ".join(str(reason).split())[:240]
+
+    @staticmethod
+    def _provider_reason(exc: ProviderCascadeError) -> str:
+        kinds = ",".join(exc.failure_kinds)
+        return kinds or type(exc).__name__
 
     @staticmethod
     def _split_bundle(bundle: PreparedBundle) -> list[PreparedBundle]:

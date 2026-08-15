@@ -155,6 +155,19 @@ async def test_fallback_log_identifies_degraded_editorial_stage(caplog):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_analysis_raw_response_is_saved_only_as_opt_in_debug_artifact(tmp_path):
+    generator = _generator()
+    generator.config.settings.article.save_debug_artifacts = True
+    generator.config.settings.article.debug_artifact_dir = str(tmp_path)
+    generator.provider.chat_completion = AsyncMock(return_value='{"cards": [')
+
+    await generator.generate_article({"Source": [_message("На Колонии нет света")]})
+
+    assert (tmp_path / "editorial_analysis_raw.txt").read_text() == '{"cards": ['
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_systemic_audit_failure_falls_back_after_one_regeneration():
     generator = _generator()
     card_response = json.dumps(
