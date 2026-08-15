@@ -31,10 +31,10 @@ class TokenBudgetExhaustedError(RuntimeError):
     """Raised when a provider exhausts its token budget without producing visible output."""
 
 
-class ProviderCascadeError(RuntimeError):
+class ProviderCascadeError(RuntimeError):  # noqa: B042
     """Raised when every provider slot in a fallback cascade fails."""
 
-    def __init__(
+    def __init__(  # noqa: B042
         self,
         message: str,
         *,
