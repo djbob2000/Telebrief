@@ -91,7 +91,7 @@ async def test_editorial_analyzer_parses_cards_and_keeps_source_roles(mock_logge
     assert analysis.cards[0].editorial_angle["type"] == "editorial_synthesis"
     system_prompt, user_prompt = analyzer.build_prompt(_bundle())
     assert "untrusted data" in system_prompt.lower()
-    assert "4–8" in system_prompt
+    assert "up to 8" in system_prompt
     assert "Classify each message" not in user_prompt
     assert "source_type=official" in user_prompt
     assert "S000001" in user_prompt
@@ -168,7 +168,7 @@ def test_editorial_analyzer_compact_prompt_requests_only_significant_stories(moc
 
     system_prompt, user_prompt = analyzer.build_prompt(_bundle(), compact=True)
 
-    assert "3–6" in system_prompt
+    assert "up to 6" in system_prompt
     assert "Do not classify or label every supplied message" in system_prompt
     assert "S000001" in user_prompt
 
@@ -408,3 +408,52 @@ async def test_analyzer_analyze_sanitizes_refs_and_succeeds_with_partial_bad_ref
     assert analysis.cards[0].id == "SC001"
     assert analysis.cards[0].representative_source_refs == ["S000001"]
     assert analysis.cards[0].hard_facts[0].source_refs == ["S000001"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("compact", [False, True])
+def test_analyzer_prompts_contain_locality_and_editorial_value_tests(compact, mock_logger):
+    """Analyzer prompts include locality gate, editorial-value test, and preserved canonical fields."""
+    analyzer = EditorialAnalyzer(MagicMock(), "model", mock_logger)
+    system_prompt, user_prompt = analyzer.build_prompt(_bundle(), compact=compact)
+
+    assert "Locality Test" in system_prompt or "locality" in system_prompt.lower()
+    assert "Berdyansk" in system_prompt
+    assert "Editorial-Value Test" in system_prompt or "editorial-value" in system_prompt.lower()
+    assert "editorial_angle" in system_prompt
+    assert "representative" in system_prompt.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("compact", [False, True])
+def test_analyzer_prompts_contain_evidence_position_and_commercial_rules(compact, mock_logger):
+    """Analyzer prompts distinguish hard_facts vs resident observations and demote commercial ads."""
+    analyzer = EditorialAnalyzer(MagicMock(), "model", mock_logger)
+    system_prompt, user_prompt = analyzer.build_prompt(_bundle(), compact=compact)
+
+    assert "Evidence-Position Test" in system_prompt or "evidence-position" in system_prompt.lower()
+    assert "hard_facts" in system_prompt
+    assert "Commercial Demarcation" in system_prompt or "commercial" in system_prompt.lower()
+    assert (
+        "trend" in system_prompt.lower()
+        or "shortage" in system_prompt.lower()
+        or "migration" in system_prompt.lower()
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("compact", [False, True])
+def test_analyzer_prompts_contain_cardinality_bounds_and_quota_independence(compact, mock_logger):
+    """Analyzer prompts enforce upper bounds (8 normal / 6 compact) with no minimum quota and zero valid."""
+    analyzer = EditorialAnalyzer(MagicMock(), "model", mock_logger)
+    system_prompt, user_prompt = analyzer.build_prompt(_bundle(), compact=compact)
+
+    expected_target = "up to 6" if compact else "up to 8"
+    assert expected_target in system_prompt
+    assert (
+        "One or two" in system_prompt
+        or "1–2" in system_prompt
+        or "one or two" in system_prompt.lower()
+    )
+    assert "zero" in system_prompt.lower()
+    assert "quota" in system_prompt.lower() or "minimum" in system_prompt.lower()

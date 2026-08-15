@@ -545,3 +545,60 @@ async def test_fact_check_failure_saves_raw_response_and_structured_reason(
     failure_data = json.loads(failure_file.read_text(encoding="utf-8"))
     assert failure_data["stage"] == "json_parse"
     assert failure_data["response_chars"] == len("not a valid json fact check response")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("card_count", [1, 2])
+async def test_pipeline_accepts_small_local_story_set_without_inflation(
+    card_count, sample_config, mock_logger
+):
+    """Pipeline smoothly accepts 1 or 2 local story cards without forcing extra stories or falling back."""
+    cards = [
+        {
+            "id": f"SC00{i + 1}",
+            "topic": f"Local Topic {i + 1}",
+            "importance": "high",
+            "summary": f"Summary {i + 1}",
+            "hard_facts": [{"text": f"Fact {i + 1}", "source_refs": ["S000001"]}],
+        }
+        for i in range(card_count)
+    ]
+    analysis_json = json.dumps({"cards": cards})
+    writer_json = json.dumps(
+        {
+            "headline": "Городской заголовок",
+            "lead": "Городской лид.",
+            "paragraphs": ["Параграф."],
+            "sections": [],
+        }
+    )
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[
+            analysis_json,
+            writer_json,
+            json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
+        ]
+    )
+
+    messages = {
+        "ch1": [
+            Message(
+                text="Сообщение из Бердянска",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="user1",
+                message_id=1,
+                link="https://t.me/c1/1",
+                has_media=False,
+                media_type="",
+            )
+        ]
+    }
+
+    title, lead, body = await generator.generate_article(messages)
+    assert title == "Городской заголовок"
+    assert lead == "Городской лид."
+    assert "Параграф" in body
+    assert generator.provider.chat_completion.call_count == 3
