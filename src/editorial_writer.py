@@ -229,6 +229,9 @@ Absence from supplied reporting material does not prove absence in the outside w
 When the evidence is corpus absence, write 'в доступных официальных сообщениях срок не указан',
 'по доступным сообщениям редакции неизвестно', etc. Use absolute 'официального графика/срока нет' only
 when an authorized source explicitly establishes that fact.
+Normalize chat slang and colloquial contractions in author text (e.g. use 'дистанционное обучение / дистанционный формат'
+instead of 'дистант', 'удалённая работа' instead of 'удалёнка', 'коммунальные службы' instead of 'коммуналка',
+unless quoting verbatim resident speech in quotes).
 Aim for about 900–1500 words on a busy day, allow up to about 1800 words when the
 material genuinely supports it, and accept 600–900 words on a thin day. These are editorial
 targets, not validation limits; never pad length.

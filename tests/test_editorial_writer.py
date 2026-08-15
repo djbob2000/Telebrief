@@ -345,3 +345,15 @@ def test_article_draft_normalizes_leading_hashes_in_headings():
     assert markdown.startswith("# Заголовок статьи\n\nЛид статьи.\n\n## Глава 1: События")
     assert "## ##" not in markdown
     assert "# #" not in markdown
+
+
+@pytest.mark.unit
+def test_writer_prompt_and_skill_contain_chat_slang_normalization(mock_logger):
+    from src.article_generator import _load_skill_instructions
+
+    skill_content = _load_skill_instructions(".agents/skills/news-style/SKILL.md")
+    writer = EditorialWriter(MagicMock(), "model", skill_content, mock_logger)
+    system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
+
+    assert "дистант" in system_prompt.lower() or "сленг" in system_prompt.lower()
+    assert "дистанционное" in system_prompt.lower() or "дистанционный" in system_prompt.lower()

@@ -121,6 +121,10 @@ on the same day or share a broad topic. Follow an explicit user-selected story o
    автора”; do not present a translation as the speaker's exact original wording.
 10. Keep paragraphs visually light, usually one to three sentences. Remove bureaucratic padding,
     emotional intensifiers, clickbait, rhetorical questions, and unsupported superlatives.
+11. Chat slang and colloquialisms: colloquial contractions from resident messages (such as «дистант»,
+    «удалёнка», «коммуналка») must be normalized to standard journalistic terms in author text
+    («дистанционное обучение / дистанционный формат», «удалённая работа», «коммунальные службы / услуги»)
+    or enclosed in quotes when quoting verbatim resident speech.
 
 ## High-risk reporting
 
