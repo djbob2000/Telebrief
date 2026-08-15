@@ -367,3 +367,44 @@ async def test_editorial_analyzer_clears_raw_response_before_next_provider_call(
     with pytest.raises(EditorialAnalysisError):
         await analyzer.analyze(_bundle())
     assert analyzer.last_raw_response == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_analyzer_analyze_sanitizes_refs_and_succeeds_with_partial_bad_refs(mock_logger):
+    payload = json.dumps(
+        {
+            "cards": [
+                {
+                    "id": "SC001",
+                    "topic": "Вода",
+                    "importance": "high",
+                    "summary": "Воду отключили.",
+                    "sources": ["S000001", "S999999"],
+                    "hard_facts": [
+                        {
+                            "text": "Предприятие сообщило об отключении.",
+                            "source_refs": ["S000001", "S999999"],
+                        }
+                    ],
+                },
+                {
+                    "id": "SC002",
+                    "topic": "Фантом",
+                    "importance": "low",
+                    "summary": "Фантомная тема.",
+                    "sources": ["S999999"],
+                    "hard_facts": [{"text": "Фантомный факт", "source_refs": ["S999999"]}],
+                },
+            ]
+        }
+    )
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value=payload)
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    analysis = await analyzer.analyze(_bundle())
+    assert len(analysis.cards) == 1
+    assert analysis.cards[0].id == "SC001"
+    assert analysis.cards[0].representative_source_refs == ["S000001"]
+    assert analysis.cards[0].hard_facts[0].source_refs == ["S000001"]

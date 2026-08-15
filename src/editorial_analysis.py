@@ -82,11 +82,7 @@ or mechanism. Keep story_kind free-form and do not invent missing details. {comp
     async def analyze(self, bundle: PreparedBundle, *, compact: bool = False) -> EditorialAnalysis:
         """Analyze the full bundle once; expose context-only rejection to the caller."""
         analysis = await self._call_analysis(bundle, compact=compact)
-        try:
-            analysis.validate_refs(set(bundle.records))
-        except ValueError as exc:
-            raise self._failure("invalid_source_ref", self._safe_reason(exc)) from exc
-        return analysis
+        return self._sanitize_or_fail(analysis, set(bundle.records), "invalid_source_ref")
 
     async def analyze_batched(
         self, bundle: PreparedBundle, *, compact: bool = False
@@ -94,15 +90,14 @@ or mechanism. Keep story_kind free-form and do not invent missing details. {comp
         """Analyze batches and merge them only after explicit context rejection."""
         batches = self._split_bundle(bundle)
         if len(batches) == 1:
-            analysis = await self._call_analysis(batches[0], compact=compact)
-            self._validate_refs(analysis, set(batches[0].records), "invalid_source_ref")
-            return analysis
+            return await self.analyze(batches[0], compact=compact)
 
         batch_analyses: list[EditorialAnalysis] = []
         for batch in batches:
             analysis = await self._call_analysis(batch, compact=compact)
-            self._validate_refs(analysis, set(batch.records), "invalid_source_ref")
-            batch_analyses.append(analysis)
+            batch_analyses.append(
+                self._sanitize_or_fail(analysis, set(batch.records), "invalid_source_ref")
+            )
 
         merge_payload = json.dumps(
             {"batch_results": [analysis.to_dict() for analysis in batch_analyses]},
@@ -115,8 +110,19 @@ or mechanism. Keep story_kind free-form and do not invent missing details. {comp
             "against the complete source bundle.\n\n" + merge_payload
         )
         analysis = await self._call_messages_with_provider_errors(system, user, compact=compact)
-        self._validate_refs(analysis, set(bundle.records), "merge_validation")
-        return analysis
+        return self._sanitize_or_fail(analysis, set(bundle.records), "merge_validation")
+
+    def _sanitize_or_fail(
+        self, analysis: EditorialAnalysis, available_refs: set[str], stage: str
+    ) -> EditorialAnalysis:
+        sanitized = analysis.sanitized_against_refs(available_refs)
+        if not sanitized.cards:
+            try:
+                analysis.validate_refs(available_refs)
+            except ValueError as exc:
+                raise self._failure(stage, self._safe_reason(exc)) from exc
+            raise self._failure(stage, "no valid Story Cards remain after reference sanitization")
+        return sanitized
 
     async def _call_analysis(
         self, bundle: PreparedBundle, *, compact: bool = False
@@ -221,11 +227,14 @@ or mechanism. Keep story_kind free-form and do not invent missing details. {comp
                         break
 
         refs = cls._source_refs(
-            data.get("source_refs")
+            data.get("representative_source_refs")
+            or data.get("source_refs")
             or data.get("sources")
             or data.get("refs")
             or data.get("evidence")
         )
+        data["representative_source_refs"] = refs
+
         if (
             refs
             and data.get("summary")
@@ -283,14 +292,6 @@ or mechanism. Keep story_kind free-form and do not invent missing details. {comp
             pass
         else:
             raise self._failure("response_shape", "missing cards array", response_chars)
-
-    def _validate_refs(
-        self, analysis: EditorialAnalysis, available_refs: set[str], stage: str
-    ) -> None:
-        try:
-            analysis.validate_refs(available_refs)
-        except ValueError as exc:
-            raise self._failure(stage, self._safe_reason(exc)) from exc
 
     def _failure(
         self, stage: str, reason: str, response_chars: int | None = None
