@@ -36,6 +36,34 @@ def test_channel_config_for_name_resolves_forum_topic(sample_config):
     )
 
 
+@pytest.mark.unit
+def test_core_thematic_fallback_preserves_configured_source_roles():
+    from datetime import datetime, timezone
+
+    from src.collector import Message
+    from src.core import _build_fallback_article
+
+    official = Message(
+        text="Коммунальная служба сообщила: воду отключат до 15:00",
+        sender="КП",
+        timestamp=datetime(2026, 8, 15, tzinfo=timezone.utc),
+        link="https://t.me/utility/1",
+        channel_name="Utility",
+        has_media=False,
+        media_type="",
+        message_id=1,
+    )
+    title, lead, body = _build_fallback_article(
+        {"Utility": [official]},
+        [ChannelConfig(id="@utility", name="Utility", source_type="official")],
+    )
+
+    assert title
+    assert lead
+    assert "Источник сообщил" in body
+    assert "Жители сообщали" not in body
+
+
 @pytest.fixture(autouse=True)
 def _isolate_digest_cache(tmp_path, monkeypatch):
     """Keep the digest cache out of the repo while tests run."""

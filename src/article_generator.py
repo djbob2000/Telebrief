@@ -12,7 +12,12 @@ from src.ai_providers import AIProvider, create_provider
 from src.collector import Message
 from src.config_loader import Config, SourceRoleResolver
 from src.editorial_analysis import ContextSizeRejectedError, EditorialAnalyzer
-from src.editorial_audit import FactCheckUnavailableError, LightFactChecker, deterministic_preflight
+from src.editorial_audit import (
+    FactCheckResult,
+    FactCheckUnavailableError,
+    LightFactChecker,
+    deterministic_preflight,
+)
 from src.editorial_fallback import DeterministicStoryCardBuilder, StoryCardRenderer
 from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import EditorialAnalysis, PreparedBundle
@@ -196,18 +201,19 @@ class ArticleGenerator:
             deterministic_preflight(regenerated.to_markdown())
             try:
                 regenerated_check = await self.fact_checker.check(regenerated, analysis, bundle)
-                if regenerated_check.status == "FIX" and regenerated_check.systemic_problem:
-                    raise UnsafeDraftError("systemic fact-check issue remains after regeneration")
             except FactCheckUnavailableError:
-                pass
+                return regenerated
+            if regenerated_check.systemic_problem and regenerated_check.status == "FIX":
+                raise UnsafeDraftError("systemic fact-check issue remains after regeneration")
+            if regenerated_check.status == "FIX":
+                regenerated = self._remove_unresolved_local_fixes(regenerated, regenerated_check)
+                deterministic_preflight(regenerated.to_markdown())
             return regenerated
 
         current = draft
-        for repair_pass in range(2):
+        for _ in range(2):
             current = await self.fact_checker.repair(current, result, analysis, bundle)
             deterministic_preflight(current.to_markdown())
-            if repair_pass == 1:
-                break
             try:
                 result = await self.fact_checker.check(current, analysis, bundle)
             except FactCheckUnavailableError:
@@ -216,6 +222,11 @@ class ArticleGenerator:
                 raise UnsafeDraftError("systemic fact-check issue remains after local repair")
             if result.status != "FIX":
                 return current
+        return self._remove_unresolved_local_fixes(current, result)
+
+    def _remove_unresolved_local_fixes(
+        self, draft: ArticleDraft, result: FactCheckResult
+    ) -> ArticleDraft:
         unresolved = [issue for issue in result.issues if issue.severity == "fix"]
         if any(issue.unit_id in {"TITLE", "LEAD"} for issue in unresolved):
             raise UnsafeDraftError("unresolved FIX remains in headline or lead")
@@ -233,7 +244,7 @@ class ArticleGenerator:
             any(token in issue.code.lower() for token in high_risk_codes) for issue in unresolved
         ):
             raise UnsafeDraftError("unresolved high-risk FIX remains in article")
-        current = current.apply_replacements({issue.unit_id: "" for issue in unresolved})
+        current = draft.apply_replacements({issue.unit_id: "" for issue in unresolved})
         self.logger.warning("Removed %d unresolved local FIX fragment(s)", len(unresolved))
         return current
 

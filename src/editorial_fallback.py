@@ -41,6 +41,7 @@ _TOPIC_HEADINGS = {
     "transport": "Транспорт и дороги",
     "social": "Социальные вопросы",
     "city_life": "Городская жизнь",
+    "other": "Прочее",
 }
 
 _KNOWN_AREAS = (
@@ -72,10 +73,19 @@ class DeterministicStoryCardBuilder:
 
     def build(self, bundle: PreparedBundle) -> list[StoryCard]:
         grouped: dict[str, list[tuple[str, SourceRecord]]] = defaultdict(list)
+        unclassified: list[tuple[str, SourceRecord]] = []
         for ref, record in bundle.records.items():
             if EditorialInputBuilder._is_noise(record.message.text):
                 continue
-            grouped[self._topic_for(record.message.text)].append((ref, record))
+            topic = self._topic_for(record.message.text)
+            if topic is None:
+                unclassified.append((ref, record))
+            else:
+                grouped[topic].append((ref, record))
+        if len(unclassified) >= 2 or any(
+            record.source_type in {"official", "news"} for _, record in unclassified
+        ):
+            grouped["other"].extend(unclassified)
         if not grouped:
             raise NoSubstantiveMaterialError("no substantive city material remains")
 
@@ -114,14 +124,14 @@ class DeterministicStoryCardBuilder:
         return cards
 
     @staticmethod
-    def _topic_for(text: str) -> str:
+    def _topic_for(text: str) -> str | None:
         normalized = text.lower()
         scores = {
             topic: sum(normalized.count(keyword) for keyword in keywords)
             for topic, keywords in _TOPIC_KEYWORDS.items()
         }
         topic, score = max(scores.items(), key=lambda item: item[1])
-        return topic if score else "city_life"
+        return topic if score else None
 
     def _make_element(
         self,
@@ -206,6 +216,7 @@ class DeterministicStoryCardBuilder:
             "social": "социальной сфере",
             "incidents": "происшествии",
             "city_life": "городской жизни",
+            "other": "городских событиях",
         }
         subject = labels[topic]
         if topic == "water" and "восстанов" in joined:
@@ -226,18 +237,22 @@ class DeterministicStoryCardBuilder:
                 return "Жители сообщали о перебоях с мобильной связью и интернетом."
             return "Жители обсуждали доступность мобильной связи и интернета."
         if topic == "electricity":
-            return "Жители сообщали о перебоях с электроснабжением."
+            if _NEGATIVE_SIGNAL.search(joined):
+                return "Жители сообщали о перебоях с электроснабжением."
+            return "Жители обсуждали генераторы и вопросы электроснабжения."
         if topic == "water":
-            return "Жители сообщали о перебоях с водоснабжением."
+            if _NEGATIVE_SIGNAL.search(joined):
+                return "Жители сообщали о перебоях с водоснабжением."
+            return "Жители обсуждали вопросы водоснабжения."
         if topic == "incidents":
             if "взрыв" in joined or "громк" in joined:
                 return "Жители сообщили о громком звуке или взрыве."
             return "Жители сообщали о происшествии."
-        if topic == "transport":
-            return "Жители обсуждали ситуацию на дорогах и в транспорте."
-        if topic == "social":
-            return "Жители обсуждали вопросы социальной сферы."
-        return "Жители обсуждали городские бытовые вопросы."
+        return {
+            "transport": "Жители обсуждали ситуацию на дорогах и в транспорте.",
+            "social": "Жители обсуждали вопросы социальной сферы.",
+            "other": "Жители обсуждали другие городские события.",
+        }.get(topic, "Жители обсуждали городские бытовые вопросы.")
 
     @staticmethod
     def _importance(topic: str, entries: list[tuple[str, SourceRecord]]) -> str:

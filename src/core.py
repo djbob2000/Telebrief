@@ -530,13 +530,15 @@ async def generate_and_send_digest(
         return False
 
 
-def _build_fallback_article(messages_by_channel: dict[str, list[Message]]) -> tuple[str, str, str]:
+def _build_fallback_article(
+    messages_by_channel: dict[str, list[Message]], channels: list[ChannelConfig] | None = None
+) -> tuple[str, str, str]:
     """Build the same thematic fallback as ArticleGenerator, never a raw message dump."""
     from src.config_loader import SourceRoleResolver
     from src.editorial_fallback import DeterministicStoryCardBuilder, StoryCardRenderer
     from src.editorial_input import EditorialInputBuilder
 
-    bundle = EditorialInputBuilder(SourceRoleResolver([])).build(messages_by_channel)
+    bundle = EditorialInputBuilder(SourceRoleResolver(channels or [])).build(messages_by_channel)
     cards = DeterministicStoryCardBuilder().build(bundle)
     draft = StoryCardRenderer().render(cards)
     markdown = draft.to_markdown()
@@ -590,7 +592,9 @@ async def generate_and_publish_article(
             logger.warning(
                 "ArticleGenerator failed; entering thematic fallback: %s", type(exc).__name__
             )
-            title, lead, markdown_body = _build_fallback_article(messages_by_channel)
+            title, lead, markdown_body = _build_fallback_article(
+                messages_by_channel, config.channels
+            )
 
         # Fallback / preview local save
         fallback_dir = Path(config.settings.article.fallback_save_dir)

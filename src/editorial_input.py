@@ -10,11 +10,19 @@ from src.config_loader import SourceRoleResolver
 from src.editorial_models import PreparedBundle, SourceRecord
 
 _EMOJI_OR_SPACE = re.compile(r"[\W_]+", re.UNICODE)
-_CURRENCY = re.compile(r"(?:курс|обмен|валют|доллар|евро|гривн|usd|eur|uah)", re.IGNORECASE)
+_CURRENCY_ANNOUNCEMENT = re.compile(
+    r"(?:курс\s+(?:доллара|евро|гривн)|обмен\s+валют|\b(?:usd|eur|uah)\b)",
+    re.IGNORECASE,
+)
+_EXPLICIT_COMMERCIAL = re.compile(
+    r"(?:реклама|продам|куплю|аренда|сдам|сниму|обмен\s+валют|"
+    r"курс\s+(?:доллара|евро)|заправк(?:а|и)\s+автокондиционер|"
+    r"автокондиционер|банковск(?:ими|их)?\s+карт|оформлен(?:ие|ия)\s+пенси)",
+    re.IGNORECASE,
+)
 _COMMERCIAL_MARKERS = re.compile(
-    r"(?:реклама|продам|куплю|аренда|сдам|сниму|акция|услуг|доставк|заправк(?:а|и)\s+автокондиционер|"
-    r"автокондиционер|банковск(?:ими|их)?\s+карт|оформлен(?:ие|ия)\s+пенси|обмен\s+валют|"
-    r"курс\s+(?:доллара|евро)|обращайт|звоните|пишите|запись\s+по|консультац|выгодн(?:ые|о)\s+услов)",
+    r"(?:акция|услуг|доставк|обращайт|звоните|пишите|запись\s+по|"
+    r"консультац|выгодн(?:ые|о)\s+услов)",
     re.IGNORECASE,
 )
 _SERVICE_MARKERS = re.compile(
@@ -23,6 +31,10 @@ _SERVICE_MARKERS = re.compile(
 )
 _URL = re.compile(r"(?:https?://|www\.|t\.me/)", re.IGNORECASE)
 _PHONE = re.compile(r"\+?\d[\d\s().-]{7,}\d")
+_COMMERCIAL_CALL_TO_ACTION = re.compile(
+    r"(?:обращайт|звоните|пишите|запись|консультац|доставк|выгодн|работаем)",
+    re.IGNORECASE,
+)
 
 
 class EditorialInputBuilder:
@@ -47,7 +59,7 @@ class EditorialInputBuilder:
         records: dict[str, SourceRecord] = {}
         for index, message in enumerate(ordered, start=1):
             source_type = self.role_resolver.resolve(message.channel_name, message.topic_id)
-            if self._is_noise(message.text):
+            if self._is_noise(message.text, source_type):
                 continue
             ref = f"S{index:06d}"
             parent_ref = None
@@ -82,7 +94,7 @@ class EditorialInputBuilder:
         )
 
     @staticmethod
-    def _is_noise(text: str) -> bool:
+    def _is_noise(text: str, source_type: str = "mixed") -> bool:
         stripped = text.strip()
         if not stripped:
             return True
@@ -91,13 +103,17 @@ class EditorialInputBuilder:
         )
         if not letters_or_numbers:
             return True
-        if _CURRENCY.search(stripped):
+        if _CURRENCY_ANNOUNCEMENT.search(stripped):
             return True
-        return EditorialInputBuilder._looks_commercial(stripped)
+        return EditorialInputBuilder._looks_commercial(stripped, source_type)
 
     @staticmethod
-    def _looks_commercial(text: str) -> bool:
+    def _looks_commercial(text: str, source_type: str = "mixed") -> bool:
         """Reject promotional/financial spam without filtering short city observations."""
+        if _EXPLICIT_COMMERCIAL.search(text):
+            return True
+        if source_type == "official":
+            return False
         marker_count = len(_COMMERCIAL_MARKERS.findall(text))
         has_contact = bool(_URL.search(text) or _PHONE.search(text))
         has_service = bool(_SERVICE_MARKERS.search(text))
@@ -105,7 +121,7 @@ class EditorialInputBuilder:
             return True
         if marker_count >= 2:
             return True
-        if has_contact and has_service and len(text) >= 80:
+        if has_contact and has_service and _COMMERCIAL_CALL_TO_ACTION.search(text):
             return True
         return False
 

@@ -114,3 +114,24 @@ def test_input_builder_removes_long_commercial_and_currency_messages():
     assert "автокондиционеров" not in bundle.prompt_text
     assert "Курс доллара" not in bundle.prompt_text
     assert "банковскими картами" not in bundle.prompt_text
+
+
+def test_input_builder_keeps_amounts_and_official_dispatch_phone():
+    payout = _message("Единовременная выплата составит 1000 гривен", 1)
+    utility = _message(
+        "Коммунальная служба сообщила о ремонте сети. " "Телефон диспетчерской: +7 (990) 123-45-67",
+        2,
+    )
+    utility.channel_name = "Utility"
+    builder = EditorialInputBuilder(
+        SourceRoleResolver(
+            [
+                ChannelConfig(id="@source", name="Source", source_type="mixed"),
+                ChannelConfig(id="@utility", name="Utility", source_type="official"),
+            ]
+        )
+    )
+
+    bundle = builder.build({"Source": [payout], "Utility": [utility]})
+
+    assert {record.message.message_id for record in bundle.records.values()} == {1, 2}

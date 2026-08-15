@@ -100,6 +100,26 @@ def test_fallback_synthesizes_connectivity_observations_instead_of_raw_messages(
     assert ";" not in article
 
 
+def test_fallback_does_not_turn_generator_questions_into_power_outage_reports():
+    cards = DeterministicStoryCardBuilder().build(
+        _bundle(
+            [
+                ("Какой генератор купить для дома?", "community"),
+                ("Посоветуйте хороший генератор", "community"),
+            ]
+        )
+    )
+
+    electricity = next(card for card in cards if card.topic == "electricity")
+    assert "перебоях" not in electricity.summary
+    assert "генератор" in electricity.summary
+
+
+def test_fallback_does_not_publish_single_unknown_message_as_city_life():
+    with pytest.raises(NoSubstantiveMaterialError):
+        DeterministicStoryCardBuilder().build(_bundle([("Кто знает, что это было?", "community")]))
+
+
 def test_fallback_remains_compact_for_many_repeated_candidates():
     cards = DeterministicStoryCardBuilder().build(
         _bundle(

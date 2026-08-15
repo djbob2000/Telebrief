@@ -10,6 +10,9 @@ import pytest
 from src.article_generator import ArticleGenerator
 from src.collector import Message
 from src.config_loader import Config, Settings
+from src.editorial_audit import AuditIssue, FactCheckResult
+from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord
+from src.editorial_writer import ArticleDraft
 
 
 def _generator() -> ArticleGenerator:
@@ -46,6 +49,27 @@ def _message(text: str, message_id: int = 1) -> Message:
         has_media=False,
         media_type="",
         message_id=message_id,
+    )
+
+
+def _bundle() -> PreparedBundle:
+    message = _message("Жители сообщили о перебоях со светом")
+    return PreparedBundle(
+        records={"S000001": SourceRecord("S000001", message, "community")},
+        prompt_text="[S000001] Жители сообщили о перебоях со светом",
+        total_messages=1,
+        candidate_count=1,
+    )
+
+
+def _repair_issue(unit_id: str = "P001") -> AuditIssue:
+    return AuditIssue(
+        unit_id=unit_id,
+        code="unsupported_detail",
+        original_excerpt="Неподтвержденная деталь",
+        reason="Нет подтверждения",
+        suggested_direction="Удалить",
+        source_refs=[],
     )
 
 
@@ -185,3 +209,38 @@ async def test_systemic_audit_failure_falls_back_after_one_regeneration():
 
     assert title == "Что происходило в городе за сутки"
     assert "Жители сообщали о перебоях с водоснабжением" in body
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_second_repair_is_checked_before_removing_remaining_issues():
+    generator = _generator()
+    draft = ArticleDraft("Свет", "Лид", ["Первый текст"], [])
+    first_fix = FactCheckResult("FIX", False, [_repair_issue()])
+    passed = FactCheckResult("PASS", False, [])
+    repaired_once = ArticleDraft("Свет", "Лид", ["Промежуточный текст"], [])
+    repaired_twice = ArticleDraft("Свет", "Лид", ["Исправленный текст"], [])
+    generator.fact_checker.check = AsyncMock(side_effect=[first_fix, first_fix, passed])
+    generator.fact_checker.repair = AsyncMock(side_effect=[repaired_once, repaired_twice])
+
+    result = await generator._repair_and_check(draft, EditorialAnalysis([]), _bundle())
+
+    assert result.paragraphs == ["Исправленный текст"]
+    assert generator.fact_checker.check.await_count == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_systemic_regeneration_cleans_local_fix_before_publish():
+    generator = _generator()
+    draft = ArticleDraft("Свет", "Лид", ["Старый текст"], [])
+    regenerated = ArticleDraft("Свет", "Лид", ["Новая неподтвержденная деталь"], [])
+    initial = FactCheckResult("FIX", True, [_repair_issue()])
+    local_fix = FactCheckResult("FIX", False, [_repair_issue()])
+    generator.fact_checker.check = AsyncMock(side_effect=[initial, local_fix])
+    generator.writer.write = AsyncMock(return_value=regenerated)
+
+    result = await generator._repair_and_check(draft, EditorialAnalysis([]), _bundle())
+
+    assert result.to_markdown() == "# Свет\n\nЛид"
+    assert generator.fact_checker.check.await_count == 2
