@@ -148,7 +148,7 @@ class ArticleDraft:
         result = copy.deepcopy(self)
         for unit_id, replacement in replacements.items():
             locator = result.audit_units().get(unit_id)
-            if locator is None or not isinstance(replacement, str) or not replacement.strip():
+            if locator is None or not isinstance(replacement, str):
                 continue
             value: Any = result
             for part in locator.path[:-1]:

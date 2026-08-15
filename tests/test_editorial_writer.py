@@ -89,6 +89,19 @@ def test_article_draft_apply_replacements_uses_unit_paths_not_text_search():
     assert repaired.paragraphs == ["Одинаковый текст", "Исправленный второй абзац"]
 
 
+def test_article_draft_can_remove_unresolved_body_unit():
+    draft = ArticleDraft(
+        headline="Заголовок",
+        lead="Лид",
+        paragraphs=["Неподдержанный фрагмент"],
+        sections=[],
+    )
+
+    repaired = draft.apply_replacements({"P001": ""})
+
+    assert repaired.to_markdown() == "# Заголовок\n\nЛид"
+
+
 def test_article_draft_rejects_malformed_writer_shape():
     with pytest.raises(ValueError, match="headline"):
         ArticleDraft.from_dict({"lead": "Лид", "paragraphs": [], "sections": []})

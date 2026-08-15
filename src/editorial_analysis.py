@@ -117,7 +117,12 @@ mechanism. Keep story_kind free-form and do not invent missing details.
             groups[record.message.channel_name].append(record)
         if len(groups) <= 1 and len(bundle.records) <= 1:
             return [bundle]
-        group_values = list(groups.values())
+        if len(groups) == 1:
+            only_group = next(iter(groups.values()))
+            midpoint = max(1, len(only_group) // 2)
+            group_values = [only_group[:midpoint], only_group[midpoint:]]
+        else:
+            group_values = list(groups.values())
         midpoint = max(1, len(group_values) // 2)
         chunks = [group_values[:midpoint], group_values[midpoint:]]
         result: list[PreparedBundle] = []

@@ -19,6 +19,10 @@ from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, EditorialWriter
 
 
+class UnsafeDraftError(RuntimeError):
+    """Raised when an unresolved high-risk fragment is central to the draft."""
+
+
 def _load_skill_instructions(path: str) -> str:
     """Load the configured skill once, stripping optional YAML frontmatter."""
     skill_path = Path(path)
@@ -202,7 +206,25 @@ class ArticleGenerator:
                 return current
             if result.status != "FIX":
                 return current
-        self.logger.warning("Local FIX remained after two repair passes; publishing draft")
+        unresolved = [issue for issue in result.issues if issue.severity == "fix"]
+        if any(issue.unit_id in {"TITLE", "LEAD"} for issue in unresolved):
+            raise UnsafeDraftError("unresolved FIX remains in headline or lead")
+        high_risk_codes = (
+            "medical",
+            "casualty",
+            "weapon",
+            "safety",
+            "accus",
+            "identity",
+            "legal",
+            "financial",
+        )
+        if any(
+            any(token in issue.code.lower() for token in high_risk_codes) for issue in unresolved
+        ):
+            raise UnsafeDraftError("unresolved high-risk FIX remains in article")
+        current = current.apply_replacements({issue.unit_id: "" for issue in unresolved})
+        self.logger.warning("Removed %d unresolved local FIX fragment(s)", len(unresolved))
         return current
 
     async def generate_article(
@@ -231,6 +253,8 @@ class ArticleGenerator:
 
         try:
             draft = await self._repair_and_check(draft, analysis, bundle)
+        except UnsafeDraftError as exc:
+            return await self._fallback(bundle, str(exc))
         except Exception as exc:
             self.logger.warning(
                 "Editorial audit/repair failed; publishing writer output: %s",

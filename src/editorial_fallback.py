@@ -115,7 +115,7 @@ class StoryCardRenderer:
         for card in cards:
             paragraphs: list[str] = []
             if card.hard_facts:
-                paragraphs.append(" ".join(element.text for element in card.hard_facts))
+                paragraphs.extend(self._render_element(element) for element in card.hard_facts)
             if card.community_observations:
                 observations = "; ".join(element.text for element in card.community_observations)
                 paragraphs.append(f"Жители в сообщениях обсуждали: {observations}.")
@@ -130,6 +130,14 @@ class StoryCardRenderer:
             paragraphs=[],
             sections=sections,
         )
+
+    @staticmethod
+    def _render_element(element: StoryElement) -> str:
+        """Preserve attribution unless the source explicitly established its own action."""
+        if element.status == "established":
+            return element.text
+        source = element.attribution or "источник"
+        return f"{source} сообщил: {element.text}"
 
     @staticmethod
     def _heading(topic: str) -> str:
