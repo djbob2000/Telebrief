@@ -52,17 +52,7 @@ mechanism. Keep story_kind free-form and do not invent missing details.
 
     async def analyze(self, bundle: PreparedBundle) -> EditorialAnalysis:
         """Analyze the full bundle once; expose context-only rejection to the caller."""
-        try:
-            analysis = await self._call_analysis(bundle)
-        except ProviderCascadeError as exc:
-            if exc.context_only:
-                raise self._annotated_error(
-                    ContextSizeRejectedError,
-                    "editorial bundle rejected for context size",
-                    stage="provider_call",
-                    reason="context_size",
-                ) from exc
-            raise self._failure("provider_call", self._provider_reason(exc)) from exc
+        analysis = await self._call_analysis(bundle)
         try:
             analysis.validate_refs(set(bundle.records))
         except ValueError as exc:
@@ -93,15 +83,24 @@ mechanism. Keep story_kind free-form and do not invent missing details.
             "source refs, combine related aspects without causal invention, and validate refs "
             "against the complete source bundle.\n\n" + merge_payload
         )
-        analysis = await self._call_messages(system, user)
+        analysis = await self._call_messages_with_provider_errors(system, user)
         self._validate_refs(analysis, set(bundle.records), "merge_validation")
         return analysis
 
     async def _call_analysis(self, bundle: PreparedBundle) -> EditorialAnalysis:
         system, user = self.build_prompt(bundle)
-        return await self._call_messages(system, user)
+        return await self._call_messages_with_provider_errors(system, user)
+
+    async def _call_messages_with_provider_errors(
+        self, system: str, user: str
+    ) -> EditorialAnalysis:
+        try:
+            return await self._call_messages(system, user)
+        except ProviderCascadeError as exc:
+            raise self._provider_failure(exc) from exc
 
     async def _call_messages(self, system: str, user: str) -> EditorialAnalysis:
+        self.last_raw_response = ""
         try:
             response = await self.provider.chat_completion(
                 messages=[
@@ -206,6 +205,16 @@ mechanism. Keep story_kind free-form and do not invent missing details.
     def _provider_reason(exc: ProviderCascadeError) -> str:
         kinds = ",".join(exc.failure_kinds)
         return kinds or type(exc).__name__
+
+    def _provider_failure(self, exc: ProviderCascadeError) -> EditorialAnalysisError:
+        if exc.context_only:
+            return self._annotated_error(
+                ContextSizeRejectedError,
+                "editorial bundle rejected for context size",
+                stage="provider_call",
+                reason="context_size",
+            )
+        return self._failure("provider_call", self._provider_reason(exc))
 
     @staticmethod
     def _split_bundle(bundle: PreparedBundle) -> list[PreparedBundle]:

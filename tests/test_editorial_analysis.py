@@ -128,6 +128,22 @@ async def test_editorial_analyzer_reports_provider_failure_kind(mock_logger):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_batched_analysis_reports_provider_failure_kind(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        side_effect=ProviderCascadeError("all slots failed", failure_kinds=("quota",))
+    )
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(EditorialAnalysisError) as error:
+        await analyzer.analyze_batched(_bundle())
+
+    assert error.value.stage == "provider_call"
+    assert error.value.reason == "quota"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_editorial_analyzer_rejects_story_card_refs_outside_bundle(mock_logger):
     provider = MagicMock()
     provider.chat_completion = AsyncMock(
@@ -226,3 +242,24 @@ async def test_editorial_analyzer_keeps_last_raw_response_for_debug_artifact(moc
         await analyzer.analyze(_bundle())
 
     assert analyzer.last_raw_response == raw
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_clears_raw_response_before_next_provider_call(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        side_effect=[
+            '{"cards": [',
+            ProviderCascadeError("provider unavailable", failure_kinds=("timeout",)),
+        ]
+    )
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(EditorialAnalysisError):
+        await analyzer.analyze(_bundle())
+    assert analyzer.last_raw_response == '{"cards": ['
+
+    with pytest.raises(EditorialAnalysisError):
+        await analyzer.analyze(_bundle())
+    assert analyzer.last_raw_response == ""
