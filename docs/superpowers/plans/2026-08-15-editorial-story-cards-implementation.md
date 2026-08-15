@@ -213,7 +213,7 @@ Create a dedicated analysis prompt that asks for Story Cards, not claims. Preser
 
 - [ ] **Step 5: Implement explicit context-size batching**
 
-Call `analyze` once with the full bundle through the provider cascade. Catch only `ProviderCascadeError.context_only` and convert it to `ContextSizeRejectedError`. Split by source/channel/time while preserving refs, analyze batches, then perform one merge call that groups related aspects without inventing causal links. Do not batch after a normal timeout, quota failure or one failed provider slot.
+Call `analyze` once with the full bundle through the provider cascade. Catch only `ProviderCascadeError.context_only` and convert it to `ContextSizeRejectedError`. Split by source/channel/time while preserving refs, analyze batches, validate each batch’s Story Cards against that batch’s refs, then perform one merge call that validates the merged cards against the original full bundle. The merge must group related aspects without inventing causal links. Do not batch after a normal timeout, quota failure or one failed provider slot.
 
 - [ ] **Step 6: Test and commit the analysis stage**
 
@@ -228,7 +228,6 @@ git commit -m "feat: add editorial story analysis and context fallback"
 **Files:**
 
 - Create: `src/editorial_writer.py`
-- Modify: `src/article_generator.py` (temporary integration seam only if required)
 - Test: `tests/test_editorial_writer.py`
 
 **Interfaces:**
@@ -405,7 +404,7 @@ Delete or replace `_build_fallback_article`. Core should publish the tuple retur
 
 - [ ] **Step 4: Add debug artifact persistence**
 
-Add `article.save_debug_artifacts: bool = false`. In dry-run, allow an explicit debug flag to enable artifacts. Write prepared input, Story Cards, writer draft, fact-check JSON, repair result and final article with a run timestamp; do not include secrets. Artifact failures log warnings and do not block publication. Add parser tests for the new option.
+Add `article.save_debug_artifacts: bool = false`. In dry-run, allow an explicit debug flag to enable artifacts. Write prepared input, Story Cards, writer draft, fact-check JSON, repair result and final article with a run timestamp; do not include secrets. Keep the artifact directory git-ignored and never upload or publish it automatically: prepared input contains real Telegram text, sender metadata and links. Artifact failures log warnings and do not block publication. Add parser tests for the new option.
 
 - [ ] **Step 5: Run article/core tests and commit**
 
@@ -426,7 +425,7 @@ git commit -m "feat: orchestrate Story Card article generation"
 
 **Interfaces:**
 
-- `ArticleGenerator._compose_writer_prompt()` loads the revised skill.
+- `ArticleGenerator` loads the revised skill once and passes `skill_instructions` to `EditorialWriter`; `EditorialWriter` composes the writer prompt.
 - The skill must describe the four layers: product, allowed synthesis, concrete-fact boundary, and high-risk caution.
 
 - [ ] **Step 1: Replace the compliance-heavy article contract**
