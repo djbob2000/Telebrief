@@ -19,12 +19,12 @@ Telebrief generates daily local journalistic articles from raw Telegram messages
 2. **Street Evidence $\neq$ Whole-Area Evidence:**
    Evidence from a street in a given area (e.g., *«На улице Шевченко нет света»*) means the report originated from that area; it does *not* prove that the entire area was affected. Generalizing to the entire area requires explicit area-wide evidence or must be worded with source scoping (*«На улице Шевченко в центре...»*).
 3. **Scale Denominator & Majority Gating:**
-   Until an editor-approved exhaustive area set is explicitly configured (`editorial_scale_area_set.exhaustive_for_scale: true` and `status: "approved"`), `majority_supported` remains strictly `false`, and no denominator is assumed.
+   Until an editor-approved exhaustive area set is explicitly configured (`editorial_scale_area_set.exhaustive_for_scale: true` and `status: "approved"`), `majority_supported` remains strictly `false`, `broad_prevalence_supported` remains `false`, and no denominator is assumed.
 4. **Separation of Resolution and Aggregation:**
    - `CityContextResolver`: Answers *"What entity is mentioned and what geography does it map to?"*
-   - `StoryContextEnricher`: Answers *"How many independent source refs of this selected Story Card map to the same canonical areas?"*
-5. **Deduplication of Same-Area Reports:**
-   Multiple reports referencing the same canonical area (e.g., S001 on Shevchenko St. + S027 in Center) strengthen evidence within that single area and count as **1 unique observed area**, not 2.
+   - `StoryContextEnricher`: Answers *"How many source refs belonging to this selected Story Card (`evidence_refs = card.all_source_refs() & bundle.records.keys()`) map to the same canonical areas?"*
+5. **Deduplication of Same-Area Reports & Non-Inflation:**
+   Multiple reports referencing the same canonical area (e.g., S001 on Shevchenko St. + S027 in Center) strengthen evidence within that single area and count as **1 unique observed area**, not 2. Furthermore, `source_refs` are report references, not automatically independent witnesses (`report_count = len(area_evidence.source_refs)`).
 6. **Scoped Fail-Open:**
    If `CityProfile` is missing or invalid, the pipeline logs a `WARNING`, sets `city_context_resolver = None`, and continues regular article generation without crashing. Errors in Analyzer, Writer, or Audit are never masked.
 7. **No Out-of-Scope Dependencies:**
@@ -69,9 +69,13 @@ EditorialWriter + LightFactChecker (src/editorial_writer.py, src/editorial_audit
    - Leverages normalized street/area linkages to group geographically related messages into coherent `StoryCard`s.
 
 4. **Story Card Selection & Enrichment (`StoryContextEnricher.enrich()`):**
-   - Runs strictly over selected `StoryCard.representative_source_refs`.
-   - Aggregates canonical municipal areas and colloquial areas.
-   - Computes `ScaleEvidence` (observed area count, deduplicated).
+   - Runs strictly over all valid story evidence refs: `evidence_refs = card.all_source_refs() & bundle.records.keys()` (encompassing `representative_source_refs`, `hard_facts`, `community_observations`, `useful_details`, `uncertainties`, and `editorial_angle`).
+   - Aggregates canonical municipal areas and colloquial areas with explicit `area_set` namespaces.
+   - Computes deterministic `ScaleEvidence`:
+     - `observed_count = len(unique_municipal_areas)`
+     - `geographic_spread = observed_count >= 2`
+     - `broad_prevalence_supported = False` (until approved scale policy)
+     - `majority_supported = False` (until approved exhaustive area set)
    - Generates `StoryContext` mapped to each Story Card ID.
 
 5. **Drafting & Audit (`EditorialWriter`, `LightFactChecker`):**
@@ -117,6 +121,7 @@ class CityContextAnnotation:
 
 @dataclass(frozen=True)
 class AreaEvidence:
+    area_set: str
     area_id: str
     source_refs: tuple[str, ...]
     direct_area_refs: tuple[str, ...] = ()
@@ -165,10 +170,17 @@ The runtime resolver operates strictly on structured `coverage:`.
 
 ### 4.4 Story Context Enricher (`src/city_context.py`)
 
-- Maps `StoryCard.representative_source_refs` $\rightarrow$ `SourceRecord.city_context`.
-- Groups references by canonical municipal area ID.
-- Computes `observed_count = len(unique_municipal_areas)`.
-- Enforces `majority_supported = False` while `editorial_scale_area_set.exhaustive_for_scale: false`.
+- Collects all evidence refs: `evidence_refs = card.all_source_refs() & bundle.records.keys()`.
+- Maps each reference to its `SourceRecord.city_context`.
+- Groups references by `(area_set, area_id)`.
+- Tracks `direct_area_refs` vs `inferred_from_place_refs` without inflating independent witness counts (`report_count = len(source_refs)`).
+- Computes `ScaleEvidence`:
+  - `observed_area_ids = tuple(sorted(unique_municipal_area_ids))`
+  - `observed_count = len(observed_area_ids)`
+  - `geographic_spread = (observed_count >= 2)`
+  - `broad_prevalence_supported = False`
+  - `majority_supported = False`
+  - `total_comparable_areas = None` (while unapproved)
 
 ---
 
@@ -180,7 +192,8 @@ The runtime resolver operates strictly on structured `coverage:`.
    - Distinction between object types (`улица` vs `бульвар`).
    - Ambiguous multi-area street matching vs. narrowed house-number matching.
    - Same-area aggregation and deduplication (`S001` + `S027` in Center $\rightarrow$ 1 area, 2 refs).
-   - Majority gating safety tests.
+   - Card-level complete refs aggregation (`card.all_source_refs() & bundle.records.keys()`).
+   - ScaleEvidence v1 semantics (`geographic_spread = observed_count >= 2`, `broad_prevalence_supported = False`, `majority_supported = False`).
 2. **Pipeline Integration Tests (`tests/test_editorial_input.py`, `tests/test_editorial_analysis.py`, `tests/test_editorial_writer.py`, `tests/test_editorial_audit.py`, `tests/test_article_generator.py`, `tests/test_editorial_fallback.py`):**
    - Preservation of `city_context` across batching splits.
    - Graceful fallback when YAML is missing/corrupted.
