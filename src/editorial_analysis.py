@@ -118,6 +118,8 @@ Do not classify or label every supplied message, and do not repeat source text i
     ) -> EditorialAnalysis:
         sanitized = analysis.sanitized_against_refs(available_refs)
         if not sanitized.cards:
+            if not analysis.cards:
+                return sanitized
             try:
                 analysis.validate_refs(available_refs)
             except ValueError as exc:

@@ -582,12 +582,16 @@ async def generate_and_publish_article(
         return False
 
     from src.article_generator import ArticleGenerator
+    from src.editorial_fallback import NoSubstantiveMaterialError
     from src.telegraph import TelegraphPublisher
 
     try:
         generator = ArticleGenerator(config, logger)
         try:
             title, lead, markdown_body = await generator.generate_article(messages_by_channel)
+        except NoSubstantiveMaterialError:
+            logger.info("No publishable local material for article period")
+            return False
         except Exception as exc:
             logger.warning(
                 "ArticleGenerator failed; entering thematic fallback: %s", type(exc).__name__

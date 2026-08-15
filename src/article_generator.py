@@ -22,7 +22,11 @@ from src.editorial_audit import (
     LightFactChecker,
     deterministic_preflight,
 )
-from src.editorial_fallback import DeterministicStoryCardBuilder, StoryCardRenderer
+from src.editorial_fallback import (
+    DeterministicStoryCardBuilder,
+    NoSubstantiveMaterialError,
+    StoryCardRenderer,
+)
 from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, EditorialWriter
@@ -30,6 +34,10 @@ from src.editorial_writer import ArticleDraft, EditorialWriter
 
 class UnsafeDraftError(RuntimeError):
     """Raised when an unresolved high-risk fragment is central to the draft."""
+
+
+class NoSubstantiveEditorialError(NoSubstantiveMaterialError):
+    """Valid editorial analysis found no publishable local story."""
 
 
 def _load_skill_instructions(path: str) -> str:
@@ -370,7 +378,12 @@ class ArticleGenerator:
             )
 
         if not analysis.cards:
-            return await self._fallback(bundle, "editorial analysis returned no Story Cards")
+            self.logger.info(
+                "Editorial analysis found no publishable local stories for the reporting period"
+            )
+            raise NoSubstantiveEditorialError(
+                "no publishable local stories remain for reporting period"
+            )
 
         self.logger.info("Editorial analysis selected %d stories:", len(analysis.cards))
         for card in analysis.cards:

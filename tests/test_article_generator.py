@@ -602,3 +602,41 @@ async def test_pipeline_accepts_small_local_story_set_without_inflation(
     assert lead == "Городской лид."
     assert "Параграф" in body
     assert generator.provider.chat_completion.call_count == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_pipeline_handles_valid_zero_story_cards_as_no_substantive_outcome(
+    sample_config, mock_logger
+):
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(return_value=json.dumps({"cards": []}))
+    generator.fallback_builder.build = MagicMock()
+    generator.writer.write = AsyncMock()
+
+    messages = {
+        "ch1": [
+            Message(
+                text="Сообщение",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="user",
+                message_id=1,
+                link="https://t.me/c/1",
+                has_media=False,
+                media_type="",
+            )
+        ]
+    }
+
+    from src.article_generator import NoSubstantiveEditorialError
+
+    with pytest.raises(NoSubstantiveEditorialError):
+        await generator.generate_article(messages)
+
+    assert generator.provider.chat_completion.call_count == 1
+    generator.writer.write.assert_not_called()
+    generator.fallback_builder.build.assert_not_called()
+    for call in mock_logger.warning.call_args_list:
+        assert "Editorial analysis unavailable" not in str(call)
+        assert "attempt 1 failed" not in str(call)

@@ -1229,3 +1229,44 @@ async def test_generate_and_publish_article_uses_fallback_when_model_fails(
         assert "временном отключении воды" not in page_content
         mock_send.assert_called_once()
         assert list(tmp_path.glob("*_editorial.md"))
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_zero_card_editorial_outcome_does_not_trigger_core_fallback(
+    sample_config, mock_logger, tmp_path
+):
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock, patch
+
+    from src.article_generator import NoSubstantiveEditorialError
+    from src.collector import Message
+    from src.core import generate_and_publish_article
+
+    sample_config.settings.article.fallback_save_dir = str(tmp_path)
+    message = Message(
+        text="Сообщение",
+        sender="Житель",
+        timestamp=datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc),
+        link="https://t.me/test/1",
+        channel_name="Test Channel",
+        has_media=False,
+        media_type="",
+    )
+
+    with (
+        patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
+        patch(
+            "src.article_generator.ArticleGenerator.generate_article", new_callable=AsyncMock
+        ) as mock_gen,
+        patch("src.core._build_fallback_article") as mock_fallback,
+        patch("src.telegraph.TelegraphPublisher.create_page", new_callable=AsyncMock) as mock_page,
+    ):
+        mock_collect.return_value = {"Test Channel": [message]}
+        mock_gen.side_effect = NoSubstantiveEditorialError("no publishable local stories")
+
+        success = await generate_and_publish_article(sample_config, mock_logger, hours=24)
+
+        assert success is False
+        mock_fallback.assert_not_called()
+        mock_page.assert_not_called()

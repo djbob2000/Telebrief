@@ -457,3 +457,43 @@ def test_analyzer_prompts_contain_cardinality_bounds_and_quota_independence(comp
     )
     assert "zero" in system_prompt.lower()
     assert "quota" in system_prompt.lower() or "minimum" in system_prompt.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sanitize_or_fail_accepts_empty_cards_as_valid_editorial_result(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value=json.dumps({"cards": []}))
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    analysis = await analyzer.analyze(_bundle())
+
+    assert analysis.cards == []
+    assert provider.chat_completion.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_sanitize_or_fail_fails_when_non_empty_cards_lose_all_refs(mock_logger):
+    payload = json.dumps(
+        {
+            "cards": [
+                {
+                    "id": "SC001",
+                    "topic": "Фантом",
+                    "importance": "high",
+                    "summary": "Фантомная новость",
+                    "sources": ["S999999"],
+                    "hard_facts": [{"text": "Факт", "source_refs": ["S999999"]}],
+                }
+            ]
+        }
+    )
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value=payload)
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(EditorialAnalysisError) as exc_info:
+        await analyzer.analyze(_bundle())
+
+    assert exc_info.value.stage == "invalid_source_ref"
