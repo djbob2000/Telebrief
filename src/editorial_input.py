@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Iterable
 
 from src.collector import Message
 from src.config_loader import SourceRoleResolver
@@ -85,6 +86,33 @@ class EditorialInputBuilder:
             prompt_text=prompt_text,
             total_messages=total_messages,
             candidate_count=len(records),
+        )
+
+    def select_records(
+        self,
+        bundle: PreparedBundle,
+        refs: Iterable[str],
+        *,
+        max_refs: int = 96,
+    ) -> PreparedBundle:
+        """Create a compact source bundle from representative Story Card refs."""
+        if max_refs < 1:
+            raise ValueError("max_refs must be positive")
+
+        selected: dict[str, SourceRecord] = {}
+        for ref in refs:
+            if ref in selected or ref not in bundle.records or len(selected) >= max_refs:
+                continue
+            record = bundle.records[ref]
+            selected[ref] = record
+            if record.parent_ref and record.parent_ref in bundle.records:
+                selected.setdefault(record.parent_ref, bundle.records[record.parent_ref])
+
+        return PreparedBundle(
+            records=selected,
+            prompt_text=self._render_prompt(selected),
+            total_messages=bundle.total_messages,
+            candidate_count=len(selected),
         )
 
     @staticmethod

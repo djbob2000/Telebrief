@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from src.collector import Message
 from src.config_loader import ChannelConfig, SourceRoleResolver
 from src.editorial_input import EditorialInputBuilder
+from src.editorial_models import PreparedBundle, SourceRecord
 
 
 def _message(text: str, message_id: int, *, reply_to_id: int | None = None) -> Message:
@@ -152,3 +153,48 @@ def test_input_builder_filters_financial_rate_spam_but_keeps_ticket_notice():
     bundle = builder.build({"Source": messages})
 
     assert [record.message.message_id for record in bundle.records.values()] == [2]
+
+
+def test_input_builder_selects_story_refs_and_reply_parent_without_reprocessing():
+    parent = _message("У кого сейчас есть вода?", 13)
+    reply = _message("На Колонии тоже нет", 14, reply_to_id=13)
+    unrelated = _message("В городе обсуждали транспорт", 15)
+    builder = EditorialInputBuilder(
+        SourceRoleResolver(
+            [
+                ChannelConfig(id="@source", name="Source", source_type="community"),
+            ]
+        )
+    )
+    bundle = builder.build({"Source": [parent, reply, unrelated]})
+
+    selected = builder.select_records(bundle, ["S000002"])
+
+    assert set(selected.records) == {"S000001", "S000002"}
+    assert selected.records["S000002"].source_type == "community"
+    assert 'reply_to: "У кого сейчас есть вода?"' in selected.prompt_text
+    assert "В городе обсуждали транспорт" not in selected.prompt_text
+
+
+def test_input_builder_limits_selected_evidence_in_requested_order():
+    messages = [_message(f"Наблюдение {index}", index) for index in range(1, 4)]
+    records = {
+        f"S{index:06d}": SourceRecord(
+            ref=f"S{index:06d}",
+            message=message,
+            source_type="community",
+        )
+        for index, message in enumerate(messages, start=1)
+    }
+    bundle = PreparedBundle(
+        records=records,
+        prompt_text="original",
+        total_messages=3,
+        candidate_count=3,
+    )
+    builder = EditorialInputBuilder(SourceRoleResolver([]))
+
+    selected = builder.select_records(bundle, ["S000003", "S000001", "S000002"], max_refs=2)
+
+    assert list(selected.records) == ["S000003", "S000001"]
+    assert selected.records["S000003"].message.text == "Наблюдение 3"
