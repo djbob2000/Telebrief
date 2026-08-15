@@ -297,3 +297,13 @@ def test_article_draft_from_dict_normalizes_empty_paragraphs_when_sections_prese
 
     assert draft.paragraphs == []
     assert len(draft.sections) == 1
+
+
+@pytest.mark.unit
+def test_writer_prompt_contains_unofficial_versions_and_scale_discipline(mock_logger):
+    writer = EditorialWriter(MagicMock(), "model", "skill", mock_logger)
+    system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
+
+    assert "verified baseline" in system_prompt.lower()
+    assert "unofficial estimates" in system_prompt.lower()
+    assert "evidence of scale" in system_prompt.lower()

@@ -103,13 +103,19 @@ on the same day or share a broad topic. Follow an explicit user-selected story o
    or next supported step. Omit empty sections instead of inventing transitions or background.
 4. Keep community observations distinct from hard facts: “по словам жителей”, “жители писали”,
    or equivalent is not decorative wording; it preserves epistemic status.
-5. Preserve contradictions instead of selecting a winner without evidence. Report both supported
-   versions and explain the remaining gap briefly.
-6. Use exact reporting verbs: “сообщил”, “заявил”, “утверждает”, “подтвердил”. Distinguish
+5. Preserve contradictions and newsworthy uncertainties: make the verified baseline explicit before
+   presenting unofficial estimates. Usually prefer one or two materially informative unofficial versions;
+   never enumerate speculation merely for completeness. Place significant unofficial versions in the relevant
+   chapter (use an optional end block 'Что пока не подтверждено' only when there are multiple significant unresolved items).
+6. Scale discipline: scale language requires evidence of scale, not merely evidence of the underlying
+   phenomenon. Support must come from quantified official/news reporting or sufficiently broad independent
+   observations across locations/source roles; a few comments or ads cannot establish citywide scale, shortage,
+   or majority behavior.
+7. Use exact reporting verbs: “сообщил”, “заявил”, “утверждает”, “подтвердил”. Distinguish
    observation, allegation, suspicion, detention, charge, trial, and conviction.
-7. Keep direct quotes faithful. Mark a translated direct quote as “перевод редакции” or “перевод
+8. Keep direct quotes faithful. Mark a translated direct quote as “перевод редакции” or “перевод
    автора”; do not present a translation as the speaker's exact original wording.
-8. Keep paragraphs visually light, usually one to three sentences. Remove bureaucratic padding,
+9. Keep paragraphs visually light, usually one to three sentences. Remove bureaucratic padding,
    emotional intensifiers, clickbait, rhetorical questions, and unsupported superlatives.
 
 ## High-risk reporting

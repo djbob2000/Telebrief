@@ -497,3 +497,20 @@ async def test_sanitize_or_fail_fails_when_non_empty_cards_lose_all_refs(mock_lo
         await analyzer.analyze(_bundle())
 
     assert exc_info.value.stage == "invalid_source_ref"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("compact", [False, True])
+def test_analyzer_prompts_contain_informative_uncertainty_and_canonical_schema(
+    compact, mock_logger
+):
+    analyzer = EditorialAnalyzer(MagicMock(), "model", mock_logger)
+    system_prompt, _ = analyzer.build_prompt(_bundle(), compact=compact)
+
+    assert "Informative Uncertainty" in system_prompt or "unverified" in system_prompt.lower()
+    assert "noise" in system_prompt.lower() or "rumor" in system_prompt.lower()
+    assert "representative_source_refs" in system_prompt
+    assert "timeframe" in system_prompt
+    assert "current_status" in system_prompt
+    assert "next_known_step" in system_prompt
+    assert "editorial_angle" in system_prompt

@@ -206,6 +206,16 @@ internal identifiers, source refs, Markdown or commentary. Return strict JSON on
 headline, lead, paragraphs, and sections. When structuring into chapters/sections, leave
 top-level paragraphs as empty [] to maintain a single canonical body. Use sections only
 when real material supports them (usually 3–5 thematic chapters). Usually write 8–12 substantive paragraphs.
+Usually prefer one or two materially informative unofficial versions. Include more only when
+the additional versions materially change the reader’s understanding of the uncertainty.
+Never enumerate speculation merely for completeness. Make the verified baseline explicit before
+presenting unofficial estimates. Place significant unofficial versions in the relevant chapter
+(use an optional end block 'Что пока не подтверждено' only when there are multiple significant
+unresolved items worth summarizing).
+Scale language requires evidence of scale, not merely evidence of the underlying phenomenon.
+Support may come from quantified official/news reporting or sufficiently broad independent
+observations across locations/source roles. A few comments, advertisements, or repeated reposts
+cannot establish citywide scale, shortage, demand growth, or majority behavior.
 Aim for about 900–1500 words on a busy day, allow up to about 1800 words when the
 material genuinely supports it, and accept 600–900 words on a thin day. These are editorial
 targets, not validation limits; never pad length.

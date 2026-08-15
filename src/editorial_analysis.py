@@ -51,11 +51,16 @@ class EditorialAnalyzer:
             if compact
             else "Use labels only for selected messages when they materially help the writer."
         )
-        card_schema = """Each card must use this shape: {
+        card_schema = """Each card must use this canonical shape: {
   "id": "SC001", "topic": "short topic", "importance": "high|medium|low",
   "summary": "one-sentence summary", "story_kind": "optional",
-  "hard_facts": [{"text": "...", "source_refs": ["S000001"], "status": "established|attributed|disputed"}],
-  "community_observations": [], "useful_details": [], "uncertainties": []
+  "timeframe": "optional", "current_status": "optional", "next_known_step": "optional",
+  "editorial_angle": {"text": "why this matters", "basis_refs": ["S000001"], "type": "editorial_synthesis"},
+  "representative_source_refs": ["S000001"],
+  "hard_facts": [{"text": "...", "source_refs": ["S000001"], "status": "established|attributed|disputed", "attribution": "...", "areas": []}],
+  "community_observations": [{"text": "...", "source_refs": ["S000001"], "status": "attributed", "attribution": "residents in chat", "areas": []}],
+  "useful_details": [{"text": "...", "source_refs": ["S000001"], "status": "attributed", "attribution": "", "areas": []}],
+  "uncertainties": [{"text": "...", "basis": "claimed connection/rumor", "related_source_refs": ["S000001"]}]
 }. Never replace id, topic or summary with title, headline or description; never omit them.
 """
         local_publishability_rules = f"""Local publishability gate:
@@ -63,7 +68,8 @@ class EditorialAnalyzer:
 2. Editorial-Value Test: A single remark, joke, technical guess, or classified ad does not become a Story Card. Select only genuinely significant local stories for the 24-hour period.
 3. Evidence-Position Test: Use hard_facts for sufficiently supported factual reporting from appropriate news/official evidence. Resident reports, anonymous technical claims, guesses and rumors remain attributed observations/uncertainties or are omitted. Do not treat source_type alone as proof.
 4. Commercial Demarcation: Commercial/classified messages may supply a practical detail, but cannot by themselves establish a trend, public behavior, shortage, migration pattern, demand increase, or major story.
-5. Cardinality & Quota Independence: Return {card_target} significant local Story Cards. One or two strong local stories are fully valid when material exists. Return zero cards when no publishable local story remains. Never create weak, external, commercial, or redundant cards to reach a minimum quota."""
+5. Cardinality & Quota Independence: Return {card_target} significant local Story Cards. One or two strong local stories are fully valid when material exists. Return zero cards when no publishable local story remains. Never create weak, external, commercial, or redundant cards to reach a minimum quota.
+6. Informative Uncertainty: Do not discard information merely because it is unverified. Distinguish unsupported noise from newsworthy uncertainty. A rumor, estimate, or anonymous claim may be retained in uncertainties or community_observations when its subject materially affects Berdyansk residents and knowing that the claim is circulating adds useful context. Preserve who said it, what basis they claimed to have, whether there is independent corroboration, and what remains unverified. Omit low-value speculation with no identifiable basis, repetition, practical relevance, or explanatory value. Never promote an unverified version into hard_facts."""
 
         system = f"""You are the editorial analyst for a local daily newsroom in Berdyansk.
 Return JSON with a required cards array and optional labels/excluded_refs.
