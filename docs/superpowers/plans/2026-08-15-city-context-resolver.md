@@ -233,12 +233,22 @@ class CityContextResolver:
     def resolve(self, text: str) -> CityContextAnnotation: ...
 ```
 
-- [ ] **Step 1: Write RED tests for exact entity resolution, aliases, and address precision in `tests/test_city_context.py`**
+- [ ] **Step 1: Write RED tests for direct area resolution, exact place resolution, aliases, and address precision in `tests/test_city_context.py`**
 
 ```python
 def test_city_context_resolver_exact_and_aliases():
     resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
 
+    # Direct area mentions
+    res_center = resolver.resolve("В центре снова нет света")
+    area_center = next(e for e in res_center.entities if e.kind == "area" and e.entity_id == "center")
+    assert area_center.canonical_name == "Центр"
+
+    res_liski = resolver.resolve("На Лисках нет воды")
+    area_liski = next(e for e in res_liski.entities if e.kind == "area" and e.entity_id == "liski")
+    assert area_liski.canonical_name == "Лиски"
+
+    # Streets and aliases
     res1 = resolver.resolve("На ул. Шевченко нет света")
     assert any(e.entity_id == "street:Шевченка" for e in res1.entities)
 
@@ -248,6 +258,7 @@ def test_city_context_resolver_exact_and_aliases():
     res3 = resolver.resolve("На Морозова воды нет")
     assert any(e.entity_id == "street:Північна" for e in res3.entities)
 
+    # Providers and routes
     res4 = resolver.resolve("Юпитер снова работает")
     assert any(e.entity_id == "jupiter" for e in res4.entities)
 
@@ -268,6 +279,22 @@ def test_city_context_resolver_multi_area_ambiguity():
     res = resolver.resolve("На Мелитопольском шоссе нет света")
     street_entity = next(e for e in res.entities if "Мелітопольське" in e.canonical_name or "шосе" in e.canonical_name)
     assert len(street_entity.municipal_areas) > 1
+    assert street_entity.confidence == "ambiguous"
+
+
+def test_city_context_resolver_loader_error_contract(tmp_path):
+    import pytest
+    from src.city_context import CityProfileError
+
+    # Non-existent file propagates FileNotFoundError
+    with pytest.raises(FileNotFoundError):
+        CityContextResolver.from_yaml(tmp_path / "non_existent.yaml")
+
+    # Corrupt YAML raises CityProfileError
+    bad_yaml = tmp_path / "bad.yaml"
+    bad_yaml.write_text("schema_version: 999\nprofile_id: [invalid", encoding="utf-8")
+    with pytest.raises(CityProfileError):
+        CityContextResolver.from_yaml(bad_yaml)
 ```
 
 - [ ] **Step 2: Run tests and verify RED**
@@ -276,19 +303,22 @@ def test_city_context_resolver_multi_area_ambiguity():
 uv run pytest -q tests/test_city_context.py --no-cov
 ```
 
-- [ ] **Step 3: Convert all 36 `rule:` strings to structured `coverage:` in `data/city_profiles/berdyansk.yaml`**
+- [ ] **Step 3: Convert all 468 `rule:` strings to structured `coverage:` in `data/city_profiles/berdyansk.yaml`**
 
 Mechanically convert:
-- `rule: whole_object` $\rightarrow$ `coverage: {kind: whole_object}`
-- `rule: from_start_to_Kosmonavtiv` $\rightarrow$ `coverage: {kind: segment, to_landmark: Kosmonavtiv}`
-- `rule: even_side` $\rightarrow$ `coverage: {kind: side, side: even}`
-- `rule: odd_side` $\rightarrow$ `coverage: {kind: side, side: odd}`
-- etc.
+- 432 `whole_object` mappings $\rightarrow$ `coverage: {kind: whole_object}`
+- 36 non-trivial mappings $\rightarrow$ structured `coverage:`:
+  - `kind: house_numbers` (with `houses: [...]` list and optional `private_sector: bool`)
+  - `kind: side` (with `side: "even" | "odd"`)
+  - `kind: segment` (with `from_landmark`, `to_landmark`, `from_house`, `to_house`, `side`)
+  - `kind: any_of` (with `clauses: [...]`)
 
-Verify that no `rule:` keys remain under `area_memberships`.
+Verify with acceptance assertions:
+`count_rule_keys(profile) == 0` and `count_coverage_keys(profile) == 468`.
 
 - [ ] **Step 4: Implement `CityContextResolver` in `src/city_context.py`**
 
+- Build loader validating schema and raising `CityProfileError` on malformed structures.
 - Build normalization `_normalize(text)` (NFKC, casefold, replace ё $\rightarrow$ е, trim).
 - Build indices: `_typed_place_aliases`, `_untyped_place_aliases`, `_area_aliases`, `_provider_aliases`, `_route_numbers`.
 - Implement address parser for house numbers/segments when matching multi-candidate streets.
@@ -369,7 +399,7 @@ git commit -m "feat: attach local context to editorial source records"
 
 ---
 
-### Task 4: Aggregate Story Card geography without double counting
+### Task 4: Aggregate Story Card geography without double counting and with ambiguity safety
 
 **Files:**
 - Modify: `src/city_context.py`
@@ -387,18 +417,34 @@ class StoryContextEnricher:
     ) -> dict[str, StoryContext]: ...
 ```
 
-- [ ] **Step 1: Write RED aggregation tests in `tests/test_city_context.py`**
+- [ ] **Step 1: Write RED aggregation and ambiguity safety tests in `tests/test_city_context.py`**
 
-- Test 1 (Deduplication): Story Card with `S001` ("На улице Шевченко нет света") + `S002` ("В центре света нет") $\rightarrow$ 1 municipal area (`center`), `source_refs = ("S001", "S002")`, `observed_count = 1`, `geographic_spread = False`.
-- Test 2 (Card-level complete refs): Test that refs in `card.all_source_refs() & bundle.records.keys()` (including `community_observations`, `useful_details`, etc.) are aggregated.
-- Test 3 (Multi-area spread): Refs from Center, Liski, and AKZ $\rightarrow$ `observed_count = 3`, `geographic_spread = True`, `broad_prevalence_supported = False`, `majority_supported = False`.
+```python
+def test_story_context_enricher_same_area_deduplication():
+    # S001 (Shevchenko) + S002 (Center) -> 1 unique municipal area (center) with 2 source_refs
+    ...
+
+
+def test_story_context_enricher_uses_all_source_refs():
+    # StoryCard with representative refs in Center + community_observation ref in Liski -> 2 unique areas
+    ...
+
+
+def test_ambiguous_place_does_not_inflate_scale():
+    # One unresolved multi-area street (e.g. Melitopolske Highway without house number)
+    # -> candidates exist on SourceRecord.city_context
+    # -> story scale observed_count == 0
+    # -> geographic_spread is False
+    ...
+```
 
 - [ ] **Step 2: Implement `StoryContextEnricher.enrich()` in `src/city_context.py`**
 
-- Collect `evidence_refs = card.all_source_refs() & bundle.records.keys()`.
-- Group by `(area_set, area_id)`.
+- Collect all evidence refs: `evidence_refs = card.all_source_refs() & bundle.records.keys()`.
+- Filter for **unambiguous municipal areas only** (direct area mentions or place matches with single unambiguous municipal area / `confidence != "ambiguous"`).
+- Group unambiguous references by `(area_set, area_id)`.
 - Compute `ScaleEvidence`:
-  - `observed_area_ids = tuple(sorted(unique_municipal_area_ids))`
+  - `observed_area_ids = tuple(sorted(unique_unambiguous_municipal_area_ids))`
   - `observed_count = len(observed_area_ids)`
   - `geographic_spread = (observed_count >= 2)`
   - `broad_prevalence_supported = False`
@@ -433,14 +479,14 @@ git commit -m "feat: aggregate story geography from source refs"
 
 - [ ] **Step 1: Write RED tests for ArticleGenerator, Writer, and Audit prompts**
 
-- ArticleGenerator: missing/corrupt YAML logs warning and continues generation.
+- ArticleGenerator: missing or corrupt YAML catches `(CityProfileError, FileNotFoundError)`, logs warning, and continues generation with city context disabled.
 - Writer prompt: includes rules that street-to-area mapping means observation came from that area (not that entire area was affected), same-area reports count as 1 area, and `majority_supported` is used only when deterministic scale evidence sets it to true.
 - Audit prompt: flags un-scoped whole-area generalization from street-only evidence as FIX.
-- Fallback: uses `SourceRecord.city_context` when present, preserving text-fallback if context is disabled.
+- Fallback: uses `SourceRecord.city_context` when present; when city context is unavailable, deterministic fallback continues normal text processing without performing CityProfile-dependent entity enrichment (removes duplicate `_KNOWN_AREAS` / `_KNOWN_PROVIDERS`).
 
 - [ ] **Step 2: Implement `ArticleGenerator` profile loading and enrichment pipeline**
 
-- In `ArticleGenerator.__init__`: load `CityContextResolver.from_yaml` (catch `CityProfileError` / `FileNotFoundError`, log `WARNING`, set `city_context_resolver = None`).
+- In `ArticleGenerator.__init__`: load `CityContextResolver.from_yaml` (catch `(CityProfileError, FileNotFoundError)`, log `WARNING`, set `city_context_resolver = None`).
 - In `generate_article()`: after Analyzer produces Story Cards and `selected_refs` are filtered for the writer bundle, run `StoryContextEnricher.enrich(analysis, writer_bundle)` and attach `story_contexts` to `writer_bundle`.
 
 - [ ] **Step 3: Render deterministic story context into writer bundle prompt**
@@ -451,7 +497,7 @@ Render `[LOCAL STORY CONTEXT SC###]` blocks into `PreparedBundle.prompt_text` fo
 
 - Add deterministic local context instructions to `EditorialWriter.build_prompt()`.
 - Add street-to-area audit check to `LightFactChecker._build_system_prompt()`.
-- Update `EditorialFallback` to leverage `SourceRecord.city_context`.
+- Update `EditorialFallback` to leverage `SourceRecord.city_context` and remove duplicate hardcoded dictionaries.
 
 - [ ] **Step 5: Run tests to verify PASS**
 
@@ -477,6 +523,7 @@ git commit -m "feat: use Berdyansk context across editorial pipeline"
 - [ ] **Step 1: Add end-to-end regressions in `tests/test_city_context.py` and `tests/test_article_generator.py`**
 
 - Same-area regression: `S1` (Shevchenko), `S2` (Center), `S3` (Liski) $\rightarrow$ 2 unique municipal areas, Center has 2 refs.
+- Ambiguity scale safety regression: ambiguous multi-area street does not inflate `observed_count`.
 - Toponym alias regression: `Морозова`, `Северная`, `Північна` resolve to the same street entity.
 - Collision regression: `улица Шевченко` vs `бульвар Шевченко` are distinct entities with distinct area memberships.
 - Provider/Route recognition: `Юпитер`, `Поинт`, `+7Телеком`, `МирТелеком`, `маршрут 15` recognized as local entities without operational status leaking as current-day events.
