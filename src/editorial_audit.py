@@ -148,6 +148,61 @@ class LightFactChecker:
             raise FactCheckUnavailableError("fact check response is not a dict")
         return payload
 
+    @staticmethod
+    def _compact_story_cards(
+        analysis: EditorialAnalysis,
+        *,
+        minimal: bool = False,
+    ) -> list[dict[str, Any]]:
+        compact_cards: list[dict[str, Any]] = []
+        for card in analysis.cards:
+            base: dict[str, Any] = {
+                "id": card.id,
+                "topic": card.topic,
+                "summary": card.summary,
+                "source_refs": sorted(card.all_source_refs()),
+            }
+            if minimal:
+                compact_cards.append(base)
+                continue
+            base["hard_facts"] = [
+                {
+                    "text": elem.text,
+                    "status": elem.status,
+                    "attribution": elem.attribution,
+                    "source_refs": list(elem.source_refs),
+                }
+                for elem in card.hard_facts
+            ]
+            base["community_observations"] = [
+                {
+                    "text": elem.text,
+                    "status": elem.status,
+                    "attribution": elem.attribution,
+                    "source_refs": list(elem.source_refs),
+                }
+                for elem in card.community_observations
+            ]
+            base["useful_details"] = [
+                {
+                    "text": elem.text,
+                    "status": elem.status,
+                    "attribution": elem.attribution,
+                    "source_refs": list(elem.source_refs),
+                }
+                for elem in card.useful_details
+            ]
+            base["uncertainties"] = [
+                {
+                    "text": unc.text,
+                    "basis": unc.basis,
+                    "related_source_refs": list(unc.related_source_refs),
+                }
+                for unc in card.uncertainties
+            ]
+            compact_cards.append(base)
+        return compact_cards
+
     async def check(
         self,
         draft: ArticleDraft,
@@ -164,12 +219,11 @@ class LightFactChecker:
         system = self._build_system_prompt()
         user = json.dumps(
             {
-                "draft": draft.to_dict(),
                 "audit_units": {
                     unit_id: {"path": locator.path, "text": locator.text}
                     for unit_id, locator in units.items()
                 },
-                "story_cards": analysis.to_dict(),
+                "story_cards": self._compact_story_cards(analysis, minimal=False),
                 "source_records": bundle.prompt_text,
             },
             ensure_ascii=False,

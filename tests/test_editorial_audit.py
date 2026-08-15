@@ -14,7 +14,14 @@ from src.editorial_audit import (
     LightFactChecker,
     deterministic_preflight,
 )
-from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord
+from src.editorial_models import (
+    EditorialAnalysis,
+    PreparedBundle,
+    SourceRecord,
+    StoryCard,
+    StoryElement,
+    Uncertainty,
+)
 from src.editorial_writer import ArticleDraft
 
 
@@ -227,3 +234,136 @@ async def test_fact_checker_exposes_json_parse_failure_diagnostics(mock_logger):
         "json" in (checker.last_reason or "").lower()
         or "expecting" in (checker.last_reason or "").lower()
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_checker_audit_payload_contains_no_duplicate_draft_text(mock_logger):
+    """Audit payload sends article text strictly once via audit_units, without duplicate draft."""
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps({"status": "PASS", "systemic_problem": False, "issues": []})
+    )
+    checker = LightFactChecker(provider, "model", mock_logger)
+    draft = _draft()
+    await checker.check(draft, EditorialAnalysis([]), _bundle())
+
+    assert provider.chat_completion.call_count == 1
+    call_kwargs = provider.chat_completion.call_args.kwargs
+    user_content = call_kwargs["messages"][1]["content"]
+    payload = json.loads(user_content)
+
+    assert "draft" not in payload
+    assert "article_outline" not in payload
+    assert "audit_units" in payload
+    assert set(payload.keys()) == {"audit_units", "story_cards", "source_records"}
+
+
+@pytest.mark.unit
+def test_compact_story_cards_preserve_epistemic_status_and_attribution():
+    """Compact story cards retain element status, attribution, refs, and basis while omitting debug metadata."""
+    card = StoryCard(
+        id="SC001",
+        topic="Disruptions in power and water",
+        importance="high",
+        summary="Power grid disruptions affected central districts.",
+        hard_facts=[
+            StoryElement(
+                text="Substation damaged near market.",
+                source_refs=["S000001", "S000002"],
+                status="established",
+                attribution="",
+                areas=["Center"],
+            )
+        ],
+        community_observations=[
+            StoryElement(
+                text="Residents report evening outages.",
+                source_refs=["S000003"],
+                status="attributed",
+                attribution="Residents in chats",
+            )
+        ],
+        useful_details=[
+            StoryElement(
+                text="Local cafe provides charging.",
+                source_refs=["S000004"],
+                status="attributed",
+            )
+        ],
+        uncertainties=[
+            Uncertainty(
+                text="Conflicting estimates of repair time from 2 days to 2 weeks.",
+                basis="chat rumors",
+                related_source_refs=["S000005"],
+            )
+        ],
+    )
+    analysis = EditorialAnalysis(
+        cards=[card], labels={"S000001": "power"}, excluded_refs=["S000099"]
+    )
+    compact_cards = LightFactChecker._compact_story_cards(analysis, minimal=False)
+
+    assert len(compact_cards) == 1
+    c = compact_cards[0]
+    assert c["id"] == "SC001"
+    assert c["topic"] == "Disruptions in power and water"
+    assert c["summary"] == "Power grid disruptions affected central districts."
+    assert c["source_refs"] == ["S000001", "S000002", "S000003", "S000004", "S000005"]
+
+    assert c["hard_facts"] == [
+        {
+            "text": "Substation damaged near market.",
+            "status": "established",
+            "attribution": "",
+            "source_refs": ["S000001", "S000002"],
+        }
+    ]
+    assert c["community_observations"] == [
+        {
+            "text": "Residents report evening outages.",
+            "status": "attributed",
+            "attribution": "Residents in chats",
+            "source_refs": ["S000003"],
+        }
+    ]
+    assert c["useful_details"] == [
+        {
+            "text": "Local cafe provides charging.",
+            "status": "attributed",
+            "attribution": "",
+            "source_refs": ["S000004"],
+        }
+    ]
+    assert c["uncertainties"] == [
+        {
+            "text": "Conflicting estimates of repair time from 2 days to 2 weeks.",
+            "basis": "chat rumors",
+            "related_source_refs": ["S000005"],
+        }
+    ]
+    assert "labels" not in c
+    assert "excluded_refs" not in c
+
+
+@pytest.mark.unit
+def test_compact_story_cards_minimal_mode_retains_summaries_only():
+    """Minimal mode on compact story cards retains only id, topic, summary, and sorted refs."""
+    card = StoryCard(
+        id="SC001",
+        topic="Disruptions",
+        importance="high",
+        summary="Power grid disruptions.",
+        hard_facts=[StoryElement(text="Fact", source_refs=["S000002"])],
+        uncertainties=[Uncertainty(text="Unc", related_source_refs=["S000001"])],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    compact_cards = LightFactChecker._compact_story_cards(analysis, minimal=True)
+
+    assert len(compact_cards) == 1
+    c = compact_cards[0]
+    assert set(c.keys()) == {"id", "topic", "summary", "source_refs"}
+    assert c["id"] == "SC001"
+    assert c["source_refs"] == ["S000001", "S000002"]
+    assert "hard_facts" not in c
+    assert "uncertainties" not in c
