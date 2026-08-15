@@ -284,11 +284,13 @@ class LightFactChecker:
                 try:
                     return await self._run_check_request(minimal_payload, units, compact_retry=True)
                 except Exception as retry_exc:
-                    self.last_reason = str(retry_exc)
+                    if not self.last_reason:
+                        self.last_reason = str(retry_exc)
                     raise FactCheckUnavailableError(
-                        f"compact audit retry failed: {retry_exc}"
+                        f"compact audit retry failed: {self.last_reason}"
                     ) from retry_exc
-            self.last_reason = str(exc)
+            if not self.last_reason:
+                self.last_reason = str(exc)
             raise FactCheckUnavailableError(f"fact-check unavailable: {exc}") from exc
 
     async def repair(

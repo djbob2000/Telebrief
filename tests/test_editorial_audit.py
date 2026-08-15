@@ -450,3 +450,23 @@ async def test_fact_checker_second_token_budget_failure_raises_unavailable(mock_
     assert provider.chat_completion.call_count == 2
     assert checker.last_stage == "provider_call"
     assert checker.last_reason is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compact_retry_json_parse_failure_preserves_structured_reason(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        side_effect=[
+            TokenBudgetExhaustedError("output budget exceeded"),
+            "invalid json format response",
+        ]
+    )
+    checker = LightFactChecker(provider, "model", mock_logger)
+    draft = ArticleDraft(headline="Заголовок", lead="Лид", paragraphs=["Текст"])
+
+    with pytest.raises(FactCheckUnavailableError):
+        await checker.check(draft, EditorialAnalysis([]), _bundle())
+
+    assert checker.last_stage == "json_parse"
+    assert "position" in checker.last_reason or "Expecting value" in checker.last_reason

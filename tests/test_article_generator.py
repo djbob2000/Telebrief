@@ -640,3 +640,263 @@ async def test_pipeline_handles_valid_zero_story_cards_as_no_substantive_outcome
     for call in mock_logger.warning.call_args_list:
         assert "Editorial analysis unavailable" not in str(call)
         assert "attempt 1 failed" not in str(call)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_check_lifecycle_artifacts_initial_pass(sample_config, mock_logger, tmp_path):
+    sample_config.settings.article.save_debug_artifacts = True
+    sample_config.settings.article.debug_artifact_dir = str(tmp_path)
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "cards": [
+                        {
+                            "id": "SC001",
+                            "topic": "T",
+                            "importance": "high",
+                            "summary": "S",
+                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                        }
+                    ]
+                }
+            ),
+            json.dumps({"headline": "H", "lead": "L", "paragraphs": ["P"], "sections": []}),
+            json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
+        ]
+    )
+    messages = {
+        "ch1": [
+            Message(
+                text="T",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="u",
+                message_id=1,
+                link="l",
+                has_media=False,
+                media_type="",
+            )
+        ]
+    }
+
+    await generator.generate_article(messages)
+
+    initial_data = json.loads((tmp_path / "fact_check_initial.json").read_text(encoding="utf-8"))
+    final_data = json.loads((tmp_path / "fact_check_final.json").read_text(encoding="utf-8"))
+    fact_check_data = json.loads((tmp_path / "fact_check.json").read_text(encoding="utf-8"))
+    assert initial_data["status"] == "PASS"
+    assert final_data["status"] == "PASS"
+    assert fact_check_data == final_data
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_check_lifecycle_artifacts_fix_repaired_to_pass(
+    sample_config, mock_logger, tmp_path
+):
+    sample_config.settings.article.save_debug_artifacts = True
+    sample_config.settings.article.debug_artifact_dir = str(tmp_path)
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "cards": [
+                        {
+                            "id": "SC001",
+                            "topic": "T",
+                            "importance": "high",
+                            "summary": "S",
+                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                        }
+                    ]
+                }
+            ),
+            json.dumps({"headline": "H", "lead": "L", "paragraphs": ["P"], "sections": []}),
+            json.dumps(
+                {
+                    "status": "FIX",
+                    "systemic_problem": False,
+                    "issues": [
+                        {
+                            "unit_id": "P001",
+                            "severity": "fix",
+                            "code": "unverified",
+                            "original_excerpt": "P",
+                            "reason": "Unsupported factual wording",
+                            "suggested_direction": "Use attributed wording",
+                            "source_refs": ["S000001"],
+                        }
+                    ],
+                }
+            ),
+            json.dumps({"replacements": {"P001": "Repaired P"}}),
+            json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
+        ]
+    )
+    messages = {
+        "ch1": [
+            Message(
+                text="T",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="u",
+                message_id=1,
+                link="l",
+                has_media=False,
+                media_type="",
+            )
+        ]
+    }
+
+    _, _, body = await generator.generate_article(messages)
+
+    assert "Repaired P" in body
+    initial_data = json.loads((tmp_path / "fact_check_initial.json").read_text(encoding="utf-8"))
+    final_data = json.loads((tmp_path / "fact_check_final.json").read_text(encoding="utf-8"))
+    fact_check_data = json.loads((tmp_path / "fact_check.json").read_text(encoding="utf-8"))
+    assert initial_data["status"] == "FIX"
+    assert final_data["status"] == "PASS"
+    assert fact_check_data == final_data
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_check_lifecycle_artifacts_systemic_regeneration(
+    sample_config, mock_logger, tmp_path
+):
+    sample_config.settings.article.save_debug_artifacts = True
+    sample_config.settings.article.debug_artifact_dir = str(tmp_path)
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "cards": [
+                        {
+                            "id": "SC001",
+                            "topic": "T",
+                            "importance": "high",
+                            "summary": "S",
+                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                        }
+                    ]
+                }
+            ),
+            json.dumps({"headline": "H1", "lead": "L1", "paragraphs": ["P1"], "sections": []}),
+            json.dumps(
+                {
+                    "status": "FIX",
+                    "systemic_problem": True,
+                    "issues": [
+                        {
+                            "unit_id": "P001",
+                            "severity": "fix",
+                            "code": "systemic",
+                            "original_excerpt": "P1",
+                            "reason": "Systemic structural error",
+                            "suggested_direction": "Regenerate whole piece",
+                            "source_refs": ["S000001"],
+                        }
+                    ],
+                }
+            ),
+            json.dumps({"headline": "H2", "lead": "L2", "paragraphs": ["P2"], "sections": []}),
+            json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
+        ]
+    )
+    messages = {
+        "ch1": [
+            Message(
+                text="T",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="u",
+                message_id=1,
+                link="l",
+                has_media=False,
+                media_type="",
+            )
+        ]
+    }
+
+    await generator.generate_article(messages)
+
+    initial_data = json.loads((tmp_path / "fact_check_initial.json").read_text(encoding="utf-8"))
+    final_data = json.loads((tmp_path / "fact_check_final.json").read_text(encoding="utf-8"))
+    assert initial_data["status"] == "FIX"
+    assert initial_data["systemic_problem"] is True
+    assert final_data["status"] == "PASS"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_check_lifecycle_keeps_last_parsed_result_when_recheck_unavailable(
+    sample_config, mock_logger, tmp_path
+):
+    sample_config.settings.article.save_debug_artifacts = True
+    sample_config.settings.article.debug_artifact_dir = str(tmp_path)
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[
+            json.dumps(
+                {
+                    "cards": [
+                        {
+                            "id": "SC001",
+                            "topic": "T",
+                            "importance": "high",
+                            "summary": "S",
+                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                        }
+                    ]
+                }
+            ),
+            json.dumps({"headline": "H", "lead": "L", "paragraphs": ["P"], "sections": []}),
+            json.dumps(
+                {
+                    "status": "FIX",
+                    "systemic_problem": False,
+                    "issues": [
+                        {
+                            "unit_id": "P001",
+                            "severity": "fix",
+                            "code": "unverified",
+                            "original_excerpt": "P",
+                            "reason": "Unsupported factual wording",
+                            "suggested_direction": "Use attributed wording",
+                            "source_refs": ["S000001"],
+                        }
+                    ],
+                }
+            ),
+            json.dumps({"replacements": {"P001": "Repaired P"}}),
+            "invalid json on recheck",
+        ]
+    )
+    messages = {
+        "ch1": [
+            Message(
+                text="T",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="u",
+                message_id=1,
+                link="l",
+                has_media=False,
+                media_type="",
+            )
+        ]
+    }
+
+    await generator.generate_article(messages)
+
+    initial_data = json.loads((tmp_path / "fact_check_initial.json").read_text(encoding="utf-8"))
+    final_data = json.loads((tmp_path / "fact_check_final.json").read_text(encoding="utf-8"))
+    failure_data = json.loads((tmp_path / "fact_check_failure.json").read_text(encoding="utf-8"))
+    assert initial_data["status"] == "FIX"
+    assert final_data["status"] == "FIX"
+    assert failure_data["stage"] == "json_parse"

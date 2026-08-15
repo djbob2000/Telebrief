@@ -265,6 +265,30 @@ class ArticleGenerator:
                 "Could not save debug artifact %s: %s", filename, type(exc).__name__
             )
 
+    def _save_fact_check_result(self, filename: str, result: FactCheckResult) -> None:
+        self._save_debug_artifact(
+            filename,
+            {
+                "status": result.status,
+                "systemic_problem": result.systemic_problem,
+                "issues": [issue.to_dict() for issue in result.issues],
+            },
+        )
+
+    def _save_fact_check_failure(self, exc: Exception) -> None:
+        stage = getattr(self.fact_checker, "last_stage", "unknown") or "unknown"
+        reason = getattr(self.fact_checker, "last_reason", str(exc)) or str(exc)
+        chars = getattr(self.fact_checker, "last_response_chars", None)
+        self._save_debug_artifact(
+            "fact_check_failure.json",
+            {
+                "stage": stage,
+                "reason": reason,
+                "response_chars": chars,
+                "error": str(exc),
+            },
+        )
+
     async def _repair_and_check(  # noqa: C901
         self, draft: ArticleDraft, analysis: EditorialAnalysis, bundle: PreparedBundle
     ) -> ArticleDraft:
@@ -282,31 +306,21 @@ class ArticleGenerator:
             )
             if self.fact_checker.last_raw_response is not None:
                 self._save_debug_artifact("fact_check_raw.txt", self.fact_checker.last_raw_response)
-            self._save_debug_artifact(
-                "fact_check_failure.json",
-                {
-                    "stage": stage,
-                    "reason": reason,
-                    "response_chars": chars,
-                    "error": str(exc),
-                },
-            )
+            self._save_fact_check_failure(exc)
             return draft
+
         if self.fact_checker.last_raw_response is not None:
             self._save_debug_artifact("fact_check_raw.txt", self.fact_checker.last_raw_response)
-        self._save_debug_artifact(
-            "fact_check.json",
-            {
-                "status": result.status,
-                "systemic_problem": result.systemic_problem,
-                "issues": [issue.to_dict() for issue in result.issues],
-            },
-        )
+
+        self._save_fact_check_result("fact_check_initial.json", result)
+
         if result.status != "FIX":
             if result.status == "WARN":
                 self.logger.warning(
                     "Publishing article with %d fact-check warning(s)", len(result.issues)
                 )
+            self._save_fact_check_result("fact_check_final.json", result)
+            self._save_fact_check_result("fact_check.json", result)
             return draft
 
         if result.systemic_problem:
@@ -315,8 +329,14 @@ class ArticleGenerator:
             deterministic_preflight(regenerated.to_markdown())
             try:
                 regenerated_check = await self.fact_checker.check(regenerated, analysis, bundle)
-            except FactCheckUnavailableError:
+                self._save_fact_check_result("fact_check_final.json", regenerated_check)
+                self._save_fact_check_result("fact_check.json", regenerated_check)
+            except FactCheckUnavailableError as exc:
+                self._save_fact_check_result("fact_check_final.json", result)
+                self._save_fact_check_result("fact_check.json", result)
+                self._save_fact_check_failure(exc)
                 return regenerated
+
             if regenerated_check.systemic_problem and regenerated_check.status == "FIX":
                 raise UnsafeDraftError("systemic fact-check issue remains after regeneration")
             if regenerated_check.status == "FIX":
@@ -330,12 +350,19 @@ class ArticleGenerator:
             deterministic_preflight(current.to_markdown())
             try:
                 result = await self.fact_checker.check(current, analysis, bundle)
-            except FactCheckUnavailableError:
+                self._save_fact_check_result("fact_check_final.json", result)
+                self._save_fact_check_result("fact_check.json", result)
+            except FactCheckUnavailableError as exc:
+                self._save_fact_check_result("fact_check_final.json", result)
+                self._save_fact_check_result("fact_check.json", result)
+                self._save_fact_check_failure(exc)
                 return current
+
             if result.systemic_problem and result.status == "FIX":
                 raise UnsafeDraftError("systemic fact-check issue remains after local repair")
             if result.status != "FIX":
                 return current
+
         return self._remove_unresolved_local_fixes(current, result)
 
     def _remove_unresolved_local_fixes(
