@@ -5,7 +5,7 @@
 Telebrief generates daily local journalistic articles from raw Telegram messages. Resident messages frequently reference local entities using diverse names:
 - Street names in Russian and Ukrainian, historical Soviet names (2016 renames), and recent occupation-era alias variants (e.g., *улица Шевченко*, *Северная / Північна / Морозова*);
 - Colloquial neighborhood names vs. formal municipal committee boundaries (*на горе*, *на Лисках*, *в центре*);
-- Local service providers (*Поинт*, *+7Телеком*, *МирТелеком*, *Бердянскводоканал*, *Запорожгаз*);
+- Local providers and service organizations present in CityProfile (e.g., *Поинт*, *+7Телеком*, *МирТелеком*);
 - Public transport routes (*маршрут 15*).
 
 **Goal:** Add deterministic entity resolution and story-level geographic evidence aggregation so local entities and locations are normalized and deduplicated before LLM analysis, without converting static profile context into evidence of current-day events.
