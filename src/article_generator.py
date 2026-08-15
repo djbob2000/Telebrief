@@ -116,19 +116,21 @@ class ArticleGenerator:
         )
         return bundle
 
-    async def _analyze(self, bundle: PreparedBundle) -> EditorialAnalysis:
+    async def _analyze(self, bundle: PreparedBundle) -> EditorialAnalysis:  # noqa: C901
         retries = max(0, int(getattr(self.config.settings.article, "generation_retries", 2)))
         delay = max(
             0.0, float(getattr(self.config.settings.article, "generation_retry_delay", 1.0))
         )
-        for attempt in range(retries + 1):
+        compact_attempted = False
+        attempt = 0
+        while attempt <= retries:
             try:
-                return await self.analyzer.analyze(bundle)
+                return await self.analyzer.analyze(bundle, compact=compact_attempted)
             except ContextSizeRejectedError:
                 self.logger.warning(
                     "Editorial analysis exceeded model context; using explicit context batching"
                 )
-                return await self.analyzer.analyze_batched(bundle)
+                return await self.analyzer.analyze_batched(bundle, compact=compact_attempted)
             except EditorialAnalysisError as exc:
                 self.logger.warning(
                     "Editorial analysis attempt %d failed: stage=%s reason=%s response_chars=%s",
@@ -137,6 +139,13 @@ class ArticleGenerator:
                     exc.reason,
                     exc.response_chars if exc.response_chars is not None else "unknown",
                 )
+                if self._is_token_budget_error(exc) and not compact_attempted:
+                    compact_attempted = True
+                    self.logger.warning(
+                        "Editorial analysis token budget exhausted; retrying full bundle "
+                        "in compact-analysis mode"
+                    )
+                    continue
                 if attempt >= retries:
                     raise
                 if delay:
@@ -153,7 +162,25 @@ class ArticleGenerator:
                 if delay:
                     await asyncio.sleep(delay * (attempt + 1))
                 self.logger.warning("Editorial analysis attempt %d failed; retrying", attempt + 1)
+            attempt += 1
         raise RuntimeError("Editorial analysis exhausted retries")
+
+    @staticmethod
+    def _is_token_budget_error(error: EditorialAnalysisError) -> bool:
+        reason = f"{error.reason} {error}".lower()
+        return error.stage == "provider_call" and (
+            "token_budget" in reason or "tokenbudgetexhausted" in reason
+        )
+
+    def _select_writer_bundle(
+        self, analysis: EditorialAnalysis, bundle: PreparedBundle
+    ) -> PreparedBundle:
+        refs: list[str] = []
+        for card in analysis.cards:
+            for ref in sorted(card.all_source_refs()):
+                if ref not in refs:
+                    refs.append(ref)
+        return self.input_builder.select_records(bundle, refs)
 
     async def _fallback(self, bundle: PreparedBundle, reason: str) -> Tuple[str, str, str]:
         self.logger.warning("Editorial pipeline entered degraded path: %s", reason)
@@ -283,15 +310,22 @@ class ArticleGenerator:
         if not analysis.cards:
             return await self._fallback(bundle, "editorial analysis returned no Story Cards")
 
+        writer_bundle = self._select_writer_bundle(analysis, bundle)
+        if not writer_bundle.records:
+            return await self._fallback(
+                bundle, "editorial analysis returned no resolvable representative refs"
+            )
+        self._save_debug_artifact("writer_input.txt", writer_bundle.prompt_text)
+
         try:
-            draft = await self.writer.write(analysis, bundle)
+            draft = await self.writer.write(analysis, writer_bundle)
             deterministic_preflight(draft.to_markdown())
             self._save_debug_artifact("writer_draft.json", draft.to_dict())
         except Exception as exc:
             return await self._fallback(bundle, f"writer unavailable: {type(exc).__name__}")
 
         try:
-            draft = await self._repair_and_check(draft, analysis, bundle)
+            draft = await self._repair_and_check(draft, analysis, writer_bundle)
         except UnsafeDraftError as exc:
             return await self._fallback(bundle, str(exc))
         except Exception as exc:

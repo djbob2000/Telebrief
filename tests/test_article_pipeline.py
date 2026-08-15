@@ -10,8 +10,15 @@ import pytest
 from src.article_generator import ArticleGenerator
 from src.collector import Message
 from src.config_loader import Config, Settings
+from src.editorial_analysis import ContextSizeRejectedError, EditorialAnalysisError
 from src.editorial_audit import AuditIssue, FactCheckResult
-from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord
+from src.editorial_models import (
+    EditorialAnalysis,
+    PreparedBundle,
+    SourceRecord,
+    StoryCard,
+    StoryElement,
+)
 from src.editorial_writer import ArticleDraft
 
 
@@ -115,6 +122,99 @@ async def test_writer_article_survives_fact_checker_failure():
     assert title == "Воду отключили"
     assert lead.startswith("В городе")
     assert "Подробности" in body
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_token_budget_switches_to_compact_analysis_and_reaches_writer():
+    generator = _generator()
+    token_error = EditorialAnalysisError("token budget")
+    token_error.stage = "provider_call"
+    token_error.reason = "token_budget"
+    compact_analysis = EditorialAnalysis(
+        cards=[
+            StoryCard(
+                id="SC001",
+                topic="Свет",
+                importance="high",
+                summary="Жители сообщили о перебоях со светом.",
+                hard_facts=[
+                    StoryElement(
+                        text="Жители сообщили о перебоях со светом.",
+                        source_refs=["S000001"],
+                        status="attributed",
+                    )
+                ],
+            )
+        ]
+    )
+    generator.analyzer.analyze = AsyncMock(
+        side_effect=[
+            token_error,
+            compact_analysis,
+        ]
+    )
+    generator.writer.write = AsyncMock(
+        return_value=ArticleDraft("Перебои со светом", "Лид", ["Абзац"], [])
+    )
+    generator.fact_checker.check = AsyncMock(return_value=FactCheckResult("PASS", False, []))
+
+    title, lead, body = await generator.generate_article(
+        {"Source": [_message("Жители сообщили о перебоях со светом")]}
+    )
+
+    assert title == "Перебои со светом"
+    assert lead == "Лид"
+    assert "Абзац" in body
+    assert generator.analyzer.analyze.call_args_list[0].kwargs == {"compact": False}
+    assert generator.analyzer.analyze.call_args_list[1].kwargs == {"compact": True}
+    writer_bundle = generator.writer.write.call_args.args[1]
+    assert set(writer_bundle.records) == {"S000001"}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_context_rejection_uses_batching_without_compact_retry():
+    generator = _generator()
+    analysis = EditorialAnalysis(cards=[])
+    context_error = ContextSizeRejectedError("too large")
+    context_error.stage = "provider_call"
+    context_error.reason = "context_size"
+    generator.analyzer.analyze = AsyncMock(side_effect=context_error)
+    generator.analyzer.analyze_batched = AsyncMock(return_value=analysis)
+
+    result = await generator._analyze(_bundle())
+
+    assert result is analysis
+    generator.analyzer.analyze.assert_awaited_once_with(_bundle(), compact=False)
+    generator.analyzer.analyze_batched.assert_awaited_once_with(_bundle(), compact=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_analysis_without_resolvable_refs_uses_complete_bundle_fallback():
+    generator = _generator()
+    generator.analyzer.analyze = AsyncMock(
+        return_value=EditorialAnalysis(
+            cards=[
+                StoryCard(
+                    id="SC001",
+                    topic="Свет",
+                    importance="high",
+                    summary="Сводка без исходных refs.",
+                )
+            ]
+        )
+    )
+    generator.writer.write = AsyncMock()
+
+    title, _, body = await generator.generate_article(
+        {"Source": [_message("На Колонии нет света")]}
+    )
+
+    assert title == "Что происходило в городе за сутки"
+    assert "Жители сообщали о перебоях с электроснабжением" in body
+    generator.writer.write.assert_not_awaited()
 
 
 @pytest.mark.unit
