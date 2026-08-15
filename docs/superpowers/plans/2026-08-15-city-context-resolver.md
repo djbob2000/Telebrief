@@ -239,14 +239,16 @@ class CityContextResolver:
 def test_city_context_resolver_exact_and_aliases():
     resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
 
-    # Direct area mentions
+    # Direct area mentions (stable identity + canonical name)
     res_center = resolver.resolve("В центре снова нет света")
     area_center = next(e for e in res_center.entities if e.kind == "area" and e.entity_id == "center")
-    assert area_center.canonical_name == "Центр"
+    assert area_center.entity_id == "center"
+    assert area_center.canonical_name == "Центр міста"
 
     res_liski = resolver.resolve("На Лисках нет воды")
     area_liski = next(e for e in res_liski.entities if e.kind == "area" and e.entity_id == "liski")
-    assert area_liski.canonical_name == "Лиски"
+    assert area_liski.entity_id == "liski"
+    assert area_liski.canonical_name == "Ліски"
 
     # Streets and aliases
     res1 = resolver.resolve("На ул. Шевченко нет света")
@@ -318,9 +320,15 @@ Verify with acceptance assertions:
 
 - [ ] **Step 4: Implement `CityContextResolver` in `src/city_context.py`**
 
-- Build loader validating schema and raising `CityProfileError` on malformed structures.
+- Build loader validating schema and raising `CityProfileError` on malformed structures (`FileNotFoundError` propagates).
 - Build normalization `_normalize(text)` (NFKC, casefold, replace ё $\rightarrow$ е, trim).
-- Build indices: `_typed_place_aliases`, `_untyped_place_aliases`, `_area_aliases`, `_provider_aliases`, `_route_numbers`.
+- Build deterministic surface-form prefix normalization:
+  - `ул.` / `улица` / `улице` / `улицы` / `вул.` / `вулиця` / `вулиці` $\rightarrow$ `street`
+  - `бульвар` / `бульваре` / `бул.` $\rightarrow$ `boulevard`
+  - `проспект` / `проспекте` / `пр-т` $\rightarrow$ `prospect`
+  - `пер.` / `переулок` / `переулке` / `провулок` / `провулку` $\rightarrow$ `lane`
+  - `шоссе` / `шосе` $\rightarrow$ `highway`
+- Build indices: `_typed_place_aliases`, `_untyped_place_aliases`, `_area_aliases` (including conversational case forms like `центре`, `в центре`, `Лисках`, `на Лисках`, `на горе`, `нагорной части`, `на Косе`, `Косе`), `_provider_aliases`, `_route_numbers`.
 - Implement address parser for house numbers/segments when matching multi-candidate streets.
 - If coverage details are insufficient, return all candidates with `confidence: "ambiguous"`.
 
@@ -420,22 +428,157 @@ class StoryContextEnricher:
 - [ ] **Step 1: Write RED aggregation and ambiguity safety tests in `tests/test_city_context.py`**
 
 ```python
+from datetime import datetime
+from src.database import Message
+from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord, StoryCard
+
+
 def test_story_context_enricher_same_area_deduplication():
-    # S001 (Shevchenko) + S002 (Center) -> 1 unique municipal area (center) with 2 source_refs
-    ...
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+    enricher = StoryContextEnricher(resolver)
+
+    # S000001 on Shevchenko St (inferred Center), S000002 directly in Center, S000003 in Liski
+    rec1 = SourceRecord(
+        ref="S000001",
+        message=Message(id=1, text="На ул. Шевченко нет света", date=datetime.now()),
+        source_type="channel",
+        parent_ref=None,
+        context_text="",
+        city_context=resolver.resolve("На ул. Шевченко нет света"),
+    )
+    rec2 = SourceRecord(
+        ref="S000002",
+        message=Message(id=2, text="В центре нет света", date=datetime.now()),
+        source_type="channel",
+        parent_ref=None,
+        context_text="",
+        city_context=resolver.resolve("В центре нет света"),
+    )
+    rec3 = SourceRecord(
+        ref="S000003",
+        message=Message(id=3, text="На Лисках нет света", date=datetime.now()),
+        source_type="channel",
+        parent_ref=None,
+        context_text="",
+        city_context=resolver.resolve("На Лисках нет света"),
+    )
+    bundle = PreparedBundle(
+        records={"S000001": rec1, "S000002": rec2, "S000003": rec3},
+        prompt_text="",
+        total_messages=3,
+        candidate_count=3,
+    )
+    card = StoryCard(
+        id="SC001",
+        topic="Отключения света",
+        importance="high",
+        summary="Отключения в Центре и на Лисках",
+        representative_source_refs=["S000001", "S000002", "S000003"],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    contexts = enricher.enrich(analysis, bundle)
+
+    assert "SC001" in contexts
+    context = contexts["SC001"]
+    assert context.scale.observed_count == 2
+    assert context.scale.geographic_spread is True
+    assert set(context.scale.observed_area_ids) == {"center", "liski"}
+
+    center = next(area for area in context.municipal_areas if area.area_id == "center")
+    assert center.source_refs == ("S000001", "S000002")
+    assert center.inferred_from_place_refs == ("S000001",)
+    assert center.direct_area_refs == ("S000002",)
 
 
 def test_story_context_enricher_uses_all_source_refs():
-    # StoryCard with representative refs in Center + community_observation ref in Liski -> 2 unique areas
-    ...
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+    enricher = StoryContextEnricher(resolver)
+
+    rec1 = SourceRecord(
+        ref="S000001",
+        message=Message(id=1, text="В центре нет света", date=datetime.now()),
+        source_type="channel",
+        parent_ref=None,
+        context_text="",
+        city_context=resolver.resolve("В центре нет света"),
+    )
+    rec2 = SourceRecord(
+        ref="S000002",
+        message=Message(id=2, text="На Лисках нет света", date=datetime.now()),
+        source_type="channel",
+        parent_ref=None,
+        context_text="",
+        city_context=resolver.resolve("На Лисках нет света"),
+    )
+    bundle = PreparedBundle(
+        records={"S000001": rec1, "S000002": rec2},
+        prompt_text="",
+        total_messages=2,
+        candidate_count=2,
+    )
+    # S000001 is representative, but S000002 is in community_observations
+    card = StoryCard(
+        id="SC001",
+        topic="Отключения света",
+        importance="high",
+        summary="Отключения света",
+        representative_source_refs=["S000001"],
+        community_observations=[
+            {"claim": "На Лисках тоже темно", "source_refs": ["S000002"]}
+        ],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    contexts = enricher.enrich(analysis, bundle)
+
+    context = contexts["SC001"]
+    assert context.scale.observed_count == 2
+    assert set(context.scale.observed_area_ids) == {"center", "liski"}
+    assert context.scale.geographic_spread is True
 
 
 def test_ambiguous_place_does_not_inflate_scale():
-    # One unresolved multi-area street (e.g. Melitopolske Highway without house number)
-    # -> candidates exist on SourceRecord.city_context
-    # -> story scale observed_count == 0
-    # -> geographic_spread is False
-    ...
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+    enricher = StoryContextEnricher(resolver)
+
+    # Melitopolske Highway without house number maps to multiple municipal areas with confidence: ambiguous
+    rec = SourceRecord(
+        ref="S000001",
+        message=Message(id=1, text="На Мелитопольском шоссе нет света", date=datetime.now()),
+        source_type="channel",
+        parent_ref=None,
+        context_text="",
+        city_context=resolver.resolve("На Мелитопольском шоссе нет света"),
+    )
+    assert rec.city_context is not None
+    assert len(rec.city_context.entities) >= 1
+    highway_entity = next(
+        e for e in rec.city_context.entities
+        if "Мелітопольське" in e.canonical_name or "шосе" in e.canonical_name
+    )
+    assert len(highway_entity.municipal_areas) > 1
+    assert highway_entity.confidence == "ambiguous"
+
+    bundle = PreparedBundle(
+        records={"S000001": rec},
+        prompt_text="",
+        total_messages=1,
+        candidate_count=1,
+    )
+    card = StoryCard(
+        id="SC001",
+        topic="Отключения света",
+        importance="high",
+        summary="Отключения на шоссе",
+        representative_source_refs=["S000001"],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    contexts = enricher.enrich(analysis, bundle)
+
+    context = contexts["SC001"]
+    assert context.municipal_areas == ()
+    assert context.scale.observed_count == 0
+    assert context.scale.geographic_spread is False
+    assert context.scale.majority_supported is False
 ```
 
 - [ ] **Step 2: Implement `StoryContextEnricher.enrich()` in `src/city_context.py`**

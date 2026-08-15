@@ -23,10 +23,13 @@ Telebrief generates daily local journalistic articles from raw Telegram messages
 4. **Separation of Resolution and Aggregation:**
    - `CityContextResolver`: Answers *"What entity is mentioned and what geography does it map to?"*
    - `StoryContextEnricher`: Answers *"How many source refs belonging to this selected Story Card (`evidence_refs = card.all_source_refs() & bundle.records.keys()`) map to the same canonical areas?"*
-5. **Deduplication of Same-Area Reports & Non-Inflation:**
-   Multiple reports referencing the same canonical area (e.g., S001 on Shevchenko St. + S027 in Center) strengthen evidence within that single area and count as **1 unique observed area**, not 2. Furthermore, `source_refs` are report references, not automatically independent witnesses (`report_count = len(area_evidence.source_refs)`).
-6. **Scoped Fail-Open:**
-   If `CityProfile` is missing or invalid, the pipeline logs a `WARNING`, sets `city_context_resolver = None`, and continues regular article generation without crashing. Errors in Analyzer, Writer, or Audit are never masked.
+5. **Deduplication and Ambiguity Safety in ScaleEvidence:**
+   - Only **unambiguously resolved municipal areas** participate in `AreaEvidence` used for `ScaleEvidence` (`observed_area_ids` and `observed_count`).
+   - Ambiguous municipal candidates (e.g., a street crossing multiple committees without house numbers) remain available in `SourceRecord.city_context` for interpretation, but **MUST NOT** enter `observed_area_ids` or inflate `observed_count`.
+   - Multiple reports referencing the same canonical area strengthen evidence within that single area and count as **1 unique observed area**, not 2.
+   - `source_refs` are report references, not automatically independent witnesses (`report_count = len(area_evidence.source_refs)`).
+6. **Scoped Fail-Open & Clean Error Contract:**
+   If `CityProfile` is missing (`FileNotFoundError`) or invalid (`CityProfileError`), `ArticleGenerator` catches `(CityProfileError, FileNotFoundError)`, logs a `WARNING`, sets `city_context_resolver = None`, and continues regular article generation without crashing. Errors in Analyzer, Writer, or Audit are never masked.
 7. **No Out-of-Scope Dependencies:**
    No SQLite, vector databases, embeddings, RAG, external geocoding network calls, or additional LLM calls.
 
@@ -55,7 +58,7 @@ EditorialWriter + LightFactChecker (src/editorial_writer.py, src/editorial_audit
 ### Stage Details
 
 1. **Initialization (`ArticleGenerator`):**
-   - Loads `data/city_profiles/berdyansk.yaml` once into `CityContextResolver`.
+   - Loads `data/city_profiles/berdyansk.yaml` once into `CityContextResolver` (catching `(CityProfileError, FileNotFoundError)`).
    - Initializes `StoryContextEnricher(resolver)`.
    - Injects `resolver` into `EditorialInputBuilder`.
 
@@ -71,8 +74,9 @@ EditorialWriter + LightFactChecker (src/editorial_writer.py, src/editorial_audit
 4. **Story Card Selection & Enrichment (`StoryContextEnricher.enrich()`):**
    - Runs strictly over all valid story evidence refs: `evidence_refs = card.all_source_refs() & bundle.records.keys()` (encompassing `representative_source_refs`, `hard_facts`, `community_observations`, `useful_details`, `uncertainties`, and `editorial_angle`).
    - Aggregates canonical municipal areas and colloquial areas with explicit `area_set` namespaces.
+   - Excludes ambiguous candidates from `ScaleEvidence`.
    - Computes deterministic `ScaleEvidence`:
-     - `observed_count = len(unique_municipal_areas)`
+     - `observed_count = len(unique_unambiguous_municipal_areas)`
      - `geographic_spread = observed_count >= 2`
      - `broad_prevalence_supported = False` (until approved scale policy)
      - `majority_supported = False` (until approved exhaustive area set)
@@ -84,7 +88,8 @@ EditorialWriter + LightFactChecker (src/editorial_writer.py, src/editorial_audit
    - Fact Checker validates that draft statements match source evidence and that scale language respects deterministic `ScaleEvidence`.
 
 6. **Fallback Pipeline (`EditorialFallback`):**
-   - Uses `SourceRecord.city_context` when available, falling back gracefully to text-based matching if city context is disabled.
+   - Uses `SourceRecord.city_context` when available.
+   - Removes duplicated hard-coded `_KNOWN_AREAS` / `_KNOWN_PROVIDERS` dictionaries; when city context is disabled, fallback continues its normal text processing without performing CityProfile-dependent entity enrichment.
 
 ---
 
@@ -111,7 +116,7 @@ class ResolvedEntity:
     matched_text: str
     canonical_name: str
     object_type: str = ""  # "street", "boulevard", "lane", "prospect", etc.
-    confidence: str = "high"
+    confidence: str = "high"  # "high" or "ambiguous"
     municipal_areas: tuple[AreaCandidate, ...] = ()
     colloquial_area_ids: tuple[str, ...] = ()
 
@@ -147,20 +152,30 @@ class StoryContext:
 
 ### 4.2 YAML Coverage Schema (`data/city_profiles/berdyansk.yaml`)
 
-All 36 string `rule:` entries are mechanically normalized into typed `coverage:` mappings:
+Convert all 468 `area_memberships[].rule` mappings into typed `coverage:` mappings:
+- 432 `whole_object` mappings convert mechanically to `coverage: {kind: whole_object}`.
+- 36 non-trivial mappings convert to structured `coverage:` objects:
+  - `kind: house_numbers` (with `houses: [...]` list and optional `private_sector: bool`)
+  - `kind: side` (with `side: "even" | "odd"`)
+  - `kind: segment` (with `from_landmark`, `to_landmark`, `from_house`, `to_house`, `side`)
+  - `kind: any_of` (with `clauses: [...]`)
 
-- `kind: whole_object`
-- `kind: house_numbers` (with `houses: [...]` list and optional `private_sector: bool`)
-- `kind: side` (with `side: "even" | "odd"`)
-- `kind: segment` (with `from_landmark`, `to_landmark`, `from_house`, `to_house`, `side`)
-- `kind: any_of` (with `clauses: [...]`)
-
-The runtime resolver operates strictly on structured `coverage:`.
+Acceptance check: `count_rule_keys(profile) == 0` and `count_coverage_keys(profile) == 468`.
 
 ### 4.3 Resolver & Normalizer (`src/city_context.py`)
 
+- **Loader Error Contract:**
+  `CityContextResolver.from_yaml()` lets `FileNotFoundError` propagate. YAML syntax errors, wrong top-level structure, unsupported `schema_version`, or malformed entries raise `CityProfileError`.
 - **Text Normalization:**
   `unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")`, whitespace normalization, and punctuation trimming.
+- **Surface-Form & Object-Type Normalization:**
+  - Prefix/noun normalization without full morphology:
+    - `ул.` / `улица` / `улице` / `улицы` / `вул.` / `вулиця` / `вулиці` $\rightarrow$ `street`
+    - `бульвар` / `бульваре` / `бул.` $\rightarrow$ `boulevard`
+    - `проспект` / `проспекте` / `пр-т` $\rightarrow$ `prospect`
+    - `пер.` / `переулок` / `переулке` / `провулок` / `провулку` $\rightarrow$ `lane`
+    - `шоссе` / `шосе` $\rightarrow$ `highway`
+  - Explicit conversational case aliases in YAML for high-frequency area forms (e.g. `центре`, `в центре`, `Лисках`, `на Лисках`, `на горе`, `нагорной части`, `на Косе`, `Косе`).
 - **Typed Identity:**
   `(object_type, canonical_name)` distinction ensures `улица Шевченко` and `бульвар Шевченко` are distinct entities with distinct area memberships.
 - **Alias Indexing:**
@@ -172,10 +187,11 @@ The runtime resolver operates strictly on structured `coverage:`.
 
 - Collects all evidence refs: `evidence_refs = card.all_source_refs() & bundle.records.keys()`.
 - Maps each reference to its `SourceRecord.city_context`.
-- Groups references by `(area_set, area_id)`.
+- **Ambiguity Filter:** Only unambiguously resolved municipal areas (from direct area mentions or place matches with single unambiguous area candidate / `confidence != "ambiguous"`) enter `AreaEvidence` for `ScaleEvidence`.
+- Groups unambiguous references by `(area_set, area_id)`.
 - Tracks `direct_area_refs` vs `inferred_from_place_refs` without inflating independent witness counts (`report_count = len(source_refs)`).
 - Computes `ScaleEvidence`:
-  - `observed_area_ids = tuple(sorted(unique_municipal_area_ids))`
+  - `observed_area_ids = tuple(sorted(unique_unambiguous_municipal_area_ids))`
   - `observed_count = len(observed_area_ids)`
   - `geographic_spread = (observed_count >= 2)`
   - `broad_prevalence_supported = False`
@@ -187,16 +203,20 @@ The runtime resolver operates strictly on structured `coverage:`.
 ## 5. Testing & Verification Plan
 
 1. **Unit Tests (`tests/test_city_context.py`):**
-   - Profile YAML schema validation (schema version 2, safety contracts, 400+ street entries).
+   - Profile YAML schema validation (schema version 2, safety contracts, 400+ street entries, 0 rule keys, 468 coverage keys).
+   - Exact entity resolution for direct areas (*«В центре снова нет света»* $\rightarrow$ `area:center`, *«На Лисках нет воды»* $\rightarrow$ `area:liski`).
    - Exact entity resolution for streets, historical aliases, 2024 aliases, providers, routes.
    - Distinction between object types (`улица` vs `бульвар`).
    - Ambiguous multi-area street matching vs. narrowed house-number matching.
+   - **Ambiguity Scale Safety Regression:** One unresolved multi-area street $\rightarrow$ candidates on `SourceRecord`, but `ScaleEvidence.observed_count == 0` and `geographic_spread is False`.
    - Same-area aggregation and deduplication (`S001` + `S027` in Center $\rightarrow$ 1 area, 2 refs).
    - Card-level complete refs aggregation (`card.all_source_refs() & bundle.records.keys()`).
    - ScaleEvidence v1 semantics (`geographic_spread = observed_count >= 2`, `broad_prevalence_supported = False`, `majority_supported = False`).
+   - Loader errors: invalid YAML / wrong schema version $\rightarrow$ raises `CityProfileError`.
 2. **Pipeline Integration Tests (`tests/test_editorial_input.py`, `tests/test_editorial_analysis.py`, `tests/test_editorial_writer.py`, `tests/test_editorial_audit.py`, `tests/test_article_generator.py`, `tests/test_editorial_fallback.py`):**
    - Preservation of `city_context` across batching splits.
-   - Graceful fallback when YAML is missing/corrupted.
+   - Graceful fallback when YAML is missing/corrupted (`(CityProfileError, FileNotFoundError)` caught).
+   - Removal of duplicate hardcoded dictionaries in `EditorialFallback`.
    - Writer and Audit prompt evidence boundaries.
 3. **Full Suite & Static Quality Verification:**
    - `uv run pytest -q --no-cov`
