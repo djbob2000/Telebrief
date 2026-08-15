@@ -240,9 +240,9 @@ async def test_editorial_analyzer_reports_story_card_parse_stage(mock_logger):
                 "cards": [
                     {
                         "id": "SC001",
-                        "topic": "Вода",
-                        "importance": "urgent",
-                        "summary": "Тема",
+                        "topic": "",
+                        "importance": "high",
+                        "summary": "",
                     }
                 ]
             }
@@ -282,6 +282,36 @@ async def test_editorial_analyzer_keeps_valid_cards_when_one_card_is_malformed(m
     analysis = await analyzer.analyze(_bundle())
 
     assert [card.id for card in analysis.cards] == ["SC001"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_normalizes_common_card_aliases(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps(
+            {
+                "cards": [
+                    {
+                        "title": "Вода",
+                        "description": "Воду временно отключили.",
+                        "importance": "urgent",
+                        "sources": ["S000001"],
+                    }
+                ]
+            }
+        )
+    )
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    analysis = await analyzer.analyze(_bundle())
+
+    card = analysis.cards[0]
+    assert card.id == "SC001"
+    assert card.topic == "Вода"
+    assert card.summary == "Воду временно отключили."
+    assert card.importance == "medium"
+    assert card.hard_facts[0].source_refs == ["S000001"]
 
 
 @pytest.mark.unit

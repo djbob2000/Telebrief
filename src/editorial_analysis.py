@@ -40,6 +40,13 @@ class EditorialAnalyzer:
             if compact
             else "Use labels only for selected messages when they materially help the writer."
         )
+        card_schema = """Each card must use this shape: {
+  "id": "SC001", "topic": "short topic", "importance": "high|medium|low",
+  "summary": "one-sentence summary", "story_kind": "optional",
+  "hard_facts": [{"text": "...", "source_refs": ["S000001"], "status": "established|attributed|disputed"}],
+  "community_observations": [], "useful_details": [], "uncertainties": []
+}. Never replace id, topic or summary with title, headline or description; never omit them.
+"""
         system = f"""You are the editorial analyst for a local daily newsroom.
 Return JSON with a required cards array and optional labels/excluded_refs. Select {card_target}
 significant stories for the day. Do not classify or label every supplied message, and do not
@@ -52,6 +59,7 @@ editorial role prior, not proof or a trust score. Distinguish established, attri
 material. Preserve uncertainties and contradictions. Every element reference must use a supplied
 S###### ref. Use editorial_angle only for a clearly supported synthesis, never a new number, cause
 or mechanism. Keep story_kind free-form and do not invent missing details. {compact_rules}
+{card_schema}
 """
         user = (
             "Review the complete supplied period and combine related messages into significant "
@@ -155,7 +163,7 @@ or mechanism. Keep story_kind free-form and do not invent missing details. {comp
         valid_cards: list[dict[str, object]] = []
         for index, raw_card in enumerate(raw_cards):
             try:
-                card = StoryCard.from_dict(raw_card)
+                card = StoryCard.from_dict(self._normalize_card_payload(raw_card, index))
             except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
                 self.logger.warning(
                     "Skipping malformed editorial Story Card index=%d: %s",
@@ -171,6 +179,69 @@ or mechanism. Keep story_kind free-form and do not invent missing details. {comp
         normalized = dict(payload)
         normalized["cards"] = valid_cards
         return normalized
+
+    @classmethod
+    def _normalize_card_payload(cls, raw_card: object, index: int) -> dict[str, object]:
+        if not isinstance(raw_card, dict):
+            raise TypeError("story card must be an object")
+        data = dict(raw_card)
+        card_id = data.get("id") or data.get("story_id") or f"SC{index + 1:03d}"
+        data["id"] = card_id if isinstance(card_id, str) else ""
+        topic = (
+            data.get("topic") or data.get("title") or data.get("headline") or data.get("story_kind")
+        )
+        data["topic"] = topic if isinstance(topic, str) else ""
+        summary = (
+            data.get("summary") or data.get("description") or data.get("text") or data.get("story")
+        )
+        data["summary"] = summary if isinstance(summary, str) else ""
+        if data.get("importance") not in {"high", "medium", "low"}:
+            data["importance"] = "medium"
+
+        for target, aliases in {
+            "hard_facts": ("facts",),
+            "community_observations": ("observations", "community"),
+            "useful_details": ("details",),
+        }.items():
+            if not data.get(target):
+                for alias in aliases:
+                    if data.get(alias):
+                        data[target] = data[alias]
+                        break
+
+        refs = cls._source_refs(
+            data.get("source_refs")
+            or data.get("sources")
+            or data.get("refs")
+            or data.get("evidence")
+        )
+        if (
+            refs
+            and data.get("summary")
+            and not any(
+                data.get(key) for key in ("hard_facts", "community_observations", "useful_details")
+            )
+        ):
+            data["hard_facts"] = [
+                {"text": data["summary"], "source_refs": refs, "status": "attributed"}
+            ]
+        return data
+
+    @staticmethod
+    def _source_refs(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        refs: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                refs.append(item.strip())
+            elif isinstance(item, dict):
+                for key in ("source_ref", "source_id", "ref", "id"):
+                    candidate = item.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        refs.append(candidate.strip())
+                        break
+        return refs
 
     def _decode_response(self, response: object) -> tuple[object, int]:
         response_chars = len(response) if isinstance(response, str) else 0
