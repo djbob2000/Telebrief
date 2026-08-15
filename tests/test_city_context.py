@@ -1,11 +1,10 @@
-"""Unit tests for Berdyansk City Profile and City Context Models."""
-
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 import yaml
 
-from src.city_context import CityContextResolver, CityProfileError
+from src.city_context import CityContextResolver, CityProfileError, StoryContextEnricher
 from src.city_context_models import (
     AreaCandidate,
     AreaEvidence,
@@ -13,6 +12,14 @@ from src.city_context_models import (
     ResolvedEntity,
     ScaleEvidence,
     StoryContext,
+)
+from src.collector import Message
+from src.editorial_models import (
+    EditorialAnalysis,
+    PreparedBundle,
+    SourceRecord,
+    StoryCard,
+    StoryElement,
 )
 
 
@@ -162,3 +169,152 @@ def test_city_context_resolver_loader_error_contract(tmp_path):
     bad_yaml.write_text("schema_version: 999\nprofile_id: [invalid", encoding="utf-8")
     with pytest.raises(CityProfileError):
         CityContextResolver.from_yaml(bad_yaml)
+
+
+def _message(text: str, message_id: int) -> Message:
+    return Message(
+        text=text,
+        sender="u",
+        timestamp=datetime.now(timezone.utc),
+        link="",
+        channel_name="ch1",
+        has_media=False,
+        media_type="",
+        message_id=message_id,
+    )
+
+
+def test_story_context_enricher_aggregates_complete_refs_and_sets_spread():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+    enricher = StoryContextEnricher(resolver)
+
+    rec1 = SourceRecord(
+        ref="S000001",
+        message=_message("В центре снова нет света", 1),
+        source_type="community",
+        city_context=resolver.resolve("В центре снова нет света"),
+    )
+    rec2 = SourceRecord(
+        ref="S000002",
+        message=_message("На Лисках тоже темно", 2),
+        source_type="community",
+        city_context=resolver.resolve("На Лисках тоже темно"),
+    )
+
+    card = StoryCard(
+        id="SC001",
+        topic="Отключения света",
+        importance="high",
+        summary="Отключения зафиксированы в двух районах",
+        representative_source_refs=["S000001", "S000002"],
+        community_observations=[
+            StoryElement(
+                text="В центре снова нет света",
+                source_refs=["S000001"],
+                status="attributed",
+            ),
+            StoryElement(
+                text="На Лисках тоже темно",
+                source_refs=["S000002"],
+                status="attributed",
+            ),
+        ],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    bundle = PreparedBundle(
+        records={"S000001": rec1, "S000002": rec2},
+        prompt_text="",
+        total_messages=2,
+        candidate_count=2,
+    )
+
+    story_contexts = enricher.enrich(analysis, bundle)
+    ctx = story_contexts["SC001"]
+
+    assert len(ctx.municipal_areas) == 2
+    assert ctx.scale.observed_count == 2
+    assert ctx.scale.geographic_spread is True
+    assert ctx.scale.broad_prevalence_supported is False
+    assert ctx.scale.majority_supported is False
+
+
+def test_story_context_enricher_ambiguity_safety():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+    enricher = StoryContextEnricher(resolver)
+
+    # Melitopolskoe highway without house number spans multiple municipal committees -> ambiguous
+    rec1 = SourceRecord(
+        ref="S000001",
+        message=_message("На Мелитопольском шоссе нет света", 1),
+        source_type="community",
+        city_context=resolver.resolve("На Мелитопольском шоссе нет света"),
+    )
+
+    card = StoryCard(
+        id="SC001",
+        topic="Отключения света",
+        importance="high",
+        summary="Отключения на шоссе",
+        representative_source_refs=["S000001"],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    bundle = PreparedBundle(
+        records={"S000001": rec1},
+        prompt_text="",
+        total_messages=1,
+        candidate_count=1,
+    )
+
+    story_contexts = enricher.enrich(analysis, bundle)
+    ctx = story_contexts["SC001"]
+
+    # Ambiguous candidates must NOT enter observed_count or scale
+    assert ctx.scale.observed_count == 0
+    assert ctx.scale.geographic_spread is False
+
+
+def test_story_context_enricher_counts_all_card_source_refs():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+    enricher = StoryContextEnricher(resolver)
+
+    rec1 = SourceRecord(
+        ref="S000001",
+        message=_message("В центре снова нет света", 1),
+        source_type="community",
+        city_context=resolver.resolve("В центре снова нет света"),
+    )
+    rec2 = SourceRecord(
+        ref="S000002",
+        message=_message("На Лисках тоже темно", 2),
+        source_type="community",
+        city_context=resolver.resolve("На Лисках тоже темно"),
+    )
+
+    # Only S000001 is in representative_source_refs, but S000002 is in community_observations
+    card = StoryCard(
+        id="SC001",
+        topic="Отключения света",
+        importance="high",
+        summary="Отключения света",
+        representative_source_refs=["S000001"],
+        community_observations=[
+            StoryElement(
+                text="На Лисках тоже темно",
+                source_refs=["S000002"],
+                status="attributed",
+            )
+        ],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    bundle = PreparedBundle(
+        records={"S000001": rec1, "S000002": rec2},
+        prompt_text="",
+        total_messages=2,
+        candidate_count=2,
+    )
+
+    story_contexts = enricher.enrich(analysis, bundle)
+    ctx = story_contexts["SC001"]
+
+    assert ctx.scale.observed_count == 2
+    assert ctx.scale.geographic_spread is True

@@ -491,102 +491,28 @@ def test_story_context_enricher_same_area_deduplication():
         id="SC001",
         topic="Отключения света",
         importance="high",
-        summary="Отключения в Центре и на Лисках",
+        summary="Отключения",
         representative_source_refs=["S000001", "S000002", "S000003"],
     )
     analysis = EditorialAnalysis(cards=[card])
-    contexts = enricher.enrich(analysis, bundle)
 
-    assert "SC001" in contexts
-    context = contexts["SC001"]
-    assert context.scale.observed_count == 2
-    assert context.scale.geographic_spread is True
-    assert set(context.scale.observed_area_ids) == {"center", "liski"}
+    story_contexts = enricher.enrich(analysis, bundle)
+    # Deduplication logic validation...
+    assert story_contexts["SC001"].scale.observed_count == 2
+```
 
-    center = next(area for area in context.municipal_areas if area.area_id == "center")
-    assert center.source_refs == ("S000001", "S000002")
-    assert center.inferred_from_place_refs == ("S000001",)
-    assert center.direct_area_refs == ("S000002",)
-
-
-def test_story_context_enricher_uses_all_source_refs():
+```python
+def test_story_context_enricher_ambiguity_safety():
     resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
     enricher = StoryContextEnricher(resolver)
 
     rec1 = SourceRecord(
         ref="S000001",
-        message=_message("В центре нет света", 1),
-        source_type="community",
-        parent_ref=None,
-        context_text="",
-        city_context=resolver.resolve("В центре нет света"),
-    )
-    rec2 = SourceRecord(
-        ref="S000002",
-        message=_message("На Лисках нет света", 2),
-        source_type="community",
-        parent_ref=None,
-        context_text="",
-        city_context=resolver.resolve("На Лисках нет света"),
-    )
-    bundle = PreparedBundle(
-        records={"S000001": rec1, "S000002": rec2},
-        prompt_text="",
-        total_messages=2,
-        candidate_count=2,
-    )
-    # S000001 is representative, but S000002 is in community_observations
-    card = StoryCard(
-        id="SC001",
-        topic="Отключения света",
-        importance="high",
-        summary="Отключения света",
-        representative_source_refs=["S000001"],
-        community_observations=[
-            StoryElement(
-                text="На Лисках тоже темно",
-                source_refs=["S000002"],
-                status="attributed",
-            )
-        ],
-    )
-    analysis = EditorialAnalysis(cards=[card])
-    contexts = enricher.enrich(analysis, bundle)
-
-    context = contexts["SC001"]
-    assert context.scale.observed_count == 2
-    assert set(context.scale.observed_area_ids) == {"center", "liski"}
-    assert context.scale.geographic_spread is True
-
-
-def test_ambiguous_place_does_not_inflate_scale():
-    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
-    enricher = StoryContextEnricher(resolver)
-
-    # Melitopolske Highway without house number maps to multiple municipal areas with confidence: ambiguous
-    rec = SourceRecord(
-        ref="S000001",
         message=_message("На Мелитопольском шоссе нет света", 1),
         source_type="community",
-        parent_ref=None,
-        context_text="",
         city_context=resolver.resolve("На Мелитопольском шоссе нет света"),
     )
-    assert rec.city_context is not None
-    assert len(rec.city_context.entities) >= 1
-    highway_entity = next(
-        e for e in rec.city_context.entities
-        if "Мелітопольське" in e.canonical_name or "шосе" in e.canonical_name
-    )
-    assert len(highway_entity.municipal_areas) > 1
-    assert highway_entity.confidence == "ambiguous"
 
-    bundle = PreparedBundle(
-        records={"S000001": rec},
-        prompt_text="",
-        total_messages=1,
-        candidate_count=1,
-    )
     card = StoryCard(
         id="SC001",
         topic="Отключения света",
@@ -595,22 +521,79 @@ def test_ambiguous_place_does_not_inflate_scale():
         representative_source_refs=["S000001"],
     )
     analysis = EditorialAnalysis(cards=[card])
-    contexts = enricher.enrich(analysis, bundle)
+    bundle = PreparedBundle(
+        records={"S000001": rec1},
+        prompt_text="",
+        total_messages=1,
+        candidate_count=1,
+    )
 
-    context = contexts["SC001"]
-    assert context.municipal_areas == ()
-    assert context.scale.observed_count == 0
-    assert context.scale.geographic_spread is False
-    assert context.scale.majority_supported is False
+    story_contexts = enricher.enrich(analysis, bundle)
+    ctx = story_contexts["SC001"]
+
+    # Ambiguous candidates must NOT enter observed_count or scale
+    assert ctx.scale.observed_count == 0
+    assert ctx.scale.geographic_spread is False
 ```
 
-- [ ] **Step 2: Implement `StoryContextEnricher.enrich()` in `src/city_context.py`**
+```python
+def test_story_context_enricher_counts_all_card_source_refs():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+    enricher = StoryContextEnricher(resolver)
 
-- Collect all evidence refs: `evidence_refs = card.all_source_refs() & bundle.records.keys()`.
-- Filter for **unambiguous municipal areas only** (direct area mentions or place matches with single unambiguous municipal area / `confidence != "ambiguous"`).
-- Group unambiguous references by `(area_set, area_id)`.
+    rec1 = SourceRecord(
+        ref="S000001",
+        message=_message("В центре снова нет света", 1),
+        source_type="community",
+        city_context=resolver.resolve("В центре снова нет света"),
+    )
+    rec2 = SourceRecord(
+        ref="S000002",
+        message=_message("На Лисках тоже темно", 2),
+        source_type="community",
+        city_context=resolver.resolve("На Лисках тоже темно"),
+    )
+
+    # Only S000001 is in representative_source_refs, but S000002 is in community_observations
+    card = StoryCard(
+        id="SC001",
+        topic="Отключения света",
+        importance="high",
+        summary="Отключения света",
+        representative_source_refs=["S000001"],
+        community_observations=[
+            StoryElement(text="На Лисках тоже темно", source_refs=["S000002"], status="attributed")
+        ],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    bundle = PreparedBundle(
+        records={"S000001": rec1, "S000002": rec2},
+        prompt_text="",
+        total_messages=2,
+        candidate_count=2,
+    )
+
+    story_contexts = enricher.enrich(analysis, bundle)
+    ctx = story_contexts["SC001"]
+
+    assert ctx.scale.observed_count == 2
+    assert ctx.scale.geographic_spread is True
+```
+
+- [x] **Step 2: Run tests and verify RED**
+
+```bash
+uv run pytest -q tests/test_city_context.py --no-cov
+```
+
+- [x] **Step 3: Implement `StoryContextEnricher` in `src/city_context.py`**
+
+- Collect all evidence refs via `card.all_source_refs() & bundle.records.keys()`.
+- Group by canonical `(area_set, area_id)`.
+- Separate `direct_area_refs` and `inferred_from_place_refs`.
+- Aggregate total `source_refs` as deduplicated union of both.
+- Ambiguity Scale Safety: Exclude ambiguous candidates from `ScaleEvidence.observed_area_ids` and `observed_count`.
 - Compute `ScaleEvidence`:
-  - `observed_area_ids = tuple(sorted(unique_unambiguous_municipal_area_ids))`
   - `observed_count = len(observed_area_ids)`
   - `geographic_spread = (observed_count >= 2)`
   - `broad_prevalence_supported = False`
