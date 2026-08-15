@@ -486,3 +486,33 @@ async def test_compact_retry_json_parse_failure_preserves_structured_reason(mock
 
     assert checker.last_stage == "json_parse"
     assert "position" in checker.last_reason or "Expecting value" in checker.last_reason
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_checker_resolves_issues_with_path_or_fragment_fallback(mock_logger):
+    """Fact checker resolves issue unit_id from path or fragment when unit_id is omitted by model."""
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps(
+            {
+                "status": "FIX",
+                "systemic_problem": False,
+                "issues": [
+                    {
+                        "path": ["paragraphs", "1"],
+                        "fragment": "Продажи генераторов выросли вдвое.",
+                        "reason": "Unsupported sales claim",
+                        "severity": "fix",
+                    }
+                ],
+            }
+        )
+    )
+    checker = LightFactChecker(provider, "model", mock_logger)
+    draft = _draft()
+    result = await checker.check(draft, EditorialAnalysis([]), _bundle())
+
+    assert len(result.issues) == 1
+    assert result.issues[0].unit_id == "P002"
+    assert result.issues[0].original_excerpt == "Продажи генераторов выросли вдвое."

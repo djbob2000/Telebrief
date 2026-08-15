@@ -28,12 +28,35 @@ class AuditIssue:
         severity = str(data.get("severity", "fix")).lower()
         if severity not in {"fix", "warn"}:
             severity = "fix"
+        unit_id = str(data.get("unit_id") or data.get("id") or "")
+        code = str(data.get("code") or "unspecified")
+        original_excerpt = str(
+            data.get("original_excerpt")
+            or data.get("fragment")
+            or data.get("excerpt")
+            or data.get("text")
+            or ""
+        )
+        reason = str(
+            data.get("reason")
+            or data.get("message")
+            or data.get("explanation")
+            or data.get("detail")
+            or ""
+        )
+        suggested_direction = str(
+            data.get("suggested_direction")
+            or data.get("fix")
+            or data.get("suggestion")
+            or data.get("recommendation")
+            or ""
+        )
         return cls(
-            unit_id=str(data.get("unit_id", "")),
-            code=str(data.get("code", "unspecified")),
-            original_excerpt=str(data.get("original_excerpt", "")),
-            reason=str(data.get("reason", "")),
-            suggested_direction=str(data.get("suggested_direction", "")),
+            unit_id=unit_id,
+            code=code,
+            original_excerpt=original_excerpt,
+            reason=reason,
+            suggested_direction=suggested_direction,
             source_refs=list(data.get("source_refs", [])),
             severity=severity,
         )
@@ -209,6 +232,32 @@ class LightFactChecker:
             compact_cards.append(base)
         return compact_cards
 
+    @staticmethod
+    def _resolve_issue_unit_ids(
+        result: FactCheckResult, parsed: dict[str, Any], units: dict[str, AuditUnitLocator]
+    ) -> None:
+        path_to_unit = {locator.path: unit_id for unit_id, locator in units.items()}
+        raw_issues = parsed.get("issues", []) if isinstance(parsed, dict) else []
+        for i, issue in enumerate(result.issues):
+            if (
+                issue.unit_id not in units
+                and i < len(raw_issues)
+                and isinstance(raw_issues[i], dict)
+            ):
+                raw_path = raw_issues[i].get("path")
+                if isinstance(raw_path, list):
+                    candidate_path = tuple(str(x) for x in raw_path)
+                    if candidate_path in path_to_unit:
+                        issue.unit_id = path_to_unit[candidate_path]
+                if issue.unit_id not in units and issue.original_excerpt:
+                    for uid, locator in units.items():
+                        if (
+                            issue.original_excerpt in locator.text
+                            or locator.text in issue.original_excerpt
+                        ):
+                            issue.unit_id = uid
+                            break
+
     async def _run_check_request(
         self,
         payload: dict[str, Any],
@@ -237,6 +286,8 @@ class LightFactChecker:
         except Exception as exc:
             self.last_reason = f"failed to parse FactCheckResult: {exc}"
             raise FactCheckUnavailableError(f"failed to parse FactCheckResult: {exc}") from exc
+
+        self._resolve_issue_unit_ids(result, parsed, units)
 
         unknown_units = sorted(set(issue.unit_id for issue in result.issues) - set(units))
         if unknown_units:
