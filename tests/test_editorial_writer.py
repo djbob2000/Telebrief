@@ -307,3 +307,18 @@ def test_writer_prompt_contains_unofficial_versions_and_scale_discipline(mock_lo
     assert "verified baseline" in system_prompt.lower()
     assert "unofficial estimates" in system_prompt.lower()
     assert "evidence of scale" in system_prompt.lower()
+
+
+@pytest.mark.unit
+def test_writer_prompt_contains_3_tier_scale_hierarchy_and_corpus_boundary(mock_logger):
+    writer = EditorialWriter(MagicMock(), "model", "skill", mock_logger)
+    system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
+
+    assert "geographic spread" in system_prompt.lower()
+    assert (
+        "broad prevalence" in system_prompt.lower()
+        or "broad multi-district" in system_prompt.lower()
+    )
+    assert "majority" in system_prompt.lower()
+    assert "corpus absence" in system_prompt.lower()
+    assert "доступных" in system_prompt.lower()

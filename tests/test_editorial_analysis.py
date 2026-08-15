@@ -514,3 +514,16 @@ def test_analyzer_prompts_contain_informative_uncertainty_and_canonical_schema(
     assert "current_status" in system_prompt
     assert "next_known_step" in system_prompt
     assert "editorial_angle" in system_prompt
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("compact", [False, True])
+def test_analyzer_prompts_contain_scale_hierarchy_and_corpus_boundary(compact, mock_logger):
+    analyzer = EditorialAnalyzer(MagicMock(), "model", mock_logger)
+    system_prompt, _ = analyzer.build_prompt(_bundle(), compact=compact)
+
+    assert "geographic spread" in system_prompt.lower()
+    assert "majority" in system_prompt.lower()
+    assert "denominator" in system_prompt.lower()
+    assert "corpus" in system_prompt.lower()
+    assert "supplied records" in system_prompt.lower() or "supplied corpus" in system_prompt.lower()

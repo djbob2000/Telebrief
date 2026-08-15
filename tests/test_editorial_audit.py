@@ -218,6 +218,22 @@ def test_light_fact_checker_prompt_distinguishes_synthesis_from_unverified_facts
     assert "verifiable" in prompt.lower() or "unverified" in prompt.lower()
 
 
+def test_fact_checker_prompt_enforces_scale_denominator_and_absence_rules():
+    import logging
+
+    checker = LightFactChecker(
+        provider=None,
+        model="test-model",
+        logger=logging.getLogger("test"),
+    )
+    prompt = checker._build_system_prompt()
+    assert "denominator" in prompt.lower()
+    assert "majority" in prompt.lower()
+    assert "absence" in prompt.lower()
+    assert "corpus" in prompt.lower()
+    assert "FIX" in prompt
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_fact_checker_exposes_json_parse_failure_diagnostics(mock_logger):

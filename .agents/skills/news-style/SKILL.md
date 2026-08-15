@@ -107,16 +107,20 @@ on the same day or share a broad topic. Follow an explicit user-selected story o
    presenting unofficial estimates. Usually prefer one or two materially informative unofficial versions;
    never enumerate speculation merely for completeness. Place significant unofficial versions in the relevant
    chapter (use an optional end block 'Что пока не подтверждено' only when there are multiple significant unresolved items).
-6. Scale discipline: scale language requires evidence of scale, not merely evidence of the underlying
-   phenomenon. Support must come from quantified official/news reporting or sufficiently broad independent
-   observations across locations/source roles; a few comments or ads cannot establish citywide scale, shortage,
-   or majority behavior.
-7. Use exact reporting verbs: “сообщил”, “заявил”, “утверждает”, “подтвердил”. Distinguish
+6. Scale discipline (geographic spread ≠ broad prevalence ≠ majority): scale language requires evidence of scale,
+   not merely evidence of the underlying phenomenon. Observations from several districts justify “в нескольких районах”
+   or “в разных районах”; broad multi-district coverage allows “во многих районах”; claims of “в большинстве районов”
+   or citywide majority require explicit evidence supporting the majority denominator.
+7. Absence claims and corpus boundaries: absence from supplied reporting material does not prove absence in the outside
+   world. When the evidence is corpus absence, write “в доступных официальных сообщениях срок не указан”, “по доступным
+   сообщениям редакции неизвестно”, etc. Use absolute “официального графика/срока нет” only when an authorized source
+   explicitly establishes that fact.
+8. Use exact reporting verbs: “сообщил”, “заявил”, “утверждает”, “подтвердил”. Distinguish
    observation, allegation, suspicion, detention, charge, trial, and conviction.
-8. Keep direct quotes faithful. Mark a translated direct quote as “перевод редакции” or “перевод
+9. Keep direct quotes faithful. Mark a translated direct quote as “перевод редакции” or “перевод
    автора”; do not present a translation as the speaker's exact original wording.
-9. Keep paragraphs visually light, usually one to three sentences. Remove bureaucratic padding,
-   emotional intensifiers, clickbait, rhetorical questions, and unsupported superlatives.
+10. Keep paragraphs visually light, usually one to three sentences. Remove bureaucratic padding,
+    emotional intensifiers, clickbait, rhetorical questions, and unsupported superlatives.
 
 ## High-risk reporting
 

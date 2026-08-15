@@ -213,9 +213,13 @@ presenting unofficial estimates. Place significant unofficial versions in the re
 (use an optional end block 'Что пока не подтверждено' only when there are multiple significant
 unresolved items worth summarizing).
 Scale language requires evidence of scale, not merely evidence of the underlying phenomenon.
-Support may come from quantified official/news reporting or sufficiently broad independent
-observations across locations/source roles. A few comments, advertisements, or repeated reposts
-cannot establish citywide scale, shortage, demand growth, or majority behavior.
+Geographic spread ≠ broad prevalence ≠ majority: observations from several districts justify
+'в нескольких районах' or 'в разных районах'; broad multi-district coverage allows 'во многих районах';
+'в большинстве районов' requires explicit evidence establishing the majority denominator.
+Absence from supplied reporting material does not prove absence in the outside world (corpus boundary).
+When the evidence is corpus absence, write 'в доступных официальных сообщениях срок не указан',
+'по доступным сообщениям редакции неизвестно', etc. Use absolute 'официального графика/срока нет' only
+when an authorized source explicitly establishes that fact.
 Aim for about 900–1500 words on a busy day, allow up to about 1800 words when the
 material genuinely supports it, and accept 600–900 words on a thin day. These are editorial
 targets, not validation limits; never pad length.
