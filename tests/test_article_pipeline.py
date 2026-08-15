@@ -328,17 +328,17 @@ async def test_systemic_audit_failure_falls_back_after_one_regeneration():
 @pytest.mark.asyncio
 async def test_second_repair_is_checked_before_removing_remaining_issues():
     generator = _generator()
-    draft = ArticleDraft("Свет", "Лид", ["Первый текст"], [])
+    draft = ArticleDraft("Свет", "Лид", ["Первый текст", "Незатронутый абзац"], [])
     first_fix = FactCheckResult("FIX", False, [_repair_issue()])
     passed = FactCheckResult("PASS", False, [])
-    repaired_once = ArticleDraft("Свет", "Лид", ["Промежуточный текст"], [])
-    repaired_twice = ArticleDraft("Свет", "Лид", ["Исправленный текст"], [])
+    repaired_once = ArticleDraft("Свет", "Лид", ["Промежуточный текст", "Незатронутый абзац"], [])
+    repaired_twice = ArticleDraft("Свет", "Лид", ["Исправленный текст", "Незатронутый абзац"], [])
     generator.fact_checker.check = AsyncMock(side_effect=[first_fix, first_fix, passed])
     generator.fact_checker.repair = AsyncMock(side_effect=[repaired_once, repaired_twice])
 
     result = await generator._repair_and_check(draft, EditorialAnalysis([]), _bundle())
 
-    assert result.paragraphs == ["Исправленный текст"]
+    assert result.paragraphs == ["Исправленный текст", "Незатронутый абзац"]
     assert generator.fact_checker.check.await_count == 3
 
 
