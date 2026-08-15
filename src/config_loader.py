@@ -386,7 +386,7 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
         value = raw.get(name, default)
         if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
             raise ValueError(f"settings.article.{name} must be a positive integer")
-        return value
+        return int(value)
 
     # Explicit stage budgets override the legacy shared value. This keeps old
     # config files valid while allowing long-form analysis, writing and audit to
