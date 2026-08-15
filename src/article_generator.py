@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from src.ai_providers import AIProvider, create_provider
+from src.city_context import CityContextResolver, CityProfileError, StoryContextEnricher
 from src.collector import Message
 from src.config_loader import Config, SourceRoleResolver
 from src.editorial_analysis import (
@@ -99,8 +100,25 @@ class ArticleGenerator:
             config.settings.article, "prompt_template", ".agents/skills/news-style/SKILL.md"
         )
         self.skill_instructions = _load_skill_instructions(skill_path)
+        city_profile_path = getattr(
+            config.settings.article, "city_profile_path", "data/city_profiles/berdyansk.yaml"
+        )
+        try:
+            self.city_context_resolver: CityContextResolver | None = CityContextResolver.from_yaml(
+                city_profile_path
+            )
+            self.story_context_enricher: StoryContextEnricher | None = StoryContextEnricher(
+                self.city_context_resolver
+            )
+        except (CityProfileError, FileNotFoundError) as exc:
+            self.logger.warning("City context profile unavailable: %s", exc)
+            self.city_context_resolver = None
+            self.story_context_enricher = None
+
         self.role_resolver = SourceRoleResolver(config.channels)
-        self.input_builder = EditorialInputBuilder(self.role_resolver)
+        self.input_builder = EditorialInputBuilder(
+            self.role_resolver, city_context_resolver=self.city_context_resolver
+        )
         self.analyzer = EditorialAnalyzer(
             self.provider,
             self.model,
@@ -466,6 +484,10 @@ class ArticleGenerator:
         if not writer_bundle.records:
             return await self._fallback(
                 bundle, "editorial analysis returned no resolvable representative refs"
+            )
+        if self.story_context_enricher is not None:
+            writer_bundle.story_contexts = self.story_context_enricher.enrich(
+                analysis, writer_bundle
             )
         self.logger.info("Selected %d source records for writer", len(writer_bundle.records))
         self.logger.info(

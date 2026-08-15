@@ -43,25 +43,6 @@ _TOPIC_HEADINGS = {
     "other": "Прочее",
 }
 
-_KNOWN_AREAS = (
-    "АКЗ",
-    "Колония",
-    "Морская",
-    "Центральная",
-    "Победы",
-    "Азовская",
-    "Южный",
-    "Лиски",
-)
-_KNOWN_PROVIDERS = (
-    "Onet",
-    "Юпитер",
-    "+7телеком",
-    "7телеком",
-    "Киевстар",
-    "Vodafone",
-    "Lifecell",
-)
 _NEGATIVE_SIGNAL = re.compile(
     r"(?:нет|не\s+работ|пропал|исчез|перебо|плох|сбой|отключ)", re.IGNORECASE
 )
@@ -141,8 +122,8 @@ class DeterministicStoryCardBuilder:
             return None
         texts = [record.message.text.strip() for _, record in entries]
         refs = [ref for ref, _ in entries]
-        areas = self._areas(texts)
-        providers = self._providers(texts)
+        areas = self._extract_areas(entries)
+        providers = self._extract_providers(entries)
         established = (
             source_group
             and all(record.source_type == "official" for _, record in entries)
@@ -260,24 +241,36 @@ class DeterministicStoryCardBuilder:
         return "low"
 
     @staticmethod
-    def _areas(texts: list[str]) -> list[str]:
-        joined = " ".join(texts)
-        return [
-            area
-            for area in _KNOWN_AREAS
-            if re.search(rf"\b{re.escape(area)}\b", joined, re.IGNORECASE)
-        ]
+    def _extract_areas(entries: list[tuple[str, SourceRecord]]) -> list[str]:
+        areas: list[str] = []
+        seen: set[str] = set()
+        for _, record in entries:
+            ctx = getattr(record, "city_context", None)
+            if not ctx or not getattr(ctx, "entities", None):
+                continue
+            for entity in ctx.entities:
+                if entity.kind in {"area", "place"}:
+                    name = entity.canonical_name or entity.entity_id
+                    if name and name not in seen:
+                        seen.add(name)
+                        areas.append(name)
+        return areas
 
     @staticmethod
-    def _providers(texts: list[str]) -> list[str]:
-        joined = " ".join(texts)
-        result: list[str] = []
-        for provider in _KNOWN_PROVIDERS:
-            if re.search(re.escape(provider), joined, re.IGNORECASE):
-                if provider == "7телеком" and "+7телеком" in result:
-                    continue
-                result.append(provider)
-        return result
+    def _extract_providers(entries: list[tuple[str, SourceRecord]]) -> list[str]:
+        providers: list[str] = []
+        seen: set[str] = set()
+        for _, record in entries:
+            ctx = getattr(record, "city_context", None)
+            if not ctx or not getattr(ctx, "entities", None):
+                continue
+            for entity in ctx.entities:
+                if entity.kind == "provider":
+                    name = entity.canonical_name or entity.entity_id
+                    if name and name not in seen:
+                        seen.add(name)
+                        providers.append(name)
+        return providers
 
 
 class StoryCardRenderer:

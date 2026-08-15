@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from src.city_context import CityContextResolver
 from src.collector import Message
 from src.editorial_fallback import (
     DeterministicStoryCardBuilder,
@@ -12,8 +13,10 @@ from src.editorial_fallback import (
 )
 from src.editorial_models import PreparedBundle, SourceRecord
 
+_RESOLVER = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
 
-def _bundle(texts: list[tuple[str, str]]) -> PreparedBundle:
+
+def _bundle(texts: list[tuple[str, str]], *, use_resolver: bool = True) -> PreparedBundle:
     records = {}
     for index, (text, source_type) in enumerate(texts, start=1):
         ref = f"S{index:06d}"
@@ -27,7 +30,8 @@ def _bundle(texts: list[tuple[str, str]]) -> PreparedBundle:
             media_type="",
             message_id=index,
         )
-        records[ref] = SourceRecord(ref, message, source_type)
+        city_ctx = _RESOLVER.resolve(text) if use_resolver else None
+        records[ref] = SourceRecord(ref, message, source_type, city_context=city_ctx)
     return PreparedBundle(
         records=records,
         prompt_text="",
@@ -175,3 +179,18 @@ def test_renderer_never_concatenates_raw_story_elements():
     assert "Курс доллара" not in rendered
     assert "автокондиционеров" not in rendered
     assert "+7 990" not in rendered
+
+
+def test_fallback_without_city_context_performs_normal_processing():
+    bundle = _bundle(
+        [
+            ("Воду отключили до вечера", "official"),
+            ("В чате пишут, что воды нет", "community"),
+        ],
+        use_resolver=False,
+    )
+    cards = DeterministicStoryCardBuilder().build(bundle)
+    assert len(cards) == 1
+    assert cards[0].topic == "water"
+    article = StoryCardRenderer().render(cards).to_markdown()
+    assert "Вода" in article

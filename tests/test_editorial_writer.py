@@ -357,3 +357,35 @@ def test_writer_prompt_and_skill_contain_chat_slang_normalization(mock_logger):
 
     assert "дистант" in system_prompt.lower() or "сленг" in system_prompt.lower()
     assert "дистанционное" in system_prompt.lower() or "дистанционный" in system_prompt.lower()
+
+
+@pytest.mark.unit
+def test_writer_prompt_contains_local_story_context(mock_logger):
+    from src.city_context_models import AreaEvidence, ScaleEvidence, StoryContext
+
+    writer = EditorialWriter(MagicMock(), "model", "skill", mock_logger)
+    bundle = _bundle()
+    scale = ScaleEvidence(
+        observed_area_ids=("center", "liski"),
+        observed_count=2,
+        geographic_spread=True,
+    )
+    area1 = AreaEvidence(
+        area_set="municipal_neighborhood_committees_2021",
+        area_id="center",
+        source_refs=("S000001",),
+    )
+    bundle.story_contexts = {
+        "SC001": StoryContext(
+            card_id="SC001",
+            municipal_areas=(area1,),
+            colloquial_area_ids=("center",),
+            scale=scale,
+        )
+    }
+
+    system_prompt, user_prompt = writer.build_prompt(_analysis(), bundle)
+    assert "[LOCAL STORY CONTEXT SC001]" in user_prompt
+    assert "observed_municipal_areas: center (1 refs)" in user_prompt
+    assert "geographic_spread=true" in user_prompt
+    assert "LOCAL STORY CONTEXT" in system_prompt

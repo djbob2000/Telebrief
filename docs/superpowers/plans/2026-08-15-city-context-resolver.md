@@ -614,7 +614,7 @@ git commit -m "feat: aggregate story geography from source refs"
 
 ---
 
-### Task 5: Integrate local context into ArticleGenerator, Writer, Fact Checker, and Fallback
+### Task 5: Integrate local context into ArticleGenerator, Writer, Fact Checker, and Fallback (COMPLETED)
 
 **Files:**
 - Modify: `src/article_generator.py`
@@ -626,23 +626,23 @@ git commit -m "feat: aggregate story geography from source refs"
 - Modify: `tests/test_editorial_audit.py`
 - Modify: `tests/test_editorial_fallback.py`
 
-- [ ] **Step 1: Write RED tests for ArticleGenerator, Writer, and Audit prompts**
+- [x] **Step 1: Write RED tests for ArticleGenerator, Writer, and Audit prompts**
 
 - ArticleGenerator: missing or corrupt YAML catches `(CityProfileError, FileNotFoundError)`, logs warning, and continues generation with city context disabled.
 - Writer prompt: includes rules that street-to-area mapping means observation came from that area (not that entire area was affected), same-area reports count as 1 area, and `majority_supported` is used only when deterministic scale evidence sets it to true.
 - Audit prompt: flags un-scoped whole-area generalization from street-only evidence as FIX.
-- Fallback: uses `SourceRecord.city_context` when present; when city context is unavailable, deterministic fallback continues normal text processing without performing CityProfile-dependent entity enrichment (removes duplicate `_KNOWN_AREAS` / `_KNOWN_PROVIDERS`).
+- Fallback: uses `SourceRecord.city_context` when present; when city context is unavailable, deterministic fallback continues normal text processing without performing CityProfile-dependent enrichment.
 
-- [ ] **Step 2: Implement `ArticleGenerator` profile loading and enrichment pipeline**
+- [x] **Step 2: Implement `ArticleGenerator` profile loading and enrichment pipeline**
 
 - In `ArticleGenerator.__init__`: load `CityContextResolver.from_yaml` (catch `(CityProfileError, FileNotFoundError)`, log `WARNING`, set `city_context_resolver = None`).
 - In `generate_article()`: after Analyzer produces Story Cards and `selected_refs` are filtered for the writer bundle, run `StoryContextEnricher.enrich(analysis, writer_bundle)` and attach `story_contexts` to `writer_bundle`.
 
-- [ ] **Step 3: Render deterministic story context into writer bundle prompt**
+- [x] **Step 3: Render deterministic story context into writer bundle prompt**
 
 Render `[LOCAL STORY CONTEXT SC###]` blocks into `PreparedBundle.prompt_text` for Writer and Fact Checker.
 
-- [ ] **Step 4: Update Writer, Audit, and Fallback components**
+- [x] **Step 4: Update Writer, Audit, and Fallback components**
 
 - Add deterministic local context instructions to `EditorialWriter.build_prompt()`.
 - Add street-to-area audit check to `LightFactChecker._build_system_prompt()`.

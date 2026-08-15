@@ -1043,3 +1043,17 @@ def test_remove_unresolved_local_fixes_raises_unsafe_on_h_unit(sample_config, mo
 
     with pytest.raises(UnsafeDraftError, match="headline, lead, or section heading"):
         generator._remove_unresolved_local_fixes(draft, result)
+
+
+@pytest.mark.unit
+def test_article_generator_loads_city_context_and_handles_missing_file(sample_config, mock_logger):
+    # Default initialization loads checked-in profile
+    generator = ArticleGenerator(sample_config, mock_logger)
+    assert generator.city_context_resolver is not None
+    assert generator.story_context_enricher is not None
+
+    # When profile path is invalid, fails open gracefully
+    sample_config.settings.article.city_profile_path = "non_existent_profile.yaml"
+    generator_fallback = ArticleGenerator(sample_config, mock_logger)
+    assert generator_fallback.city_context_resolver is None
+    assert generator_fallback.story_context_enricher is None

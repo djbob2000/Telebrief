@@ -142,6 +142,8 @@ class LightFactChecker:
             "Scale claims such as 'most districts', 'across most of the city', 'massively', 'citywide shortage' "
             "require evidence supporting the claimed denominator or sufficiently broad geographic coverage; "
             "multiple observations establish geographic spread, but do not automatically establish a majority (flag unsupported majority claims as FIX). "
+            "Street observations indicate that a phenomenon was observed on that street/area, not across the entire district or whole city; "
+            "flag un-scoped district-wide or citywide generalizations from single street observations as FIX. "
             "Absence from supplied reporting material does not prove absence in the outside world (corpus boundary): "
             "when evidence is corpus absence, the text must state 'в доступных сообщениях...' rather than absolute 'официального графика нет' "
             "unless an authorized source explicitly establishes that fact (flag unsupported absolute absence claims as FIX). "

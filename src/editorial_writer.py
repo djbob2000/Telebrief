@@ -184,6 +184,30 @@ class ArticleDraft:
         return result
 
 
+def render_story_contexts(story_contexts: dict[str, Any]) -> str:
+    """Render deterministic local story context for the writer and fact checker."""
+    if not story_contexts:
+        return ""
+    blocks: list[str] = []
+    for card_id, ctx in sorted(story_contexts.items()):
+        lines = [f"[LOCAL STORY CONTEXT {card_id}]"]
+        if getattr(ctx, "municipal_areas", None):
+            area_parts = [f"{a.area_id} ({len(a.source_refs)} refs)" for a in ctx.municipal_areas]
+            lines.append(f"observed_municipal_areas: {', '.join(area_parts)}")
+        if getattr(ctx, "colloquial_area_ids", None):
+            lines.append(f"observed_colloquial_areas: {', '.join(ctx.colloquial_area_ids)}")
+        scale = getattr(ctx, "scale", None)
+        if scale:
+            lines.append(
+                f"scale_evidence: observed_count={scale.observed_count}, "
+                f"geographic_spread={str(scale.geographic_spread).lower()}, "
+                f"broad_prevalence_supported={str(scale.broad_prevalence_supported).lower()}, "
+                f"majority_supported={str(scale.majority_supported).lower()}"
+            )
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 class EditorialWriter:
     """Write a natural article while keeping Story Cards as the evidence boundary."""
 
@@ -221,6 +245,7 @@ Never enumerate speculation merely for completeness. Make the verified baseline 
 presenting unofficial estimates. Place significant unofficial versions in the relevant chapter
 (use an optional end block 'Что пока не подтверждено' only when there are multiple significant
 unresolved items worth summarizing).
+Deterministic local story context ([LOCAL STORY CONTEXT]) specifies the observed geography and scale evidence for each Story Card. A street observation means the report came from that street/area, not that the entire area was affected. Same-area reports count as 1 area. Use majority or citywide phrasing only when majority_supported is true; when geographic_spread is true, describe as multiple areas (e.g. 'в нескольких районах города', 'в Центре и на Лисках'), not the whole city.
 Scale language requires evidence of scale, not merely evidence of the underlying phenomenon.
 Geographic spread ≠ broad prevalence ≠ majority: observations from several districts justify
 'в нескольких районах' or 'в разных районах'; broad multi-district coverage allows 'во многих районах';
@@ -236,12 +261,14 @@ Aim for about 900–1500 words on a busy day, allow up to about 1800 words when 
 material genuinely supports it, and accept 600–900 words on a thin day. These are editorial
 targets, not validation limits; never pad length.
 """
-        user = (
-            "STORY CARDS:\n"
-            + json.dumps(analysis.to_dict(), ensure_ascii=False)
-            + "\n\nORIGINAL SOURCE EXCERPTS:\n"
-            + bundle.prompt_text
-        )
+        user_parts = [
+            "STORY CARDS:\n" + json.dumps(analysis.to_dict(), ensure_ascii=False),
+        ]
+        story_ctx_str = render_story_contexts(getattr(bundle, "story_contexts", {}))
+        if story_ctx_str:
+            user_parts.append("LOCAL STORY CONTEXT:\n" + story_ctx_str)
+        user_parts.append("ORIGINAL SOURCE EXCERPTS:\n" + bundle.prompt_text)
+        user = "\n\n".join(user_parts)
         return system, user
 
     async def write(self, analysis: EditorialAnalysis, bundle: PreparedBundle) -> ArticleDraft:

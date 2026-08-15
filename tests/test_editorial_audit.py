@@ -516,3 +516,12 @@ async def test_fact_checker_resolves_issues_with_path_or_fragment_fallback(mock_
     assert len(result.issues) == 1
     assert result.issues[0].unit_id == "P002"
     assert result.issues[0].original_excerpt == "Продажи генераторов выросли вдвое."
+
+
+@pytest.mark.unit
+def test_audit_system_prompt_contains_street_to_area_and_scale_checks(mock_logger):
+    checker = LightFactChecker(MagicMock(), "model", mock_logger)
+    system_prompt = checker._build_system_prompt()
+    assert "street observations" in system_prompt.lower()
+    assert "generalizations" in system_prompt.lower() or "scale" in system_prompt.lower()
+    assert "fix" in system_prompt.lower()
