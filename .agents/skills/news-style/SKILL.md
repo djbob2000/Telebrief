@@ -47,6 +47,18 @@ Source role is an editorial prior, not a trust score or permission to state a fa
 - `mixed` means the role is decided from the individual message and its local context, not from
   the channel name.
 
+## Composition contract and narrative structure
+
+For the daily city article («Чем жил Бердянск за последние сутки»):
+
+1. **Headline:** captures the key supported event, condition, or theme of the day. Collective mood or emotional state may appear only when directly supported by source material.
+2. **Lead:** 1–2 sentences highlighting 2–3 prominent themes of the 24-hour period (avoid an exhaustive inventory of all categories).
+3. **Thematic Chapters:** usually 3–5 narrative story chapters with descriptive journalistic headings (`## [Тематический заголовок]`, e.g. `## Перебои со светом и поиск зарядки: что обсуждали в районах`).
+4. **Resident Observation Synthesis:** synthesize resident observations across districts into coherent narrative paragraphs with visible attribution (`по сообщениям жителей`, `в районных чатах отмечали`). Resident comments are valuable editorial material reflecting the lived reality of the city.
+5. **Contextual Grouping without Causal Leaps:** cover related same-day developments (e.g. power outages, residents searching for power, local venues offering free charging) within the same chapter without manufacturing unsupported causal bridges (`из-за`, `вследствие` require direct evidence).
+6. **Adaptive Dominance:** when one major event or condition clearly dominates the day's reporting, give it proportionally more space as the primary chapter without enforcing a rigid percentage.
+7. **Internal Progression:** follow timeline or geographic progression within chapters when helpful, rather than forcing a rigid global morning-to-evening chronology across unrelated topics.
+
 ## Story Cards and journalistic synthesis
 
 When the pipeline supplies Story Cards, treat them as reporting notes and source navigation, not
@@ -62,7 +74,7 @@ Allowed examples:
 - say that electricity or water was a noticeable practical topic when the supplied material
   shows repeated, geographically varied discussion;
 - connect separately supported facts with cautious wording such as “одновременно” or “на фоне”
-  when it does not imply an unsupported cause.
+  when it does not imply an unsupported cause (respect strict causality boundaries: sequence is not causality).
 
 Not allowed:
 
@@ -74,10 +86,10 @@ Not allowed:
   into an established fact.
 
 Do not force an exact number of paragraphs, sections, cards, or topics. Use the soft long-form
-target for a sufficiently rich day, but follow the real material: one thin story may need a few
-paragraphs, while a busy day may need a developed article with clearly separated events. Do not
-join independent events merely because they happened on the same day or share a broad topic.
-Follow an explicit user-selected story over a default “most important” item.
+target for a sufficiently rich day (usually 3–5 chapters, 8–12 substantive paragraphs), but follow
+the real material: one thin story may need a few paragraphs, while a busy day may need a developed
+article with clearly separated events. Do not join independent events merely because they happened
+on the same day or share a broad topic. Follow an explicit user-selected story over a default “most important” item.
 
 ## Drafting rules
 

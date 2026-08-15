@@ -105,8 +105,9 @@ class ArticleGenerator:
             f"{self.skill_instructions}\n\n"
             f"Write in the configured output language: {self.output_language}.\n"
             "Story Cards are reporting notes, not a sentence template. Combine, reorder, "
-            "compress and connect supplied material naturally. Do not create a new independently "
-            "verifiable fact absent from the cards and source material. Return strict JSON only."
+            "compress and connect supplied material naturally into 3–5 thematic chapters. "
+            "Do not create a new independently verifiable fact absent from the cards and source "
+            "material. Return strict JSON only with headline, lead, paragraphs, and sections."
         )
 
     @staticmethod

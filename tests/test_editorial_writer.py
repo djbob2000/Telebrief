@@ -191,3 +191,39 @@ def test_writer_prompt_uses_selected_source_excerpts_only():
 
     assert "Жители сообщили о перебоях с водой" in user_prompt
     assert "S000002" not in user_prompt
+
+
+def test_editorial_writer_prompt_contains_thematic_chapters_and_synthesis_rules():
+    import logging
+
+    writer = EditorialWriter(
+        provider=None,
+        model="test-model",
+        skill_instructions="Newsroom style guidelines",
+        logger=logging.getLogger("test"),
+    )
+    analysis = EditorialAnalysis(
+        cards=[
+            StoryCard(
+                id="SC001",
+                topic="Свет",
+                importance="high",
+                summary="Отключения",
+                representative_source_refs=["S000001"],
+            )
+        ]
+    )
+    bundle = PreparedBundle(records={}, prompt_text="", total_messages=1, candidate_count=1)
+    system, _ = writer.build_prompt(analysis, bundle)
+    assert "3–5" in system or "3-5" in system
+    assert "lead" in system.lower()
+    assert "Story Cards are reporting notes" in system
+
+
+def test_news_style_skill_file_contains_approved_composition_contract():
+    from src.article_generator import _load_skill_instructions
+
+    content = _load_skill_instructions(".agents/skills/news-style/SKILL.md")
+    assert "3–5" in content or "3-5" in content
+    assert "жители" in content.lower() or "resident" in content.lower()
+    assert "causality" in content.lower() or "причинн" in content.lower()
