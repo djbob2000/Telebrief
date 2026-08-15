@@ -14,6 +14,7 @@ from src.ai_providers import (  # isort: skip
     OllamaProvider,
     OpenAIProvider,
     TokenBudgetExhaustedError,
+    is_token_budget_error,
 )
 
 # --- Factory tests ---
@@ -1449,3 +1450,32 @@ class AsyncContextManager:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass
+
+
+@pytest.mark.unit
+def test_is_token_budget_error():
+    """Token budget classifier identifies direct and cascade token budget exhaustion."""
+    import asyncio
+
+    assert is_token_budget_error(TokenBudgetExhaustedError("exceeded")) is True
+    assert (
+        is_token_budget_error(
+            ProviderCascadeError("cascade failed", failure_kinds=("token_budget",))
+        )
+        is True
+    )
+    assert (
+        is_token_budget_error(
+            ProviderCascadeError("cascade failed", failure_kinds=("token_budget", "timeout"))
+        )
+        is True
+    )
+    assert (
+        is_token_budget_error(
+            ProviderCascadeError("cascade failed", failure_kinds=("timeout", "quota"))
+        )
+        is False
+    )
+    assert is_token_budget_error(asyncio.TimeoutError()) is False
+    assert is_token_budget_error(ValueError("invalid")) is False
+    assert is_token_budget_error(RuntimeError("generic")) is False

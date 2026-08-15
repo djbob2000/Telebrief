@@ -53,6 +53,15 @@ class ProviderCascadeError(RuntimeError):  # noqa: B042
         )
 
 
+def is_token_budget_error(exc: BaseException) -> bool:
+    """Public semantic check for token budget exhaustion without string parsing."""
+    if isinstance(exc, TokenBudgetExhaustedError):
+        return True
+    if isinstance(exc, ProviderCascadeError) and "token_budget" in exc.failure_kinds:
+        return True
+    return False
+
+
 def _classify_provider_failure(exc: BaseException) -> str:
     """Classify an SDK failure without retaining provider error text."""
     text = str(exc).lower()
