@@ -506,3 +506,98 @@ def test_story_context_enricher_same_area_deduplication():
     assert center_area.inferred_from_place_refs == ("S000001",)
     assert ctx.scale.observed_count == 2
     assert ctx.scale.geographic_spread is True
+
+
+def test_coverage_evaluator_except_segment_semantics():
+    from src.city_context import AddressContext, EvalResult, evaluate_coverage
+
+    # Rule: segment on odd side from house 1 to 77, EXCEPT landmark segment Sofiivska to Sevastopolska
+    coverage = {
+        "kind": "segment",
+        "side": "odd",
+        "from_house": 1,
+        "to_house": 77,
+        "except_segment": {
+            "side": "odd",
+            "from_landmark": "Sofiivska",
+            "to_landmark": "Sevastopolska",
+        },
+    }
+
+    # 1. Address within 1-77, odd side, outside the landmark exclusion (e.g. house 5) -> MATCH
+    ctx_outside = AddressContext(
+        house_number="5",
+        normalized_house="5",
+        house_int=5,
+        parity="odd",
+        explicit_side=None,
+        landmark_segment=None,
+    )
+    assert evaluate_coverage(coverage, ctx_outside) == EvalResult.MATCH
+
+    # 2. Address within the landmark exclusion -> NO_MATCH
+    ctx_inside = AddressContext(
+        house_number="15",
+        normalized_house="15",
+        house_int=15,
+        parity="odd",
+        explicit_side=None,
+        landmark_segment=("софіївської", "севастопольської"),
+    )
+    assert evaluate_coverage(coverage, ctx_inside) == EvalResult.NO_MATCH
+
+    # 3. Address without side or house evidence -> UNKNOWN
+    ctx_unknown = AddressContext(
+        house_number=None,
+        normalized_house=None,
+        house_int=None,
+        parity=None,
+        explicit_side=None,
+        landmark_segment=None,
+    )
+    assert evaluate_coverage(coverage, ctx_unknown) == EvalResult.UNKNOWN
+
+
+def test_landmark_based_segment_positive_resolution():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+
+    # "вул. Володимира Довганюка від Софіївської до Севастопольської" matches nahirna
+    res = resolver.resolve("вул. Володимира Довганюка від Софіївської до Севастопольської")
+    entity = next((e for e in res.entities if "Довганюка" in e.canonical_name), None)
+    assert entity is not None
+    assert entity.confidence == "high"
+    assert any(a.area_id == "nahirna" for a in entity.municipal_areas)
+
+
+def test_untyped_place_matching_does_not_fuzzy_stem_bare_mentions():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+
+    # "выставка Айвазовского" does NOT mention a street/boulevard and should not match street:Айвазовського
+    res_bare = resolver.resolve("В художественном музее открылась выставка Айвазовского")
+    assert not any(e.entity_id == "street:Айвазовського" for e in res_bare.entities)
+
+    # "ул. Айвазовского" explicitly names the street
+    res_typed = resolver.resolve("На ул. Айвазовского починили водопровод")
+    assert any(e.entity_id == "street:Айвазовського" for e in res_typed.entities)
+
+
+def test_house_numbers_private_sector_union_semantics():
+    from src.city_context import AddressContext, EvalResult, evaluate_coverage
+
+    coverage = {
+        "kind": "house_numbers",
+        "houses": ["1", "3", "5"],
+        "private_sector": True,
+    }
+
+    # "частный сектор, дом 29" -> house 29 is not in [1, 3, 5], but is_private_sector is True -> MATCH
+    ctx = AddressContext(
+        house_number="29",
+        normalized_house="29",
+        house_int=29,
+        parity="odd",
+        explicit_side=None,
+        landmark_segment=None,
+        is_private_sector=True,
+    )
+    assert evaluate_coverage(coverage, ctx) == EvalResult.MATCH

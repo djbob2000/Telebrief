@@ -147,12 +147,36 @@ def _eval_house_ranges(ranges: list[Any], ctx: AddressContext) -> bool:
     return False
 
 
+_LANDMARK_ALIASES: dict[str, tuple[str, ...]] = {
+    "Hretska": ("грецьк", "греческ", "люксембург"),
+    "Kosmonavtiv": ("космонавт",),
+    "Liepaiska": ("лієпайськ", "лиепайск"),
+    "Lomonosova": ("ломоносов",),
+    "Melitopolske_highway": ("мелітопольськ", "мелитопольск"),
+    "Morska": ("морськ", "морск", "мазін", "мазин"),
+    "Pershotravneva": ("першотравнев", "первомайск"),
+    "Petrovskyi_shliakh": ("петровськ", "петровск"),
+    "Pravdy": ("правд",),
+    "Pryvokzalna": ("привокзальн", "привокзаль", "енгельс", "энгельс"),
+    "Sevastopolska": ("севастопольськ", "севастопольск"),
+    "Skhidnyi_prospect": ("східн", "восточн", "пролетарськ", "пролетарск"),
+    "Sofiivska": ("софіївськ", "софиевск", "димитров"),
+    "Tsentralna": ("центральн", "маркс"),
+    "Tyshchenka": ("тищенк",),
+    "Vilnyi_lane": ("вільн", "вольн"),
+    "Volodymyra_Dovhanyuka": ("довганюк", "орджонікідз", "орджоникидз"),
+    "Volonteriv": ("волонтер", "піонерськ", "пионерск"),
+    "Yaroslava_Mudroho": ("мудр", "шаумян"),
+}
+
+
 def _eval_house_numbers(coverage: dict[str, Any], ctx: AddressContext) -> EvalResult:
+    if coverage.get("private_sector") and ctx.is_private_sector:
+        return EvalResult.MATCH
+
     houses = [normalize_house_number(str(h)) for h in coverage.get("houses", [])]
     ranges = coverage.get("house_ranges", [])
     if ctx.normalized_house is None:
-        if coverage.get("private_sector") and ctx.is_private_sector:
-            return EvalResult.MATCH
         return EvalResult.UNKNOWN
 
     if houses and ctx.normalized_house in houses:
@@ -216,23 +240,27 @@ def _eval_segment_from_houses(coverage: dict[str, Any], ctx: AddressContext) -> 
 
 def _eval_segment_landmarks(coverage: dict[str, Any], ctx: AddressContext) -> EvalResult:
     if ctx.landmark_segment:
-        from_lm = coverage.get("from_landmark", "").casefold()
-        to_lm = coverage.get("to_landmark", "").casefold()
+        from_lm = coverage.get("from_landmark", "")
+        to_lm = coverage.get("to_landmark", "")
         if from_lm and to_lm:
+            from_forms = _LANDMARK_ALIASES.get(from_lm, (from_lm.casefold(),))
+            to_forms = _LANDMARK_ALIASES.get(to_lm, (to_lm.casefold(),))
             l1, l2 = ctx.landmark_segment
-            if (from_lm in l1 and to_lm in l2) or (from_lm in l2 and to_lm in l1):
+            l1_from = any(f in l1 for f in from_forms)
+            l2_to = any(f in l2 for f in to_forms)
+            l1_to = any(f in l1 for f in to_forms)
+            l2_from = any(f in l2 for f in from_forms)
+            if (l1_from and l2_to) or (l1_to and l2_from):
                 return EvalResult.MATCH
     return EvalResult.UNKNOWN
 
 
 def _eval_segment(coverage: dict[str, Any], ctx: AddressContext) -> EvalResult:
     if "except_segment" in coverage and isinstance(coverage["except_segment"], dict):
-        except_res = evaluate_coverage(coverage["except_segment"], ctx)
+        excluded = {"kind": "segment", **coverage["except_segment"]}
+        except_res = evaluate_coverage(excluded, ctx)
         if except_res == EvalResult.MATCH:
             return EvalResult.NO_MATCH
-        if except_res == EvalResult.NO_MATCH:
-            return EvalResult.MATCH
-        return EvalResult.UNKNOWN
 
     fh_res = _eval_segment_from_houses(coverage, ctx)
     if fh_res is not None:
@@ -360,8 +388,21 @@ def resolve_place_memberships(
     return tuple(candidates), confidence
 
 
+def _make_vowel_pattern(root: str) -> str:
+    """Build a regex pattern handling Ukrainian/Russian vowel variations without morphology chopping."""
+    chars: list[str] = []
+    for ch in root:
+        if ch in ("и", "і", "ы"):
+            chars.append("[иіы]")
+        elif ch in ("е", "є", "э"):
+            chars.append("[еєэ]")
+        else:
+            chars.append(re.escape(ch))
+    return "".join(chars)
+
+
 def _make_stem_pattern(root: str) -> str:
-    """Build a regex pattern handling Ukrainian/Russian vowels and adjective/noun suffixes."""
+    """Build a regex pattern handling Ukrainian/Russian vowels and adjective/noun suffixes for typed matches."""
     chars: list[str] = []
     for ch in root:
         if ch in ("и", "і", "ы"):
@@ -497,20 +538,40 @@ def _find_colliding_ids(matches: list[PlaceMatch]) -> set[str]:
     return collision_entity_ids
 
 
-def _match_prefix_type(
-    words: list[str],
+def _match_typed_roots(
     place: dict[str, Any],
     norm_text: str,
     seen_spans: set[tuple[int, int]],
 ) -> list[PlaceMatch]:
     matches: list[PlaceMatch] = []
-    prefix_type = _OBJECT_TYPE_MAP[words[0]]
-    alias_root = " ".join(words[1:])
-    root_pat = _make_stem_pattern(alias_root)
+    name_root = place.get("name_root", place["canonical_name"])
+    norm_root = _normalize(name_root)
+    if not norm_root:
+        return matches
+
+    root_pat = _make_stem_pattern(norm_root)
+    target_type = place["object_type"]
     for p_word, p_type in _OBJECT_TYPE_MAP.items():
-        if p_type == prefix_type:
-            pat = r"(?<!\w)" + re.escape(p_word) + r"\s+" + root_pat + r"(?!\w)"
-            for m in re.finditer(pat, norm_text):
+        if p_type == target_type:
+            pat_pref = r"(?<!\w)" + re.escape(p_word) + r"\.?(?:\s+)" + root_pat + r"(?!\w)"
+            for m in re.finditer(pat_pref, norm_text):
+                span = (m.start(), m.end())
+                if span not in seen_spans:
+                    seen_spans.add(span)
+                    matches.append(
+                        PlaceMatch(
+                            entity_id=place["entity_id"],
+                            canonical_name=place["canonical_name"],
+                            object_type=place["object_type"],
+                            matched_text=m.group(0),
+                            start=m.start(),
+                            end=m.end(),
+                            explicit_object_type=True,
+                            place_data=place,
+                        )
+                    )
+            pat_suff = r"(?<!\w)" + root_pat + r"(?:\s+)" + re.escape(p_word) + r"\.?(?!\w)"
+            for m in re.finditer(pat_suff, norm_text):
                 span = (m.start(), m.end())
                 if span not in seen_spans:
                     seen_spans.add(span)
@@ -529,38 +590,29 @@ def _match_prefix_type(
     return matches
 
 
-def _match_suffix_type(
-    words: list[str],
-    place: dict[str, Any],
-    norm_text: str,
-    seen_spans: set[tuple[int, int]],
-) -> list[PlaceMatch]:
-    matches: list[PlaceMatch] = []
-    suffix_type = _OBJECT_TYPE_MAP[words[-1]]
-    alias_root = " ".join(words[:-1])
-    root_pat = _make_stem_pattern(alias_root)
-    for s_word, s_type in _OBJECT_TYPE_MAP.items():
-        if s_type == suffix_type:
-            pat1 = r"(?<!\w)" + root_pat + r"\s+" + re.escape(s_word) + r"(?!\w)"
-            pat2 = r"(?<!\w)" + re.escape(s_word) + r"\s+" + root_pat + r"(?!\w)"
-            for pat in (pat1, pat2):
-                for m in re.finditer(pat, norm_text):
-                    span = (m.start(), m.end())
-                    if span not in seen_spans:
-                        seen_spans.add(span)
-                        matches.append(
-                            PlaceMatch(
-                                entity_id=place["entity_id"],
-                                canonical_name=place["canonical_name"],
-                                object_type=place["object_type"],
-                                matched_text=m.group(0),
-                                start=m.start(),
-                                end=m.end(),
-                                explicit_object_type=True,
-                                place_data=place,
-                            )
-                        )
-    return matches
+def _check_surrounding_object_type(
+    norm_text: str, start_pos: int, end_pos: int, target_type: str
+) -> tuple[bool, int, int, bool]:
+    preceding = norm_text[:start_pos].strip().split()
+    if preceding:
+        last_w = preceding[-1].strip(".,!?:;")
+        if last_w in _OBJECT_TYPE_MAP:
+            if _OBJECT_TYPE_MAP[last_w] != target_type:
+                return False, start_pos, end_pos, False
+            p_start = norm_text.rfind(preceding[-1], 0, start_pos)
+            return True, p_start, end_pos, True
+
+    following = norm_text[end_pos:].strip().split()
+    if following:
+        first_w = following[0].strip(".,!?:;")
+        if first_w in _OBJECT_TYPE_MAP:
+            if _OBJECT_TYPE_MAP[first_w] != target_type:
+                return False, start_pos, end_pos, False
+            after_idx = norm_text.find(following[0], end_pos)
+            if after_idx >= 0:
+                return True, start_pos, after_idx + len(following[0]), True
+
+    return True, start_pos, end_pos, False
 
 
 def _match_untyped(
@@ -570,31 +622,16 @@ def _match_untyped(
     seen_spans: set[tuple[int, int]],
 ) -> list[PlaceMatch]:
     matches: list[PlaceMatch] = []
-    pat = r"(?<!\w)" + _make_stem_pattern(norm_alias) + r"(?!\w)"
+    pat = r"(?<!\w)" + _make_vowel_pattern(norm_alias) + r"(?!\w)"
     for m in re.finditer(pat, norm_text):
-        preceding = norm_text[: m.start()].strip().split()
-        following = norm_text[m.end() :].strip().split()
-        explicit_type = False
-        start_pos = m.start()
-        end_pos = m.end()
+        if any(s_start <= m.start() and m.end() <= s_end for s_start, s_end in seen_spans):
+            continue
 
-        if preceding:
-            last_w = preceding[-1].strip(".,!?:;")
-            if last_w in _OBJECT_TYPE_MAP:
-                if _OBJECT_TYPE_MAP[last_w] != place["object_type"]:
-                    continue
-                explicit_type = True
-                start_pos = norm_text.rfind(preceding[-1], 0, m.start())
-
-        if not explicit_type and following:
-            first_w = following[0].strip(".,!?:;")
-            if first_w in _OBJECT_TYPE_MAP:
-                if _OBJECT_TYPE_MAP[first_w] != place["object_type"]:
-                    continue
-                explicit_type = True
-                after_idx = norm_text.find(following[0], m.end())
-                if after_idx >= 0:
-                    end_pos = after_idx + len(following[0])
+        valid, start_pos, end_pos, explicit_type = _check_surrounding_object_type(
+            norm_text, m.start(), m.end(), place["object_type"]
+        )
+        if not valid:
+            continue
 
         span = (start_pos, end_pos)
         if span not in seen_spans:
@@ -687,7 +724,7 @@ class CityContextResolver:
                                 "area_id": area_id,
                                 "area_name": area_name,
                                 "compiled_pat": re.compile(
-                                    r"(?<!\w)" + _make_stem_pattern(norm_alias) + r"(?!\w)"
+                                    r"(?<!\w)" + _make_vowel_pattern(norm_alias) + r"(?!\w)"
                                 ),
                             }
                         )
@@ -928,21 +965,12 @@ class CityContextResolver:
         return resolved
 
     def _find_place_matches(self, place: dict[str, Any], norm_text: str) -> list[PlaceMatch]:
-        matches: list[PlaceMatch] = []
-        aliases = [place["canonical_name"]] + place["aliases"]
         seen_spans: set[tuple[int, int]] = set()
-
+        matches = _match_typed_roots(place, norm_text, seen_spans)
+        aliases = [place["canonical_name"]] + place["aliases"]
         for alias in aliases:
             norm_alias = _normalize(alias)
-            if not norm_alias:
-                continue
-
-            words = norm_alias.split()
-            if len(words) > 1 and words[0] in _OBJECT_TYPE_MAP:
-                matches.extend(_match_prefix_type(words, place, norm_text, seen_spans))
-            elif len(words) > 1 and words[-1] in _OBJECT_TYPE_MAP:
-                matches.extend(_match_suffix_type(words, place, norm_text, seen_spans))
-            else:
+            if norm_alias:
                 matches.extend(_match_untyped(norm_alias, place, norm_text, seen_spans))
         return matches
 
@@ -985,15 +1013,13 @@ class CityContextResolver:
         )
 
         landmark_seg: tuple[str, str] | None = None
-        seg_match = re.search(
-            r"(?:от|від)\s+([а-яa-z0-9_\s]+?)\s+(?:до|по)\s+([а-яa-z0-9_\s]+)", surrounding
-        )
+        seg_match = re.search(r"(?:от|від)\s+([\w\s]+?)\s+(?:до|по)\s+([\w\s]+)", surrounding)
         if seg_match:
             landmark_seg = (seg_match.group(1).strip(), seg_match.group(2).strip())
 
         single_landmark: str | None = None
         single_m = re.search(
-            r"(?:на\s+пере[хк]рестке|на\s+перехресті|на\s+углу|угол|возле|біля|пересечени\w*)\s+(?:с|з)?\s*([а-яa-z0-9_\s]+)",
+            r"(?:на\s+пере[хк]рестке|на\s+перехресті|на\s+углу|угол|возле|біля|пересечени\w*)\s+(?:с|з)?\s*([\w\s]+)",
             surrounding,
         )
         if single_m:

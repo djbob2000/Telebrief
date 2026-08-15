@@ -121,10 +121,15 @@ class LightFactChecker:
         provider: AIProvider,
         model: str,
         logger: logging.Logger,
-        max_output_tokens: int = 16_384,
-        repair_max_output_tokens: int = 8_192,
+        max_output_tokens: int = 65_536,
+        repair_max_output_tokens: int | None = None,
         output_language: str = "Russian",
     ):
+        if max_output_tokens <= 0:
+            raise ValueError("max_output_tokens must be positive")
+        if repair_max_output_tokens is not None and repair_max_output_tokens <= 0:
+            raise ValueError("repair_max_output_tokens must be positive")
+
         self.provider = provider
         self.model = model
         self.logger = logger
@@ -399,6 +404,11 @@ class LightFactChecker:
             ensure_ascii=False,
         )
         try:
+            repair_tokens = (
+                self.repair_max_output_tokens
+                if self.repair_max_output_tokens is not None
+                else min(self.max_output_tokens, 8_192)
+            )
             response = await self.provider.chat_completion(
                 messages=[
                     {
@@ -409,7 +419,7 @@ class LightFactChecker:
                 ],
                 model=self.model,
                 temperature=0.1,
-                max_tokens=self.repair_max_output_tokens,
+                max_tokens=repair_tokens,
                 response_format={"type": "json_object"},
             )
             payload = json.loads(response.strip())
