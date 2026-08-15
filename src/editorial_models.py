@@ -54,6 +54,10 @@ class Uncertainty:
             raise ValueError("Uncertainty.text must be non-empty")
         if not self.basis.strip():
             raise ValueError("Uncertainty.basis must be non-empty")
+        if not isinstance(self.related_source_refs, list) or not all(
+            isinstance(ref, str) and ref.strip() for ref in self.related_source_refs
+        ):
+            raise ValueError("Uncertainty.related_source_refs must contain non-empty strings")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Uncertainty":
@@ -90,6 +94,14 @@ class StoryCard:
             raise ValueError(f"importance must be one of {sorted(IMPORTANCE_VALUES)}")
         if not self.id.strip() or not self.topic.strip() or not self.summary.strip():
             raise ValueError("StoryCard id, topic and summary must be non-empty")
+        if self.editorial_angle is not None:
+            if not isinstance(self.editorial_angle, dict):
+                raise ValueError("editorial_angle must be an object")
+            basis_refs = self.editorial_angle.get("basis_refs", [])
+            if not isinstance(basis_refs, list) or not all(
+                isinstance(ref, str) and ref.strip() for ref in basis_refs
+            ):
+                raise ValueError("editorial_angle.basis_refs must contain non-empty strings")
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "StoryCard":

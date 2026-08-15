@@ -104,3 +104,34 @@ async def test_editorial_analyzer_exposes_context_rejection_for_caller(mock_logg
 
     with pytest.raises(ContextSizeRejectedError):
         await analyzer.analyze(_bundle())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_rejects_story_card_refs_outside_bundle(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps(
+            {
+                "cards": [
+                    {
+                        "id": "SC001",
+                        "topic": "Вода",
+                        "importance": "medium",
+                        "summary": "Тема",
+                        "hard_facts": [
+                            {
+                                "text": "Факт",
+                                "source_refs": ["S999999"],
+                                "status": "attributed",
+                            }
+                        ],
+                    }
+                ]
+            }
+        )
+    )
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(ValueError, match="S999999"):
+        await analyzer.analyze(_bundle())

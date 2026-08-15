@@ -47,7 +47,9 @@ mechanism. Keep story_kind free-form and do not invent missing details.
     async def analyze(self, bundle: PreparedBundle) -> EditorialAnalysis:
         """Analyze the full bundle once; expose context-only rejection to the caller."""
         try:
-            return await self._call_analysis(bundle)
+            analysis = await self._call_analysis(bundle)
+            analysis.validate_refs(set(bundle.records))
+            return analysis
         except ProviderCascadeError as exc:
             if exc.context_only:
                 raise ContextSizeRejectedError(
