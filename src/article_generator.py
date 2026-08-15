@@ -77,18 +77,24 @@ class ArticleGenerator:
             self.provider,
             self.model,
             logger,
-            max_output_tokens=config.settings.article.editorial_max_output_tokens,
+            max_output_tokens=config.settings.article.editorial_analysis_max_output_tokens,
+            compact_max_output_tokens=(
+                config.settings.article.editorial_analysis_compact_max_output_tokens
+            ),
         )
-        max_output_tokens = config.settings.article.editorial_max_output_tokens
         self.writer = EditorialWriter(
             self.provider,
             self.model,
             self.skill_instructions,
             logger,
-            max_output_tokens=max_output_tokens,
+            max_output_tokens=config.settings.article.editorial_writer_max_output_tokens,
         )
         self.fact_checker = LightFactChecker(
-            self.provider, self.model, logger, max_output_tokens=max_output_tokens
+            self.provider,
+            self.model,
+            logger,
+            max_output_tokens=config.settings.article.editorial_audit_max_output_tokens,
+            repair_max_output_tokens=config.settings.article.editorial_repair_max_output_tokens,
         )
         self.fallback_builder = DeterministicStoryCardBuilder()
         self.fallback_renderer = StoryCardRenderer()

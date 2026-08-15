@@ -95,7 +95,14 @@ class ArticleConfig:
     prompt_template: str = ".agents/skills/news-style/SKILL.md"
     generation_retries: int = 2
     generation_retry_delay: float = 1.0
+    # Legacy shared budget retained for backward-compatible configs. New long-form
+    # stages use the explicit budgets below when they are present.
     editorial_max_output_tokens: int = 65_536
+    editorial_analysis_max_output_tokens: int = 65_536
+    editorial_analysis_compact_max_output_tokens: int = 16_384
+    editorial_writer_max_output_tokens: int = 65_536
+    editorial_audit_max_output_tokens: int = 16_384
+    editorial_repair_max_output_tokens: int = 8_192
     editorial_api_timeout: int = 180
     telegraph_access_token: str | None = None
     save_debug_artifacts: bool = False
@@ -375,6 +382,32 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
     ):
         raise ValueError("settings.article.editorial_max_output_tokens must be a positive integer")
 
+    def _positive_budget(name: str, default: int) -> int:
+        value = raw.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"settings.article.{name} must be a positive integer")
+        return value
+
+    # Explicit stage budgets override the legacy shared value. This keeps old
+    # config files valid while allowing long-form analysis, writing and audit to
+    # have different completion limits.
+    editorial_analysis_max_output_tokens = _positive_budget(
+        "editorial_analysis_max_output_tokens", editorial_max_output_tokens
+    )
+    editorial_analysis_compact_max_output_tokens = _positive_budget(
+        "editorial_analysis_compact_max_output_tokens",
+        min(editorial_analysis_max_output_tokens, 16_384),
+    )
+    editorial_writer_max_output_tokens = _positive_budget(
+        "editorial_writer_max_output_tokens", editorial_max_output_tokens
+    )
+    editorial_audit_max_output_tokens = _positive_budget(
+        "editorial_audit_max_output_tokens", min(editorial_writer_max_output_tokens, 16_384)
+    )
+    editorial_repair_max_output_tokens = _positive_budget(
+        "editorial_repair_max_output_tokens", min(editorial_audit_max_output_tokens, 8_192)
+    )
+
     editorial_api_timeout = raw.get("editorial_api_timeout", 180)
     if (
         isinstance(editorial_api_timeout, bool)
@@ -407,6 +440,11 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
         generation_retries=generation_retries,
         generation_retry_delay=float(generation_retry_delay),
         editorial_max_output_tokens=editorial_max_output_tokens,
+        editorial_analysis_max_output_tokens=editorial_analysis_max_output_tokens,
+        editorial_analysis_compact_max_output_tokens=editorial_analysis_compact_max_output_tokens,
+        editorial_writer_max_output_tokens=editorial_writer_max_output_tokens,
+        editorial_audit_max_output_tokens=editorial_audit_max_output_tokens,
+        editorial_repair_max_output_tokens=editorial_repair_max_output_tokens,
         editorial_api_timeout=editorial_api_timeout,
         telegraph_access_token=token.strip() if token else None,
         save_debug_artifacts=save_debug_artifacts,

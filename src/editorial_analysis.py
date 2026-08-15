@@ -32,13 +32,15 @@ class EditorialAnalyzer:
         model: str,
         logger: logging.Logger,
         max_output_tokens: int = 65_536,
+        compact_max_output_tokens: int = 16_384,
     ):
-        if max_output_tokens <= 0:
-            raise ValueError("max_output_tokens must be positive")
+        if max_output_tokens <= 0 or compact_max_output_tokens <= 0:
+            raise ValueError("output token budgets must be positive")
         self.provider = provider
         self.model = model
         self.logger = logger
         self.max_output_tokens = max_output_tokens
+        self.compact_max_output_tokens = compact_max_output_tokens
         self.last_raw_response = ""
 
     def build_prompt(self, bundle: PreparedBundle, *, compact: bool = False) -> tuple[str, str]:
@@ -142,7 +144,7 @@ or mechanism. Keep story_kind free-form and do not invent missing details. {comp
                 ],
                 model=self.model,
                 temperature=0.2,
-                max_tokens=self.max_output_tokens,
+                max_tokens=(self.compact_max_output_tokens if compact else self.max_output_tokens),
                 response_format={"type": "json_object"},
             )
         except ProviderCascadeError:

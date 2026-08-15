@@ -126,7 +126,13 @@ settings:
     prompt_template: ".agents/skills/news-style/SKILL.md"
     generation_retries: 1
     generation_retry_delay: 1.0
-    # Long-form Story Card analysis has its own completion budget;
-    # max_tokens_per_summary above belongs to the legacy digest pipeline.
-    editorial_max_output_tokens: 65536
+    # Legacy digest budget above is independent from the long-form article path.
+    # Long-form stages have separate completion budgets because their response
+    # shapes and failure modes are different.
+    editorial_max_output_tokens: 65536  # backward-compatible shared default
+    editorial_analysis_max_output_tokens: 65536
+    editorial_analysis_compact_max_output_tokens: 16384
+    editorial_writer_max_output_tokens: 65536
+    editorial_audit_max_output_tokens: 16384
+    editorial_repair_max_output_tokens: 8192
     editorial_api_timeout: 180

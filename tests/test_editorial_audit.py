@@ -137,6 +137,36 @@ async def test_fact_checker_uses_configured_longform_output_budget(mock_logger):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_fact_checker_uses_smaller_repair_budget(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps({"replacements": {"P002": "Продажи не оценивались."}})
+    )
+    checker = LightFactChecker(
+        provider, "model", mock_logger, max_output_tokens=16384, repair_max_output_tokens=8192
+    )
+    result = FactCheckResult(
+        status="FIX",
+        systemic_problem=False,
+        issues=[
+            AuditIssue(
+                unit_id="P002",
+                code="unsupported_scale",
+                original_excerpt="Продажи генераторов выросли вдвое.",
+                reason="No source supports it.",
+                suggested_direction="Remove the claim.",
+                source_refs=[],
+            )
+        ],
+    )
+
+    await checker.repair(_draft(), result, EditorialAnalysis([]), _bundle())
+
+    assert provider.chat_completion.call_args.kwargs["max_tokens"] == 8192
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_repair_replaces_only_flagged_unit(mock_logger):
     provider = MagicMock()
     provider.chat_completion = AsyncMock(

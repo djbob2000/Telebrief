@@ -92,13 +92,17 @@ class LightFactChecker:
         model: str,
         logger: logging.Logger,
         max_output_tokens: int = 65_536,
+        repair_max_output_tokens: int | None = None,
     ):
         if max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
+        if repair_max_output_tokens is not None and repair_max_output_tokens <= 0:
+            raise ValueError("repair_max_output_tokens must be positive")
         self.provider = provider
         self.model = model
         self.logger = logger
         self.max_output_tokens = max_output_tokens
+        self.repair_max_output_tokens = repair_max_output_tokens or max_output_tokens
 
     async def check(
         self,
@@ -186,7 +190,7 @@ class LightFactChecker:
                 ],
                 model=self.model,
                 temperature=0.1,
-                max_tokens=self.max_output_tokens,
+                max_tokens=self.repair_max_output_tokens,
                 response_format={"type": "json_object"},
             )
             payload = json.loads(response.strip())
