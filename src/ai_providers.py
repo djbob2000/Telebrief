@@ -64,8 +64,12 @@ def _classify_provider_failure(exc: BaseException) -> str:
             "context_length",
             "context length",
             "context window",
+            "maximum context",
+            "input token limit",
+            "too many tokens",
             "prompt too long",
             "request too large",
+            "payload size",
         )
     ):
         return "context_size"
