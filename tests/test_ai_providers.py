@@ -131,6 +131,24 @@ async def test_provider_cascade_reports_all_slot_failures(mock_logger):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_provider_cascade_classifies_token_budget_exhaustion(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        side_effect=TokenBudgetExhaustedError("secret provider details")
+    )
+    cascade = ProviderCascade([("primary", provider)], mock_logger)
+
+    with pytest.raises(ProviderCascadeError) as error:
+        await cascade.chat_completion(
+            messages=[], model="deepseek-v4-flash", temperature=0.2, max_tokens=100
+        )
+
+    assert error.value.failure_kinds == ("token_budget",)
+    assert "secret provider details" not in str(error.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_provider_cascade_does_not_expose_provider_exception_text(mock_logger):
     """Aggregate failover errors remain safe even if an SDK error contains a secret."""
     provider = MagicMock()

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.ai_providers import ProviderCascadeError
+from src.ai_providers import ProviderCascadeError, TokenBudgetExhaustedError
 from src.collector import Message
 from src.editorial_analysis import (
     ContextSizeRejectedError,
@@ -91,6 +91,8 @@ async def test_editorial_analyzer_parses_cards_and_keeps_source_roles(mock_logge
     assert analysis.cards[0].editorial_angle["type"] == "editorial_synthesis"
     system_prompt, user_prompt = analyzer.build_prompt(_bundle())
     assert "untrusted data" in system_prompt.lower()
+    assert "4–8" in system_prompt
+    assert "Classify each message" not in user_prompt
     assert "source_type=official" in user_prompt
     assert "S000001" in user_prompt
 
@@ -124,6 +126,31 @@ async def test_editorial_analyzer_reports_provider_failure_kind(mock_logger):
 
     assert error.value.stage == "provider_call"
     assert error.value.reason == "quota,timeout"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_maps_token_budget_failure(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(side_effect=TokenBudgetExhaustedError("provider details"))
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(EditorialAnalysisError) as error:
+        await analyzer.analyze(_bundle())
+
+    assert error.value.stage == "provider_call"
+    assert error.value.reason == "token_budget"
+
+
+@pytest.mark.unit
+def test_editorial_analyzer_compact_prompt_requests_only_significant_stories(mock_logger):
+    analyzer = EditorialAnalyzer(MagicMock(), "model", mock_logger)
+
+    system_prompt, user_prompt = analyzer.build_prompt(_bundle(), compact=True)
+
+    assert "3–6" in system_prompt
+    assert "Do not classify or label every supplied message" in system_prompt
+    assert "S000001" in user_prompt
 
 
 @pytest.mark.unit

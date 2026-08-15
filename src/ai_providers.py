@@ -73,6 +73,10 @@ def _classify_provider_failure(exc: BaseException) -> str:
         )
     ):
         return "context_size"
+    if isinstance(exc, TokenBudgetExhaustedError) or any(
+        token in text for token in ("token budget", "finish_reason=length", "max_tokens")
+    ):
+        return "token_budget"
     if any(
         token in text
         for token in ("quota", "rate limit", "rate_limit", "resource exhausted", "429")
