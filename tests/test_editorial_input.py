@@ -198,3 +198,46 @@ def test_input_builder_limits_selected_evidence_in_requested_order():
 
     assert list(selected.records) == ["S000003", "S000001"]
     assert selected.records["S000003"].message.text == "Наблюдение 3"
+
+
+def test_looks_commercial_preserves_mutual_aid_pairs():
+    # Mutual aid / assistance must be KEPT (return False from _looks_commercial)
+    assert not EditorialInputBuilder._looks_commercial(
+        "В кафе сегодня можно бесплатно зарядить телефон, работаем, адрес: ул. Морская 10, звоните +79901234567",
+        source_type="community",
+    )
+    assert not EditorialInputBuilder._looks_commercial(
+        "Подвоз воды жителям АКЗ бесплатно во двор, звоните +79901234567",
+        source_type="community",
+    )
+    assert not EditorialInputBuilder._looks_commercial(
+        "В ДК открыт пункт обогрева, можно набрать воды и зарядить гаджеты",
+        source_type="community",
+    )
+
+
+def test_looks_commercial_still_filters_commercial_pairs():
+    # Commercial advertisements must be DROPPED (return True from _looks_commercial)
+    assert EditorialInputBuilder._looks_commercial(
+        "Бесплатная консультация, звоните +79901234567, запись по телефону",
+        source_type="community",
+    )
+    assert EditorialInputBuilder._looks_commercial(
+        "Доставка воды, выгодные цены, звоните +79901234567", source_type="community"
+    )
+    assert EditorialInputBuilder._looks_commercial(
+        "Обмен валют по лучшему курсу, обналичивание карт в центре",
+        source_type="community",
+    )
+
+
+def test_editorial_input_builder_never_mutates_source_type():
+    resolver = SourceRoleResolver(
+        [ChannelConfig(id="@test_channel", name="test_channel", source_type="community")]
+    )
+    builder = EditorialInputBuilder(resolver)
+    msg = _message("В кафе можно бесплатно зарядить телефон", 1)
+    msg.channel_name = "test_channel"
+    bundle = builder.build({"test_channel": [msg]})
+    assert "S000001" in bundle.records
+    assert bundle.records["S000001"].source_type == "community"

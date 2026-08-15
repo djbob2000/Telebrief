@@ -39,6 +39,11 @@ _COMMERCIAL_CALL_TO_ACTION = re.compile(
     r"(?:обращайт|звоните|пишите|запись|консультац|доставк|выгодн|работаем)",
     re.IGNORECASE,
 )
+_MUTUAL_AID_MARKERS = re.compile(
+    r"(?:бесплатно\s+(?:зарядить|набрать|разда)|подвоз\s+(?:питьев|техническ)?воды|"
+    r"раздач[аеи]\s+воды|пункт\s+обогрев|помощь\s+сосед|поделит[ьс]ся\s+генератор)",
+    re.IGNORECASE,
+)
 
 
 class EditorialInputBuilder:
@@ -152,6 +157,8 @@ class EditorialInputBuilder:
         if _EXPLICIT_COMMERCIAL.search(text):
             return True
         if source_type == "official":
+            return False
+        if _MUTUAL_AID_MARKERS.search(text):
             return False
         marker_count = len(_COMMERCIAL_MARKERS.findall(text))
         has_contact = bool(_URL.search(text) or _PHONE.search(text))
