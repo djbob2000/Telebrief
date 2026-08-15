@@ -4,7 +4,7 @@
 
 **Goal:** Replace the atomic claim-gated daily article with a Story Card editorial pipeline that writes readable long-form local journalism, performs non-blocking light fact checking with targeted repairs, and always degrades to a thematic digest when substantive material remains.
 
-**Architecture:** `MessageCollector` produces source-typed messages with reply/topic metadata. `EditorialInputBuilder` cleans and references the full 24-hour bundle, `EditorialAnalyzer` produces Story Cards (full bundle first, context batching only after explicit size rejection), `EditorialWriter` writes a free-form article, and `LightFactChecker` returns PASS/WARN/FIX with at most two batched repair passes. `DeterministicStoryCardBuilder` and `StoryCardRenderer` provide the final non-raw fallback. `ArticleGenerator` orchestrates these units while the morning digest remains independent.
+**Architecture:** `MessageCollector` produces messages with reply/topic metadata; `SourceRoleResolver` applies configured editorial source roles during input preparation. `EditorialInputBuilder` cleans and references the full 24-hour bundle, `EditorialAnalyzer` produces Story Cards (full bundle first, context batching only after explicit size rejection), `EditorialWriter` writes a free-form article, and `LightFactChecker` returns PASS/WARN/FIX with at most two batched repair passes. `DeterministicStoryCardBuilder` and `StoryCardRenderer` provide the final non-raw fallback. `ArticleGenerator` orchestrates these units while the morning digest remains independent.
 
 **Tech Stack:** Python 3.14, dataclasses, asyncio, YAML configuration, existing `AIProvider`/provider cascade, Telethon `Message`, pytest/pytest-asyncio, existing Telegraph and Telegram delivery code.
 
@@ -314,7 +314,7 @@ Recheck repaired fragments only. Run a second repair call only for remaining/new
 
 - [ ] **Step 6: Implement preflight and audit-failure behavior**
 
-Check non-empty article, headline, valid Markdown, no raw JSON, and no internal `TITLE`/`LEAD`/`P###`/`S######` markers. If the AI fact checker fails, log the failure and publish a preflight-passing writer draft.
+Check non-empty article, headline, valid Markdown, no raw JSON, and no internal `TITLE`/`LEAD`/`P###`/`H###`/`S######` markers. If the AI fact checker fails, log the failure and publish a preflight-passing writer draft.
 
 - [ ] **Step 7: Test and commit**
 
@@ -370,6 +370,7 @@ git commit -m "feat: add deterministic thematic article fallback"
 - Modify: `src/config_loader.py` (`ArticleConfig.save_debug_artifacts`)
 - Modify: `config.yaml.example` (debug artifact option/documentation)
 - Local-only: `config.yaml` (enable the option for this installation if desired; do not stage or commit this ignored user configuration)
+- Conditional: `.gitignore` (add only the debug-artifact directory if it is not already ignored)
 - Test: `tests/test_article_generator.py`
 - Test: `tests/test_core.py`
 
@@ -404,7 +405,7 @@ Delete or replace `_build_fallback_article`. Core should publish the tuple retur
 
 - [ ] **Step 4: Add debug artifact persistence**
 
-Add `article.save_debug_artifacts: bool = false`. In dry-run, allow an explicit debug flag to enable artifacts. Write prepared input, Story Cards, writer draft, fact-check JSON, repair result and final article with a run timestamp; do not include secrets. Keep the artifact directory git-ignored and never upload or publish it automatically: prepared input contains real Telegram text, sender metadata and links. Artifact failures log warnings and do not block publication. Add parser tests for the new option.
+Add `article.save_debug_artifacts: bool = false`. In dry-run, allow an explicit debug flag to enable artifacts. Write prepared input, Story Cards, writer draft, fact-check JSON, repair result and final article with a run timestamp; do not include secrets. Verify the artifact directory is git-ignored; if it is not, add only that directory to `.gitignore`. Never upload or publish artifacts automatically: prepared input contains real Telegram text, sender metadata and links. Artifact failures log warnings and do not block publication. Add parser tests for the new option and a preflight regression asserting `TITLE`, `LEAD`, `P###`, `H###` and `S######` markers never reach output.
 
 - [ ] **Step 5: Run article/core tests and commit**
 
