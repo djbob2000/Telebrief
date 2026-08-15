@@ -143,6 +143,20 @@ async def test_editorial_analyzer_maps_token_budget_failure(mock_logger):
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_uses_one_output_budget_for_normal_and_compact_calls(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value=_analysis_json())
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger, max_output_tokens=65536)
+
+    await analyzer.analyze(_bundle())
+    await analyzer.analyze(_bundle(), compact=True)
+
+    assert provider.chat_completion.call_args_list[0].kwargs["max_tokens"] == 65536
+    assert provider.chat_completion.call_args_list[1].kwargs["max_tokens"] == 65536
+
+
+@pytest.mark.unit
 def test_editorial_analyzer_compact_prompt_requests_only_significant_stories(mock_logger):
     analyzer = EditorialAnalyzer(MagicMock(), "model", mock_logger)
 

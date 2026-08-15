@@ -151,6 +151,33 @@ async def test_writer_prompt_allows_synthesis_without_claim_ids():
     assert "900–1500 words" in combined
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_writer_uses_configured_longform_output_budget():
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps(
+            {
+                "headline": "Вода",
+                "lead": "Лид.",
+                "paragraphs": ["Абзац."],
+                "sections": [],
+            }
+        )
+    )
+    writer = EditorialWriter(
+        provider,
+        "model",
+        "SKILL: precise local news",
+        MagicMock(),
+        max_output_tokens=65536,
+    )
+
+    await writer.write(_analysis(), _bundle())
+
+    assert provider.chat_completion.call_args.kwargs["max_tokens"] == 65536
+
+
 def test_writer_prompt_uses_selected_source_excerpts_only():
     writer = EditorialWriter(MagicMock(), "model", "SKILL: precise local news", MagicMock())
     selected = PreparedBundle(

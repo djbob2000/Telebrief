@@ -26,10 +26,19 @@ class ContextSizeRejectedError(EditorialAnalysisError):
 class EditorialAnalyzer:
     """Turn prepared source records into validated Story Cards."""
 
-    def __init__(self, provider: AIProvider, model: str, logger: logging.Logger):
+    def __init__(
+        self,
+        provider: AIProvider,
+        model: str,
+        logger: logging.Logger,
+        max_output_tokens: int = 65_536,
+    ):
+        if max_output_tokens <= 0:
+            raise ValueError("max_output_tokens must be positive")
         self.provider = provider
         self.model = model
         self.logger = logger
+        self.max_output_tokens = max_output_tokens
         self.last_raw_response = ""
 
     def build_prompt(self, bundle: PreparedBundle, *, compact: bool = False) -> tuple[str, str]:
@@ -133,7 +142,7 @@ or mechanism. Keep story_kind free-form and do not invent missing details. {comp
                 ],
                 model=self.model,
                 temperature=0.2,
-                max_tokens=8000 if compact else 12000,
+                max_tokens=self.max_output_tokens,
                 response_format={"type": "json_object"},
             )
         except ProviderCascadeError:

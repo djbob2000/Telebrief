@@ -179,11 +179,15 @@ class EditorialWriter:
         model: str,
         skill_instructions: str,
         logger: logging.Logger,
+        max_output_tokens: int = 65_536,
     ):
+        if max_output_tokens <= 0:
+            raise ValueError("max_output_tokens must be positive")
         self.provider = provider
         self.model = model
         self.skill_instructions = skill_instructions
         self.logger = logger
+        self.max_output_tokens = max_output_tokens
 
     def build_prompt(self, analysis: EditorialAnalysis, bundle: PreparedBundle) -> tuple[str, str]:
         system = f"""{self.skill_instructions}
@@ -216,7 +220,7 @@ never pad length.
             ],
             model=self.model,
             temperature=0.7,
-            max_tokens=16000,
+            max_tokens=self.max_output_tokens,
             response_format={"type": "json_object"},
         )
         return ArticleDraft.from_json(response)

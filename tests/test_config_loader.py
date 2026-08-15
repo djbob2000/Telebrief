@@ -96,6 +96,28 @@ settings:
 
 
 @pytest.mark.unit
+def test_article_config_parses_editorial_output_budget(tmp_path, mock_env_vars):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@test"
+    name: "Test Channel"
+settings:
+  target_user_id: 123456789
+  article:
+    editorial_max_output_tokens: 65536
+    editorial_api_timeout: 180
+"""
+    )
+
+    config = load_config(str(config_file))
+
+    assert config.settings.article.editorial_max_output_tokens == 65536
+    assert config.settings.article.editorial_api_timeout == 180
+
+
+@pytest.mark.unit
 def test_load_config_parses_forum_topics(tmp_path, mock_env_vars):
     """A channel may restrict collection to named Telegram forum topics."""
     config_file = tmp_path / "config.yaml"

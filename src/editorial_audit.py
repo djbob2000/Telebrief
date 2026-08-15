@@ -86,10 +86,19 @@ class FactCheckUnavailableError(RuntimeError):
 class LightFactChecker:
     """Ask a model to find concrete unsupported additions and repair them locally."""
 
-    def __init__(self, provider: AIProvider, model: str, logger: logging.Logger):
+    def __init__(
+        self,
+        provider: AIProvider,
+        model: str,
+        logger: logging.Logger,
+        max_output_tokens: int = 65_536,
+    ):
+        if max_output_tokens <= 0:
+            raise ValueError("max_output_tokens must be positive")
         self.provider = provider
         self.model = model
         self.logger = logger
+        self.max_output_tokens = max_output_tokens
 
     async def check(
         self,
@@ -127,7 +136,7 @@ class LightFactChecker:
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                 model=self.model,
                 temperature=0.1,
-                max_tokens=12000,
+                max_tokens=self.max_output_tokens,
                 response_format={"type": "json_object"},
             )
             result = FactCheckResult.from_dict(json.loads(response.strip()))
@@ -177,7 +186,7 @@ class LightFactChecker:
                 ],
                 model=self.model,
                 temperature=0.1,
-                max_tokens=6000,
+                max_tokens=self.max_output_tokens,
                 response_format={"type": "json_object"},
             )
             payload = json.loads(response.strip())

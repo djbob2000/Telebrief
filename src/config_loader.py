@@ -95,6 +95,8 @@ class ArticleConfig:
     prompt_template: str = ".agents/skills/news-style/SKILL.md"
     generation_retries: int = 2
     generation_retry_delay: float = 1.0
+    editorial_max_output_tokens: int = 65_536
+    editorial_api_timeout: int = 180
     telegraph_access_token: str | None = None
     save_debug_artifacts: bool = False
     debug_artifact_dir: str = "data/debug/editorial"
@@ -365,6 +367,22 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
     ):
         raise ValueError("settings.article.generation_retry_delay must be a non-negative number")
 
+    editorial_max_output_tokens = raw.get("editorial_max_output_tokens", 65_536)
+    if (
+        isinstance(editorial_max_output_tokens, bool)
+        or not isinstance(editorial_max_output_tokens, int)
+        or editorial_max_output_tokens <= 0
+    ):
+        raise ValueError("settings.article.editorial_max_output_tokens must be a positive integer")
+
+    editorial_api_timeout = raw.get("editorial_api_timeout", 180)
+    if (
+        isinstance(editorial_api_timeout, bool)
+        or not isinstance(editorial_api_timeout, int)
+        or editorial_api_timeout <= 0
+    ):
+        raise ValueError("settings.article.editorial_api_timeout must be a positive integer")
+
     token = raw.get("telegraph_access_token")
     if token is not None and not isinstance(token, str):
         raise ValueError(
@@ -388,6 +406,8 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
         prompt_template=prompt_template.strip(),
         generation_retries=generation_retries,
         generation_retry_delay=float(generation_retry_delay),
+        editorial_max_output_tokens=editorial_max_output_tokens,
+        editorial_api_timeout=editorial_api_timeout,
         telegraph_access_token=token.strip() if token else None,
         save_debug_artifacts=save_debug_artifacts,
         debug_artifact_dir=debug_artifact_dir.strip(),

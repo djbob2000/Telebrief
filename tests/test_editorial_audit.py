@@ -123,6 +123,20 @@ async def test_fact_checker_marks_unsupported_concrete_detail_as_fix(mock_logger
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_fact_checker_uses_configured_longform_output_budget(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps({"status": "PASS", "systemic_problem": False, "issues": []})
+    )
+    checker = LightFactChecker(provider, "model", mock_logger, max_output_tokens=65536)
+
+    await checker.check(_draft(), EditorialAnalysis([]), _bundle())
+
+    assert provider.chat_completion.call_args.kwargs["max_tokens"] == 65536
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_repair_replaces_only_flagged_unit(mock_logger):
     provider = MagicMock()
     provider.chat_completion = AsyncMock(

@@ -63,7 +63,7 @@ class ArticleGenerator:
             openrouter_base_url=config.openrouter_base_url,
             openrouter_model=config.openrouter_model,
             ollama_base_url=config.settings.ollama_base_url,
-            api_timeout=config.settings.api_timeout,
+            api_timeout=config.settings.article.editorial_api_timeout,
         )
         self.model = config.settings.ai_model
         self.output_language = config.settings.output_language
@@ -73,9 +73,23 @@ class ArticleGenerator:
         self.skill_instructions = _load_skill_instructions(skill_path)
         self.role_resolver = SourceRoleResolver(config.channels)
         self.input_builder = EditorialInputBuilder(self.role_resolver)
-        self.analyzer = EditorialAnalyzer(self.provider, self.model, logger)
-        self.writer = EditorialWriter(self.provider, self.model, self.skill_instructions, logger)
-        self.fact_checker = LightFactChecker(self.provider, self.model, logger)
+        self.analyzer = EditorialAnalyzer(
+            self.provider,
+            self.model,
+            logger,
+            max_output_tokens=config.settings.article.editorial_max_output_tokens,
+        )
+        max_output_tokens = config.settings.article.editorial_max_output_tokens
+        self.writer = EditorialWriter(
+            self.provider,
+            self.model,
+            self.skill_instructions,
+            logger,
+            max_output_tokens=max_output_tokens,
+        )
+        self.fact_checker = LightFactChecker(
+            self.provider, self.model, logger, max_output_tokens=max_output_tokens
+        )
         self.fallback_builder = DeterministicStoryCardBuilder()
         self.fallback_renderer = StoryCardRenderer()
 
