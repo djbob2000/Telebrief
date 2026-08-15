@@ -10,6 +10,7 @@ from src.collector import Message
 from src.editorial_audit import (
     AuditIssue,
     FactCheckResult,
+    FactCheckUnavailableError,
     LightFactChecker,
     deterministic_preflight,
 )
@@ -207,3 +208,22 @@ def test_light_fact_checker_prompt_distinguishes_synthesis_from_unverified_facts
     assert "FIX" in prompt
     assert "WARN" in prompt
     assert "verifiable" in prompt.lower() or "unverified" in prompt.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_checker_exposes_json_parse_failure_diagnostics(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value="{invalid json")
+    checker = LightFactChecker(provider, "model", mock_logger)
+
+    with pytest.raises(FactCheckUnavailableError):
+        await checker.check(_draft(), EditorialAnalysis([]), _bundle())
+
+    assert checker.last_stage == "json_parse"
+    assert checker.last_raw_response == "{invalid json"
+    assert checker.last_response_chars == len("{invalid json")
+    assert (
+        "json" in (checker.last_reason or "").lower()
+        or "expecting" in (checker.last_reason or "").lower()
+    )

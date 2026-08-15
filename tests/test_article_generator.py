@@ -12,6 +12,7 @@ import pytest
 from src.article_generator import ArticleGenerator
 from src.collector import Message
 from src.config_loader import Config, Settings
+from src.editorial_writer import ArticleDraft
 
 _VALID_REGISTRY = json.dumps(
     {
@@ -399,3 +400,148 @@ async def test_regression_pipeline_recovers_from_string_elements_and_bad_refs(
     passed_analysis, passed_bundle = call_args[0]
     assert "S999999" not in passed_analysis.all_source_refs()
     assert "S999999" not in passed_bundle.records
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_writer_diagnostics_capture_exact_bundle_passed_to_writer(
+    sample_config, mock_logger, tmp_path
+):
+    sample_config.settings.article.save_debug_artifacts = True
+    sample_config.settings.article.debug_artifact_dir = str(tmp_path)
+
+    analysis_json = json.dumps(
+        {
+            "cards": [
+                {
+                    "id": "SC001",
+                    "topic": "Электроснабжение",
+                    "importance": "high",
+                    "summary": "Отключения света",
+                    "sources": ["S000001"],
+                    "hard_facts": ["На АКЗ отключилось электричество"],
+                }
+            ]
+        }
+    )
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[
+            analysis_json,
+            json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
+        ]
+    )
+    mock_writer = AsyncMock()
+    mock_writer.write.return_value = ArticleDraft(
+        headline="Заголовок", lead="Лид", paragraphs=["Абзац"], sections=[]
+    )
+    generator.writer = mock_writer
+
+    messages = {
+        "ch1": [
+            Message(
+                text="На АКЗ нет света",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="user1",
+                message_id=1,
+                link="https://t.me/c1/1",
+                has_media=False,
+                media_type="",
+            ),
+            Message(
+                text="Другое сообщение без ссылки",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="user2",
+                message_id=2,
+                link="https://t.me/c1/2",
+                has_media=False,
+                media_type="",
+            ),
+        ]
+    }
+
+    await generator.generate_article(messages)
+
+    call_args = mock_writer.write.call_args
+    _, passed_bundle = call_args[0]
+    assert list(passed_bundle.records.keys()) == ["S000001"]
+
+    writer_bundle_file = tmp_path / "writer_bundle.txt"
+    assert writer_bundle_file.exists()
+    assert "[S000001]" in writer_bundle_file.read_text(encoding="utf-8")
+    assert "[S000002]" not in writer_bundle_file.read_text(encoding="utf-8")
+
+    mock_logger.info.assert_any_call("Editorial analysis selected %d stories:", 1)
+    mock_logger.info.assert_any_call("Selected %d source records for writer", 1)
+    mock_logger.info.assert_any_call(
+        "Drafting article from %d Story Cards / %d source records", 1, 1
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_check_failure_saves_raw_response_and_structured_reason(
+    sample_config, mock_logger, tmp_path
+):
+    sample_config.settings.article.save_debug_artifacts = True
+    sample_config.settings.article.debug_artifact_dir = str(tmp_path)
+
+    analysis_json = json.dumps(
+        {
+            "cards": [
+                {
+                    "id": "SC001",
+                    "topic": "Свет",
+                    "importance": "high",
+                    "summary": "Отключения света",
+                    "sources": ["S000001"],
+                    "hard_facts": ["На АКЗ отключилось электричество"],
+                }
+            ]
+        }
+    )
+    writer_json = json.dumps(
+        {
+            "headline": "Заголовок",
+            "lead": "Лид",
+            "paragraphs": ["Абзац"],
+            "sections": [],
+        }
+    )
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[
+            analysis_json,
+            writer_json,
+            "not a valid json fact check response",
+        ]
+    )
+
+    messages = {
+        "ch1": [
+            Message(
+                text="На АКЗ нет света",
+                channel_name="ch1",
+                timestamp=datetime.now(timezone.utc),
+                sender="user1",
+                message_id=1,
+                link="https://t.me/c1/1",
+                has_media=False,
+                media_type="",
+            )
+        ]
+    }
+
+    title, _, _ = await generator.generate_article(messages)
+    assert title == "Заголовок"
+
+    raw_file = tmp_path / "fact_check_raw.txt"
+    failure_file = tmp_path / "fact_check_failure.json"
+    assert raw_file.exists()
+    assert raw_file.read_text(encoding="utf-8") == "not a valid json fact check response"
+    assert failure_file.exists()
+    failure_data = json.loads(failure_file.read_text(encoding="utf-8"))
+    assert failure_data["stage"] == "json_parse"
+    assert failure_data["response_chars"] == len("not a valid json fact check response")

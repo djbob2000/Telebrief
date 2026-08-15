@@ -263,8 +263,29 @@ class ArticleGenerator:
         try:
             result = await self.fact_checker.check(draft, analysis, bundle)
         except FactCheckUnavailableError as exc:
-            self.logger.warning("Light fact-check unavailable; publishing writer output: %s", exc)
+            stage = getattr(self.fact_checker, "last_stage", "unknown") or "unknown"
+            reason = getattr(self.fact_checker, "last_reason", str(exc)) or str(exc)
+            chars = getattr(self.fact_checker, "last_response_chars", None)
+            self.logger.warning(
+                "Light fact-check unavailable; publishing writer output: stage=%s reason=%s response_chars=%s",
+                stage,
+                reason,
+                chars if chars is not None else "unknown",
+            )
+            if self.fact_checker.last_raw_response is not None:
+                self._save_debug_artifact("fact_check_raw.txt", self.fact_checker.last_raw_response)
+            self._save_debug_artifact(
+                "fact_check_failure.json",
+                {
+                    "stage": stage,
+                    "reason": reason,
+                    "response_chars": chars,
+                    "error": str(exc),
+                },
+            )
             return draft
+        if self.fact_checker.last_raw_response is not None:
+            self._save_debug_artifact("fact_check_raw.txt", self.fact_checker.last_raw_response)
         self._save_debug_artifact(
             "fact_check.json",
             {
@@ -351,12 +372,37 @@ class ArticleGenerator:
         if not analysis.cards:
             return await self._fallback(bundle, "editorial analysis returned no Story Cards")
 
+        self.logger.info("Editorial analysis selected %d stories:", len(analysis.cards))
+        for card in analysis.cards:
+            self.logger.info(
+                "  %s topic=%s importance=%s refs=%d",
+                card.id,
+                card.topic,
+                card.importance,
+                len(card.all_source_refs()),
+            )
+
         writer_bundle = self._select_writer_bundle(analysis, bundle)
         if not writer_bundle.records:
             return await self._fallback(
                 bundle, "editorial analysis returned no resolvable representative refs"
             )
+        self.logger.info("Selected %d source records for writer", len(writer_bundle.records))
+        self.logger.info(
+            "Drafting article from %d Story Cards / %d source records",
+            len(analysis.cards),
+            len(writer_bundle.records),
+        )
+        self._save_debug_artifact("writer_bundle.txt", writer_bundle.prompt_text)
         self._save_debug_artifact("writer_input.txt", writer_bundle.prompt_text)
+        self._save_debug_artifact(
+            "writer_bundle.json",
+            {
+                "total_messages": writer_bundle.total_messages,
+                "candidate_count": writer_bundle.candidate_count,
+                "records": list(writer_bundle.records.keys()),
+            },
+        )
 
         try:
             draft = await self.writer.write(analysis, writer_bundle)

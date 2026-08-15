@@ -103,6 +103,10 @@ class LightFactChecker:
         self.logger = logger
         self.max_output_tokens = max_output_tokens
         self.repair_max_output_tokens = repair_max_output_tokens or max_output_tokens
+        self.last_raw_response: str | None = None
+        self.last_stage: str | None = None
+        self.last_reason: str | None = None
+        self.last_response_chars: int | None = None
 
     def _build_system_prompt(self) -> str:
         return (
@@ -121,6 +125,29 @@ class LightFactChecker:
             "must be changed."
         )
 
+    def _parse_payload(self, response: str) -> dict[str, Any]:
+        if not response or not response.strip():
+            self.last_stage = "empty_response"
+            self.last_reason = "empty response from provider"
+            raise FactCheckUnavailableError("empty response from provider")
+
+        self.last_stage = "json_parse"
+        cleaned = response.strip()
+        if cleaned.startswith("```"):
+            cleaned = cleaned.removeprefix("```json").removeprefix("```").strip()
+            cleaned = cleaned.removesuffix("```").strip()
+        try:
+            payload = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            self.last_reason = f"JSON decode error: {exc}"
+            raise FactCheckUnavailableError(f"invalid JSON response: {exc}") from exc
+
+        if not isinstance(payload, dict):
+            self.last_stage = "response_shape"
+            self.last_reason = "fact check response is not a dict"
+            raise FactCheckUnavailableError("fact check response is not a dict")
+        return payload
+
     async def check(
         self,
         draft: ArticleDraft,
@@ -128,6 +155,11 @@ class LightFactChecker:
         bundle: PreparedBundle,
         audit_units: dict[str, AuditUnitLocator] | None = None,
     ) -> FactCheckResult:
+        self.last_raw_response = None
+        self.last_stage = None
+        self.last_reason = None
+        self.last_response_chars = None
+
         units = audit_units or draft.audit_units()
         system = self._build_system_prompt()
         user = json.dumps(
@@ -142,6 +174,7 @@ class LightFactChecker:
             },
             ensure_ascii=False,
         )
+        self.last_stage = "provider_call"
         try:
             response = await self.provider.chat_completion(
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -150,12 +183,31 @@ class LightFactChecker:
                 max_tokens=self.max_output_tokens,
                 response_format={"type": "json_object"},
             )
-            result = FactCheckResult.from_dict(json.loads(response.strip()))
         except Exception as exc:
-            raise FactCheckUnavailableError("light fact-check unavailable") from exc
+            self.last_reason = str(exc)
+            raise FactCheckUnavailableError(f"provider_call failed: {exc}") from exc
+
+        self.last_raw_response = response
+        self.last_response_chars = len(response) if response is not None else 0
+
+        payload = self._parse_payload(response)
+
+        self.last_stage = "result_parse"
+        try:
+            result = FactCheckResult.from_dict(payload)
+        except Exception as exc:
+            self.last_reason = f"failed to parse FactCheckResult: {exc}"
+            raise FactCheckUnavailableError(f"failed to parse FactCheckResult: {exc}") from exc
+
         unknown_units = sorted(set(issue.unit_id for issue in result.issues) - set(units))
         if unknown_units:
+            self.last_reason = (
+                f"fact-check returned unknown audit units: {', '.join(unknown_units)}"
+            )
             raise ValueError(f"fact-check returned unknown audit units: {', '.join(unknown_units)}")
+
+        self.last_stage = None
+        self.last_reason = None
         return result
 
     async def repair(
