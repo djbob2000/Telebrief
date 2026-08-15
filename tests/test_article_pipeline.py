@@ -111,3 +111,61 @@ async def test_analysis_failure_uses_thematic_fallback_not_raw_latest_messages()
     assert "Курс доллара" not in body
     assert "Реклама" not in body
     assert "последние сообщения" not in body.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_systemic_audit_failure_falls_back_after_one_regeneration():
+    generator = _generator()
+    card_response = json.dumps(
+        {
+            "cards": [
+                {
+                    "id": "SC001",
+                    "topic": "Вода",
+                    "importance": "high",
+                    "summary": "Воду отключили.",
+                    "hard_facts": [
+                        {
+                            "text": "Воду отключили.",
+                            "source_refs": ["S000001"],
+                            "status": "established",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    draft_response = json.dumps(
+        {
+            "headline": "Воду отключили",
+            "lead": "В городе сообщили об отключении воды.",
+            "paragraphs": ["Подробности уточняются."],
+            "sections": [],
+        }
+    )
+    systemic_fix = json.dumps(
+        {
+            "status": "FIX",
+            "systemic_problem": True,
+            "issues": [
+                {
+                    "unit_id": "LEAD",
+                    "code": "unsupported_cause",
+                    "original_excerpt": "В городе сообщили об отключении воды.",
+                    "reason": "Systemic unsupported framing.",
+                    "suggested_direction": "Fallback.",
+                    "source_refs": [],
+                    "severity": "fix",
+                }
+            ],
+        }
+    )
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[card_response, draft_response, systemic_fix, draft_response, systemic_fix]
+    )
+
+    title, _, body = await generator.generate_article({"Source": [_message("Воду отключили.")]})
+
+    assert title == "Что происходило в городе за сутки"
+    assert "Воду отключили" in body

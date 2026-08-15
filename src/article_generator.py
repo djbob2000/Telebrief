@@ -189,7 +189,9 @@ class ArticleGenerator:
             regenerated = await self.writer.write(analysis, bundle)
             deterministic_preflight(regenerated.to_markdown())
             try:
-                await self.fact_checker.check(regenerated, analysis, bundle)
+                regenerated_check = await self.fact_checker.check(regenerated, analysis, bundle)
+                if regenerated_check.status == "FIX" and regenerated_check.systemic_problem:
+                    raise UnsafeDraftError("systemic fact-check issue remains after regeneration")
             except FactCheckUnavailableError:
                 pass
             return regenerated
@@ -204,6 +206,8 @@ class ArticleGenerator:
                 result = await self.fact_checker.check(current, analysis, bundle)
             except FactCheckUnavailableError:
                 return current
+            if result.systemic_problem and result.status == "FIX":
+                raise UnsafeDraftError("systemic fact-check issue remains after local repair")
             if result.status != "FIX":
                 return current
         unresolved = [issue for issue in result.issues if issue.severity == "fix"]
