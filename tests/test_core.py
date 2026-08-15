@@ -1197,6 +1197,7 @@ async def test_generate_and_publish_article_uses_fallback_when_model_fails(
         assert success is True
         mock_page.assert_called_once()
         page_content = mock_page.call_args.kwargs["content_markdown"]
-        assert "временном отключении воды" in page_content
+        assert "Жители сообщали о перебоях с водоснабжением" in page_content
+        assert "временном отключении воды" not in page_content
         mock_send.assert_called_once()
         assert list(tmp_path.glob("*_editorial.md"))

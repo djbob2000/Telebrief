@@ -120,7 +120,12 @@ class ArticleGenerator:
                     "Editorial analysis exceeded model context; using explicit context batching"
                 )
                 return await self.analyzer.analyze_batched(bundle)
-            except Exception:
+            except Exception as exc:
+                self.logger.warning(
+                    "Editorial analysis attempt %d failed: %s",
+                    attempt + 1,
+                    type(exc).__name__,
+                )
                 if attempt >= retries:
                     raise
                 if delay:
@@ -129,8 +134,9 @@ class ArticleGenerator:
         raise RuntimeError("Editorial analysis exhausted retries")
 
     async def _fallback(self, bundle: PreparedBundle, reason: str) -> Tuple[str, str, str]:
-        self.logger.warning("Using deterministic editorial fallback: %s", reason)
+        self.logger.warning("Editorial pipeline entered degraded path: %s", reason)
         cards = self.fallback_builder.build(bundle)
+        self.logger.info("Deterministic fallback built %d normalized Story Cards", len(cards))
         draft = self.fallback_renderer.render(cards)
         markdown = draft.to_markdown()
         deterministic_preflight(markdown)

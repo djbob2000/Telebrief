@@ -1,6 +1,6 @@
 """Tests for the deterministic thematic emergency editorial path."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -20,7 +20,7 @@ def _bundle(texts: list[tuple[str, str]]) -> PreparedBundle:
         message = Message(
             text=text,
             sender="Источник",
-            timestamp=datetime(2026, 8, 14, 12, index, tzinfo=timezone.utc),
+            timestamp=datetime(2026, 8, 14, 12, tzinfo=timezone.utc) + timedelta(minutes=index),
             link=f"https://t.me/source/{index}",
             channel_name="Source",
             has_media=False,
@@ -72,3 +72,70 @@ def test_fallback_does_not_infer_causality_between_broad_topics():
 def test_fallback_skips_empty_or_noise_only_bundle():
     with pytest.raises(NoSubstantiveMaterialError):
         DeterministicStoryCardBuilder().build(PreparedBundle({}, "", 3, 0))
+
+
+def test_fallback_synthesizes_connectivity_observations_instead_of_raw_messages():
+    cards = DeterministicStoryCardBuilder().build(
+        _bundle(
+            [
+                ("Что со связью?", "community"),
+                ("Есть у кого связь?!", "community"),
+                ("Я целый день без связи", "community"),
+                ("Ни Onet, ни Юпитер не работают", "community"),
+                ("Почему на АКЗ плохо работает +7телеком?", "community"),
+            ]
+        )
+    )
+
+    card = next(card for card in cards if card.topic == "communications")
+    texts = [element.text for element in card.community_observations]
+    assert len(texts) <= 2
+    assert all(text not in {"Что со связью?", "Есть у кого связь?!"} for text in texts)
+    assert all(";" not in text for text in texts)
+    assert "Жители сообщали о перебоях" in card.summary
+
+    article = StoryCardRenderer().render(cards).to_markdown()
+    assert "АКЗ" in article
+    assert "Что со связью?" not in article
+    assert ";" not in article
+
+
+def test_fallback_remains_compact_for_many_repeated_candidates():
+    cards = DeterministicStoryCardBuilder().build(
+        _bundle(
+            [
+                (f"На Колонии снова нет связи, сообщение {index}", "community")
+                for index in range(600)
+            ]
+        )
+    )
+
+    article = StoryCardRenderer().render(cards).to_markdown()
+    assert len(cards) == 1
+    assert len(article.splitlines()) <= 8
+    assert len(article) < 1200
+    assert "сообщение 599" not in article
+
+
+def test_renderer_never_concatenates_raw_story_elements():
+    cards = DeterministicStoryCardBuilder().build(
+        _bundle(
+            [
+                ("На Колонии нет света", "community"),
+                ("На Морской тоже нет света", "community"),
+                ("Курс доллара 41.20", "community"),
+                (
+                    "Заправка автокондиционеров, запись по телефону +7 990 123-45-67 "
+                    "https://t.me/ac_service",
+                    "community",
+                ),
+            ]
+        )
+    )
+
+    rendered = StoryCardRenderer().render(cards).to_markdown()
+
+    assert "; " not in rendered
+    assert "Курс доллара" not in rendered
+    assert "автокондиционеров" not in rendered
+    assert "+7 990" not in rendered

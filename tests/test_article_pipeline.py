@@ -1,6 +1,7 @@
 """Integration tests for main and degraded editorial generation paths."""
 
 import json
+import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -107,10 +108,25 @@ async def test_analysis_failure_uses_thematic_fallback_not_raw_latest_messages()
 
     assert title == "Что происходило в городе за сутки"
     assert lead
-    assert "На Колонии нет света" in body
+    assert "Жители сообщали о перебоях с электроснабжением" in body
+    assert "На Колонии нет света" not in body
     assert "Курс доллара" not in body
     assert "Реклама" not in body
     assert "последние сообщения" not in body.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_log_identifies_degraded_editorial_stage(caplog):
+    generator = _generator()
+    generator.logger = logging.getLogger("telebrief.test.editorial")
+    generator.provider.chat_completion = AsyncMock(side_effect=RuntimeError("provider down"))
+
+    with caplog.at_level(logging.WARNING, logger="telebrief.test.editorial"):
+        await generator.generate_article({"Source": [_message("На Колонии нет света")]})
+
+    assert "Editorial pipeline entered degraded path" in caplog.text
+    assert "editorial analysis unavailable" in caplog.text
 
 
 @pytest.mark.unit
@@ -168,4 +184,4 @@ async def test_systemic_audit_failure_falls_back_after_one_regeneration():
     title, _, body = await generator.generate_article({"Source": [_message("Воду отключили.")]})
 
     assert title == "Что происходило в городе за сутки"
-    assert "Воду отключили" in body
+    assert "Жители сообщали о перебоях с водоснабжением" in body

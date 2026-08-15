@@ -11,10 +11,18 @@ from src.editorial_models import PreparedBundle, SourceRecord
 
 _EMOJI_OR_SPACE = re.compile(r"[\W_]+", re.UNICODE)
 _CURRENCY = re.compile(r"(?:курс|обмен|валют|доллар|евро|гривн|usd|eur|uah)", re.IGNORECASE)
-_COMMERCIAL = re.compile(
-    r"(?:реклама|продам|куплю|аренда|сдам|сниму|акция|услуги|доставка|звонить|карта\s*\d)",
+_COMMERCIAL_MARKERS = re.compile(
+    r"(?:реклама|продам|куплю|аренда|сдам|сниму|акция|услуг|доставк|заправк(?:а|и)\s+автокондиционер|"
+    r"автокондиционер|банковск(?:ими|их)?\s+карт|оформлен(?:ие|ия)\s+пенси|обмен\s+валют|"
+    r"курс\s+(?:доллара|евро)|обращайт|звоните|пишите|запись\s+по|консультац|выгодн(?:ые|о)\s+услов)",
     re.IGNORECASE,
 )
+_SERVICE_MARKERS = re.compile(
+    r"(?:диагностик|ремонт|работаем|телефон|адрес|подробност|личн(?:ые|ых)\s+сообщен)",
+    re.IGNORECASE,
+)
+_URL = re.compile(r"(?:https?://|www\.|t\.me/)", re.IGNORECASE)
+_PHONE = re.compile(r"\+?\d[\d\s().-]{7,}\d")
 
 
 class EditorialInputBuilder:
@@ -38,6 +46,7 @@ class EditorialInputBuilder:
 
         records: dict[str, SourceRecord] = {}
         for index, message in enumerate(ordered, start=1):
+            source_type = self.role_resolver.resolve(message.channel_name, message.topic_id)
             if self._is_noise(message.text):
                 continue
             ref = f"S{index:06d}"
@@ -48,7 +57,7 @@ class EditorialInputBuilder:
             records[ref] = SourceRecord(
                 ref=ref,
                 message=message,
-                source_type=self.role_resolver.resolve(message.channel_name, message.topic_id),
+                source_type=source_type,
                 parent_ref=parent_ref,
                 context_text=context_text,
             )
@@ -82,9 +91,23 @@ class EditorialInputBuilder:
         )
         if not letters_or_numbers:
             return True
-        if _CURRENCY.search(stripped) and len(stripped) < 180:
+        if _CURRENCY.search(stripped):
             return True
-        return bool(_COMMERCIAL.search(stripped) and len(stripped) < 220)
+        return EditorialInputBuilder._looks_commercial(stripped)
+
+    @staticmethod
+    def _looks_commercial(text: str) -> bool:
+        """Reject promotional/financial spam without filtering short city observations."""
+        marker_count = len(_COMMERCIAL_MARKERS.findall(text))
+        has_contact = bool(_URL.search(text) or _PHONE.search(text))
+        has_service = bool(_SERVICE_MARKERS.search(text))
+        if marker_count and has_contact:
+            return True
+        if marker_count >= 2:
+            return True
+        if has_contact and has_service and len(text) >= 80:
+            return True
+        return False
 
     @staticmethod
     def _context_for(

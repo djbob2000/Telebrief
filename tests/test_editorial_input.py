@@ -82,3 +82,35 @@ def test_input_builder_uses_topic_and_channel_roles_without_inferring_names():
     bundle = builder.build({"Forum — Новости": messages})
 
     assert bundle.records["S000001"].source_type == "community"
+
+
+def test_input_builder_removes_long_commercial_and_currency_messages():
+    messages = [
+        _message(
+            "Бердянск. Заправка автокондиционеров, диагностика и ремонт. "
+            "Работаем ежедневно, запись по телефону +7 (990) 123-45-67. "
+            "Адрес: улица Морская, 10. Подробности: https://t.me/ac_service",
+            1,
+        ),
+        _message(
+            "Курс доллара и евро на сегодня: обмен валюты, выгодные условия. "
+            "Телефон +7 990 111-22-33, подробности в канале https://t.me/currency",
+            2,
+        ),
+        _message(
+            "Помощь с банковскими картами и оформлением пенсий. "
+            "Консультация по телефону +7 990 333-44-55, пишите в личные сообщения.",
+            3,
+        ),
+        _message("Вода пропала на Колонии", 4),
+    ]
+    builder = EditorialInputBuilder(
+        SourceRoleResolver([ChannelConfig(id="@source", name="Source")])
+    )
+
+    bundle = builder.build({"Source": messages})
+
+    assert [record.message.message_id for record in bundle.records.values()] == [4]
+    assert "автокондиционеров" not in bundle.prompt_text
+    assert "Курс доллара" not in bundle.prompt_text
+    assert "банковскими картами" not in bundle.prompt_text

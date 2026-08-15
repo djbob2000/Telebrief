@@ -588,7 +588,7 @@ async def generate_and_publish_article(
             title, lead, markdown_body = await generator.generate_article(messages_by_channel)
         except Exception as exc:
             logger.warning(
-                "Primary article generation failed; using source-based fallback: %s", exc
+                "ArticleGenerator failed; entering thematic fallback: %s", type(exc).__name__
             )
             title, lead, markdown_body = _build_fallback_article(messages_by_channel)
 
