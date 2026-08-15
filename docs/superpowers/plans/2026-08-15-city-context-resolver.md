@@ -428,9 +428,28 @@ class StoryContextEnricher:
 - [ ] **Step 1: Write RED aggregation and ambiguity safety tests in `tests/test_city_context.py`**
 
 ```python
-from datetime import datetime
-from src.database import Message
-from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord, StoryCard
+from datetime import datetime, timezone
+from src.collector import Message
+from src.editorial_models import (
+    EditorialAnalysis,
+    PreparedBundle,
+    SourceRecord,
+    StoryCard,
+    StoryElement,
+)
+
+
+def _message(text: str, message_id: int) -> Message:
+    return Message(
+        text=text,
+        channel_name="test",
+        timestamp=datetime.now(timezone.utc),
+        sender="resident",
+        message_id=message_id,
+        link="",
+        has_media=False,
+        media_type="",
+    )
 
 
 def test_story_context_enricher_same_area_deduplication():
@@ -440,24 +459,24 @@ def test_story_context_enricher_same_area_deduplication():
     # S000001 on Shevchenko St (inferred Center), S000002 directly in Center, S000003 in Liski
     rec1 = SourceRecord(
         ref="S000001",
-        message=Message(id=1, text="На ул. Шевченко нет света", date=datetime.now()),
-        source_type="channel",
+        message=_message("На ул. Шевченко нет света", 1),
+        source_type="community",
         parent_ref=None,
         context_text="",
         city_context=resolver.resolve("На ул. Шевченко нет света"),
     )
     rec2 = SourceRecord(
         ref="S000002",
-        message=Message(id=2, text="В центре нет света", date=datetime.now()),
-        source_type="channel",
+        message=_message("В центре нет света", 2),
+        source_type="community",
         parent_ref=None,
         context_text="",
         city_context=resolver.resolve("В центре нет света"),
     )
     rec3 = SourceRecord(
         ref="S000003",
-        message=Message(id=3, text="На Лисках нет света", date=datetime.now()),
-        source_type="channel",
+        message=_message("На Лисках нет света", 3),
+        source_type="community",
         parent_ref=None,
         context_text="",
         city_context=resolver.resolve("На Лисках нет света"),
@@ -496,16 +515,16 @@ def test_story_context_enricher_uses_all_source_refs():
 
     rec1 = SourceRecord(
         ref="S000001",
-        message=Message(id=1, text="В центре нет света", date=datetime.now()),
-        source_type="channel",
+        message=_message("В центре нет света", 1),
+        source_type="community",
         parent_ref=None,
         context_text="",
         city_context=resolver.resolve("В центре нет света"),
     )
     rec2 = SourceRecord(
         ref="S000002",
-        message=Message(id=2, text="На Лисках нет света", date=datetime.now()),
-        source_type="channel",
+        message=_message("На Лисках нет света", 2),
+        source_type="community",
         parent_ref=None,
         context_text="",
         city_context=resolver.resolve("На Лисках нет света"),
@@ -524,7 +543,11 @@ def test_story_context_enricher_uses_all_source_refs():
         summary="Отключения света",
         representative_source_refs=["S000001"],
         community_observations=[
-            {"claim": "На Лисках тоже темно", "source_refs": ["S000002"]}
+            StoryElement(
+                text="На Лисках тоже темно",
+                source_refs=["S000002"],
+                status="attributed",
+            )
         ],
     )
     analysis = EditorialAnalysis(cards=[card])
@@ -543,8 +566,8 @@ def test_ambiguous_place_does_not_inflate_scale():
     # Melitopolske Highway without house number maps to multiple municipal areas with confidence: ambiguous
     rec = SourceRecord(
         ref="S000001",
-        message=Message(id=1, text="На Мелитопольском шоссе нет света", date=datetime.now()),
-        source_type="channel",
+        message=_message("На Мелитопольском шоссе нет света", 1),
+        source_type="community",
         parent_ref=None,
         context_text="",
         city_context=resolver.resolve("На Мелитопольском шоссе нет света"),
