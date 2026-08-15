@@ -136,8 +136,8 @@ settings:
     fallback_save_dir: "data/articles"
     # save_debug_artifacts: false  # opt-in; contains source messages and stays local
     # debug_artifact_dir: "data/debug/editorial"
-    generation_retries: 2  # Additional model attempts after a transient/error response.
-    generation_retry_delay: 1.0  # Seconds between attempts.
+    # generation_retries: 2  # (Deprecated) Adaptive recovery state machine is used instead.
+    # generation_retry_delay: 1.0  # (Deprecated) Retained for schema backwards-compatibility.
     # telegraph_access_token: ""  # Optional: generated automatically if omitted
 
 

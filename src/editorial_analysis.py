@@ -209,7 +209,9 @@ Do not classify or label every supplied message, and do not repeat source text i
                 failure_kinds=("token_budget",),
                 slot_failures=(
                     ProviderSlotFailure(
-                        slot="primary", kind="token_budget", exception_type=type(exc).__name__
+                        slot="unwrapped_provider",
+                        kind="token_budget",
+                        exception_type=type(exc).__name__,
                     ),
                 ),
             ) from exc
@@ -221,7 +223,9 @@ Do not classify or label every supplied message, and do not repeat source text i
                 exc_type,
                 failure_kinds=(kind,),
                 slot_failures=(
-                    ProviderSlotFailure(slot="primary", kind=kind, exception_type=exc_type),
+                    ProviderSlotFailure(
+                        slot="unwrapped_provider", kind=kind, exception_type=exc_type
+                    ),
                 ),
             ) from exc
         return self._parse_response(response)

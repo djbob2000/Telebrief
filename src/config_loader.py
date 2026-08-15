@@ -93,8 +93,8 @@ class ArticleConfig:
     author_name: str = "Бердянск Новости"
     fallback_save_dir: str = "data/articles"
     prompt_template: str = ".agents/skills/news-style/SKILL.md"
-    generation_retries: int = 2
-    generation_retry_delay: float = 1.0
+    generation_retries: int = 2  # Deprecated: retained for schema backwards compatibility
+    generation_retry_delay: float = 1.0  # Deprecated: retained for schema backwards compatibility
     # Legacy shared budget retained for backward-compatible configs. New long-form
     # stages use the explicit budgets below when they are present.
     editorial_max_output_tokens: int = 65_536
