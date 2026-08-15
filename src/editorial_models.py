@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -364,12 +365,36 @@ class StoryCard:
             uncertainties=clean_unc,
         )
 
+    def human_readable_text(self) -> str:
+        parts: list[str] = [
+            self.topic,
+            self.summary,
+            self.story_kind or "",
+            self.timeframe or "",
+            self.current_status or "",
+            self.next_known_step or "",
+        ]
+        if self.editorial_angle and isinstance(self.editorial_angle, dict):
+            parts.append(str(self.editorial_angle.get("text", "")))
+        for fact in self.hard_facts:
+            parts.extend([fact.text, fact.attribution])
+        for obs in self.community_observations:
+            parts.extend([obs.text, obs.attribution])
+        for detail in self.useful_details:
+            parts.extend([detail.text, detail.attribution])
+        for unc in self.uncertainties:
+            parts.extend([unc.text, unc.basis])
+        return " ".join(p for p in parts if p)
+
 
 @dataclass
 class EditorialAnalysis:
     cards: list[StoryCard]
     labels: dict[str, dict[str, Any]] = field(default_factory=dict)
     excluded_refs: list[str] = field(default_factory=list)
+
+    def human_readable_text(self) -> str:
+        return " ".join(card.human_readable_text() for card in self.cards)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EditorialAnalysis":
@@ -449,6 +474,28 @@ class EditorialAnalysis:
             labels=clean_labels,
             excluded_refs=clean_excluded,
         )
+
+
+def is_expected_language(text: str, expected_language: str) -> bool:
+    """Verify that substantive text predominantly matches the expected language."""
+    if not text or not expected_language:
+        return True
+    lang = expected_language.strip().lower()
+    if lang in {"russian", "ru", "русский"}:
+        cyrillic_chars = len(re.findall(r"[\u0400-\u04FF]", text))
+        latin_chars = len(re.findall(r"[a-zA-Z]", text))
+        total_alpha = cyrillic_chars + latin_chars
+        if total_alpha < 60:
+            return True
+        return (cyrillic_chars / total_alpha) >= 0.35
+    elif lang in {"english", "en"}:
+        cyrillic_chars = len(re.findall(r"[\u0400-\u04FF]", text))
+        latin_chars = len(re.findall(r"[a-zA-Z]", text))
+        total_alpha = cyrillic_chars + latin_chars
+        if total_alpha < 60:
+            return True
+        return (latin_chars / total_alpha) >= 0.35
+    return True
 
 
 @dataclass

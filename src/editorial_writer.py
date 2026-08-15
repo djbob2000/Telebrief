@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.ai_providers import AIProvider
-from src.editorial_models import EditorialAnalysis, PreparedBundle
+from src.editorial_models import EditorialAnalysis, PreparedBundle, is_expected_language
 
 
 @dataclass
@@ -121,6 +121,14 @@ class ArticleDraft:
             ],
         }
 
+    def human_readable_text(self) -> str:
+        parts = [self.headline, self.lead]
+        parts.extend(self.paragraphs)
+        for section in self.sections:
+            parts.append(section.heading)
+            parts.extend(section.paragraphs)
+        return " ".join(p for p in parts if p)
+
     def to_markdown(self) -> str:
         clean_headline = self.headline.strip().lstrip("#").strip()
         blocks = [f"# {clean_headline}", self.lead]
@@ -218,6 +226,7 @@ class EditorialWriter:
         skill_instructions: str,
         logger: logging.Logger,
         max_output_tokens: int = 65_536,
+        output_language: str = "Russian",
     ):
         if max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
@@ -226,9 +235,13 @@ class EditorialWriter:
         self.skill_instructions = skill_instructions
         self.logger = logger
         self.max_output_tokens = max_output_tokens
+        self.output_language = output_language
 
     def build_prompt(self, analysis: EditorialAnalysis, bundle: PreparedBundle) -> tuple[str, str]:
         system = f"""{self.skill_instructions}
+
+Write the article exclusively in the configured output language: {self.output_language}.
+All headlines, leads, section headings, and body paragraphs must be strictly written in {self.output_language}.
 
 You are the article writer. Story Cards are reporting notes, not a sentence template.
 Combine, reorder, compress and connect their material naturally into a cohesive 3–5 chapter article.
@@ -283,4 +296,7 @@ targets, not validation limits; never pad length.
             max_tokens=self.max_output_tokens,
             response_format={"type": "json_object"},
         )
-        return ArticleDraft.from_json(response)
+        draft = ArticleDraft.from_json(response)
+        if not is_expected_language(draft.human_readable_text(), self.output_language):
+            raise ValueError(f"writer output language mismatch: expected {self.output_language}")
+        return draft

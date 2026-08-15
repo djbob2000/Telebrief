@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from src.ai_providers import AIProvider, create_provider
+from src.ai_providers import AIProvider, create_provider, ensure_provider_cascade
 from src.city_context import CityContextResolver, CityProfileError, StoryContextEnricher
 from src.collector import Message
 from src.config_loader import Config, SourceRoleResolver
@@ -16,6 +15,7 @@ from src.editorial_analysis import (
     ContextSizeRejectedError,
     EditorialAnalysisError,
     EditorialAnalyzer,
+    is_large_bundle_for_rescue,
 )
 from src.editorial_audit import (
     FactCheckResult,
@@ -80,7 +80,7 @@ class ArticleGenerator:
     def __init__(self, config: Config, logger: logging.Logger):
         self.config = config
         self.logger = logger
-        self.provider: AIProvider = create_provider(
+        raw_provider: AIProvider = create_provider(
             provider_name=config.settings.ai_provider,
             logger=logger,
             openai_api_key=config.openai_api_key,
@@ -93,6 +93,9 @@ class ArticleGenerator:
             openrouter_model=config.openrouter_model,
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=config.settings.article.editorial_api_timeout,
+        )
+        self.provider: AIProvider = ensure_provider_cascade(
+            raw_provider, logger=logger, slot_name=config.settings.ai_provider
         )
         self.model = config.settings.ai_model
         self.output_language = config.settings.output_language
@@ -127,6 +130,7 @@ class ArticleGenerator:
             compact_max_output_tokens=(
                 config.settings.article.editorial_analysis_compact_max_output_tokens
             ),
+            output_language=self.output_language,
         )
         self.writer = EditorialWriter(
             self.provider,
@@ -134,6 +138,7 @@ class ArticleGenerator:
             self.skill_instructions,
             logger,
             max_output_tokens=config.settings.article.editorial_writer_max_output_tokens,
+            output_language=self.output_language,
         )
         self.fact_checker = LightFactChecker(
             self.provider,
@@ -141,9 +146,10 @@ class ArticleGenerator:
             logger,
             max_output_tokens=config.settings.article.editorial_audit_max_output_tokens,
             repair_max_output_tokens=config.settings.article.editorial_repair_max_output_tokens,
+            output_language=self.output_language,
         )
         self.fallback_builder = DeterministicStoryCardBuilder()
-        self.fallback_renderer = StoryCardRenderer()
+        self.fallback_renderer = StoryCardRenderer(output_language=self.output_language)
 
     def _compose_system_prompt(self) -> str:
         """Compatibility helper exposing the single writer prompt owner."""
@@ -184,61 +190,102 @@ class ArticleGenerator:
         return bundle
 
     async def _analyze(self, bundle: PreparedBundle) -> EditorialAnalysis:  # noqa: C901
-        retries = max(0, int(getattr(self.config.settings.article, "generation_retries", 2)))
-        delay = max(
-            0.0, float(getattr(self.config.settings.article, "generation_retry_delay", 1.0))
+        """Analyze full bundle with adaptive, non-duplicative recovery transitions."""
+        # 1. Full Normal
+        try:
+            return await self.analyzer.analyze(bundle, compact=False)
+        except ContextSizeRejectedError:
+            self.logger.warning(
+                "Editorial analysis exceeded model context; using explicit context batching"
+            )
+            return await self.analyzer.analyze_batched(bundle, compact=False)
+        except EditorialAnalysisError as exc:
+            self._log_cascade_failure(exc)
+            return await self._handle_analysis_recovery(exc, bundle)
+
+    def _log_cascade_failure(
+        self, error: EditorialAnalysisError, decision: str | None = None
+    ) -> None:
+        summary = (
+            ", ".join(f"{f.slot}:{f.kind}:{f.exception_type}" for f in error.slot_failures)
+            or error.reason
+            or "unknown"
         )
-        compact_attempted = False
-        attempt = 0
-        while attempt <= retries:
+        if decision:
+            self.logger.warning(
+                "Editorial analysis provider cascade failed: slots=[%s] decision=%s",
+                summary,
+                decision,
+            )
+        else:
+            self.logger.warning(
+                "Editorial analysis provider cascade failed: slots=[%s]",
+                summary,
+            )
+
+    async def _handle_analysis_recovery(
+        self, error: EditorialAnalysisError, bundle: PreparedBundle
+    ) -> EditorialAnalysis:
+        failure_kinds = set(error.failure_kinds)
+        is_token_budget = (
+            "token_budget" in failure_kinds
+            or error.reason == "token_budget"
+            or self._is_output_shape_failure(error)
+        )
+        is_context_size = (
+            "context_size" in failure_kinds
+            or error.reason == "context_size"
+            or isinstance(error, ContextSizeRejectedError)
+        )
+        is_pure_outage = bool(failure_kinds) and failure_kinds <= {
+            "auth",
+            "quota",
+            "server",
+            "timeout",
+        }
+        is_other = "other" in failure_kinds or not failure_kinds
+
+        # Transition 1: token_budget -> Full Compact
+        if is_token_budget:
+            self._log_cascade_failure(error, decision="compact_full_bundle")
             try:
-                return await self.analyzer.analyze(bundle, compact=compact_attempted)
+                return await self.analyzer.analyze(bundle, compact=True)
             except ContextSizeRejectedError:
                 self.logger.warning(
-                    "Editorial analysis exceeded model context; using explicit context batching"
+                    "Compact editorial analysis exceeded model context; switching to batched compact"
                 )
-                return await self.analyzer.analyze_batched(bundle, compact=compact_attempted)
-            except EditorialAnalysisError as exc:
-                self.logger.warning(
-                    "Editorial analysis attempt %d failed: stage=%s reason=%s response_chars=%s",
-                    attempt + 1,
-                    exc.stage,
-                    exc.reason,
-                    exc.response_chars if exc.response_chars is not None else "unknown",
-                )
-                if self._should_retry_compact(exc, compact_attempted):
-                    compact_attempted = True
-                    self.logger.warning(
-                        "Editorial analysis response was not usable; retrying full bundle "
-                        "in compact-analysis mode"
-                    )
-                    continue
-                if attempt >= retries:
-                    raise
-                if delay:
-                    await asyncio.sleep(delay * (attempt + 1))
-                self.logger.warning("Editorial analysis attempt %d failed; retrying", attempt + 1)
-            except Exception as exc:
-                self.logger.warning(
-                    "Editorial analysis attempt %d failed: %s",
-                    attempt + 1,
-                    type(exc).__name__,
-                )
-                if attempt >= retries:
-                    raise
-                if delay:
-                    await asyncio.sleep(delay * (attempt + 1))
-                self.logger.warning("Editorial analysis attempt %d failed; retrying", attempt + 1)
-            attempt += 1
-        raise RuntimeError("Editorial analysis exhausted retries")
+                return await self.analyzer.analyze_batched(bundle, compact=True)
+            except EditorialAnalysisError as compact_exc:
+                compact_kinds = set(compact_exc.failure_kinds)
+                if "context_size" in compact_kinds or (
+                    "other" in compact_kinds and is_large_bundle_for_rescue(bundle)
+                ):
+                    self._log_cascade_failure(compact_exc, decision="batched_compact")
+                    return await self.analyzer.analyze_batched(bundle, compact=True)
+                self._log_cascade_failure(compact_exc, decision="fallback")
+                raise
+
+        # Transition 2: context_size (or mixed with timeout/server/quota) -> Batched Normal
+        if is_context_size:
+            self._log_cascade_failure(error, decision="batching")
+            return await self.analyzer.analyze_batched(bundle, compact=False)
+
+        # Transition 3: Pure Outage -> Degraded Fallback
+        if is_pure_outage:
+            self._log_cascade_failure(error, decision="fallback_pure_outage")
+            raise error
+
+        # Transition 4: Other/unknown on large bundle -> One bounded batched rescue
+        if is_other and is_large_bundle_for_rescue(bundle):
+            self._log_cascade_failure(error, decision="batched_rescue")
+            return await self.analyzer.analyze_batched(bundle, compact=False)
+
+        # Default: Fallback
+        self._log_cascade_failure(error, decision="fallback")
+        raise error
 
     @staticmethod
-    def _should_retry_compact(error: EditorialAnalysisError, compact_attempted: bool) -> bool:
-        if compact_attempted:
-            return False
-        reason = f"{error.reason} {error}".lower()
-        if error.stage == "provider_call":
-            return "token_budget" in reason or "tokenbudgetexhausted" in reason
+    def _is_output_shape_failure(error: EditorialAnalysisError) -> bool:
         return error.stage in {
             "empty_response",
             "json_parse",

@@ -12,6 +12,8 @@ import pytest
 from src.article_generator import ArticleGenerator
 from src.collector import Message
 from src.config_loader import Config, Settings
+from src.editorial_analysis import ContextSizeRejectedError, EditorialAnalysisError
+from src.editorial_models import PreparedBundle
 from src.editorial_writer import ArticleDraft
 
 _VALID_REGISTRY = json.dumps(
@@ -225,25 +227,32 @@ async def test_article_generator_creates_valid_article():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_article_generator_retries_after_transient_model_failure():
-    """A temporary provider failure is retried before the workflow gives up."""
+    """A primary provider failure is recovered via the provider cascade."""
+    from src.ai_providers import ProviderCascade
+
     generator = _make_generator()
-    generator.config.settings.article.generation_retries = 1
-    generator.config.settings.article.generation_retry_delay = 0
-    generator.provider.chat_completion = AsyncMock(
+    primary = MagicMock()
+    primary.chat_completion = AsyncMock(side_effect=RuntimeError("temporary provider failure"))
+    backup = MagicMock()
+    backup.chat_completion = AsyncMock(
         side_effect=[
-            RuntimeError("temporary provider failure"),
             _SIMPLE_REGISTRY,
             _SIMPLE_DRAFT,
             _VALID_AUDIT,
         ]
     )
+    generator.provider = ProviderCascade(
+        [("primary", primary), ("backup", backup)], generator.logger
+    )
+    generator.analyzer.provider = generator.provider
+    generator.writer.provider = generator.provider
+    generator.fact_checker.provider = generator.provider
 
     title, lead, body = await generator.generate_article({"news": [_message("Факт события")]})
 
     assert title == "Заголовок"
     assert lead == "Текст статьи."
     assert "Дополнительный абзац." in body
-    assert generator.provider.chat_completion.await_count == 4
 
 
 @pytest.mark.unit
@@ -1057,3 +1066,346 @@ def test_article_generator_loads_city_context_and_handles_missing_file(sample_co
     generator_fallback = ArticleGenerator(sample_config, mock_logger)
     assert generator_fallback.city_context_resolver is None
     assert generator_fallback.story_context_enricher is None
+
+
+@pytest.mark.unit
+def test_article_generator_propagates_output_language(sample_config, mock_logger):
+    sample_config.settings.output_language = "Russian"
+    generator = ArticleGenerator(sample_config, mock_logger)
+    assert generator.analyzer.output_language == "Russian"
+    assert generator.writer.output_language == "Russian"
+    assert generator.fact_checker.output_language == "Russian"
+    assert generator.fallback_renderer.output_language == "Russian"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_article_generator_wrong_language_writer_falls_back_to_story_cards(
+    sample_config, mock_logger
+):
+    from unittest.mock import AsyncMock
+
+    from src.editorial_models import EditorialAnalysis, StoryCard, StoryElement
+
+    sample_config.settings.output_language = "Russian"
+    generator = ArticleGenerator(sample_config, mock_logger)
+
+    card = StoryCard(
+        id="SC001",
+        topic="Электроснабжение",
+        importance="high",
+        summary="В городе наблюдаются проблемы со светом.",
+        hard_facts=[
+            StoryElement(
+                text="Жители сообщали об отключении электроснабжения на АКЗ.",
+                source_refs=["S000001"],
+                status="attributed",
+                attribution="Жители",
+            )
+        ],
+    )
+    generator._analyze = AsyncMock(return_value=EditorialAnalysis(cards=[card]))
+    english_draft_text = json.dumps(
+        {
+            "headline": "Blackout in Berdyansk",
+            "lead": "Residents in several districts report power outages across the city.",
+            "sections": [
+                {
+                    "heading": "Power outage",
+                    "paragraphs": ["Residents reported no electricity."],
+                }
+            ],
+        }
+    )
+    generator.writer.provider.chat_completion = AsyncMock(return_value=english_draft_text)
+
+    msg = Message(
+        text="На АКЗ нет света",
+        sender="u1",
+        timestamp=datetime.now(timezone.utc),
+        link="",
+        channel_name="ch1",
+        has_media=False,
+        media_type="",
+        message_id=1,
+    )
+    title, lead, body = await generator.generate_article({"ch1": [msg]})
+
+    assert "Blackout" not in title
+    assert "Blackout" not in body
+    assert "Что происходило в городе за сутки" in title or "Электроснабжение" in body
+    assert "Жители сообщали об отключении электроснабжения на АКЗ." in body
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_analyze_token_budget_triggers_compact_full_bundle(sample_config, mock_logger):
+    from src.ai_providers import ProviderSlotFailure
+    from src.editorial_models import EditorialAnalysis, StoryCard
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(id="SC001", topic="Тема", importance="high", summary="Сводка")
+    success_analysis = EditorialAnalysis(cards=[card])
+
+    slot1 = ProviderSlotFailure(
+        slot="primary", kind="token_budget", exception_type="TokenBudgetExhaustedError"
+    )
+    tb_error = EditorialAnalysisError("token budget exhausted")
+    tb_error.stage = "provider_call"
+    tb_error.reason = "token_budget"
+    tb_error.failure_kinds = ("token_budget",)
+    tb_error.slot_failures = (slot1,)
+
+    generator.analyzer.analyze = AsyncMock(side_effect=[tb_error, success_analysis])
+    generator.analyzer.analyze_batched = AsyncMock()
+
+    bundle = PreparedBundle(
+        records={}, prompt_text="small prompt", total_messages=10, candidate_count=10
+    )
+    result = await generator._analyze(bundle)
+
+    assert result == success_analysis
+    assert generator.analyzer.analyze.await_count == 2
+    # First call compact=False, second call compact=True
+    assert generator.analyzer.analyze.await_args_list[0].kwargs == {"compact": False}
+    assert generator.analyzer.analyze.await_args_list[1].kwargs == {"compact": True}
+    generator.analyzer.analyze_batched.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_analyze_token_budget_then_context_size_triggers_batched_compact(
+    sample_config, mock_logger
+):
+    from src.ai_providers import ProviderSlotFailure
+    from src.editorial_models import EditorialAnalysis, StoryCard
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(id="SC001", topic="Тема", importance="high", summary="Сводка")
+    success_analysis = EditorialAnalysis(cards=[card])
+
+    tb_error = EditorialAnalysisError("token budget")
+    tb_error.stage = "provider_call"
+    tb_error.reason = "token_budget"
+    tb_error.failure_kinds = ("token_budget",)
+    tb_error.slot_failures = (
+        ProviderSlotFailure("primary", "token_budget", "TokenBudgetExhaustedError"),
+    )
+
+    cs_error = ContextSizeRejectedError("context size")
+    cs_error.stage = "provider_call"
+    cs_error.reason = "context_size"
+    cs_error.failure_kinds = ("context_size",)
+    cs_error.slot_failures = (ProviderSlotFailure("primary", "context_size", "BadRequestError"),)
+
+    generator.analyzer.analyze = AsyncMock(side_effect=[tb_error, cs_error])
+    generator.analyzer.analyze_batched = AsyncMock(return_value=success_analysis)
+
+    bundle = PreparedBundle(
+        records={}, prompt_text="small prompt", total_messages=10, candidate_count=10
+    )
+    result = await generator._analyze(bundle)
+
+    assert result == success_analysis
+    assert generator.analyzer.analyze.await_count == 2
+    generator.analyzer.analyze_batched.assert_awaited_once_with(bundle, compact=True)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_analyze_context_size_or_mixed_triggers_batched_normal(sample_config, mock_logger):
+    from src.ai_providers import ProviderSlotFailure
+    from src.editorial_models import EditorialAnalysis, StoryCard
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(id="SC001", topic="Тема", importance="high", summary="Сводка")
+    success_analysis = EditorialAnalysis(cards=[card])
+
+    # Mixed failure: primary timeout + backup context_size
+    cs_error = ContextSizeRejectedError("context size")
+    cs_error.stage = "provider_call"
+    cs_error.reason = "context_size"
+    cs_error.failure_kinds = ("timeout", "context_size")
+    cs_error.slot_failures = (
+        ProviderSlotFailure("primary", "timeout", "TimeoutError"),
+        ProviderSlotFailure("backup", "context_size", "BadRequestError"),
+    )
+
+    generator.analyzer.analyze = AsyncMock(side_effect=cs_error)
+    generator.analyzer.analyze_batched = AsyncMock(return_value=success_analysis)
+
+    bundle = PreparedBundle(
+        records={}, prompt_text="small prompt", total_messages=10, candidate_count=10
+    )
+    result = await generator._analyze(bundle)
+
+    assert result == success_analysis
+    generator.analyzer.analyze.assert_awaited_once_with(bundle, compact=False)
+    generator.analyzer.analyze_batched.assert_awaited_once_with(bundle, compact=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_analyze_pure_outage_fails_fast_without_batching(sample_config, mock_logger):
+    from src.ai_providers import ProviderSlotFailure
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+
+    outage_error = EditorialAnalysisError("pure outage")
+    outage_error.stage = "provider_call"
+    outage_error.reason = "auth,server"
+    outage_error.failure_kinds = ("auth", "server")
+    outage_error.slot_failures = (
+        ProviderSlotFailure("primary", "auth", "AuthenticationError"),
+        ProviderSlotFailure("backup", "server", "InternalServerError"),
+    )
+
+    generator.analyzer.analyze = AsyncMock(side_effect=outage_error)
+    generator.analyzer.analyze_batched = AsyncMock()
+
+    bundle = PreparedBundle(records={}, prompt_text="prompt", total_messages=10, candidate_count=10)
+    with pytest.raises(EditorialAnalysisError):
+        await generator._analyze(bundle)
+
+    generator.analyzer.analyze.assert_awaited_once_with(bundle, compact=False)
+    generator.analyzer.analyze_batched.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_analyze_other_large_bundle_triggers_batched_rescue(sample_config, mock_logger):
+    from src.ai_providers import ProviderSlotFailure
+    from src.editorial_models import EditorialAnalysis, StoryCard
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(id="SC001", topic="Тема", importance="high", summary="Сводка")
+    success_analysis = EditorialAnalysis(cards=[card])
+
+    other_error = EditorialAnalysisError("RuntimeError")
+    other_error.stage = "provider_call"
+    other_error.reason = "RuntimeError"
+    other_error.failure_kinds = ("other",)
+    other_error.slot_failures = (ProviderSlotFailure("primary", "other", "RuntimeError"),)
+
+    generator.analyzer.analyze = AsyncMock(side_effect=other_error)
+    generator.analyzer.analyze_batched = AsyncMock(return_value=success_analysis)
+
+    # Large bundle: 100 candidate messages
+    bundle = PreparedBundle(
+        records={}, prompt_text="x" * 100, total_messages=100, candidate_count=100
+    )
+    result = await generator._analyze(bundle)
+
+    assert result == success_analysis
+    generator.analyzer.analyze.assert_awaited_once_with(bundle, compact=False)
+    generator.analyzer.analyze_batched.assert_awaited_once_with(bundle, compact=False)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_analyze_other_small_bundle_fails_fast_without_batching(sample_config, mock_logger):
+    from src.ai_providers import ProviderSlotFailure
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+
+    other_error = EditorialAnalysisError("RuntimeError")
+    other_error.stage = "provider_call"
+    other_error.reason = "RuntimeError"
+    other_error.failure_kinds = ("other",)
+    other_error.slot_failures = (ProviderSlotFailure("primary", "other", "RuntimeError"),)
+
+    generator.analyzer.analyze = AsyncMock(side_effect=other_error)
+    generator.analyzer.analyze_batched = AsyncMock()
+
+    # Small bundle: 10 candidate messages, 100 chars
+    bundle = PreparedBundle(
+        records={}, prompt_text="x" * 100, total_messages=10, candidate_count=10
+    )
+    with pytest.raises(EditorialAnalysisError):
+        await generator._analyze(bundle)
+
+    generator.analyzer.analyze.assert_awaited_once_with(bundle, compact=False)
+    generator.analyzer.analyze_batched.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_parse_error_on_large_bundle_uses_compact_not_batching(sample_config, mock_logger):
+    """Substantive response with JSON/schema errors triggers compact retry, NEVER batching."""
+    from src.editorial_models import EditorialAnalysis, StoryCard
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(id="SC001", topic="Тема", importance="high", summary="Сводка")
+    success_compact = EditorialAnalysis(cards=[card])
+
+    parse_error = EditorialAnalysisError("malformed json")
+    parse_error.stage = "json_parse"
+    parse_error.reason = "Expecting value"
+
+    generator.analyzer.analyze = AsyncMock(side_effect=[parse_error, success_compact])
+    generator.analyzer.analyze_batched = AsyncMock()
+
+    # Large bundle: 100 candidate messages
+    bundle = PreparedBundle(
+        records={}, prompt_text="x" * 60_000, total_messages=100, candidate_count=100
+    )
+    result = await generator._analyze(bundle)
+
+    assert result == success_compact
+    assert generator.analyzer.analyze.await_count == 2
+    assert generator.analyzer.analyze.await_args_list[0].kwargs == {"compact": False}
+    assert generator.analyzer.analyze.await_args_list[1].kwargs == {"compact": True}
+    generator.analyzer.analyze_batched.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_state_machine_each_call_shape_attempted_at_most_once(sample_config, mock_logger):
+    """Verify state machine invariant: every (shape, compact) call is made at most once."""
+    from src.ai_providers import ProviderSlotFailure
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+
+    # Sequence: Full Normal (token_budget) -> Full Compact (context_size) -> Batched Compact (fails) -> Fallback
+    tb_error = EditorialAnalysisError("token budget")
+    tb_error.stage = "provider_call"
+    tb_error.reason = "token_budget"
+    tb_error.failure_kinds = ("token_budget",)
+    tb_error.slot_failures = (
+        ProviderSlotFailure("primary", "token_budget", "TokenBudgetExhaustedError"),
+    )
+
+    cs_error = ContextSizeRejectedError("context size")
+    cs_error.stage = "provider_call"
+    cs_error.reason = "context_size"
+    cs_error.failure_kinds = ("context_size",)
+    cs_error.slot_failures = (ProviderSlotFailure("primary", "context_size", "BadRequestError"),)
+
+    batched_error = ContextSizeRejectedError("batch also exceeded")
+    batched_error.stage = "provider_call"
+    batched_error.reason = "context_size"
+    batched_error.failure_kinds = ("context_size",)
+
+    calls: list[tuple[str, bool]] = []
+
+    async def mock_analyze(b, *, compact=False):
+        calls.append(("full", compact))
+        if not compact:
+            raise tb_error
+        raise cs_error
+
+    async def mock_analyze_batched(b, *, compact=False):
+        calls.append(("batched", compact))
+        raise batched_error
+
+    generator.analyzer.analyze = AsyncMock(side_effect=mock_analyze)
+    generator.analyzer.analyze_batched = AsyncMock(side_effect=mock_analyze_batched)
+
+    bundle = PreparedBundle(records={}, prompt_text="prompt", total_messages=10, candidate_count=10)
+
+    with pytest.raises(EditorialAnalysisError):
+        await generator._analyze(bundle)
+
+    # Invariant: No duplicate (shape, compact) calls
+    assert len(calls) == len(set(calls))
+    assert calls == [("full", False), ("full", True), ("batched", True)]

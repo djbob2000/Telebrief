@@ -5,10 +5,32 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
-from typing import cast
+from typing import Sequence, cast
 
-from src.ai_providers import AIProvider, ProviderCascadeError, TokenBudgetExhaustedError
-from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord, StoryCard
+from src.ai_providers import (
+    AIProvider,
+    ProviderCascadeError,
+    ProviderSlotFailure,
+    TokenBudgetExhaustedError,
+)
+from src.editorial_models import (
+    EditorialAnalysis,
+    PreparedBundle,
+    SourceRecord,
+    StoryCard,
+    is_expected_language,
+)
+
+UNKNOWN_BATCH_RESCUE_MIN_CANDIDATES = 100
+UNKNOWN_BATCH_RESCUE_MIN_CHARS = 50_000
+
+
+def is_large_bundle_for_rescue(bundle: PreparedBundle) -> bool:
+    """Determine whether an unclassified failure plausibly represents a masked size/latency issue."""
+    return (
+        bundle.candidate_count >= UNKNOWN_BATCH_RESCUE_MIN_CANDIDATES
+        or len(bundle.prompt_text) >= UNKNOWN_BATCH_RESCUE_MIN_CHARS
+    )
 
 
 class EditorialAnalysisError(RuntimeError):
@@ -17,10 +39,12 @@ class EditorialAnalysisError(RuntimeError):
     stage: str = "unknown"
     reason: str = ""
     response_chars: int | None = None
+    failure_kinds: tuple[str, ...] = ()
+    slot_failures: tuple[ProviderSlotFailure, ...] = ()
 
 
 class ContextSizeRejectedError(EditorialAnalysisError):
-    """The provider cascade rejected the full bundle solely because it was too large."""
+    """The provider cascade rejected the full bundle because it was too large."""
 
 
 class EditorialAnalyzer:
@@ -33,6 +57,7 @@ class EditorialAnalyzer:
         logger: logging.Logger,
         max_output_tokens: int = 65_536,
         compact_max_output_tokens: int = 16_384,
+        output_language: str = "Russian",
     ):
         if max_output_tokens <= 0 or compact_max_output_tokens <= 0:
             raise ValueError("output token budgets must be positive")
@@ -41,6 +66,7 @@ class EditorialAnalyzer:
         self.logger = logger
         self.max_output_tokens = max_output_tokens
         self.compact_max_output_tokens = compact_max_output_tokens
+        self.output_language = output_language
         self.last_raw_response = ""
 
     def build_prompt(self, bundle: PreparedBundle, *, compact: bool = False) -> tuple[str, str]:
@@ -51,17 +77,26 @@ class EditorialAnalyzer:
             if compact
             else "Use labels only for selected messages when they materially help the writer."
         )
-        card_schema = """Each card must use this canonical shape: {
-  "id": "SC001", "topic": "short topic", "importance": "high|medium|low",
-  "summary": "one-sentence summary", "story_kind": "optional",
-  "timeframe": "optional", "current_status": "optional", "next_known_step": "optional",
-  "editorial_angle": {"text": "why this matters", "basis_refs": ["S000001"], "type": "editorial_synthesis"},
+        language_rule = (
+            f"Language requirement: Write all human-readable story card fields (topic, summary, "
+            f"editorial_angle.text, hard_facts[].text, community_observations[].text, useful_details[].text, "
+            f"uncertainties[].text, timeframe, current_status, next_known_step, uncertainties[].basis, "
+            f"and attribution) strictly and exclusively in {self.output_language}.\n"
+            f"Schema requirement: Keep all JSON keys, IDs (e.g. SC001), source references (e.g. S000001), "
+            f"importance values ('high'|'medium'|'low'), status values ('established'|'attributed'|'disputed'), "
+            f"and editorial_angle type ('editorial_synthesis') in canonical English."
+        )
+        card_schema = f"""Each card must use this canonical shape: {{
+  "id": "SC001", "topic": "topic in {self.output_language}", "importance": "high|medium|low",
+  "summary": "one-sentence summary in {self.output_language}", "story_kind": "optional",
+  "timeframe": "optional in {self.output_language}", "current_status": "optional in {self.output_language}", "next_known_step": "optional in {self.output_language}",
+  "editorial_angle": {{"text": "why this matters in {self.output_language}", "basis_refs": ["S000001"], "type": "editorial_synthesis"}},
   "representative_source_refs": ["S000001"],
-  "hard_facts": [{"text": "...", "source_refs": ["S000001"], "status": "established|attributed|disputed", "attribution": "...", "areas": []}],
-  "community_observations": [{"text": "...", "source_refs": ["S000001"], "status": "attributed", "attribution": "residents in chat", "areas": []}],
-  "useful_details": [{"text": "...", "source_refs": ["S000001"], "status": "attributed", "attribution": "", "areas": []}],
-  "uncertainties": [{"text": "...", "basis": "claimed connection/rumor", "related_source_refs": ["S000001"]}]
-}. Never replace id, topic or summary with title, headline or description; never omit them.
+  "hard_facts": [{{"text": "text in {self.output_language}", "source_refs": ["S000001"], "status": "established|attributed|disputed", "attribution": "attribution in {self.output_language}", "areas": []}}],
+  "community_observations": [{{"text": "text in {self.output_language}", "source_refs": ["S000001"], "status": "attributed", "attribution": "attribution in {self.output_language}", "areas": []}}],
+  "useful_details": [{{"text": "text in {self.output_language}", "source_refs": ["S000001"], "status": "attributed", "attribution": "", "areas": []}}],
+  "uncertainties": [{{"text": "text in {self.output_language}", "basis": "claimed connection/rumor in {self.output_language}", "related_source_refs": ["S000001"]}}]
+}}. Never replace id, topic or summary with title, headline or description; never omit them.
 """
         local_publishability_rules = f"""Local publishability gate:
 1. Locality Test: A Story Card exists only if it materially describes what happened in Berdyansk, directly affected life in Berdyansk during the reporting period, or is necessary to understand a concrete local consequence. Presence in a Berdyansk Telegram source is not local relevance. Exclude distant strikes, regional roundups, and external news unless there is a direct local impact on Berdyansk.
@@ -74,6 +109,8 @@ class EditorialAnalyzer:
 
         system = f"""You are the editorial analyst for a local daily newsroom in Berdyansk.
 Return JSON with a required cards array and optional labels/excluded_refs.
+
+{language_rule}
 
 {local_publishability_rules}
 
@@ -163,12 +200,30 @@ Do not classify or label every supplied message, and do not repeat source text i
                 max_tokens=(self.compact_max_output_tokens if compact else self.max_output_tokens),
                 response_format={"type": "json_object"},
             )
-        except ProviderCascadeError:
-            raise
+        except ProviderCascadeError as exc:
+            raise self._provider_failure(exc) from exc
         except TokenBudgetExhaustedError as exc:
-            raise self._failure("provider_call", "token_budget") from exc
+            raise self._failure(
+                "provider_call",
+                "token_budget",
+                failure_kinds=("token_budget",),
+                slot_failures=(
+                    ProviderSlotFailure(
+                        slot="primary", kind="token_budget", exception_type=type(exc).__name__
+                    ),
+                ),
+            ) from exc
         except Exception as exc:
-            raise self._failure("provider_call", type(exc).__name__) from exc
+            exc_type = type(exc).__name__
+            kind = "timeout" if "timeout" in str(exc).lower() else "other"
+            raise self._failure(
+                "provider_call",
+                exc_type,
+                failure_kinds=(kind,),
+                slot_failures=(
+                    ProviderSlotFailure(slot="primary", kind=kind, exception_type=exc_type),
+                ),
+            ) from exc
         return self._parse_response(response)
 
     def _parse_response(self, response: object) -> EditorialAnalysis:
@@ -177,7 +232,14 @@ Do not classify or label every supplied message, and do not repeat source text i
         try:
             if isinstance(payload, dict) and "cards" in payload:
                 payload = self._drop_malformed_cards(payload, response_chars)
-            return EditorialAnalysis.from_dict(cast(dict[str, object], payload))
+            analysis = EditorialAnalysis.from_dict(cast(dict[str, object], payload))
+            if analysis.cards and not is_expected_language(
+                analysis.human_readable_text(), self.output_language
+            ):
+                raise self._failure("response_shape", "wrong_output_language", response_chars)
+            return analysis
+        except EditorialAnalysisError:
+            raise
         except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
             raise self._failure("story_card_parse", self._safe_reason(exc), response_chars) from exc
 
@@ -304,7 +366,12 @@ Do not classify or label every supplied message, and do not repeat source text i
             raise self._failure("response_shape", "missing cards array", response_chars)
 
     def _failure(
-        self, stage: str, reason: str, response_chars: int | None = None
+        self,
+        stage: str,
+        reason: str,
+        response_chars: int | None = None,
+        failure_kinds: Sequence[str] = (),
+        slot_failures: Sequence[ProviderSlotFailure] = (),
     ) -> EditorialAnalysisError:
         safe_reason = self._safe_reason(reason)
         self.logger.warning(
@@ -319,6 +386,8 @@ Do not classify or label every supplied message, and do not repeat source text i
             stage=stage,
             reason=safe_reason,
             response_chars=response_chars,
+            failure_kinds=failure_kinds,
+            slot_failures=slot_failures,
         )
 
     @staticmethod
@@ -329,11 +398,15 @@ Do not classify or label every supplied message, and do not repeat source text i
         stage: str,
         reason: str,
         response_chars: int | None = None,
+        failure_kinds: Sequence[str] = (),
+        slot_failures: Sequence[ProviderSlotFailure] = (),
     ) -> EditorialAnalysisError:
         error = error_type(message)
         error.stage = stage
         error.reason = reason
         error.response_chars = response_chars
+        error.failure_kinds = tuple(failure_kinds)
+        error.slot_failures = tuple(slot_failures)
         return error
 
     @staticmethod
@@ -346,14 +419,21 @@ Do not classify or label every supplied message, and do not repeat source text i
         return kinds or type(exc).__name__
 
     def _provider_failure(self, exc: ProviderCascadeError) -> EditorialAnalysisError:
-        if exc.context_only:
+        if exc.has_context_size:
             return self._annotated_error(
                 ContextSizeRejectedError,
                 "editorial bundle rejected for context size",
                 stage="provider_call",
                 reason="context_size",
+                failure_kinds=exc.failure_kinds,
+                slot_failures=exc.slot_failures,
             )
-        return self._failure("provider_call", self._provider_reason(exc))
+        return self._failure(
+            "provider_call",
+            self._provider_reason(exc),
+            failure_kinds=exc.failure_kinds,
+            slot_failures=exc.slot_failures,
+        )
 
     @staticmethod
     def _split_bundle(bundle: PreparedBundle) -> list[PreparedBundle]:

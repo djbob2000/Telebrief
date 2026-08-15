@@ -194,3 +194,34 @@ def test_fallback_without_city_context_performs_normal_processing():
     assert cards[0].topic == "water"
     article = StoryCardRenderer().render(cards).to_markdown()
     assert "Вода" in article
+
+
+def test_story_card_renderer_localizes_generic_attribution_phrases():
+    from src.editorial_models import StoryCard, StoryElement
+
+    elem1 = StoryElement(
+        text="На АКЗ и РТС нет света уже две недели.",
+        source_refs=["S000001"],
+        status="attributed",
+        attribution="multiple residents in community chat",
+    )
+    elem2 = StoryElement(
+        text="Официальный срок восстановления не указан.",
+        source_refs=["S000002"],
+        status="attributed",
+        attribution="resident reports and absence of official statements in corpus",
+    )
+    card = StoryCard(
+        id="SC001",
+        topic="Электроснабжение",
+        importance="high",
+        summary="Проблемы со светом.",
+        hard_facts=[elem1],
+        community_observations=[elem2],
+    )
+    rendered = StoryCardRenderer(output_language="Russian").render([card]).to_markdown()
+
+    assert "multiple residents" not in rendered
+    assert "in community chat" not in rendered
+    assert "Жители в чате сообщали: На АКЗ и РТС нет света уже две недели." in rendered
+    assert "По сообщениям жителей: Официальный срок восстановления не указан." in rendered

@@ -525,3 +525,38 @@ def test_audit_system_prompt_contains_street_to_area_and_scale_checks(mock_logge
     assert "street observations" in system_prompt.lower()
     assert "generalizations" in system_prompt.lower() or "scale" in system_prompt.lower()
     assert "fix" in system_prompt.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audit_prompts_enforce_output_language(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps({"replacements": {"P001": "Отремонтированный текст."}})
+    )
+    checker = LightFactChecker(provider, "model", mock_logger, output_language="Russian")
+    system_prompt = checker._build_system_prompt()
+    assert "in Russian" in system_prompt
+
+    draft = _draft()
+    result = FactCheckResult(
+        status="FIX",
+        systemic_problem=False,
+        issues=[
+            AuditIssue(
+                unit_id="P001",
+                code="unsupported",
+                original_excerpt="text",
+                reason="reason",
+                suggested_direction="fix",
+                source_refs=[],
+            )
+        ],
+    )
+    await checker.repair(draft, result, EditorialAnalysis([]), _bundle())
+    call_args = provider.chat_completion.call_args[1]
+    messages = call_args["messages"]
+    sys_msg = messages[0]["content"]
+    user_msg = messages[1]["content"]
+    assert "strictly in Russian" in sys_msg
+    assert "strictly in Russian" in user_msg

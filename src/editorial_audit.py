@@ -116,6 +116,7 @@ class LightFactChecker:
         logger: logging.Logger,
         max_output_tokens: int = 65_536,
         repair_max_output_tokens: int | None = None,
+        output_language: str = "Russian",
     ):
         if max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
@@ -126,6 +127,7 @@ class LightFactChecker:
         self.logger = logger
         self.max_output_tokens = max_output_tokens
         self.repair_max_output_tokens = repair_max_output_tokens or max_output_tokens
+        self.output_language = output_language
         self.last_raw_response: str | None = None
         self.last_stage: str | None = None
         self.last_reason: str | None = None
@@ -139,6 +141,8 @@ class LightFactChecker:
             "verifiable facts without support: numbers, prices, dates, names, official actions, "
             "causes, mechanisms, damage, sales, medical/legal/military claims, casualties and "
             "precise scale. "
+            f"Language requirement: Write all human-readable diagnostics (reason, suggested_direction) in {self.output_language}. "
+            "Keep machine schema keys and enums (status: PASS|WARN|FIX, severity: fix|warn, code, unit_id) in canonical English. "
             "Scale claims such as 'most districts', 'across most of the city', 'massively', 'citywide shortage' "
             "require evidence supporting the claimed denominator or sufficiently broad geographic coverage; "
             "multiple observations establish geographic spread, but do not automatically establish a majority (flag unsupported majority claims as FIX). "
@@ -365,7 +369,12 @@ class LightFactChecker:
         units = draft.audit_units()
         prompt = json.dumps(
             {
-                "instruction": "Return JSON only as {replacements: {unit_id: replacement_text}}. Repair only listed units. Keep all other units unchanged. Remove unsupported concrete details or use the most conservative wording supported by the cards.",
+                "instruction": (
+                    f"Return JSON only as {{replacements: {{unit_id: replacement_text}}}}. "
+                    f"Write all replacement_text strictly in {self.output_language}. "
+                    "Repair only listed units. Keep all other units unchanged. "
+                    "Remove unsupported concrete details or use the most conservative wording supported by the cards."
+                ),
                 "issues": [issue.to_dict() for issue in issues],
                 "units": {
                     issue.unit_id: {
@@ -385,7 +394,7 @@ class LightFactChecker:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a precise local-news repair editor. Return only the requested replacement map.",
+                        "content": f"You are a precise local-news repair editor. Write replacement text strictly in {self.output_language}. Return only the requested replacement map.",
                     },
                     {"role": "user", "content": prompt},
                 ],

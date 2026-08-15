@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Any, Dict, List, Sequence
 from urllib.parse import urlparse, urlunparse
 
@@ -27,6 +28,15 @@ def _redact_url(url: str) -> str:
     return url
 
 
+@dataclass(frozen=True)
+class ProviderSlotFailure:
+    """Safe typed record of a single slot failure without raw error text."""
+
+    slot: str
+    kind: str
+    exception_type: str
+
+
 class TokenBudgetExhaustedError(RuntimeError):
     """Raised when a provider exhausts its token budget without producing visible output."""
 
@@ -40,10 +50,22 @@ class ProviderCascadeError(RuntimeError):  # noqa: B042
         *,
         failure_kinds: Sequence[str] = (),
         failure_labels: Sequence[str] = (),
+        slot_failures: Sequence[ProviderSlotFailure] = (),
     ):
         super().__init__(message)
         self.failure_kinds = tuple(failure_kinds)
         self.failure_labels = tuple(failure_labels)
+        if slot_failures:
+            self.slot_failures = tuple(slot_failures)
+        else:
+            self.slot_failures = tuple(
+                ProviderSlotFailure(
+                    slot=label,
+                    kind=kind,
+                    exception_type="UnknownException",
+                )
+                for label, kind in zip(self.failure_labels, self.failure_kinds)
+            )
 
     @property
     def context_only(self) -> bool:
@@ -51,6 +73,39 @@ class ProviderCascadeError(RuntimeError):  # noqa: B042
         return bool(self.failure_kinds) and all(
             kind == "context_size" for kind in self.failure_kinds
         )
+
+    @property
+    def has_context_size(self) -> bool:
+        """Whether at least one attempted slot rejected the request for its size."""
+        return "context_size" in self.failure_kinds
+
+    @property
+    def has_token_budget(self) -> bool:
+        """Whether at least one attempted slot failed due to token budget."""
+        return "token_budget" in self.failure_kinds
+
+    @property
+    def is_pure_outage(self) -> bool:
+        """Whether all failures were purely infrastructure/auth outages with no size signals."""
+        return bool(self.failure_kinds) and set(self.failure_kinds) <= {
+            "auth",
+            "quota",
+            "server",
+            "timeout",
+        }
+
+    def dominant_kind(self) -> str:
+        """Return the most specific failure kind across attempted slots."""
+        if not self.failure_kinds:
+            return "other"
+        for priority in ("token_budget", "context_size", "quota", "auth", "server", "timeout"):
+            if priority in self.failure_kinds:
+                return priority
+        return self.failure_kinds[0]
+
+    def diagnostic_summary(self) -> str:
+        """Safe compact summary formatted as slot:kind:exception_type without raw messages."""
+        return ", ".join(f"{f.slot}:{f.kind}:{f.exception_type}" for f in self.slot_failures)
 
 
 def is_token_budget_error(exc: BaseException) -> bool:
@@ -159,6 +214,7 @@ class ProviderCascade(AIProvider):
         thinking: bool | None = None,
         response_format: Dict[str, Any] | None = None,
     ) -> str:
+        slot_failures: list[ProviderSlotFailure] = []
         failures: list[str] = []
         failure_kinds: list[str] = []
         failure_labels: list[str] = []
@@ -182,9 +238,14 @@ class ProviderCascade(AIProvider):
                 # Do not propagate provider exception text: SDK errors can contain request
                 # metadata or credentials. Slot names and exception classes are sufficient
                 # for diagnostics while keeping the aggregate error safe to log.
-                failures.append(f"{label} ({type(exc).__name__})")
+                exc_type = type(exc).__name__
+                kind = _classify_provider_failure(exc)
+                slot_failures.append(
+                    ProviderSlotFailure(slot=label, kind=kind, exception_type=exc_type)
+                )
+                failures.append(f"{label} ({exc_type})")
                 failure_labels.append(label)
-                failure_kinds.append(_classify_provider_failure(exc))
+                failure_kinds.append(kind)
                 if slot_index < len(self.providers) - 1:
                     self.logger.warning("AI provider slot %s failed; switching to next slot", label)
                 else:
@@ -196,6 +257,7 @@ class ProviderCascade(AIProvider):
             "All AI provider slots failed: " + "; ".join(failures),
             failure_kinds=failure_kinds,
             failure_labels=failure_labels,
+            slot_failures=slot_failures,
         )
 
 
@@ -647,3 +709,15 @@ def create_provider(  # noqa: C901
         f"Unknown AI provider: '{provider_name}'. "
         f"Supported providers: openai, ollama, anthropic, google, openrouter"
     )
+
+
+def ensure_provider_cascade(
+    provider: AIProvider,
+    *,
+    logger: logging.Logger,
+    slot_name: str = "primary",
+) -> ProviderCascade:
+    """Ensure the provider exhibits uniform ProviderCascade error semantics for editorial callers."""
+    if isinstance(provider, ProviderCascade):
+        return provider
+    return ProviderCascade([(slot_name, provider)], logger)

@@ -389,3 +389,42 @@ def test_writer_prompt_contains_local_story_context(mock_logger):
     assert "observed_municipal_areas: center (1 refs)" in user_prompt
     assert "geographic_spread=true" in user_prompt
     assert "LOCAL STORY CONTEXT" in system_prompt
+
+
+@pytest.mark.unit
+def test_writer_prompt_enforces_output_language(mock_logger):
+    writer = EditorialWriter(MagicMock(), "model", "skill", mock_logger, output_language="Russian")
+    system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
+    assert (
+        "Write the article exclusively in the configured output language: Russian" in system_prompt
+    )
+    assert (
+        "All headlines, leads, section headings, and body paragraphs must be strictly written in Russian"
+        in system_prompt
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_writer_rejects_wrong_output_language(mock_logger):
+    english_draft = json.dumps(
+        {
+            "headline": "Citywide power outage enters third week",
+            "lead": "Berdyansk residents report a prolonged blackout across multiple districts with no restoration date.",
+            "sections": [
+                {
+                    "heading": "Power outage details",
+                    "paragraphs": [
+                        "Residents in multiple districts reported being without electricity for about two weeks.",
+                        "No official restoration schedule was announced by the local authorities.",
+                    ],
+                }
+            ],
+        }
+    )
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value=english_draft)
+    writer = EditorialWriter(provider, "model", "skill", mock_logger, output_language="Russian")
+
+    with pytest.raises(ValueError, match="writer output language mismatch"):
+        await writer.write(_analysis(), _bundle())

@@ -87,6 +87,20 @@ def test_create_provider_google(mock_logger):
 
 
 @pytest.mark.unit
+def test_ensure_provider_cascade(mock_logger):
+    from src.ai_providers import ProviderCascade, ensure_provider_cascade
+
+    single = MagicMock()
+    wrapped = ensure_provider_cascade(single, logger=mock_logger, slot_name="openai")
+    assert isinstance(wrapped, ProviderCascade)
+    assert wrapped.providers[0][0] == "openai"
+    assert wrapped.providers[0][1] is single
+
+    # Idempotent if already a cascade
+    assert ensure_provider_cascade(wrapped, logger=mock_logger) is wrapped
+
+
+@pytest.mark.unit
 def test_create_provider_google_missing_key(mock_logger):
     """Test that Google requires its own API key."""
     with pytest.raises(ValueError, match="GEMINI_API_KEY is required"):
@@ -1479,3 +1493,77 @@ def test_is_token_budget_error():
     assert is_token_budget_error(asyncio.TimeoutError()) is False
     assert is_token_budget_error(ValueError("invalid")) is False
     assert is_token_budget_error(RuntimeError("generic")) is False
+
+
+@pytest.mark.unit
+def test_provider_cascade_mixed_failure_properties():
+    from src.ai_providers import ProviderSlotFailure
+
+    slot1 = ProviderSlotFailure(slot="primary", kind="timeout", exception_type="TimeoutError")
+    slot2 = ProviderSlotFailure(
+        slot="backup", kind="context_size", exception_type="BadRequestError"
+    )
+    err = ProviderCascadeError(
+        "All AI provider slots failed",
+        failure_kinds=("timeout", "context_size"),
+        failure_labels=("primary", "backup"),
+        slot_failures=(slot1, slot2),
+    )
+    assert err.has_context_size is True
+    assert err.has_token_budget is False
+    assert err.is_pure_outage is False
+    assert err.context_only is False
+    assert (
+        err.diagnostic_summary()
+        == "primary:timeout:TimeoutError, backup:context_size:BadRequestError"
+    )
+
+
+@pytest.mark.unit
+def test_provider_cascade_pure_outage_properties():
+    from src.ai_providers import ProviderSlotFailure
+
+    slot1 = ProviderSlotFailure(slot="primary", kind="auth", exception_type="AuthenticationError")
+    slot2 = ProviderSlotFailure(slot="backup", kind="server", exception_type="InternalServerError")
+    err = ProviderCascadeError(
+        "All AI provider slots failed",
+        failure_kinds=("auth", "server"),
+        failure_labels=("primary", "backup"),
+        slot_failures=(slot1, slot2),
+    )
+    assert err.has_context_size is False
+    assert err.has_token_budget is False
+    assert err.is_pure_outage is True
+    assert (
+        err.diagnostic_summary()
+        == "primary:auth:AuthenticationError, backup:server:InternalServerError"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_populates_slot_failures(mock_logger):
+    from src.ai_providers import ProviderCascade
+
+    slot1 = MagicMock()
+    slot1.chat_completion = AsyncMock(side_effect=TimeoutError("request timed out after 60s"))
+    slot2 = MagicMock()
+    slot2.chat_completion = AsyncMock(
+        side_effect=RuntimeError("context_length_exceeded: maximum context length is 8192 tokens")
+    )
+    cascade = ProviderCascade([("primary-slot", slot1), ("backup-slot", slot2)], mock_logger)
+
+    with pytest.raises(ProviderCascadeError) as exc_info:
+        await cascade.chat_completion(
+            messages=[], model="test-model", temperature=0.2, max_tokens=100
+        )
+    err = exc_info.value
+    assert len(err.slot_failures) == 2
+    assert err.slot_failures[0].slot == "primary-slot"
+    assert err.slot_failures[0].kind == "timeout"
+    assert err.slot_failures[0].exception_type == "TimeoutError"
+    assert err.slot_failures[1].slot == "backup-slot"
+    assert err.slot_failures[1].kind == "context_size"
+    assert err.slot_failures[1].exception_type == "RuntimeError"
+    assert "request timed out" not in err.diagnostic_summary()
+    assert "maximum context length" not in err.diagnostic_summary()

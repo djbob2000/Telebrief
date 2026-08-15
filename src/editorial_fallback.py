@@ -273,8 +273,23 @@ class DeterministicStoryCardBuilder:
         return providers
 
 
+_GENERIC_ATTRIBUTIONS = {
+    "residents in community chat": "Жители в чате",
+    "multiple residents in community chat": "Жители в чате",
+    "residents in chat": "Жители в чате",
+    "multiple residents in chat": "Жители в чате",
+    "residents": "Жители",
+    "multiple residents": "Жители",
+    "resident reports and absence of official statements in corpus": "По сообщениям жителей",
+    "parents and a school director's statement as relayed by a resident": "Родители и руководство школ",
+}
+
+
 class StoryCardRenderer:
     """Render normalized Story Cards as a short thematic article."""
+
+    def __init__(self, output_language: str = "Russian"):
+        self.output_language = output_language
 
     def render(self, cards: list[StoryCard]) -> ArticleDraft:
         if not cards:
@@ -312,19 +327,34 @@ class StoryCardRenderer:
                 paragraphs.append(uncertainty)
         return paragraphs
 
-    @staticmethod
-    def _render_element(element: StoryElement) -> str:
+    @classmethod
+    def _render_element(cls, element: StoryElement) -> str:
         """Render normalized text while retaining attribution for attributed sources."""
         text = element.text.strip()
         if element.status == "established":
             return text
-        if text.startswith(("Жители ", "Источник ", "Источники ")):
+        if text.startswith(
+            ("Жители ", "Источник ", "Источники ", "По сообщениям ", "В чатах ", "Родители ")
+        ):
             return text
-        source = element.attribution.strip()
-        if source and source not in {"Источник", "Жители"}:
-            return f"{source} сообщил: {text}"
-        return text
+        raw_source = element.attribution.strip()
+        if not raw_source:
+            return text
+        norm_source = _GENERIC_ATTRIBUTIONS.get(raw_source.lower(), raw_source)
+        if norm_source in {"Источник", "Жители"}:
+            return text
+        if norm_source in {
+            "Жители в чате",
+            "Жители",
+            "Родители и руководство школ",
+        } or norm_source.endswith("жители"):
+            return f"{norm_source} сообщали: {text}"
+        if norm_source.startswith("По сообщениям"):
+            return f"{norm_source}: {text}"
+        return f"{norm_source} сообщил: {text}"
 
     @staticmethod
     def _heading(topic: str) -> str:
-        return _TOPIC_HEADINGS.get(topic, topic.capitalize())
+        return _TOPIC_HEADINGS.get(
+            topic.lower(), topic.capitalize() if topic else "Городские события"
+        )

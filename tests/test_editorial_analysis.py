@@ -596,3 +596,104 @@ def test_split_bundle_preserves_local_context(mock_logger):
     assert len(batches) == 2
     b1 = next(b for b in batches if "S000001" in b.records)
     assert "local_context: street:Шевченка" in b1.prompt_text
+
+
+@pytest.mark.unit
+def test_editorial_analyzer_enforces_output_language_prompt_contract(mock_logger):
+    provider = MagicMock()
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger, output_language="Russian")
+    system_prompt, _ = analyzer.build_prompt(_bundle())
+    assert (
+        "exclusively in Russian" in system_prompt
+        or "strictly and exclusively in Russian" in system_prompt
+    )
+    assert "importance values ('high'|'medium'|'low')" in system_prompt
+    assert "status values ('established'|'attributed'|'disputed')" in system_prompt
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_rejects_wrong_output_language(mock_logger):
+    english_analysis = json.dumps(
+        {
+            "cards": [
+                {
+                    "id": "SC001",
+                    "topic": "Citywide power outage enters third week",
+                    "importance": "high",
+                    "story_kind": "infrastructure outage",
+                    "summary": "Berdyansk residents report a prolonged electricity blackout across multiple districts.",
+                    "hard_facts": [
+                        {
+                            "text": "Residents in multiple districts reported being without electricity for about two weeks.",
+                            "source_refs": ["S000001"],
+                            "status": "attributed",
+                            "attribution": "multiple residents in community chat",
+                        }
+                    ],
+                    "community_observations": [],
+                    "useful_details": [],
+                    "uncertainties": [],
+                }
+            ]
+        }
+    )
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value=english_analysis)
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger, output_language="Russian")
+
+    with pytest.raises(EditorialAnalysisError) as exc_info:
+        await analyzer.analyze(_bundle())
+    assert exc_info.value.stage == "response_shape"
+    assert exc_info.value.reason == "wrong_output_language"
+
+
+@pytest.mark.unit
+def test_is_large_bundle_for_rescue_boundary_conditions():
+    from src.editorial_analysis import is_large_bundle_for_rescue
+
+    # 99 candidates, 49,999 chars -> False
+    bundle_small = PreparedBundle(
+        records={}, prompt_text="x" * 49_999, total_messages=99, candidate_count=99
+    )
+    assert is_large_bundle_for_rescue(bundle_small) is False
+
+    # 100 candidates, 10 chars -> True
+    bundle_100_candidates = PreparedBundle(
+        records={}, prompt_text="x" * 10, total_messages=100, candidate_count=100
+    )
+    assert is_large_bundle_for_rescue(bundle_100_candidates) is True
+
+    # 10 candidates, 50,000 chars -> True
+    bundle_50k_chars = PreparedBundle(
+        records={}, prompt_text="x" * 50_000, total_messages=10, candidate_count=10
+    )
+    assert is_large_bundle_for_rescue(bundle_50k_chars) is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analysis_propagates_slot_failures_and_kinds(mock_logger):
+    from src.ai_providers import ProviderSlotFailure
+
+    slot1 = ProviderSlotFailure(slot="slot1", kind="timeout", exception_type="TimeoutError")
+    slot2 = ProviderSlotFailure(slot="slot2", kind="context_size", exception_type="BadRequestError")
+    provider_exc = ProviderCascadeError(
+        "cascade failed",
+        failure_kinds=("timeout", "context_size"),
+        failure_labels=("slot1", "slot2"),
+        slot_failures=(slot1, slot2),
+    )
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(side_effect=provider_exc)
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(ContextSizeRejectedError) as exc_info:
+        await analyzer.analyze(_bundle())
+    err = exc_info.value
+    assert err.stage == "provider_call"
+    assert err.reason == "context_size"
+    assert err.failure_kinds == ("timeout", "context_size")
+    assert len(err.slot_failures) == 2
+    assert err.slot_failures[0] == slot1
+    assert err.slot_failures[1] == slot2
