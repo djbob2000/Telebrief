@@ -428,3 +428,29 @@ async def test_writer_rejects_wrong_output_language(mock_logger):
 
     with pytest.raises(ValueError, match="writer output language mismatch"):
         await writer.write(_analysis(), _bundle())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_writer_rejects_single_english_paragraph_in_russian_draft(mock_logger):
+    mixed_draft = json.dumps(
+        {
+            "headline": "В Бердянске обсуждают перебои со светом",
+            "lead": "Жители нескольких районов сообщают о длительном отключении электроэнергии.",
+            "sections": [
+                {
+                    "heading": "Ситуация со светом",
+                    "paragraphs": [
+                        "Электроснабжение отсутствует в ряде микрорайонов города.",
+                        "Residents in multiple districts reported being without electricity for two weeks.",
+                    ],
+                }
+            ],
+        }
+    )
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value=mixed_draft)
+    writer = EditorialWriter(provider, "model", "skill", mock_logger, output_language="Russian")
+
+    with pytest.raises(ValueError, match="writer output language mismatch"):
+        await writer.write(_analysis(), _bundle())

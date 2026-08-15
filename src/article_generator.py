@@ -194,11 +194,6 @@ class ArticleGenerator:
         # 1. Full Normal
         try:
             return await self.analyzer.analyze(bundle, compact=False)
-        except ContextSizeRejectedError:
-            self.logger.warning(
-                "Editorial analysis exceeded model context; using explicit context batching"
-            )
-            return await self.analyzer.analyze_batched(bundle, compact=False)
         except EditorialAnalysisError as exc:
             self._log_cascade_failure(exc)
             return await self._handle_analysis_recovery(exc, bundle)

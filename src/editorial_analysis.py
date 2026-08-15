@@ -237,8 +237,9 @@ Do not classify or label every supplied message, and do not repeat source text i
             if isinstance(payload, dict) and "cards" in payload:
                 payload = self._drop_malformed_cards(payload, response_chars)
             analysis = EditorialAnalysis.from_dict(cast(dict[str, object], payload))
-            if analysis.cards and not is_expected_language(
-                analysis.human_readable_text(), self.output_language
+            if analysis.cards and any(
+                not is_expected_language(card.human_readable_text(), self.output_language)
+                for card in analysis.cards
             ):
                 raise self._failure("response_shape", "wrong_output_language", response_chars)
             return analysis
@@ -423,6 +424,13 @@ Do not classify or label every supplied message, and do not repeat source text i
         return kinds or type(exc).__name__
 
     def _provider_failure(self, exc: ProviderCascadeError) -> EditorialAnalysisError:
+        if exc.has_token_budget:
+            return self._failure(
+                "provider_call",
+                self._provider_reason(exc),
+                failure_kinds=exc.failure_kinds,
+                slot_failures=exc.slot_failures,
+            )
         if exc.has_context_size:
             return self._annotated_error(
                 ContextSizeRejectedError,

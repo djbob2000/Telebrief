@@ -482,19 +482,31 @@ def is_expected_language(text: str, expected_language: str) -> bool:
         return True
     lang = expected_language.strip().lower()
     if lang in {"russian", "ru", "русский"}:
-        cyrillic_chars = len(re.findall(r"[\u0400-\u04FF]", text))
-        latin_chars = len(re.findall(r"[a-zA-Z]", text))
+        clean = re.sub(r"https?://\S+|t\.me/\S+|@\w+", " ", text)
+        clean = re.sub(
+            r"\b(?:\+?7\s*)?(?:telecom|onet|point|mts|t2|wifi|wi-fi|kw|kwh|ai-92|ai-95)\b",
+            " ",
+            clean,
+            flags=re.IGNORECASE,
+        )
+        cyrillic_chars = len(re.findall(r"[\u0400-\u04FF]", clean))
+        latin_chars = len(re.findall(r"[a-zA-Z]", clean))
+        if cyrillic_chars == 0 and latin_chars > 0:
+            return False
         total_alpha = cyrillic_chars + latin_chars
-        if total_alpha < 60:
+        if total_alpha == 0:
             return True
-        return (cyrillic_chars / total_alpha) >= 0.35
+        return (cyrillic_chars / total_alpha) >= 0.70
     elif lang in {"english", "en"}:
-        cyrillic_chars = len(re.findall(r"[\u0400-\u04FF]", text))
-        latin_chars = len(re.findall(r"[a-zA-Z]", text))
+        clean = re.sub(r"https?://\S+|t\.me/\S+|@\w+", " ", text)
+        cyrillic_chars = len(re.findall(r"[\u0400-\u04FF]", clean))
+        latin_chars = len(re.findall(r"[a-zA-Z]", clean))
+        if latin_chars == 0 and cyrillic_chars > 0:
+            return False
         total_alpha = cyrillic_chars + latin_chars
-        if total_alpha < 60:
+        if total_alpha == 0:
             return True
-        return (latin_chars / total_alpha) >= 0.35
+        return (latin_chars / total_alpha) >= 0.70
     return True
 
 

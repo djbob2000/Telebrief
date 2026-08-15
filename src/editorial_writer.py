@@ -297,6 +297,9 @@ targets, not validation limits; never pad length.
             response_format={"type": "json_object"},
         )
         draft = ArticleDraft.from_json(response)
-        if not is_expected_language(draft.human_readable_text(), self.output_language):
+        if any(
+            not is_expected_language(unit.text, self.output_language)
+            for unit in draft.audit_units().values()
+        ):
             raise ValueError(f"writer output language mismatch: expected {self.output_language}")
         return draft

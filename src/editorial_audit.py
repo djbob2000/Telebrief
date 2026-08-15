@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from src.ai_providers import AIProvider, is_token_budget_error
-from src.editorial_models import EditorialAnalysis, PreparedBundle
-from src.editorial_writer import ArticleDraft, AuditUnitLocator
+from src.editorial_models import EditorialAnalysis, PreparedBundle, is_expected_language
+from src.editorial_writer import ArticleDraft, AuditUnitLocator, render_story_contexts
 
 
 @dataclass
@@ -37,27 +37,19 @@ class AuditIssue:
             or data.get("text")
             or ""
         )
-        reason = str(
-            data.get("reason")
-            or data.get("message")
-            or data.get("explanation")
-            or data.get("detail")
-            or ""
+        reason = str(data.get("reason") or data.get("explanation") or data.get("message") or "")
+        suggested = str(
+            data.get("suggested_direction") or data.get("suggestion") or data.get("direction") or ""
         )
-        suggested_direction = str(
-            data.get("suggested_direction")
-            or data.get("fix")
-            or data.get("suggestion")
-            or data.get("recommendation")
-            or ""
-        )
+        raw_refs = data.get("source_refs") or data.get("refs") or data.get("sources") or []
+        refs = [str(r) for r in raw_refs if isinstance(r, (str, int))]
         return cls(
             unit_id=unit_id,
             code=code,
             original_excerpt=original_excerpt,
             reason=reason,
-            suggested_direction=suggested_direction,
-            source_refs=list(data.get("source_refs", [])),
+            suggested_direction=suggested,
+            source_refs=refs,
             severity=severity,
         )
 
@@ -76,11 +68,27 @@ class AuditIssue:
 @dataclass
 class FactCheckResult:
     status: str
-    systemic_problem: bool
+    systemic_problem: bool = False
     issues: list[AuditIssue] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.status = self._normalize_status(self.status, self.issues)
+
+    @staticmethod
+    def _normalize_status(status: str, issues: list[AuditIssue]) -> str:
+        if any(issue.severity == "fix" for issue in issues) or status.upper() == "FIX":
+            return "FIX"
+        if issues or status.upper() == "WARN":
+            return "WARN"
+        return "PASS"
+
+    @property
+    def passed(self) -> bool:
+        return self.status.upper() in {"PASS", "WARN"}
+
+    @property
+    def needs_repair(self) -> bool:
+        return any(issue.severity == "fix" for issue in self.issues)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FactCheckResult":
@@ -93,40 +101,35 @@ class FactCheckResult:
             issues=issues,
         )
 
-    @staticmethod
-    def _normalize_status(status: str, issues: list[AuditIssue]) -> str:
-        if any(issue.severity == "fix" for issue in issues) or status.upper() == "FIX":
-            return "FIX"
-        if issues or status.upper() == "WARN":
-            return "WARN"
-        return "PASS"
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "systemic_problem": self.systemic_problem,
+            "issues": [issue.to_dict() for issue in self.issues],
+        }
 
 
 class FactCheckUnavailableError(RuntimeError):
-    """The optional light fact-check provider was unavailable."""
+    """Raised when the fact checking model call cannot be completed."""
 
 
 class LightFactChecker:
-    """Ask a model to find concrete unsupported additions and repair them locally."""
+    """Non-blocking fact-checker enforcing evidence bounds on the final draft."""
 
     def __init__(
         self,
         provider: AIProvider,
         model: str,
         logger: logging.Logger,
-        max_output_tokens: int = 65_536,
-        repair_max_output_tokens: int | None = None,
+        max_output_tokens: int = 16_384,
+        repair_max_output_tokens: int = 8_192,
         output_language: str = "Russian",
     ):
-        if max_output_tokens <= 0:
-            raise ValueError("max_output_tokens must be positive")
-        if repair_max_output_tokens is not None and repair_max_output_tokens <= 0:
-            raise ValueError("repair_max_output_tokens must be positive")
         self.provider = provider
         self.model = model
         self.logger = logger
         self.max_output_tokens = max_output_tokens
-        self.repair_max_output_tokens = repair_max_output_tokens or max_output_tokens
+        self.repair_max_output_tokens = repair_max_output_tokens
         self.output_language = output_language
         self.last_raw_response: str | None = None
         self.last_stage: str | None = None
@@ -143,6 +146,7 @@ class LightFactChecker:
             "precise scale. "
             f"Language requirement: Write all human-readable diagnostics (reason, suggested_direction) in {self.output_language}. "
             "Keep machine schema keys and enums (status: PASS|WARN|FIX, severity: fix|warn, code, unit_id) in canonical English. "
+            "story_contexts is deterministic interpretation and aggregation metadata. It is authoritative for resolved entity identity, distinct-area counting and explicit flags such as majority_supported. It does not independently establish that the reported phenomenon affected an entire area and is not additional current-event evidence. "
             "Scale claims such as 'most districts', 'across most of the city', 'massively', 'citywide shortage' "
             "require evidence supporting the claimed denominator or sufficiently broad geographic coverage; "
             "multiple observations establish geographic spread, but do not automatically establish a majority (flag unsupported majority claims as FIX). "
@@ -318,12 +322,14 @@ class LightFactChecker:
         self.last_response_chars = None
 
         units = audit_units or draft.audit_units()
+        rendered_contexts = render_story_contexts(getattr(bundle, "story_contexts", {}))
         normal_payload = {
             "audit_units": {
                 unit_id: {"path": locator.path, "text": locator.text}
                 for unit_id, locator in units.items()
             },
             "story_cards": self._compact_story_cards(analysis, minimal=False),
+            "story_contexts": rendered_contexts,
             "source_records": bundle.prompt_text,
         }
         try:
@@ -342,6 +348,7 @@ class LightFactChecker:
                         for unit_id, locator in units.items()
                     },
                     "story_cards": self._compact_story_cards(analysis, minimal=True),
+                    "story_contexts": rendered_contexts,
                     "source_records": bundle.prompt_text,
                 }
                 try:
@@ -367,6 +374,7 @@ class LightFactChecker:
         if not issues:
             return draft
         units = draft.audit_units()
+        rendered_contexts = render_story_contexts(getattr(bundle, "story_contexts", {}))
         prompt = json.dumps(
             {
                 "instruction": (
@@ -385,6 +393,7 @@ class LightFactChecker:
                     if issue.unit_id in units
                 },
                 "story_cards": analysis.to_dict(),
+                "story_contexts": rendered_contexts,
                 "source_records": bundle.prompt_text,
             },
             ensure_ascii=False,
@@ -407,9 +416,18 @@ class LightFactChecker:
             replacements = payload.get("replacements", {})
             if not isinstance(replacements, dict):
                 return draft
-            return draft.apply_replacements(
-                {str(unit_id): str(text) for unit_id, text in replacements.items()}
-            )
+            valid_replacements: dict[str, str] = {}
+            for unit_id, text in replacements.items():
+                if isinstance(text, str):
+                    if not is_expected_language(text, self.output_language):
+                        self.logger.warning(
+                            "Discarding repaired unit %s: replacement text failed language validation (%s)",
+                            unit_id,
+                            self.output_language,
+                        )
+                        continue
+                    valid_replacements[str(unit_id)] = text
+            return draft.apply_replacements(valid_replacements)
         except Exception:
             self.logger.exception("Targeted article repair failed")
             return draft

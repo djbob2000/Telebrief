@@ -6591,6 +6591,7 @@ operational_context:
       aliases:
       - 7Телеком
       - +7 Telecom
+      - +7 Телеком
       status: active_at_last_verification
       confidence: high
       source_refs:

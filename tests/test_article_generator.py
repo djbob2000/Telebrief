@@ -566,10 +566,10 @@ async def test_pipeline_accepts_small_local_story_set_without_inflation(
     cards = [
         {
             "id": f"SC00{i + 1}",
-            "topic": f"Local Topic {i + 1}",
+            "topic": f"Городская тема {i + 1}",
             "importance": "high",
-            "summary": f"Summary {i + 1}",
-            "hard_facts": [{"text": f"Fact {i + 1}", "source_refs": ["S000001"]}],
+            "summary": f"Сводка по теме {i + 1}",
+            "hard_facts": [{"text": f"Фактическое описание {i + 1}", "source_refs": ["S000001"]}],
         }
         for i in range(card_count)
     ]
@@ -664,22 +664,24 @@ async def test_fact_check_lifecycle_artifacts_initial_pass(sample_config, mock_l
                     "cards": [
                         {
                             "id": "SC001",
-                            "topic": "T",
+                            "topic": "Тема",
                             "importance": "high",
-                            "summary": "S",
-                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                            "summary": "Сводка",
+                            "hard_facts": [{"text": "Факты", "source_refs": ["S000001"]}],
                         }
                     ]
                 }
             ),
-            json.dumps({"headline": "H", "lead": "L", "paragraphs": ["P"], "sections": []}),
+            json.dumps(
+                {"headline": "Заголовок", "lead": "Лид", "paragraphs": ["Параграф"], "sections": []}
+            ),
             json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
         ]
     )
     messages = {
         "ch1": [
             Message(
-                text="T",
+                text="Сообщение",
                 channel_name="ch1",
                 timestamp=datetime.now(timezone.utc),
                 sender="u",
@@ -716,15 +718,17 @@ async def test_fact_check_lifecycle_artifacts_fix_repaired_to_pass(
                     "cards": [
                         {
                             "id": "SC001",
-                            "topic": "T",
+                            "topic": "Тема",
                             "importance": "high",
-                            "summary": "S",
-                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                            "summary": "Сводка",
+                            "hard_facts": [{"text": "Факты", "source_refs": ["S000001"]}],
                         }
                     ]
                 }
             ),
-            json.dumps({"headline": "H", "lead": "L", "paragraphs": ["P"], "sections": []}),
+            json.dumps(
+                {"headline": "Заголовок", "lead": "Лид", "paragraphs": ["Параграф"], "sections": []}
+            ),
             json.dumps(
                 {
                     "status": "FIX",
@@ -734,22 +738,22 @@ async def test_fact_check_lifecycle_artifacts_fix_repaired_to_pass(
                             "unit_id": "P001",
                             "severity": "fix",
                             "code": "unverified",
-                            "original_excerpt": "P",
-                            "reason": "Unsupported factual wording",
-                            "suggested_direction": "Use attributed wording",
+                            "original_excerpt": "Параграф",
+                            "reason": "Неподтвержденная формулировка",
+                            "suggested_direction": "Использовать атрибуцию",
                             "source_refs": ["S000001"],
                         }
                     ],
                 }
             ),
-            json.dumps({"replacements": {"P001": "Repaired P"}}),
+            json.dumps({"replacements": {"P001": "Отремонтированный параграф"}}),
             json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
         ]
     )
     messages = {
         "ch1": [
             Message(
-                text="T",
+                text="Сообщение",
                 channel_name="ch1",
                 timestamp=datetime.now(timezone.utc),
                 sender="u",
@@ -763,7 +767,7 @@ async def test_fact_check_lifecycle_artifacts_fix_repaired_to_pass(
 
     _, _, body = await generator.generate_article(messages)
 
-    assert "Repaired P" in body
+    assert "Отремонтированный параграф" in body
     initial_data = json.loads((tmp_path / "fact_check_initial.json").read_text(encoding="utf-8"))
     final_data = json.loads((tmp_path / "fact_check_final.json").read_text(encoding="utf-8"))
     fact_check_data = json.loads((tmp_path / "fact_check.json").read_text(encoding="utf-8"))
@@ -787,15 +791,22 @@ async def test_fact_check_lifecycle_artifacts_systemic_regeneration(
                     "cards": [
                         {
                             "id": "SC001",
-                            "topic": "T",
+                            "topic": "Тема",
                             "importance": "high",
-                            "summary": "S",
-                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                            "summary": "Сводка",
+                            "hard_facts": [{"text": "Факты", "source_refs": ["S000001"]}],
                         }
                     ]
                 }
             ),
-            json.dumps({"headline": "H1", "lead": "L1", "paragraphs": ["P1"], "sections": []}),
+            json.dumps(
+                {
+                    "headline": "Заголовок1",
+                    "lead": "Лид1",
+                    "paragraphs": ["Параграф1"],
+                    "sections": [],
+                }
+            ),
             json.dumps(
                 {
                     "status": "FIX",
@@ -805,22 +816,29 @@ async def test_fact_check_lifecycle_artifacts_systemic_regeneration(
                             "unit_id": "P001",
                             "severity": "fix",
                             "code": "systemic",
-                            "original_excerpt": "P1",
-                            "reason": "Systemic structural error",
-                            "suggested_direction": "Regenerate whole piece",
+                            "original_excerpt": "Параграф1",
+                            "reason": "Системная структурная ошибка",
+                            "suggested_direction": "Сгенерировать заново",
                             "source_refs": ["S000001"],
                         }
                     ],
                 }
             ),
-            json.dumps({"headline": "H2", "lead": "L2", "paragraphs": ["P2"], "sections": []}),
+            json.dumps(
+                {
+                    "headline": "Заголовок2",
+                    "lead": "Лид2",
+                    "paragraphs": ["Параграф2"],
+                    "sections": [],
+                }
+            ),
             json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
         ]
     )
     messages = {
         "ch1": [
             Message(
-                text="T",
+                text="Сообщение",
                 channel_name="ch1",
                 timestamp=datetime.now(timezone.utc),
                 sender="u",
@@ -856,15 +874,17 @@ async def test_fact_check_lifecycle_keeps_last_parsed_result_when_recheck_unavai
                     "cards": [
                         {
                             "id": "SC001",
-                            "topic": "T",
+                            "topic": "Тема",
                             "importance": "high",
-                            "summary": "S",
-                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                            "summary": "Сводка",
+                            "hard_facts": [{"text": "Факты", "source_refs": ["S000001"]}],
                         }
                     ]
                 }
             ),
-            json.dumps({"headline": "H", "lead": "L", "paragraphs": ["P"], "sections": []}),
+            json.dumps(
+                {"headline": "Заголовок", "lead": "Лид", "paragraphs": ["Параграф"], "sections": []}
+            ),
             json.dumps(
                 {
                     "status": "FIX",
@@ -874,22 +894,22 @@ async def test_fact_check_lifecycle_keeps_last_parsed_result_when_recheck_unavai
                             "unit_id": "P001",
                             "severity": "fix",
                             "code": "unverified",
-                            "original_excerpt": "P",
-                            "reason": "Unsupported factual wording",
-                            "suggested_direction": "Use attributed wording",
+                            "original_excerpt": "Параграф",
+                            "reason": "Неподтвержденная формулировка",
+                            "suggested_direction": "Использовать атрибуцию",
                             "source_refs": ["S000001"],
                         }
                     ],
                 }
             ),
-            json.dumps({"replacements": {"P001": "Repaired P"}}),
+            json.dumps({"replacements": {"P001": "Отремонтированный параграф"}}),
             "invalid json on recheck",
         ]
     )
     messages = {
         "ch1": [
             Message(
-                text="T",
+                text="Сообщение",
                 channel_name="ch1",
                 timestamp=datetime.now(timezone.utc),
                 sender="u",
@@ -931,22 +951,24 @@ async def test_generate_article_clears_stale_failure_on_successful_pass(
                     "cards": [
                         {
                             "id": "SC001",
-                            "topic": "T",
+                            "topic": "Тема",
                             "importance": "high",
-                            "summary": "S",
-                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                            "summary": "Сводка",
+                            "hard_facts": [{"text": "Факты", "source_refs": ["S000001"]}],
                         }
                     ]
                 }
             ),
-            json.dumps({"headline": "H", "lead": "L", "paragraphs": ["P"], "sections": []}),
+            json.dumps(
+                {"headline": "Заголовок", "lead": "Лид", "paragraphs": ["Параграф"], "sections": []}
+            ),
             json.dumps({"status": "PASS", "systemic_problem": False, "issues": []}),
         ]
     )
     messages = {
         "ch1": [
             Message(
-                text="T",
+                text="Сообщение",
                 channel_name="ch1",
                 timestamp=datetime.now(timezone.utc),
                 sender="u",
@@ -987,22 +1009,24 @@ async def test_generate_article_clears_stale_pass_on_audit_failure(
                     "cards": [
                         {
                             "id": "SC001",
-                            "topic": "T",
+                            "topic": "Тема",
                             "importance": "high",
-                            "summary": "S",
-                            "hard_facts": [{"text": "F", "source_refs": ["S000001"]}],
+                            "summary": "Сводка",
+                            "hard_facts": [{"text": "Факты", "source_refs": ["S000001"]}],
                         }
                     ]
                 }
             ),
-            json.dumps({"headline": "H", "lead": "L", "paragraphs": ["P"], "sections": []}),
+            json.dumps(
+                {"headline": "Заголовок", "lead": "Лид", "paragraphs": ["Параграф"], "sections": []}
+            ),
             "invalid json on initial audit",
         ]
     )
     messages = {
         "ch1": [
             Message(
-                text="T",
+                text="В городе отключили свет",
                 channel_name="ch1",
                 timestamp=datetime.now(timezone.utc),
                 sender="u",
@@ -1409,3 +1433,35 @@ async def test_state_machine_each_call_shape_attempted_at_most_once(sample_confi
     # Invariant: No duplicate (shape, compact) calls
     assert len(calls) == len(set(calls))
     assert calls == [("full", False), ("full", True), ("batched", True)]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_analyze_mixed_token_budget_and_context_size_executes_full_compact_first(
+    sample_config, mock_logger
+):
+    """Mixed cascade failure with {token_budget, context_size} must execute Full Compact first."""
+    from src.editorial_models import EditorialAnalysis, StoryCard
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(id="SC001", topic="Тема", importance="high", summary="Сводка")
+    success_compact = EditorialAnalysis(cards=[card])
+
+    mixed_error = EditorialAnalysisError("mixed failure")
+    mixed_error.stage = "provider_call"
+    mixed_error.reason = "token_budget,context_size"
+    mixed_error.failure_kinds = ("token_budget", "context_size")
+
+    generator.analyzer.analyze = AsyncMock(side_effect=[mixed_error, success_compact])
+    generator.analyzer.analyze_batched = AsyncMock()
+
+    bundle = PreparedBundle(
+        records={}, prompt_text="x" * 60_000, total_messages=100, candidate_count=100
+    )
+    result = await generator._analyze(bundle)
+
+    assert result == success_compact
+    assert generator.analyzer.analyze.await_count == 2
+    assert generator.analyzer.analyze.await_args_list[0].kwargs == {"compact": False}
+    assert generator.analyzer.analyze.await_args_list[1].kwargs == {"compact": True}
+    generator.analyzer.analyze_batched.assert_not_called()

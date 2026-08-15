@@ -67,7 +67,7 @@ def _analysis_json() -> str:
                     "uncertainties": [
                         {
                             "text": "Причина не установлена.",
-                            "basis": "No supplied source directly establishes the cause",
+                            "basis": "Ни один источник прямо не указывает причину.",
                             "related_source_refs": ["S000001"],
                         }
                     ],
@@ -110,6 +110,73 @@ async def test_editorial_analyzer_exposes_context_rejection_for_caller(mock_logg
 
     with pytest.raises(ContextSizeRejectedError):
         await analyzer.analyze(_bundle())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_mixed_token_budget_and_context_size_does_not_raise_context_size_rejected(
+    mock_logger,
+):
+    """Aggregate failure {token_budget, context_size} must NOT raise ContextSizeRejectedError so token_budget priority applies."""
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        side_effect=ProviderCascadeError(
+            "all slots failed",
+            failure_kinds=("token_budget", "context_size"),
+            failure_labels=("primary", "fallback"),
+        )
+    )
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger)
+
+    with pytest.raises(EditorialAnalysisError) as exc_info:
+        await analyzer.analyze(_bundle())
+
+    assert not isinstance(exc_info.value, ContextSizeRejectedError)
+    assert "token_budget" in exc_info.value.failure_kinds
+    assert "context_size" in exc_info.value.failure_kinds
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editorial_analyzer_rejects_single_english_card_among_russian_cards(mock_logger):
+    """Per-card language check: one English card among Russian cards fails analysis language validation."""
+    russian_card = {
+        "id": "SC001",
+        "topic": "Отключения света",
+        "importance": "high",
+        "summary": "В городе продолжаются перебои с электроснабжением.",
+        "hard_facts": [
+            {
+                "text": "Электроснабжение отключено в нескольких районах.",
+                "source_refs": ["S000001"],
+                "status": "established",
+            }
+        ],
+    }
+    english_card = {
+        "id": "SC002",
+        "topic": "Water supply",
+        "importance": "medium",
+        "summary": "Residents report severe water supply outages across the city.",
+        "hard_facts": [
+            {
+                "text": "Water pressure dropped significantly yesterday evening.",
+                "source_refs": ["S000001"],
+                "status": "attributed",
+            }
+        ],
+    }
+    # 7 Russian cards + 1 English card
+    payload = json.dumps({"cards": [russian_card] * 7 + [english_card]})
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value=payload)
+    analyzer = EditorialAnalyzer(provider, "model", mock_logger, output_language="Russian")
+
+    with pytest.raises(EditorialAnalysisError) as exc_info:
+        await analyzer.analyze(_bundle())
+
+    assert exc_info.value.stage == "response_shape"
+    assert exc_info.value.reason == "wrong_output_language"
 
 
 @pytest.mark.unit

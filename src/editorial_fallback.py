@@ -5,7 +5,13 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
-from src.editorial_models import PreparedBundle, SourceRecord, StoryCard, StoryElement
+from src.editorial_models import (
+    PreparedBundle,
+    SourceRecord,
+    StoryCard,
+    StoryElement,
+    is_expected_language,
+)
 from src.editorial_writer import ArticleDraft, ArticleSection
 
 
@@ -306,12 +312,18 @@ class StoryCardRenderer:
             lead = f"За последние сутки в городе обсуждали тему: {headings[0]}."
         else:
             lead = "За последние сутки в городе обсуждали " + ", ".join(headings) + "."
-        return ArticleDraft(
+        draft = ArticleDraft(
             headline="Что происходило в городе за сутки",
             lead=lead,
             paragraphs=[],
             sections=sections,
         )
+        if any(
+            not is_expected_language(unit.text, self.output_language)
+            for unit in draft.audit_units().values()
+        ):
+            raise ValueError(f"rendered draft language mismatch: expected {self.output_language}")
+        return draft
 
     def _paragraphs_for_card(self, card: StoryCard) -> list[str]:
         paragraphs: list[str] = []

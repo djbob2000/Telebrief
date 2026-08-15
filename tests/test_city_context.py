@@ -159,6 +159,143 @@ def test_city_context_resolver_multi_area_ambiguity():
     assert street_entity.confidence == "ambiguous"
 
 
+def test_city_context_resolver_coverage_narrowing_and_precedence():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+
+    # 1. Side / Parity narrowing on вул. Космонавтів (odd -> AKZ, even -> Sklovolokno)
+    res_odd = resolver.resolve("вул. Космонавтів 15")
+    entity_odd = next(e for e in res_odd.entities if e.entity_id == "street:Космонавтів")
+    assert len(entity_odd.municipal_areas) == 1
+    assert entity_odd.municipal_areas[0].area_id == "akz"
+    assert entity_odd.confidence == "high"
+
+    res_even = resolver.resolve("вул. Космонавтів 16")
+    entity_even = next(e for e in res_even.entities if e.entity_id == "street:Космонавтів")
+    assert len(entity_even.municipal_areas) == 1
+    assert entity_even.municipal_areas[0].area_id == "sklovolokno"
+    assert entity_even.confidence == "high"
+
+    # 2. Specific house in list on вул. Волонтерів (158 -> nahirna)
+    res_vol = resolver.resolve("вул. Волонтерів 158")
+    entity_vol = next(e for e in res_vol.entities if e.entity_id == "street:Волонтерів")
+    assert len(entity_vol.municipal_areas) == 1
+    assert entity_vol.municipal_areas[0].area_id == "nahirna"
+    assert entity_vol.confidence == "high"
+
+    # 3. Numeric range on вул. Мічуріна (105 in 99-117 -> slobidka)
+    res_mich_105 = resolver.resolve("вул. Мічуріна 105")
+    entity_mich_105 = next(e for e in res_mich_105.entities if e.entity_id == "street:Мічуріна")
+    assert len(entity_mich_105.municipal_areas) == 1
+    assert entity_mich_105.municipal_areas[0].area_id == "slobidka"
+    assert entity_mich_105.confidence == "high"
+
+    # 4. Definite NO_MATCH on specific rule narrows to baseline whole_object:
+    # On Мічуріна: Slobidka is house_numbers (99-117, 228-230/6). House 50 is NO_MATCH for Slobidka.
+    # Koloniia-Makorty is whole_object MATCH. Result: Koloniia-Makorty with high confidence.
+    res_mich_50 = resolver.resolve("вул. Мічуріна 50")
+    entity_mich_50 = next(e for e in res_mich_50.entities if e.entity_id == "street:Мічуріна")
+    assert len(entity_mich_50.municipal_areas) == 1
+    assert entity_mich_50.municipal_areas[0].area_id == "koloniia_makorty"
+    assert entity_mich_50.confidence == "high"
+
+    # 5. Missing address on multi-membership street: remains ambiguous (never guess)
+    res_mich_bare = resolver.resolve("вул. Мічуріна")
+    entity_mich_bare = next(e for e in res_mich_bare.entities if e.entity_id == "street:Мічуріна")
+    assert len(entity_mich_bare.municipal_areas) > 1
+    assert entity_mich_bare.confidence == "ambiguous"
+
+    # 6. House suffix normalization and segment from_houses on Мелітопольське шосе 106А (Cyrillic А -> RTS)
+    res_mel_106a = resolver.resolve("Мелітопольське шосе 106А")
+    entity_mel_106a = next(
+        e for e in res_mel_106a.entities if e.entity_id == "highway:Мелітопольське шосе"
+    )
+    assert len(entity_mel_106a.municipal_areas) == 1
+    assert entity_mel_106a.municipal_areas[0].area_id == "rts"
+    assert entity_mel_106a.confidence == "high"
+
+    # 7. Endpoint/landmark boundary alone is UNKNOWN, not segment match: remains ambiguous
+    res_dovg = resolver.resolve("вул. Володимира Довганюка на перехресті з Софіївською")
+    entity_dovg = next(e for e in res_dovg.entities if e.entity_id == "street:Володимира Довганюка")
+    assert len(entity_dovg.municipal_areas) > 1
+    assert entity_dovg.confidence == "ambiguous"
+
+
+def test_city_context_resolver_cross_entity_ambiguity_and_enricher():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+    enricher = StoryContextEnricher(resolver)
+
+    # 1. Bare "Шевченко" without object type matches both street and boulevard at same span -> ambiguous
+    res_bare = resolver.resolve("На Шевченко нет света")
+    places = [e for e in res_bare.entities if e.kind == "place"]
+    assert len(places) >= 2
+    assert all(p.confidence == "ambiguous" for p in places)
+
+    # 2. Enricher on bare "Шевченко" message does NOT produce false geographic spread
+    rec = SourceRecord(
+        ref="S000001",
+        message=_message("На Шевченко нет света", 1),
+        source_type="community",
+        city_context=res_bare,
+    )
+    card = StoryCard(
+        id="SC001",
+        topic="Отключения света",
+        importance="high",
+        summary="Отключения света",
+        representative_source_refs=["S000001"],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    bundle = PreparedBundle(
+        records={"S000001": rec},
+        prompt_text="",
+        total_messages=1,
+        candidate_count=1,
+    )
+    ctx = enricher.enrich(analysis, bundle)["SC001"]
+    assert ctx.scale.observed_count == 0
+    assert ctx.scale.geographic_spread is False
+
+    # 3. Explicit object types across distinct mentions -> high confidence
+    res_typed = resolver.resolve("На вул. Шевченка и бульваре Шевченка")
+    st = next(e for e in res_typed.entities if e.entity_id == "street:Шевченка")
+    bv = next(e for e in res_typed.entities if e.entity_id == "boulevard:Шевченка")
+    assert st.confidence == "high"
+    assert bv.confidence == "high"
+
+    # 4. Route number in proximity does not become street house number
+    res_route_street = resolver.resolve("Маршрут 15 зупинився на вул. Космонавтів")
+    assert any(
+        e.entity_id == "route:15" and e.confidence == "high" for e in res_route_street.entities
+    )
+    st_kosm = next(e for e in res_route_street.entities if e.entity_id == "street:Космонавтів")
+    # Because 15 was consumed as route number, street Космонавтів has no house number and remains ambiguous
+    assert st_kosm.confidence == "ambiguous"
+
+
+def test_city_context_resolver_composite_routes_and_provider_boundary():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+
+    # Composite route numbers
+    res_r1 = resolver.resolve("маршрут 4/15 задерживается")
+    assert any(e.entity_id == "route:4/15" or "4/15" in e.matched_text for e in res_r1.entities)
+
+    res_r2 = resolver.resolve("автобус 17/15 не пришел")
+    assert any("17/15" in e.matched_text for e in res_r2.entities)
+
+    res_r3 = resolver.resolve("маршрутка 5/2 на линии")
+    assert any("5/2" in e.matched_text for e in res_r3.entities)
+
+    # Provider boundary matching with + symbol
+    res_p1 = resolver.resolve("у клиентов +7Телеком проблемы с интернетом")
+    assert any(e.entity_id == "plus7telecom" for e in res_p1.entities)
+
+    res_p2 = resolver.resolve("у клиентов +7 Telecom проблемы")
+    assert any(e.entity_id == "plus7telecom" for e in res_p2.entities)
+
+    res_p3 = resolver.resolve("у клиентов +7 Телеком проблемы")
+    assert any(e.entity_id == "plus7telecom" for e in res_p3.entities)
+
+
 def test_city_context_resolver_loader_error_contract(tmp_path):
     # Non-existent file propagates FileNotFoundError
     with pytest.raises(FileNotFoundError):

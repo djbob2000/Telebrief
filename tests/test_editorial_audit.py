@@ -272,8 +272,12 @@ async def test_fact_checker_audit_payload_contains_no_duplicate_draft_text(mock_
 
     assert "draft" not in payload
     assert "article_outline" not in payload
-    assert "audit_units" in payload
-    assert set(payload.keys()) == {"audit_units", "story_cards", "source_records"}
+    assert set(payload.keys()) == {
+        "audit_units",
+        "story_cards",
+        "story_contexts",
+        "source_records",
+    }
 
 
 @pytest.mark.unit
@@ -375,15 +379,16 @@ def test_compact_story_cards_minimal_mode_retains_summaries_only():
         uncertainties=[Uncertainty(text="Unc", related_source_refs=["S000001"])],
     )
     analysis = EditorialAnalysis(cards=[card])
-    compact_cards = LightFactChecker._compact_story_cards(analysis, minimal=True)
+    checker = LightFactChecker(MagicMock(), "model", MagicMock())
+    compact = checker._compact_story_cards(analysis, minimal=True)
 
-    assert len(compact_cards) == 1
-    c = compact_cards[0]
-    assert set(c.keys()) == {"id", "topic", "summary", "source_refs"}
-    assert c["id"] == "SC001"
-    assert c["source_refs"] == ["S000001", "S000002"]
-    assert "hard_facts" not in c
-    assert "uncertainties" not in c
+    assert len(compact) == 1
+    assert compact[0]["id"] == "SC001"
+    assert compact[0]["topic"] == "Disruptions"
+    assert compact[0]["summary"] == "Power grid disruptions."
+    assert compact[0]["source_refs"] == ["S000001", "S000002"]
+    assert "hard_facts" not in compact[0]
+    assert "uncertainties" not in compact[0]
 
 
 @pytest.mark.unit
@@ -416,7 +421,12 @@ async def test_fact_checker_compact_retry_triggers_only_on_token_budget_exhausti
     second_payload = json.loads(
         provider.chat_completion.await_args_list[1].kwargs["messages"][1]["content"]
     )
-    assert set(second_payload) == {"audit_units", "story_cards", "source_records"}
+    assert set(second_payload) == {
+        "audit_units",
+        "story_cards",
+        "story_contexts",
+        "source_records",
+    }
     for c in second_payload["story_cards"]:
         assert set(c) == {"id", "topic", "summary", "source_refs"}
         assert "hard_facts" not in c
@@ -560,3 +570,80 @@ async def test_audit_prompts_enforce_output_language(mock_logger):
     user_msg = messages[1]["content"]
     assert "strictly in Russian" in sys_msg
     assert "strictly in Russian" in user_msg
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audit_passes_story_contexts_in_check_and_repair(mock_logger):
+    from src.city_context import AreaEvidence, ScaleEvidence, StoryContext
+
+    bundle = _bundle()
+    bundle.story_contexts = {
+        "SC001": StoryContext(
+            card_id="SC001",
+            municipal_areas=(
+                AreaEvidence(
+                    area_set="municipal_neighborhood_committees_2021",
+                    area_id="center",
+                    source_refs=("S000001",),
+                ),
+            ),
+            colloquial_area_ids=("center",),
+            scale=ScaleEvidence(
+                observed_area_ids=("center",),
+                observed_count=1,
+                geographic_spread=False,
+                broad_prevalence_supported=False,
+                majority_supported=False,
+            ),
+        )
+    }
+
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps({"status": "PASS", "systemic_problem": False, "issues": []})
+    )
+    checker = LightFactChecker(provider, "model", mock_logger)
+    await checker.check(_draft(), EditorialAnalysis([]), bundle)
+
+    call_args = provider.chat_completion.call_args[1]
+    user_msg = call_args["messages"][1]["content"]
+    assert "story_contexts" in user_msg
+    assert "center" in user_msg
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_audit_repair_discards_wrong_language_replacement(mock_logger):
+    """Repair returns English text when language is Russian -> discarded, original text retained."""
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps(
+            {
+                "replacements": {
+                    "P002": "Generator sales doubled according to market rumors.",
+                }
+            }
+        )
+    )
+    checker = LightFactChecker(provider, "model", mock_logger, output_language="Russian")
+    draft = _draft()
+    result = FactCheckResult(
+        status="FIX",
+        systemic_problem=False,
+        issues=[
+            AuditIssue(
+                unit_id="P002",
+                code="unsupported_number",
+                original_excerpt="Продажи генераторов выросли вдвое.",
+                reason="Unsupported number",
+                suggested_direction="Remove comparison",
+                source_refs=[],
+                severity="fix",
+            )
+        ],
+    )
+    repaired = await checker.repair(draft, result, EditorialAnalysis([]), _bundle())
+
+    # P002 replacement was English -> discarded -> original remains
+    assert repaired.paragraphs[1] == "Продажи генераторов выросли вдвое."
