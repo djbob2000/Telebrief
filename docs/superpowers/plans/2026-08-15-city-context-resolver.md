@@ -49,7 +49,7 @@
 
 ---
 
-### Task 1: Check in CityProfile and add typed context models
+### Task 1: Check in CityProfile and add typed context models (COMPLETED)
 
 **Files:**
 - Existing: `data/city_profiles/berdyansk.yaml`
@@ -110,7 +110,7 @@ class StoryContext:
     scale: ScaleEvidence = ScaleEvidence()
 ```
 
-- [ ] **Step 1: Write failing model/profile validation tests in `tests/test_city_context.py`**
+- [x] **Step 1: Write failing model/profile validation tests in `tests/test_city_context.py`**
 
 ```python
 import yaml
@@ -185,7 +185,7 @@ def test_city_context_models_instantiation():
     assert context.scale.geographic_spread is True
 ```
 
-- [ ] **Step 2: Run the failing tests**
+- [x] **Step 2: Run the failing tests**
 
 ```bash
 uv run pytest -q tests/test_city_context.py --no-cov
@@ -193,11 +193,11 @@ uv run pytest -q tests/test_city_context.py --no-cov
 
 Expected: FAIL (`ModuleNotFoundError: No module named 'src.city_context_models'`).
 
-- [ ] **Step 3: Implement pure dataclasses in `src/city_context_models.py`**
+- [x] **Step 3: Implement pure dataclasses in `src/city_context_models.py`**
 
 Create `src/city_context_models.py` defining `AreaCandidate`, `ResolvedEntity`, `CityContextAnnotation`, `AreaEvidence`, `ScaleEvidence`, and `StoryContext`.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 ```bash
 uv run pytest -q tests/test_city_context.py --no-cov
@@ -205,7 +205,7 @@ uv run pytest -q tests/test_city_context.py --no-cov
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/city_context_models.py tests/test_city_context.py
