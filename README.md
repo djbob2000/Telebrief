@@ -52,7 +52,11 @@ Before you begin, you'll need:
 
    Select the provider explicitly in `config.yaml` with `settings.ai_provider`.
    For Google use `ai_provider: "google"`, set `ai_model: "gemini-3.6-flash"`,
-   and store the key in `.env` as `GEMINI_API_KEY`.
+   and store the primary key in `.env` as `GEMINI_API_KEY`. To keep article generation
+   available during quota or transport failures, optionally add `GEMINI_API_KEY_2` and
+   `GEMINI_API_KEY_3`; the application tries them in order, then can use an optional
+   `OPENROUTER_API_KEY` with model `openrouter/free` as the final fallback.
+   OpenRouter can also be selected directly with `settings.ai_provider: "openrouter"`.
 
 5. **Your Telegram User ID** - Get from [@userinfobot](https://t.me/userinfobot)
    - Send `/start` to get your ID
