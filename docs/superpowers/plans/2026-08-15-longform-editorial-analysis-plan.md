@@ -1,6 +1,6 @@
 # Compact Editorial Analysis and Long-Form Article Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILLS: Use superpowers:test-driven-development for every feature or fix, use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task, and use superpowers:verification-before-completion before claiming the implementation is complete. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Keep full-day editorial analysis as the primary path while bounding the analyzer’s response to a small set of important Story Cards so the free-form writer can reliably produce a cohesive long-form daily article.
 
@@ -18,6 +18,7 @@
 - Explicit context/request-size rejection activates the existing batching path; timeout, quota and ordinary provider failures use provider cascade/retry and never activate batching.
 - Batching does not change editorial semantics. Batch refs are validated against their batch; the merged result is validated against the original complete bundle.
 - Writer receives selected Story Cards plus selected original source excerpts, not the full daily corpus. It may synthesize and connect supplied material but may not add a new independently verifiable fact.
+- If Story Cards produce no resolvable representative refs, the analysis is unusable for long-form writing; use deterministic fallback over the complete cleaned bundle. Never attach unrelated records merely to give the writer evidence.
 - Target article shape is soft: usually 8–12 substantive paragraphs; roughly 900–1500 words on a sufficiently busy day, up to about 1800 for genuinely strong material, and 600–900 words when the source day is thin. Never pad for length and never reject a good article for missing a word count.
 - `WARN` never blocks a structurally valid article; targeted repair remains bounded and does not trigger an infinite audit loop.
 - Deterministic fallback remains a compact thematic digest, never the normal long-form writer and never a raw-message dump.
@@ -216,7 +217,7 @@ Keep the evidence boundary and attribution rules, but explicitly permit combinin
 
 - [ ] **Step 4: Update the skill’s product contract**
 
-In `.agents/skills/news-style/SKILL.md`, preserve source locking, attribution, high-risk and privacy rules, but replace any implication that a short brief is the default for a sufficiently rich day with the approved soft long-form target. State that a daily article should become a coherent narrative from several supported stories, while thin source material may remain shorter. Do not reintroduce claim-ID or sentence-level proof requirements.
+Before editing `.agents/skills/news-style/SKILL.md`, invoke the `skill-creator` skill and follow its guidance. Then preserve source locking, attribution, high-risk and privacy rules, but replace any implication that a short brief is the default for a sufficiently rich day with the approved soft long-form target. State that a daily article should become a coherent narrative from several supported stories, while thin source material may remain shorter. Do not reintroduce claim-ID or sentence-level proof requirements.
 
 - [ ] **Step 5: Run writer/skill tests and commit**
 
@@ -289,7 +290,7 @@ Collect `StoryCard.all_source_refs()` in card order, preserve meaningful refs fo
 
 - [ ] **Step 5: Route writer and audit through the selected bundle**
 
-Call `writer.write(analysis, writer_bundle)` and `_repair_and_check(draft, analysis, writer_bundle)`. Keep fallback calls as `_fallback(bundle, reason)`. If selection yields no records, retain Story Cards as the writer’s notes but use a bounded source subset chosen from the highest-priority `news`/`official` records; never revert to a raw latest-message slice.
+Call `writer.write(analysis, writer_bundle)` and `_repair_and_check(draft, analysis, writer_bundle)`. Keep fallback calls as `_fallback(bundle, reason)`. If Story Cards produce no resolvable representative refs, treat the analysis as unusable for long-form writing and call the deterministic fallback with the complete cleaned bundle. Do not attach unrelated `news`/`official` records merely to provide evidence to the writer, and never revert to a raw latest-message slice.
 
 - [ ] **Step 6: Run orchestration tests and commit**
 
