@@ -192,3 +192,18 @@ async def test_repair_replaces_only_flagged_unit(mock_logger):
 
     assert repaired.paragraphs[0] == _draft().paragraphs[0]
     assert repaired.paragraphs[1] == "Продажи не оценивались."
+
+
+def test_light_fact_checker_prompt_distinguishes_synthesis_from_unverified_facts():
+    import logging
+
+    checker = LightFactChecker(
+        provider=None,
+        model="test-model",
+        logger=logging.getLogger("test"),
+    )
+    prompt = checker._build_system_prompt()
+    assert "synthesis" in prompt.lower()
+    assert "FIX" in prompt
+    assert "WARN" in prompt
+    assert "verifiable" in prompt.lower() or "unverified" in prompt.lower()

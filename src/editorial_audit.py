@@ -104,6 +104,23 @@ class LightFactChecker:
         self.max_output_tokens = max_output_tokens
         self.repair_max_output_tokens = repair_max_output_tokens or max_output_tokens
 
+    def _build_system_prompt(self) -> str:
+        return (
+            "You are a light newsroom fact checker. Inspect the whole draft against the Story "
+            "Cards and original source records. Return JSON only: status PASS, WARN or FIX, "
+            "systemic_problem boolean, and issues. Find only new concrete independently "
+            "verifiable facts without support: numbers, prices, dates, names, official actions, "
+            "causes, mechanisms, damage, sales, medical/legal/military claims, casualties and "
+            "precise scale. Legitimate collective synthesis of resident observations and "
+            "discussions is not a FIX merely because no single message literally contains the "
+            "whole synthesized sentence. Use PASS when well supported and WARN for soft "
+            "overstatement or debatable framing; reserve FIX for unsupported verifiable facts, "
+            "lost attribution, false causality or high-risk escalation. Emotional or mood assertions "
+            "require direct source evidence. Attribution and source_refs are inspection aids, "
+            "not proof by themselves. WARN is non-blocking; use FIX only when a local fragment "
+            "must be changed."
+        )
+
     async def check(
         self,
         draft: ArticleDraft,
@@ -112,17 +129,7 @@ class LightFactChecker:
         audit_units: dict[str, AuditUnitLocator] | None = None,
     ) -> FactCheckResult:
         units = audit_units or draft.audit_units()
-        system = (
-            "You are a light newsroom fact checker. Inspect the whole draft against the Story "
-            "Cards and original source records. Return JSON only: status PASS, WARN or FIX, "
-            "systemic_problem boolean, and issues. Find only new concrete independently "
-            "verifiable facts without support: numbers, prices, dates, names, official actions, "
-            "causes, mechanisms, damage, sales, medical/legal/military claims, casualties and "
-            "precise scale. Ordinary synthesis such as saying a topic was prominent may pass "
-            "when supported by the supplied material. Attribution and source_refs are inspection "
-            "aids, not proof by themselves. WARN is non-blocking; use FIX only when a local "
-            "fragment must be changed."
-        )
+        system = self._build_system_prompt()
         user = json.dumps(
             {
                 "draft": draft.to_dict(),

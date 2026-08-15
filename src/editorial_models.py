@@ -424,6 +424,14 @@ class EditorialAnalysis:
             "excluded_refs": self.excluded_refs,
         }
 
+    def all_source_refs(self) -> set[str]:
+        refs: set[str] = set()
+        for card in self.cards:
+            refs.update(card.all_source_refs())
+        refs.update(self.labels.keys())
+        refs.update(self.excluded_refs)
+        return refs
+
     def validate_refs(self, available_refs: set[str]) -> None:
         for card in self.cards:
             card.validate_refs(available_refs)

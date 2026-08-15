@@ -295,3 +295,107 @@ async def test_article_generator_empty_messages_raises():
 
     with pytest.raises(ValueError, match="No messages provided for article generation"):
         await generator.generate_article({"Бердянск": []})
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_regression_pipeline_recovers_from_string_elements_and_bad_refs(
+    sample_config, mock_logger, mocker
+):
+    from src.editorial_writer import ArticleDraft, ArticleSection
+
+    analysis_json = json.dumps(
+        {
+            "cards": [
+                {
+                    "id": "SC001",
+                    "topic": "Электроснабжение",
+                    "summary": "Отключения света на АКЗ и в Лисках",
+                    "sources": ["S000001", "S000002"],
+                    "hard_facts": [
+                        "На АКЗ отключилось электричество",
+                        "В Лисках также нет света",
+                    ],
+                    "uncertainties": [{"text": "Сроки подачи не сообщаются"}],
+                },
+                {
+                    "id": "SC002",
+                    "topic": "Связь",
+                    "summary": "Перебои у операторов",
+                    "sources": ["S000001", "S999999"],  # Contains 1 bad ref
+                    "community_observations": ["Жители жалуются на мобильную связь"],
+                },
+            ]
+        }
+    )
+
+    writer_draft = ArticleDraft(
+        headline="Как Бердянск прожил сутки с перебоями света и связи",
+        lead="Главными темами дня в городе стали перебои с электричеством и мобильной связью.",
+        sections=[
+            ArticleSection(
+                heading="Перебои со светом и зарядка гаджетов: что происходило в районах",
+                paragraphs=[
+                    "В течение дня жители АКЗ и Лисок сообщали об отключениях электричества."
+                ],
+            ),
+            ArticleSection(
+                heading="Ситуация с мобильной связью",
+                paragraphs=["В городских чатах жители также отмечали перебои со связью."],
+            ),
+        ],
+    )
+
+    generator = ArticleGenerator(sample_config, mock_logger)
+    generator.provider.chat_completion = AsyncMock(
+        side_effect=[
+            analysis_json,  # Analyzer call
+            json.dumps(
+                {"status": "PASS", "systemic_problem": False, "issues": []}
+            ),  # Fact-check call
+        ]
+    )
+
+    analyzer_spy = mocker.spy(generator.analyzer, "analyze")
+    generator.fallback_builder.build = mocker.MagicMock(wraps=generator.fallback_builder.build)
+    generator.writer.write = AsyncMock(return_value=writer_draft)
+
+    messages = {
+        "channel_1": [
+            Message(
+                text="На АКЗ нет света",
+                channel_name="channel_1",
+                timestamp=datetime.now(timezone.utc),
+                sender="user1",
+                message_id=1,
+                link="https://t.me/c1/1",
+                has_media=False,
+                media_type="",
+            ),
+            Message(
+                text="В Лисках тоже выключили",
+                channel_name="channel_1",
+                timestamp=datetime.now(timezone.utc),
+                sender="user2",
+                message_id=2,
+                link="https://t.me/c1/2",
+                has_media=False,
+                media_type="",
+            ),
+        ]
+    }
+
+    title, lead, body = await generator.generate_article(messages)
+
+    assert title == "Как Бердянск прожил сутки с перебоями света и связи"
+    assert "Перебои со светом" in body
+    assert generator.fallback_builder.build.call_count == 0
+    assert generator.writer.write.call_count == 1
+    assert analyzer_spy.call_count == 1
+    assert analyzer_spy.call_args.kwargs.get("compact", False) is False
+
+    # Verify S999999 was sanitized out and never passed to writer bundle
+    call_args = generator.writer.write.call_args
+    passed_analysis, passed_bundle = call_args[0]
+    assert "S999999" not in passed_analysis.all_source_refs()
+    assert "S999999" not in passed_bundle.records
