@@ -96,6 +96,8 @@ class ArticleConfig:
     generation_retries: int = 2
     generation_retry_delay: float = 1.0
     telegraph_access_token: str | None = None
+    save_debug_artifacts: bool = False
+    debug_artifact_dir: str = "data/debug/editorial"
 
 
 @dataclass
@@ -369,6 +371,14 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
             f"settings.article.telegraph_access_token must be a string or null, got {type(token).__name__}"
         )
 
+    save_debug_artifacts = raw.get("save_debug_artifacts", False)
+    if not isinstance(save_debug_artifacts, bool):
+        raise ValueError("settings.article.save_debug_artifacts must be a bool")
+
+    debug_artifact_dir = raw.get("debug_artifact_dir", "data/debug/editorial")
+    if not isinstance(debug_artifact_dir, str) or not debug_artifact_dir.strip():
+        raise ValueError("settings.article.debug_artifact_dir must be a non-empty string")
+
     return ArticleConfig(
         enabled=enabled,
         schedule_time=schedule_time.strip(),
@@ -379,6 +389,8 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
         generation_retries=generation_retries,
         generation_retry_delay=float(generation_retry_delay),
         telegraph_access_token=token.strip() if token else None,
+        save_debug_artifacts=save_debug_artifacts,
+        debug_artifact_dir=debug_artifact_dir.strip(),
     )
 
 

@@ -134,6 +134,8 @@ settings:
     lookback_hours: 24
     author_name: "Бердянск Новости"
     fallback_save_dir: "data/articles"
+    # save_debug_artifacts: false  # opt-in; contains source messages and stays local
+    # debug_artifact_dir: "data/debug/editorial"
     generation_retries: 2  # Additional model attempts after a transient/error response.
     generation_retry_delay: 1.0  # Seconds between attempts.
     # telegraph_access_token: ""  # Optional: generated automatically if omitted

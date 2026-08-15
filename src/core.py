@@ -531,26 +531,19 @@ async def generate_and_send_digest(
 
 
 def _build_fallback_article(messages_by_channel: dict[str, list[Message]]) -> tuple[str, str, str]:
-    """Build a transparent source-based article when the model is unavailable."""
-    candidates: list[tuple[datetime, str, Message]] = []
-    for channel_name, messages in messages_by_channel.items():
-        for message in messages:
-            text = " ".join(str(message.text or "").split())
-            if text:
-                candidates.append((message.timestamp, channel_name, message))
-    if not candidates:
-        raise ValueError("Cannot build fallback article without source messages")
+    """Build the same thematic fallback as ArticleGenerator, never a raw message dump."""
+    from src.config_loader import SourceRoleResolver
+    from src.editorial_fallback import DeterministicStoryCardBuilder, StoryCardRenderer
+    from src.editorial_input import EditorialInputBuilder
 
-    candidates.sort(key=lambda item: item[0], reverse=True)
-    selected = candidates[:5]
-    title = "Краткая сводка сообщений за последние 24 часа"
-    lead = "Редакционная генерация временно недоступна. Ниже собраны последние сообщения из источников."
-    parts = [
-        f"**{channel}**, {message.timestamp:%H:%M}: {message.text.strip()}"
-        for _, channel, message in selected
-    ]
-    body = f"# {title}\n\n{lead}\n\n" + "\n\n".join(parts)
-    return title, lead, body
+    bundle = EditorialInputBuilder(SourceRoleResolver([])).build(messages_by_channel)
+    cards = DeterministicStoryCardBuilder().build(bundle)
+    draft = StoryCardRenderer().render(cards)
+    markdown = draft.to_markdown()
+    lines = [line.strip() for line in markdown.splitlines() if line.strip()]
+    title = lines[0].removeprefix("# ") if lines else "Редакционная заметка"
+    lead = lines[1] if len(lines) > 1 else ""
+    return title, lead, markdown
 
 
 async def generate_and_publish_article(
