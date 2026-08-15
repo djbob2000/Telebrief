@@ -214,7 +214,7 @@ git commit -m "feat: add Berdyansk city context profile models"
 
 ---
 
-### Task 2: Normalize profile coverage rules in YAML and implement deterministic resolver
+### Task 2: Normalize profile coverage rules in YAML and implement deterministic resolver (COMPLETED)
 
 **Files:**
 - Modify: `data/city_profiles/berdyansk.yaml`
@@ -233,7 +233,7 @@ class CityContextResolver:
     def resolve(self, text: str) -> CityContextAnnotation: ...
 ```
 
-- [ ] **Step 1: Write RED tests for direct area resolution, exact place resolution, aliases, and address precision in `tests/test_city_context.py`**
+- [x] **Step 1: Write RED tests for direct area resolution, exact place resolution, aliases, and address precision in `tests/test_city_context.py`**
 
 ```python
 def test_city_context_resolver_exact_and_aliases():
@@ -299,13 +299,13 @@ def test_city_context_resolver_loader_error_contract(tmp_path):
         CityContextResolver.from_yaml(bad_yaml)
 ```
 
-- [ ] **Step 2: Run tests and verify RED**
+- [x] **Step 2: Run tests and verify RED**
 
 ```bash
 uv run pytest -q tests/test_city_context.py --no-cov
 ```
 
-- [ ] **Step 3: Convert all 468 `rule:` strings to structured `coverage:` in `data/city_profiles/berdyansk.yaml`**
+- [x] **Step 3: Convert all 468 `rule:` strings to structured `coverage:` in `data/city_profiles/berdyansk.yaml`**
 
 Mechanically convert:
 - 432 `whole_object` mappings $\rightarrow$ `coverage: {kind: whole_object}`
@@ -318,7 +318,7 @@ Mechanically convert:
 Verify with acceptance assertions:
 `count_rule_keys(profile) == 0` and `count_coverage_keys(profile) == 468`.
 
-- [ ] **Step 4: Implement `CityContextResolver` in `src/city_context.py`**
+- [x] **Step 4: Implement `CityContextResolver` in `src/city_context.py`**
 
 - Build loader validating schema and raising `CityProfileError` on malformed structures (`FileNotFoundError` propagates).
 - Build normalization `_normalize(text)` (NFKC, casefold, replace ё $\rightarrow$ е, trim).
@@ -332,13 +332,13 @@ Verify with acceptance assertions:
 - Implement address parser for house numbers/segments when matching multi-candidate streets.
 - If coverage details are insufficient, return all candidates with `confidence: "ambiguous"`.
 
-- [ ] **Step 5: Run tests to verify PASS**
+- [x] **Step 5: Run tests to verify PASS**
 
 ```bash
 uv run pytest -q tests/test_city_context.py --no-cov
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add data/city_profiles/berdyansk.yaml src/city_context.py tests/test_city_context.py

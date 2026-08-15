@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
+from src.city_context import CityContextResolver, CityProfileError
 from src.city_context_models import (
     AreaCandidate,
     AreaEvidence,
@@ -27,6 +29,25 @@ def test_city_profile_yaml_structure():
         is False
     )
     assert len(profile["stable_context"]["geography"]["street_gazetteer"]["entries"]) >= 400
+
+
+def test_city_profile_yaml_coverage_conversion():
+    path = Path("data/city_profiles/berdyansk.yaml")
+    with open(path, "r", encoding="utf-8") as f:
+        profile = yaml.safe_load(f)
+
+    entries = profile["stable_context"]["geography"]["street_gazetteer"]["entries"]
+    rule_count = 0
+    coverage_count = 0
+    for entry in entries:
+        for m in entry.get("area_memberships", []):
+            if "rule" in m:
+                rule_count += 1
+            if "coverage" in m:
+                coverage_count += 1
+
+    assert rule_count == 0
+    assert coverage_count == 468
 
 
 def test_city_context_models_instantiation():
@@ -75,3 +96,69 @@ def test_city_context_models_instantiation():
     )
     assert context.card_id == "SC001"
     assert context.scale.geographic_spread is True
+
+
+def test_city_context_resolver_exact_and_aliases():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+
+    # Direct area mentions (stable identity + canonical name)
+    res_center = resolver.resolve("В центре снова нет света")
+    area_center = next(
+        e for e in res_center.entities if e.kind == "area" and e.entity_id == "center"
+    )
+    assert area_center.entity_id == "center"
+    assert area_center.canonical_name == "Центр міста"
+
+    res_liski = resolver.resolve("На Лисках нет воды")
+    area_liski = next(e for e in res_liski.entities if e.kind == "area" and e.entity_id == "liski")
+    assert area_liski.entity_id == "liski"
+    assert area_liski.canonical_name == "Ліски"
+
+    # Streets and aliases
+    res1 = resolver.resolve("На ул. Шевченко нет света")
+    assert any(e.entity_id == "street:Шевченка" for e in res1.entities)
+
+    res2 = resolver.resolve("На бульваре Шевченко нет света")
+    assert any(e.entity_id == "boulevard:Шевченка" for e in res2.entities)
+
+    res3 = resolver.resolve("На Морозова воды нет")
+    assert any(e.entity_id == "street:Північна" for e in res3.entities)
+
+    # Providers and routes
+    res4 = resolver.resolve("Юпитер снова работает")
+    assert any(e.entity_id == "jupiter" for e in res4.entities)
+
+    res5 = resolver.resolve("Поинт лежит")
+    assert any(e.entity_id == "point" for e in res5.entities)
+
+    res6 = resolver.resolve("маршрут 15 сегодня не ходит")
+    assert any(e.entity_id == "route:15" for e in res6.entities)
+
+    # Bare number outside transport context does not become route 15
+    res7 = resolver.resolve("В доме 15 отключили воду")
+    assert not any(e.entity_id == "route:15" for e in res7.entities)
+
+
+def test_city_context_resolver_multi_area_ambiguity():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+
+    res = resolver.resolve("На Мелитопольском шоссе нет света")
+    street_entity = next(
+        e
+        for e in res.entities
+        if "Мелітопольське" in e.canonical_name or "шосе" in e.canonical_name
+    )
+    assert len(street_entity.municipal_areas) > 1
+    assert street_entity.confidence == "ambiguous"
+
+
+def test_city_context_resolver_loader_error_contract(tmp_path):
+    # Non-existent file propagates FileNotFoundError
+    with pytest.raises(FileNotFoundError):
+        CityContextResolver.from_yaml(tmp_path / "non_existent.yaml")
+
+    # Corrupt YAML raises CityProfileError
+    bad_yaml = tmp_path / "bad.yaml"
+    bad_yaml.write_text("schema_version: 999\nprofile_id: [invalid", encoding="utf-8")
+    with pytest.raises(CityProfileError):
+        CityContextResolver.from_yaml(bad_yaml)
