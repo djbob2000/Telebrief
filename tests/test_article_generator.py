@@ -2056,3 +2056,84 @@ async def test_feedback_guided_regeneration_failure_triggers_story_card_fallback
     assert title == "Что происходило в городе за сутки"
     assert "Сводка" in body
     generator.fallback_renderer.render.assert_called_once_with(analysis.cards)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_repair_structural_failure_falls_back_to_story_cards_not_rejected_draft(
+    sample_config, mock_logger
+):
+    """Regression: When initial audit returns FIX and local repair produces a structurally malformed draft,
+
+    the rejected original draft is NOT published, Story Card fallback is used, and fallback_builder is NOT called.
+    """
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(
+        id="SC001",
+        topic="Свет",
+        importance="high",
+        summary="Сводка по отключениям",
+        representative_source_refs=["S000001"],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    rejected_initial_draft = ArticleDraft(
+        "Бракованный заголовок", "Бракованный лид", ["Бракованный текст абзаца"], []
+    )
+    # Malformed draft produced by repair (empty title/lead or invalid markdown that fails deterministic_preflight)
+    malformed_repaired_draft = ArticleDraft("", "", [], [])
+
+    fix_result = FactCheckResult(
+        "FIX",
+        systemic_problem=False,
+        issues=[
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Бракованный текст",
+                "Scale unsupported",
+                "Fix",
+                [],
+                "fix",
+            )
+        ],
+    )
+
+    generator._analyze = AsyncMock(return_value=analysis)
+    generator.writer.write = AsyncMock(return_value=rejected_initial_draft)
+    generator.fact_checker.check = AsyncMock(return_value=fix_result)
+    generator.fact_checker.repair = AsyncMock(return_value=malformed_repaired_draft)
+    generator.fallback_renderer.render = MagicMock(
+        return_value=ArticleDraft(
+            "Что происходило в городе за сутки", "Лид сводки", ["Сводка по отключениям"], []
+        )
+    )
+    generator.fallback_builder.build = MagicMock()
+
+    bundle_messages = {
+        "ch": [
+            Message(
+                text="Жители сообщают про свет",
+                sender="u",
+                timestamp=datetime.now(timezone.utc),
+                link="l",
+                channel_name="ch",
+                has_media=False,
+                media_type="",
+                message_id=1,
+            )
+        ]
+    }
+
+    title, lead, body = await generator.generate_article(bundle_messages)
+
+    # 1. Story Card fallback was used
+    assert title == "Что происходило в городе за сутки"
+    assert "Сводка по отключениям" in body
+    generator.fallback_renderer.render.assert_called_once_with(analysis.cards)
+
+    # 2. Original rejected writer draft was NOT published
+    assert title != "Бракованный заголовок"
+    assert "Бракованный текст" not in body
+
+    # 3. Deterministic fallback builder was NOT called while AI Story Cards were valid
+    generator.fallback_builder.build.assert_not_called()

@@ -294,8 +294,11 @@ targets, not validation limits; never pad length.
             if fix_issues:
                 feedback_lines = ["AUDIT REVISION FEEDBACK:"]
                 for issue in fix_issues:
-                    detail = issue.reason or issue.suggested_direction or ""
-                    feedback_lines.append(f"- {issue.unit_id} / {issue.code}: {detail}".strip())
+                    feedback_lines.append(f"- {issue.unit_id} / {issue.code}")
+                    if issue.reason:
+                        feedback_lines.append(f"  Reason: {issue.reason}")
+                    if issue.suggested_direction:
+                        feedback_lines.append(f"  Direction: {issue.suggested_direction}")
                 feedback_lines.extend(
                     [
                         "",

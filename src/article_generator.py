@@ -401,7 +401,12 @@ class ArticleGenerator:
             if result.status != "FIX":
                 return current, result
             current = await self.fact_checker.repair(current, result, analysis, bundle)
-            deterministic_preflight(current.to_markdown())
+            try:
+                deterministic_preflight(current.to_markdown())
+            except Exception as exc:
+                raise UnsafeDraftError(
+                    f"local repair preflight failed: {type(exc).__name__}"
+                ) from exc
             try:
                 result = await self.fact_checker.check(current, analysis, bundle)
                 self._save_fact_check_result("fact_check_final.json", result)
