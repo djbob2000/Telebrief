@@ -268,3 +268,16 @@ def test_editorial_input_builder_with_city_context_resolver():
     # Verify rendered local_context line in prompt_text
     assert "local_context: street:Шевченка" in bundle.prompt_text
     assert "local_context: area:center" in bundle.prompt_text
+
+
+def test_input_builder_renders_forward_origin():
+    msg = _message("Официальное сообщение об отключении газа", 1)
+    msg.forward_origin_name = "Запорожгаз"
+    msg.forward_origin_username = "zaporozhgaz_official"
+    builder = EditorialInputBuilder(
+        SourceRoleResolver([ChannelConfig(id="@source", name="Source", source_type="community")])
+    )
+
+    bundle = builder.build({"Source": [msg]})
+
+    assert "forward_origin: name=Запорожгаз, username=zaporozhgaz_official" in bundle.prompt_text

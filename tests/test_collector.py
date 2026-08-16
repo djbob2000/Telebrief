@@ -137,3 +137,20 @@ async def test_fetch_messages_keeps_whole_source_behavior_without_topics(
 
     assert result["Test Channel"] == messages
     collector.fetch_channel_messages.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_to_project_message_extracts_forward_origin(sample_config, mock_logger):
+    """Forward metadata (channel title and username) is preserved in Message."""
+    collector = _collector(sample_config, mock_logger)
+    message = _telegram_message(50, "Официальное сообщение от Запорожгаза")
+    fwd_chat = SimpleNamespace(title="Запорожгаз", username="zaporozhgaz_official")
+    message.forward = SimpleNamespace(from_name=None, chat=fwd_chat, sender=None, post_author=None)
+    entity = SimpleNamespace(id=123, username="source")
+
+    result = await collector._to_project_message(entity, "Source", message)
+
+    assert result is not None
+    assert result.forward_origin_name == "Запорожгаз"
+    assert result.forward_origin_username == "zaporozhgaz_official"

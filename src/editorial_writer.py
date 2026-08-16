@@ -260,12 +260,36 @@ internal identifiers, source refs, Markdown or commentary. Return strict JSON on
 headline, lead, paragraphs, and sections. When structuring into chapters/sections, leave
 top-level paragraphs as empty [] to maintain a single canonical body. Use sections only
 when real material supports them (usually 3–5 thematic chapters). Usually write 8–12 substantive paragraphs.
-Usually prefer one or two materially informative unofficial versions. Include more only when
-the additional versions materially change the reader’s understanding of the uncertainty.
-Never enumerate speculation merely for completeness. Make the verified baseline explicit before
-presenting unofficial estimates. Place significant unofficial versions in the relevant chapter
-(use an optional end block 'Что пока не подтверждено' only when there are multiple significant
-unresolved items worth summarizing).
+
+Source attribution and collection mechanics:
+Do NOT reveal internal collection mechanics to the reader. Avoid phrases like 'в чате', 'участники чата',
+'сообщение в чате', 'в Telegram-чате обсуждают', 'один из участников написал'. Use natural journalistic
+city attribution: 'жители сообщают', 'горожане обсуждают', 'по словам жителей', 'среди родителей обсуждается',
+'по наблюдениям горожан'. Core principle: Do not hide uncertainty — hide the technical method of data collection.
+
+Official forwarded messages:
+If a source record contains forward_origin with the name or username of an official organization or utility
+(e.g. 'Запорожгаз', 'МЧС', 'Администрация'), attribute the information directly to that official source
+(e.g. '«Запорожгаз» предупредил...', 'Бердянский участок «Запорожгаза» сообщил...'). Do NOT artificially
+downgrade it to 'опубликовали сообщение от имени организации' merely because it was received as a forward.
+
+Weaving uncertainty into narrative chapters:
+Do NOT create a separate checklist section like 'Что пока не подтверждено' or 'Что не подтверждено'.
+Weave rumors, unofficial versions, and uncertainties directly and naturally into their relevant thematic story
+chapters (e.g. rumors about transformer relocation inside the power outage chapter, versions about school formats
+inside the education chapter). Usually prefer one or two materially informative unofficial versions. Include more
+only when the additional versions materially change the reader's understanding of the uncertainty. Never enumerate
+speculation merely for completeness. Make the verified baseline explicit before presenting unofficial estimates.
+
+Direct quotes:
+Use verbatim direct quotes sparingly and selectively (typically 2–4 sharp, authentic quotes across the entire article)
+to convey the human mood and living reality. Paraphrase the rest in clear journalistic language.
+
+Resident experience and technical advice:
+Present technical lifehacks, practical tips, and community explanations (such as powering routers from powerbanks,
+voltage specs, or optic fiber vs twisted pair) as resident experience, advice, or observations ('По опыту жителей...',
+'Как отмечают горожане...'), not as universal technical laws.
+
 Deterministic local story context ([LOCAL STORY CONTEXT]) specifies the observed geography and scale evidence for each Story Card. A street observation means the report came from that street/area, not that the entire area was affected. Same-area reports count as 1 area. Use majority or citywide phrasing only when majority_supported is true; when geographic_spread is true, describe as multiple areas (e.g. 'в нескольких районах города', 'в Центре и на Лисках'), not the whole city.
 Scale language requires evidence of scale, not merely evidence of the underlying phenomenon.
 Geographic spread ≠ broad prevalence ≠ majority: observations from several districts justify

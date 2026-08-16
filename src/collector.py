@@ -31,6 +31,8 @@ class Message:
     message_id: int | None = None
     reply_to_id: int | None = None
     topic_id: int | None = None
+    forward_origin_name: str | None = None
+    forward_origin_username: str | None = None
 
 
 class MessageCollector:
@@ -277,6 +279,7 @@ class MessageCollector:
         link = await self._generate_message_link(entity, message.id)
         reply_to = getattr(message, "reply_to", None)
         reply_to_id = getattr(reply_to, "reply_to_msg_id", None) if reply_to else None
+        fwd_name, fwd_username = await self._get_forward_origin(message)
         return Message(
             text=text,
             sender=sender,
@@ -288,7 +291,37 @@ class MessageCollector:
             message_id=getattr(message, "id", None),
             reply_to_id=reply_to_id,
             topic_id=topic_id,
+            forward_origin_name=fwd_name,
+            forward_origin_username=fwd_username,
         )
+
+    async def _get_forward_origin(self, message: TelegramMessage) -> tuple[str | None, str | None]:
+        """Extract forward origin name and username if available."""
+        fwd = getattr(message, "forward", None) or getattr(message, "fwd_from", None)
+        if not fwd:
+            return None, None
+
+        name = getattr(fwd, "from_name", None)
+        username = None
+
+        chat = getattr(fwd, "chat", None)
+        if chat:
+            name = name or getattr(chat, "title", None) or getattr(chat, "first_name", None)
+            username = getattr(chat, "username", None)
+
+        sender = getattr(fwd, "sender", None)
+        if sender:
+            if not name:
+                name = getattr(sender, "first_name", None) or getattr(sender, "title", None)
+                if hasattr(sender, "last_name") and sender.last_name:
+                    name = f"{name} {sender.last_name}"
+            username = username or getattr(sender, "username", None)
+
+        post_author = getattr(fwd, "post_author", None)
+        if post_author and not name:
+            name = post_author
+
+        return (str(name).strip() if name else None), (str(username).strip() if username else None)
 
     def _get_media_type(self, message: TelegramMessage) -> str:
         """

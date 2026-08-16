@@ -200,9 +200,20 @@ class EditorialInputBuilder:
             message = record.message
             lines = [
                 f"[{ref}] source_type={record.source_type} channel={message.channel_name}",
-                f"time={message.timestamp.isoformat()} sender={message.sender}",
-                f"text: {message.text}",
             ]
+            fwd_parts: list[str] = []
+            if getattr(message, "forward_origin_name", None):
+                fwd_parts.append(f"name={message.forward_origin_name}")
+            if getattr(message, "forward_origin_username", None):
+                fwd_parts.append(f"username={message.forward_origin_username}")
+            if fwd_parts:
+                lines.append(f"forward_origin: {', '.join(fwd_parts)}")
+            lines.extend(
+                [
+                    f"time={message.timestamp.isoformat()} sender={message.sender}",
+                    f"text: {message.text}",
+                ]
+            )
             if record.context_text:
                 lines.append(record.context_text)
             local_ctx = render_local_context(record.city_context)

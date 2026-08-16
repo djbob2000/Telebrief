@@ -37,12 +37,15 @@ place, category, and current status.
 Source role is an editorial prior, not a trust score or permission to state a fact:
 
 - `official` helps identify a source's own schedules, decisions, addresses, and actions; its
-  theory about a cause remains attributed unless independently supported.
+  theory about a cause remains attributed unless independently supported. If a message is a
+  forward originating from an official channel or utility (e.g. «Запорожгаз»), attribute directly
+  to the organization without artificially downgrading to "сообщение от имени организации".
 - `news` supplies reported facts and short news items; repeat or copied material is not a second
   source merely because it appears in another channel.
 - `community` supplies observations, complaints, discussion, and practical local consequences.
   Use it freely when relevant, but keep visible attribution and do not promote discussion into
-  an official finding.
+  an official finding. Avoid technical ingestion meta-language: use "жители сообщают", "по словам горожан",
+  "среди родителей обсуждается" instead of "в чате", "участники чата", "в Telegram-чате".
 - `classifieds` is normally low priority and requires advertising/spam filtering.
 - `mixed` means the role is decided from the individual message and its local context, not from
   the channel name.
@@ -53,8 +56,8 @@ For the daily city article («Чем жил Бердянск за последн
 
 1. **Headline:** captures the key supported event, condition, or theme of the day. Collective mood or emotional state may appear only when directly supported by source material.
 2. **Lead:** 1–2 sentences highlighting 2–3 prominent themes of the 24-hour period (avoid an exhaustive inventory of all categories).
-3. **Thematic Chapters:** usually 3–5 narrative story chapters with descriptive journalistic headings (`## [Тематический заголовок]`, e.g. `## Перебои со светом и поиск зарядки: что обсуждали в районах`). These sections form the single canonical body of the article; top-level paragraphs are not duplicated before chapters.
-4. **Resident Observation Synthesis:** synthesize resident observations across districts into coherent narrative paragraphs with visible attribution (`по сообщениям жителей`, `в районных чатах отмечали`). Resident comments are valuable editorial material reflecting the lived reality of the city.
+3. **Thematic Chapters:** usually 3–5 narrative story chapters with descriptive journalistic headings (`## [Тематический заголовок]`, e.g. `## Перебои со светом и поиск зарядки: что обсуждали в районах`). Do not create a separate 'Что пока не подтверждено' checklist chapter; weave rumors, versions, and uncertainties directly into their corresponding thematic chapters. These sections form the single canonical body of the article; top-level paragraphs are not duplicated before chapters.
+4. **Resident Observation Synthesis:** synthesize resident observations across districts into coherent narrative paragraphs with natural journalistic attribution (`по сообщениям жителей`, `по словам горожан`, `как отмечают жители`). Do not reveal Telegram ingestion mechanics (`в чате`, `участники чата`). Resident comments are valuable editorial material reflecting the lived reality of the city.
 5. **Contextual Grouping without Causal Leaps:** cover related same-day developments (e.g. power outages, residents searching for power, local venues offering free charging) within the same chapter without manufacturing unsupported causal bridges (`из-за`, `вследствие` require direct evidence).
 6. **Adaptive Dominance:** when one major event or condition clearly dominates the day's reporting, give it proportionally more space as the primary chapter without enforcing a rigid percentage.
 7. **Internal Progression:** follow timeline or geographic progression within chapters when helpful, rather than forcing a rigid global morning-to-evening chronology across unrelated topics.
@@ -101,12 +104,12 @@ on the same day or share a broad topic. Follow an explicit user-selected story o
    source in the lead when the fact is attributed or is an official source's own action.
 3. Give each paragraph a job: fact, detail, resident consequence, uncertainty, response, status,
    or next supported step. Omit empty sections instead of inventing transitions or background.
-4. Keep community observations distinct from hard facts: “по словам жителей”, “жители писали”,
+4. Keep community observations distinct from hard facts: “по словам жителей”, “горожане сообщают”,
    or equivalent is not decorative wording; it preserves epistemic status.
 5. Preserve contradictions and newsworthy uncertainties: make the verified baseline explicit before
    presenting unofficial estimates. Usually prefer one or two materially informative unofficial versions;
-   never enumerate speculation merely for completeness. Place significant unofficial versions in the relevant
-   chapter (use an optional end block 'Что пока не подтверждено' only when there are multiple significant unresolved items).
+   never enumerate speculation merely for completeness. Weave significant unofficial versions directly into
+   the relevant thematic chapter rather than appending an isolated checklist block.
 6. Scale discipline (geographic spread ≠ broad prevalence ≠ majority): scale language requires evidence of scale,
    not merely evidence of the underlying phenomenon. Observations from several districts justify “в нескольких районах”
    or “в разных районах”; broad multi-district coverage allows “во многих районах”; claims of “в большинстве районов”
@@ -117,11 +120,15 @@ on the same day or share a broad topic. Follow an explicit user-selected story o
    explicitly establishes that fact.
 8. Use exact reporting verbs: “сообщил”, “заявил”, “утверждает”, “подтвердил”. Distinguish
    observation, allegation, suspicion, detention, charge, trial, and conviction.
-9. Keep direct quotes faithful. Mark a translated direct quote as “перевод редакции” or “перевод
-   автора”; do not present a translation as the speaker's exact original wording.
-10. Keep paragraphs visually light, usually one to three sentences. Remove bureaucratic padding,
+9. Keep direct quotes faithful and economical: use typically 2–4 strong, authentic direct quotes across the
+   entire article to convey the living atmosphere; paraphrase the rest in clean journalistic language.
+   Mark a translated direct quote as “перевод редакции” or “перевод автора”.
+10. Frame community technical tips and practical solutions (e.g. connecting powerbanks to routers, voltage
+    requirements, optic fiber) as resident experience, advice, or observations («По опыту жителей...»),
+    not as absolute technical laws.
+11. Keep paragraphs visually light, usually one to three sentences. Remove bureaucratic padding,
     emotional intensifiers, clickbait, rhetorical questions, and unsupported superlatives.
-11. Chat slang and colloquialisms: colloquial contractions from resident messages (such as «дистант»,
+12. Chat slang and colloquialisms: colloquial contractions from resident messages (such as «дистант»,
     «удалёнка», «коммуналка») must be normalized to standard journalistic terms in author text
     («дистанционное обучение / дистанционный формат», «удалённая работа», «коммунальные службы / услуги»)
     or enclosed in quotes when quoting verbatim resident speech.

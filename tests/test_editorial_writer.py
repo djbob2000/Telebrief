@@ -523,3 +523,29 @@ def test_no_runtime_circular_import():
     audit_mod = importlib.import_module("src.editorial_audit")
     assert hasattr(writer_mod, "EditorialWriter")
     assert hasattr(audit_mod, "LightFactChecker")
+
+
+@pytest.mark.unit
+def test_writer_prompt_contains_journalistic_polish_rules(mock_logger):
+    writer = EditorialWriter(MagicMock(), "model", "skill", mock_logger, output_language="Russian")
+    system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
+
+    # Check ban on chat meta-language
+    assert "Do NOT reveal internal collection mechanics to the reader" in system_prompt
+    assert "Do not hide uncertainty — hide the technical method of data collection" in system_prompt
+
+    # Check official forward attribution rule
+    assert "Official forwarded messages:" in system_prompt
+    assert "forward_origin with the name or username of an official organization" in system_prompt
+
+    # Check weaving of uncertainty and ban on standalone unconfirmed section
+    assert "Weaving uncertainty into narrative chapters:" in system_prompt
+    assert (
+        "Do NOT create a separate checklist section like 'Что пока не подтверждено'"
+        in system_prompt
+    )
+
+    # Check direct quotes and resident experience rules
+    assert "Direct quotes:" in system_prompt
+    assert "typically 2–4 sharp, authentic quotes" in system_prompt
+    assert "Resident experience and technical advice:" in system_prompt
