@@ -666,3 +666,22 @@ def test_landmark_start_and_end_boundaries():
     assert skhidnyi is not None
     assert skhidnyi.confidence == "high"
     assert any(a.area_id == "center" for a in skhidnyi.municipal_areas)
+
+
+def test_different_landmark_interval_is_unknown_without_topology():
+    from src.city_context import AddressContext, EvalResult, evaluate_coverage
+
+    coverage = {
+        "kind": "segment",
+        "from_landmark": "Pershotravneva",
+        "to_landmark": "Liepaiska",
+    }
+    ctx = AddressContext(
+        house_number=None,
+        normalized_house=None,
+        house_int=None,
+        parity=None,
+        explicit_side=None,
+        landmark_segment=("морської", "лієпайської"),
+    )
+    assert evaluate_coverage(coverage, ctx) == EvalResult.UNKNOWN

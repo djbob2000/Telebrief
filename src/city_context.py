@@ -254,7 +254,6 @@ def _eval_segment_landmarks(coverage: dict[str, Any], ctx: AddressContext) -> Ev
             l2_from = any(f in l2 for f in from_forms)
             if (l1_from and l2_to) or (l1_to and l2_from):
                 return EvalResult.MATCH
-            return EvalResult.NO_MATCH
     return EvalResult.UNKNOWN
 
 
