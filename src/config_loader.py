@@ -794,9 +794,8 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
             f"Please set them in .env file (see .env.example)"
         )
 
-    assert telegram_api_id is not None
-    assert telegram_api_hash is not None
-    assert telegram_bot_token is not None
+    if telegram_api_id is None or telegram_api_hash is None or telegram_bot_token is None:
+        raise ValueError("Missing required Telegram credentials")
 
     return {
         "telegram_api_id": int(telegram_api_id),
