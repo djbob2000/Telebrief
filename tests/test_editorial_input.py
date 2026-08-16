@@ -120,7 +120,7 @@ def test_input_builder_removes_long_commercial_and_currency_messages():
 def test_input_builder_keeps_amounts_and_official_dispatch_phone():
     payout = _message("Единовременная выплата составит 1000 гривен", 1)
     utility = _message(
-        "Коммунальная служба сообщила о ремонте сети. " "Телефон диспетчерской: +7 (990) 123-45-67",
+        "Коммунальная служба сообщила о ремонте сети. Телефон диспетчерской: +7 (990) 123-45-67",
         2,
     )
     utility.channel_name = "Utility"
@@ -141,7 +141,7 @@ def test_input_builder_keeps_amounts_and_official_dispatch_phone():
 def test_input_builder_filters_financial_rate_spam_but_keeps_ticket_notice():
     messages = [
         _message(
-            "О Б Н А Л И Ч И В А Н И Е. Продажа. #Покупка. " "синий 85, белый 83, евро 99",
+            "О Б Н А Л И Ч И В А Н И Е. Продажа. #Покупка. синий 85, белый 83, евро 99",
             1,
         ),
         _message("Продажа билетов временно приостановлена", 2),

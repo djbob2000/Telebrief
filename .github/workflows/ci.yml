@@ -101,10 +101,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install pre-commit safety
+        pip install ruff safety
 
-    - name: Run Bandit via pre-commit
-      run: pre-commit run bandit --all-files
+    - name: Run security checks (Ruff security rules)
+      run: ruff check --select S src/
 
     - name: Run Safety (dependency security check)
       run: safety check --json

@@ -21,48 +21,62 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "black>=23.7.0",
-    "flake8>=6.1.0",
-    "flake8-bugbear>=23.7.0",
-    "flake8-docstrings>=1.7.0",
-    "flake8-import-order>=0.18.2",
-    "isort>=5.12.0",
     "mypy>=1.5.0",
     "pre-commit>=3.3.0",
-    "pylint>=2.17.0",
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
     "pytest-cov>=4.1.0",
     "pytest-mock>=3.11.0",
     "pytest-timeout>=2.1.0",
+    "ruff>=0.8.0",
     "types-python-dateutil>=2.8.0",
     "types-pyyaml>=6.0.0",
-    "vulture>=2.7",
 ]
 
-[tool.black]
+[tool.ruff]
+target-version = "py313"
 line-length = 100
-target-version = ['py313']
-include = '\.pyi?$'
-exclude = '''
-/(
-    \.git
-  | \.venv
-  | venv
-  | build
-  | dist
-  | \.pytest_cache
-  | \.mypy_cache
-  | sessions
-)/
-'''
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "build",
+    "dist",
+    ".pytest_cache",
+    ".mypy_cache",
+    "sessions",
+    "logs",
+]
 
-[tool.isort]
-profile = "black"
-line_length = 100
-skip_gitignore = true
-known_first_party = ["src", "tests"]
-sections = ["FUTURE", "STDLIB", "THIRDPARTY", "FIRSTPARTY", "LOCALFOLDER"]
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "S",    # flake8-bandit (security)
+]
+ignore = [
+    "E501",   # line-too-long (handled by ruff format)
+    "S101",   # use of assert (pytest and internal assertions)
+    "S104",   # possible binding to all interfaces
+    "S608",   # possible SQL injection (false positives on LLM prompt templates containing 'select')
+    "B905",   # zip without explicit strict= parameter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "ARG"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src", "tests"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
 
 [tool.mypy]
 python_version = "3.14"
@@ -76,6 +90,7 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 warn_no_return = true
 follow_imports = "normal"
+ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = [
@@ -86,18 +101,6 @@ module = [
     "asyncpg.*",
 ]
 ignore_missing_imports = true
-
-[tool.pylint.messages_control]
-disable = [
-    "C0111",  # missing-docstring
-    "C0103",  # invalid-name
-    "R0913",  # too-many-arguments
-    "R0914",  # too-many-locals
-    "W0212",  # protected-access (for tests)
-]
-
-[tool.pylint.format]
-max-line-length = 100
 
 [tool.coverage.run]
 source = ["src"]

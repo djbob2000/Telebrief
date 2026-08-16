@@ -817,9 +817,7 @@ class CityContextResolver:
             "routes", []
         ) or self._profile.get("stable_context", {}).get("infrastructure", {}).get(
             "transport", {}
-        ).get(
-            "routes", []
-        )
+        ).get("routes", [])
         for route in transit_routes:
             r_num = str(route.get("number") or route.get("route_number") or "")
             r_name = route.get("name", f"Маршрут {r_num}")

@@ -272,7 +272,7 @@ def _extract_chat_completion_text(response: Any, logger: logging.Logger, provide
     usage = response.usage
 
     logger.debug(
-        "%s response: finish_reason=%s prompt_tokens=%s " "completion_tokens=%s total_tokens=%s",
+        "%s response: finish_reason=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
         provider,
         finish_reason,
         usage.prompt_tokens if usage else None,
@@ -448,9 +448,7 @@ class OllamaProvider(AIProvider):
         max_tokens: int,
         reasoning_effort: str | None = None,  # noqa: ARG002 — accepted, not used by Ollama
         thinking: bool | None = None,  # noqa: ARG002 — accepted, not used by Ollama
-        response_format: (
-            Dict[str, Any] | None
-        ) = None,  # noqa: ARG002 — accepted, not used by Ollama
+        response_format: (Dict[str, Any] | None) = None,  # noqa: ARG002 — accepted, not used by Ollama
     ) -> str:
         url = f"{self.base_url}/api/chat"
         payload: Dict[str, Any] = {
@@ -534,9 +532,7 @@ class AnthropicProvider(AIProvider):
         max_tokens: int,
         reasoning_effort: str | None = None,  # noqa: ARG002 — accepted, not used by Anthropic
         thinking: bool | None = None,  # noqa: ARG002 — accepted, not used by Anthropic
-        response_format: (
-            Dict[str, Any] | None
-        ) = None,  # noqa: ARG002 — accepted, not used by Anthropic
+        response_format: (Dict[str, Any] | None) = None,  # noqa: ARG002 — accepted, not used by Anthropic
     ) -> str:
         # Extract system message and user messages
         system_text = ""

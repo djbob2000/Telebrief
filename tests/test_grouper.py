@@ -399,7 +399,7 @@ class TestExtractBulletsFromSummary:
 
     def test_extracts_dash_and_dot_bullets(self):
         """Extracts bullets prefixed with •, -, 1., etc."""
-        summary = "• Bullet one with info\n" "- Bullet two with data\n" "1. Bullet three numbered"
+        summary = "• Bullet one with info\n- Bullet two with data\n1. Bullet three numbered"
         bullets = _extract_bullets_from_summary(summary, channel_name="Ch2")
         assert len(bullets) == 3
         assert bullets[0].point == "Bullet one with info"
@@ -408,7 +408,7 @@ class TestExtractBulletsFromSummary:
 
     def test_handles_multiline_continuation(self):
         """Continuation lines without punctuation end are merged to preceding bullet."""
-        summary = "1️⃣ First part of sentence\n" "continuation of the same event\n" "2️⃣ Second event"
+        summary = "1️⃣ First part of sentence\ncontinuation of the same event\n2️⃣ Second event"
         bullets = _extract_bullets_from_summary(summary, channel_name="Ch3")
         assert len(bullets) == 2
         assert bullets[0].point == "First part of sentence continuation of the same event"
@@ -416,7 +416,7 @@ class TestExtractBulletsFromSummary:
 
     def test_splits_unmarked_new_sentences(self):
         """Unmarked new sentences starting with capital letter after a period are split."""
-        summary = "1️⃣ First complete sentence.\n" "Second independent sentence.\n" "2️⃣ Third event"
+        summary = "1️⃣ First complete sentence.\nSecond independent sentence.\n2️⃣ Third event"
         bullets = _extract_bullets_from_summary(summary, channel_name="Ch4")
         assert len(bullets) == 3
         assert bullets[0].point == "First complete sentence."

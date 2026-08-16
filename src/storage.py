@@ -61,7 +61,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)
 """
 
 _QUERY_BASE = (
-    "SELECT channel_name, sender, text, timestamp, link, has_media, media_type" " FROM messages"
+    "SELECT channel_name, sender, text, timestamp, link, has_media, media_type FROM messages"
 )
 
 

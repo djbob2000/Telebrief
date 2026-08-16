@@ -922,7 +922,7 @@ async def test_ollama_provider_debug_logging(mock_logger):
             max_tokens=500,
         )
 
-    debug_calls = [call for call in mock_logger.debug.call_args_list]
+    debug_calls = list(mock_logger.debug.call_args_list)
     assert len(debug_calls) == 3
 
     # First call: request log

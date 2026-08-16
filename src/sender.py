@@ -436,8 +436,7 @@ class DigestSender:
             self.logger.info(f"✅ All {success_count} channel messages sent successfully")
             return True
         self.logger.warning(
-            f"⚠️ Sent {success_count}/{total_count} messages. "
-            f"Failed: {', '.join(failed_channels)}"
+            f"⚠️ Sent {success_count}/{total_count} messages. Failed: {', '.join(failed_channels)}"
         )
         return success_count > 0
 

@@ -1386,7 +1386,7 @@ def test_channel_group_field_parsed(tmp_path, mock_env_vars):
 def test_channel_group_none_by_default(tmp_path, mock_env_vars):
     p = tmp_path / "config.yaml"
     p.write_text(
-        'channels:\n  - id: "@test"\n    name: "Test"\n' "settings:\n  target_user_id: 123456789\n"
+        'channels:\n  - id: "@test"\n    name: "Test"\nsettings:\n  target_user_id: 123456789\n'
     )
     config = load_config(str(p))
     assert config.channels[0].group is None
@@ -1459,7 +1459,7 @@ def test_channel_group_null_yaml_is_none(tmp_path, mock_env_vars):
 def test_prompts_config_missing_block_defaults(tmp_path, mock_env_vars):
     p = tmp_path / "config.yaml"
     p.write_text(
-        'channels:\n  - id: "@test"\n    name: "Test"\n' "settings:\n  target_user_id: 123456789\n"
+        'channels:\n  - id: "@test"\n    name: "Test"\nsettings:\n  target_user_id: 123456789\n'
     )
     config = load_config(str(p))
     assert config.prompts == PromptsConfig()

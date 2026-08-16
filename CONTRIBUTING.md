@@ -48,12 +48,9 @@ uv run pytest tests/ -v
 # Type checking
 uv run mypy src/
 
-# Linting
-uv tool run ruff check src/ tests/
-uv run flake8 src/ tests/
-
-# Formatting (CI pins black 24.10.0 — always run before pushing)
-uv run black src/ tests/
+# Linting and formatting
+uv run ruff check src/ tests/
+uv run ruff format src/ tests/
 ```
 
 Or use the Makefile shortcuts: `make test`, `make lint`, `make format`, `make check`.
@@ -66,18 +63,8 @@ Or use the Makefile shortcuts: `make test`, `make lint`, `make format`, `make ch
 
 ## Code Style
 
-- **black** (24.10.0, as pinned in `.pre-commit-config.yaml`) for formatting
-- **isort** for import ordering
-- **flake8** with `max-complexity=10`
+- **Ruff** for code formatting (line length 100) and linting (`ruff format`, `ruff check`)
 - **mypy** for type checking — new code should be fully typed
-- Protocol method stubs forced to one-liners by black need per-line flake8 suppression:
-
-  ```python
-  class MyProtocol(Protocol):
-      async def save(self, items: list) -> int: ...  # noqa: E704
-  ```
-
-- Markdown files in `docs/` must have a blank line before and after every fenced code block (markdownlint MD031)
 
 ## Commit Messages
 
@@ -95,7 +82,7 @@ Common types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
 
 1. **Fork** the repository and create a branch from `main`
 2. **Make your changes** — keep PRs focused on a single concern
-3. **Run the full check suite** (tests + mypy + ruff + black + flake8) locally
+3. **Run the full check suite** (`make check` or tests + mypy + ruff) locally
 4. **Open a PR** against `main` with a clear description of what and why
 5. CI must pass before review; a maintainer will review and merge
 

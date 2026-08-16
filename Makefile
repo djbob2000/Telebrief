@@ -8,8 +8,8 @@ help:
 	@echo "  make install-dev  - Install development dependencies"
 	@echo "  make test         - Run tests with coverage"
 	@echo "  make test-fast    - Run tests without coverage"
-	@echo "  make lint         - Run all linters"
-	@echo "  make format       - Format code with black and isort"
+	@echo "  make lint         - Run linters (Ruff and MyPy)"
+	@echo "  make format       - Format code with Ruff"
 	@echo "  make clean        - Remove build artifacts"
 	@echo "  make run          - Run the application"
 	@echo "  make pre-commit   - Install pre-commit hooks"
@@ -34,22 +34,16 @@ test-integration:
 	pytest -v -m integration
 
 lint:
-	@echo "Running Black..."
-	black --check src tests
-	@echo "\nRunning isort..."
-	isort --check-only src tests
-	@echo "\nRunning Flake8..."
-	flake8 src tests
+	@echo "Running Ruff linter..."
+	ruff check src tests
+	@echo "\nRunning Ruff format check..."
+	ruff format --check src tests
 	@echo "\nRunning MyPy..."
 	mypy src
-	@echo "\nRunning Pylint..."
-	pylint src tests --fail-under=8.0
-	@echo "\nRunning Vulture (unused code detection)..."
-	vulture src vulture_whitelist.py --min-confidence 80
 
 format:
-	black src tests
-	isort src tests
+	ruff format src tests
+	ruff check --fix src tests
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

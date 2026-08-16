@@ -300,8 +300,7 @@ def _parse_digest_settings(
     if digest_mode == "digest" and not digest_groups:
         logger = logging.getLogger("telebrief")
         logger.warning(
-            "digest mode enabled but no digest_groups configured"
-            " — all content will go to 'Other'"
+            "digest mode enabled but no digest_groups configured — all content will go to 'Other'"
         )
 
     return digest_mode, digest_groups, output_language
@@ -487,7 +486,7 @@ def _parse_filter_specs(raw_list: object, path_label: str) -> list[FilterSpec]:
         config = item.get("config", {})
         if not isinstance(config, dict):
             raise ValueError(
-                f"{path_label}[{i}].config must be a mapping, " f"got {type(config).__name__}"
+                f"{path_label}[{i}].config must be a mapping, got {type(config).__name__}"
             )
         specs.append(FilterSpec(class_path=class_path, config=config))
     return specs
@@ -499,7 +498,7 @@ def _validate_channel_lookback(i: int, ch: dict) -> int | None:
         return None
     if not isinstance(lookback_hours, int) or isinstance(lookback_hours, bool):
         raise ValueError(
-            f"channels[{i}].lookback_hours must be an int, " f"got {type(lookback_hours).__name__}"
+            f"channels[{i}].lookback_hours must be an int, got {type(lookback_hours).__name__}"
         )
     if lookback_hours <= 0:
         raise ValueError(f"channels[{i}].lookback_hours must be positive, got {lookback_hours}")

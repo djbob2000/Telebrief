@@ -30,7 +30,7 @@ def load_class(dotted_path: str) -> type:
 
     if not hasattr(module, class_name):
         raise ValueError(
-            f"Module {module_path!r} has no attribute {class_name!r} " f"(path: {dotted_path!r})"
+            f"Module {module_path!r} has no attribute {class_name!r} (path: {dotted_path!r})"
         )
 
     obj = getattr(module, class_name)

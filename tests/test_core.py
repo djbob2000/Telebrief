@@ -81,7 +81,6 @@ async def test_build_digest_success(sample_config, mock_logger, sample_messages)
         patch("src.core.Summarizer") as mock_summarizer_class,
         patch("src.core.DigestFormatter") as mock_formatter_class,
     ):
-
         # Set up mocks
         mock_collector = MagicMock()
         mock_collector.connect = AsyncMock()
@@ -203,7 +202,6 @@ async def test_generate_and_send_digest_success(sample_config, mock_logger, samp
         patch("src.core.DigestFormatter") as mock_formatter_class,
         patch("src.core.DigestSender") as mock_sender_class,
     ):
-
         # Set up mocks
         mock_collector_class.return_value = _make_collector_mock(sample_messages)
 
@@ -250,7 +248,6 @@ async def test_generate_and_send_digest_send_failure(sample_config, mock_logger,
         patch("src.core.DigestFormatter") as mock_formatter_class,
         patch("src.core.DigestSender") as mock_sender_class,
     ):
-
         # Set up mocks (same as success case)
         mock_collector_class.return_value = _make_collector_mock(sample_messages)
 
