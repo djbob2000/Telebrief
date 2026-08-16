@@ -266,7 +266,7 @@ def test_to_markdown_renders_paragraphs_when_sections_empty():
 
     markdown = draft.to_markdown()
 
-    assert markdown == ("# Короткая заметка\n\n" "Лид заметки.\n\n" "Единственный абзац статьи.")
+    assert markdown == ("# Короткая заметка\n\nЛид заметки.\n\nЕдинственный абзац статьи.")
 
 
 def test_audit_units_does_not_duplicate_paragraphs_when_sections_present():
@@ -454,3 +454,55 @@ async def test_writer_rejects_single_english_paragraph_in_russian_draft(mock_log
 
     with pytest.raises(ValueError, match="writer output language mismatch"):
         await writer.write(_analysis(), _bundle())
+
+
+@pytest.mark.unit
+def test_writer_prompt_includes_revision_feedback_filtering_fix_only(mock_logger):
+    from src.editorial_audit import AuditIssue, FactCheckResult
+
+    writer = EditorialWriter(MagicMock(), "model", "skill", mock_logger, output_language="Russian")
+    feedback = FactCheckResult(
+        status="FIX",
+        systemic_problem=True,
+        issues=[
+            AuditIssue(
+                unit_id="TITLE",
+                code="unsupported_scale",
+                original_excerpt="Бердянск без света",
+                reason="Scale unsupported by evidence",
+                suggested_direction="Narrow to confirmed areas",
+                source_refs=["S000001"],
+                severity="fix",
+            ),
+            AuditIssue(
+                unit_id="LEAD",
+                code="soft_overstatement",
+                original_excerpt="В городе обсуждают",
+                reason="Minor wording style",
+                suggested_direction="Soften tone",
+                source_refs=[],
+                severity="warn",
+            ),
+        ],
+    )
+
+    _, user_prompt = writer.build_prompt(_analysis(), _bundle(), revision_feedback=feedback)
+    assert "AUDIT REVISION FEEDBACK:" in user_prompt
+    assert "- TITLE / unsupported_scale: Scale unsupported by evidence" in user_prompt
+    assert "LEAD / soft_overstatement" not in user_prompt
+    assert "These are failure modes to correct, not replacement sentences." in user_prompt
+    assert "Do not mechanically copy suggested wording." in user_prompt
+
+
+@pytest.mark.unit
+def test_no_runtime_circular_import():
+    import importlib
+    import sys
+
+    # Reload modules to verify clean import chain without circular dependencies
+    sys.modules.pop("src.editorial_writer", None)
+    sys.modules.pop("src.editorial_audit", None)
+    writer_mod = importlib.import_module("src.editorial_writer")
+    audit_mod = importlib.import_module("src.editorial_audit")
+    assert hasattr(writer_mod, "EditorialWriter")
+    assert hasattr(audit_mod, "LightFactChecker")

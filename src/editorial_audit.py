@@ -168,7 +168,12 @@ class LightFactChecker:
             "lost attribution, false causality or high-risk escalation. Emotional or mood assertions "
             "require direct source evidence. Attribution and source_refs are inspection aids, "
             "not proof by themselves. WARN is non-blocking; use FIX only when a local fragment "
-            "must be changed."
+            "must be changed. "
+            "Systemic problem criteria: Set systemic_problem=true only when the draft cannot be made safe by independently "
+            "replacing/removing the listed audit units because unsupported material affects the core narrative structure "
+            "or is distributed throughout the article. Set systemic_problem=false for localized problems in specific "
+            "TITLE, LEAD, heading or paragraph units — including several such issues — when each can be repaired independently. "
+            "3–5 local FIX issues do not by themselves constitute a systemic problem."
         )
 
     def _parse_payload(self, response: str) -> dict[str, Any]:
@@ -306,7 +311,7 @@ class LightFactChecker:
 
         self._resolve_issue_unit_ids(result, parsed, units)
 
-        unknown_units = sorted(set(issue.unit_id for issue in result.issues) - set(units))
+        unknown_units = sorted({issue.unit_id for issue in result.issues} - set(units))
         if unknown_units:
             self.last_reason = (
                 f"fact-check returned unknown audit units: {', '.join(unknown_units)}"

@@ -9,11 +9,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.article_generator import ArticleGenerator
+from src.article_generator import ArticleGenerator, UnsafeDraftError
 from src.collector import Message
 from src.config_loader import Config, Settings
 from src.editorial_analysis import ContextSizeRejectedError, EditorialAnalysisError
-from src.editorial_models import PreparedBundle
+from src.editorial_audit import (
+    AuditIssue,
+    FactCheckResult,
+    FactCheckUnavailableError,
+)
+from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord, StoryCard
 from src.editorial_writer import ArticleDraft
 
 _VALID_REGISTRY = json.dumps(
@@ -824,6 +829,42 @@ async def test_fact_check_lifecycle_artifacts_systemic_regeneration(
                     ],
                 }
             ),
+            json.dumps({"replacements": {"P001": "Параграф1"}}),
+            json.dumps(
+                {
+                    "status": "FIX",
+                    "systemic_problem": True,
+                    "issues": [
+                        {
+                            "unit_id": "P001",
+                            "severity": "fix",
+                            "code": "systemic",
+                            "original_excerpt": "Параграф1",
+                            "reason": "Системная структурная ошибка",
+                            "suggested_direction": "Сгенерировать заново",
+                            "source_refs": ["S000001"],
+                        }
+                    ],
+                }
+            ),
+            json.dumps({"replacements": {"P001": "Параграф1"}}),
+            json.dumps(
+                {
+                    "status": "FIX",
+                    "systemic_problem": True,
+                    "issues": [
+                        {
+                            "unit_id": "P001",
+                            "severity": "fix",
+                            "code": "systemic",
+                            "original_excerpt": "Параграф1",
+                            "reason": "Системная структурная ошибка",
+                            "suggested_direction": "Сгенерировать заново",
+                            "source_refs": ["S000001"],
+                        }
+                    ],
+                }
+            ),
             json.dumps(
                 {
                     "headline": "Заголовок2",
@@ -1465,3 +1506,553 @@ async def test_analyze_mixed_token_budget_and_context_size_executes_full_compact
     assert generator.analyzer.analyze.await_args_list[0].kwargs == {"compact": False}
     assert generator.analyzer.analyze.await_args_list[1].kwargs == {"compact": True}
     generator.analyzer.analyze_batched.assert_not_called()
+
+
+def _make_dummy_bundle() -> PreparedBundle:
+    return PreparedBundle(
+        records={
+            "S000001": SourceRecord(
+                "S000001",
+                Message(
+                    text="Жители сообщают о ситуации",
+                    sender="u",
+                    timestamp=datetime.now(timezone.utc),
+                    link="l",
+                    channel_name="ch",
+                    has_media=False,
+                    media_type="",
+                    message_id=1,
+                ),
+                "community",
+            )
+        },
+        prompt_text="[S000001] Жители сообщают о ситуации",
+        total_messages=1,
+        candidate_count=1,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_systemic_true_attempts_repair_before_regeneration(sample_config, mock_logger):
+    """Criteria 1: systemic=True with local FIXes undergoes local repair before regeneration."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    draft = ArticleDraft("Свет", "Лид", ["Текст с ошибкой"], [])
+    systemic_fix = FactCheckResult(
+        "FIX",
+        True,
+        [
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Текст с ошибкой",
+                "Scale unsupported",
+                "Narrow scale",
+                [],
+                "fix",
+            )
+        ],
+    )
+    pass_result = FactCheckResult("PASS", False, [])
+    repaired_draft = ArticleDraft("Свет", "Лид", ["Исправленный текст"], [])
+
+    generator.fact_checker.check = AsyncMock(side_effect=[systemic_fix, pass_result])
+    generator.fact_checker.repair = AsyncMock(return_value=repaired_draft)
+    generator.writer.write = AsyncMock()
+
+    result = await generator._repair_and_check(draft, EditorialAnalysis([]), _make_dummy_bundle())
+
+    assert result.paragraphs == ["Исправленный текст"]
+    assert generator.fact_checker.repair.await_count == 1
+    generator.writer.write.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_first_repair_pass_prevents_regeneration(sample_config, mock_logger):
+    """Criteria 2: If first repair pass returns PASS, writer.write() is NOT called a second time."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    draft = ArticleDraft("Свет", "Лид", ["Текст с ошибкой"], [])
+    initial_fix = FactCheckResult(
+        "FIX",
+        True,
+        [
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Текст с ошибкой",
+                "Scale unsupported",
+                "Narrow",
+                [],
+                "fix",
+            )
+        ],
+    )
+    pass_result = FactCheckResult("PASS", False, [])
+    repaired_draft = ArticleDraft("Свет", "Лид", ["Исправленный текст"], [])
+
+    generator.fact_checker.check = AsyncMock(side_effect=[initial_fix, pass_result])
+    generator.fact_checker.repair = AsyncMock(return_value=repaired_draft)
+    generator.writer.write = AsyncMock()
+
+    result = await generator._repair_and_check(draft, EditorialAnalysis([]), _make_dummy_bundle())
+
+    assert result == repaired_draft
+    generator.writer.write.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_still_systemic_fix_after_two_repairs_triggers_exactly_one_regeneration(
+    sample_config, mock_logger
+):
+    """Criteria 3 & 4: If still systemic FIX after 2 repairs, exactly ONE regeneration with feedback is triggered."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    draft = ArticleDraft("Свет", "Лид", ["Текст"], [])
+    systemic_fix = FactCheckResult(
+        "FIX",
+        True,
+        [
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Текст",
+                "Scale unsupported",
+                "Narrow",
+                [],
+                "fix",
+            )
+        ],
+    )
+    pass_result = FactCheckResult("PASS", False, [])
+    regenerated_draft = ArticleDraft("Свет новый", "Лид новый", ["Регенерированный текст"], [])
+
+    # Initial check -> repair 1 -> check 2 -> repair 2 -> check 3 -> regeneration -> regenerated check
+    generator.fact_checker.check = AsyncMock(
+        side_effect=[systemic_fix, systemic_fix, systemic_fix, pass_result]
+    )
+    generator.fact_checker.repair = AsyncMock(return_value=draft)
+    generator.writer.write = AsyncMock(return_value=regenerated_draft)
+
+    result = await generator._repair_and_check(draft, EditorialAnalysis([]), _make_dummy_bundle())
+
+    assert result.headline == "Свет новый"
+    assert generator.writer.write.await_count == 1
+    # Verify feedback was passed to write
+    call_kwargs = generator.writer.write.await_args_list[0].kwargs
+    assert call_kwargs.get("revision_feedback") == systemic_fix
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_regenerated_draft_with_local_fix_undergoes_repair(sample_config, mock_logger):
+    """Criteria 5: Regenerated draft with local FIX goes through repair loop, not immediate failure."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    draft = ArticleDraft("Свет", "Лид", ["Текст"], [])
+    systemic_fix = FactCheckResult(
+        "FIX",
+        True,
+        [
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Текст",
+                "Scale unsupported",
+                "Narrow",
+                [],
+                "fix",
+            )
+        ],
+    )
+    regenerated_draft = ArticleDraft(
+        "Свет 2", "Лид 2", ["Регенерированный текст с локальной ошибкой"], []
+    )
+    local_fix = FactCheckResult(
+        "FIX",
+        False,
+        [
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Регенерированный текст",
+                "Local issue",
+                "Fix it",
+                [],
+                "fix",
+            )
+        ],
+    )
+    pass_result = FactCheckResult("PASS", False, [])
+    repaired_regenerated = ArticleDraft(
+        "Свет 2", "Лид 2", ["Исправленный регенерированный текст"], []
+    )
+
+    # Initial check -> repair 1 -> check 2 -> repair 2 -> check 3
+    # -> regeneration -> regenerated check (local_fix)
+    # -> regenerated repair 1 -> regenerated check 2 (pass)
+    generator.fact_checker.check = AsyncMock(
+        side_effect=[systemic_fix, systemic_fix, systemic_fix, local_fix, pass_result]
+    )
+    generator.fact_checker.repair = AsyncMock(side_effect=[draft, draft, repaired_regenerated])
+    generator.writer.write = AsyncMock(return_value=regenerated_draft)
+
+    result = await generator._repair_and_check(draft, EditorialAnalysis([]), _make_dummy_bundle())
+
+    assert result.paragraphs == ["Исправленный регенерированный текст"]
+    assert generator.writer.write.await_count == 1
+    assert generator.fact_checker.repair.await_count == 3
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_no_second_regeneration_on_persistent_systemic_issue(sample_config, mock_logger):
+    """Criteria 6 & regression: Persistent systemic issue after regeneration triggers UnsafeDraftError, no 2nd write."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    draft = ArticleDraft("Свет", "Лид", ["Текст"], [])
+    systemic_fix = FactCheckResult(
+        "FIX",
+        True,
+        [
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Текст",
+                "Scale unsupported",
+                "Narrow",
+                [],
+                "fix",
+            )
+        ],
+    )
+    regenerated_draft = ArticleDraft("Свет 2", "Лид 2", ["Регенерированный"], [])
+
+    # Initial check -> repair 1 -> check 2 -> repair 2 -> check 3
+    # -> regeneration -> regenerated check (systemic)
+    # -> regenerated repair 1 -> regenerated check 2 (systemic)
+    # -> regenerated repair 2 -> regenerated check 3 (systemic)
+    generator.fact_checker.check = AsyncMock(
+        side_effect=[
+            systemic_fix,
+            systemic_fix,
+            systemic_fix,
+            systemic_fix,
+            systemic_fix,
+            systemic_fix,
+        ]
+    )
+    generator.fact_checker.repair = AsyncMock(return_value=draft)
+    generator.writer.write = AsyncMock(return_value=regenerated_draft)
+
+    with pytest.raises(UnsafeDraftError, match="systemic fact-check issue remains"):
+        await generator._repair_and_check(draft, EditorialAnalysis([]), _make_dummy_bundle())
+
+    assert generator.writer.write.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unsafe_draft_falls_back_to_story_cards_not_deterministic_regex(
+    sample_config, mock_logger
+):
+    """Criteria 7 & 8: UnsafeDraftError uses _render_story_card_fallback without calling fallback_builder."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(
+        id="SC001",
+        topic="Тема света",
+        importance="high",
+        summary="Сводка по свету",
+        representative_source_refs=["S000001"],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    draft = ArticleDraft("Свет", "Лид", ["Текст"], [])
+
+    generator._analyze = AsyncMock(return_value=analysis)
+    generator.writer.write = AsyncMock(return_value=draft)
+    generator._repair_and_check = AsyncMock(
+        side_effect=UnsafeDraftError("systemic fact-check issue remains")
+    )
+    generator.fallback_renderer.render = MagicMock(
+        return_value=ArticleDraft(
+            "Что происходило в городе за сутки", "Лид", ["Сводка по свету"], []
+        )
+    )
+    generator.fallback_builder.build = MagicMock()
+
+    bundle_messages = {
+        "ch": [
+            Message(
+                text="Жители сообщают",
+                sender="u",
+                timestamp=datetime.now(timezone.utc),
+                link="l",
+                channel_name="ch",
+                has_media=False,
+                media_type="",
+                message_id=1,
+            )
+        ]
+    }
+
+    title, lead, body = await generator.generate_article(bundle_messages)
+
+    assert title == "Что происходило в городе за сутки"
+    assert "Сводка по свету" in body
+    generator.fallback_renderer.render.assert_called_once_with(analysis.cards)
+    generator.fallback_builder.build.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_deterministic_fallback_used_only_if_story_card_renderer_fails(
+    sample_config, mock_logger
+):
+    """Criteria 9: If StoryCard renderer fails, fallback_builder is called as the ultimate fallback."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(
+        id="SC001",
+        topic="Свет",
+        importance="high",
+        summary="Сводка",
+        representative_source_refs=["S000001"],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    draft = ArticleDraft("Свет", "Лид", ["Текст"], [])
+
+    generator._analyze = AsyncMock(return_value=analysis)
+    generator.writer.write = AsyncMock(return_value=draft)
+    generator._repair_and_check = AsyncMock(
+        side_effect=UnsafeDraftError("systemic fact-check issue remains")
+    )
+    generator.fallback_renderer.render = MagicMock(side_effect=RuntimeError("renderer crash"))
+    generator._fallback = AsyncMock(
+        return_value=("Фоллбэк заголовок", "Фоллбэк лид", "Фоллбэк тело")
+    )
+
+    bundle_messages = {
+        "ch": [
+            Message(
+                text="Жители сообщают про свет",
+                sender="u",
+                timestamp=datetime.now(timezone.utc),
+                link="l",
+                channel_name="ch",
+                has_media=False,
+                media_type="",
+                message_id=1,
+            )
+        ]
+    }
+
+    title, _, body = await generator.generate_article(bundle_messages)
+
+    assert title == "Фоллбэк заголовок"
+    generator._fallback.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unresolved_title_lead_heading_fix_raises_unsafe_draft_error(
+    sample_config, mock_logger
+):
+    """Criteria 10: Unresolved TITLE/LEAD/heading FIX after repair raises UnsafeDraftError."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    draft = ArticleDraft("Свет с ошибкой", "Лид", ["Текст"], [])
+    title_fix = FactCheckResult(
+        "FIX",
+        False,
+        [
+            AuditIssue(
+                "TITLE",
+                "unsupported_claim",
+                "Свет с ошибкой",
+                "Title unsupported",
+                "Fix",
+                [],
+                "fix",
+            )
+        ],
+    )
+
+    generator.fact_checker.check = AsyncMock(return_value=title_fix)
+    generator.fact_checker.repair = AsyncMock(return_value=draft)
+
+    with pytest.raises(UnsafeDraftError, match="unresolved FIX remains in headline"):
+        await generator._repair_and_check(draft, EditorialAnalysis([]), _make_dummy_bundle())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fact_check_unavailable_publishes_valid_draft_non_blocking(
+    sample_config, mock_logger
+):
+    """Criteria 11: FactCheckUnavailableError remains non-blocking and publishes current valid draft."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    draft = ArticleDraft("Свет", "Лид", ["Текст"], [])
+
+    generator.fact_checker.check = AsyncMock(
+        side_effect=FactCheckUnavailableError("Fact check timed out")
+    )
+
+    result = await generator._repair_and_check(draft, EditorialAnalysis([]), _make_dummy_bundle())
+
+    assert result == draft
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_systemic_to_non_systemic_repair_proceeds_to_local_removal_without_regeneration(
+    sample_config, mock_logger
+):
+    """Criteria 12: Initial systemic FIX repaired to non-systemic FIX does not regenerate, cleans local fix."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    draft = ArticleDraft("Свет", "Лид", ["Текст", "Удаляемый абзац"], [])
+    initial_systemic = FactCheckResult(
+        "FIX",
+        True,
+        [
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Текст",
+                "Scale unsupported",
+                "Fix",
+                [],
+                "fix",
+            )
+        ],
+    )
+    non_systemic_fix = FactCheckResult(
+        "FIX",
+        False,
+        [
+            AuditIssue(
+                "P002",
+                "unsupported_fact",
+                "Удаляемый абзац",
+                "Local detail unsupported",
+                "Remove",
+                [],
+                "fix",
+            )
+        ],
+    )
+
+    # Initial check (systemic) -> repair 1 -> check (non-systemic) -> repair 2 -> check (non-systemic)
+    generator.fact_checker.check = AsyncMock(
+        side_effect=[initial_systemic, non_systemic_fix, non_systemic_fix]
+    )
+    generator.fact_checker.repair = AsyncMock(return_value=draft)
+    generator.writer.write = AsyncMock()
+
+    result = await generator._repair_and_check(draft, EditorialAnalysis([]), _make_dummy_bundle())
+
+    assert result.to_markdown() == "# Свет\n\nЛид\n\nТекст"
+    generator.writer.write.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_regenerated_audit_unavailable_publishes_regenerated_prose(
+    sample_config, mock_logger
+):
+    """Criteria 13: When audit of regenerated draft fails with FactCheckUnavailableError, publish regenerated draft."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    draft = ArticleDraft("Свет", "Лид", ["Текст"], [])
+    systemic_fix = FactCheckResult(
+        "FIX",
+        True,
+        [
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Текст",
+                "Scale unsupported",
+                "Fix",
+                [],
+                "fix",
+            )
+        ],
+    )
+    regenerated = ArticleDraft("Свет новый", "Лид новый", ["Регенерированный текст"], [])
+
+    # Initial check (systemic) -> repair 1 -> check (systemic) -> repair 2 -> check (systemic)
+    # -> regeneration -> regenerated check (FactCheckUnavailableError)
+    generator.fact_checker.check = AsyncMock(
+        side_effect=[
+            systemic_fix,
+            systemic_fix,
+            systemic_fix,
+            FactCheckUnavailableError("Fact check timed out"),
+        ]
+    )
+    generator.fact_checker.repair = AsyncMock(return_value=draft)
+    generator.writer.write = AsyncMock(return_value=regenerated)
+
+    result = await generator._repair_and_check(draft, EditorialAnalysis([]), _make_dummy_bundle())
+
+    assert result == regenerated
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_feedback_guided_regeneration_failure_triggers_story_card_fallback(
+    sample_config, mock_logger
+):
+    """Regeneration failure (e.g. provider error) raises UnsafeDraftError and triggers Story Card fallback."""
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(
+        id="SC001",
+        topic="Свет",
+        importance="high",
+        summary="Сводка",
+        representative_source_refs=["S000001"],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    draft = ArticleDraft("Свет", "Лид", ["Текст"], [])
+    systemic_fix = FactCheckResult(
+        "FIX",
+        True,
+        [
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Текст",
+                "Scale unsupported",
+                "Fix",
+                [],
+                "fix",
+            )
+        ],
+    )
+
+    generator._analyze = AsyncMock(return_value=analysis)
+    # First write succeeds with initial draft
+    generator.writer.write = AsyncMock(
+        side_effect=[draft, RuntimeError("Regeneration provider timeout")]
+    )
+    generator.fact_checker.check = AsyncMock(return_value=systemic_fix)
+    generator.fact_checker.repair = AsyncMock(return_value=draft)
+    generator.fallback_renderer.render = MagicMock(
+        return_value=ArticleDraft("Что происходило в городе за сутки", "Лид", ["Сводка"], [])
+    )
+
+    bundle_messages = {
+        "ch": [
+            Message(
+                text="Жители сообщают про свет",
+                sender="u",
+                timestamp=datetime.now(timezone.utc),
+                link="l",
+                channel_name="ch",
+                has_media=False,
+                media_type="",
+                message_id=1,
+            )
+        ]
+    }
+
+    title, _, body = await generator.generate_article(bundle_messages)
+
+    assert title == "Что происходило в городе за сутки"
+    assert "Сводка" in body
+    generator.fallback_renderer.render.assert_called_once_with(analysis.cards)

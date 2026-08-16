@@ -385,6 +385,36 @@ class ArticleGenerator:
             },
         )
 
+    async def _run_local_repair_loop(
+        self,
+        draft: ArticleDraft,
+        result: FactCheckResult,
+        analysis: EditorialAnalysis,
+        bundle: PreparedBundle,
+    ) -> tuple[ArticleDraft, FactCheckResult | None]:
+        """Run up to 2 targeted repair attempts on draft.
+
+        Returns (repaired_draft, latest_result) or (current_draft, None) if fact-check became unavailable.
+        """
+        current = draft
+        for _ in range(2):
+            if result.status != "FIX":
+                return current, result
+            current = await self.fact_checker.repair(current, result, analysis, bundle)
+            deterministic_preflight(current.to_markdown())
+            try:
+                result = await self.fact_checker.check(current, analysis, bundle)
+                self._save_fact_check_result("fact_check_final.json", result)
+                self._save_fact_check_result("fact_check.json", result)
+            except FactCheckUnavailableError as exc:
+                self._save_fact_check_result("fact_check_final.json", result)
+                self._save_fact_check_result("fact_check.json", result)
+                self._save_fact_check_failure(exc)
+                return current, None
+            if result.status != "FIX":
+                return current, result
+        return current, result
+
     async def _repair_and_check(  # noqa: C901
         self, draft: ArticleDraft, analysis: EditorialAnalysis, bundle: PreparedBundle
     ) -> ArticleDraft:
@@ -419,47 +449,82 @@ class ArticleGenerator:
             self._save_fact_check_result("fact_check.json", result)
             return draft
 
-        if result.systemic_problem:
-            self.logger.warning("Fact-check found a systemic issue; regenerating once")
-            regenerated = await self.writer.write(analysis, bundle)
-            deterministic_preflight(regenerated.to_markdown())
+        # Phase 1: Local repair loop on initial draft (up to 2 passes)
+        current, current_result = await self._run_local_repair_loop(draft, result, analysis, bundle)
+        if current_result is None:
+            return current
+
+        if current_result.status != "FIX":
+            if current_result.status == "WARN":
+                self.logger.warning(
+                    "Publishing article with %d fact-check warning(s)", len(current_result.issues)
+                )
+            self._save_fact_check_result("fact_check_final.json", current_result)
+            self._save_fact_check_result("fact_check.json", current_result)
+            return current
+
+        # Phase 2: If still FIX and systemic_problem, escalate to ONE feedback-guided regeneration
+        if current_result.systemic_problem:
+            self.logger.warning(
+                "Fact-check found systemic issue after repair attempts; regenerating once with audit feedback"
+            )
+            try:
+                regenerated = await self.writer.write(
+                    analysis, bundle, revision_feedback=current_result
+                )
+                deterministic_preflight(regenerated.to_markdown())
+            except Exception as exc:
+                raise UnsafeDraftError(
+                    f"feedback-guided regeneration failed: {type(exc).__name__}"
+                ) from exc
+
             try:
                 regenerated_check = await self.fact_checker.check(regenerated, analysis, bundle)
                 self._save_fact_check_result("fact_check_final.json", regenerated_check)
                 self._save_fact_check_result("fact_check.json", regenerated_check)
             except FactCheckUnavailableError as exc:
-                self._save_fact_check_result("fact_check_final.json", result)
-                self._save_fact_check_result("fact_check.json", result)
+                self._save_fact_check_result("fact_check_final.json", current_result)
+                self._save_fact_check_result("fact_check.json", current_result)
                 self._save_fact_check_failure(exc)
                 return regenerated
 
-            if regenerated_check.systemic_problem and regenerated_check.status == "FIX":
-                raise UnsafeDraftError("systemic fact-check issue remains after regeneration")
-            if regenerated_check.status == "FIX":
-                regenerated = self._remove_unresolved_local_fixes(regenerated, regenerated_check)
-                deterministic_preflight(regenerated.to_markdown())
-            return regenerated
+            if regenerated_check.status != "FIX":
+                if regenerated_check.status == "WARN":
+                    self.logger.warning(
+                        "Publishing regenerated article with %d fact-check warning(s)",
+                        len(regenerated_check.issues),
+                    )
+                return regenerated
 
-        current = draft
-        for _ in range(2):
-            current = await self.fact_checker.repair(current, result, analysis, bundle)
-            deterministic_preflight(current.to_markdown())
+            # Phase 3: Run local repair loop on regenerated draft (up to 2 passes)
+            current, current_result = await self._run_local_repair_loop(
+                regenerated, regenerated_check, analysis, bundle
+            )
+            if current_result is None:
+                return current
+            if current_result.status != "FIX":
+                if current_result.status == "WARN":
+                    self.logger.warning(
+                        "Publishing regenerated article with %d fact-check warning(s)",
+                        len(current_result.issues),
+                    )
+                return current
+
+        # Phase 4: Final removal of unrepairable safe local fixes
+        if current_result is not None and current_result.status == "FIX":
+            if current_result.systemic_problem:
+                raise UnsafeDraftError(
+                    "systemic fact-check issue remains after regeneration and local repair"
+                )
+            current = self._remove_unresolved_local_fixes(current, current_result)
             try:
-                result = await self.fact_checker.check(current, analysis, bundle)
-                self._save_fact_check_result("fact_check_final.json", result)
-                self._save_fact_check_result("fact_check.json", result)
-            except FactCheckUnavailableError as exc:
-                self._save_fact_check_result("fact_check_final.json", result)
-                self._save_fact_check_result("fact_check.json", result)
-                self._save_fact_check_failure(exc)
-                return current
+                deterministic_preflight(current.to_markdown())
+            except Exception as exc:
+                raise UnsafeDraftError(
+                    f"post-repair preflight failed: {type(exc).__name__}"
+                ) from exc
 
-            if result.systemic_problem and result.status == "FIX":
-                raise UnsafeDraftError("systemic fact-check issue remains after local repair")
-            if result.status != "FIX":
-                return current
-
-        return self._remove_unresolved_local_fixes(current, result)
+        return current
 
     def _remove_unresolved_local_fixes(
         self, draft: ArticleDraft, result: FactCheckResult
@@ -565,7 +630,14 @@ class ArticleGenerator:
         try:
             draft = await self._repair_and_check(draft, analysis, writer_bundle)
         except UnsafeDraftError as exc:
-            return await self._fallback(bundle, str(exc))
+            reason = str(exc)
+            try:
+                return await self._render_story_card_fallback(analysis, reason)
+            except Exception as card_exc:
+                self.logger.warning(
+                    "Validated Story Card render failed: %s", type(card_exc).__name__
+                )
+                return await self._fallback(bundle, reason)
         except Exception as exc:
             self.logger.warning(
                 "Editorial audit/repair failed; publishing writer output: %s",

@@ -6,10 +6,13 @@ import copy
 import json
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.ai_providers import AIProvider
 from src.editorial_models import EditorialAnalysis, PreparedBundle, is_expected_language
+
+if TYPE_CHECKING:
+    from src.editorial_audit import FactCheckResult
 
 
 @dataclass
@@ -237,7 +240,12 @@ class EditorialWriter:
         self.max_output_tokens = max_output_tokens
         self.output_language = output_language
 
-    def build_prompt(self, analysis: EditorialAnalysis, bundle: PreparedBundle) -> tuple[str, str]:
+    def build_prompt(
+        self,
+        analysis: EditorialAnalysis,
+        bundle: PreparedBundle,
+        revision_feedback: FactCheckResult | None = None,
+    ) -> tuple[str, str]:
         system = f"""{self.skill_instructions}
 
 Write the article exclusively in the configured output language: {self.output_language}.
@@ -281,11 +289,32 @@ targets, not validation limits; never pad length.
         if story_ctx_str:
             user_parts.append("LOCAL STORY CONTEXT:\n" + story_ctx_str)
         user_parts.append("ORIGINAL SOURCE EXCERPTS:\n" + bundle.prompt_text)
+        if revision_feedback and revision_feedback.issues:
+            fix_issues = [issue for issue in revision_feedback.issues if issue.severity == "fix"]
+            if fix_issues:
+                feedback_lines = ["AUDIT REVISION FEEDBACK:"]
+                for issue in fix_issues:
+                    detail = issue.reason or issue.suggested_direction or ""
+                    feedback_lines.append(f"- {issue.unit_id} / {issue.code}: {detail}".strip())
+                feedback_lines.extend(
+                    [
+                        "",
+                        "These are failure modes to correct, not replacement sentences.",
+                        "Do not mechanically copy suggested wording.",
+                        "Do not introduce facts absent from Story Cards and source records.",
+                    ]
+                )
+                user_parts.append("\n".join(feedback_lines))
         user = "\n\n".join(user_parts)
         return system, user
 
-    async def write(self, analysis: EditorialAnalysis, bundle: PreparedBundle) -> ArticleDraft:
-        system, user = self.build_prompt(analysis, bundle)
+    async def write(
+        self,
+        analysis: EditorialAnalysis,
+        bundle: PreparedBundle,
+        revision_feedback: FactCheckResult | None = None,
+    ) -> ArticleDraft:
+        system, user = self.build_prompt(analysis, bundle, revision_feedback=revision_feedback)
         response = await self.provider.chat_completion(
             messages=[
                 {"role": "system", "content": system},

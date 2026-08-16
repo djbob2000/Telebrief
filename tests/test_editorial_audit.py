@@ -660,3 +660,14 @@ def test_fact_checker_constructor_defaults_and_validation(mock_logger):
 
     with pytest.raises(ValueError, match="repair_max_output_tokens must be positive"):
         LightFactChecker(MagicMock(), "model", mock_logger, repair_max_output_tokens=-10)
+
+
+@pytest.mark.unit
+def test_fact_checker_prompt_operational_definition_systemic_problem(mock_logger):
+    checker = LightFactChecker(MagicMock(), "model", mock_logger)
+    prompt = checker._build_system_prompt()
+    assert "Systemic problem criteria:" in prompt
+    assert (
+        "cannot be made safe by independently replacing/removing the listed audit units" in prompt
+    )
+    assert "3–5 local FIX issues do not by themselves constitute a systemic problem" in prompt

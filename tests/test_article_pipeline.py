@@ -370,7 +370,7 @@ async def test_analysis_raw_response_is_saved_only_as_opt_in_debug_artifact(tmp_
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_systemic_audit_failure_falls_back_after_one_regeneration():
+async def test_systemic_audit_failure_falls_back_to_story_cards_after_regeneration():
     generator = _generator()
     card_response = json.dumps(
         {
@@ -416,14 +416,43 @@ async def test_systemic_audit_failure_falls_back_after_one_regeneration():
             ],
         }
     )
+    repair_response = json.dumps(
+        {
+            "replacements": {
+                "LEAD": "В городе сообщили об отключении воды.",
+            }
+        }
+    )
+    # Analysis -> Writer Draft -> Check 1 (systemic FIX)
+    # -> Repair 1 -> Check 2 (systemic FIX)
+    # -> Repair 2 -> Check 3 (systemic FIX)
+    # -> Regenerate Writer Draft -> Regenerated Check (systemic FIX)
+    # -> Regenerated Repair 1 -> Regenerated Check 2 (systemic FIX)
+    # -> Regenerated Repair 2 -> Regenerated Check 3 (systemic FIX)
     generator.provider.chat_completion = AsyncMock(
-        side_effect=[card_response, draft_response, systemic_fix, draft_response, systemic_fix]
+        side_effect=[
+            card_response,
+            draft_response,
+            systemic_fix,
+            repair_response,
+            systemic_fix,
+            repair_response,
+            systemic_fix,
+            draft_response,
+            systemic_fix,
+            repair_response,
+            systemic_fix,
+            repair_response,
+            systemic_fix,
+        ]
     )
 
     title, _, body = await generator.generate_article({"Source": [_message("Воду отключили.")]})
 
+    # Preserves validated AI Story Cards via _render_story_card_fallback
     assert title == "Что происходило в городе за сутки"
-    assert "Жители сообщали о перебоях с водоснабжением" in body
+    assert "Воду отключили." in body
+    assert "Жители сообщали о перебоях с водоснабжением" not in body
 
 
 @pytest.mark.unit
@@ -446,16 +475,27 @@ async def test_second_repair_is_checked_before_removing_remaining_issues():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_systemic_regeneration_cleans_local_fix_before_publish():
+async def test_systemic_regeneration_cleans_local_fix_after_repairs_before_publish():
     generator = _generator()
     draft = ArticleDraft("Свет", "Лид", ["Старый текст"], [])
     regenerated = ArticleDraft("Свет", "Лид", ["Новая неподтвержденная деталь"], [])
     initial = FactCheckResult("FIX", True, [_repair_issue()])
     local_fix = FactCheckResult("FIX", False, [_repair_issue()])
-    generator.fact_checker.check = AsyncMock(side_effect=[initial, local_fix])
+    # Initial check (FIX, systemic=True)
+    # -> repair 1 -> check 2 (FIX, systemic=True)
+    # -> repair 2 -> check 3 (FIX, systemic=True)
+    # -> regeneration -> check (local_fix: FIX, systemic=False)
+    # -> repair 1 -> check (local_fix)
+    # -> repair 2 -> check (local_fix)
+    # -> safe local removal
+    generator.fact_checker.check = AsyncMock(
+        side_effect=[initial, initial, initial, local_fix, local_fix, local_fix]
+    )
+    generator.fact_checker.repair = AsyncMock(side_effect=[draft, draft, regenerated, regenerated])
     generator.writer.write = AsyncMock(return_value=regenerated)
 
     result = await generator._repair_and_check(draft, EditorialAnalysis([]), _bundle())
 
     assert result.to_markdown() == "# Свет\n\nЛид"
-    assert generator.fact_checker.check.await_count == 2
+    assert generator.writer.write.await_count == 1
+    assert generator.fact_checker.check.await_count == 6
