@@ -24,6 +24,7 @@ REQUIRED_KEYS = [
     # bot_commands.py
     "cmd_start_desc",
     "cmd_digest_desc",
+    "cmd_article_desc",
     "cmd_cleanup_desc",
     "cmd_status_desc",
     "cmd_help_desc",
@@ -31,6 +32,10 @@ REQUIRED_KEYS = [
     "digest_done",
     "digest_error",
     "digest_exception",
+    "generating_article",
+    "article_done",
+    "article_error",
+    "article_exception",
     "cleaning_up",
     "cleanup_done",
     "cleanup_partial",

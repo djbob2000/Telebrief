@@ -310,3 +310,123 @@ async def test_cleanup_rate_limited(english_config, mock_logger):
     texts = [call[0][0] for call in update.message.reply_text.call_args_list]
     assert len(texts) == 1
     assert "wait" in texts[0].lower() or "Please wait" in texts[0]
+
+
+# ---------------------------------------------------------------------------
+# handle_article
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_article_authorized_success(english_config, mock_logger):
+    """handle_article sends processing message then success message when article succeeds."""
+    handler = BotCommandHandler(english_config, mock_logger)
+    update = _make_update(123456789)
+
+    with patch(
+        "src.bot_commands.generate_and_publish_article", new=AsyncMock(return_value=True)
+    ) as mock_gen:
+        await handler.handle_article(update, MagicMock())
+        mock_gen.assert_awaited_once_with(
+            config=english_config, logger=mock_logger, hours=24, user_id=123456789
+        )
+
+    assert update.message.reply_text.call_count == 2
+    processing_text = update.message.reply_text.call_args_list[0][0][0]
+    success_text = update.message.reply_text.call_args_list[1][0][0]
+    assert "Generating editorial article" in processing_text
+    assert "successfully generated and published" in success_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_article_authorized_failure(english_config, mock_logger):
+    """handle_article sends error message when article generation returns False."""
+    handler = BotCommandHandler(english_config, mock_logger)
+    update = _make_update(123456789)
+
+    with patch("src.bot_commands.generate_and_publish_article", new=AsyncMock(return_value=False)):
+        await handler.handle_article(update, MagicMock())
+
+    assert update.message.reply_text.call_count == 2
+    error_text = update.message.reply_text.call_args_list[1][0][0]
+    assert "Error generating article" in error_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_article_unauthorized(english_config, mock_logger):
+    """Unauthorized user is ignored silently and logged."""
+    handler = BotCommandHandler(english_config, mock_logger)
+    update = _make_update(999999999)  # Unauthorized user
+
+    with patch(
+        "src.bot_commands.generate_and_publish_article", new=AsyncMock(return_value=True)
+    ) as mock_gen:
+        await handler.handle_article(update, MagicMock())
+        mock_gen.assert_not_called()
+
+    assert update.message.reply_text.call_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_article_rate_limited(english_config, mock_logger):
+    """Rapid successive /article commands from same user are throttled."""
+    handler = BotCommandHandler(english_config, mock_logger)
+    update = _make_update(123456789)
+
+    with patch("src.bot_commands.generate_and_publish_article", new=AsyncMock(return_value=True)):
+        await handler.handle_article(update, MagicMock())
+        update.message.reply_text.reset_mock()
+        await handler.handle_article(update, MagicMock())
+
+    texts = [call[0][0] for call in update.message.reply_text.call_args_list]
+    assert len(texts) == 1
+    assert "wait" in texts[0].lower() or "Please wait" in texts[0]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_handle_article_exception(english_config, mock_logger):
+    """handle_article handles unexpected exception gracefully."""
+    handler = BotCommandHandler(english_config, mock_logger)
+    update = _make_update(123456789)
+
+    with patch(
+        "src.bot_commands.generate_and_publish_article",
+        new=AsyncMock(side_effect=RuntimeError("LLM failed")),
+    ):
+        await handler.handle_article(update, MagicMock())
+
+    assert update.message.reply_text.call_count == 2
+    exc_text = update.message.reply_text.call_args_list[1][0][0]
+    assert "error occurred while generating the article" in exc_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_setup_application_registers_article_handler(english_config, mock_logger):
+    """setup_application registers /article CommandHandler."""
+    handler = BotCommandHandler(english_config, mock_logger)
+    app = handler.setup_application()
+    command_names = [h.callback.__name__ for h in app.handlers[0] if hasattr(h, "callback")]
+    assert "handle_article" in command_names
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_help_and_status_include_article(english_config, mock_logger):
+    """/help and /status outputs list the /article command."""
+    handler = BotCommandHandler(english_config, mock_logger)
+    update = _make_update(123456789)
+
+    await handler.handle_help(update, MagicMock())
+    help_text = update.message.reply_text.call_args[0][0]
+    assert "/article" in help_text
+
+    update.message.reply_text.reset_mock()
+    await handler.handle_status(update, MagicMock())
+    status_text = update.message.reply_text.call_args[0][0]
+    assert "/article" in status_text

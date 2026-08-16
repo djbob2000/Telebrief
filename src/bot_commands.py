@@ -11,7 +11,7 @@ from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
 from src.config_loader import Config
-from src.core import generate_and_send_digest
+from src.core import generate_and_publish_article, generate_and_send_digest
 from src.scheduler import DigestScheduler
 from src.sender import DigestSender
 from src.ui_strings import get_ui_strings
@@ -63,6 +63,7 @@ class BotCommandHandler:
 
         # Add command handlers
         self.app.add_handler(CommandHandler("digest", self.handle_digest))
+        self.app.add_handler(CommandHandler("article", self.handle_article))
         self.app.add_handler(CommandHandler("cleanup", self.handle_cleanup))
         self.app.add_handler(CommandHandler("status", self.handle_status))
         self.app.add_handler(CommandHandler("help", self.handle_help))
@@ -83,6 +84,7 @@ class BotCommandHandler:
         commands = [
             BotCommand("start", self._ui["cmd_start_desc"]),
             BotCommand("digest", self._ui["cmd_digest_desc"]),
+            BotCommand("article", self._ui["cmd_article_desc"]),
             BotCommand("cleanup", self._ui["cmd_cleanup_desc"]),
             BotCommand("status", self._ui["cmd_status_desc"]),
             BotCommand("help", self._ui["cmd_help_desc"]),
@@ -115,6 +117,41 @@ class BotCommandHandler:
             context: Bot context
         """
         await self._handle_digest_window(update, hours=24, command_name="digest")
+
+    async def handle_article(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Handle /article command.
+
+        Args:
+            update: Telegram update
+            context: Bot context
+        """
+        if update.effective_user is None or update.message is None:
+            return
+
+        user_id = update.effective_user.id
+        if not self.is_authorized(user_id):
+            self.logger.warning(f"Unauthorized /article attempt from user {user_id}")
+            return
+
+        if self._is_rate_limited(user_id):
+            await update.message.reply_text(self._ui["rate_limited"])
+            return
+
+        self.logger.info(f"Manual /article requested by user {user_id} (24h)")
+        processing_message = self._ui["generating_article"]
+        await update.message.reply_text(processing_message)
+
+        try:
+            success = await generate_and_publish_article(
+                config=self.config, logger=self.logger, hours=24, user_id=user_id
+            )
+            await update.message.reply_text(
+                self._ui["article_done"] if success else self._ui["article_error"]
+            )
+        except Exception as e:
+            self.logger.error(f"Error in /article command: {e}", exc_info=True)
+            await update.message.reply_text(self._ui["article_exception"])
 
     async def _handle_digest_window(self, update: Update, hours: int, command_name: str):
         """Authorize, rate-limit, generate, and report one manual digest window."""
@@ -229,6 +266,7 @@ class BotCommandHandler:
                 "",
                 self._ui["available_commands"],
                 "/digest - " + self._ui["cmd_digest_desc"],
+                "/article - " + self._ui["cmd_article_desc"],
                 "/cleanup - " + self._ui["cmd_cleanup_desc"],
                 "/status - " + self._ui["cmd_status_desc"],
                 "/help - " + self._ui["cmd_help_desc"],
@@ -259,6 +297,7 @@ class BotCommandHandler:
             f"{self._ui['help_intro']}\n\n"
             f"{self._ui['help_commands_header']}\n\n"
             f"/digest - {self._ui['cmd_digest_desc']}\n"
+            f"/article - {self._ui['cmd_article_desc']}\n"
             f"/cleanup - {self._ui['cmd_cleanup_desc']}\n"
             f"/status - {self._ui['cmd_status_desc']}\n"
             f"/help - {self._ui['cmd_help_desc']}\n\n"
