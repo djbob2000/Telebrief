@@ -7,7 +7,7 @@ description: Use when drafting, rewriting, translating, fact-checking, or copy-e
 
 ## Editorial Contract
 
-Produce original, publication-ready local news in a pro.berdyansk.biz-like voice: practical, city-focused, fact-led, and useful on one reading. Make the main fact immediate, keep every consequential claim traceable, show uncertainty, and explain what changes for residents.
+Produce original, publication-ready local news in a calm, professional regional-newsroom voice: practical, city-focused, fact-led, and useful on one reading. Make the main fact immediate, keep every consequential claim traceable, show uncertainty, and explain what changes for residents.
 
 Treat source material as evidence, not omniscient truth. Accuracy, fairness, privacy, and public safety outrank speed, color, symmetry, and a catchy headline. Never invent a fact, quote, link, source, reaction, reporting action, causal bridge, technical mechanism, consequence, or forecast.
 

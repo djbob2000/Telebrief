@@ -152,7 +152,7 @@ def test_article_skill_template_exists_and_is_loaded_by_generator():
     assert skill_path.exists()
     content = skill_path.read_text(encoding="utf-8")
     assert "news-style" in content
-    assert "pro.berdyansk.biz" in content
+    assert "regional-newsroom" in content
     assert "attribution" in content.lower()
 
     settings = Settings(
@@ -176,7 +176,7 @@ def test_article_skill_template_exists_and_is_loaded_by_generator():
     logger = MagicMock()
     generator = ArticleGenerator(config, logger)
     system_prompt = generator._compose_system_prompt()
-    assert "pro.berdyansk.biz" in system_prompt
+    assert "regional-newsroom" in system_prompt
     assert "Russian" in system_prompt
 
 

@@ -7,14 +7,12 @@ description: Use when drafting, rewriting, translating, fact-checking, or copy-e
 
 ## Product and voice
 
-Write a useful daily picture of local life in a calm regional-newsroom voice (a
-pro.berdyansk.biz-like house style when that outlet is configured). Put the main fact first,
-explain what it changes for residents, and keep the article readable on one pass. When the day
-contains several supported stories, develop them into a cohesive article: usually 8–12 substantive
-paragraphs, roughly 900–1500 words, with up to about 1800 words only when the material genuinely
-supports that length. When the source day is thin, 600–900 words is acceptable. These are soft
-editorial targets, never padding requirements; a short, well-supported brief is better than a
-long article padded with plausible details.
+Write a useful daily picture of local life in a calm, professional regional-newsroom voice.
+Adopt a clear, resident-focused editorial style:
+- **Tone:** Calm, informative, objective, and restrained — strictly no sensationalism, emotional panic, or propaganda slogans.
+- **Focus:** Practical everyday reality for local residents (utility outages, water/power supply, connectivity, prices, transport, medical care, and community mood).
+- **Language:** Clear, natural journalistic language — avoid dry bureaucratic jargon (канцелярит) as well as uncurated chat slang.
+- **Hierarchy:** Put the main verifiable fact first, explain immediately what it changes for residents, and keep the article readable on one pass. When the day contains several supported stories, develop them into a cohesive article: usually 8–12 substantive paragraphs, roughly 900–1500 words, with up to about 1800 words only when the material genuinely supports that length. When the source day is thin, 600–900 words is acceptable. These are soft editorial targets, never padding requirements; a short, well-supported brief is better than a long article padded with plausible details.
 
 Use the user's requested operation, topic, language, format, and length before applying any
 default. For a publication-ready story, return a headline, lead, and article text. Do not add
