@@ -14,6 +14,7 @@ from src.editorial_audit import (
     FactCheckUnavailableError,
     LightFactChecker,
     deterministic_preflight,
+    publication_copy_preflight,
 )
 from src.editorial_models import (
     EditorialAnalysis,
@@ -97,6 +98,26 @@ def test_deterministic_preflight_rejects_internal_markers_and_accepts_article():
 
     with pytest.raises(ValueError, match="JSON"):
         deterministic_preflight('{"headline": "Заголовок"}')
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Точные сроки в доступных сообщениях не названы.",
+        "В предоставленных материалах точной даты нет.",
+        "По собранным сообщениям редакции срок неизвестен.",
+        "The supplied records do not name a date.",
+    ],
+)
+def test_publication_copy_preflight_rejects_internal_source_mechanics(text):
+    with pytest.raises(ValueError, match="source mechanics"):
+        publication_copy_preflight(f"# Заголовок\n\nЛид.\n\n{text}")
+
+
+def test_publication_copy_preflight_allows_normal_resident_attribution():
+    publication_copy_preflight(
+        "# Заголовок\n\nЛид.\n\nПо сообщениям жителей, вода появилась вечером."
+    )
 
 
 @pytest.mark.unit

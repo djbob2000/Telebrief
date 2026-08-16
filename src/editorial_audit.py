@@ -509,3 +509,20 @@ def deterministic_preflight(markdown: str) -> None:
     match = _INTERNAL_MARKERS.search(markdown)
     if match:
         raise ValueError(f"article contains internal marker: {match.group(0)}")
+
+
+_INTERNAL_SOURCE_MECHANICS = re.compile(
+    r"(?:"
+    r"\b(?:в|по)\s+(?:доступн\w*|предоставленн\w*|собранн\w*|исходн\w*)\s+"
+    r"(?:сообщени\w*|материал\w*|запис\w*)\b"
+    r"|\b(?:supplied|provided|collected)\s+(?:source\s+)?(?:messages|records|materials)\b"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def publication_copy_preflight(markdown: str) -> None:
+    """Reject publication copy that exposes internal evidence-collection mechanics."""
+    match = _INTERNAL_SOURCE_MECHANICS.search(markdown)
+    if match:
+        raise ValueError(f"article exposes internal source mechanics: {match.group(0)}")

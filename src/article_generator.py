@@ -22,6 +22,7 @@ from src.editorial_audit import (
     FactCheckUnavailableError,
     LightFactChecker,
     deterministic_preflight,
+    publication_copy_preflight,
 )
 from src.editorial_fallback import (
     DeterministicStoryCardBuilder,
@@ -308,6 +309,7 @@ class ArticleGenerator:
         draft = self.fallback_renderer.render(analysis.cards)
         markdown = draft.to_markdown()
         deterministic_preflight(markdown)
+        publication_copy_preflight(markdown)
         self._save_debug_artifact("story_card_fallback.md", markdown)
         return self._parse_article_response(markdown)
 
@@ -318,6 +320,7 @@ class ArticleGenerator:
         draft = self.fallback_renderer.render(cards)
         markdown = draft.to_markdown()
         deterministic_preflight(markdown)
+        publication_copy_preflight(markdown)
         self._save_debug_artifact("fallback_reason.txt", reason)
         self._save_debug_artifact(
             "fallback_story_cards.json", {"cards": [card.to_dict() for card in cards]}
@@ -684,6 +687,15 @@ class ArticleGenerator:
             )
 
         markdown = draft.to_markdown()
-        deterministic_preflight(markdown)
+        try:
+            deterministic_preflight(markdown)
+            publication_copy_preflight(markdown)
+        except ValueError as exc:
+            reason = f"publication copy preflight failed: {exc}"
+            try:
+                return await self._render_story_card_fallback(analysis, reason)
+            except Exception:
+                return await self._fallback(bundle, reason)
+
         self._save_debug_artifact("final_article.md", markdown)
         return self._parse_article_response(markdown)
