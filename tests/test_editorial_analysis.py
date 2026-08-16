@@ -598,6 +598,27 @@ def test_analyzer_prompts_contain_scale_hierarchy_and_corpus_boundary(compact, m
 
 
 @pytest.mark.unit
+def test_analyzer_prompt_preserves_materially_different_concrete_values(mock_logger):
+    analyzer = EditorialAnalyzer(MagicMock(), "model", mock_logger)
+    system, _ = analyzer.build_prompt(_bundle())
+    lower = system.lower()
+
+    assert "concrete values" in lower or "prices" in lower
+    assert "representative" in lower
+    assert "average" in lower or "midpoint" in lower
+    assert "source refs" in lower
+
+
+@pytest.mark.unit
+def test_analyzer_prompt_keeps_corpus_boundary_internal(mock_logger):
+    analyzer = EditorialAnalyzer(MagicMock(), "model", mock_logger)
+    system, _ = analyzer.build_prompt(_bundle())
+
+    assert "do not encode corpus absence as an established hard fact" in system.lower()
+    assert "no official schedule appears in the supplied records" not in system.lower()
+
+
+@pytest.mark.unit
 def test_split_bundle_preserves_local_context(mock_logger):
     from src.city_context_models import AreaCandidate, CityContextAnnotation, ResolvedEntity
 
