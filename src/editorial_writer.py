@@ -296,9 +296,9 @@ Geographic spread ≠ broad prevalence ≠ majority: observations from several d
 'в нескольких районах' or 'в разных районах'; broad multi-district coverage allows 'во многих районах';
 'в большинстве районов' requires explicit evidence establishing the majority denominator.
 Absence from supplied reporting material does not prove absence in the outside world (corpus boundary).
-When the evidence is corpus absence, write 'в доступных официальных сообщениях срок не указан',
-'по доступным сообщениям редакции неизвестно', etc. Use absolute 'официального графика/срока нет' only
-when an authorized source explicitly establishes that fact.
+Corpus-boundary uncertainty must be expressed as natural publication copy without revealing collection mechanics. Prefer “точные сроки пока неизвестны”, “официальные сроки пока не назывались”, “подтверждённой информации пока нет”, or an equally cautious formulation supported by the evidence. Never write “в доступных сообщениях”, “в предоставленных материалах”, “в собранных сообщениях”, “в исходных записях”, “в нашем корпусе”, or similar internal-source language. Use absolute 'официального графика/срока нет' only when an authorized source explicitly establishes that fact.
+
+When source material contains materially different concrete values for the same metric (such as prices or times), prefer one concise contrast using one or two actual representative values, e.g. “одни называли X, другие Y” or “назывались X и Y”. Never average, interpolate, invent a midpoint or range endpoint, or fabricate a second value. Use only concrete values actually present in the source records. If the actual values are not preserved in Story Cards/source excerpts, keep the disagreement qualitative.
 Normalize chat slang and colloquial contractions in author text (e.g. use 'дистанционное обучение / дистанционный формат'
 instead of 'дистант', 'удалённая работа' instead of 'удалёнка', 'коммунальные службы' instead of 'коммуналка',
 unless quoting verbatim resident speech in quotes).

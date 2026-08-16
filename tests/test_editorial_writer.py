@@ -320,8 +320,30 @@ def test_writer_prompt_contains_3_tier_scale_hierarchy_and_corpus_boundary(mock_
         or "broad multi-district" in system_prompt.lower()
     )
     assert "majority" in system_prompt.lower()
-    assert "corpus absence" in system_prompt.lower()
-    assert "доступных" in system_prompt.lower()
+    assert "corpus" in system_prompt.lower()
+
+
+@pytest.mark.unit
+def test_writer_prompt_prefers_concrete_sourced_examples_for_numeric_disagreement(mock_logger):
+    writer = EditorialWriter(MagicMock(), "model", "skill", mock_logger)
+    system, _ = writer.build_prompt(_analysis(), _bundle())
+    lower = system.lower()
+
+    assert "representative" in lower
+    assert "concrete values" in lower or "prices" in lower
+    assert "never average" in lower or "midpoint" in lower
+    assert "only" in lower and "source" in lower
+
+
+@pytest.mark.unit
+def test_writer_prompt_hides_internal_corpus_mechanics(mock_logger):
+    writer = EditorialWriter(MagicMock(), "model", "skill", mock_logger)
+    system, _ = writer.build_prompt(_analysis(), _bundle())
+    lower = system.lower()
+
+    assert "в доступных официальных сообщениях" not in lower
+    assert "по доступным сообщениям редакции" not in lower
+    assert "точные сроки пока неизвестны" in lower or "neutral publication" in lower
 
 
 @pytest.mark.unit

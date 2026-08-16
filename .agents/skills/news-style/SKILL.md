@@ -109,15 +109,21 @@ on the same day or share a broad topic. Follow an explicit user-selected story o
 5. Preserve contradictions and newsworthy uncertainties: make the verified baseline explicit before
    presenting unofficial estimates. Usually prefer one or two materially informative unofficial versions;
    never enumerate speculation merely for completeness. Weave significant unofficial versions directly into
-   the relevant thematic chapter rather than appending an isolated checklist block.
+   the relevant thematic chapter rather than appending an isolated checklist block. When several sourced messages
+   give materially different concrete values for the same practical metric, show the disagreement with one or two
+   real representative values when that helps the reader understand the spread. Example form: “одни называли 160 рублей за литр, другие — 190”.
+   Use only values actually present in the evidence. Never average them into a new midpoint, invent range endpoints,
+   or add a second value merely to make the sentence vivid.
 6. Scale discipline (geographic spread ≠ broad prevalence ≠ majority): scale language requires evidence of scale,
    not merely evidence of the underlying phenomenon. Observations from several districts justify “в нескольких районах”
    or “в разных районах”; broad multi-district coverage allows “во многих районах”; claims of “в большинстве районов”
    or citywide majority require explicit evidence supporting the majority denominator.
-7. Absence claims and corpus boundaries: absence from supplied reporting material does not prove absence in the outside
-   world. When the evidence is corpus absence, write “в доступных официальных сообщениях срок не указан”, “по доступным
-   сообщениям редакции неизвестно”, etc. Use absolute “официального графика/срока нет” only when an authorized source
-   explicitly establishes that fact.
+7. Absence claims and corpus boundaries: absence from the authorized evidence does not prove absence in the outside world.
+   Preserve that uncertainty without exposing collection mechanics in publication copy. Prefer neutral wording such as
+   “точные сроки пока неизвестны”, “официальные сроки пока не назывались”, “подтверждённой информации пока нет”, or
+   “когда именно восстановят подачу, пока неясно”. Do not write “в доступных сообщениях”, “в предоставленных материалах”,
+   “по данным собранных сообщений”, “в исходных записях”, or other phrases that reveal the internal source corpus.
+   Use absolute “официального графика/срока нет” only when an authorized source explicitly establishes that fact.
 8. Use exact reporting verbs: “сообщил”, “заявил”, “утверждает”, “подтвердил”. Distinguish
    observation, allegation, suspicion, detention, charge, trial, and conviction.
 9. Keep direct quotes faithful and economical: use typically 2–4 strong, authentic direct quotes across the
