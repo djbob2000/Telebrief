@@ -653,7 +653,7 @@ async def test_audit_repair_discards_wrong_language_replacement(mock_logger):
 def test_fact_checker_constructor_defaults_and_validation(mock_logger):
     checker = LightFactChecker(MagicMock(), "model", mock_logger)
     assert checker.max_output_tokens == 65_536
-    assert checker.repair_max_output_tokens is None
+    assert checker.repair_max_output_tokens == 65_536
 
     with pytest.raises(ValueError, match="max_output_tokens must be positive"):
         LightFactChecker(MagicMock(), "model", mock_logger, max_output_tokens=0)

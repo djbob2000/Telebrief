@@ -601,3 +601,68 @@ def test_house_numbers_private_sector_union_semantics():
         is_private_sector=True,
     )
     assert evaluate_coverage(coverage, ctx) == EvalResult.MATCH
+
+
+def test_coverage_evaluator_except_only_rule_semantics():
+    from src.city_context import AddressContext, EvalResult, evaluate_coverage
+
+    # Rule without base constraints: kind=segment + except_segment (even side from Pershotravneva to Liepaiska)
+    coverage = {
+        "kind": "segment",
+        "except_segment": {
+            "side": "even",
+            "from_landmark": "Pershotravneva",
+            "to_landmark": "Liepaiska",
+        },
+    }
+
+    # 1. Address inside excluded segment -> NO_MATCH
+    ctx_inside = AddressContext(
+        house_number="12",
+        normalized_house="12",
+        house_int=12,
+        parity="even",
+        explicit_side=None,
+        landmark_segment=("першотравневої", "лієпайської"),
+    )
+    assert evaluate_coverage(coverage, ctx_inside) == EvalResult.NO_MATCH
+
+    # 2. Address proven outside excluded segment (e.g. odd side or different landmark segment) -> MATCH
+    ctx_outside_side = AddressContext(
+        house_number="15",
+        normalized_house="15",
+        house_int=15,
+        parity="odd",
+        explicit_side=None,
+        landmark_segment=None,
+    )
+    assert evaluate_coverage(coverage, ctx_outside_side) == EvalResult.MATCH
+
+    # 3. Address with no side or landmark evidence -> UNKNOWN
+    ctx_unknown = AddressContext(
+        house_number=None,
+        normalized_house=None,
+        house_int=None,
+        parity=None,
+        explicit_side=None,
+        landmark_segment=None,
+    )
+    assert evaluate_coverage(coverage, ctx_unknown) == EvalResult.UNKNOWN
+
+
+def test_landmark_start_and_end_boundaries():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+
+    # "вул. Будівельна від початку вулиці до Космонавтів" matches start -> Kosmonavtiv (akz)
+    res1 = resolver.resolve("вул. Будівельна від початку вулиці до Космонавтів")
+    budivelna = next((e for e in res1.entities if "Будівельна" in e.canonical_name), None)
+    assert budivelna is not None
+    assert budivelna.confidence == "high"
+    assert any(a.area_id == "akz" for a in budivelna.municipal_areas)
+
+    # "Східний проспект від Петровського шляху до кінця" matches Petrovskyi_shliakh -> end (center)
+    res2 = resolver.resolve("Східний проспект від Петровського шляху до кінця")
+    skhidnyi = next((e for e in res2.entities if "Східний" in e.canonical_name), None)
+    assert skhidnyi is not None
+    assert skhidnyi.confidence == "high"
+    assert any(a.area_id == "center" for a in skhidnyi.municipal_areas)

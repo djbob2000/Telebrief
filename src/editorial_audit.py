@@ -134,7 +134,9 @@ class LightFactChecker:
         self.model = model
         self.logger = logger
         self.max_output_tokens = max_output_tokens
-        self.repair_max_output_tokens = repair_max_output_tokens
+        self.repair_max_output_tokens = (
+            repair_max_output_tokens if repair_max_output_tokens is not None else max_output_tokens
+        )
         self.output_language = output_language
         self.last_raw_response: str | None = None
         self.last_stage: str | None = None
@@ -404,11 +406,6 @@ class LightFactChecker:
             ensure_ascii=False,
         )
         try:
-            repair_tokens = (
-                self.repair_max_output_tokens
-                if self.repair_max_output_tokens is not None
-                else min(self.max_output_tokens, 8_192)
-            )
             response = await self.provider.chat_completion(
                 messages=[
                     {
@@ -419,7 +416,7 @@ class LightFactChecker:
                 ],
                 model=self.model,
                 temperature=0.1,
-                max_tokens=repair_tokens,
+                max_tokens=self.repair_max_output_tokens,
                 response_format={"type": "json_object"},
             )
             payload = json.loads(response.strip())

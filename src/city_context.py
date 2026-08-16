@@ -148,6 +148,8 @@ def _eval_house_ranges(ranges: list[Any], ctx: AddressContext) -> bool:
 
 
 _LANDMARK_ALIASES: dict[str, tuple[str, ...]] = {
+    "start": ("начал", "почат"),
+    "end": ("конц", "кінц"),
     "Hretska": ("грецьк", "греческ", "люксембург"),
     "Kosmonavtiv": ("космонавт",),
     "Liepaiska": ("лієпайськ", "лиепайск"),
@@ -252,15 +254,32 @@ def _eval_segment_landmarks(coverage: dict[str, Any], ctx: AddressContext) -> Ev
             l2_from = any(f in l2 for f in from_forms)
             if (l1_from and l2_to) or (l1_to and l2_from):
                 return EvalResult.MATCH
+            return EvalResult.NO_MATCH
     return EvalResult.UNKNOWN
 
 
 def _eval_segment(coverage: dict[str, Any], ctx: AddressContext) -> EvalResult:
-    if "except_segment" in coverage and isinstance(coverage["except_segment"], dict):
+    has_except = "except_segment" in coverage and isinstance(coverage["except_segment"], dict)
+    except_res: EvalResult | None = None
+    if has_except:
         excluded = {"kind": "segment", **coverage["except_segment"]}
         except_res = evaluate_coverage(excluded, ctx)
         if except_res == EvalResult.MATCH:
             return EvalResult.NO_MATCH
+
+    has_base_constraints = any(
+        k in coverage
+        for k in (
+            "side",
+            "from_house",
+            "to_house",
+            "from_houses",
+            "from_landmark",
+            "to_landmark",
+        )
+    )
+    if not has_base_constraints:
+        return EvalResult.MATCH if except_res == EvalResult.NO_MATCH else EvalResult.UNKNOWN
 
     fh_res = _eval_segment_from_houses(coverage, ctx)
     if fh_res is not None:
