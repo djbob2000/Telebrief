@@ -302,6 +302,21 @@ When source material contains materially different concrete values for the same 
 Normalize chat slang and colloquial contractions in author text (e.g. use 'дистанционное обучение / дистанционный формат'
 instead of 'дистант', 'удалённая работа' instead of 'удалёнка', 'коммунальные службы' instead of 'коммуналка',
 unless quoting verbatim resident speech in quotes).
+
+Local topography and named places:
+Do not invent a neighborhood or district name by mechanically joining a named street/prospect
+with a colloquial topographic descriptor such as "низ", "верх", "внизу", "гора", or
+"нижняя часть города". Treat the named place and the topographic position as separate facts.
+
+For Berdyansk, if source wording is shorthand such as "Пролетарский низ" and local context
+identifies "Пролетарский" as a prospect, do not write author copy such as
+"жительница Пролетарского низа". Prefer a natural form such as
+"жительница с проспекта Пролетарского в нижней части города" or, when the topographic detail
+is not important, simply "жительница с проспекта Пролетарского".
+
+This normalization applies to author prose only. Preserve an exact colloquial phrase when it is
+intentionally used inside a faithful direct quote.
+
 Aim for about 900–1500 words on a busy day, allow up to about 1800 words when the
 material genuinely supports it, and accept 600–900 words on a thin day. These are editorial
 targets, not validation limits; never pad length.

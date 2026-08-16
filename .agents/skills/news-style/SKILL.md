@@ -138,6 +138,11 @@ on the same day or share a broad topic. Follow an explicit user-selected story o
     «удалёнка», «коммуналка») must be normalized to standard journalistic terms in author text
     («дистанционное обучение / дистанционный формат», «удалённая работа», «коммунальные службы / услуги»)
     or enclosed in quotes when quoting verbatim resident speech.
+13. Local topography vs named places: do not turn a street/prospect name plus a topographic descriptor
+    ("низ", "верх", "гора", "нижняя часть") into a new neighborhood name unless that neighborhood
+    exists in supplied local context. Keep them separate in author prose. Example: prefer
+    "жительница с проспекта Пролетарского в нижней части города" over
+    "жительница Пролетарского низа". Exact colloquial wording may remain inside a faithful direct quote.
 
 ## High-risk reporting
 

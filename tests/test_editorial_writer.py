@@ -571,3 +571,22 @@ def test_writer_prompt_contains_journalistic_polish_rules(mock_logger):
     assert "Direct quotes:" in system_prompt
     assert "typically 2–4 sharp, authentic quotes" in system_prompt
     assert "Resident experience and technical advice:" in system_prompt
+
+
+@pytest.mark.unit
+def test_writer_prompt_separates_named_place_from_topographic_descriptor(mock_logger):
+    writer = EditorialWriter(
+        MagicMock(),
+        "model",
+        "skill",
+        mock_logger,
+        output_language="Russian",
+    )
+
+    system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
+
+    assert "Local topography and named places:" in system_prompt
+    assert "Пролетарский низ" in system_prompt
+    assert "жительница Пролетарского низа" in system_prompt
+    assert "жительница с проспекта Пролетарского в нижней части города" in system_prompt
+    assert "Do not invent a neighborhood or district name" in system_prompt
