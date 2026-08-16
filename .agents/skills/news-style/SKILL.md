@@ -147,6 +147,9 @@ on the same day or share a broad topic. Follow an explicit user-selected story o
     Inflect for grammar when necessary, but do not semantically rewrite or expand a proper name.
     For example, "Железный рынок" must not become "железнодорожный рынок" merely because the
     model interprets the adjective.
+15. Person attributes: do not infer or change gender, age, occupation, role, or relationship for style.
+    Preserve such attributes only when the evidence establishes them. Do not infer gender from a
+    sender/display name or username; if it is unclear, recast the sentence rather than inventing it.
 
 ## High-risk reporting
 

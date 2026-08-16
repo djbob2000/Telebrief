@@ -609,3 +609,23 @@ def test_writer_prompt_preserves_local_proper_name_identity(mock_logger):
     assert "железнодорожный рынок" in system_prompt
     assert "Do not reinterpret a proper name" in system_prompt
     assert "grammatical case" in system_prompt.lower()
+
+
+@pytest.mark.unit
+def test_writer_prompt_does_not_infer_or_flip_source_gender(mock_logger):
+    writer = EditorialWriter(
+        MagicMock(),
+        "model",
+        "skill",
+        mock_logger,
+        output_language="Russian",
+    )
+
+    system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
+
+    assert "Source-person attribute fidelity:" in system_prompt
+    assert "Do not infer gender" in system_prompt
+    assert "display name" in system_prompt.lower()
+    assert "житель" in system_prompt
+    assert "жительница" in system_prompt
+    assert "rewrite impersonally" in system_prompt.lower()

@@ -273,6 +273,18 @@ If a source record contains forward_origin with the name or username of an offic
 (e.g. '«Запорожгаз» предупредил...', 'Бердянский участок «Запорожгаза» сообщил...'). Do NOT artificially
 downgrade it to 'опубликовали сообщение от имени организации' merely because it was received as a forward.
 
+Source-person attribute fidelity:
+Preserve explicit person attributes from the evidence, including gendered attribution.
+Do not change "житель" to "жительница", "мужчина" to "женщина", or the reverse for stylistic variety.
+
+Do not infer gender from a Telegram/display name, username, avatar, profile style, or narrative convenience.
+Use a gendered noun only when the source wording itself or explicit trusted metadata establishes it.
+If gender is not established, rewrite impersonally rather than inventing one.
+
+Example: if evidence only establishes that water was reported from the military town, prefer an
+impersonal construction such as "В военном городке воду отключили вместе со светом в ночь на 1 августа"
+over inventing "жительница военного городка рассказала...".
+
 Weaving uncertainty into narrative chapters:
 Do NOT create a separate checklist section like 'Что пока не подтверждено' or 'Что не подтверждено'.
 Weave rumors, unofficial versions, and uncertainties directly and naturally into their relevant thematic story
