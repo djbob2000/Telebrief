@@ -689,13 +689,21 @@ class ArticleGenerator:
         markdown = draft.to_markdown()
         try:
             deterministic_preflight(markdown)
-            publication_copy_preflight(markdown)
         except ValueError as exc:
-            reason = f"publication copy preflight failed: {exc}"
+            reason = f"deterministic preflight failed: {exc}"
             try:
                 return await self._render_story_card_fallback(analysis, reason)
             except Exception:
                 return await self._fallback(bundle, reason)
+
+        try:
+            publication_copy_preflight(markdown)
+        except ValueError as exc:
+            self.logger.warning(
+                "Publication-copy polish warning; publishing full Writer prose: %s",
+                exc,
+            )
+            self._save_debug_artifact("publication_copy_warning.txt", str(exc))
 
         self._save_debug_artifact("final_article.md", markdown)
         return self._parse_article_response(markdown)

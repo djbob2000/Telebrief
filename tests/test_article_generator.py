@@ -2383,9 +2383,7 @@ async def test_repair_loop_recomputes_blocking_units_on_new_blocking_issue(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_generator_leaked_source_opacity_falls_back_to_story_cards(
-    sample_config, mock_logger
-):
+async def test_generator_leaked_source_opacity_keeps_writer_prose(sample_config, mock_logger):
     generator = ArticleGenerator(sample_config, mock_logger)
     card = StoryCard(
         id="SC001",
@@ -2401,9 +2399,61 @@ async def test_generator_leaked_source_opacity_falls_back_to_story_cards(
         paragraphs=["В доступных сообщениях сроки восстановления не названы."],
         sections=[],
     )
+
     generator._analyze = AsyncMock(return_value=analysis)
     generator.writer.write = AsyncMock(return_value=leaked_draft)
     generator._repair_and_check = AsyncMock(return_value=leaked_draft)
+    generator.fallback_renderer.render = MagicMock()
+
+    bundle_messages = {
+        "ch": [
+            Message(
+                text="Воды нет.",
+                sender="u",
+                timestamp=datetime.now(timezone.utc),
+                link="l",
+                channel_name="ch",
+                has_media=False,
+                media_type="",
+                message_id=1,
+            )
+        ]
+    }
+
+    title, lead, body = await generator.generate_article(bundle_messages)
+
+    assert title == "Отключение воды в городе"
+    assert lead == "В нескольких районах пропала вода."
+    assert "сроки восстановления" in body
+    generator.fallback_renderer.render.assert_not_called()
+    assert any(
+        "publication-copy" in str(call).lower() or "source mechanics" in str(call).lower()
+        for call in mock_logger.warning.call_args_list
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generator_structural_preflight_remains_hard_gate(sample_config, mock_logger):
+    generator = ArticleGenerator(sample_config, mock_logger)
+    card = StoryCard(
+        id="SC001",
+        topic="Вода",
+        importance="high",
+        summary="Воду отключили до вечера.",
+        representative_source_refs=["S000001"],
+    )
+    analysis = EditorialAnalysis(cards=[card])
+    malformed_draft = ArticleDraft(
+        headline="Отключение воды в городе",
+        lead="В нескольких районах пропала вода.",
+        paragraphs=["Текст с маркером [S000001], который нарушает структуру."],
+        sections=[],
+    )
+
+    generator._analyze = AsyncMock(return_value=analysis)
+    generator.writer.write = AsyncMock(return_value=malformed_draft)
+    generator._repair_and_check = AsyncMock(return_value=malformed_draft)
     generator.fallback_renderer.render = MagicMock(
         return_value=ArticleDraft(
             "Что происходило в городе за сутки",
@@ -2429,9 +2479,7 @@ async def test_generator_leaked_source_opacity_falls_back_to_story_cards(
     }
 
     title, lead, body = await generator.generate_article(bundle_messages)
-    article_text = f"{title}\n\n{lead}\n\n{body}"
 
-    assert "в доступных сообщениях" not in article_text.lower()
-    assert "в предоставленных материалах" not in article_text.lower()
-    assert title != ""
-    assert body != ""
+    generator.fallback_renderer.render.assert_called_once()
+    assert title == "Что происходило в городе за сутки"
+    assert "[S000001]" not in body
