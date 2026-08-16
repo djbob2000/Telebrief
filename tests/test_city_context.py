@@ -685,3 +685,17 @@ def test_different_landmark_interval_is_unknown_without_topology():
         landmark_segment=("морської", "лієпайської"),
     )
     assert evaluate_coverage(coverage, ctx) == EvalResult.UNKNOWN
+
+
+def test_city_context_resolves_proletarsky_genitive_as_prospect_not_area():
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+
+    result = resolver.resolve("На Пролетарского в нижней части города вода пошла слабым напором")
+
+    prospect = next(entity for entity in result.entities if entity.entity_id == "prospect:Східний")
+
+    assert prospect.object_type == "prospect"
+    assert not any(
+        entity.kind == "area" and "пролетар" in entity.canonical_name.casefold()
+        for entity in result.entities
+    )

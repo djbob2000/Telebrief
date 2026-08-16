@@ -5273,6 +5273,12 @@ stable_context:
         - text: проспект Восточный
           status: common_ru_or_abbreviation
           source_ref: editorial_normalization
+        - text: Пролетарского
+          status: historical_or_local_inflected_form
+          source_ref: editorial_normalization
+        - text: Пролетарский
+          status: historical_or_local_inflected_form
+          source_ref: editorial_normalization
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
           area_id: nahirna
