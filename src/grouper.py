@@ -338,6 +338,7 @@ class DigestGrouper:
             openrouter_model=config.openrouter_model,
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=grouper_timeout,
+            reasoning_effort=config.settings.reasoning_effort,
         )
         self.model = config.settings.ai_model
         # The classifier returns IDs rather than repeating every point's text.

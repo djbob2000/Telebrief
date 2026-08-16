@@ -66,6 +66,7 @@ class Summarizer:
             openrouter_model=config.openrouter_model,
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=config.settings.api_timeout,
+            reasoning_effort=config.settings.reasoning_effort,
         )
         self.model = config.settings.ai_model
         self.temperature = config.settings.temperature

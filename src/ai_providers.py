@@ -392,13 +392,20 @@ class OpenAIProvider(AIProvider):
 class GoogleProvider(AIProvider):
     """Google Gemini provider through Google's OpenAI-compatible endpoint."""
 
-    def __init__(self, api_key: str, logger: logging.Logger, timeout: int = 60):
+    def __init__(
+        self,
+        api_key: str,
+        logger: logging.Logger,
+        timeout: int = 60,
+        default_reasoning_effort: str = "high",
+    ):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=GOOGLE_BASE_URL,
             timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
         )
         self.logger = logger
+        self.default_reasoning_effort = default_reasoning_effort
 
     async def chat_completion(  # pylint: disable=too-many-positional-arguments
         self,
@@ -419,11 +426,12 @@ class GoogleProvider(AIProvider):
                 GOOGLE_MAX_OUTPUT_TOKENS,
             )
 
+        effort = reasoning_effort if reasoning_effort is not None else self.default_reasoning_effort
         create_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "max_completion_tokens": output_tokens,
-            "reasoning_effort": reasoning_effort if reasoning_effort is not None else "high",
+            "reasoning_effort": effort,
         }
         if response_format is not None:
             create_kwargs["response_format"] = response_format
@@ -614,6 +622,7 @@ def create_provider(  # noqa: C901
     openrouter_model: str = "openrouter/free",
     ollama_base_url: str = "http://localhost:11434",
     api_timeout: int = 60,
+    reasoning_effort: str | None = None,
 ) -> AIProvider:
     """
     Factory function to create an AI provider.
@@ -630,6 +639,7 @@ def create_provider(  # noqa: C901
         openrouter_model: Model used by the OpenRouter failover slot
         ollama_base_url: Ollama server URL (for 'ollama' provider)
         api_timeout: HTTP request timeout in seconds
+        reasoning_effort: Optional reasoning effort hint for models supporting it
 
     Returns:
         AIProvider instance
@@ -669,7 +679,12 @@ def create_provider(  # noqa: C901
         slots: list[tuple[str, AIProvider, str]] = [
             (
                 f"google-{index}",
-                GoogleProvider(api_key=key, logger=logger, timeout=api_timeout),
+                GoogleProvider(
+                    api_key=key,
+                    logger=logger,
+                    timeout=api_timeout,
+                    default_reasoning_effort=reasoning_effort or "high",
+                ),
                 "",
             )
             for index, key in enumerate(keys, start=1)

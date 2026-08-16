@@ -94,6 +94,7 @@ class ArticleGenerator:
             openrouter_model=config.openrouter_model,
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=config.settings.article.editorial_api_timeout,
+            reasoning_effort=config.settings.reasoning_effort,
         )
         self.provider: AIProvider = ensure_provider_cascade(
             raw_provider, logger=logger, slot_name=config.settings.ai_provider

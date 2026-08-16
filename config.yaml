@@ -75,15 +75,16 @@ settings:
   timezone: "Europe/Kyiv"
   lookback_hours: 24
 
-  # Google Gemini settings (commented out):
-  # ai_provider: "google"
-  # ai_model: "gemini-3.6-flash"
+  # Google Gemini settings (active):
+  ai_provider: "google"
+  ai_model: "gemini-3.7-flash"
+  reasoning_effort: "medium"
+  max_tokens_per_summary: 65536
 
-  # DeepSeek settings (active):
-  ai_provider: "openai"
-  ai_model: "deepseek-v4-flash"
-  openai_temperature: 0.7
-  max_tokens_per_summary: 96000
+  # DeepSeek settings (commented out):
+  # ai_provider: "openai"
+  # ai_model: "deepseek-v4-flash"
+  # openai_temperature: 0.7
 
   digest_mode: "digest"
   dedup_topics: true
@@ -119,9 +120,9 @@ settings:
 
   article:
     enabled: true
-    schedule_time: "20:00"
+    schedule_time: "21:15"
     lookback_hours: 24
-    author_name: "Бердянск Новости"
+    author_name: "@berdiansk_news"
     fallback_save_dir: "data/articles"
     prompt_template: ".agents/skills/news-style/SKILL.md"
     generation_retries: 1

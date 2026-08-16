@@ -136,6 +136,7 @@ class Settings:
     digest_groups: List[DigestGroupConfig] = field(default_factory=list)
     filters: list[FilterSpec] = field(default_factory=list)
     dedup_topics: bool = False
+    reasoning_effort: str | None = None
     article: ArticleConfig = field(default_factory=ArticleConfig)
 
 
@@ -889,6 +890,11 @@ def load_config(config_path: str = "config.yaml") -> Config:
         digest_groups=digest_groups,
         filters=global_filters,
         dedup_topics=bool(settings_dict.get("dedup_topics", False)),
+        reasoning_effort=(
+            str(settings_dict["reasoning_effort"]).strip()
+            if settings_dict.get("reasoning_effort") is not None
+            else None
+        ),
         article=_parse_article_config(settings_dict),
     )
 
