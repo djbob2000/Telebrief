@@ -590,3 +590,22 @@ def test_writer_prompt_separates_named_place_from_topographic_descriptor(mock_lo
     assert "жительница Пролетарского низа" in system_prompt
     assert "жительница с проспекта Пролетарского в нижней части города" in system_prompt
     assert "Do not invent a neighborhood or district name" in system_prompt
+
+
+@pytest.mark.unit
+def test_writer_prompt_preserves_local_proper_name_identity(mock_logger):
+    writer = EditorialWriter(
+        MagicMock(),
+        "model",
+        "skill",
+        mock_logger,
+        output_language="Russian",
+    )
+
+    system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
+
+    assert "Local proper-name fidelity:" in system_prompt
+    assert "Железный рынок" in system_prompt
+    assert "железнодорожный рынок" in system_prompt
+    assert "Do not reinterpret a proper name" in system_prompt
+    assert "grammatical case" in system_prompt.lower()

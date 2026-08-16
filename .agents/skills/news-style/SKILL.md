@@ -143,6 +143,10 @@ on the same day or share a broad topic. Follow an explicit user-selected story o
     exists in supplied local context. Keep them separate in author prose. Example: prefer
     "жительница с проспекта Пролетарского в нижней части города" over
     "жительница Пролетарского низа". Exact colloquial wording may remain inside a faithful direct quote.
+14. Local proper names: preserve the lexical identity of named local places from the evidence.
+    Inflect for grammar when necessary, but do not semantically rewrite or expand a proper name.
+    For example, "Железный рынок" must not become "железнодорожный рынок" merely because the
+    model interprets the adjective.
 
 ## High-risk reporting
 

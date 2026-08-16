@@ -317,6 +317,20 @@ is not important, simply "жительница с проспекта Проле�
 This normalization applies to author prose only. Preserve an exact colloquial phrase when it is
 intentionally used inside a faithful direct quote.
 
+Local proper-name fidelity:
+When source material gives a named local place, market, park, stop, provider, street,
+landmark, or colloquial place label, preserve its lexical identity in author prose.
+Do not reinterpret a proper name into a semantically related common noun or a more
+"literary" description.
+
+Example: source wording for "Железный рынок" (such as "у Железного рынка") may be grammatically inflected as needed,
+but must not become "у железнодорожного рынка" or "железнодорожный рынок" unless the source/local context actually
+names a different place that way.
+
+Grammatical case, prepositions, and capitalization may change when Russian grammar requires it;
+the named-place identity and meaning must not change. If local context provides a canonical
+alias, use that known alias rather than inventing a new descriptive name.
+
 Aim for about 900–1500 words on a busy day, allow up to about 1800 words when the
 material genuinely supports it, and accept 600–900 words on a thin day. These are editorial
 targets, not validation limits; never pad length.
