@@ -391,22 +391,38 @@ class ArticleGenerator:
         result: FactCheckResult,
         analysis: EditorialAnalysis,
         bundle: PreparedBundle,
+        *,
+        known_blocking_units: dict[str, str] | None = None,
     ) -> tuple[ArticleDraft, FactCheckResult | None]:
         """Run up to 2 targeted repair attempts on draft.
 
         Returns (repaired_draft, latest_result) or (current_draft, None) if fact-check became unavailable.
+        If a repair candidate fails preflight, it is discarded and the previous valid draft is kept.
         """
         current = draft
+        blocking_units = (
+            dict(known_blocking_units)
+            if known_blocking_units is not None
+            else {
+                issue.unit_id: draft.audit_units()[issue.unit_id].text
+                for issue in result.issues
+                if issue.severity == "fix"
+                and issue.publication_blocking
+                and issue.unit_id in draft.audit_units()
+            }
+        )
         for _ in range(2):
             if result.status != "FIX":
                 return current, result
-            current = await self.fact_checker.repair(current, result, analysis, bundle)
+            candidate = await self.fact_checker.repair(current, result, analysis, bundle)
             try:
-                deterministic_preflight(current.to_markdown())
+                deterministic_preflight(candidate.to_markdown())
+                current = candidate
             except Exception as exc:
-                raise UnsafeDraftError(
-                    f"local repair preflight failed: {type(exc).__name__}"
-                ) from exc
+                self.logger.warning(
+                    "Discarding structurally invalid local repair; keeping previous draft: %s",
+                    type(exc).__name__,
+                )
             try:
                 result = await self.fact_checker.check(current, analysis, bundle)
                 self._save_fact_check_result("fact_check_final.json", result)
@@ -415,6 +431,20 @@ class ArticleGenerator:
                 self._save_fact_check_result("fact_check_final.json", result)
                 self._save_fact_check_result("fact_check.json", result)
                 self._save_fact_check_failure(exc)
+                if blocking_units:
+                    current_units = current.audit_units()
+                    unmodified_blocking = [
+                        uid
+                        for uid, orig_text in blocking_units.items()
+                        if uid in current_units and current_units[uid].text == orig_text
+                    ]
+                    if unmodified_blocking:
+                        raise UnsafeDraftError(
+                            f"fact check unavailable during repair with unmodified publication-blocking unit(s): {', '.join(unmodified_blocking)}"
+                        ) from exc
+                    self.logger.warning(
+                        "Fact check unavailable during repair; publishing modified draft with prior blocking fixes"
+                    )
                 return current, None
             if result.status != "FIX":
                 return current, result
@@ -468,95 +498,102 @@ class ArticleGenerator:
             self._save_fact_check_result("fact_check.json", current_result)
             return current
 
-        # Phase 2: If still FIX and systemic_problem, escalate to ONE feedback-guided regeneration
-        if current_result.systemic_problem:
+        # Phase 2: If still FIX and needs regeneration (systemic_problem or blocking fixes), escalate to ONE feedback-guided regeneration
+        if current_result.needs_regeneration:
             self.logger.warning(
-                "Fact-check found systemic issue after repair attempts; regenerating once with audit feedback"
+                "Fact-check requires regeneration (systemic=%s, blocking=%s); regenerating once with audit feedback",
+                current_result.systemic_problem,
+                current_result.has_blocking_fixes,
             )
+            blocking_before_regeneration = current_result.has_blocking_fixes
             try:
                 regenerated = await self.writer.write(
                     analysis, bundle, revision_feedback=current_result
                 )
                 deterministic_preflight(regenerated.to_markdown())
             except Exception as exc:
-                raise UnsafeDraftError(
-                    f"feedback-guided regeneration failed: {type(exc).__name__}"
-                ) from exc
-
-            try:
-                regenerated_check = await self.fact_checker.check(regenerated, analysis, bundle)
-                self._save_fact_check_result("fact_check_final.json", regenerated_check)
-                self._save_fact_check_result("fact_check.json", regenerated_check)
-            except FactCheckUnavailableError as exc:
-                self._save_fact_check_result("fact_check_final.json", current_result)
-                self._save_fact_check_result("fact_check.json", current_result)
-                self._save_fact_check_failure(exc)
-                return regenerated
-
-            if regenerated_check.status != "FIX":
-                if regenerated_check.status == "WARN":
-                    self.logger.warning(
-                        "Publishing regenerated article with %d fact-check warning(s)",
-                        len(regenerated_check.issues),
-                    )
-                return regenerated
-
-            # Phase 3: Run local repair loop on regenerated draft (up to 2 passes)
-            current, current_result = await self._run_local_repair_loop(
-                regenerated, regenerated_check, analysis, bundle
-            )
-            if current_result is None:
-                return current
-            if current_result.status != "FIX":
-                if current_result.status == "WARN":
-                    self.logger.warning(
-                        "Publishing regenerated article with %d fact-check warning(s)",
-                        len(current_result.issues),
-                    )
-                return current
-
-        # Phase 4: Final removal of unrepairable safe local fixes
-        if current_result is not None and current_result.status == "FIX":
-            if current_result.systemic_problem:
-                raise UnsafeDraftError(
-                    "systemic fact-check issue remains after regeneration and local repair"
+                if blocking_before_regeneration:
+                    raise UnsafeDraftError(
+                        f"feedback-guided regeneration failed with prior blocking fix: {type(exc).__name__}"
+                    ) from exc
+                self.logger.warning(
+                    "Feedback-guided regeneration failed for non-blocking draft; preserving previous draft: %s",
+                    type(exc).__name__,
                 )
-            current = self._remove_unresolved_local_fixes(current, current_result)
-            try:
-                deterministic_preflight(current.to_markdown())
-            except Exception as exc:
-                raise UnsafeDraftError(
-                    f"post-repair preflight failed: {type(exc).__name__}"
-                ) from exc
+                regenerated = None
+
+            if regenerated is not None:
+                try:
+                    regenerated_check = await self.fact_checker.check(regenerated, analysis, bundle)
+                    self._save_fact_check_result("fact_check_final.json", regenerated_check)
+                    self._save_fact_check_result("fact_check.json", regenerated_check)
+                except FactCheckUnavailableError as exc:
+                    self._save_fact_check_result("fact_check_final.json", current_result)
+                    self._save_fact_check_result("fact_check.json", current_result)
+                    self._save_fact_check_failure(exc)
+                    self.logger.warning(
+                        "Fact check unavailable after successful regeneration; publishing regenerated draft: %s",
+                        exc,
+                    )
+                    return regenerated
+
+                if regenerated_check.status != "FIX":
+                    if regenerated_check.status == "WARN":
+                        self.logger.warning(
+                            "Publishing regenerated article with %d fact-check warning(s)",
+                            len(regenerated_check.issues),
+                        )
+                    return regenerated
+
+                # Phase 3: Run local repair loop on regenerated draft (up to 2 passes)
+                current, current_result = await self._run_local_repair_loop(
+                    regenerated,
+                    regenerated_check,
+                    analysis,
+                    bundle,
+                )
+                if current_result is None:
+                    return current
+                if current_result.status != "FIX":
+                    if current_result.status == "WARN":
+                        self.logger.warning(
+                            "Publishing regenerated article with %d fact-check warning(s)",
+                            len(current_result.issues),
+                        )
+                    return current
+
+        # Phase 4: Enforce publication gate on final draft
+        if current_result is not None and current_result.status == "FIX":
+            current = self._enforce_publication_gate(current, current_result)
 
         return current
 
-    def _remove_unresolved_local_fixes(
+    def _enforce_publication_gate(
         self, draft: ArticleDraft, result: FactCheckResult
     ) -> ArticleDraft:
-        unresolved = [issue for issue in result.issues if issue.severity == "fix"]
-        if any(
-            issue.unit_id in {"TITLE", "LEAD"} or issue.unit_id.startswith("H")
-            for issue in unresolved
-        ):
-            raise UnsafeDraftError("unresolved FIX remains in headline, lead, or section heading")
-        high_risk_codes = (
-            "medical",
-            "casualty",
-            "weapon",
-            "safety",
-            "accus",
-            "identity",
-            "legal",
-            "financial",
-        )
-        if any(
-            any(token in issue.code.lower() for token in high_risk_codes) for issue in unresolved
-        ):
-            raise UnsafeDraftError("unresolved high-risk FIX remains in article")
-        current = draft.apply_replacements({issue.unit_id: "" for issue in unresolved})
-        self.logger.warning("Removed %d unresolved local FIX fragment(s)", len(unresolved))
-        return current
+        blocking = [
+            issue
+            for issue in result.issues
+            if issue.severity == "fix" and issue.publication_blocking
+        ]
+        if blocking:
+            safe_ids = ", ".join(f"{issue.unit_id}:{issue.code}" for issue in blocking)
+            raise UnsafeDraftError(f"unresolved publication-blocking FIX remains: {safe_ids}")
+
+        non_blocking = [
+            issue
+            for issue in result.issues
+            if issue.severity == "fix" and not issue.publication_blocking
+        ]
+        if non_blocking:
+            safe_ids = ", ".join(f"{issue.unit_id}:{issue.code}" for issue in non_blocking)
+            self.logger.warning(
+                "Publishing prose with %d unresolved non-blocking editorial FIX(s): %s",
+                len(non_blocking),
+                safe_ids,
+            )
+
+        return draft
 
     async def generate_article(  # noqa: C901
         self, messages_by_channel: Dict[str, List[Message]]

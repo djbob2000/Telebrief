@@ -295,6 +295,10 @@ targets, not validation limits; never pad length.
                 feedback_lines = ["AUDIT REVISION FEEDBACK:"]
                 for issue in fix_issues:
                     feedback_lines.append(f"- {issue.unit_id} / {issue.code}")
+                    blocking_str = (
+                        "true" if getattr(issue, "publication_blocking", False) else "false"
+                    )
+                    feedback_lines.append(f"  Publication blocking: {blocking_str}")
                     if issue.reason:
                         feedback_lines.append(f"  Reason: {issue.reason}")
                     if issue.suggested_direction:

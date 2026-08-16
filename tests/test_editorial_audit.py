@@ -671,3 +671,135 @@ def test_fact_checker_prompt_operational_definition_systemic_problem(mock_logger
         "cannot be made safe by independently replacing/removing the listed audit units" in prompt
     )
     assert "3–5 local FIX issues do not by themselves constitute a systemic problem" in prompt
+    assert "not a publication ban" in prompt.lower()
+
+
+@pytest.mark.unit
+def test_fact_checker_prompt_contract_includes_publication_blocking(mock_logger):
+    checker = LightFactChecker(MagicMock(), "model", mock_logger)
+    prompt = checker._build_system_prompt()
+    assert "publication_blocking" in prompt
+    assert "material misinformation" in prompt
+    assert "non-blocking" in prompt.lower()
+    assert "corpus boundary" in prompt.lower()
+    assert "significant part" in prompt.lower() or "значительной части" in prompt.lower()
+    assert "entire city" in prompt.lower() or "most districts" in prompt.lower()
+
+
+@pytest.mark.unit
+def test_explicit_non_blocking_fix():
+    issue = AuditIssue.from_dict(
+        {
+            "unit_id": "TITLE",
+            "code": "absolute_absence",
+            "severity": "fix",
+            "publication_blocking": False,
+        }
+    )
+    assert issue.publication_blocking is False
+    assert issue.to_dict()["publication_blocking"] is False
+
+
+@pytest.mark.unit
+def test_explicit_blocking_fix():
+    issue = AuditIssue.from_dict(
+        {
+            "unit_id": "P001",
+            "code": "unsupported_casualty",
+            "severity": "fix",
+            "publication_blocking": True,
+        }
+    )
+    assert issue.publication_blocking is True
+    assert issue.to_dict()["publication_blocking"] is True
+
+
+@pytest.mark.unit
+def test_missing_publication_blocking_on_fix_defaults_to_false():
+    issue = AuditIssue.from_dict(
+        {
+            "unit_id": "P001",
+            "code": "legacy_fix",
+            "severity": "fix",
+        }
+    )
+    assert issue.publication_blocking is False
+
+
+@pytest.mark.unit
+def test_warn_cannot_be_publication_blocking():
+    issue = AuditIssue.from_dict(
+        {
+            "unit_id": "P001",
+            "severity": "warn",
+            "publication_blocking": True,
+        }
+    )
+    assert issue.publication_blocking is False
+    assert issue.to_dict()["publication_blocking"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("raw_val", "expected"),
+    [
+        ("true", True),
+        ("True", True),
+        ("TRUE", True),
+        ("1", True),
+        ("yes", True),
+        (1, True),
+        ("false", False),
+        ("False", False),
+        ("0", False),
+        ("no", False),
+        (0, False),
+        ("invalid", False),  # malformed on FIX soft fail-open to False
+        (None, False),  # None on FIX soft fail-open to False
+    ],
+)
+def test_publication_blocking_coercion_on_fix(raw_val, expected):
+    issue = AuditIssue.from_dict(
+        {
+            "unit_id": "P001",
+            "severity": "fix",
+            "publication_blocking": raw_val,
+        }
+    )
+    assert issue.publication_blocking is expected
+
+
+@pytest.mark.unit
+def test_fact_check_result_has_blocking_fixes_and_needs_regeneration():
+    non_blocking_issue = AuditIssue.from_dict(
+        {"unit_id": "TITLE", "severity": "fix", "publication_blocking": False}
+    )
+    blocking_issue = AuditIssue.from_dict(
+        {"unit_id": "P001", "severity": "fix", "publication_blocking": True}
+    )
+    warn_issue = AuditIssue.from_dict(
+        {"unit_id": "P002", "severity": "warn", "publication_blocking": False}
+    )
+
+    # 1. Non-blocking fix only
+    res1 = FactCheckResult(status="FIX", systemic_problem=False, issues=[non_blocking_issue])
+    assert res1.needs_repair is True
+    assert res1.has_blocking_fixes is False
+    assert res1.needs_regeneration is False
+
+    # 2. Blocking fix
+    res2 = FactCheckResult(status="FIX", systemic_problem=False, issues=[blocking_issue])
+    assert res2.needs_repair is True
+    assert res2.has_blocking_fixes is True
+    assert res2.needs_regeneration is True
+
+    # 3. Systemic problem with non-blocking fix
+    res3 = FactCheckResult(status="FIX", systemic_problem=True, issues=[non_blocking_issue])
+    assert res3.has_blocking_fixes is False
+    assert res3.needs_regeneration is True
+
+    # 4. Warn only
+    res4 = FactCheckResult(status="WARN", systemic_problem=False, issues=[warn_issue])
+    assert res4.needs_repair is False
+    assert res4.has_blocking_fixes is False
+    assert res4.needs_regeneration is False

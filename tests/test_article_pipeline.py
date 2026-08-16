@@ -412,6 +412,7 @@ async def test_systemic_audit_failure_falls_back_to_story_cards_after_regenerati
                     "suggested_direction": "Fallback.",
                     "source_refs": [],
                     "severity": "fix",
+                    "publication_blocking": True,
                 }
             ],
         }
@@ -487,7 +488,7 @@ async def test_systemic_regeneration_cleans_local_fix_after_repairs_before_publi
     # -> regeneration -> check (local_fix: FIX, systemic=False)
     # -> repair 1 -> check (local_fix)
     # -> repair 2 -> check (local_fix)
-    # -> safe local removal
+    # -> non-blocking fix is published intact
     generator.fact_checker.check = AsyncMock(
         side_effect=[initial, initial, initial, local_fix, local_fix, local_fix]
     )
@@ -496,6 +497,6 @@ async def test_systemic_regeneration_cleans_local_fix_after_repairs_before_publi
 
     result = await generator._repair_and_check(draft, EditorialAnalysis([]), _bundle())
 
-    assert result.to_markdown() == "# Свет\n\nЛид"
+    assert result.to_markdown() == "# Свет\n\nЛид\n\nНовая неподтвержденная деталь"
     assert generator.writer.write.await_count == 1
     assert generator.fact_checker.check.await_count == 6

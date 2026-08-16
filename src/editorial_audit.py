@@ -13,6 +13,28 @@ from src.editorial_models import EditorialAnalysis, PreparedBundle, is_expected_
 from src.editorial_writer import ArticleDraft, AuditUnitLocator, render_story_contexts
 
 
+def _parse_publication_blocking(value: Any, severity: str) -> bool:
+    if severity != "fix":
+        return False
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+
+    # Missing/malformed provider field on FIX:
+    # default to False (soft fail-open) so missing JSON field does not trigger fallback.
+    return False
+
+
 @dataclass
 class AuditIssue:
     unit_id: str
@@ -22,12 +44,16 @@ class AuditIssue:
     suggested_direction: str
     source_refs: list[str]
     severity: str = "fix"
+    publication_blocking: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AuditIssue":
         severity = str(data.get("severity", "fix")).lower()
         if severity not in {"fix", "warn"}:
             severity = "fix"
+        publication_blocking = _parse_publication_blocking(
+            data.get("publication_blocking"), severity
+        )
         unit_id = str(data.get("unit_id") or data.get("id") or "")
         code = str(data.get("code") or "unspecified")
         original_excerpt = str(
@@ -51,6 +77,7 @@ class AuditIssue:
             suggested_direction=suggested,
             source_refs=refs,
             severity=severity,
+            publication_blocking=publication_blocking,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,6 +89,7 @@ class AuditIssue:
             "suggested_direction": self.suggested_direction,
             "source_refs": self.source_refs,
             "severity": self.severity,
+            "publication_blocking": self.publication_blocking,
         }
 
 
@@ -89,6 +117,14 @@ class FactCheckResult:
     @property
     def needs_repair(self) -> bool:
         return any(issue.severity == "fix" for issue in self.issues)
+
+    @property
+    def has_blocking_fixes(self) -> bool:
+        return any(issue.severity == "fix" and issue.publication_blocking for issue in self.issues)
+
+    @property
+    def needs_regeneration(self) -> bool:
+        return self.systemic_problem or self.has_blocking_fixes
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FactCheckResult":
@@ -147,33 +183,41 @@ class LightFactChecker:
         return (
             "You are a light newsroom fact checker. Inspect the whole draft against the Story "
             "Cards and original source records. Return JSON only: status PASS, WARN or FIX, "
-            "systemic_problem boolean, and issues. Find only new concrete independently "
-            "verifiable facts without support: numbers, prices, dates, names, official actions, "
-            "causes, mechanisms, damage, sales, medical/legal/military claims, casualties and "
-            "precise scale. "
+            "systemic_problem boolean, and issues array. Every issue in issues MUST contain: "
+            "unit_id, code, original_excerpt, reason, suggested_direction, severity ('warn' | 'fix'), "
+            "and publication_blocking (true | false). "
             f"Language requirement: Write all human-readable diagnostics (reason, suggested_direction) in {self.output_language}. "
-            "Keep machine schema keys and enums (status: PASS|WARN|FIX, severity: fix|warn, code, unit_id) in canonical English. "
+            "Keep machine schema keys and enums (status: PASS|WARN|FIX, severity: fix|warn, publication_blocking: true|false, code, unit_id) in canonical English. "
+            "Core distinction: severity='fix' means the wording should be repaired if possible. "
+            "publication_blocking=true means that publishing the CURRENT wording would create a material misinformation or safety risk. "
+            "Unverified claims are not blocking by themselves: publication_blocking=true applies only when a dangerous material claim is presented as established fact without attribution. "
+            "When a report clearly states resident discussions, rumors, or unconfirmed status ('в чатах обсуждают', 'по сообщениям жителей', 'подтверждения пока нет'), it is non-blocking. "
+            "publication_blocking is NOT a measure of stylistic quality, journalistic elegance, or whether epistemic wording could be more precise. "
+            "For severity='warn', publication_blocking is always false. "
+            "Non-blocking FIX (severity='fix', publication_blocking=false): "
+            "Corpus boundary notes (e.g. 'официальных сроков нет' when absence from supplied reporting material occurs but blackout is confirmed); "
+            "soft scale overstatements (e.g. 'в значительной части города' / 'significant part of the city' when observations come from several districts but broad prevalence or denominator is unproven); "
+            "minor source/attribution characterization nuances (e.g. 'жительница' vs 'участник чата'); "
+            "and headline compression that punchily summarizes without inventing new events. "
+            "Blocking FIX (severity='fix', publication_blocking=true): "
+            "Unverified casualties, injuries, or medical claims presented as fact; "
+            "fabricated official actions, evacuation orders, or emergency instructions; "
+            "accusations of specific individuals or fabricated legal/criminal claims; "
+            "hard unsupported scale claims (e.g. 'весь город' / 'entire city', 'most districts', '90% города' based on narrow, street observations or single-point evidence without denominator); "
+            "invented numbers, prices, payouts, laws, dates/times, or phone numbers / contacts that prompt harmful real-world action; "
+            "invented causes, responsibility, or damage without basis. "
             "story_contexts is deterministic interpretation and aggregation metadata. It is authoritative for resolved entity identity, distinct-area counting and explicit flags such as majority_supported. It does not independently establish that the reported phenomenon affected an entire area and is not additional current-event evidence. "
-            "Scale claims such as 'most districts', 'across most of the city', 'massively', 'citywide shortage' "
-            "require evidence supporting the claimed denominator or sufficiently broad geographic coverage; "
-            "multiple observations establish geographic spread, but do not automatically establish a majority (flag unsupported majority claims as FIX). "
-            "Street observations indicate that a phenomenon was observed on that street/area, not across the entire district or whole city; "
-            "flag un-scoped district-wide or citywide generalizations from single street observations as FIX. "
-            "Absence from supplied reporting material does not prove absence in the outside world (corpus boundary): "
-            "when evidence is corpus absence, the text must state 'в доступных сообщениях...' rather than absolute 'официального графика нет' "
-            "unless an authorized source explicitly establishes that fact (flag unsupported absolute absence claims as FIX). "
+            "Street observations indicate that a phenomenon was observed on that street/area, not across the entire district or whole city. "
             "Legitimate collective synthesis of resident observations and discussions is not a FIX merely because no single "
             "message literally contains the whole synthesized sentence. Use PASS when well supported and WARN for soft "
-            "overstatement or debatable framing; reserve FIX for unsupported verifiable facts, "
-            "lost attribution, false causality or high-risk escalation. Emotional or mood assertions "
-            "require direct source evidence. Attribution and source_refs are inspection aids, "
-            "not proof by themselves. WARN is non-blocking; use FIX only when a local fragment "
-            "must be changed. "
+            "overstatement or debatable framing. "
             "Systemic problem criteria: Set systemic_problem=true only when the draft cannot be made safe by independently "
             "replacing/removing the listed audit units because unsupported material affects the core narrative structure "
             "or is distributed throughout the article. Set systemic_problem=false for localized problems in specific "
             "TITLE, LEAD, heading or paragraph units — including several such issues — when each can be repaired independently. "
-            "3–5 local FIX issues do not by themselves constitute a systemic problem."
+            "3–5 local FIX issues do not by themselves constitute a systemic problem. "
+            "If systemic_problem=true describes a material publication hazard, at least one corresponding FIX issue must have publication_blocking=true. "
+            "systemic_problem by itself is an escalation hint for regeneration, not a publication ban."
         )
 
     def _parse_payload(self, response: str) -> dict[str, Any]:
@@ -289,7 +333,10 @@ class LightFactChecker:
     ) -> FactCheckResult:
         system = self._build_system_prompt()
         if compact_retry:
-            system += "\n\nCOMPACT RETRY: Return only a minimal JSON object with status and substantive issues."
+            system += (
+                "\n\nCOMPACT RETRY: Return only a minimal JSON object with status, systemic_problem, "
+                "and substantive issues including severity ('warn'|'fix') and publication_blocking (true|false)."
+            )
         user = json.dumps(payload, ensure_ascii=False)
         self.last_stage = "provider_call"
         response = await self.provider.chat_completion(

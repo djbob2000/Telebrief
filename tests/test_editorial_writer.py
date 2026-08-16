@@ -473,6 +473,17 @@ def test_writer_prompt_includes_revision_feedback_filtering_fix_only(mock_logger
                 suggested_direction="Narrow to confirmed areas",
                 source_refs=["S000001"],
                 severity="fix",
+                publication_blocking=False,
+            ),
+            AuditIssue(
+                unit_id="P004",
+                code="unsupported_official_action",
+                original_excerpt="Полиция объявила",
+                reason="No official announcement",
+                suggested_direction="Attribute to chat rumors",
+                source_refs=[],
+                severity="fix",
+                publication_blocking=True,
             ),
             AuditIssue(
                 unit_id="LEAD",
@@ -482,6 +493,7 @@ def test_writer_prompt_includes_revision_feedback_filtering_fix_only(mock_logger
                 suggested_direction="Soften tone",
                 source_refs=[],
                 severity="warn",
+                publication_blocking=False,
             ),
         ],
     )
@@ -489,8 +501,11 @@ def test_writer_prompt_includes_revision_feedback_filtering_fix_only(mock_logger
     _, user_prompt = writer.build_prompt(_analysis(), _bundle(), revision_feedback=feedback)
     assert "AUDIT REVISION FEEDBACK:" in user_prompt
     assert "- TITLE / unsupported_scale" in user_prompt
+    assert "Publication blocking: false" in user_prompt
     assert "Reason: Scale unsupported by evidence" in user_prompt
     assert "Direction: Narrow to confirmed areas" in user_prompt
+    assert "- P004 / unsupported_official_action" in user_prompt
+    assert "Publication blocking: true" in user_prompt
     assert "LEAD / soft_overstatement" not in user_prompt
     assert "These are failure modes to correct, not replacement sentences." in user_prompt
     assert "Do not mechanically copy suggested wording." in user_prompt
