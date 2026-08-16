@@ -2311,3 +2311,71 @@ async def test_repair_structural_failure_falls_back_to_story_cards_not_rejected_
 
     # 3. Deterministic fallback builder was NOT called while AI Story Cards were valid
     generator.fallback_builder.build.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_repair_loop_recomputes_blocking_units_on_new_blocking_issue(
+    sample_config, mock_logger
+):
+    """Regression: When initial audit has non-blocking FIX, but repair introduces a new blocking FIX,
+
+    subsequent audit timeout while the new blocking unit remains unmodified raises UnsafeDraftError.
+    """
+    generator = ArticleGenerator(sample_config, mock_logger)
+    initial_draft = ArticleDraft("Свет", "Лид", ["Текст 1", "Текст 2"], [])
+    initial_non_blocking = FactCheckResult(
+        "FIX",
+        False,
+        [
+            AuditIssue(
+                "P001",
+                "unsupported_scale",
+                "Текст 1",
+                "Soft scale overstatement",
+                "Narrow scale",
+                [],
+                "fix",
+                publication_blocking=False,
+            )
+        ],
+    )
+    # Repair #1 produces intermediate draft where P002 has fake evacuation
+    intermediate_draft = ArticleDraft(
+        "Свет", "Лид", ["Исправленный текст 1", "Ложная эвакуация на Пушкина"], []
+    )
+    second_check_new_blocking = FactCheckResult(
+        "FIX",
+        False,
+        [
+            AuditIssue(
+                "P002",
+                "unsupported_evacuation",
+                "Ложная эвакуация на Пушкина",
+                "Fake evacuation order",
+                "Remove",
+                [],
+                "fix",
+                publication_blocking=True,
+            )
+        ],
+    )
+
+    # Initial check -> repair 1 (returns intermediate_draft) -> check 2 (new blocking FIX on P002)
+    # -> repair 2 (returns intermediate_draft unchanged) -> check 3 (FactCheckUnavailableError)
+    generator.fact_checker.check = AsyncMock(
+        side_effect=[
+            initial_non_blocking,
+            second_check_new_blocking,
+            FactCheckUnavailableError("Fact check timed out"),
+        ]
+    )
+    generator.fact_checker.repair = AsyncMock(side_effect=[intermediate_draft, intermediate_draft])
+
+    with pytest.raises(
+        UnsafeDraftError,
+        match="fact check unavailable during repair with unmodified publication-blocking unit",
+    ):
+        await generator._repair_and_check(
+            initial_draft, EditorialAnalysis([]), _make_dummy_bundle()
+        )

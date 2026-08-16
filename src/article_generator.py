@@ -391,8 +391,6 @@ class ArticleGenerator:
         result: FactCheckResult,
         analysis: EditorialAnalysis,
         bundle: PreparedBundle,
-        *,
-        known_blocking_units: dict[str, str] | None = None,
     ) -> tuple[ArticleDraft, FactCheckResult | None]:
         """Run up to 2 targeted repair attempts on draft.
 
@@ -400,20 +398,19 @@ class ArticleGenerator:
         If a repair candidate fails preflight, it is discarded and the previous valid draft is kept.
         """
         current = draft
-        blocking_units = (
-            dict(known_blocking_units)
-            if known_blocking_units is not None
-            else {
-                issue.unit_id: draft.audit_units()[issue.unit_id].text
-                for issue in result.issues
-                if issue.severity == "fix"
-                and issue.publication_blocking
-                and issue.unit_id in draft.audit_units()
-            }
-        )
         for _ in range(2):
             if result.status != "FIX":
                 return current, result
+
+            current_units = current.audit_units()
+            blocking_units = {
+                issue.unit_id: current_units[issue.unit_id].text
+                for issue in result.issues
+                if issue.severity == "fix"
+                and issue.publication_blocking
+                and issue.unit_id in current_units
+            }
+
             candidate = await self.fact_checker.repair(current, result, analysis, bundle)
             try:
                 deterministic_preflight(candidate.to_markdown())
@@ -432,11 +429,11 @@ class ArticleGenerator:
                 self._save_fact_check_result("fact_check.json", result)
                 self._save_fact_check_failure(exc)
                 if blocking_units:
-                    current_units = current.audit_units()
+                    post_repair_units = current.audit_units()
                     unmodified_blocking = [
                         uid
                         for uid, orig_text in blocking_units.items()
-                        if uid in current_units and current_units[uid].text == orig_text
+                        if uid in post_repair_units and post_repair_units[uid].text == orig_text
                     ]
                     if unmodified_blocking:
                         raise UnsafeDraftError(
