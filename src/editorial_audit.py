@@ -191,7 +191,7 @@ class LightFactChecker:
             "Core distinction: severity='fix' means the wording should be repaired if possible. "
             "publication_blocking=true means that publishing the CURRENT wording would create a material misinformation or safety risk. "
             "Unverified claims are not blocking by themselves: publication_blocking=true applies only when a dangerous material claim is presented as established fact without attribution. "
-            "When a report clearly states resident discussions, rumors, or unconfirmed status ('в чатах обсуждают', 'по сообщениям жителей', 'подтверждения пока нет'), it is non-blocking. "
+            "When a report clearly states resident discussions, rumors, or unconfirmed status ('горожане обсуждают', 'по сообщениям жителей', 'подтверждения пока нет'), it is non-blocking. "
             "publication_blocking is NOT a measure of stylistic quality, journalistic elegance, or whether epistemic wording could be more precise. "
             "For severity='warn', publication_blocking is always false. "
             "Non-blocking FIX (severity='fix', publication_blocking=false): "

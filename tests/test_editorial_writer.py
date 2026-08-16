@@ -629,3 +629,21 @@ def test_writer_prompt_does_not_infer_or_flip_source_gender(mock_logger):
     assert "житель" in system_prompt
     assert "жительница" in system_prompt
     assert "rewrite impersonally" in system_prompt.lower()
+
+
+@pytest.mark.unit
+def test_writer_prompt_contains_community_mood_and_coping_guidelines(mock_logger):
+    writer = EditorialWriter(
+        MagicMock(),
+        "model",
+        "skill",
+        mock_logger,
+        output_language="Russian",
+    )
+
+    system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
+
+    assert "Community mood, resident concerns, and everyday coping:" in system_prompt
+    assert "winter coping" in system_prompt.lower() or "stove heating" in system_prompt.lower()
+    assert "80% сбегут" in system_prompt
+    assert "pseudo-statistics" in system_prompt.lower()

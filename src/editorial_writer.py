@@ -297,6 +297,9 @@ Direct quotes:
 Use verbatim direct quotes sparingly and selectively (typically 2–4 sharp, authentic quotes across the entire article)
 to convey the human mood and living reality. Paraphrase the rest in clear journalistic language.
 
+Community mood, resident concerns, and everyday coping:
+When covering prolonged municipal crises (such as multi-week utility blackouts, water outages, connectivity issues, or price surges), integrate residents' genuine concerns, seasonal anxieties (such as winter coping, stove heating, preparing supplies, or rural alternatives), and everyday adaptations into the relevant thematic chapters as human context and community mood. Distinguish genuine community sentiment from statistical claims: describe the qualitative concern accurately without turning emotional hyperbole or conversational figures of speech (e.g. '80% сбегут') into pseudo-statistics or demographic facts.
+
 Resident experience and technical advice:
 Present technical lifehacks, practical tips, and community explanations (such as powering routers from powerbanks,
 voltage specs, or optic fiber vs twisted pair) as resident experience, advice, or observations ('По опыту жителей...',

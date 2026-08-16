@@ -59,6 +59,7 @@ For the daily city article («Чем жил Бердянск за последн
 5. **Contextual Grouping without Causal Leaps:** cover related same-day developments (e.g. power outages, residents searching for power, local venues offering free charging) within the same chapter without manufacturing unsupported causal bridges (`из-за`, `вследствие` require direct evidence).
 6. **Adaptive Dominance:** when one major event or condition clearly dominates the day's reporting, give it proportionally more space as the primary chapter without enforcing a rigid percentage.
 7. **Internal Progression:** follow timeline or geographic progression within chapters when helpful, rather than forcing a rigid global morning-to-evening chronology across unrelated topics.
+8. **Community Mood and Everyday Lived Reality:** when covering prolonged municipal crises (such as multi-week utility blackouts, water outages, connectivity issues, or price surges), integrate residents' genuine concerns, seasonal anxieties (such as winter coping, stove heating, preparing supplies, or rural alternatives), and everyday adaptations into the relevant thematic chapters as human context. Distinguish genuine community sentiment from statistical claims: describe the qualitative concern accurately without turning emotional hyperbole or figures of speech (e.g. "80% сбегут") into pseudo-statistics or demographic facts.
 
 ## Story Cards and journalistic synthesis
 
@@ -74,12 +75,14 @@ Allowed examples:
 - combine several supported resident observations into “жители нескольких районов сообщали...”;
 - say that electricity or water was a noticeable practical topic when the supplied material
   shows repeated, geographically varied discussion;
+- reflect residents' shared anxieties or coping strategies (e.g., concerns about winter heating and considering stove-heated rural houses during prolonged blackouts) as community mood with proper attribution;
 - connect separately supported facts with cautious wording such as “одновременно” or “на фоне”
   when it does not imply an unsupported cause (respect strict causality boundaries: sequence is not causality).
 
 Not allowed:
 
 - “продажи генераторов выросли вдвое” without sales data;
+- turning a resident's emotional figure of speech or hyperbole (such as “80% уедут”) into a statistical or demographic fact;
 - “после взрыва отключился свет” when the sources only report a sound and an outage;
 - prices, queues, terminals, utility payments, technical mechanisms, comparisons with last year,
   or citywide scale that do not appear in the sources;

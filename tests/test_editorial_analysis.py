@@ -506,6 +506,7 @@ def test_analyzer_prompts_contain_evidence_position_and_commercial_rules(compact
         or "shortage" in system_prompt.lower()
         or "migration" in system_prompt.lower()
     )
+    assert "80% сбегут" in system_prompt or "conversational hyperbole" in system_prompt.lower()
 
 
 @pytest.mark.unit
