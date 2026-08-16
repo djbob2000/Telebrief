@@ -1153,9 +1153,11 @@ async def test_collect_channel_messages_rejects_bad_limit(sample_config, mock_lo
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_generate_and_publish_article_workflow(sample_config, mock_logger):
+async def test_generate_and_publish_article_workflow(sample_config, mock_logger, tmp_path):
     """Test the complete generate_and_publish_article orchestration workflow."""
     from src.core import generate_and_publish_article
+
+    sample_config.settings.article.fallback_save_dir = str(tmp_path)
 
     with (
         patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
@@ -1178,6 +1180,47 @@ async def test_generate_and_publish_article_workflow(sample_config, mock_logger)
         mock_gen.assert_called_once()
         mock_page.assert_called_once()
         mock_send.assert_called_once()
+        assert len(list(tmp_path.glob("*_editorial.md"))) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_and_publish_article_dry_run_saves_timestamped_preview(
+    sample_config, mock_logger, tmp_path
+):
+    """Dry-run mode saves timestamped preview file (preview_<timestamp>_editorial.md)."""
+    from src.core import generate_and_publish_article
+
+    sample_config.settings.article.fallback_save_dir = str(tmp_path)
+
+    with (
+        patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
+        patch(
+            "src.article_generator.ArticleGenerator.generate_article", new_callable=AsyncMock
+        ) as mock_gen,
+        patch("src.telegraph.TelegraphPublisher.create_page", new_callable=AsyncMock) as mock_page,
+        patch(
+            "src.sender.DigestSender.send_article_instant_view", new_callable=AsyncMock
+        ) as mock_send,
+    ):
+        mock_collect.return_value = {"Test Channel": [MagicMock()]}
+        mock_gen.return_value = (
+            "Превью Заголовок",
+            "Превью Лид",
+            "# Превью Заголовок\n\nТекст превью.",
+        )
+
+        success = await generate_and_publish_article(
+            sample_config, mock_logger, hours=24, dry_run=True
+        )
+        assert success is True
+        mock_page.assert_not_called()
+        mock_send.assert_not_called()
+
+        preview_files = list(tmp_path.glob("preview_*_editorial.md"))
+        assert len(preview_files) == 1
+        assert "Текст превью." in preview_files[0].read_text(encoding="utf-8")
+        assert not (tmp_path / "preview_editorial.md").exists()
 
 
 @pytest.mark.unit

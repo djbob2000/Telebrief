@@ -604,9 +604,9 @@ async def generate_and_publish_article(
         fallback_dir = Path(config.settings.article.fallback_save_dir)
         try:
             fallback_dir.mkdir(parents=True, exist_ok=True)
-            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M")
+            now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
             fallback_file = (
-                fallback_dir / "preview_editorial.md"
+                fallback_dir / f"preview_{now_str}_editorial.md"
                 if dry_run
                 else fallback_dir / f"{now_str}_editorial.md"
             )
