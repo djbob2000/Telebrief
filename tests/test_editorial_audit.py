@@ -573,6 +573,47 @@ async def test_audit_prompts_enforce_output_language(mock_logger):
 
 
 @pytest.mark.unit
+def test_fact_checker_prompt_rejects_invented_midpoints_and_corpus_copy(mock_logger):
+    checker = LightFactChecker(provider=None, model="test-model", logger=mock_logger)
+    prompt = checker._build_system_prompt().lower()
+
+    assert "midpoint" in prompt or "average" in prompt
+    assert "price" in prompt
+    assert "в доступных сообщениях" not in prompt
+    assert "publication copy" in prompt or "collection mechanics" in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_repair_instruction_forbids_internal_source_mechanics(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(
+        return_value=json.dumps({"replacements": {"P001": "Точные сроки пока неизвестны."}})
+    )
+    checker = LightFactChecker(provider, "model", mock_logger)
+    result = FactCheckResult(
+        status="FIX",
+        systemic_problem=False,
+        issues=[
+            AuditIssue(
+                unit_id="P001",
+                code="corpus_boundary",
+                original_excerpt="В доступных сообщениях сроки не указаны.",
+                reason="Corpus-boundary wording leakage",
+                suggested_direction="Use neutral publication wording",
+                source_refs=[],
+            )
+        ],
+    )
+    await checker.repair(_draft(), result, EditorialAnalysis([]), _bundle())
+    call_args = provider.chat_completion.call_args[1]
+    user_msg = json.loads(call_args["messages"][1]["content"])
+    instruction = user_msg["instruction"].lower()
+    assert "collection mechanics" in instruction or "supplied/source records" in instruction
+    assert "uncertainty" in instruction
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_audit_passes_story_contexts_in_check_and_repair(mock_logger):
     from src.city_context import AreaEvidence, ScaleEvidence, StoryContext

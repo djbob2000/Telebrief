@@ -216,7 +216,9 @@ class LightFactChecker:
             "TITLE, LEAD, heading or paragraph units — including several such issues — when each can be repaired independently. "
             "3–5 local FIX issues do not by themselves constitute a systemic problem. "
             "If systemic_problem=true describes a material publication hazard, at least one corresponding FIX issue must have publication_blocking=true. "
-            "systemic_problem by itself is an escalation hint for regeneration, not a publication ban."
+            "systemic_problem by itself is an escalation hint for regeneration, not a publication ban. "
+            "Averaging or interpolating disagreement is invention: if sources say 160 and 190, a draft price or value such as 170 is unsupported unless 170 itself appears in authorized evidence. Flag invented midpoint, average, converted, or manufactured range values under an unsupported/invented number code. "
+            "Corpus-boundary repairs must preserve uncertainty in publication copy without naming the corpus or collection mechanics. Treat phrases exposing internal source records or message ingestion as editorial-copy leakage. Suggested directions should use neutral publication copy such as “точные сроки пока неизвестны” or “подтверждённой информации пока нет”, while avoiding a stronger absolute claim."
         )
 
     def _parse_payload(self, response: str) -> dict[str, Any]:
@@ -439,7 +441,9 @@ class LightFactChecker:
                     f"Return JSON only as {{replacements: {{unit_id: replacement_text}}}}. "
                     f"Write all replacement_text strictly in {self.output_language}. "
                     "Repair only listed units. Keep all other units unchanged. "
-                    "Remove unsupported concrete details or use the most conservative wording supported by the cards."
+                    "Remove unsupported concrete details or use the most conservative wording supported by the cards. "
+                    "Never mention supplied/source records, available/collected messages, corpus, prompt input, editorial tooling, or collection mechanics in replacement_text. "
+                    "Preserve corpus-boundary uncertainty with neutral publication wording instead of turning it into an absolute claim."
                 ),
                 "issues": [issue.to_dict() for issue in issues],
                 "units": {
