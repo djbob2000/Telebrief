@@ -18,17 +18,20 @@ Your task is to convert a local news story (headline, lead, and details) into an
 
 ### 1. EDITORIAL PHOTOJOURNALISM STYLE
 - **Visual Goal:** Authentic documentary photography taken by a local photojournalist on a 35mm lens. Natural candid scene, natural realistic daylight or atmospheric dusk lighting, gritty authentic textures, zero stock-photo gloss.
-- **Composition:** Focus on a grounded everyday moment with 1–3 fictional local residents or a tangible municipal setting.
+- **Composition:** Prefer environmental medium shots or wide-angle documentary compositions showing subjects interacting naturally with their surroundings. Avoid extreme close-up headshots or staged portrait poses.
 
 ### 2. REGIONAL AUTHENTICITY ANCHORS ({city_name}, Ukraine)
 Anchor the scene strictly to authentic Eastern European / Azov coastal urban reality:
 - **Architecture:** 5-story Soviet-era brick or panel residential apartment buildings (khrushchevka), weathered balconies, metal entrance canopies, yellow exterior gas pipes along brick facades.
-- **Courtyards & Streets:** Asphalt courtyards with patches, dry summer grass, poplars, acacia trees, ordinary domestic cars.
+- **Courtyards & Streets:** Asphalt courtyards with patches, local trees (poplars, acacia, chestnuts), ordinary domestic cars.
+- **Season & Climate Adaptation:** Dynamically match clothing and environment to the current date/season of the news:
+  * Warm season (Spring/Summer): Everyday casual t-shirts, shorts, sandals, light shirts, dusty green trees, dry grass.
+  * Cold season (Autumn/Winter): Puffer jackets, dark coats, beanies, warm boots, overcast sky, bare branches or wet asphalt.
 - **Tangible Everyday Props (choose 2–3 relevant to the news):**
   * Utility/Blackout stories: A portable gasoline/diesel generator humming on the asphalt near a residential building entrance; people carrying 5-liter transparent plastic water jugs with blue handles; powerbanks and charging cables on a simple kitchen table; unlit apartment windows at dusk.
   * Fire/Emergency stories: Firefighters near a red fire truck extinguishing dry grass/bushes on a hill; distant smoke over trees.
   * Everyday City stories: Quiet bus stops, municipal repair crews, local grocery courtyards.
-- **People:** Everyday ordinary local residents in authentic casual summer clothing (plain t-shirts, shorts, sandals, light shirts). Calm, natural human behavior.
+- **People:** 1–3 fictional local residents in authentic casual everyday wear. Calm, natural human behavior.
 
 ### 3. CATEGORICAL NEGATIVE CONSTRAINTS (Crucial)
 You MUST strictly exclude:
@@ -39,7 +42,7 @@ You MUST strictly exclude:
 
 ### 4. PROMPT STRUCTURE
 Combine into a single cohesive English paragraph (approx 80–120 words):
-[Optics & Documentary Style] + [1–2 Everyday Subjects Performing Specific Action from the News] + [Authentic Setting in {city_name}: Soviet-era 5-story brick building, asphalt courtyard, poplars] + [Tangible News Props: e.g. generator on asphalt / water jugs / powerbanks] + [Lighting & Atmosphere] + [Negative Constraints: completely textless, blank facades, NO signs, NO text, NO protests, photorealistic 16:9].
+[Optics & Documentary Medium/Wide Shot] + [1–2 Everyday Subjects Performing Specific Action from the News] + [Authentic Setting in {city_name}: Soviet-era 5-story brick building, asphalt courtyard, poplars] + [Tangible News Props: e.g. generator on asphalt / water jugs / powerbanks] + [Lighting & Seasonal Atmosphere] + [Negative Constraints: completely textless, blank facades, NO signs, NO text, NO protests, photorealistic 16:9].
 
 Output ONLY the final English prompt as a single cohesive paragraph without commentary, labels, quotes, or markdown."""
 
