@@ -604,6 +604,25 @@ class TestQualityGateFilter:
         assert len(survivors) == 1
         assert "Пограничник-дезертир" in survivors[0].point
 
+    def test_quality_gate_preserves_civilian_utility_and_hospital_needs(self):
+        """Verify that civilian utility and medical generator/vehicle needs are not falsely dropped."""
+        bullets = [
+            ExtractedBullet(
+                point="🏥 В городскую больницу доставлен резервный генератор мощностью 50 кВт для реанимации.",
+                source="Ch1",
+            ),
+            ExtractedBullet(
+                point="🚗 Для аварийной службы водоканала приобретен новый автомобиль для оперативных выездов.",
+                source="Ch2",
+            ),
+            ExtractedBullet(
+                point="📻 Коммунальное предприятие закупило новые рации для диспетчеров аварийной службы.",
+                source="Ch3",
+            ),
+        ]
+        survivors = _quality_gate_filter(bullets)
+        assert len(survivors) == 3
+
     def test_quality_gate_drops_photo_video_notices(self):
         """Verify that low-signal media-photo notices without substantial facts are dropped."""
         bullets = [
