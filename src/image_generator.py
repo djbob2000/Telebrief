@@ -13,28 +13,35 @@ import httpx
 from src.ai_providers import GoogleProvider, OpenAIProvider
 from src.config_loader import Config
 
-IMAGE_PROMPT_SYSTEM_INSTRUCTION = """You are a senior editorial art director for a local news outlet.
-Your task is to convert a local news story (headline, lead, and details) into an optimal, high-fidelity English prompt for an AI image generation model (16:9 aspect ratio).
+IMAGE_PROMPT_SYSTEM_INSTRUCTION = """You are a senior editorial art director for a local news outlet covering {city_name}, Ukraine.
+Your task is to convert a local news story (headline, lead, and details) into an optimal, photorealistic, high-fidelity English prompt for an AI image generation model (16:9 aspect ratio).
 
-### 1. STYLE SELECTION
-- **DEFAULT (90% of news):** "Realistic editorial photojournalism, authentic documentary photography, 35mm lens, candid street/indoor shot, natural lighting, gritty authentic textures, no studio gloss."
-- **SATIRE / BUREAUCRATIC ABSURDITY (10% of news):** Only for bizarre rumors, absurd official announcements, or comedic city mishaps: "Expressive editorial satirical cartoon, colorful newspaper caricature style, expressive characters, vibrant ink and color wash."
+### 1. EDITORIAL PHOTOJOURNALISM STYLE
+- **Visual Goal:** Authentic documentary photography taken by a local photojournalist on a 35mm lens. Natural candid scene, natural realistic daylight or atmospheric dusk lighting, gritty authentic textures, zero stock-photo gloss.
+- **Composition:** Focus on a grounded everyday moment with 1–3 fictional local residents or a tangible municipal setting.
 
 ### 2. REGIONAL AUTHENTICITY ANCHORS ({city_name}, Ukraine)
-Anchor the scene to authentic Eastern European / Azov coastal urban reality:
-- **Architecture:** 5-story Soviet-era brick or panel apartment buildings (khrushchevka), weathered balconies, metal entrance canopies, yellow gas pipes along exterior brick walls.
-- **Courtyards & Streets:** Asphalt courtyards with patches, dry summer grass, poplars, acacia trees, domestic parked cars.
-- **Domestic Interiors:** Authentic residential kitchens/apartments, tiled walls, simple countertops, portable LED flashlights, powerbanks, 5-liter transparent plastic water jugs with blue caps.
-- **People:** Fictional local residents in authentic everyday casual clothing matching the season (summer: t-shirts, shorts, sandals; winter: jackets, beanies).
+Anchor the scene strictly to authentic Eastern European / Azov coastal urban reality:
+- **Architecture:** 5-story Soviet-era brick or panel residential apartment buildings (khrushchevka), weathered balconies, metal entrance canopies, yellow exterior gas pipes along brick facades.
+- **Courtyards & Streets:** Asphalt courtyards with patches, dry summer grass, poplars, acacia trees, ordinary domestic cars.
+- **Tangible Everyday Props (choose 2–3 relevant to the news):**
+  * Utility/Blackout stories: A portable gasoline/diesel generator humming on the asphalt near a residential building entrance; people carrying 5-liter transparent plastic water jugs with blue handles; powerbanks and charging cables on a simple kitchen table; unlit apartment windows at dusk.
+  * Fire/Emergency stories: Firefighters near a red fire truck extinguishing dry grass/bushes on a hill; distant smoke over trees.
+  * Everyday City stories: Quiet bus stops, municipal repair crews, local grocery courtyards.
+- **People:** Everyday ordinary local residents in authentic casual summer clothing (plain t-shirts, shorts, sandals, light shirts). Calm, natural human behavior.
 
-### 3. PROMPT SYNTAX STRUCTURE (Follow this exact order)
-[Style & Camera Lens] + [Primary Subject & Action in Foreground] + [Authentic Setting & Background Details in {city_name}] + [Lighting Source & Atmosphere] + [Negative Quality Constraints].
+### 3. CATEGORICAL NEGATIVE CONSTRAINTS (Crucial)
+You MUST strictly exclude:
+- **NO PROTESTS / NO RALLIES:** NEVER depict protests, demonstrations, crowds holding signs, cardboard placards, banners, or activists.
+- **NO TEXT / NO SIGNS:** Absolutely NO text, NO letters, NO words on signs, NO neon signs, NO shopfront names, NO English or foreign text, NO logos on clothing.
+- **NO FOREIGN SETTINGS:** NO Italian or Western European cobblestone streets, NO British double-decker buses, NO Western police uniforms, NO American suburban architecture, NO palm trees.
+- **NO FAKE DISASTERS:** NO explosions, NO blood, NO weapons.
 
-### 4. STRICT NEGATIVE CONSTRAINTS (Crucial for realism)
-Always conclude the prompt with:
-"Unmarked blank facades, plain unbranded clothing, completely textless environment, NO text, NO letters, NO words on signs, NO English shopfronts, NO American suburban architecture, NO palm trees, NO watermarks, NO logos, NO artificial stock-photo gloss. Photorealistic 16:9 aspect ratio."
+### 4. PROMPT STRUCTURE
+Combine into a single cohesive English paragraph (approx 80–120 words):
+[Optics & Documentary Style] + [1–2 Everyday Subjects Performing Specific Action from the News] + [Authentic Setting in {city_name}: Soviet-era 5-story brick building, asphalt courtyard, poplars] + [Tangible News Props: e.g. generator on asphalt / water jugs / powerbanks] + [Lighting & Atmosphere] + [Negative Constraints: completely textless, blank facades, NO signs, NO text, NO protests, photorealistic 16:9].
 
-Output ONLY the final English prompt as a single cohesive paragraph without commentary, labels, or markdown formatting."""
+Output ONLY the final English prompt as a single cohesive paragraph without commentary, labels, quotes, or markdown."""
 
 
 CITY_NAMES_EN: dict[str, str] = {
@@ -148,8 +155,8 @@ class NewsImageGenerator:
         user_content = (
             f"Заголовок новости: {title}\n"
             f"Лид новости: {lead}\n"
-            f"Краткий контекст статьи: {article_text[:1500]}\n\n"
-            f"Сформируй один связный детальный промпт на английском языке для генерации изображения 16:9."
+            f"Краткий контекст статьи: {article_text[:2000]}\n\n"
+            f"Сформируй один связный детальный промпт на английском языке для генерации фотореалистичной иллюстрации 16:9 без текста и без плакатов."
         )
 
         for label, provider, model in self.prompt_providers:
@@ -161,7 +168,7 @@ class NewsImageGenerator:
                     ],
                     model=model,
                     temperature=0.7,
-                    max_tokens=500,
+                    max_tokens=4096,
                 )
                 clean_prompt = response.strip().strip('"').strip("'")
                 if clean_prompt:
@@ -174,9 +181,10 @@ class NewsImageGenerator:
 
         self.logger.warning("All prompt generation slots failed, using static fallback prompt.")
         return (
-            f"Realistic editorial photojournalism, documentary street photography. "
-            f"A residential courtyard in {city_en}, Ukraine with Soviet-era brick apartment buildings. "
-            f"STRICTLY NO text, NO letters, NO words, NO logos. 16:9 aspect ratio."
+            f"Realistic editorial photojournalism, documentary street photography, 35mm lens. "
+            f"A quiet residential courtyard in {city_en}, Ukraine with 5-story Soviet-era brick apartment buildings, "
+            f"a portable generator standing on the asphalt path, people carrying water jugs in summer clothing. "
+            f"Completely textless environment, unmarked facades, NO text, NO letters, NO words, NO signs, NO posters. 16:9 aspect ratio."
         )
 
     async def generate_image(
@@ -245,7 +253,7 @@ class NewsImageGenerator:
                 "model": self.openrouter_image_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "modalities": ["image", "text"],
-                "max_tokens": 2500,
+                "max_tokens": 4096,
             }
             headers = {
                 "Authorization": f"Bearer {self.openrouter_api_key}",
