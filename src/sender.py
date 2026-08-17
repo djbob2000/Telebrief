@@ -4,9 +4,10 @@ Telegram bot sender for delivering digests.
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Optional
 
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
@@ -586,6 +587,95 @@ class DigestSender:
         except TelegramError as e:
             self.logger.error(f"Failed to send article Instant View: {e}")
             return False
+
+    async def send_article_with_photo(
+        self,
+        title: str,
+        lead: str,
+        telegraph_url: str,
+        photo_path: Optional[Path | str] = None,
+        user_id: Optional[int] = None,
+    ) -> bool:
+        """Send an editorial article photo post with headline, lead, and inline Telegraph button.
+
+        Args:
+            title: Headline of the article
+            lead: Short introductory lead text
+            telegraph_url: Telegra.ph page URL
+            photo_path: Path to the generated editorial photo
+            user_id: Optional target user or chat ID
+
+        Returns:
+            True if photo post or text fallback was sent successfully
+        """
+        if user_id is None:
+            user_id = self.target_user_id
+
+        if user_id != self.target_user_id:
+            self.logger.warning(f"Unauthorized send attempt to user {user_id}")
+            return False
+
+        destination_chat = self.target_chat_id or user_id
+
+        # Fallback to instant view text message if photo is not provided or file doesn't exist
+        if photo_path is None or not Path(photo_path).exists():
+            self.logger.info("Photo path missing or invalid, falling back to text Instant View")
+            return await self.send_article_instant_view(
+                title=title, lead=lead, telegraph_url=telegraph_url, user_id=user_id
+            )
+
+        # Telegram photo caption limit is 1024 characters
+        title_clean = title.strip()
+        lead_clean = lead.strip()
+        header = f"📰 *{title_clean}*\n\n"
+        max_lead_chars = 1000 - len(header)
+        if len(lead_clean) > max_lead_chars:
+            lead_clean = lead_clean[:max_lead_chars].rsplit(" ", 1)[0] + "..."
+
+        caption = f"{header}{lead_clean}" if lead_clean else f"📰 *{title_clean}*"
+
+        keyboard = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(text="⚡️ Читать статью полностью", url=telegraph_url)]]
+        )
+
+        try:
+            with open(photo_path, "rb") as photo_file:
+                await self.bot.send_photo(
+                    chat_id=destination_chat,
+                    photo=photo_file,
+                    caption=caption,
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                )
+            self.logger.info(f"✅ Sent article photo post to {destination_chat}")
+            return True
+        except TelegramError as e:
+            if "Can't parse entities" in str(e):
+                self.logger.warning("Markdown parse error in photo caption, trying plain text")
+                try:
+                    with open(photo_path, "rb") as photo_file:
+                        plain_caption = (
+                            f"📰 {title_clean}\n\n{lead_clean}"
+                            if lead_clean
+                            else f"📰 {title_clean}"
+                        )
+                        await self.bot.send_photo(
+                            chat_id=destination_chat,
+                            photo=photo_file,
+                            caption=plain_caption,
+                            parse_mode=None,
+                            reply_markup=keyboard,
+                        )
+                    self.logger.info(
+                        f"✅ Sent article photo post (plain text caption) to {destination_chat}"
+                    )
+                    return True
+                except TelegramError as e2:
+                    self.logger.error(f"Failed to send photo post (plain text fallback): {e2}")
+            self.logger.warning(f"Photo send failed ({e}), falling back to text Instant View")
+            return await self.send_article_instant_view(
+                title=title, lead=lead, telegraph_url=telegraph_url, user_id=user_id
+            )
 
 
 async def main():

@@ -16,6 +16,7 @@ from src.config_loader import ChannelConfig, Config
 from src.extensions.loader import load_class
 from src.formatter import DigestFormatter
 from src.grouper import DigestGrouper
+from src.image_generator import NewsImageGenerator
 from src.sender import DigestSender
 from src.storage import create_storage
 from src.summarizer import ERROR_SUMMARY_PREFIX, Summarizer
@@ -615,23 +616,31 @@ async def generate_and_publish_article(
         except Exception as e:
             logger.warning(f"Could not save local article backup: {e}")
 
+        # Generate editorial cover image
+        image_generator = NewsImageGenerator(config, logger)
+        image_prompt = await image_generator.generate_prompt(
+            title=title,
+            lead=lead,
+            article_text=markdown_body,
+        )
+        photo_path = await image_generator.generate_image(prompt=image_prompt)
+
         if dry_run:
             print("\n" + "=" * 70)
             print("📰 ТЕСТОВОЕ ПРЕВЬЮ СТАТЬИ (DRY-RUN)")
             print("=" * 70)
             print(f"Заголовок: {title}")
             print(f"Лид: {lead}\n")
+            print(f"Сгенерированный промпт для иллюстрации: {image_prompt}")
+            print(f"Файл иллюстрации: {photo_path or 'Не сгенерирован (fallback)'}\n")
             print("--- ПОЛНЫЙ ТЕКСТ СТАТЬИ ДЛЯ TELEGRA.PH ---")
             print(markdown_body)
-            print("\n--- КАК ЭТО БУДЕТ ВЫГЛЯДЕТЬ В TELEGRAM-КАНАЛЕ ---")
+            print("\n--- КАК ЭТО БУДЕТ ВЫГЛЯДЕТЬ В TELEGRAM-КАНАЛЕ (ФОТО-ПОСТ) ---")
             lead_part = f"{lead.strip()}\n\n" if lead.strip() else ""
             mock_url = "https://telegra.ph/Primer-stati-08-14"
-            print(
-                f"📰 *{title.strip()}*\n\n"
-                f"{lead_part}"
-                f"⚡️ [Читать полностью в Instant View]({mock_url})\n"
-                f"{mock_url}"
-            )
+            print(f"[ ФОТО: {photo_path or 'Иллюстрация к новости'} ]")
+            print(f"📰 *{title.strip()}*\n\n{lead_part}")
+            print(f"[ КНОПКА: ⚡️ Читать статью полностью -> {mock_url} ]")
             print("=" * 70 + "\n")
             return True
 
@@ -647,10 +656,11 @@ async def generate_and_publish_article(
         logger.info(f"Published article to Telegra.ph: {telegraph_url}")
 
         sender = DigestSender(config, logger)
-        success = await sender.send_article_instant_view(
+        success = await sender.send_article_with_photo(
             title=title,
             lead=lead,
             telegraph_url=telegraph_url,
+            photo_path=photo_path,
             user_id=user_id,
         )
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()

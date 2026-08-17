@@ -510,3 +510,57 @@ async def test_send_article_instant_view(sample_config, mock_logger):
     assert "https://telegra.ph/V-Berdyanske-08-14" in kwargs["text"]
     assert "В Бердянске ликвидируют последствия происшествий" in kwargs["text"]
     assert kwargs["chat_id"] == "@berdiansk_news"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_article_with_photo_success(sample_config, mock_logger, tmp_path):
+    """Test sending editorial article photo post with headline, lead, and inline button."""
+    sample_config.settings.target_chat_id = "@berdiansk_news"
+    fake_img = tmp_path / "test.jpg"
+    fake_img.write_bytes(b"dummy image data")
+
+    with patch("src.sender.Bot") as mock_bot_class:
+        mock_bot = MagicMock()
+        mock_bot.send_photo = AsyncMock()
+        mock_bot_class.return_value = mock_bot
+
+        sender = DigestSender(sample_config, mock_logger)
+        success = await sender.send_article_with_photo(
+            title="В Бердянске ликвидируют последствия происшествий",
+            lead="Краткий лид статьи о ситуации в городе за последние 24 часа.",
+            telegraph_url="https://telegra.ph/V-Berdyanske-08-14",
+            photo_path=fake_img,
+            user_id=123456789,
+        )
+
+    assert success is True
+    mock_bot.send_photo.assert_called_once()
+    kwargs = mock_bot.send_photo.call_args.kwargs
+    assert kwargs["chat_id"] == "@berdiansk_news"
+    assert "В Бердянске ликвидируют последствия происшествий" in kwargs["caption"]
+    assert kwargs["reply_markup"] is not None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_article_with_photo_fallback_when_file_missing(sample_config, mock_logger):
+    """Test falling back to text Instant View when photo file is missing."""
+    sample_config.settings.target_chat_id = "@berdiansk_news"
+
+    with patch("src.sender.Bot") as mock_bot_class:
+        mock_bot = MagicMock()
+        mock_bot.send_message = AsyncMock()
+        mock_bot_class.return_value = mock_bot
+
+        sender = DigestSender(sample_config, mock_logger)
+        success = await sender.send_article_with_photo(
+            title="В Бердянске ликвидируют последствия происшествий",
+            lead="Краткий лид статьи о ситуации в городе за последние 24 часа.",
+            telegraph_url="https://telegra.ph/V-Berdyanske-08-14",
+            photo_path="/non/existent/path.jpg",
+            user_id=123456789,
+        )
+
+    assert success is True
+    mock_bot.send_message.assert_called_once()
