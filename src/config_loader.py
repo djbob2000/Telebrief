@@ -159,11 +159,24 @@ class Config:
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "openrouter/free"
+    openrouter_image_model: str = "google/gemini-3.1-flash-lite-image"
     openai_base_url: str = ""
     anthropic_api_key: str = ""
     storage: StorageConfig = field(default_factory=StorageConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
+
+    @property
+    def gemini_api_key(self) -> str:
+        return self.google_api_key
+
+    @property
+    def gemini_api_key_2(self) -> str:
+        return self.google_api_key_2
+
+    @property
+    def gemini_api_key_3(self) -> str:
+        return self.google_api_key_3
 
 
 SUPPORTED_LANGUAGES = ("English", "Russian", "Spanish", "German", "French")
@@ -769,6 +782,9 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
     openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
     openrouter_base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
     openrouter_model = os.getenv("OPENROUTER_MODEL") or "openrouter/free"
+    openrouter_image_model = (
+        os.getenv("OPENROUTER_IMAGE_MODEL") or "google/gemini-3.1-flash-lite-image"
+    )
     log_level = os.getenv("LOG_LEVEL", "INFO")
 
     missing_vars = []
@@ -810,6 +826,7 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
         "openrouter_api_key": openrouter_api_key,
         "openrouter_base_url": openrouter_base_url,
         "openrouter_model": openrouter_model,
+        "openrouter_image_model": openrouter_image_model,
         "log_level": log_level,
     }
 
