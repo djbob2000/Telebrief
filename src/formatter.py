@@ -6,7 +6,7 @@ import json
 import logging
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 from src.collector import Message
 from src.config_loader import Config
@@ -15,7 +15,6 @@ from src.summarizer import ERROR_SUMMARY_PREFIX
 from src.ui_strings import get_month_names, get_ui_strings
 from src.utils import TELEGRAM_MAX_MESSAGE_CHARS, TELEGRAM_SAFE_MESSAGE_CHARS
 
-_CHANNEL_URL_RE = re.compile(r"^https://t\.me/(?:c/\d+|[^/]{2,})$")
 _INLINE_SOURCE_URL_RE = re.compile(r"https://t\.me/[^\s)\]]+")
 _MARKDOWN_SOURCE_LINK_RE = re.compile(r"\[([^\]]+)\]\((https://t\.me/[^)\s]+)\)")
 _LEADING_BULLET_RE = re.compile(r"^\s*(?:(?:[•●▪◦]+|\*(?!\*)|-+|\d+[.)])\s*)+")
@@ -23,7 +22,7 @@ _SOURCE_MARKER_RE = re.compile(r"\s*(?:🖇️|🔗)\s*")
 
 
 class DigestFormatter:
-    """Formats digest into Markdown with emojis and links."""
+    """Formats digest into Markdown with emojis and clean text."""
 
     def __init__(self, config: Config, logger: logging.Logger):
         """
@@ -130,23 +129,6 @@ class DigestFormatter:
         emoji = "📊" if self.use_emojis else ""
         return f"# {emoji} {self._ui['daily_digest']} - {date_str}\n"
 
-    def _extract_channel_url(self, messages: List[Message]) -> Optional[str]:
-        """
-        Derive the channel base URL from the first message with a valid link.
-
-        Args:
-            messages: Messages from the channel
-
-        Returns:
-            Channel URL (e.g. https://t.me/username) or None if unavailable
-        """
-        for msg in messages:
-            if msg.link and msg.link != "#":
-                base = msg.link.rsplit("/", 1)[0]
-                if _CHANNEL_URL_RE.match(base):
-                    return base
-        return None
-
     def _create_channel_section(
         self, channel_name: str, summary: str, messages: List[Message]
     ) -> str:
@@ -156,21 +138,14 @@ class DigestFormatter:
         Args:
             channel_name: Channel name
             summary: Channel summary
-            messages: Messages from channel (for link extraction)
+            messages: Messages from channel
 
         Returns:
             Formatted section
         """
         emoji = self._pick_emoji(channel_name)
-        channel_url = self._extract_channel_url(messages)
-
-        if channel_url:
-            header = f"## {emoji} {channel_name} · [{self._ui['open_channel']} →]({channel_url})\n"
-        else:
-            header = f"## {emoji} {channel_name}\n"
-
+        header = f"## {emoji} {channel_name}\n"
         section_parts = [header, summary, "\n"]
-
         return "\n".join(section_parts)
 
     def _pick_emoji(self, channel_name: str) -> str:
@@ -238,11 +213,7 @@ class DigestFormatter:
         # Channel header with date
         date_str = self._format_date(datetime.now(timezone.utc))
         emoji = self._pick_emoji(channel_name)
-        channel_url = self._extract_channel_url(messages)
-        if channel_url:
-            header = f"# {emoji} {channel_name} · [{self._ui['open_channel']} →]({channel_url})\n*{date_str}*\n"
-        else:
-            header = f"# {emoji} {channel_name}\n*{date_str}*\n"
+        header = f"# {emoji} {channel_name}\n*{date_str}*\n"
         parts.append(header)
 
         # Summary
@@ -329,43 +300,8 @@ class DigestFormatter:
         for group_name, points in sections:
             bullet_lines = []
             for point in points:
-                point_text = point.point
-                markdown_source = _MARKDOWN_SOURCE_LINK_RE.search(point_text)
-                source_url = point.source_url
-                if markdown_source:
-                    destination_url = markdown_source.group(2)
-                    visible_label = markdown_source.group(1).strip()
-                    label_url = (
-                        visible_label
-                        if visible_label.startswith("https://")
-                        else f"https://{visible_label}"
-                    )
-                    label_is_message_url = bool(
-                        _INLINE_SOURCE_URL_RE.fullmatch(label_url)
-                        and re.search(r"/\d+$", label_url)
-                    )
-                    source_url = label_url if label_is_message_url else destination_url
-                    replacement = "" if label_url.startswith("https://t.me/") else visible_label
-                    point_text = _MARKDOWN_SOURCE_LINK_RE.sub(replacement, point_text, count=1)
-
-                inline_urls = _INLINE_SOURCE_URL_RE.findall(point_text)
-                if inline_urls:
-                    source_url = inline_urls[0]
-                if inline_urls:
-                    point_text = _INLINE_SOURCE_URL_RE.sub("", point_text)
-                    point_text = re.sub(r"\s*(?:→|->|—|–)\s*$", "", point_text).rstrip()
-                point_text = _SOURCE_MARKER_RE.sub(" ", point_text)
-                point_text = _LEADING_BULLET_RE.sub("", point_text)
-                # The AI may emit a visible link arrow even when the URL is
-                # already carried by source_url and will be rendered below.
-                point_text = re.sub(r"(?:\s*(?:→|↗))+\s*$", "", point_text).rstrip()
-                point_text = re.sub(r"[ \t]{2,}", " ", point_text).strip()
-
+                point_text = self._clean_group_point(point)
                 line = f"• {point_text}"
-                if source_url and (
-                    _CHANNEL_URL_RE.match(source_url) or _INLINE_SOURCE_URL_RE.fullmatch(source_url)
-                ):
-                    line += f" [↗]({source_url})"
                 bullet_lines.append(line)
 
             parts.append(
@@ -380,36 +316,29 @@ class DigestFormatter:
 
         return "\n\n".join(parts)
 
-    def _clean_group_point(self, point: GroupedPoint) -> tuple[str, str]:
-        """Normalize one grouped point and resolve its Telegram source URL."""
+    def _clean_group_point(self, point: GroupedPoint) -> str:
+        """Normalize one grouped point and strip source links/markers."""
         point_text = point.point
         markdown_source = _MARKDOWN_SOURCE_LINK_RE.search(point_text)
-        source_url = point.source_url
         if markdown_source:
-            destination_url = markdown_source.group(2)
             visible_label = markdown_source.group(1).strip()
             label_url = (
                 visible_label
                 if visible_label.startswith("https://")
                 else f"https://{visible_label}"
             )
-            label_is_message_url = bool(
-                _INLINE_SOURCE_URL_RE.fullmatch(label_url) and re.search(r"/\d+$", label_url)
-            )
-            source_url = label_url if label_is_message_url else destination_url
             replacement = "" if label_url.startswith("https://t.me/") else visible_label
             point_text = _MARKDOWN_SOURCE_LINK_RE.sub(replacement, point_text, count=1)
 
         inline_urls = _INLINE_SOURCE_URL_RE.findall(point_text)
         if inline_urls:
-            source_url = inline_urls[0]
             point_text = _INLINE_SOURCE_URL_RE.sub("", point_text)
             point_text = re.sub(r"\s*(?:→|->|—|–)\s*$", "", point_text).rstrip()
         point_text = _SOURCE_MARKER_RE.sub(" ", point_text)
         point_text = _LEADING_BULLET_RE.sub("", point_text)
         point_text = re.sub(r"(?:\s*(?:→|↗))+\s*$", "", point_text).rstrip()
         point_text = re.sub(r"[ \t]{2,}", " ", point_text).strip()
-        return point_text, source_url
+        return point_text
 
     def _parse_rich_text_spans(self, text: str) -> list[object]:
         """Parse inline markdown formatting (e.g. **bold**) into Rich Text spans."""
@@ -449,17 +378,8 @@ class DigestFormatter:
         for group_name, points in sections:
             items = []
             for point in points:
-                point_text, source_url = self._clean_group_point(point)
+                point_text = self._clean_group_point(point)
                 text_parts: list[object] = self._parse_rich_text_spans(point_text)
-                if source_url and (
-                    _CHANNEL_URL_RE.match(source_url) or _INLINE_SOURCE_URL_RE.fullmatch(source_url)
-                ):
-                    text_parts.extend(
-                        [
-                            " ",
-                            {"type": "url", "text": "↗", "url": source_url},
-                        ]
-                    )
                 items.append(
                     {
                         "blocks": [

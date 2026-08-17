@@ -347,9 +347,7 @@ Input line format: `N. [HH:MM] Sender: Text | URL`
                 .replace(" | ", " - ")
             )
             sender = msg.sender.replace("\r", " ").replace("\n", " ").replace(" | ", " - ")
-            link = msg.link if msg.link and msg.link != "#" else ""
-            link_part = f" | {link}" if link else ""
-            formatted.append(f"{i}. [{timestamp}] {sender}: {text}{link_part}")
+            formatted.append(f"{i}. [{timestamp}] {sender}: {text}")
 
         # Select most recent messages that fit within the character budget.
         # Always include at least one message (the most recent).

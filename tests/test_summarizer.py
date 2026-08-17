@@ -156,14 +156,14 @@ def _make_messages(count: int, text_len: int = 20):
 @pytest.mark.unit
 def test_format_messages_prompt_truncation_keeps_recent(sample_config, mock_logger):
     """When total chars exceed max_chars, only the most recent messages that fit are kept."""
-    # Each formatted line: "N. [HH:MM] S: " (14 chars) + 20 X's + " | https://t.me/test/N" = 56 chars
-    # 2 messages + 1 newline = 56 + 1 + 56 = 113 chars → max_chars=120 keeps exactly 2
-    # 3 messages = 56*3 + 2 = 170 chars → exceeds 120
+    # Each formatted line: "N. [HH:MM] S: " (13 chars) + 20 X's = 33 chars
+    # 2 messages + 1 newline = 33 + 1 + 33 = 67 chars → max_chars=80 keeps exactly 2
+    # 3 messages = 33*3 + 2 = 101 chars → exceeds 80
     messages = _make_messages(5, text_len=20)
 
     with patch("src.ai_providers.AsyncOpenAI"):
         summarizer = Summarizer(sample_config, mock_logger)
-        result = summarizer._format_messages_for_prompt(messages, max_chars=120)
+        result = summarizer._format_messages_for_prompt(messages, max_chars=80)
 
     lines = result.split("\n")
     assert len(lines) == 2
@@ -178,7 +178,7 @@ def test_format_messages_prompt_truncation_keeps_recent(sample_config, mock_logg
 @pytest.mark.unit
 def test_format_messages_prompt_no_truncation_within_budget(sample_config, mock_logger):
     """When total chars are within budget, all messages are included unchanged."""
-    # 5 messages × 56 chars + 4 newlines = 284 chars → max_chars=300 fits all
+    # 5 messages × 33 chars + 4 newlines = 169 chars → max_chars=300 fits all
     messages = _make_messages(5, text_len=20)
 
     with patch("src.ai_providers.AsyncOpenAI"):
@@ -212,7 +212,7 @@ def test_format_messages_prompt_warns_on_truncation(sample_config, mock_logger):
 
     with patch("src.ai_providers.AsyncOpenAI"):
         summarizer = Summarizer(sample_config, mock_logger)
-        summarizer._format_messages_for_prompt(messages, max_chars=120)
+        summarizer._format_messages_for_prompt(messages, max_chars=80)
 
     mock_logger.warning.assert_called()
     warning_text = str(mock_logger.warning.call_args)
@@ -256,15 +256,15 @@ def test_system_prompt_template_language():
 
 
 @pytest.mark.unit
-def test_format_messages_includes_link(sample_config, mock_logger, sample_messages):
-    """Formatted messages include each message's link so AI can embed them in one-liners."""
+def test_format_messages_excludes_link(sample_config, mock_logger, sample_messages):
+    """Formatted messages do not include message links to prevent exposing source URLs."""
     with patch("src.ai_providers.AsyncOpenAI"):
         summarizer = Summarizer(sample_config, mock_logger)
         formatted = summarizer._format_messages_for_prompt(sample_messages)
 
-    assert "https://t.me/test/1" in formatted
-    assert "https://t.me/test/2" in formatted
-    assert "https://t.me/test/3" in formatted
+    assert "https://t.me/test/1" not in formatted
+    assert "https://t.me/test/2" not in formatted
+    assert "https://t.me/test/3" not in formatted
 
 
 @pytest.mark.unit

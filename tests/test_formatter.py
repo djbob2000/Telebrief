@@ -255,105 +255,25 @@ def test_create_header_russian_month_name(sample_config, mock_logger):
     assert "March" not in header
 
 
-# --- Channel URL extraction tests ---
+# --- Channel section header tests ---
 
 
 @pytest.mark.unit
-def test_extract_channel_url_public(sample_config, mock_logger):
-    """Extracts base channel URL from a public message link."""
-    from datetime import datetime
-
-    from src.collector import Message
-
-    messages = [
-        Message(
-            text="hi",
-            sender="u",
-            timestamp=datetime(2026, 1, 1),
-            link="https://t.me/mychannel/42",
-            channel_name="Test",
-            has_media=False,
-            media_type="",
-        )
-    ]
-    formatter = DigestFormatter(sample_config, mock_logger)
-    assert formatter._extract_channel_url(messages) == "https://t.me/mychannel"
-
-
-@pytest.mark.unit
-def test_extract_channel_url_private(sample_config, mock_logger):
-    """Extracts base channel URL from a private message link."""
-    from datetime import datetime
-
-    from src.collector import Message
-
-    messages = [
-        Message(
-            text="hi",
-            sender="u",
-            timestamp=datetime(2026, 1, 1),
-            link="https://t.me/c/1234567890/42",
-            channel_name="Test",
-            has_media=False,
-            media_type="",
-        )
-    ]
-    formatter = DigestFormatter(sample_config, mock_logger)
-    assert formatter._extract_channel_url(messages) == "https://t.me/c/1234567890"
-
-
-@pytest.mark.unit
-def test_extract_channel_url_no_messages(sample_config, mock_logger):
-    """Returns None when no messages are provided."""
-    formatter = DigestFormatter(sample_config, mock_logger)
-    assert formatter._extract_channel_url([]) is None
-
-
-@pytest.mark.unit
-def test_extract_channel_url_fallback_link(sample_config, mock_logger):
-    """Returns None when all message links are '#' fallback."""
-    from datetime import datetime
-
-    from src.collector import Message
-
-    messages = [
-        Message(
-            text="hi",
-            sender="u",
-            timestamp=datetime(2026, 1, 1),
-            link="#",
-            channel_name="Test",
-            has_media=False,
-            media_type="",
-        )
-    ]
-    formatter = DigestFormatter(sample_config, mock_logger)
-    assert formatter._extract_channel_url(messages) is None
-
-
-@pytest.mark.unit
-def test_channel_section_includes_channel_link(sample_config, mock_logger, sample_messages):
-    """Channel section header includes a clickable link to the channel."""
+def test_channel_section_header_format(sample_config, mock_logger, sample_messages):
+    """Channel section header includes channel name and emoji without external URLs."""
     formatter = DigestFormatter(sample_config, mock_logger)
     section = formatter._create_channel_section("Test Channel", "Summary", sample_messages)
-    # sample_messages links are https://t.me/test/1 etc → channel URL is https://t.me/test
-    assert "https://t.me/test" in section
+    assert "## 📺 Test Channel" in section
+    assert "https://t.me" not in section
 
 
 @pytest.mark.unit
-def test_format_channel_message_includes_channel_link(sample_config, mock_logger, sample_messages):
-    """format_channel_message header includes a clickable link to the channel."""
+def test_format_channel_message_header_format(sample_config, mock_logger, sample_messages):
+    """format_channel_message header includes channel name and date without external URLs."""
     formatter = DigestFormatter(sample_config, mock_logger)
     msg = formatter.format_channel_message("Test Channel", "Summary", sample_messages)
-    assert "https://t.me/test" in msg
-
-
-@pytest.mark.unit
-def test_channel_section_no_link_when_no_messages(sample_config, mock_logger):
-    """Channel section omits channel link gracefully when no messages provided."""
-    formatter = DigestFormatter(sample_config, mock_logger)
-    section = formatter._create_channel_section("Test Channel", "Summary", [])
-    assert "https://t.me" not in section
+    assert "# 📺 Test Channel" in msg
+    assert "https://t.me" not in msg
 
 
 # --- Group formatter tests ---
@@ -414,7 +334,8 @@ def test_format_group_digest_russian_compact_single_message(sample_config, mock_
     assert f"{formatter._ui['daily_digest']} ·" in result
     assert "**Предупреждения**" in result
     assert "**Другое**" in result
-    assert "• Напряжение 130–150 В вместо 220 [↗](https://t.me/berdiansk_me)" in result
+    assert "• Напряжение 130–150 В вместо 220" in result
+    assert "[↗]" not in result
     assert "• Отдают котят" in result
     assert "📺 Бердянск" not in result
     assert "📺" not in result
@@ -447,7 +368,7 @@ def test_format_group_digest_omits_empty_sections_and_uses_requested_hours(
 def test_format_group_digest_replaces_inline_source_url_with_source_link(
     sample_config, mock_logger
 ):
-    """Inline AI-provided URLs are rendered once as the source link."""
+    """Inline AI-provided URLs and source markers are stripped cleanly."""
     formatter = DigestFormatter(sample_config, mock_logger)
     message_url = "https://t.me/berdiansk_me/123"
 
@@ -466,14 +387,15 @@ def test_format_group_digest_replaces_inline_source_url_with_source_link(
         ]
     )
 
-    assert f"• Важная новость [↗]({message_url})" in result
+    assert "• Важная новость" in result
+    assert "[↗]" not in result
     assert "🖇️" not in result
-    assert result.count(message_url) == 1
+    assert message_url not in result
 
 
 @pytest.mark.unit
 def test_format_group_digest_normalizes_markdown_wrapped_source_link(sample_config, mock_logger):
-    """Markdown-wrapped Telegram sources render as one compact arrow link."""
+    """Markdown-wrapped Telegram sources are stripped cleanly."""
     formatter = DigestFormatter(sample_config, mock_logger)
     message_url = "https://t.me/Brd24discord/208708"
 
@@ -495,9 +417,10 @@ def test_format_group_digest_normalizes_markdown_wrapped_source_link(sample_conf
         ]
     )
 
-    assert f"• Бердянск снова остался без света. [↗]({message_url})" in result
+    assert "• Бердянск снова остался без света." in result
     assert "[t.me/Brd24discord/208708](" not in result
-    assert result.count(message_url) == 1
+    assert "[↗]" not in result
+    assert message_url not in result
 
 
 @pytest.mark.unit
@@ -522,14 +445,15 @@ def test_format_group_digest_removes_source_markers_and_duplicate_bullets(
         ]
     )
 
-    assert "• 💧 Вода пропадает в Мелитополе [↗](https://t.me/berdiansk_me/123)" in result
+    assert "• 💧 Вода пропадает в Мелитополе" in result
     assert "🖇️" not in result
     assert "• •" not in result
+    assert "[↗]" not in result
 
 
 @pytest.mark.unit
 def test_format_group_digest_removes_standalone_trailing_arrow(sample_config, mock_logger):
-    """A standalone AI arrow is removed when the source URL is already attached."""
+    """A standalone AI arrow is removed cleanly."""
     formatter = DigestFormatter(sample_config, mock_logger)
 
     result = formatter.format_group_digest(
@@ -547,8 +471,9 @@ def test_format_group_digest_removes_standalone_trailing_arrow(sample_config, mo
         ]
     )
 
-    assert "работают. [↗](https://t.me/berdiansk_me/123)" in result
+    assert "• 🏦 Наличные: банкоматы работают." in result
     assert " →" not in result
+    assert "[↗]" not in result
 
 
 @pytest.mark.unit
@@ -596,11 +521,8 @@ def test_format_group_rich_digest_uses_native_headings_and_unordered_lists(
     assert blocks[1] == {"type": "heading", "size": 3, "text": "Предупреждения"}
     assert blocks[2]["type"] == "list"
     assert all("value" not in item for item in blocks[2]["items"])
-    assert blocks[2]["items"][0]["blocks"][0]["text"][-1] == {
-        "type": "url",
-        "text": "↗",
-        "url": "https://t.me/berdiansk_me/123",
-    }
+    assert blocks[2]["items"][0]["blocks"][0]["text"] == ["Напряжение нестабильно"]
+    assert blocks[2]["items"][1]["blocks"][0]["text"] == ["Воды нет"]
 
 
 @pytest.mark.unit
@@ -629,7 +551,7 @@ def test_format_group_rich_digest_removes_duplicate_markers_and_empty_groups(
     blocks = result["rich_message"]["blocks"]
     assert len(blocks) == 3
     item_text = blocks[2]["items"][0]["blocks"][0]["text"]
-    assert item_text[0] == "💧 Вода пропадает"
+    assert item_text == ["💧 Вода пропадает"]
     assert "Пустая группа" not in str(result)
 
 
@@ -690,18 +612,15 @@ def test_format_group_rich_digest_parses_markdown_bold_subheadings(sample_config
     )
 
     items = result["rich_message"]["blocks"][2]["items"]
-    # First item: "⚡ ", {"type": "bold", "text": "Критические перепады напряжения"}, ": В большинстве районов города", " ", {"type": "url", ...}
+    # First item: "⚡ ", {"type": "bold", "text": "Критические перепады напряжения"}, ": В большинстве районов города"
     first_item_text = items[0]["blocks"][0]["text"]
     assert first_item_text[0] == "⚡ "
     assert first_item_text[1] == {"type": "bold", "text": "Критические перепады напряжения"}
     assert first_item_text[2] == ": В большинстве районов города"
-    assert first_item_text[-1] == {
-        "type": "url",
-        "text": "↗",
-        "url": "https://t.me/berdiansk_me/123",
-    }
+    assert len(first_item_text) == 3
 
     # Second item starts directly with bold span
     second_item_text = items[1]["blocks"][0]["text"]
     assert second_item_text[0] == {"type": "bold", "text": "Репрессии в Токмаке"}
     assert second_item_text[1] == ": подробности дела"
+    assert len(second_item_text) == 2
