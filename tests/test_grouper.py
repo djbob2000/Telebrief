@@ -560,6 +560,66 @@ class TestQualityGateFilter:
         assert len(survivors) == 1
         assert "Отключение света" in survivors[0].point
 
+    def test_quality_gate_drops_llm_meta_leakage_messages(self):
+        """Verify that LLM meta-explanations and rule commentary are dropped."""
+        bullets = [
+            ExtractedBullet(
+                point="ℹ️ Сообщено об исключении остальных сообщений по указанным правилам.",
+                source="Ch1",
+            ),
+            ExtractedBullet(
+                point="Остальные сообщения исключены согласно установленным правилам фильтрации.",
+                source="Ch2",
+            ),
+            ExtractedBullet(
+                point="All other messages were excluded according to rules.",
+                source="Ch3",
+            ),
+            ExtractedBullet(
+                point="🏮 В городе прекратил работу Нижний Бердянский маяк.",
+                source="Ch4",
+            ),
+        ]
+        survivors = _quality_gate_filter(bullets)
+        assert len(survivors) == 1
+        assert "Нижний Бердянский маяк" in survivors[0].point
+
+    def test_quality_gate_drops_military_fundraisers_and_equipment_appeals(self):
+        """Verify that military fundraisers, 3D printer requests, and weapon repair appeals are dropped."""
+        bullets = [
+            ExtractedBullet(
+                point="🔧 Для ремонта стрелкового оружия на Бердянском направлении требуется 3D-принтер стоимостью 31 896 грн.",
+                source="Ch1",
+            ),
+            ExtractedBullet(
+                point="Открыт сбор на Mavic 3 Pro для подразделения: требуется 120 000 грн на карту монобанк.",
+                source="Ch2",
+            ),
+            ExtractedBullet(
+                point="⚖️ Пограничник-дезертир, пытавший жителя Бердянского района, получил судебный приговор.",
+                source="Ch3",
+            ),
+        ]
+        survivors = _quality_gate_filter(bullets)
+        assert len(survivors) == 1
+        assert "Пограничник-дезертир" in survivors[0].point
+
+    def test_quality_gate_drops_photo_video_notices(self):
+        """Verify that low-signal media-photo notices without substantial facts are dropped."""
+        bullets = [
+            ExtractedBullet(
+                point="📸 Опубликованы фотографии памятника Дюку и пострадавших объектов в регионе.",
+                source="Ch1",
+            ),
+            ExtractedBullet(
+                point="В Бердянске на Восточном проспекте завершён ремонт водовода диаметром 500 мм.",
+                source="Ch2",
+            ),
+        ]
+        survivors = _quality_gate_filter(bullets)
+        assert len(survivors) == 1
+        assert "ремонт водовода" in survivors[0].point
+
 
 class TestDeterministicDedup:
     """Tests for deterministic dedup in _parse_grouped_response."""

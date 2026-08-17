@@ -94,6 +94,26 @@ _QG_DROP_PATTERNS: tuple[re.Pattern[str], ...] = (
         re.IGNORECASE,
     ),
     re.compile(r"^\s*📭"),
+    # LLM meta-leakage & algorithm/rule disclosure
+    re.compile(
+        r"(?:сообщено|сообщается|информация)\s+об\s+исключении"
+        r"|исключен[ыоаея].*(?:правил|инструкци|критери|настройк|запрос)"
+        r"|остальны(?:е|х)\s+сообщени(?:я|й|ях).*(?:исключен|отфильтрован|пропущен|не\s+вошл)"
+        r"|согласно\s+(?:указанным\s+|заданным\s+)?(?:правилам|инструкциям|критериям)"
+        r"|в\s+соответствии\s+с\s+(?:указанными\s+|заданными\s+)?(?:правилами|инструкциями)"
+        r"|не\s+вошедш(?:ие|их)\s+в\s+дайджест"
+        r"|отфильтрован[ыоаея]\s+по\s+правилам"
+        r"|all\s+other\s+messages\s+(?:excluded|filtered|dropped)"
+        r"|excluded\s+according\s+to\s+rules",
+        re.IGNORECASE,
+    ),
+    # Low-signal media notice (e.g. "Опубликованы фотографии памятника Дюку...")
+    re.compile(
+        r"^(?:📸|📷|🎥|📹|🖼️)?\s*(?:опубликованы|появились|выложены|показали)\s+"
+        r"(?:фото|фотографии|кадры|видео|снимки)\s+"
+        r"(?:памятника|объектов|пострадавших|разрушений|места|последствий|в\s+сети|в\s+каналах)",
+        re.IGNORECASE,
+    ),
 )
 # Hedging stems — flag for "speculation without entity" gate
 _QG_HEDGE_RE = re.compile(
@@ -116,6 +136,17 @@ _QG_COMMERCIAL_OFFER_RE = re.compile(
     r"требуется|ваканси(?:я|и)|заказ(?:ать)?|места|цена|стоимость)\b",
     re.IGNORECASE,
 )
+_QG_MILITARY_FUNDRAISER_RE = re.compile(
+    r"(?:\b(?:требуется|ищ(?:ем|ут)|открыт\s+сбор|объявлен\s+сбор|сбор\s+(?:средств|на|для)|донаты?\s+на|"
+    r"банка\s+на|закупк(?:а|и)\s+для|для\s+подразделени(?:я|й|ю)|для\s+бойцов|для\s+военных|на\s+нужды\s+всу|на\s+нужды\s+армии)\b.*"
+    r"(?:3d[ -]?принтер|дрон|бпла|мавик|mavic|dji|fpv|тепловизор|снаряжени|оружи|экипировк|пнв|генератор|пикап|автомобил|раци|старлинк|starlink))"
+    r"|(?:\b(?:3d[ -]?принтер|дрон|бпла|мавик|mavic|dji|fpv|тепловизор|снаряжени|оружи|экипировк|пнв|starlink|старлинк)\b.*"
+    r"\b(?:стоимостью\s+\d+|требуется\s+\d+|сбор\s+на\s+\d+|цель\s+сбора|\d+\s*(?:грн|руб|usd|\$)|монобанк|send\.monobank|приватбанк|карту\s+моно|карту\s+приват)\b)"
+    r"|(?:\bна\s+[а-яёa-z-]+\s+направлении\s+требуется\b)"
+    r"|(?:\bдля\s+ремонта\s+стрелкового\s+оружия\b)"
+    r"|(?:\b(?:монобанк|приватбанк|send\.monobank\.ua)\b.*\b(?:сбор|донаты?|на\s+дрон|на\s+бпла|на\s+3d|на\s+оружие)\b)",
+    re.IGNORECASE,
+)
 
 
 def _qg_has_concrete_entity(point: str) -> bool:
@@ -133,6 +164,11 @@ def _is_commercial_advertisement(point: str) -> bool:
     return bool(_QG_COMMERCIAL_CONTACT_RE.search(point) and _QG_COMMERCIAL_OFFER_RE.search(point))
 
 
+def _is_military_fundraiser(point: str) -> bool:
+    """Detect frontline gear/weapon procurement, crowdfunding appeals, and donation targets."""
+    return bool(_QG_MILITARY_FUNDRAISER_RE.search(point))
+
+
 def _quality_gate_filter(bullets: List["ExtractedBullet"]) -> List["ExtractedBullet"]:
     """Deterministic QUALITY GATE — drop low-signal bullets before dedup/classification.
 
@@ -142,6 +178,9 @@ def _quality_gate_filter(bullets: List["ExtractedBullet"]) -> List["ExtractedBul
     Drops:
     - Admin chatter ("new chat member", joins/leaves)
     - Meta-empty ("без деталей", "no details")
+    - LLM meta-leakage ("сообщено об исключении по правилам", "остальные сообщения отфильтрованы")
+    - Military equipment fundraising and donation appeals
+    - Low-signal media/photo announcements
     - Short bullets (<30 chars) lacking any concrete entity (digits, @, URL, proper name)
     - Speculation/hedging without a concrete entity to anchor it
     - Private commercial offers with a booking/contact signal
@@ -154,6 +193,8 @@ def _quality_gate_filter(bullets: List["ExtractedBullet"]) -> List["ExtractedBul
         if any(p.search(text) for p in _QG_DROP_PATTERNS):
             continue
         if _is_commercial_advertisement(text):
+            continue
+        if _is_military_fundraiser(text):
             continue
         has_entity = _qg_has_concrete_entity(text)
         if len(text) < 30 and not has_entity:
