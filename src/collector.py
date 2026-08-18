@@ -7,7 +7,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from telethon import TelegramClient, functions, types
 from telethon.errors import ChannelPrivateError, FloodWaitError
@@ -33,6 +33,7 @@ class Message:
     topic_id: int | None = None
     forward_origin_name: str | None = None
     forward_origin_username: str | None = None
+    channel_id: int | str | None = None
 
 
 class MessageCollector:
@@ -293,7 +294,25 @@ class MessageCollector:
             topic_id=topic_id,
             forward_origin_name=fwd_name,
             forward_origin_username=fwd_username,
+            channel_id=getattr(entity, "id", None),
         )
+
+    async def download_message_photo(
+        self, channel_identifier: int | str, message_id: int
+    ) -> Optional[bytes]:
+        """Download photo bytes for a specific message from Telegram."""
+        try:
+            entity = await self.client.get_entity(channel_identifier)
+            msg = await self.client.get_messages(entity, ids=message_id)
+            if msg and msg.media:
+                media_bytes = await self.client.download_media(msg.media, file=bytes)
+                if isinstance(media_bytes, bytes) and media_bytes:
+                    return media_bytes
+        except Exception as e:
+            self.logger.warning(
+                f"Failed to download photo for message {message_id} from {channel_identifier}: {e}"
+            )
+        return None
 
     async def _get_forward_origin(self, message: TelegramMessage) -> tuple[str | None, str | None]:
         """Extract forward origin name and username if available."""

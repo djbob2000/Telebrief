@@ -1310,3 +1310,67 @@ async def test_zero_card_editorial_outcome_does_not_trigger_core_fallback(
         assert success is False
         mock_fallback.assert_not_called()
         mock_page.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_extract_candidate_photo_bytes_success(sample_config, mock_logger):
+    from datetime import datetime, timezone
+
+    from src.collector import Message
+    from src.core import _extract_candidate_photo_bytes
+
+    photo_msg = Message(
+        text="Фото с места ремонта",
+        sender="Корреспондент",
+        timestamp=datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc),
+        link="https://t.me/test/100",
+        channel_name="Test Channel",
+        has_media=True,
+        media_type="Фото",
+        message_id=100,
+        channel_id=-100123456789,
+    )
+
+    fake_bytes = b"fake_source_photo_bytes"
+    mock_collector = MagicMock()
+    mock_collector.connect = AsyncMock()
+    mock_collector.disconnect = AsyncMock()
+    mock_collector.download_message_photo = AsyncMock(return_value=fake_bytes)
+
+    with patch("src.core.MessageCollector", return_value=mock_collector):
+        res = await _extract_candidate_photo_bytes(
+            {"Test Channel": [photo_msg]}, sample_config, mock_logger
+        )
+
+    assert res == fake_bytes
+    mock_collector.download_message_photo.assert_called_once_with(
+        channel_identifier=-100123456789,
+        message_id=100,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_extract_candidate_photo_bytes_no_photo(sample_config, mock_logger):
+    from datetime import datetime, timezone
+
+    from src.collector import Message
+    from src.core import _extract_candidate_photo_bytes
+
+    text_msg = Message(
+        text="Текстовое сообщение без фото",
+        sender="Корреспондент",
+        timestamp=datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc),
+        link="https://t.me/test/101",
+        channel_name="Test Channel",
+        has_media=False,
+        media_type="",
+        message_id=101,
+        channel_id=-100123456789,
+    )
+
+    res = await _extract_candidate_photo_bytes(
+        {"Test Channel": [text_msg]}, sample_config, mock_logger
+    )
+    assert res is None

@@ -549,6 +549,62 @@ def _build_fallback_article(
     return title, lead, markdown
 
 
+async def _extract_candidate_photo_bytes(
+    messages_by_channel: dict[str, list[Message]],
+    config: Config,
+    logger: logging.Logger,
+) -> Optional[bytes]:
+    """Find the most relevant news photo from collected messages and download its bytes."""
+    candidate_msg: Optional[Message] = None
+    photo_keywords = {"photo", "фото", "foto"}
+    for msgs in messages_by_channel.values():
+        for m in msgs:
+            if getattr(m, "has_media", False) is True:
+                media_type = getattr(m, "media_type", "") or ""
+                if isinstance(media_type, str) and any(
+                    k in media_type.lower() for k in photo_keywords
+                ):
+                    m_id = getattr(m, "message_id", None)
+                    ch_id = getattr(m, "channel_id", None) or getattr(m, "channel_name", None)
+                    if isinstance(m_id, int) and (isinstance(ch_id, (int, str))):
+                        candidate_msg = m
+                        break
+        if candidate_msg:
+            break
+
+    if not candidate_msg or candidate_msg.message_id is None:
+        return None
+
+    target_channel = getattr(candidate_msg, "channel_id", None) or getattr(
+        candidate_msg, "channel_name", None
+    )
+    if not target_channel:
+        return None
+
+    final_msg_id: int = candidate_msg.message_id
+    try:
+        collector = MessageCollector(config, logger)
+        await collector.connect()
+        try:
+            photo_bytes = await collector.download_message_photo(
+                channel_identifier=target_channel,
+                message_id=final_msg_id,
+            )
+            if photo_bytes:
+                logger.info(
+                    "Retrieved source photo reference (%d bytes) from msg %s in channel %s",
+                    len(photo_bytes),
+                    candidate_msg.message_id,
+                    candidate_msg.channel_name,
+                )
+                return photo_bytes
+        finally:
+            await collector.disconnect()
+    except Exception as e:
+        logger.warning("Could not download candidate reference photo: %s", e)
+    return None
+
+
 async def generate_and_publish_article(
     config: Config,
     logger: logging.Logger,
@@ -616,14 +672,23 @@ async def generate_and_publish_article(
         except Exception as e:
             logger.warning(f"Could not save local article backup: {e}")
 
+        # Check if any candidate photo is available in collected messages for Image-to-Image redraw
+        reference_image_bytes = await _extract_candidate_photo_bytes(
+            messages_by_channel, config, logger
+        )
+
         # Generate editorial cover image
         image_generator = NewsImageGenerator(config, logger)
         image_prompt = await image_generator.generate_prompt(
             title=title,
             lead=lead,
             article_text=markdown_body,
+            has_reference_image=reference_image_bytes is not None,
         )
-        photo_path = await image_generator.generate_image(prompt=image_prompt)
+        photo_path = await image_generator.generate_image(
+            prompt=image_prompt,
+            reference_image_bytes=reference_image_bytes,
+        )
 
         if dry_run:
             print("\n" + "=" * 70)

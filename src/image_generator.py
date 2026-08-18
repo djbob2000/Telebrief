@@ -6,7 +6,7 @@ import base64
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 
@@ -14,37 +14,52 @@ from src.ai_providers import GoogleProvider, OpenAIProvider
 from src.config_loader import Config
 
 IMAGE_PROMPT_SYSTEM_INSTRUCTION = """You are a senior editorial art director for a local news outlet covering {city_name}, Ukraine.
-Your task is to convert a local news story (headline, lead, and details) into an optimal, photorealistic, high-fidelity English prompt for an AI image generation model (16:9 aspect ratio).
+Your task is to convert a local news story (headline, lead, and context) into a single, cohesive, photorealistic English visual prompt (16:9 aspect ratio) for an AI image generator.
 
-### 1. EDITORIAL PHOTOJOURNALISM STYLE
-- **Visual Goal:** Authentic documentary photography taken by a local photojournalist on a 35mm lens. Natural candid scene, natural realistic daylight or atmospheric dusk lighting, gritty authentic textures, zero stock-photo gloss.
-- **Composition:** Prefer environmental medium shots or wide-angle documentary compositions showing subjects interacting naturally with their surroundings. Avoid extreme close-up headshots or staged portrait poses.
+### 1. EDITORIAL PHOTOJOURNALISM AESTHETICS (Top Priority)
+- **Camera & Optics:** Authentic 35mm documentary street photography, eye-level medium shot or environmental wide-angle, natural atmospheric lighting (daylight or dusk), organic textures, zero studio lighting, zero stock-photo gloss.
+- **Composition:** Unstaged candid moment. Subjects naturally embedded in the city environment. Never generate isolated studio portraits, extreme close-up headshots, or fake posed smiles.
 
-### 2. REGIONAL AUTHENTICITY ANCHORS ({city_name}, Ukraine)
-Anchor the scene strictly to authentic Eastern European / Azov coastal urban reality:
-- **Architecture:** 5-story Soviet-era brick or panel residential apartment buildings (khrushchevka), weathered balconies, metal entrance canopies, yellow exterior gas pipes along brick facades.
-- **Courtyards & Streets:** Asphalt courtyards with patches, local trees (poplars, acacia, chestnuts), ordinary domestic cars.
-- **Season & Climate Adaptation:** Dynamically match clothing and environment to the current date/season of the news:
-  * Warm season (Spring/Summer): Everyday casual t-shirts, shorts, sandals, light shirts, dusty green trees, dry grass.
-  * Cold season (Autumn/Winter): Puffer jackets, dark coats, beanies, warm boots, overcast sky, bare branches or wet asphalt.
-- **Tangible Everyday Props (choose 2–3 relevant to the news):**
-  * Utility/Blackout stories: A portable gasoline/diesel generator humming on the asphalt near a residential building entrance; people carrying 5-liter transparent plastic water jugs with blue handles; powerbanks and charging cables on a simple kitchen table; unlit apartment windows at dusk.
-  * Fire/Emergency stories: Firefighters near a red fire truck extinguishing dry grass/bushes on a hill; distant smoke over trees.
-  * Everyday City stories: Quiet bus stops, municipal repair crews, local grocery courtyards.
-- **People:** 1–3 fictional local residents in authentic casual everyday wear. Calm, natural human behavior.
+### 2. AUTHENTIC REGIONAL ANCHORS ({city_name}, Ukraine)
+Anchor all outdoor and indoor scenes strictly to Eastern European / Azov coastal reality:
+- **Architecture:** Weathered 5-story Soviet silicate brick or panel residential buildings (khrushchevka), mismatched glazed balconies, metal entrance canopies over concrete steps, exterior yellow gas facade pipes.
+- **Environment & Streets:** Patchwork cracked asphalt, tall poplars, acacia bushes, dusty curbs, ordinary domestic vehicles.
+- **Dynamic Seasonal Adaptation:** Match attire and environment to the news context:
+  * Warm season: Casual t-shirts, shorts, sandals, light shirts, dry grass, dusty green trees.
+  * Cold season: Dark puffer jackets, warm beanies, boots, overcast gray sky, wet asphalt, bare branches.
+- **Everyday News Props (select 2–3 relevant items):**
+  * Utility/Blackouts: A portable humming gasoline generator on asphalt near an entrance; residents carrying 5-liter plastic water bottles with blue handles; powerbanks on a simple wooden table; unlit apartment windows at twilight.
+  * Municipal/Emergency: Utility repair crews in work overalls with digging equipment; red fire truck near dry brush; municipal buses.
+  * Community life: Quiet bus stops, local grocery courtyards, residential benches.
+- **Subjects:** 1–3 fictional local residents in plain everyday wear behaving naturally and calmly.
 
-### 3. CATEGORICAL NEGATIVE CONSTRAINTS (Crucial)
-You MUST strictly exclude:
-- **NO PROTESTS / NO RALLIES:** NEVER depict protests, demonstrations, crowds holding signs, cardboard placards, banners, or activists.
-- **NO TEXT / NO SIGNS:** Absolutely NO text, NO letters, NO words on signs, NO neon signs, NO shopfront names, NO English or foreign text, NO logos on clothing.
-- **NO FOREIGN SETTINGS:** NO Italian or Western European cobblestone streets, NO British double-decker buses, NO Western police uniforms, NO American suburban architecture, NO palm trees.
-- **NO FAKE DISASTERS:** NO explosions, NO blood, NO weapons.
+### 3. STRICT NEGATIVE CONSTRAINTS
+- **NO PROTESTS:** NEVER depict rallies, demonstrations, crowds with placards, cardboard signs, or banners.
+- **CLEAN SURFACES (NO TEXT):** Blank unbranded facades, plain clothing without logos, textless environment, NO words, NO letters, NO signs, NO English shopfronts.
+- **NO FOREIGN CLICHÉS:** NO Western European cobblestones, NO American suburban homes, NO palm trees, NO British buses.
+- **NO FAKE DISASTERS:** NO cinematic explosions, NO blood, NO weapons.
 
-### 4. PROMPT STRUCTURE
-Combine into a single cohesive English paragraph (approx 80–120 words):
-[Optics & Documentary Medium/Wide Shot] + [1–2 Everyday Subjects Performing Specific Action from the News] + [Authentic Setting in {city_name}: Soviet-era 5-story brick building, asphalt courtyard, poplars] + [Tangible News Props: e.g. generator on asphalt / water jugs / powerbanks] + [Lighting & Seasonal Atmosphere] + [Negative Constraints: completely textless, blank facades, NO signs, NO text, NO protests, photorealistic 16:9].
+### 4. OUTPUT FORMAT & STRUCTURE
+Output EXACTLY ONE cohesive English paragraph (80–110 words) following this sequence:
+[Documentary editorial photograph, 35mm lens, candid environmental shot] + [1–2 Everyday Subjects Performing Specific Action from News] + [Authentic Setting in {city_name}: 5-story brick khrushchevka, asphalt courtyard, poplars] + [Tangible Story Props] + [Lighting & Seasonal Atmosphere] + [Clean blank unmarked facades, plain unbranded clothing, completely textless scene, photorealistic 16:9].
 
-Output ONLY the final English prompt as a single cohesive paragraph without commentary, labels, quotes, or markdown."""
+Do NOT include labels, quotes, explanations, markdown formatting, or multiple paragraphs."""
+
+IMAGE_REDRAW_SYSTEM_INSTRUCTION = """You are a senior editorial art director for a local news outlet covering {city_name}, Ukraine.
+Your task is to formulate a precise English visual prompt (16:9 aspect ratio) that instructs an AI image model to cleanly redraw/re-imagine an attached reference news photograph.
+
+### 1. EDITORIAL REDRAW GUIDELINES & DIRECTIVES
+- **Image-to-Image Guidance:** Explicitly instruct the model to use the attached reference photo for spatial composition, subject placement, and core news situation (e.g. municipal repair site, quiet courtyard, coastal view, utility work).
+- **Artifact & Clutter Removal:** Eliminate all watermarks, channel logos, timestamps, digital blur, camera artifacts, and low-res pixelation from the source.
+- **Style Elevation:** Transform the scene into crisp 35mm documentary photojournalism with realistic natural lighting, sharp textures, and natural depth of field.
+- **Regional Authenticity ({city_name}):** Preserve or enforce authentic Eastern European architectural details (weathered brick apartment blocks, asphalt, local trees, seasonal clothing).
+- **Strict Textless Constraint:** Blank clean facades, unmarked surfaces, plain unbranded clothing, completely textless environment, NO watermarks, NO logos, NO text, NO signs.
+
+### 2. OUTPUT FORMAT & STRUCTURE
+Output EXACTLY ONE cohesive English paragraph (80–110 words) following this sequence:
+"Based on the spatial layout and composition of the attached reference image, an authentic 35mm documentary editorial photograph capturing [core news action/subjects from the story] in {city_name}, Ukraine. [Detailed description of subjects, realistic setting with Soviet-era residential backdrop, tangible equipment/props, and natural atmospheric lighting]. High-fidelity rendering with clean unmarked surfaces, plain clothing, completely textless scene, no watermarks, no logos, no banners, photorealistic 16:9."
+
+Do NOT include labels, quotes, explanations, markdown formatting, or multiple paragraphs."""
 
 
 CITY_NAMES_EN: dict[str, str] = {
@@ -151,16 +166,26 @@ class NewsImageGenerator:
         lead: str,
         article_text: str,
         city_name: str = "Бердянск",
+        has_reference_image: bool = False,
     ) -> str:
         """Generate an English visual prompt for image generation models with multi-provider fallback."""
         city_en = _get_city_name_en(city_name)
-        system_instruction = IMAGE_PROMPT_SYSTEM_INSTRUCTION.format(city_name=city_en)
-        user_content = (
-            f"Заголовок новости: {title}\n"
-            f"Лид новости: {lead}\n"
-            f"Краткий контекст статьи: {article_text[:2000]}\n\n"
-            f"Сформируй один связный детальный промпт на английском языке для генерации фотореалистичной иллюстрации 16:9 без текста и без плакатов."
-        )
+        if has_reference_image:
+            system_instruction = IMAGE_REDRAW_SYSTEM_INSTRUCTION.format(city_name=city_en)
+            user_content = (
+                f"Заголовок новости: {title}\n"
+                f"Лид новости: {lead}\n"
+                f"Краткий контекст статьи: {article_text[:2000]}\n\n"
+                f"Сформируй один связный детальный промпт на английском языке для чистой перерисовки фотографии к этой новости в фотореалистичном редакционном стиле 16:9 без водяных знаков, логотипов, букв и текста."
+            )
+        else:
+            system_instruction = IMAGE_PROMPT_SYSTEM_INSTRUCTION.format(city_name=city_en)
+            user_content = (
+                f"Заголовок новости: {title}\n"
+                f"Лид новости: {lead}\n"
+                f"Краткий контекст статьи: {article_text[:2000]}\n\n"
+                f"Сформируй один связный детальный промпт на английском языке для генерации фотореалистичной иллюстрации 16:9 без текста и без плакатов."
+            )
 
         for label, provider, model in self.prompt_providers:
             try:
@@ -183,6 +208,12 @@ class NewsImageGenerator:
                 )
 
         self.logger.warning("All prompt generation slots failed, using static fallback prompt.")
+        if has_reference_image:
+            return (
+                f"Realistic editorial photojournalism, documentary street photography, 35mm lens. "
+                f"A clean high-resolution re-imagining of the news scene in {city_en}, Ukraine based on the reference photo, "
+                f"authentic composition and local environment. Completely textless, blank facades, NO text, NO letters, NO words, NO signs, NO watermarks, NO logos. 16:9 aspect ratio."
+            )
         return (
             f"Realistic editorial photojournalism, documentary street photography, 35mm lens. "
             f"A quiet residential courtyard in {city_en}, Ukraine with 5-story Soviet-era brick apartment buildings, "
@@ -195,6 +226,7 @@ class NewsImageGenerator:
         prompt: str,
         output_dir: Optional[Path | str] = None,
         model_name: str = "gemini-3.1-flash-lite-image",
+        reference_image_bytes: Optional[bytes] = None,
     ) -> Optional[Path]:
         """Generate image using 3-tier cascade (Google Key 1 -> Google Key 2 -> OpenRouter) and save to disk."""
         if output_dir is None:
@@ -210,8 +242,21 @@ class NewsImageGenerator:
         # Tier 1 & 2: Try direct Google Gemini API keys
         for idx, key in enumerate(self.gemini_keys, start=1):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
+            parts: list[dict[str, Any]] = []
+            if reference_image_bytes:
+                b64_ref = base64.b64encode(reference_image_bytes).decode("utf-8")
+                parts.append(
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": b64_ref,
+                        }
+                    }
+                )
+            parts.append({"text": prompt})
+
             payload = {
-                "contents": [{"parts": [{"text": prompt}]}],
+                "contents": [{"parts": parts}],
                 "generationConfig": {"responseModalities": ["IMAGE"]},
             }
             try:
@@ -232,8 +277,8 @@ class NewsImageGenerator:
                         self.logger.warning("Google image slot %d returned no candidates", idx)
                         continue
 
-                    parts = candidates[0].get("content", {}).get("parts", [])
-                    for part in parts:
+                    parts_resp = candidates[0].get("content", {}).get("parts", [])
+                    for part in parts_resp:
                         inline_data = part.get("inlineData") or part.get("inline_data")
                         if inline_data and "data" in inline_data:
                             raw_bytes = base64.b64decode(inline_data["data"])
@@ -252,9 +297,22 @@ class NewsImageGenerator:
         # Tier 3: OpenRouter Image Generation Fallback
         if self.openrouter_api_key:
             openrouter_url = f"{self.openrouter_base_url.rstrip('/')}/chat/completions"
+            msg_content: str | list[dict[str, Any]]
+            if reference_image_bytes:
+                b64_ref = base64.b64encode(reference_image_bytes).decode("utf-8")
+                msg_content = [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64_ref}"},
+                    },
+                    {"type": "text", "text": prompt},
+                ]
+            else:
+                msg_content = prompt
+
             openrouter_payload = {
                 "model": self.openrouter_image_model,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": msg_content}],
                 "modalities": ["image", "text"],
                 "max_tokens": 8192,
             }
