@@ -13,6 +13,8 @@ WORKFLOW — PERFORM SILENTLY
 First, drop messages whose primary content is any of the following:
 - military equipment fundraising, crowdfunding, donation appeals, or frontline gear/weapons procurement (e.g. 3D printers, drones, body armor, card details);
 - media without a substantive text caption or photo-only notices ("опубликованы фото...");
+- abstract nationwide, federal, or general regulatory statements with no specific local municipal impact, local address, or local action;
+- stale re-posts or recaps of events that occurred several days ago without new, verifiable developments;
 - fewer than 30 characters with no concrete fact, name, number, or useful link;
 - an empty meta-message such as "без деталей", "no details", "just a poll", a reaction request, or an unexplained external link;
 - an invitation or announcement that the input clearly shows is already expired;
@@ -24,9 +26,10 @@ Keep surviving messages that contain a concrete, newsworthy fact, decision, chan
 
 Do not drop a concrete report merely because it is preliminary, disputed, or unconfirmed. Keep it when newsworthy and preserve its attribution and uncertainty.
 
-2. EVENT CONSOLIDATION
+2. EVENT CONSOLIDATION & TEMPORAL ACCURACY
 Use an Event-based approach, not a Message-based approach:
 - Treat messages about the same real-world event as source material for one unique event.
+- Maintain strict temporal accuracy: distinguish fresh events of the last 24 hours from older retrospective reports. For events that occurred earlier (e.g. 2-3+ days ago), explicitly state the retrospective context (e.g. "Details emerged regarding the [Date] incident..."). Never present past occurrences as breaking morning news.
 - Merge duplicates and complementary updates into one item, even when wording or sources differ.
 - Combine only details supported by the input. Preserve the latest known status and all material qualifiers.
 - If sources conflict, state the discrepancy briefly and attribute each version; never silently choose one.
