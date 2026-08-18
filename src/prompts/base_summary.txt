@@ -13,7 +13,7 @@ WORKFLOW — PERFORM SILENTLY
 First, drop messages whose primary content is any of the following:
 - military equipment fundraising, crowdfunding, donation appeals, or frontline gear/weapons procurement (e.g. 3D printers, drones, body armor, card details);
 - media without a substantive text caption or photo-only notices ("опубликованы фото...");
-- abstract nationwide, federal, or general regulatory statements with no specific local municipal impact, local address, or local action;
+- abstract nationwide, federal, or general regulatory bureaucracy and ministry paperwork with no direct practical bearing on citizens' everyday actions (KEEP regulations that directly govern citizens' essential access — such as SIM cards, identity documents, pensions, property re-registration — but frame them strictly around the practical citizen impact rather than abstract institutional legalese);
 - stale re-posts or recaps of events that occurred several days ago without new, verifiable developments;
 - fewer than 30 characters with no concrete fact, name, number, or useful link;
 - an empty meta-message such as "без деталей", "no details", "just a poll", a reaction request, or an unexplained external link;
