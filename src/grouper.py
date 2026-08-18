@@ -493,11 +493,9 @@ class DigestGrouper:
         if not bullets:
             return {}
         messages = self._build_classifier_prompt(bullets, groups)
-        # ID-only output is compact; reserve a small budget per input item and
-        # avoid spending the summary-sized budget on echoed event text.
         classifier_tokens = max(
-            128,
-            min(self.max_tokens, 32 + len(bullets) * 6 + len(groups) * 12),
+            4096,
+            min(self.max_tokens, 4096 + len(bullets) * 100 + len(groups) * 100),
         )
         response = await self.provider.chat_completion(
             messages=messages,
@@ -1055,7 +1053,7 @@ class DigestGrouper:
 
         messages = self._build_synthesis_prompt(group_name, points)
         try:
-            tokens_budget = max(256, min(self.max_tokens, len(points) * 150))
+            tokens_budget = max(8192, min(self.max_tokens, 8192 + len(points) * 500))
             response = await self.provider.chat_completion(
                 messages=messages,
                 model=self.model,

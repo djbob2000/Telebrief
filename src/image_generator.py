@@ -171,7 +171,7 @@ class NewsImageGenerator:
                     ],
                     model=model,
                     temperature=0.7,
-                    max_tokens=4096,
+                    max_tokens=8192,
                 )
                 clean_prompt = response.strip().strip('"').strip("'")
                 if clean_prompt:
@@ -256,7 +256,7 @@ class NewsImageGenerator:
                 "model": self.openrouter_image_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "modalities": ["image", "text"],
-                "max_tokens": 4096,
+                "max_tokens": 8192,
             }
             headers = {
                 "Authorization": f"Bearer {self.openrouter_api_key}",
