@@ -58,6 +58,8 @@ class EditorialAnalyzer:
         max_output_tokens: int = 65_536,
         compact_max_output_tokens: int = 16_384,
         output_language: str = "Russian",
+        reasoning_effort: str | None = None,
+        temperature: float | None = None,
     ):
         if max_output_tokens <= 0 or compact_max_output_tokens <= 0:
             raise ValueError("output token budgets must be positive")
@@ -67,6 +69,8 @@ class EditorialAnalyzer:
         self.max_output_tokens = max_output_tokens
         self.compact_max_output_tokens = compact_max_output_tokens
         self.output_language = output_language
+        self.reasoning_effort = reasoning_effort
+        self.temperature = temperature
         self.last_raw_response = ""
 
     def build_prompt(self, bundle: PreparedBundle, *, compact: bool = False) -> tuple[str, str]:
@@ -197,8 +201,9 @@ Do not classify or label every supplied message, and do not repeat source text i
                     {"role": "user", "content": user},
                 ],
                 model=self.model,
-                temperature=0.2,
+                temperature=self.temperature,
                 max_tokens=(self.compact_max_output_tokens if compact else self.max_output_tokens),
+                reasoning_effort=self.reasoning_effort,
                 response_format={"type": "json_object"},
             )
         except ProviderCascadeError as exc:

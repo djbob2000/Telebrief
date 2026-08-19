@@ -124,6 +124,8 @@ class ArticleGenerator:
         self.input_builder = EditorialInputBuilder(
             self.role_resolver, city_context_resolver=self.city_context_resolver
         )
+        reasoning_effort = getattr(config.settings, "reasoning_effort", None)
+        article_temp = getattr(getattr(config.settings, "article", None), "temperature", None)
         self.analyzer = EditorialAnalyzer(
             self.provider,
             self.model,
@@ -133,6 +135,8 @@ class ArticleGenerator:
                 config.settings.article.editorial_analysis_compact_max_output_tokens
             ),
             output_language=self.output_language,
+            reasoning_effort=reasoning_effort,
+            temperature=article_temp,
         )
         self.writer = EditorialWriter(
             self.provider,
@@ -141,6 +145,8 @@ class ArticleGenerator:
             logger,
             max_output_tokens=config.settings.article.editorial_writer_max_output_tokens,
             output_language=self.output_language,
+            reasoning_effort=reasoning_effort,
+            temperature=article_temp,
         )
         self.fact_checker = LightFactChecker(
             self.provider,
@@ -149,6 +155,8 @@ class ArticleGenerator:
             max_output_tokens=config.settings.article.editorial_audit_max_output_tokens,
             repair_max_output_tokens=config.settings.article.editorial_repair_max_output_tokens,
             output_language=self.output_language,
+            reasoning_effort=reasoning_effort,
+            temperature=article_temp,
         )
         self.fallback_builder = DeterministicStoryCardBuilder()
         self.fallback_renderer = StoryCardRenderer(output_language=self.output_language)

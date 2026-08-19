@@ -235,7 +235,7 @@ def test_create_google_provider_builds_google_and_openrouter_fallback_slots(mock
         "google-1",
         "google-2",
         "google-3",
-        "openrouter-free",
+        "openrouter",
     ]
     assert provider.providers[-1][2] == "openrouter/free"
 

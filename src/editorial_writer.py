@@ -86,14 +86,31 @@ class ArticleDraft:
             section_paragraphs = section.get("paragraphs", [])
             if not isinstance(heading, str) or not heading.strip().lstrip("#").strip():
                 raise ValueError("article section heading must be non-empty")
-            if not isinstance(section_paragraphs, list) or not all(
-                isinstance(item, str) and item.strip() for item in section_paragraphs
+            if (
+                not isinstance(section_paragraphs, list)
+                or not section_paragraphs
+                or not all(isinstance(item, str) and item.strip() for item in section_paragraphs)
             ):
-                raise ValueError("article section paragraphs must be non-empty strings")
+                raise ValueError(
+                    "article section paragraphs must contain at least one non-empty string"
+                )
             parsed_sections.append(
-                ArticleSection(heading.strip().lstrip("#").strip(), section_paragraphs)
+                ArticleSection(
+                    heading.strip().lstrip("#").strip(),
+                    [
+                        item.strip()
+                        for item in section_paragraphs
+                        if isinstance(item, str) and item.strip()
+                    ],
+                )
             )
-        normalized_paragraphs = [] if parsed_sections else list(paragraphs)
+        normalized_paragraphs = (
+            []
+            if parsed_sections
+            else [item.strip() for item in paragraphs if isinstance(item, str) and item.strip()]
+        )
+        if not parsed_sections and not normalized_paragraphs:
+            raise ValueError("article draft must contain at least one body paragraph")
         return cls(
             headline=headline.strip().lstrip("#").strip(),
             lead=lead.strip(),
@@ -230,6 +247,8 @@ class EditorialWriter:
         logger: logging.Logger,
         max_output_tokens: int = 65_536,
         output_language: str = "Russian",
+        reasoning_effort: str | None = None,
+        temperature: float | None = None,
     ):
         if max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
@@ -239,6 +258,8 @@ class EditorialWriter:
         self.logger = logger
         self.max_output_tokens = max_output_tokens
         self.output_language = output_language
+        self.reasoning_effort = reasoning_effort
+        self.temperature = temperature
 
     def build_prompt(
         self,
@@ -256,10 +277,29 @@ Combine, reorder, compress and connect their material naturally into a cohesive 
 You may synthesize an editorial angle supported by several messages, but may not create a
 new independently verifiable fact absent from the Story Cards and referenced source material.
 Preserve attribution, uncertainty, contradiction, modality and source roles. Do not emit
-internal identifiers, source refs, Markdown or commentary. Return strict JSON only with
-headline, lead, paragraphs, and sections. When structuring into chapters/sections, leave
-top-level paragraphs as empty [] to maintain a single canonical body. Use sections only
-when real material supports them (usually 3–5 thematic chapters). Usually write 8–12 substantive paragraphs.
+internal identifiers, source refs, Markdown or commentary.
+
+Return strict JSON only matching this canonical shape:
+{{
+  "headline": "...",
+  "lead": "...",
+  "paragraphs": [],
+  "sections": [
+    {{
+      "heading": "...",
+      "paragraphs": [
+        "First substantive body paragraph for this section...",
+        "Second substantive body paragraph for this section..."
+      ]
+    }}
+  ]
+}}
+
+CRITICAL STRUCTURAL RULES:
+1. Every section in "sections" MUST contain non-empty body paragraphs in its "paragraphs" array. Never return empty "paragraphs": [].
+2. When structuring into chapters/sections (usually 3–5 thematic chapters), place all substantive body paragraphs inside their respective section "paragraphs" arrays, and keep top-level "paragraphs" as [].
+3. If writing a short single-topic brief without chapters, place all body paragraphs in top-level "paragraphs" and leave "sections" as [].
+4. Usually write 8–12 substantive paragraphs across the entire article.
 
 Source attribution and collection mechanics:
 Do NOT reveal internal collection mechanics to the reader. Avoid phrases like 'в чате', 'участники чата',
@@ -396,8 +436,9 @@ targets, not validation limits; never pad length.
                 {"role": "user", "content": user},
             ],
             model=self.model,
-            temperature=0.7,
+            temperature=self.temperature,
             max_tokens=self.max_output_tokens,
+            reasoning_effort=self.reasoning_effort,
             response_format={"type": "json_object"},
         )
         draft = ArticleDraft.from_json(response)

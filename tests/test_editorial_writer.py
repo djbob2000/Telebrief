@@ -647,3 +647,51 @@ def test_writer_prompt_contains_community_mood_and_coping_guidelines(mock_logger
     assert "winter coping" in system_prompt.lower() or "stove heating" in system_prompt.lower()
     assert "80% сбегут" in system_prompt
     assert "pseudo-statistics" in system_prompt.lower()
+
+
+@pytest.mark.unit
+def test_article_draft_rejects_empty_sections_and_empty_paragraphs():
+    with pytest.raises(ValueError, match="at least one body paragraph"):
+        ArticleDraft.from_dict(
+            {
+                "headline": "Заголовок",
+                "lead": "Лид",
+                "paragraphs": [],
+                "sections": [],
+            }
+        )
+
+
+@pytest.mark.unit
+def test_article_draft_rejects_sections_with_empty_paragraphs():
+    with pytest.raises(ValueError, match="at least one non-empty string"):
+        ArticleDraft.from_dict(
+            {
+                "headline": "Заголовок",
+                "lead": "Лид",
+                "paragraphs": [],
+                "sections": [
+                    {"heading": "Глава 1", "paragraphs": []},
+                    {"heading": "Глава 2", "paragraphs": []},
+                ],
+            }
+        )
+
+
+@pytest.mark.unit
+def test_writer_prompt_contains_explicit_json_schema_and_section_rules(mock_logger):
+    writer = EditorialWriter(
+        MagicMock(),
+        "model",
+        "skill",
+        mock_logger,
+        output_language="Russian",
+        reasoning_effort="medium",
+    )
+
+    system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
+
+    assert '"sections": [' in system_prompt
+    assert "CRITICAL STRUCTURAL RULES:" in system_prompt
+    assert "Never return empty" in system_prompt
+    assert writer.reasoning_effort == "medium"

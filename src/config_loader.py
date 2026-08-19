@@ -107,6 +107,7 @@ class ArticleConfig:
     telegraph_access_token: str | None = None
     save_debug_artifacts: bool = False
     debug_artifact_dir: str = "data/debug/editorial"
+    temperature: float | None = None
 
 
 @dataclass
@@ -443,6 +444,15 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
     if not isinstance(debug_artifact_dir, str) or not debug_artifact_dir.strip():
         raise ValueError("settings.article.debug_artifact_dir must be a non-empty string")
 
+    raw_temp = raw.get("temperature")
+    article_temp: float | None = None
+    if raw_temp is not None:
+        if isinstance(raw_temp, bool) or not isinstance(raw_temp, (int, float)):
+            raise ValueError("settings.article.temperature must be a float or null")
+        article_temp = float(raw_temp)
+        if article_temp < 0.0 or article_temp > 2.0:
+            raise ValueError("settings.article.temperature must be between 0.0 and 2.0")
+
     return ArticleConfig(
         enabled=enabled,
         schedule_time=schedule_time.strip(),
@@ -462,6 +472,7 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
         telegraph_access_token=token.strip() if token else None,
         save_debug_artifacts=save_debug_artifacts,
         debug_artifact_dir=debug_artifact_dir.strip(),
+        temperature=article_temp,
     )
 
 

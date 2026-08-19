@@ -160,6 +160,8 @@ class LightFactChecker:
         max_output_tokens: int = 65_536,
         repair_max_output_tokens: int | None = None,
         output_language: str = "Russian",
+        reasoning_effort: str | None = None,
+        temperature: float | None = None,
     ):
         if max_output_tokens <= 0:
             raise ValueError("max_output_tokens must be positive")
@@ -174,6 +176,8 @@ class LightFactChecker:
             repair_max_output_tokens if repair_max_output_tokens is not None else max_output_tokens
         )
         self.output_language = output_language
+        self.reasoning_effort = reasoning_effort
+        self.temperature = temperature
         self.last_raw_response: str | None = None
         self.last_stage: str | None = None
         self.last_reason: str | None = None
@@ -343,8 +347,9 @@ class LightFactChecker:
         response = await self.provider.chat_completion(
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
             model=self.model,
-            temperature=0.1,
+            temperature=self.temperature,
             max_tokens=self.max_output_tokens,
+            reasoning_effort=self.reasoning_effort,
             response_format={"type": "json_object"},
         )
         self.last_raw_response = response
@@ -470,8 +475,9 @@ class LightFactChecker:
                     {"role": "user", "content": prompt},
                 ],
                 model=self.model,
-                temperature=0.1,
+                temperature=self.temperature,
                 max_tokens=self.repair_max_output_tokens,
+                reasoning_effort=self.reasoning_effort,
                 response_format={"type": "json_object"},
             )
             payload = json.loads(response.strip())

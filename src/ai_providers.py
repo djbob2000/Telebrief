@@ -167,8 +167,8 @@ class AIProvider(ABC):
         self,
         messages: List[Dict[str, str]],
         model: str,
-        temperature: float,
-        max_tokens: int,
+        temperature: float | None = None,
+        max_tokens: int = 4096,
         reasoning_effort: str | None = None,
         thinking: bool | None = None,
         response_format: Dict[str, Any] | None = None,
@@ -179,7 +179,7 @@ class AIProvider(ABC):
         Args:
             messages: List of message dicts with 'role' and 'content'
             model: Model name
-            temperature: Sampling temperature
+            temperature: Optional sampling temperature (None uses model/provider defaults)
             max_tokens: Maximum tokens in response
             reasoning_effort: Optional reasoning effort hint passed to the API when not None.
                 Supported by some providers (e.g. OpenAI). Ignored by others.
@@ -208,8 +208,8 @@ class ProviderCascade(AIProvider):
         self,
         messages: List[Dict[str, str]],
         model: str,
-        temperature: float,
-        max_tokens: int,
+        temperature: float | None = None,
+        max_tokens: int = 4096,
         reasoning_effort: str | None = None,
         thinking: bool | None = None,
         response_format: Dict[str, Any] | None = None,
@@ -331,8 +331,8 @@ class OpenAIProvider(AIProvider):
         self,
         messages: List[Dict[str, str]],
         model: str,
-        temperature: float,
-        max_tokens: int,
+        temperature: float | None = None,
+        max_tokens: int = 4096,
         reasoning_effort: str | None = None,
         thinking: bool | None = None,
         response_format: Dict[str, Any] | None = None,
@@ -341,9 +341,10 @@ class OpenAIProvider(AIProvider):
         create_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
             ("max_tokens" if is_deepseek else "max_completion_tokens"): max_tokens,
         }
+        if temperature is not None:
+            create_kwargs["temperature"] = temperature
         if reasoning_effort is not None:
             create_kwargs["reasoning_effort"] = reasoning_effort
         if is_deepseek and thinking is not None:
@@ -411,8 +412,8 @@ class GoogleProvider(AIProvider):
         self,
         messages: List[Dict[str, str]],
         model: str,
-        temperature: float,  # noqa: ARG002 — Gemini 3 uses model defaults
-        max_tokens: int,
+        temperature: float | None = None,  # noqa: ARG002 — Gemini 3 uses model defaults
+        max_tokens: int = 4096,
         reasoning_effort: str | None = None,
         thinking: bool | None = None,  # noqa: ARG002 — accepted, reasoning_effort used for Gemini
         response_format: Dict[str, Any] | None = None,
@@ -452,21 +453,21 @@ class OllamaProvider(AIProvider):
         self,
         messages: List[Dict[str, str]],
         model: str,
-        temperature: float,
-        max_tokens: int,
+        temperature: float | None = None,
+        max_tokens: int = 4096,
         reasoning_effort: str | None = None,  # noqa: ARG002 — accepted, not used by Ollama
         thinking: bool | None = None,  # noqa: ARG002 — accepted, not used by Ollama
         response_format: (Dict[str, Any] | None) = None,  # noqa: ARG002 — accepted, not used by Ollama
     ) -> str:
         url = f"{self.base_url}/api/chat"
+        options: Dict[str, Any] = {"num_predict": max_tokens}
+        if temperature is not None:
+            options["temperature"] = temperature
         payload: Dict[str, Any] = {
             "model": model,
             "messages": messages,
             "stream": False,
-            "options": {
-                "temperature": temperature,
-                "num_predict": max_tokens,
-            },
+            "options": options,
         }
 
         self.logger.debug(
@@ -488,7 +489,7 @@ class OllamaProvider(AIProvider):
                     resp.content_length,
                 )
 
-        resp_model = data.get("model", "unknown")
+        resp_model = data.get("model", model)
         eval_count = data.get("eval_count")
         prompt_eval_count = data.get("prompt_eval_count")
         done_reason = data.get("done_reason")
@@ -536,8 +537,8 @@ class AnthropicProvider(AIProvider):
         self,
         messages: List[Dict[str, str]],
         model: str,
-        temperature: float,
-        max_tokens: int,
+        temperature: float | None = None,
+        max_tokens: int = 4096,
         reasoning_effort: str | None = None,  # noqa: ARG002 — accepted, not used by Anthropic
         thinking: bool | None = None,  # noqa: ARG002 — accepted, not used by Anthropic
         response_format: (Dict[str, Any] | None) = None,  # noqa: ARG002 — accepted, not used by Anthropic
@@ -564,7 +565,8 @@ class AnthropicProvider(AIProvider):
         }
         if system_text:
             payload["system"] = system_text
-        payload["temperature"] = temperature
+        if temperature is not None:
+            payload["temperature"] = temperature
 
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
             async with session.post(url, json=payload, headers=headers) as resp:
@@ -692,7 +694,7 @@ def create_provider(  # noqa: C901
         if openrouter_api_key:
             slots.append(
                 (
-                    "openrouter-free",
+                    "openrouter",
                     OpenAIProvider(
                         api_key=openrouter_api_key,
                         logger=logger,
