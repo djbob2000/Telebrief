@@ -52,9 +52,12 @@ def test_article_draft_supports_thin_story_without_h2_sections():
     )
 
     markdown = draft.to_markdown()
+    body_markdown = draft.to_body_markdown()
     units = draft.audit_units()
 
     assert markdown.startswith("# Жители сообщили")
+    assert not body_markdown.startswith("#")
+    assert body_markdown.startswith("В нескольких районах")
     assert "\n\nКоммунальное предприятие" in markdown
     assert set(units) == {"TITLE", "LEAD", "P001"}
     assert units["P001"].path == ("paragraphs", "0")

@@ -149,9 +149,9 @@ class ArticleDraft:
             parts.extend(section.paragraphs)
         return " ".join(p for p in parts if p)
 
-    def to_markdown(self) -> str:
+    def to_markdown(self, include_title: bool = True) -> str:
         clean_headline = self.headline.strip().lstrip("#").strip()
-        blocks = [f"# {clean_headline}", self.lead]
+        blocks: list[str] = [f"# {clean_headline}", self.lead] if include_title else [self.lead]
         if self.sections:
             for section in self.sections:
                 clean_heading = section.heading.strip().lstrip("#").strip()
@@ -160,6 +160,10 @@ class ArticleDraft:
         else:
             blocks.extend(self.paragraphs)
         return "\n\n".join(block.strip() for block in blocks if block.strip())
+
+    def to_body_markdown(self) -> str:
+        """Return the article body (lead and sections) without the top-level headline."""
+        return self.to_markdown(include_title=False)
 
     def audit_units(self) -> dict[str, AuditUnitLocator]:
         units = {

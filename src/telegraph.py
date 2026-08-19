@@ -222,7 +222,17 @@ class TelegraphPublisher:
             Published page URL.
         """
         token = await self.get_or_create_access_token(author_name=author_name)
-        nodes = markdown_to_telegraph_nodes(content_markdown)
+
+        # Remove redundant leading title header in markdown if present, since Telegra.ph
+        # renders `title` natively as the <h1> page header above author and date.
+        cleaned_markdown = content_markdown.strip()
+        lines = cleaned_markdown.splitlines()
+        if lines and lines[0].strip().startswith(("# ", "## ")):
+            header_text = re.sub(r"^#+\s*", "", lines[0].strip()).strip()
+            if header_text.lower() == title.strip().lower() or lines[0].strip().startswith("# "):
+                cleaned_markdown = "\n".join(lines[1:]).strip()
+
+        nodes = markdown_to_telegraph_nodes(cleaned_markdown)
 
         payload: Dict[str, Any] = {
             "access_token": token,

@@ -88,6 +88,13 @@ async def test_telegraph_publisher_create_page_success():
         )
         assert url == "https://telegra.ph/Sample-Article-08-14"
 
+        call_args = mock_post.call_args
+        data = call_args.kwargs.get("data", {})
+        content_nodes = json.loads(data.get("content", "[]"))
+        # Header "# Sample Article" was stripped, only the paragraph remains
+        assert len(content_nodes) == 1
+        assert content_nodes[0] == {"tag": "p", "children": ["Content paragraph."]}
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
