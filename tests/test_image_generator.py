@@ -68,94 +68,10 @@ async def test_generate_prompt_fallback_when_no_provider(mock_config, mock_logge
 
 
 @pytest.mark.asyncio
-async def test_generate_image_tier1_google_success(mock_config, mock_logger, tmp_path):
+async def test_generate_image_primary_openrouter_success(mock_config, mock_logger, tmp_path):
     generator = NewsImageGenerator(mock_config, mock_logger)
-    fake_png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
-    fake_b64 = base64.b64encode(fake_png_bytes).decode("utf-8")
-
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.json.return_value = {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [
-                        {
-                            "inlineData": {
-                                "mimeType": "image/jpeg",
-                                "data": fake_b64,
-                            }
-                        }
-                    ]
-                }
-            }
-        ]
-    }
-
-    with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=mock_resp)):
-        saved_path = await generator.generate_image(
-            prompt="A residential courtyard in Berdyansk",
-            output_dir=tmp_path,
-        )
-
-    assert saved_path is not None
-    assert saved_path.exists()
-    assert saved_path.read_bytes() == fake_png_bytes
-
-
-@pytest.mark.asyncio
-async def test_generate_image_tier2_google_backup_success(mock_config, mock_logger, tmp_path):
-    generator = NewsImageGenerator(mock_config, mock_logger)
-    fake_png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR_TIER2"
-    fake_b64 = base64.b64encode(fake_png_bytes).decode("utf-8")
-
-    fail_resp = MagicMock()
-    fail_resp.status_code = 429
-    fail_resp.text = "Quota exceeded"
-
-    success_resp = MagicMock()
-    success_resp.status_code = 200
-    success_resp.json.return_value = {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [
-                        {
-                            "inlineData": {
-                                "mimeType": "image/jpeg",
-                                "data": fake_b64,
-                            }
-                        }
-                    ]
-                }
-            }
-        ]
-    }
-
-    with patch("httpx.AsyncClient.post", new=AsyncMock(side_effect=[fail_resp, success_resp])):
-        saved_path = await generator.generate_image(
-            prompt="A residential courtyard in Berdyansk",
-            output_dir=tmp_path,
-        )
-
-    assert saved_path is not None
-    assert saved_path.exists()
-    assert saved_path.read_bytes() == fake_png_bytes
-
-
-@pytest.mark.asyncio
-async def test_generate_image_tier3_openrouter_success(mock_config, mock_logger, tmp_path):
-    generator = NewsImageGenerator(mock_config, mock_logger)
-    fake_jpg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF_TIER3"
+    fake_jpg_bytes = b"\xff\xd8\xff\xe0\x00\x10JFIF_OPENROUTER_TIER1"
     fake_b64 = base64.b64encode(fake_jpg_bytes).decode("utf-8")
-
-    fail_google1 = MagicMock()
-    fail_google1.status_code = 429
-    fail_google1.text = "Quota exceeded 1"
-
-    fail_google2 = MagicMock()
-    fail_google2.status_code = 429
-    fail_google2.text = "Quota exceeded 2"
 
     openrouter_resp = MagicMock()
     openrouter_resp.status_code = 200
@@ -176,10 +92,7 @@ async def test_generate_image_tier3_openrouter_success(mock_config, mock_logger,
         ]
     }
 
-    with patch(
-        "httpx.AsyncClient.post",
-        new=AsyncMock(side_effect=[fail_google1, fail_google2, openrouter_resp]),
-    ):
+    with patch("httpx.AsyncClient.post", new=AsyncMock(return_value=openrouter_resp)):
         saved_path = await generator.generate_image(
             prompt="A residential courtyard in Berdyansk",
             output_dir=tmp_path,
@@ -188,6 +101,96 @@ async def test_generate_image_tier3_openrouter_success(mock_config, mock_logger,
     assert saved_path is not None
     assert saved_path.exists()
     assert saved_path.read_bytes() == fake_jpg_bytes
+
+
+@pytest.mark.asyncio
+async def test_generate_image_fallback_to_google_key1_success(mock_config, mock_logger, tmp_path):
+    generator = NewsImageGenerator(mock_config, mock_logger)
+    fake_png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR"
+    fake_b64 = base64.b64encode(fake_png_bytes).decode("utf-8")
+
+    fail_openrouter = MagicMock()
+    fail_openrouter.status_code = 500
+    fail_openrouter.text = "Internal Server Error"
+
+    google_resp = MagicMock()
+    google_resp.status_code = 200
+    google_resp.json.return_value = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "image/jpeg",
+                                "data": fake_b64,
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    with patch(
+        "httpx.AsyncClient.post",
+        new=AsyncMock(side_effect=[fail_openrouter, google_resp]),
+    ):
+        saved_path = await generator.generate_image(
+            prompt="A residential courtyard in Berdyansk",
+            output_dir=tmp_path,
+        )
+
+    assert saved_path is not None
+    assert saved_path.exists()
+    assert saved_path.read_bytes() == fake_png_bytes
+
+
+@pytest.mark.asyncio
+async def test_generate_image_fallback_to_google_key2_success(mock_config, mock_logger, tmp_path):
+    generator = NewsImageGenerator(mock_config, mock_logger)
+    fake_png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR_TIER2"
+    fake_b64 = base64.b64encode(fake_png_bytes).decode("utf-8")
+
+    fail_openrouter = MagicMock()
+    fail_openrouter.status_code = 500
+    fail_openrouter.text = "Internal Server Error"
+
+    fail_google1 = MagicMock()
+    fail_google1.status_code = 429
+    fail_google1.text = "Quota exceeded"
+
+    success_google2 = MagicMock()
+    success_google2.status_code = 200
+    success_google2.json.return_value = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "image/jpeg",
+                                "data": fake_b64,
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
+
+    with patch(
+        "httpx.AsyncClient.post",
+        new=AsyncMock(side_effect=[fail_openrouter, fail_google1, success_google2]),
+    ):
+        saved_path = await generator.generate_image(
+            prompt="A residential courtyard in Berdyansk",
+            output_dir=tmp_path,
+        )
+
+    assert saved_path is not None
+    assert saved_path.exists()
+    assert saved_path.read_bytes() == fake_png_bytes
 
 
 @pytest.mark.asyncio
@@ -281,6 +284,7 @@ async def test_generate_prompt_fallback_with_reference_image(mock_config, mock_l
 
 @pytest.mark.asyncio
 async def test_generate_image_with_reference_image_google(mock_config, mock_logger, tmp_path):
+    mock_config.openrouter_api_key = ""
     generator = NewsImageGenerator(mock_config, mock_logger)
     fake_png_bytes = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR_MULTIMODAL"
     fake_b64 = base64.b64encode(fake_png_bytes).decode("utf-8")
@@ -333,14 +337,6 @@ async def test_generate_image_with_reference_image_openrouter(mock_config, mock_
     fake_b64 = base64.b64encode(fake_jpg_bytes).decode("utf-8")
     ref_bytes = b"original_raw_photo_bytes"
 
-    fail_google1 = MagicMock()
-    fail_google1.status_code = 429
-    fail_google1.text = "Quota exceeded 1"
-
-    fail_google2 = MagicMock()
-    fail_google2.status_code = 429
-    fail_google2.text = "Quota exceeded 2"
-
     openrouter_resp = MagicMock()
     openrouter_resp.status_code = 200
     openrouter_resp.json.return_value = {
@@ -362,7 +358,7 @@ async def test_generate_image_with_reference_image_openrouter(mock_config, mock_
 
     with patch(
         "httpx.AsyncClient.post",
-        new=AsyncMock(side_effect=[fail_google1, fail_google2, openrouter_resp]),
+        new=AsyncMock(return_value=openrouter_resp),
     ) as mock_post:
         saved_path = await generator.generate_image(
             prompt="Redraw this news scene cleanly",
@@ -374,8 +370,8 @@ async def test_generate_image_with_reference_image_openrouter(mock_config, mock_
         assert saved_path.exists()
         assert saved_path.read_bytes() == fake_jpg_bytes
 
-        # Check third call payload (OpenRouter)
-        or_call_kwargs = mock_post.call_args_list[2][1]
+        # Check call payload (OpenRouter)
+        or_call_kwargs = mock_post.call_args_list[0][1]
         or_payload = or_call_kwargs["json"]
         msg_content = or_payload["messages"][0]["content"]
         assert isinstance(msg_content, list)

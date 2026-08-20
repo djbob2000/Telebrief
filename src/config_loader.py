@@ -163,6 +163,7 @@ class Config:
     openrouter_image_model: str = "google/gemini-3.1-flash-lite-image"
     openai_base_url: str = ""
     anthropic_api_key: str = ""
+    google_api_keys: list[str] = field(default_factory=list)
     storage: StorageConfig = field(default_factory=StorageConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
@@ -178,6 +179,19 @@ class Config:
     @property
     def gemini_api_key_3(self) -> str:
         return self.google_api_key_3
+
+    @property
+    def gemini_api_key_4(self) -> str:
+        return self.google_api_keys[3] if len(self.google_api_keys) > 3 else ""
+
+    @property
+    def gemini_api_key_5(self) -> str:
+        return self.google_api_keys[4] if len(self.google_api_keys) > 4 else ""
+
+    @property
+    def google_api_backup_keys(self) -> list[str]:
+        """Return all backup Gemini keys (from index 1 onwards)."""
+        return self.google_api_keys[1:] if len(self.google_api_keys) > 1 else []
 
 
 SUPPORTED_LANGUAGES = ("English", "Russian", "Spanish", "German", "French")
@@ -787,9 +801,22 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
     openai_api_key = os.getenv("OPENAI_API_KEY", "")
     openai_base_url = os.getenv("OPENAI_BASE_URL", "")
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    google_api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+    # Collect all Gemini/Google API keys dynamically (GEMINI_API_KEY, GEMINI_API_KEY_2..N)
+    google_api_keys: list[str] = []
+    primary_google_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+    if primary_google_key:
+        google_api_keys.append(primary_google_key)
+
+    # Check numbered keys 2..20
+    for i in range(2, 21):
+        k = os.getenv(f"GEMINI_API_KEY_{i}") or os.getenv(f"GOOGLE_API_KEY_{i}", "")
+        if k and k not in google_api_keys:
+            google_api_keys.append(k)
+
+    google_api_key = primary_google_key
     google_api_key_2 = os.getenv("GEMINI_API_KEY_2") or os.getenv("GOOGLE_API_KEY_2", "")
     google_api_key_3 = os.getenv("GEMINI_API_KEY_3") or os.getenv("GOOGLE_API_KEY_3", "")
+
     openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
     openrouter_base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
     openrouter_model = os.getenv("OPENROUTER_MODEL") or "openrouter/free"
@@ -834,6 +861,7 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
         "google_api_key": google_api_key,
         "google_api_key_2": google_api_key_2,
         "google_api_key_3": google_api_key_3,
+        "google_api_keys": google_api_keys,
         "openrouter_api_key": openrouter_api_key,
         "openrouter_base_url": openrouter_base_url,
         "openrouter_model": openrouter_model,

@@ -373,7 +373,7 @@ class DigestGrouper:
             openai_base_url=config.openai_base_url,
             anthropic_api_key=config.anthropic_api_key,
             google_api_key=config.google_api_key,
-            google_api_keys=(config.google_api_key_2, config.google_api_key_3),
+            google_api_keys=config.google_api_backup_keys,
             openrouter_api_key=config.openrouter_api_key,
             openrouter_base_url=config.openrouter_base_url,
             openrouter_model=config.openrouter_model,

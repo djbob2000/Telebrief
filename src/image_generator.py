@@ -97,8 +97,10 @@ def _extract_openrouter_image_bytes(data: dict) -> Optional[bytes]:
                 return base64.b64decode(url_str)
         elif isinstance(img_item, str):
             if "," in img_item:
-                img_item = img_item.split(",", 1)[1]
-            return base64.b64decode(img_item)
+                url_str = img_item.split(",", 1)[1]
+            else:
+                url_str = img_item
+            return base64.b64decode(url_str)
     content = msg.get("content")
     if isinstance(content, str) and content.startswith("data:image/"):
         b64_str = content.split(",", 1)[1]
@@ -107,24 +109,31 @@ def _extract_openrouter_image_bytes(data: dict) -> Optional[bytes]:
 
 
 class NewsImageGenerator:
-    """Generates editorial illustrations for news articles using a 3-tier cascade."""
+    """Generates editorial illustrations for news articles using OpenRouter direct routing with failovers."""
 
     def __init__(self, config: Config, logger: logging.Logger):
         self.config = config
         self.logger = logger
 
-        # Gather all configured Gemini API keys (Tier 1, Tier 2, Tier 3)
-        self.gemini_keys: list[str] = [
-            k
-            for k in [
-                getattr(config, "google_api_key", ""),
-                getattr(config, "google_api_key_2", ""),
-                getattr(config, "google_api_key_3", ""),
-            ]
-            if k
-        ]
+        # Gather all configured Gemini API keys (Tier 1..N)
+        keys: list[str] = []
+        configured_keys = getattr(config, "google_api_keys", None)
+        if isinstance(configured_keys, (list, tuple)):
+            keys.extend(k for k in configured_keys if isinstance(k, str) and k)
+        if not keys:
+            for attr in (
+                "google_api_key",
+                "google_api_key_2",
+                "google_api_key_3",
+                "google_api_key_4",
+                "google_api_key_5",
+            ):
+                val = getattr(config, attr, None)
+                if isinstance(val, str) and val and val not in keys:
+                    keys.append(val)
+        self.gemini_keys: list[str] = keys
 
-        # OpenRouter fallback settings
+        # OpenRouter settings
         self.openrouter_api_key = getattr(config, "openrouter_api_key", "")
         self.openrouter_base_url = (
             getattr(config, "openrouter_base_url", "") or "https://openrouter.ai/api/v1"
@@ -134,7 +143,7 @@ class NewsImageGenerator:
             getattr(config, "openrouter_image_model", "") or "google/gemini-3.1-flash-lite-image"
         )
 
-        # Build prompt generation providers cascade
+        # Build prompt generation providers cascade with round-robin and quota cooldown
         self.prompt_providers: list[tuple[str, GoogleProvider | OpenAIProvider, str]] = []
         for idx, key in enumerate(self.gemini_keys, start=1):
             self.prompt_providers.append(
@@ -189,6 +198,7 @@ class NewsImageGenerator:
                 f"Сформируй один связный детальный промпт на английском языке для генерации фотореалистичной иллюстрации в виде единого кадра 16:9 (single continuous photograph, no collage, no split screen) без текста и без плакатов."
             )
 
+        # Try prompt providers cascade
         for label, provider, model in self.prompt_providers:
             try:
                 response = await provider.chat_completion(
@@ -230,7 +240,7 @@ class NewsImageGenerator:
         model_name: str = "gemini-3.1-flash-lite-image",
         reference_image_bytes: Optional[bytes] = None,
     ) -> Optional[Path]:
-        """Generate image using 3-tier cascade (Google Key 1 -> Google Key 2 -> OpenRouter) and save to disk."""
+        """Generate image using OpenRouter direct routing with Google key failover and save to disk."""
         if output_dir is None:
             base_dir = getattr(self.config.settings.article, "fallback_save_dir", "data/articles")
             output_dir = Path(base_dir) / "images"
@@ -241,7 +251,68 @@ class NewsImageGenerator:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         target_file = output_dir / f"editorial_{timestamp}.jpg"
 
-        # Tier 1 & 2: Try direct Google Gemini API keys
+        # Tier 1: Direct OpenRouter Image Generation (Primary)
+        if self.openrouter_api_key:
+            openrouter_url = f"{self.openrouter_base_url.rstrip('/')}/chat/completions"
+            msg_content: str | list[dict[str, Any]]
+            if reference_image_bytes:
+                b64_ref = base64.b64encode(reference_image_bytes).decode("utf-8")
+                msg_content = [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/jpeg;base64,{b64_ref}"},
+                    },
+                    {"type": "text", "text": prompt},
+                ]
+            else:
+                msg_content = prompt
+
+            openrouter_payload = {
+                "model": self.openrouter_image_model,
+                "messages": [{"role": "user", "content": msg_content}],
+                "modalities": ["image", "text"],
+                "max_tokens": 8192,
+            }
+            headers = {
+                "Authorization": f"Bearer {self.openrouter_api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://github.com/telebrief",
+                "X-Title": "Telebrief",
+            }
+            try:
+                self.logger.info(
+                    "Trying OpenRouter image slot with model %s", self.openrouter_image_model
+                )
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.post(
+                        openrouter_url, json=openrouter_payload, headers=headers
+                    )
+                    if resp.status_code != 200:
+                        self.logger.warning(
+                            "OpenRouter image generation returned HTTP %s: %s; trying fallback slots",
+                            resp.status_code,
+                            resp.text[:200],
+                        )
+                    else:
+                        openrouter_bytes = _extract_openrouter_image_bytes(resp.json())
+                        if openrouter_bytes:
+                            target_file.write_bytes(openrouter_bytes)
+                            self.logger.info(
+                                "Saved generated editorial image (via OpenRouter %s) to %s",
+                                self.openrouter_image_model,
+                                target_file,
+                            )
+                            return target_file
+                        else:
+                            self.logger.warning(
+                                "OpenRouter response did not contain extractable image bytes"
+                            )
+            except Exception as exc:
+                self.logger.warning(
+                    "OpenRouter image generation exception: %s; trying fallback slots", exc
+                )
+
+        # Tier 2: Direct Google Gemini API keys (Fallback if OpenRouter unconfigured/failed)
         for idx, key in enumerate(self.gemini_keys, start=1):
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
             parts: list[dict[str, Any]] = []
@@ -295,65 +366,6 @@ class NewsImageGenerator:
                 self.logger.warning(
                     "Google image slot %d exception: %s; trying next slot", idx, exc
                 )
-
-        # Tier 3: OpenRouter Image Generation Fallback
-        if self.openrouter_api_key:
-            openrouter_url = f"{self.openrouter_base_url.rstrip('/')}/chat/completions"
-            msg_content: str | list[dict[str, Any]]
-            if reference_image_bytes:
-                b64_ref = base64.b64encode(reference_image_bytes).decode("utf-8")
-                msg_content = [
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:image/jpeg;base64,{b64_ref}"},
-                    },
-                    {"type": "text", "text": prompt},
-                ]
-            else:
-                msg_content = prompt
-
-            openrouter_payload = {
-                "model": self.openrouter_image_model,
-                "messages": [{"role": "user", "content": msg_content}],
-                "modalities": ["image", "text"],
-                "max_tokens": 8192,
-            }
-            headers = {
-                "Authorization": f"Bearer {self.openrouter_api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/telebrief",
-                "X-Title": "Telebrief",
-            }
-            try:
-                self.logger.info(
-                    "Trying OpenRouter image slot with model %s", self.openrouter_image_model
-                )
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    resp = await client.post(
-                        openrouter_url, json=openrouter_payload, headers=headers
-                    )
-                    if resp.status_code != 200:
-                        self.logger.warning(
-                            "OpenRouter image generation returned HTTP %s: %s",
-                            resp.status_code,
-                            resp.text[:200],
-                        )
-                    else:
-                        openrouter_bytes = _extract_openrouter_image_bytes(resp.json())
-                        if openrouter_bytes:
-                            target_file.write_bytes(openrouter_bytes)
-                            self.logger.info(
-                                "Saved generated editorial image (via OpenRouter %s) to %s",
-                                self.openrouter_image_model,
-                                target_file,
-                            )
-                            return target_file
-                        else:
-                            self.logger.warning(
-                                "OpenRouter response did not contain extractable image bytes"
-                            )
-            except Exception as exc:
-                self.logger.warning("OpenRouter image generation exception: %s", exc)
 
         self.logger.warning("All image generation slots exhausted; returning None")
         return None

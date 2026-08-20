@@ -1567,3 +1567,78 @@ async def test_provider_cascade_populates_slot_failures(mock_logger):
     assert err.slot_failures[1].exception_type == "RuntimeError"
     assert "request timed out" not in err.diagnostic_summary()
     assert "maximum context length" not in err.diagnostic_summary()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_round_robin_rotation(mock_logger):
+    """Multiple requests rotate the starting slot across primary providers."""
+    from src.ai_providers import ProviderCascade
+
+    slot1 = MagicMock()
+    slot1.chat_completion = AsyncMock(return_value="resp-slot1")
+    slot2 = MagicMock()
+    slot2.chat_completion = AsyncMock(return_value="resp-slot2")
+    slot3 = MagicMock()
+    slot3.chat_completion = AsyncMock(return_value="resp-slot3")
+
+    cascade = ProviderCascade(
+        [("google-1", slot1), ("google-2", slot2), ("google-3", slot3)],
+        mock_logger,
+    )
+
+    # Call 1 -> starts at google-1
+    res1 = await cascade.chat_completion(messages=[], model="gemini-3.7-flash")
+    assert res1 == "resp-slot1"
+    assert slot1.chat_completion.call_count == 1
+    assert slot2.chat_completion.call_count == 0
+
+    # Call 2 -> starts at google-2
+    res2 = await cascade.chat_completion(messages=[], model="gemini-3.7-flash")
+    assert res2 == "resp-slot2"
+    assert slot1.chat_completion.call_count == 1
+    assert slot2.chat_completion.call_count == 1
+
+    # Call 3 -> starts at google-3
+    res3 = await cascade.chat_completion(messages=[], model="gemini-3.7-flash")
+    assert res3 == "resp-slot3"
+    assert slot3.chat_completion.call_count == 1
+
+    # Call 4 -> wraps around to google-1
+    res4 = await cascade.chat_completion(messages=[], model="gemini-3.7-flash")
+    assert res4 == "resp-slot1"
+    assert slot1.chat_completion.call_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_cooldown_skips_exhausted_slot(mock_logger):
+    """Slot failing with quota error is put on cooldown and skipped on next calls."""
+    from src.ai_providers import ProviderCascade
+
+    slot1 = MagicMock()
+    # First call: quota error 429
+    slot1.chat_completion = AsyncMock(
+        side_effect=RuntimeError("429 Resource Exhausted: Quota exceeded")
+    )
+    slot2 = MagicMock()
+    slot2.chat_completion = AsyncMock(return_value="backup-ok")
+
+    cascade = ProviderCascade(
+        [("google-1", slot1), ("google-2", slot2)],
+        mock_logger,
+        cooldown_seconds=300.0,
+    )
+
+    # Request 1: slot 1 fails with quota, slot 2 succeeds
+    r1 = await cascade.chat_completion(messages=[], model="gemini-3.7-flash")
+    assert r1 == "backup-ok"
+    assert slot1.chat_completion.call_count == 1
+    assert slot2.chat_completion.call_count == 1
+
+    # Request 2: slot 1 is in active cooldown, skipped directly!
+    r2 = await cascade.chat_completion(messages=[], model="gemini-3.7-flash")
+    assert r2 == "backup-ok"
+    # slot1 should NOT have been called again
+    assert slot1.chat_completion.call_count == 1
+    assert slot2.chat_completion.call_count == 2

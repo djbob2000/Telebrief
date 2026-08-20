@@ -322,6 +322,36 @@ settings:
 
 
 @pytest.mark.unit
+def test_load_config_reads_gemini_keys_1_to_5(tmp_path, mock_env_vars, monkeypatch):
+    """Dynamic loading supports up to N GEMINI_API_KEY_N variables."""
+    monkeypatch.setenv("GEMINI_API_KEY", "key-1")
+    monkeypatch.setenv("GEMINI_API_KEY_2", "key-2")
+    monkeypatch.setenv("GEMINI_API_KEY_3", "key-3")
+    monkeypatch.setenv("GEMINI_API_KEY_4", "key-4")
+    monkeypatch.setenv("GEMINI_API_KEY_5", "key-5")
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@test_channel"
+    name: "Test Channel"
+settings:
+  target_user_id: 123456789
+  ai_provider: "google"
+"""
+    )
+
+    config = load_config(str(config_file))
+    assert config.gemini_api_key == "key-1"
+    assert config.gemini_api_key_2 == "key-2"
+    assert config.gemini_api_key_3 == "key-3"
+    assert config.gemini_api_key_4 == "key-4"
+    assert config.gemini_api_key_5 == "key-5"
+    assert config.google_api_keys == ["key-1", "key-2", "key-3", "key-4", "key-5"]
+    assert config.google_api_backup_keys == ["key-2", "key-3", "key-4", "key-5"]
+
+
+@pytest.mark.unit
 def test_load_config_google_provider_requires_gemini_key(tmp_path, mock_env_vars, monkeypatch):
     """Google provider reports a missing Gemini API key clearly."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
