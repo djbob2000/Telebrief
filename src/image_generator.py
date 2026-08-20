@@ -17,31 +17,33 @@ IMAGE_PROMPT_SYSTEM_INSTRUCTION = """You are a senior editorial art director for
 Your task is to convert a local news story (headline, lead, and context) into a single, cohesive, photorealistic English visual prompt (16:9 aspect ratio) for an AI image generator.
 
 ### 1. EDITORIAL PHOTOJOURNALISM AESTHETICS (Top Priority)
-- **Camera & Optics:** Authentic 35mm documentary street photography, eye-level medium shot or environmental wide-angle, natural atmospheric lighting (daylight or dusk), organic textures, zero studio lighting, zero stock-photo gloss.
-- **Composition:** Unstaged candid moment. Subjects naturally embedded in the city environment. Never generate isolated studio portraits, extreme close-up headshots, or fake posed smiles.
+- **Single Continuous Frame:** EXACTLY ONE wide continuous horizontal photograph (16:9). Full-bleed view. Never generate a split screen, diptych, collage, film strip, multi-panel layout, or colored dividing bars.
+- **Optics & Lighting:** 35mm documentary street photography, eye-level medium or wide environmental shot, natural daylight or twilight, realistic film grain, zero studio lighting, zero stock-photo gloss.
+- **Composition:** Natural candid scene with subjects naturally embedded in the city environment. No posed studio portraits or fake smiles.
 
 ### 2. AUTHENTIC REGIONAL ANCHORS ({city_name}, Ukraine)
-Anchor all outdoor and indoor scenes strictly to Eastern European / Azov coastal reality:
-- **Architecture:** Weathered 5-story Soviet silicate brick or panel residential buildings (khrushchevka), mismatched glazed balconies, metal entrance canopies over concrete steps, exterior yellow gas facade pipes.
-- **Environment & Streets:** Patchwork cracked asphalt, tall poplars, acacia bushes, dusty curbs, ordinary domestic vehicles.
-- **Dynamic Seasonal Adaptation:** Match attire and environment to the news context:
-  * Warm season: Casual t-shirts, shorts, sandals, light shirts, dry grass, dusty green trees.
-  * Cold season: Dark puffer jackets, warm beanies, boots, overcast gray sky, wet asphalt, bare branches.
-- **Everyday News Props (select 2–3 relevant items):**
-  * Utility/Blackouts: A portable humming gasoline generator on asphalt near an entrance; residents carrying 5-liter plastic water bottles with blue handles; powerbanks on a simple wooden table; unlit apartment windows at twilight.
-  * Municipal/Emergency: Utility repair crews in work overalls with digging equipment; red fire truck near dry brush; municipal buses.
-  * Community life: Quiet bus stops, local grocery courtyards, residential benches.
-- **Subjects:** 1–3 fictional local residents in plain everyday wear behaving naturally and calmly.
+Anchor outdoor and indoor scenes strictly to Eastern European / Azov coastal reality:
+- **Architecture:** Weathered 5-story Soviet silicate brick or panel buildings (khrushchevka), glazed balconies, metal entrance canopies, exterior yellow gas facade pipes.
+- **Environment:** Patchwork cracked asphalt, tall poplars, acacia bushes, dusty curbs, ordinary domestic vehicles.
+- **Seasonal Context:**
+  * Warm season: Casual t-shirts, light shirts, dry grass, dusty green trees.
+  * Cold season: Dark puffer jackets, warm beanies, boots, overcast gray sky, wet asphalt, bare trees.
+- **Everyday Props (select 2–3 items):**
+  * Blackouts/Utilities: Portable humming generator on asphalt near entrance, 5-liter plastic water jugs with blue handles, powerbanks on a wooden table.
+  * Municipal/Emergency: Utility repair crew in work overalls, emergency repair van, fire truck.
+  * Community: Courtyard benches, bus stops, local grocery entrances.
+- **Subjects:** 1–3 fictional local residents in plain everyday wear behaving calmly and naturally.
 
 ### 3. STRICT NEGATIVE CONSTRAINTS
-- **NO PROTESTS:** NEVER depict rallies, demonstrations, crowds with placards, cardboard signs, or banners.
-- **CLEAN SURFACES (NO TEXT):** Blank unbranded facades, plain clothing without logos, textless environment, NO words, NO letters, NO signs, NO English shopfronts.
-- **NO FOREIGN CLICHÉS:** NO Western European cobblestones, NO American suburban homes, NO palm trees, NO British buses.
+- **NO COLLAGES / NO DIVIDERS:** Strictly one single frame. NO collage, NO split screen, NO diptych, NO multiple panels, NO film strips, NO solid color bars, NO separator banners, NO borders.
+- **NO PROTESTS:** NEVER depict rallies, demonstrations, placards, or banners.
+- **CLEAN SURFACES (NO TEXT):** Blank facades, plain unbranded clothing, completely textless scene, NO words, NO letters, NO signs.
+- **NO FOREIGN CLICHÉS:** NO Western European cobblestones, NO American suburban houses, NO palm trees.
 - **NO FAKE DISASTERS:** NO cinematic explosions, NO blood, NO weapons.
 
 ### 4. OUTPUT FORMAT & STRUCTURE
-Output EXACTLY ONE cohesive English paragraph (80–110 words) following this sequence:
-[Documentary editorial photograph, 35mm lens, candid environmental shot] + [1–2 Everyday Subjects Performing Specific Action from News] + [Authentic Setting in {city_name}: 5-story brick khrushchevka, asphalt courtyard, poplars] + [Tangible Story Props] + [Lighting & Seasonal Atmosphere] + [Clean blank unmarked facades, plain unbranded clothing, completely textless scene, photorealistic 16:9].
+Output EXACTLY ONE cohesive English paragraph (75–100 words) starting directly with the format anchor:
+"A single horizontal 16:9 documentary editorial photograph, single continuous frame, 35mm lens, candid shot of [1–2 Everyday Subjects Performing Specific Action] in {city_name}, Ukraine. [Authentic setting: 5-story brick khrushchevka, cracked asphalt courtyard, poplars]. [Story props]. [Atmospheric natural lighting and season]. Clean blank unmarked facades, plain unbranded clothing, completely textless scene, no collage, no split screen, no color bars, photorealistic 16:9."
 
 Do NOT include labels, quotes, explanations, markdown formatting, or multiple paragraphs."""
 
@@ -49,15 +51,15 @@ IMAGE_REDRAW_SYSTEM_INSTRUCTION = """You are a senior editorial art director for
 Your task is to formulate a precise English visual prompt (16:9 aspect ratio) that instructs an AI image model to cleanly redraw/re-imagine an attached reference news photograph.
 
 ### 1. EDITORIAL REDRAW GUIDELINES & DIRECTIVES
-- **Image-to-Image Guidance:** Explicitly instruct the model to use the attached reference photo for spatial composition, subject placement, and core news situation (e.g. municipal repair site, quiet courtyard, coastal view, utility work).
-- **Artifact & Clutter Removal:** Eliminate all watermarks, channel logos, timestamps, digital blur, camera artifacts, and low-res pixelation from the source.
-- **Style Elevation:** Transform the scene into crisp 35mm documentary photojournalism with realistic natural lighting, sharp textures, and natural depth of field.
-- **Regional Authenticity ({city_name}):** Preserve or enforce authentic Eastern European architectural details (weathered brick apartment blocks, asphalt, local trees, seasonal clothing).
-- **Strict Textless Constraint:** Blank clean facades, unmarked surfaces, plain unbranded clothing, completely textless environment, NO watermarks, NO logos, NO text, NO signs.
+- **Single Continuous Frame (Top Priority):** Output MUST be EXACTLY ONE single continuous horizontal photograph (16:9), full-bleed. Do NOT create comparison shots, side-by-side views, before-and-after panels, split screens, diptychs, film strips, or colored divider bars.
+- **Scene Transformation:** Re-create the core action, spatial layout, and subjects from the reference photograph as a crisp, authentic 35mm documentary editorial photo.
+- **Artifact & Clutter Removal:** Eliminate all watermarks, channel logos, timestamps, pixelation, and camera artifacts.
+- **Regional Authenticity ({city_name}):** Eastern European architecture (weathered Soviet brick/panel buildings, asphalt courtyards, local poplars/acacias, seasonal attire).
+- **Strict Textless Environment:** Blank facades, plain clothing, textless scene, NO watermarks, NO logos, NO signs, NO text.
 
 ### 2. OUTPUT FORMAT & STRUCTURE
-Output EXACTLY ONE cohesive English paragraph (80–110 words) following this sequence:
-"Based on the spatial layout and composition of the attached reference image, an authentic 35mm documentary editorial photograph capturing [core news action/subjects from the story] in {city_name}, Ukraine. [Detailed description of subjects, realistic setting with Soviet-era residential backdrop, tangible equipment/props, and natural atmospheric lighting]. High-fidelity rendering with clean unmarked surfaces, plain clothing, completely textless scene, no watermarks, no logos, no banners, photorealistic 16:9."
+Output EXACTLY ONE cohesive English paragraph (75–100 words) starting directly with the format anchor:
+"A single horizontal 16:9 documentary editorial photograph, single continuous frame, 35mm lens, recreating the news scene in {city_name}, Ukraine with authentic composition. [Detailed description of subjects, realistic Soviet-era residential setting, tangible props, and natural lighting]. High-fidelity rendering with clean unmarked surfaces, plain clothing, completely textless scene, no watermarks, no logos, no collage, no split screen, no dividing bars, photorealistic 16:9."
 
 Do NOT include labels, quotes, explanations, markdown formatting, or multiple paragraphs."""
 
@@ -176,7 +178,7 @@ class NewsImageGenerator:
                 f"Заголовок новости: {title}\n"
                 f"Лид новости: {lead}\n"
                 f"Краткий контекст статьи: {article_text[:2000]}\n\n"
-                f"Сформируй один связный детальный промпт на английском языке для чистой перерисовки фотографии к этой новости в фотореалистичном редакционном стиле 16:9 без водяных знаков, логотипов, букв и текста."
+                f"Сформируй один связный детальный промпт на английском языке для чистой перерисовки фотографии к этой новости в виде единого непрерывного кадра 16:9 (single continuous photograph, no collage, no split screen) без водяных знаков, логотипов, букв и текста."
             )
         else:
             system_instruction = IMAGE_PROMPT_SYSTEM_INSTRUCTION.format(city_name=city_en)
@@ -184,7 +186,7 @@ class NewsImageGenerator:
                 f"Заголовок новости: {title}\n"
                 f"Лид новости: {lead}\n"
                 f"Краткий контекст статьи: {article_text[:2000]}\n\n"
-                f"Сформируй один связный детальный промпт на английском языке для генерации фотореалистичной иллюстрации 16:9 без текста и без плакатов."
+                f"Сформируй один связный детальный промпт на английском языке для генерации фотореалистичной иллюстрации в виде единого кадра 16:9 (single continuous photograph, no collage, no split screen) без текста и без плакатов."
             )
 
         for label, provider, model in self.prompt_providers:
@@ -210,15 +212,15 @@ class NewsImageGenerator:
         self.logger.warning("All prompt generation slots failed, using static fallback prompt.")
         if has_reference_image:
             return (
-                f"Realistic editorial photojournalism, documentary street photography, 35mm lens. "
+                f"Realistic editorial photojournalism, documentary street photography, 35mm lens, single unified frame. "
                 f"A clean high-resolution re-imagining of the news scene in {city_en}, Ukraine based on the reference photo, "
-                f"authentic composition and local environment. Completely textless, blank facades, NO text, NO letters, NO words, NO signs, NO watermarks, NO logos. 16:9 aspect ratio."
+                f"authentic composition and local environment. Completely textless, blank facades, NO text, NO letters, NO words, NO signs, NO watermarks, NO logos, NO collage, NO split screen, NO diptych. 16:9 aspect ratio."
             )
         return (
-            f"Realistic editorial photojournalism, documentary street photography, 35mm lens. "
+            f"Realistic editorial photojournalism, documentary street photography, 35mm lens, single unified frame. "
             f"A quiet residential courtyard in {city_en}, Ukraine with 5-story Soviet-era brick apartment buildings, "
             f"a portable generator standing on the asphalt path, people carrying water jugs in summer clothing. "
-            f"Completely textless environment, unmarked facades, NO text, NO letters, NO words, NO signs, NO posters. 16:9 aspect ratio."
+            f"Completely textless environment, unmarked facades, NO text, NO letters, NO words, NO signs, NO posters, NO collage, NO split screen, NO diptych. 16:9 aspect ratio."
         )
 
     async def generate_image(
