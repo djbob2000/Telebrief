@@ -195,6 +195,15 @@ class AIProvider(ABC):
 class ProviderCascade(AIProvider):
     """Try compatible providers in round-robin order with quota cooldown until one returns a non-empty response."""
 
+    _global_slot_cooldowns: dict[str, float] = {}
+    _global_round_robin_index: int = 0
+
+    @classmethod
+    def reset_global_state(cls) -> None:
+        """Reset global cooldowns and round-robin index (useful for tests)."""
+        cls._global_slot_cooldowns.clear()
+        cls._global_round_robin_index = 0
+
     def __init__(
         self,
         providers: Sequence[tuple[str, AIProvider] | tuple[str, AIProvider, str]],
@@ -207,8 +216,6 @@ class ProviderCascade(AIProvider):
         ]
         self.logger = logger
         self.cooldown_seconds = cooldown_seconds
-        self._slot_cooldowns: dict[str, float] = {}
-        self._round_robin_index: int = 0
 
     async def chat_completion(  # pylint: disable=too-many-positional-arguments
         self,
@@ -238,23 +245,24 @@ class ProviderCascade(AIProvider):
             primary_slots = list(self.providers)
             fallback_slots = []
 
-        # Rotate primary starting slot via Round-Robin
+        # Rotate primary starting slot via Global Round-Robin across all calls
         if len(primary_slots) > 1:
-            start_idx = self._round_robin_index % len(primary_slots)
-            self._round_robin_index += 1
+            start_idx = ProviderCascade._global_round_robin_index % len(primary_slots)
+            ProviderCascade._global_round_robin_index += 1
             ordered_primary = primary_slots[start_idx:] + primary_slots[:start_idx]
         else:
             ordered_primary = primary_slots
 
+        # OpenRouter / Fallback slots are strictly placed at the end (only called if all primary slots fail)
         candidates = ordered_primary + fallback_slots
 
-        # Filter out slots in active cooldown
+        # Filter out slots in active cooldown (using global cross-component cooldown state)
         now = time.monotonic()
         available_slots: list[tuple[str, AIProvider, str | None]] = []
         cooldown_skipped: list[str] = []
         for slot in candidates:
             label = slot[0]
-            cooldown_until = self._slot_cooldowns.get(label, 0.0)
+            cooldown_until = ProviderCascade._global_slot_cooldowns.get(label, 0.0)
             if cooldown_until > now:
                 remaining = int(cooldown_until - now)
                 cooldown_skipped.append(f"{label} ({remaining}s remaining)")
@@ -293,8 +301,8 @@ class ProviderCascade(AIProvider):
                 )
                 if not isinstance(response, str) or not response.strip():
                     raise RuntimeError("provider returned an empty response")
-                # Clear any cooldown upon a successful response
-                self._slot_cooldowns.pop(label, None)
+                # Clear any global cooldown upon a successful response for this slot
+                ProviderCascade._global_slot_cooldowns.pop(label, None)
                 return response
             except Exception as exc:  # every provider error is eligible for failover
                 # Do not propagate provider exception text: SDK errors can contain request
@@ -303,9 +311,11 @@ class ProviderCascade(AIProvider):
                 exc_type = type(exc).__name__
                 kind = _classify_provider_failure(exc)
                 if kind == "quota":
-                    self._slot_cooldowns[label] = time.monotonic() + self.cooldown_seconds
+                    ProviderCascade._global_slot_cooldowns[label] = (
+                        time.monotonic() + self.cooldown_seconds
+                    )
                     self.logger.warning(
-                        "AI provider slot %s quota exceeded (429); placed in cooldown for %ds",
+                        "AI provider slot %s quota exceeded (429); placed in global cooldown for %ds",
                         label,
                         int(self.cooldown_seconds),
                     )

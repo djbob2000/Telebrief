@@ -8,6 +8,16 @@ import pytest
 from src.config_loader import ChannelConfig, Config, Settings
 
 
+@pytest.fixture(autouse=True)
+def reset_provider_cascade_state():
+    """Reset ProviderCascade global cooldowns and round-robin pointer for each test."""
+    from src.ai_providers import ProviderCascade
+
+    ProviderCascade.reset_global_state()
+    yield
+    ProviderCascade.reset_global_state()
+
+
 @pytest.fixture
 def mock_env_vars(monkeypatch):
     """Set up mock environment variables."""

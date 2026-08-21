@@ -1642,3 +1642,68 @@ async def test_provider_cascade_cooldown_skips_exhausted_slot(mock_logger):
     # slot1 should NOT have been called again
     assert slot1.chat_completion.call_count == 1
     assert slot2.chat_completion.call_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_cross_instance_global_cooldown(mock_logger):
+    """Cooldown is shared globally across different ProviderCascade instances."""
+    from src.ai_providers import ProviderCascade
+
+    slot1 = MagicMock()
+    slot1.chat_completion = AsyncMock(
+        side_effect=RuntimeError("429 Resource Exhausted: Quota exceeded")
+    )
+    slot2 = MagicMock()
+    slot2.chat_completion = AsyncMock(return_value="resp-from-slot2")
+
+    # Instance A (e.g. in Summarizer)
+    cascade_a = ProviderCascade(
+        [("google-1", slot1), ("google-2", slot2)],
+        mock_logger,
+        cooldown_seconds=300.0,
+    )
+    res_a = await cascade_a.chat_completion(messages=[], model="gemini-3.7-flash")
+    assert res_a == "resp-from-slot2"
+    assert slot1.chat_completion.call_count == 1
+    assert slot2.chat_completion.call_count == 1
+
+    # Instance B (e.g. in DigestGrouper) created later
+    cascade_b = ProviderCascade(
+        [("google-1", slot1), ("google-2", slot2)],
+        mock_logger,
+        cooldown_seconds=300.0,
+    )
+    # Instance B should directly skip google-1 because of global cooldown!
+    res_b = await cascade_b.chat_completion(messages=[], model="gemini-3.7-flash")
+    assert res_b == "resp-from-slot2"
+    assert slot1.chat_completion.call_count == 1  # Still 1 (skipped!)
+    assert slot2.chat_completion.call_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_openrouter_called_only_when_all_google_fail(mock_logger):
+    """OpenRouter is strictly the final fallback and is never called if any Google key works."""
+    from src.ai_providers import ProviderCascade
+
+    slot1 = MagicMock()
+    slot1.chat_completion = AsyncMock(
+        side_effect=RuntimeError("429 Resource Exhausted: Quota exceeded")
+    )
+    slot2 = MagicMock()
+    slot2.chat_completion = AsyncMock(side_effect=RuntimeError("500 Server Error"))
+    slot_or = MagicMock()
+    slot_or.chat_completion = AsyncMock(return_value="openrouter-success")
+
+    cascade = ProviderCascade(
+        [("google-1", slot1), ("google-2", slot2), ("openrouter", slot_or)],
+        mock_logger,
+    )
+
+    # When all Google slots fail, openrouter is called
+    res = await cascade.chat_completion(messages=[], model="gemini-3.7-flash")
+    assert res == "openrouter-success"
+    assert slot1.chat_completion.call_count == 1
+    assert slot2.chat_completion.call_count == 1
+    assert slot_or.chat_completion.call_count == 1
