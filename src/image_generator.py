@@ -149,7 +149,7 @@ class NewsImageGenerator:
             self.prompt_providers.append(
                 (
                     f"google-{idx}",
-                    GoogleProvider(api_key=key, logger=logger),
+                    GoogleProvider(api_key=key, logger=logger, timeout=45),
                     getattr(config.settings, "ai_model", "gemini-3.7-flash"),
                 )
             )
@@ -160,6 +160,7 @@ class NewsImageGenerator:
                     OpenAIProvider(
                         api_key=self.openrouter_api_key,
                         logger=logger,
+                        timeout=45,
                         base_url=self.openrouter_base_url,
                     ),
                     self.openrouter_model,

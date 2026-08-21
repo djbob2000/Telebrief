@@ -402,6 +402,7 @@ class OpenAIProvider(AIProvider):
             api_key=api_key,
             base_url=base_url or None,
             timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+            max_retries=0,
         )
         self.logger = logger
         self.base_url = base_url.lower()
@@ -476,13 +477,14 @@ class GoogleProvider(AIProvider):
         self,
         api_key: str,
         logger: logging.Logger,
-        timeout: int = 60,
+        timeout: int = 45,
         default_reasoning_effort: str = "high",
     ):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=GOOGLE_BASE_URL,
             timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+            max_retries=0,
         )
         self.logger = logger
         self.default_reasoning_effort = default_reasoning_effort
@@ -757,13 +759,14 @@ def create_provider(  # noqa: C901
         if not google_api_key:
             raise ValueError("GEMINI_API_KEY is required as the primary Google provider key")
 
+        google_timeout = min(api_timeout, 45)
         slots: list[tuple[str, AIProvider, str]] = [
             (
                 f"google-{index}",
                 GoogleProvider(
                     api_key=key,
                     logger=logger,
-                    timeout=api_timeout,
+                    timeout=google_timeout,
                     default_reasoning_effort=reasoning_effort or "high",
                 ),
                 "",
