@@ -58,12 +58,15 @@ PRE_PUBLISH_PRIORITY = 100
 
 DISPATCHER_QUEUEING_LOCK = "source-collection-dispatcher"
 
-# Initial attempt + two retries with an increasing wait (90s, then 150s):
-# total_wait = wait + linear_wait * attempts. Only genuinely transient
+# Bounded transient retry: max_attempts counts TOTAL executions (the gate is
+# attempts >= max_attempts with attempts starting at 0), so 2 means the
+# initial attempt plus exactly two retries, honoring "transient may retry
+# twice". Waits increase across retries: total_wait = wait + linear_wait *
+# attempts → 30s after the first failure, then 90s. Only genuinely transient
 # failures enter this loop; repeated execution is safe because SourceItem /
 # Revision application is idempotent at the database level.
 TRANSIENT_RETRY_STRATEGY = procrastinate.RetryStrategy(
-    max_attempts=3,
+    max_attempts=2,
     wait=30,
     linear_wait=60,
     retry_exceptions=(TransientCollectionError,),

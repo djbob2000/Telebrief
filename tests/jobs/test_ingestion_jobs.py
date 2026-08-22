@@ -179,8 +179,10 @@ def test_scan_source_retry_strategy_is_bounded_and_transient_only() -> None:
     strategy = task.retry_strategy
 
     assert strategy is not None
-    # Initial attempt plus exactly two retries.
-    assert strategy.max_attempts == 3
+    # max_attempts counts TOTAL executions (gate: attempts >= max_attempts,
+    # attempts starts at 0 on the first run): 2 = initial attempt plus exactly
+    # two retries, honoring "transient may retry twice".
+    assert strategy.max_attempts == 2
     assert strategy.retry_exceptions == (TransientCollectionError,)
     # Increasing wait across retries.
     assert strategy.linear_wait > 0 or strategy.exponential_wait > 0
