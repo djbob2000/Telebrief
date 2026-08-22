@@ -13,8 +13,10 @@ from src.ingestion.models import (
     ObservedStateEvent,
 )
 from src.ingestion.protocol import CollectionContext, Collector
+from src.ingestion.registry import BootstrapResult, SourceRegistry
 
 __all__ = [
+    "BootstrapResult",
     "Collector",
     "CollectionBatch",
     "CollectionCheckpoint",
@@ -25,4 +27,5 @@ __all__ = [
     "ObservedAsset",
     "ObservedItem",
     "ObservedStateEvent",
+    "SourceRegistry",
 ]

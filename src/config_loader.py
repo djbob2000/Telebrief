@@ -54,6 +54,19 @@ class DigestGroupConfig:
 
 
 @dataclass
+class CollectionConfig:
+    """Generic ingestion collection scheduling.
+
+    ``telegram_interval_minutes`` is the polling cadence bootstrap applies to
+    every managed Telegram source: at bootstrap time it is mirrored into each
+    source's ``collector_options.schedule.interval_minutes``. Valid range is
+    5..360 minutes; enforced when loading YAML, not by the dataclass itself.
+    """
+
+    telegram_interval_minutes: int = 45
+
+
+@dataclass
 class PromptsConfig:
     """Configuration for prompt template and composer."""
 
@@ -182,6 +195,7 @@ class Config:
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    collection: CollectionConfig = field(default_factory=CollectionConfig)
 
     @property
     def gemini_api_key(self) -> str:
@@ -681,6 +695,34 @@ def _parse_storage_config(yaml_config: dict) -> StorageConfig:
     return StorageConfig(enabled=enabled, backend=backend, path=path, url=url)
 
 
+def _parse_collection_config(yaml_config: dict) -> CollectionConfig:
+    """Parse and validate the optional top-level collection: block.
+
+    Absent block yields CollectionConfig() with telegram_interval_minutes=45.
+
+    Raises:
+        ValueError: If the block is not a mapping or the interval is not an
+            int within 5..360.
+    """
+    raw = yaml_config.get("collection")
+    if raw is None:
+        return CollectionConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(f"'collection' must be a mapping, got {type(raw).__name__}")
+
+    interval = raw.get("telegram_interval_minutes", 45)
+    if isinstance(interval, bool) or not isinstance(interval, int):
+        raise ValueError(
+            "collection.telegram_interval_minutes must be an int between 5 and 360, "
+            f"got {interval!r}"
+        )
+    if not 5 <= interval <= 360:
+        raise ValueError(
+            f"collection.telegram_interval_minutes must be between 5 and 360, got {interval}"
+        )
+    return CollectionConfig(telegram_interval_minutes=interval)
+
+
 def _parse_database_config(yaml_config: dict, *, require_enabled: bool = False) -> DatabaseConfig:
     """Parse and validate the optional top-level database: block.
 
@@ -1026,6 +1068,9 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
     # Parse domain database config
     database_config = _parse_database_config(yaml_config)
 
+    # Parse generic collection scheduling config
+    collection_config = _parse_collection_config(yaml_config)
+
     # Parse prompts config
     prompts_config = _parse_prompts_config(yaml_config)
 
@@ -1097,6 +1142,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         prompts=prompts_config,
         mcp=mcp_config,
         database=database_config,
+        collection=collection_config,
         **env_vars,
     )
 

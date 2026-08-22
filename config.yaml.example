@@ -168,6 +168,14 @@ settings:
 #   domain_schema: "public"
 #   procrastinate_schema: "procrastinate"
 
+# Generic ingestion collection — polling cadence for bootstrap-managed Telegram
+# sources in the domain database (independent of the daily digest schedule).
+# The value is mirrored into each managed source's collector_options
+# (schedule.interval_minutes) at bootstrap time. Must be an integer between
+# 5 and 360 minutes; defaults to 45 when this block is absent.
+# collection:
+#   telegram_interval_minutes: 45
+
 # MCP server — expose digests to MCP clients (Claude Code, etc.) over HTTP
 # Runs inside the Telebrief process; tools: get_digest(hours), get_last_digest()
 # Connect with: claude mcp add --transport http telebrief http://127.0.0.1:8765/mcp
