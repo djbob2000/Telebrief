@@ -4,7 +4,6 @@ Message collector using Telethon to fetch messages from Telegram channels.
 
 import asyncio
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
@@ -14,6 +13,15 @@ from telethon.errors import ChannelPrivateError, FloodWaitError
 from telethon.tl.types import Message as TelegramMessage
 
 from src.config_loader import ChannelConfig, Config, ForumTopicConfig
+from src.providers.telegram import (
+    MEDIA_TOKENS,
+    build_user_client,
+    classify_media,
+    ensure_connected,
+    forward_origin,
+    message_link,
+    sender_display_name,
+)
 from src.ui_strings import get_ui_strings
 
 
@@ -50,9 +58,7 @@ class MessageCollector:
         self.config = config
         self.logger = logger
         self._ui = get_ui_strings(config.settings.output_language)
-        self.client = TelegramClient(
-            "sessions/user", config.telegram_api_id, config.telegram_api_hash
-        )
+        self.client = build_user_client(config)
 
     async def connect(self):
         """Connect to Telegram using an existing user session.
@@ -60,26 +66,7 @@ class MessageCollector:
         Requires a pre-authenticated session file at sessions/user.session.
         Create one by running: python -m src.collector
         """
-        session_path = "sessions/user.session"
-        if not os.path.exists(session_path):
-            raise RuntimeError(
-                f"Telegram user session not found at '{session_path}'. "
-                "Create one by running: python -m src.collector"
-            )
-        await self.client.connect()
-        if not await self.client.is_user_authorized():
-            raise RuntimeError(
-                "Telegram user session exists but is not authorized. "
-                "Re-authenticate by running: python -m src.collector"
-            )
-        self.logger.info("Connected to Telegram User API")
-
-        # Cache all dialogs to populate entity cache
-        try:
-            dialogs = await self.client.get_dialogs()
-            self.logger.info(f"Cached {len(dialogs)} dialogs for entity resolution")
-        except Exception as e:
-            self.logger.warning(f"Could not cache dialogs: {e}")
+        await ensure_connected(self.client, self.logger)
 
     async def disconnect(self):
         """Disconnect from Telegram."""
@@ -316,31 +303,7 @@ class MessageCollector:
 
     async def _get_forward_origin(self, message: TelegramMessage) -> tuple[str | None, str | None]:
         """Extract forward origin name and username if available."""
-        fwd = getattr(message, "forward", None) or getattr(message, "fwd_from", None)
-        if not fwd:
-            return None, None
-
-        name = getattr(fwd, "from_name", None)
-        username = None
-
-        chat = getattr(fwd, "chat", None)
-        if chat:
-            name = name or getattr(chat, "title", None) or getattr(chat, "first_name", None)
-            username = getattr(chat, "username", None)
-
-        sender = getattr(fwd, "sender", None)
-        if sender:
-            if not name:
-                name = getattr(sender, "first_name", None) or getattr(sender, "title", None)
-                if hasattr(sender, "last_name") and sender.last_name:
-                    name = f"{name} {sender.last_name}"
-            username = username or getattr(sender, "username", None)
-
-        post_author = getattr(fwd, "post_author", None)
-        if post_author and not name:
-            name = post_author
-
-        return (str(name).strip() if name else None), (str(username).strip() if username else None)
+        return forward_origin(message)
 
     def _get_media_type(self, message: TelegramMessage) -> str:
         """
@@ -352,31 +315,10 @@ class MessageCollector:
         Returns:
             Media type string
         """
-        if not message.media:
+        token = classify_media(message)
+        if not token:
             return ""
-
-        media_type = type(message.media).__name__
-
-        if "Photo" in media_type:
-            return self._ui["media_photo"]
-        elif "Video" in media_type or "Document" in media_type:
-            if hasattr(message.media, "document"):
-                mime = getattr(message.media.document, "mime_type", "")
-                if "video" in mime:
-                    return self._ui["media_video"]
-                elif "audio" in mime:
-                    return self._ui["media_audio"]
-                else:
-                    return self._ui["media_document"]
-            return self._ui["media_video"]
-        elif "Voice" in media_type or "Audio" in media_type:
-            return self._ui["media_voice"]
-        elif "Poll" in media_type:
-            return self._ui["media_poll"]
-        elif "Geo" in media_type or "Location" in media_type:
-            return self._ui["media_geo"]
-        else:
-            return self._ui["media_other"]
+        return self._ui.get(MEDIA_TOKENS[token], self._ui["media_other"])
 
     async def _get_sender_name(self, message: TelegramMessage) -> str:
         """
@@ -388,21 +330,7 @@ class MessageCollector:
         Returns:
             Sender name or "Unknown"
         """
-        try:
-            if message.sender:
-                sender = await message.get_sender()
-                if hasattr(sender, "first_name"):
-                    name = str(sender.first_name)
-                    if hasattr(sender, "last_name") and sender.last_name:
-                        name += f" {sender.last_name}"
-                    return name
-                elif hasattr(sender, "title"):
-                    return str(sender.title)
-                elif hasattr(sender, "username"):
-                    return f"@{sender.username}"
-            return "Unknown"
-        except Exception:
-            return "Unknown"
+        return await sender_display_name(message)
 
     async def _generate_message_link(self, entity, message_id: int) -> str:
         """
@@ -415,20 +343,7 @@ class MessageCollector:
         Returns:
             Message link URL
         """
-        try:
-            # For public channels/groups
-            if hasattr(entity, "username") and entity.username:
-                return f"https://t.me/{entity.username}/{message_id}"
-            # For private channels/groups
-            elif hasattr(entity, "id"):
-                # Format: https://t.me/c/CHANNEL_ID/MESSAGE_ID
-                # Remove -100 prefix from channel ID
-                channel_id = str(entity.id).replace("-100", "")
-                return f"https://t.me/c/{channel_id}/{message_id}"
-            else:
-                return "#"
-        except Exception:
-            return "#"
+        return message_link(entity, message_id)
 
 
 async def main():
