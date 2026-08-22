@@ -289,6 +289,80 @@ async def test_initial_scan_without_checkpoint_uses_lookback_window(sample_confi
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_checkpointed_scan_ignores_lookback_boundary(sample_config, mock_logger):
+    """After downtime longer than lookback, the watermark cursor still catches up."""
+    collector = _collector(sample_config, mock_logger)
+    stale_but_unseen = _telegram_message(200, text="Позднее сообщение")
+    stale_but_unseen.date = datetime.now(timezone.utc) - timedelta(hours=72)
+    collector.client.iter_messages = _iter_messages_result([stale_but_unseen])
+    checkpoint = CollectionCheckpoint(adapter_state={"high_watermark_message_id": 100})
+
+    batch = await collector.scan(_source(), checkpoint, _context())
+
+    assert [item.external_id for item in batch.items] == ["200"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_checkpointed_topic_fetch_drops_min_date_bound(sample_config, mock_logger):
+    """Checkpointed forum scans bound by min_id only — no lookback cutoff."""
+    sample_config.channels[0] = ChannelConfig(
+        id="@test_channel",
+        name="Test Channel",
+        topics=[ForumTopicConfig(id=235525, name="ЖКХ")],
+    )
+    collector = _collector(sample_config, mock_logger)
+    collector.client.return_value = SimpleNamespace(messages=[_telegram_message(9001)])
+    checkpoint = CollectionCheckpoint(adapter_state={"high_watermark_message_id": 8000})
+
+    await collector.scan(_source(), checkpoint, _context())
+
+    request = collector.client.call_args.args[0]
+    assert request.min_date is None
+    assert request.min_id == 8000
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_initial_scan_stops_at_lookback_boundary(sample_config, mock_logger):
+    """Without a checkpoint the recent-window bound still applies."""
+    collector = _collector(sample_config, mock_logger)
+    fresh = _telegram_message(2)
+    ancient = _telegram_message(1)
+    ancient.date = datetime.now(timezone.utc) - timedelta(days=30)
+    collector.client.iter_messages = _iter_messages_result([fresh, ancient])
+
+    batch = await collector.scan(_source(), None, _context())
+
+    assert [item.external_id for item in batch.items] == ["2"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_conversion_failure_fails_soft_transient(sample_config, mock_logger):
+    """Unexpected conversion errors become TRANSIENT batches, never raise."""
+
+    class ExplodingMessage:
+        id = 7
+        date = NOW
+
+        @property
+        def text(self):
+            raise RuntimeError("decode failed")
+
+    collector = _collector(sample_config, mock_logger)
+    collector.client.iter_messages = _iter_messages_result([ExplodingMessage()])
+
+    batch = await collector.scan(_source(), None, _context())
+
+    assert batch.outcome == CollectionOutcome.TRANSIENT
+    assert batch.error_kind == "unexpected"
+    assert batch.adapter_state["exception_type"] == "RuntimeError"
+    assert batch.items == ()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_empty_batch_carries_prior_high_watermark_forward(sample_config, mock_logger):
     """A scan returning nothing must not erase the stored high-watermark."""
     collector = _collector(sample_config, mock_logger)

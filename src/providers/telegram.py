@@ -11,9 +11,12 @@ interactive ``python -m src.collector`` authentication flow stays unchanged.
 Item identity: ``external_id`` is ``str(message.id)`` scoped by Source; the
 forum topic id is observation metadata, never part of identity. Checkpointing
 stores the highest observed message id; incremental scans pass it as Telethon's
-``min_id`` so only newer history is fetched. Without a checkpoint the adapter
-fetches a recent window: ``lookback_hours`` from source collector_options or
-context options, defaulting to 24 hours.
+``min_id`` and are bounded solely by that watermark — no lookback cutoff — so
+gaps longer than the lookback window are still recovered after downtime.
+Without a checkpoint the adapter fetches a recent window: ``lookback_hours``
+from source collector_options or context options, defaulting to 24 hours.
+Correctness never depends on the window: identity stays
+``UNIQUE(source_id, external_id)``.
 
 Expected source-level failures never raise out of ``scan()``: they are mapped
 onto :class:`~src.ingestion.models.CollectionOutcome` values with a short typed
@@ -319,6 +322,14 @@ class TelegramCollector:
             entity, entries = await self._fetch_incremental(
                 source, checkpoint, context, channel_config
             )
+            batch = await self._convert_entries(
+                source,
+                channel_config,
+                entity,
+                entries,
+                checkpoint=checkpoint,
+                started_at=started_at,
+            )
         except Exception as error:
             outcome, error_kind, extra_state = _map_error(error)
             self.logger.warning(
@@ -334,7 +345,19 @@ class TelegramCollector:
                 completed_at=datetime.now(timezone.utc),
                 error_kind=error_kind,
             )
+        return batch
 
+    async def _convert_entries(
+        self,
+        source: Source,
+        channel_config: ChannelConfig | None,
+        entity: Any,
+        entries: list[tuple[Any, int | None]],
+        *,
+        checkpoint: CollectionCheckpoint | None,
+        started_at: datetime,
+    ) -> CollectionBatch:
+        """Convert fetched Telethon messages into one successful CollectionBatch."""
         observed_at = datetime.now(timezone.utc)
         min_id = self._min_id(checkpoint)
         items: list[ObservedItem] = []
@@ -397,9 +420,11 @@ class TelegramCollector:
         """Fetch raw Telethon messages as (entity, [(message, topic_id), ...]).
 
         With a checkpoint high-watermark the scan passes it as Telethon's
-        min_id; without one it fetches a recent lookback window (24h default).
-        Forum sources fetch per selected topic via top_msg_id, mirroring the
-        legacy collector.
+        min_id and applies no date lower bound — the watermark is the cursor,
+        so downtime longer than the lookback window still catches up. Without
+        a checkpoint it fetches a recent lookback window (24h default). Forum
+        sources fetch per selected topic via top_msg_id, mirroring the legacy
+        collector.
         """
         options: dict[str, Any] = dict(context.options or {})
         options.update(source.collector_options or {})
@@ -408,8 +433,8 @@ class TelegramCollector:
             options.get("max_messages_per_channel") or self.config.settings.max_messages_per_channel
         )
         now = datetime.now(timezone.utc)
-        lookback_time = now - timedelta(hours=lookback_hours)
         min_id = self._min_id(checkpoint)
+        lookback_time = None if min_id is not None else now - timedelta(hours=lookback_hours)
 
         entity = await self.client.get_entity(source.external_id)
         entries: list[tuple[Any, int | None]] = []
@@ -438,7 +463,7 @@ class TelegramCollector:
             if min_id:
                 kwargs["min_id"] = min_id
             async for message in self.client.iter_messages(entity, **kwargs):
-                if message.date < lookback_time:
+                if lookback_time is not None and message.date < lookback_time:
                     break
                 entries.append((message, None))
 
@@ -483,7 +508,7 @@ class TelegramCollector:
             "topic_id": effective_topic_id,
             "reply_to_id": reply_to_msg_id,
             "has_media": message.media is not None,
-            "media_kinds": [token for token in [media_token] if token],
+            "media_kinds": [media_token] if media_token else [],
             "effective_source_role": resolve_effective_role(
                 channel_config, source.role, effective_topic_id
             ),
