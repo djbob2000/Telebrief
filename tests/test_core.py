@@ -1454,6 +1454,49 @@ async def test_collect_channel_messages_persistent_reads_history_without_telegra
     mock_collector_class.assert_not_called()
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_and_publish_article_persistent_never_touches_telethon(
+    sample_config, mock_logger, tmp_path
+):
+    """persistent_ingestion=true: article photo lookup fails open without Telethon."""
+    from datetime import datetime, timezone
+
+    from src.collector import Message
+    from src.core import generate_and_publish_article
+
+    sample_config.settings.persistent_ingestion = True
+    sample_config.settings.article.fallback_save_dir = str(tmp_path)
+    photo_message = Message(
+        text="Фото с места событий",
+        sender="User",
+        timestamp=datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc),
+        link="https://t.me/test/9",
+        channel_name="Test Channel",
+        has_media=True,
+        media_type="Фото",
+        message_id=9,
+    )
+
+    with (
+        patch("src.core.MessageCollector") as mock_collector_class,
+        patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
+        patch(
+            "src.article_generator.ArticleGenerator.generate_article", new_callable=AsyncMock
+        ) as mock_gen,
+    ):
+        _forbid_telethon(mock_collector_class)
+        mock_collect.return_value = {"Test Channel": [photo_message]}
+        mock_gen.return_value = ("Заголовок", "Лид", "# Заголовок\n\nТекст статьи.")
+
+        success = await generate_and_publish_article(
+            sample_config, mock_logger, hours=24, dry_run=True
+        )
+
+    assert success is True
+    mock_collector_class.assert_not_called()
+
+
 requires_postgres = pytest.mark.skipif(
     "TELEBRIEF_TEST_DATABASE_URL" not in os.environ,
     reason="TELEBRIEF_TEST_DATABASE_URL is not set",

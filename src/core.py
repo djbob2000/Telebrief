@@ -475,6 +475,9 @@ async def collect_channel_messages(
 ) -> tuple[list[Message], str]:
     """Fetch one channel's messages, preferring stored ones over a live Telegram read.
 
+    With ``settings.persistent_ingestion`` enabled this reads persisted source
+    history only; storage snapshots and live Telegram reads are never consulted.
+
     Args:
         config: Application configuration
         logger: Logger instance
@@ -500,14 +503,14 @@ async def collect_channel_messages(
     channel_cfg = _resolve_channel(config, channel)
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
+    if config.settings.persistent_ingestion:
+        messages = await _read_persistent_channel_messages(config, logger, channel_cfg, since)
+        return messages[-limit:], "persistent"
+
     stored = await _channel_from_storage(config, logger, channel_cfg, since, limit)
     if stored is not None:
         logger.info(f"Read {len(stored)} stored messages for {channel_cfg.name!r}")
         return stored, "storage"
-
-    if config.settings.persistent_ingestion:
-        messages = await _read_persistent_channel_messages(config, logger, channel_cfg, since)
-        return messages[-limit:], "persistent"
 
     # ponytail: same process-wide lock as digest builds — one Telethon session file
     async with _digest_lock:
@@ -630,6 +633,12 @@ async def _extract_candidate_photo_bytes(
     logger: logging.Logger,
 ) -> Optional[bytes]:
     """Find the most relevant news photo from collected messages and download its bytes."""
+    if config.settings.persistent_ingestion:
+        # Live Telethon is reserved for the collector under persistent mode;
+        # the article proceeds without reference photo bytes (fail-open).
+        logger.info("Persistent ingestion mode: skipping Telegram candidate photo download")
+        return None
+
     candidate_msg: Optional[Message] = None
     photo_keywords = {"photo", "фото", "foto"}
     for msgs in messages_by_channel.values():
