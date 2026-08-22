@@ -175,44 +175,44 @@ class IngestionRepository:
     async def upsert_asset_for_revision(
         self, conn: psycopg.AsyncConnection, revision_id: int, asset: ObservedAsset
     ) -> None:
-        """Insert the asset once per (revision, kind, external_url) identity.
+        """Insert or refresh the asset keyed by uq_source_assets_revision_identity.
 
-        Re-ingesting the same batch updates the mutable fields in place
-        instead of duplicating rows; assets bind to an exact revision.
+        Identity is (revision, kind, external_url, content_hash) with NULLs
+        coalesced, so album photos without per-photo URLs stay distinct rows;
+        re-ingesting an identical asset refreshes its descriptor columns and
+        inserts nothing, making duplicate batches idempotent at the DB level.
         """
-        cursor = await conn.execute(
-            """
-            SELECT id FROM source_assets
-            WHERE source_item_revision_id = %s AND kind = %s
-              AND external_url IS NOT DISTINCT FROM %s
-            """,
-            (revision_id, asset.kind, asset.external_url),
-        )
-        row = await cursor.fetchone()
-        if row is not None:
-            await conn.execute(
-                """
-                UPDATE source_assets
-                SET mime_type = %s, content_hash = %s, metadata = %s
-                WHERE id = %s
-                """,
-                (asset.mime_type, asset.content_hash, Jsonb(asset.metadata), row[0]),
-            )
-            return
         await conn.execute(
             """
             INSERT INTO source_assets (
-                source_item_revision_id, kind, external_url, mime_type,
-                content_hash, metadata
+                source_item_revision_id, kind, external_url, local_storage_ref,
+                mime_type, content_hash, width, height, duration, metadata
             )
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (
+                source_item_revision_id,
+                kind,
+                COALESCE(external_url, ''),
+                COALESCE(content_hash, '')
+            )
+            DO UPDATE SET
+                local_storage_ref = EXCLUDED.local_storage_ref,
+                mime_type = EXCLUDED.mime_type,
+                width = EXCLUDED.width,
+                height = EXCLUDED.height,
+                duration = EXCLUDED.duration,
+                metadata = EXCLUDED.metadata
             """,
             (
                 revision_id,
                 asset.kind,
                 asset.external_url,
+                None,
                 asset.mime_type,
                 asset.content_hash,
+                None,
+                None,
+                None,
                 Jsonb(asset.metadata),
             ),
         )
@@ -289,20 +289,25 @@ class IngestionRepository:
         *,
         source_id: int,
         adapter_state: dict[str, JSONValue],
+        last_scan_at: datetime,
         last_success_at: datetime | None,
     ) -> None:
-        """Upsert the checkpoint; failed scans keep the previous success time."""
+        """Upsert the checkpoint; every scan stamps last_scan_at, failed scans
+        keep the previous success time."""
         await conn.execute(
             """
-            INSERT INTO collection_checkpoints (source_id, last_success_at, adapter_state)
-            VALUES (%s, %s, %s)
+            INSERT INTO collection_checkpoints (
+                source_id, last_scan_at, last_success_at, adapter_state
+            )
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT (source_id) DO UPDATE SET
+                last_scan_at = EXCLUDED.last_scan_at,
                 adapter_state = EXCLUDED.adapter_state,
                 last_success_at = COALESCE(
                     EXCLUDED.last_success_at, collection_checkpoints.last_success_at
                 )
             """,
-            (source_id, last_success_at, Jsonb(adapter_state)),
+            (source_id, last_scan_at, last_success_at, Jsonb(adapter_state)),
         )
 
     async def get_checkpoint(

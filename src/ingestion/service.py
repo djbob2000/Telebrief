@@ -101,6 +101,7 @@ class IngestionService:
             conn,
             source_id=source_id,
             adapter_state=batch.adapter_state,
+            last_scan_at=batch.completed_at,
             last_success_at=batch.completed_at
             if batch.outcome == CollectionOutcome.SUCCESS
             else None,

@@ -284,6 +284,33 @@ async def test_duplicate_execution_is_idempotent(service, source, uow):
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
+async def test_state_events_append_on_reingest(service, source, uow):
+    """Append-only baseline: re-ingesting a batch appends an identical event row."""
+    event = ObservedStateEvent(
+        item_external_id="42",
+        type="inaccessible",
+        observed_at=COMPLETED_AT,
+        reason="hidden from scan",
+        evidence={"message_id": 42},
+    )
+    batch = _batch(state_events=(event,))
+
+    await service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, batch)
+    await service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, batch)
+
+    async with uow.pool.connection() as conn:
+        cursor = await conn.execute(
+            """
+            SELECT type, reason, evidence FROM source_item_state_events ORDER BY id
+            """
+        )
+        rows = await cursor.fetchall()
+    assert len(rows) == 2
+    assert rows[0] == rows[1]
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
 async def test_out_of_order_parent_resolves_after_all_shells_exist(service, source, uow):
     """A reply earlier in the batch still links once its parent shell exists."""
     reply = _observation(

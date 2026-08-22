@@ -536,7 +536,7 @@ async def test_get_latest_revision_returns_none_or_highest(conn, source):
 @pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_upsert_asset_for_revision_is_idempotent_per_identity(conn, source):
-    """Same (kind, external_url) upserts in place; nothing duplicates."""
+    """Asset identity is (revision, kind, url, hash): re-ingest refreshes in place."""
     repo = IngestionRepository()
     item, _ = await repo.get_or_create_item_shell(conn, source.id, _observation())
     revision = await repo.insert_revision_if_changed(
@@ -560,20 +560,106 @@ async def test_upsert_asset_for_revision_is_idempotent_per_identity(conn, source
     )
     assert (await cursor.fetchone())[0] == 1
 
-    changed = replace(asset, content_hash="hash-b", mime_type="image/webp")
-    await repo.upsert_asset_for_revision(conn, revision.id, changed)
+    refreshed = replace(asset, mime_type="image/webp", metadata={"width": 1024})
+    await repo.upsert_asset_for_revision(conn, revision.id, refreshed)
 
     cursor = await conn.execute(
         """
-        SELECT content_hash, mime_type FROM source_assets
+        SELECT mime_type, metadata FROM source_assets
         WHERE source_item_revision_id = %s
         """,
         (revision.id,),
     )
     rows = await cursor.fetchall()
     assert len(rows) == 1
-    assert rows[0][0] == "hash-b"
-    assert rows[0][1] == "image/webp"
+    assert rows[0][0] == "image/webp"
+    assert rows[0][1] == {"width": 1024}
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_replaced_media_with_same_url_adds_new_asset_row(conn, source):
+    """Same URL but new content hash is a distinct asset version, not a clobber."""
+    repo = IngestionRepository()
+    item, _ = await repo.get_or_create_item_shell(conn, source.id, _observation())
+    revision = await repo.insert_revision_if_changed(
+        conn, item.id, _observation(), collected_at=PUBLISHED_AT
+    )
+    assert revision is not None
+    asset = ObservedAsset(
+        item_external_id="42",
+        kind="photo",
+        external_url="https://cdn.example/1.jpg",
+        mime_type="image/jpeg",
+        content_hash="hash-a",
+        metadata={},
+    )
+    replaced = replace(asset, content_hash="hash-b", mime_type="image/webp")
+
+    await repo.upsert_asset_for_revision(conn, revision.id, asset)
+    await repo.upsert_asset_for_revision(conn, revision.id, replaced)
+
+    cursor = await conn.execute(
+        """
+        SELECT content_hash, mime_type FROM source_assets
+        WHERE source_item_revision_id = %s ORDER BY content_hash
+        """,
+        (revision.id,),
+    )
+    rows = await cursor.fetchall()
+    assert [(row[0], row[1]) for row in rows] == [
+        ("hash-a", "image/jpeg"),
+        ("hash-b", "image/webp"),
+    ]
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_album_assets_without_urls_stay_distinct(conn, source):
+    """Telegram album photos have no per-photo URLs; hashes keep them apart."""
+    repo = IngestionRepository()
+    item, _ = await repo.get_or_create_item_shell(conn, source.id, _observation())
+    revision = await repo.insert_revision_if_changed(
+        conn, item.id, _observation(), collected_at=PUBLISHED_AT
+    )
+    assert revision is not None
+    photo_a = ObservedAsset(
+        item_external_id="42",
+        kind="photo",
+        external_url=None,
+        mime_type="image/jpeg",
+        content_hash="hash-a",
+        metadata={"seq": 1},
+    )
+    photo_b = replace(photo_a, content_hash="hash-b", metadata={"seq": 2})
+
+    await repo.upsert_asset_for_revision(conn, revision.id, photo_a)
+    await repo.upsert_asset_for_revision(conn, revision.id, photo_b)
+
+    cursor = await conn.execute(
+        "SELECT count(*) FROM source_assets WHERE source_item_revision_id = %s", (revision.id,)
+    )
+    assert (await cursor.fetchone())[0] == 2
+
+    await repo.upsert_asset_for_revision(conn, revision.id, photo_a)
+    await repo.upsert_asset_for_revision(
+        conn, revision.id, replace(photo_b, mime_type="image/webp")
+    )
+
+    cursor = await conn.execute(
+        """
+        SELECT content_hash, mime_type, metadata FROM source_assets
+        WHERE source_item_revision_id = %s ORDER BY content_hash
+        """,
+        (revision.id,),
+    )
+    rows = await cursor.fetchall()
+    assert len(rows) == 2
+    assert rows[0][0] == "hash-a"
+    assert rows[0][2] == {"seq": 1}
+    assert rows[1][0] == "hash-b"
+    assert rows[1][1] == "image/webp"
+    assert rows[1][2] == {"seq": 2}
 
 
 @pytest.mark.postgres
@@ -645,23 +731,34 @@ async def test_run_lifecycle_records_outcome_error_kind_and_completion(conn, sou
 @pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_update_checkpoint_upserts_and_preserves_last_success(conn, source):
-    """adapter_state always refreshes; last_success_at survives failed scans."""
+    """adapter_state/last_scan_at always refresh; last_success_at survives failures."""
     repo = IngestionRepository()
     assert await repo.get_checkpoint(conn, source.id) is None
 
     await repo.update_checkpoint(
-        conn, source_id=source.id, adapter_state={"cursor": 12}, last_success_at=PUBLISHED_AT
+        conn,
+        source_id=source.id,
+        adapter_state={"cursor": 12},
+        last_scan_at=PUBLISHED_AT,
+        last_success_at=PUBLISHED_AT,
     )
     checkpoint = await repo.get_checkpoint(conn, source.id)
     assert checkpoint is not None
     assert checkpoint.adapter_state == {"cursor": 12}
     assert checkpoint.last_success_at == PUBLISHED_AT
+    assert checkpoint.last_scan_at == PUBLISHED_AT
     assert checkpoint.consecutive_failures == 0
 
+    failed_scan_at = datetime(2026, 8, 22, 11, 0, tzinfo=timezone.utc)
     await repo.update_checkpoint(
-        conn, source_id=source.id, adapter_state={"cursor": 13}, last_success_at=None
+        conn,
+        source_id=source.id,
+        adapter_state={"cursor": 13},
+        last_scan_at=failed_scan_at,
+        last_success_at=None,
     )
     checkpoint = await repo.get_checkpoint(conn, source.id)
     assert checkpoint is not None
     assert checkpoint.adapter_state == {"cursor": 13}
     assert checkpoint.last_success_at == PUBLISHED_AT
+    assert checkpoint.last_scan_at == failed_scan_at

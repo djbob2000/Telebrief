@@ -73,6 +73,17 @@ CREATE TABLE IF NOT EXISTS source_assets (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+-- Album-safe asset identity per revision: Telegram albums expose no per-photo
+-- URLs, so same-kind assets with NULL external_url are kept apart by content
+-- hash instead of collapsing onto one row.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_source_assets_revision_identity
+ON source_assets(
+    source_item_revision_id,
+    kind,
+    COALESCE(external_url, ''),
+    COALESCE(content_hash, '')
+);
+
 CREATE TABLE IF NOT EXISTS source_item_state_events (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_item_id BIGINT NOT NULL REFERENCES source_items(id) ON DELETE CASCADE,
