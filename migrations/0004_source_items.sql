@@ -62,15 +62,21 @@ CREATE TABLE IF NOT EXISTS source_assets (
     source_item_revision_id BIGINT NOT NULL REFERENCES source_item_revisions(id) ON DELETE CASCADE,
     kind TEXT NOT NULL,
     external_url TEXT NULL,
+    local_storage_ref TEXT NULL,
     mime_type TEXT NULL,
     content_hash TEXT NULL,
+    width INTEGER NULL,
+    height INTEGER NULL,
+    -- Spec §5 duration: BIGINT seconds chosen over INTERVAL for simplicity
+    -- (integer arithmetic, direct JSON serialization).
+    duration BIGINT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
 CREATE TABLE IF NOT EXISTS source_item_state_events (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_item_id BIGINT NOT NULL REFERENCES source_items(id) ON DELETE CASCADE,
-    event_type TEXT NOT NULL,
+    type TEXT NOT NULL,
     observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     reason TEXT NULL,
     evidence JSONB NOT NULL DEFAULT '{}'::jsonb

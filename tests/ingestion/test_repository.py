@@ -241,6 +241,45 @@ async def test_asset_binds_to_exact_revision(conn, source):
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
+async def test_state_event_insert_pins_shape_and_defaults(conn, source):
+    """source_item_state_events: spec §4 shape (``type``) plus defaults."""
+    item = await _insert_item(conn, source, external_id="80", kind="telegram_message")
+
+    cursor = await conn.execute(
+        """
+        INSERT INTO source_item_state_events (source_item_id, type)
+        VALUES (%s, 'deleted_at_source')
+        RETURNING id, observed_at, reason, evidence
+        """,
+        (item,),
+    )
+    event_id, observed_at, reason, evidence = await cursor.fetchone()
+
+    cursor = await conn.execute(
+        """
+        INSERT INTO source_item_state_events (
+            source_item_id, type, observed_at, reason, evidence
+        )
+        VALUES (%s, 'restored', %s, 'reappeared in scan', '{"message_id": 80}'::jsonb)
+        RETURNING id
+        """,
+        (item, PUBLISHED_AT),
+    )
+    full_id = (await cursor.fetchone())[0]
+
+    cursor = await conn.execute(
+        "SELECT type FROM source_item_state_events WHERE id = %s", (full_id,)
+    )
+
+    assert (await cursor.fetchone())[0] == "restored"
+    assert event_id > 0
+    assert observed_at is not None
+    assert reason is None
+    assert evidence == {}
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
 async def test_management_mode_defaults_to_bootstrap_and_rejects_unknown(conn, source):
     """sources.management_mode gates Plan 2 Task 4's bootstrap upsert."""
     cursor = await conn.execute("SELECT management_mode FROM sources WHERE id = %s", (source.id,))
