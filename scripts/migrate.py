@@ -19,11 +19,26 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import psycopg  # noqa: E402
 from psycopg import sql  # noqa: E402
 
+from src.config_loader import load_database_config  # noqa: E402
 from src.db.migrations import migrate  # noqa: E402
 
 
 def _default_database_url() -> str:
     return os.environ.get("DATABASE_URL") or os.environ.get("TELEBRIEF_TEST_DATABASE_URL") or ""
+
+
+def _resolve_domain_schema(explicit: str | None) -> str:
+    """Prefer an explicit --domain-schema, else config.yaml's database.domain_schema.
+
+    Falls back to 'public' when no configuration file exists so the CLI keeps
+    working for standalone database-only setups.
+    """
+    if explicit is not None:
+        return explicit
+    try:
+        return load_database_config().domain_schema
+    except FileNotFoundError:
+        return "public"
 
 
 async def _apply(
@@ -58,8 +73,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--domain-schema",
-        default="public",
-        help="Domain schema receiving the migrations (default: public)",
+        default=None,
+        help=(
+            "Domain schema receiving the migrations "
+            "(default: database.domain_schema from config.yaml, else public)"
+        ),
     )
     args = parser.parse_args(argv)
 
@@ -70,7 +88,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         version, applied = asyncio.run(
-            _apply(args.database_url, args.migrations_dir, args.domain_schema)
+            _apply(
+                args.database_url,
+                args.migrations_dir,
+                _resolve_domain_schema(args.domain_schema),
+            )
         )
     except Exception as exc:  # CLI boundary: report and fail non-zero
         print(f"migration failed: {exc}", file=sys.stderr)
