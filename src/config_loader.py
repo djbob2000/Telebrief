@@ -164,6 +164,10 @@ class Settings:
     digest_groups: List[DigestGroupConfig] = field(default_factory=list)
     filters: list[FilterSpec] = field(default_factory=list)
     dedup_topics: bool = False
+    # Transitional migration flag (Plan 2 Task 7): when true, digest/article
+    # inputs are read from the PostgreSQL source history and Telethon is never
+    # invoked at publication time. Requires database.enabled=true.
+    persistent_ingestion: bool = False
     reasoning_effort: str | None = None
     article: ArticleConfig = field(default_factory=ArticleConfig)
 
@@ -1086,6 +1090,11 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         )
     ai_provider, ai_model = _resolve_ai_settings(settings_dict)
     digest_mode, digest_groups, output_language = _parse_digest_settings(settings_dict)
+    persistent_ingestion = settings_dict.get("persistent_ingestion", False)
+    if not isinstance(persistent_ingestion, bool):
+        raise ValueError(
+            f"settings.persistent_ingestion must be a bool, got {type(persistent_ingestion).__name__}"
+        )
     raw_global_filters = settings_dict.get("filters")
     global_filters = _parse_filter_specs(
         raw_global_filters if raw_global_filters is not None else [],
@@ -1116,6 +1125,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         digest_groups=digest_groups,
         filters=global_filters,
         dedup_topics=bool(settings_dict.get("dedup_topics", False)),
+        persistent_ingestion=persistent_ingestion,
         reasoning_effort=(
             str(settings_dict["reasoning_effort"]).strip()
             if settings_dict.get("reasoning_effort") is not None
@@ -1128,6 +1138,14 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         raise ValueError(
             "target_user_id not configured in config.yaml. "
             "Get your Telegram user ID from @userinfobot"
+        )
+
+    # The persistent read path has no live-Telegram fallback: without the
+    # domain database there would be nothing to read digest inputs from.
+    if settings.persistent_ingestion and not database_config.enabled:
+        raise ValueError(
+            "settings.persistent_ingestion requires database.enabled=true in config.yaml: "
+            "digest inputs are read from the PostgreSQL source history when the flag is set"
         )
 
     # Cross-validate channel group references against known digest_groups

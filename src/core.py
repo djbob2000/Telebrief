@@ -17,6 +17,9 @@ from src.extensions.loader import load_class
 from src.formatter import DigestFormatter
 from src.grouper import DigestGrouper
 from src.image_generator import NewsImageGenerator
+from src.ingestion.reader import SourceRevisionReader
+from src.ingestion.repository import IngestionRepository
+from src.runtime import get_runtime
 from src.sender import DigestSender
 from src.storage import create_storage
 from src.summarizer import ERROR_SUMMARY_PREFIX, Summarizer
@@ -119,18 +122,10 @@ async def _apply_filters(
     return messages
 
 
-async def _collect_messages(config: Config, logger: logging.Logger, hours: int) -> dict:
-    """Collect messages from Telegram channels."""
-    logger.info("Collecting messages from Telegram")
-    collector = MessageCollector(config, logger)
-    await collector.connect()
-    try:
-        messages_by_channel = await collector.fetch_messages(hours=hours)
-    finally:
-        await collector.disconnect()
-    total = sum(len(msgs) for msgs in messages_by_channel.values())
-    logger.info(f"Collected {total} messages from {len(messages_by_channel)} channels")
-
+async def _apply_configured_filters(
+    messages_by_channel: dict, config: Config, logger: logging.Logger
+) -> dict:
+    """Run the configured filter chain per logical channel, in place per key."""
     channel_map = {ch.name: ch for ch in config.channels}
     filtered: dict = {}
     for channel_name, msgs in messages_by_channel.items():
@@ -140,7 +135,56 @@ async def _collect_messages(config: Config, logger: logging.Logger, hours: int) 
         else:
             logger.warning(f"Channel {channel_name!r} not in config; skipping filters")
         filtered[channel_name] = msgs
-    messages_by_channel = filtered
+    return filtered
+
+
+async def _collect_messages_legacy_raw(config: Config, logger: logging.Logger, hours: int) -> dict:
+    """Collect messages live over Telethon (legacy path, unchanged behavior)."""
+    logger.info("Collecting messages from Telegram")
+    collector = MessageCollector(config, logger)
+    await collector.connect()
+    try:
+        messages_by_channel = await collector.fetch_messages(hours=hours)
+    finally:
+        await collector.disconnect()
+    total = sum(len(msgs) for msgs in messages_by_channel.values())
+    logger.info(f"Collected {total} messages from {len(messages_by_channel)} channels")
+    return messages_by_channel
+
+
+async def _read_persistent_messages(config: Config, hours: int) -> dict:
+    """Read digest inputs from the persisted source history (no live Telegram).
+
+    DB failures propagate explicitly on purpose: silently falling back to a
+    live Telegram read would violate persistent-ingestion semantics, since
+    the digest must reflect what the ingestion path actually persisted.
+    """
+    runtime = get_runtime()
+    reader = SourceRevisionReader(runtime.uow, IngestionRepository())
+    now = datetime.now(timezone.utc)
+    return await reader.read_telegram_messages(
+        edition_slug="berdyansk",
+        since=now - timedelta(hours=hours),
+        until=now,
+    )
+
+
+async def _collect_messages(config: Config, logger: logging.Logger, hours: int) -> dict:
+    """Collect digest inputs from PostgreSQL history or live Telegram.
+
+    With ``settings.persistent_ingestion`` enabled this is a pure DB-read
+    compatibility adapter over :class:`SourceRevisionReader` and Telethon is
+    never invoked; otherwise the legacy collector path runs unchanged.
+    """
+    if config.settings.persistent_ingestion:
+        messages_by_channel = await _read_persistent_messages(config, hours)
+        total = sum(len(msgs) for msgs in messages_by_channel.values())
+        logger.info(f"Read {total} persisted messages from {len(messages_by_channel)} sources")
+    else:
+        messages_by_channel = await _collect_messages_legacy_raw(config, logger, hours)
+
+    # Transitional compatibility only: Source history was already persisted raw.
+    messages_by_channel = await _apply_configured_filters(messages_by_channel, config, logger)
 
     await _save_to_storage(config, messages_by_channel, logger)
     return messages_by_channel
@@ -439,7 +483,8 @@ async def collect_channel_messages(
         limit: Maximum messages to return, newest kept
 
     Returns:
-        (messages in chronological order, source) where source is "storage" or "telegram"
+        (messages in chronological order, source) where source is "storage",
+        "persistent" (persisted source history; no live fallback), or "telegram"
 
     Raises:
         ValueError: If hours or limit are out of range, or channel is not configured
@@ -460,6 +505,10 @@ async def collect_channel_messages(
         logger.info(f"Read {len(stored)} stored messages for {channel_cfg.name!r}")
         return stored, "storage"
 
+    if config.settings.persistent_ingestion:
+        messages = await _read_persistent_channel_messages(config, logger, channel_cfg, since)
+        return messages[-limit:], "persistent"
+
     # ponytail: same process-wide lock as digest builds — one Telethon session file
     async with _digest_lock:
         collector = MessageCollector(config, logger)
@@ -473,6 +522,32 @@ async def collect_channel_messages(
     messages = await _apply_filters(channel_cfg, messages, config, logger)
     logger.info(f"Fetched {len(messages)} live messages for {channel_cfg.name!r}")
     return messages[-limit:], "telegram"
+
+
+async def _read_persistent_channel_messages(
+    config: Config,
+    logger: logging.Logger,
+    channel_cfg: ChannelConfig,
+    since: datetime,
+) -> list[Message]:
+    """Read one channel's inputs from persisted source history instead of Telethon."""
+    runtime = get_runtime()
+    reader = SourceRevisionReader(runtime.uow, IngestionRepository())
+    all_messages = await reader.read_telegram_messages(
+        edition_slug="berdyansk",
+        since=since,
+        until=datetime.now(timezone.utc),
+    )
+    # Topic keys ("channel — topic") resolve to their parent channel config.
+    messages = [
+        message
+        for key, keyed in all_messages.items()
+        if _channel_config_for_name(config, key) is channel_cfg
+        for message in keyed
+    ]
+    messages = await _apply_filters(channel_cfg, messages, config, logger)
+    logger.info(f"Read {len(messages)} persisted messages for {channel_cfg.name!r}")
+    return messages
 
 
 async def build_digest(config: Config, logger: logging.Logger, hours: int = 24) -> str:

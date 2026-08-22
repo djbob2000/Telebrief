@@ -86,6 +86,14 @@ settings:
   #     config:
   #       min_chars: 30
 
+  # Persistent ingestion cutover (transitional migration flag, default false).
+  # When true, digests and articles read their inputs from the PostgreSQL
+  # source history populated by the ingestion worker and never touch Telethon;
+  # database failures surface as explicit errors (no live-Telegram fallback).
+  # The configured filter chain still runs after the DB read. Requires
+  # database.enabled: true (see the database: block below).
+  # persistent_ingestion: false
+
   # Output
   output_language: "Russian"  # Language for AI summaries (e.g., "English", "Russian", "Spanish")
   use_emojis: true

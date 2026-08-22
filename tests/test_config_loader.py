@@ -1791,3 +1791,53 @@ def test_load_database_config_require_enabled_rejects_missing_url(monkeypatch, t
         pytest.raises(ValueError, match="DATABASE_URL"),
     ):
         load_database_config(path, require_enabled=True)
+
+
+# --- settings.persistent_ingestion (transitional cutover flag) ---
+
+
+@pytest.mark.unit
+def test_persistent_ingestion_defaults_to_false(monkeypatch, tmp_path, mock_env_vars):
+    """Legacy live-Telegram collection remains the default until operator cutover."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=_write_minimal_config(tmp_path))
+    assert config.settings.persistent_ingestion is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", ["yes", 1, None])
+def test_persistent_ingestion_must_be_bool(monkeypatch, tmp_path, mock_env_vars, value):
+    path = _write_config(
+        tmp_path, {"settings": {"target_user_id": 123456789, "persistent_ingestion": value}}
+    )
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="persistent_ingestion must be a bool"):
+            load_config(path=path)
+
+
+@pytest.mark.unit
+def test_persistent_ingestion_requires_enabled_database(monkeypatch, tmp_path, mock_env_vars):
+    """Enabling the flag without database.enabled=true fails with a clear error."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    path = _write_config(
+        tmp_path, {"settings": {"target_user_id": 123456789, "persistent_ingestion": True}}
+    )
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="persistent_ingestion.*database.enabled"):
+            load_config(path=path)
+
+
+@pytest.mark.unit
+def test_persistent_ingestion_accepted_with_database_enabled(monkeypatch, tmp_path, mock_env_vars):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
+    path = _write_config(
+        tmp_path,
+        {
+            "database": {"enabled": True},
+            "settings": {"target_user_id": 123456789, "persistent_ingestion": True},
+        },
+    )
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=path)
+    assert config.settings.persistent_ingestion is True

@@ -1,12 +1,18 @@
 """Tests for core module."""
 
+import os
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import psycopg
 import pytest
 
 from src.config_loader import ChannelConfig, FilterSpec, ForumTopicConfig, StorageConfig
 from src.core import (
     _apply_filters,
+    _build_digest_parts,
     _channel_config_for_name,
     _collect_messages,
     _resolve_channel,
@@ -16,7 +22,10 @@ from src.core import (
     read_last_digest,
     validate_hours,
 )
+from src.db.pool import close_pool, open_pool
+from src.db.uow import DatabaseUnitOfWork
 from src.grouper import GroupedPoint
+from src.runtime import install_runtime
 
 
 @pytest.mark.unit
@@ -1374,3 +1383,188 @@ async def test_extract_candidate_photo_bytes_no_photo(sample_config, mock_logger
         {"Test Channel": [text_msg]}, sample_config, mock_logger
     )
     assert res is None
+
+
+# --- persistent_ingestion (transitional DB-read cutover) ---
+
+
+def _forbid_telethon(mock_collector_class) -> None:
+    """Any MessageCollector construction means the flag leaked to the legacy path."""
+    mock_collector_class.side_effect = AssertionError("Telethon must not be used")
+
+
+class _BrokenUow:
+    @asynccontextmanager
+    async def transaction(self):
+        raise RuntimeError("database unavailable")
+        yield
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collect_messages_persistent_surfaces_db_errors_without_telegram_fallback(
+    sample_config, mock_logger
+):
+    """persistent_ingestion=true: a DB failure raises explicitly and never falls back."""
+    sample_config.settings.persistent_ingestion = True
+
+    with patch("src.core.MessageCollector") as mock_collector_class:
+        _forbid_telethon(mock_collector_class)
+        install_runtime(SimpleNamespace(uow=_BrokenUow()))
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await _collect_messages(sample_config, mock_logger, 24)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collect_channel_messages_persistent_reads_history_without_telegram(
+    sample_config, mock_logger, sample_messages, monkeypatch
+):
+    """Single-channel reads route through the reader; config filters still apply."""
+
+    class _StubReader:
+        def __init__(self, uow, repository):
+            del uow, repository
+
+        async def read_telegram_messages(self, edition_slug, since, until):
+            assert edition_slug == "berdyansk"
+            return {
+                "Test Channel": sample_messages,
+                "Unconfigured Source": [object()],
+            }
+
+    monkeypatch.setattr("src.core.SourceRevisionReader", _StubReader)
+    sample_config.settings.persistent_ingestion = True
+    sample_config.settings.filters = [
+        FilterSpec(
+            class_path="src.extensions.filters.KeywordFilter",
+            config={"include": ["Test message 2"]},
+        )
+    ]
+
+    with patch("src.core.MessageCollector") as mock_collector_class:
+        _forbid_telethon(mock_collector_class)
+        install_runtime(SimpleNamespace(uow=object()))
+        messages, source = await collect_channel_messages(
+            sample_config, mock_logger, "Test Channel", hours=6
+        )
+
+    assert (messages, source) == ([sample_messages[1]], "persistent")
+    mock_collector_class.assert_not_called()
+
+
+requires_postgres = pytest.mark.skipif(
+    "TELEBRIEF_TEST_DATABASE_URL" not in os.environ,
+    reason="TELEBRIEF_TEST_DATABASE_URL is not set",
+)
+
+_TRUNCATE = """
+    TRUNCATE source_items, source_item_revisions, source_assets,
+             source_item_state_events, collection_checkpoints,
+             collection_runs, source_editions, sources, editions
+    RESTART IDENTITY CASCADE
+"""
+
+
+@requires_postgres
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_build_digest_parts_persistent_reaches_summarization_from_db(
+    sample_config, mock_logger, database_config
+):
+    """Flag=true: digest inputs come from PostgreSQL; Telethon.connect must never run."""
+    from src.collector import Message
+
+    sample_config.settings.persistent_ingestion = True
+    published = datetime.now(timezone.utc) - timedelta(hours=1)
+
+    conn: psycopg.AsyncConnection = await psycopg.AsyncConnection.connect(
+        database_config.url, autocommit=True
+    )
+    pool = await open_pool(database_config)
+    try:
+        await conn.execute(_TRUNCATE)
+        cursor = await conn.execute(
+            "INSERT INTO editions (slug, name) VALUES ('berdyansk', 'Бердянск') RETURNING id"
+        )
+        edition_id = (await cursor.fetchone())[0]
+        cursor = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, name)
+            VALUES ('telegram', 'channel', '@test_channel', 'Test Channel')
+            RETURNING id
+            """
+        )
+        source_id = (await cursor.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+            (source_id, edition_id),
+        )
+        cursor = await conn.execute(
+            """
+            INSERT INTO source_items (
+                source_id, kind, external_id, author_name, canonical_url,
+                published_at, first_collected_at, metadata
+            )
+            VALUES (
+                %s, 'telegram_message', '42', 'Редакция', 'https://t.me/test_channel/42',
+                %s, %s, '{"topic_id": null, "reply_to_id": null, "has_media": false}'::jsonb
+            )
+            RETURNING id
+            """,
+            (source_id, published, published),
+        )
+        item_id = (await cursor.fetchone())[0]
+        await conn.execute(
+            """
+            INSERT INTO source_item_revisions (
+                source_item_id, revision_no, collected_at, content_hash, text_content, payload
+            )
+            VALUES (%s, 1, %s, 'hash-1', 'Вода отключена на центральной улице', '{}'::jsonb)
+            """,
+            (item_id, published),
+        )
+
+        install_runtime(SimpleNamespace(uow=DatabaseUnitOfWork(pool)))
+
+        with (
+            patch("src.core.MessageCollector") as mock_collector_class,
+            patch("src.core.Summarizer") as mock_summarizer_class,
+            patch("src.core.DigestFormatter") as mock_formatter_class,
+        ):
+            _forbid_telethon(mock_collector_class)
+
+            captured = {}
+
+            async def _capture_summarize(messages_by_channel):
+                captured["messages"] = messages_by_channel
+                return {"channel_summaries": {"Test Channel": "Summary"}, "overview": ""}
+
+            mock_summarizer = MagicMock()
+            mock_summarizer.summarize_all = AsyncMock(side_effect=_capture_summarize)
+            mock_summarizer_class.return_value = mock_summarizer
+
+            mock_formatter = MagicMock()
+            mock_formatter.format_channel_message = MagicMock(return_value="Channel msg")
+            mock_formatter.format_summary_message = MagicMock(return_value="Header")
+            mock_formatter_class.return_value = mock_formatter
+
+            built = await _build_digest_parts(sample_config, mock_logger, hours=24)
+
+        assert built is not None
+        parts, summary_message, rich_document = built
+        assert parts == [("Test Channel", "Channel msg")]
+        assert summary_message == "Header"
+        assert rich_document is None
+
+        persisted = captured["messages"]["Test Channel"]
+        assert len(persisted) == 1
+        assert isinstance(persisted[0], Message)
+        assert persisted[0].text == "Вода отключена на центральной улице"
+        assert persisted[0].channel_name == "Test Channel"
+        assert persisted[0].message_id == 42
+    finally:
+        await conn.execute(_TRUNCATE)
+        await conn.close()
+        await close_pool(pool)
