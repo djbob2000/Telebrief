@@ -1,5 +1,11 @@
 """
 Scheduler for automated daily digest generation.
+
+Scope note: this in-process APScheduler remains the owner of the daily
+digest/article workflows only. Durable source collection is orchestrated by
+the Procrastinate worker (``python -m src.worker``: every-minute
+``dispatch_due_sources`` plus per-source ``scan_source`` jobs), which supersedes
+any in-process collection scheduling whenever persistent ingestion is enabled.
 """
 
 import asyncio

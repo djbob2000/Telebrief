@@ -30,6 +30,7 @@ same discipline and never commits — the caller owns the transaction.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
@@ -40,6 +41,7 @@ from psycopg.types.json import Jsonb
 from src.config_loader import Config
 from src.domain.editions import Edition, NewEdition
 from src.domain.sources import NewSource, Source
+from src.ingestion.protocol import Collector
 from src.repositories.editions import EditionRepository
 
 PLATFORM_TELEGRAM = "telegram"
@@ -269,3 +271,50 @@ def _differs(existing: SimpleNamespace, source: Source) -> bool:
         or existing.enabled != source.enabled
         or existing.collector_options != source.collector_options
     )
+
+
+class CollectorRegistry:
+    """Selects the collector for a Source platform.
+
+    This module owns all ingestion registries: :class:`SourceRegistry` maps
+    configuration onto source rows, this class maps source platforms onto
+    collectors. Factories are lazy (a collector may need provider credentials)
+    and their instances are cached per platform, so one scan process builds
+    each client once. ``register`` replaces an existing mapping and discards
+    the cached instance; unknown platforms raise ``LookupError``.
+    """
+
+    def __init__(self) -> None:
+        self._factories: dict[str, Callable[[], Collector]] = {}
+        self._instances: dict[str, Collector] = {}
+
+    def register(self, platform: str, factory: Callable[[], Collector]) -> None:
+        """Bind a collector factory to a platform, replacing any previous one."""
+        self._factories[platform] = factory
+        self._instances.pop(platform, None)
+
+    def select(self, platform: str) -> Collector:
+        """Return (building and caching on first use) the platform collector."""
+        if platform not in self._factories:
+            raise LookupError(f"no collector registered for platform {platform!r}")
+        if platform not in self._instances:
+            self._instances[platform] = self._factories[platform]()
+        return self._instances[platform]
+
+
+def _build_telegram_collector() -> Collector:
+    """Build the Telegram collector from configuration; imports stay lazy."""
+    from src.config_loader import load_config
+    from src.providers.telegram import TelegramCollector
+
+    return TelegramCollector(load_config())
+
+
+def build_default_collector_registry() -> CollectorRegistry:
+    """Production wiring: Plan 2 registers Telegram only.
+
+    Plan 5 adds Facebook here without changing any caller.
+    """
+    registry = CollectorRegistry()
+    registry.register(PLATFORM_TELEGRAM, _build_telegram_collector)
+    return registry

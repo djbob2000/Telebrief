@@ -16,6 +16,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from src.domain.ingestion import CollectionRun, SourceItem, SourceItemRevision
+from src.domain.sources import Source
 from src.ingestion.models import (
     CollectionCheckpoint,
     JSONValue,
@@ -333,6 +334,42 @@ class IngestionRepository:
             consecutive_failures=row[5],
         )
 
+    async def list_collection_candidates(
+        self, conn: psycopg.AsyncConnection
+    ) -> list[tuple[Source, CollectionCheckpoint | None]]:
+        """Every enabled source joined with its checkpoint (None when absent).
+
+        Feeds the periodic dispatcher: the schedule policy decides due-ness,
+        this query only narrows to enabled sources in stable id order.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT s.id, s.platform, s.kind, s.external_id, s.url, s.name,
+                   s.role, s.enabled, s.collector_options, s.created_at, s.updated_at,
+                   c.adapter_state, c.last_success_at, c.last_scan_at, c.cursor,
+                   c.backoff_until, c.consecutive_failures
+            FROM sources s
+            LEFT JOIN collection_checkpoints c ON c.source_id = s.id
+            WHERE s.enabled
+            ORDER BY s.id
+            """
+        )
+        rows = await cursor.fetchall()
+        return [(Source.from_row(row[:11]), _checkpoint_from_row(row[11:])) for row in rows]
+
+    async def apply_backoff(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        source_id: int,
+        backoff_until: datetime,
+    ) -> None:
+        """Stamp the rate-limit resume time; the dispatcher honors it."""
+        await conn.execute(
+            "UPDATE collection_checkpoints SET backoff_until = %s WHERE source_id = %s",
+            (backoff_until, source_id),
+        )
+
     async def _resolve_external_id(
         self, conn: psycopg.AsyncConnection, source_id: int, external_id: str | None
     ) -> int | None:
@@ -344,6 +381,20 @@ class IngestionRepository:
         )
         row = await cursor.fetchone()
         return None if row is None else row[0]
+
+
+def _checkpoint_from_row(row: tuple) -> CollectionCheckpoint | None:
+    """Build a checkpoint from the joined columns; NULL row means no entry."""
+    if row[0] is None:
+        return None
+    return CollectionCheckpoint(
+        adapter_state=row[0],
+        last_success_at=row[1],
+        last_scan_at=row[2],
+        cursor=row[3],
+        backoff_until=row[4],
+        consecutive_failures=row[5],
+    )
 
 
 def _content_hash(observation: ObservedItem) -> str:

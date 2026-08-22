@@ -10,7 +10,7 @@ from src.config_loader import DatabaseConfig, load_database_config
 
 PROCASTINATE_POOL_MIN_SIZE = 1
 PROCASTINATE_POOL_MAX_SIZE = 2
-JOB_IMPORT_PATHS = ("src.jobs.maintenance",)
+JOB_IMPORT_PATHS = ("src.jobs.maintenance", "src.jobs.ingestion")
 
 
 def build_app(
