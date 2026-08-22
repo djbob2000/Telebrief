@@ -121,7 +121,8 @@ async def test_bootstrap_twice_is_idempotent(conn, config_with_roles):
 
     rows_after_second = await _fetch_sources(conn)
     assert rows_after_second.keys() == rows_after_first.keys()
-    assert rows_after_second["@news_city"] == rows_after_first["@news_city"]
+    for external_id in rows_after_first:
+        assert rows_after_second[external_id] == rows_after_first[external_id], external_id
 
 
 @pytest.mark.postgres

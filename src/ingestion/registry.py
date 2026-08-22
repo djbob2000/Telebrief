@@ -11,7 +11,7 @@ the Telegram-centric configuration. Design rules:
   database owns it; a later bootstrap only refreshes bootstrap-controlled
   defaults while ``management_mode='bootstrap'``. Rows flipped to
   ``management_mode='database'`` are detected by that column alone (never by
-  timestamps) and are left completely untouched.
+  timestamps) and are skipped entirely — never refreshed, never (re)bound.
 * **Roles map exactly** from the editorial ``source_type`` vocabulary:
   news -> local_media, community -> community, official -> official,
   classifieds -> other, mixed -> other. Unknown values degrade to 'other'
@@ -38,7 +38,7 @@ import psycopg
 from psycopg.types.json import Jsonb
 
 from src.config_loader import Config
-from src.domain.editions import NewEdition
+from src.domain.editions import Edition, NewEdition
 from src.domain.sources import NewSource, Source
 from src.repositories.editions import EditionRepository
 
@@ -202,11 +202,6 @@ class SourceRegistry:
 
             candidate = build_bootstrap_source(channel, interval_minutes)
             source = await upsert_bootstrap_source(conn, candidate)
-            if existing is not None and existing.management_mode == "database":
-                skipped += 1
-                continue
-
-            source = await upsert_bootstrap_source(conn, candidate)
             if source is None:
                 # Raced flip to 'database' between the read and the upsert:
                 # treat exactly like the pre-checked skip.
@@ -231,7 +226,7 @@ class SourceRegistry:
             edition_created=edition_created,
         )
 
-    async def _ensure_edition(self, conn: psycopg.AsyncConnection) -> tuple[Any, bool]:
+    async def _ensure_edition(self, conn: psycopg.AsyncConnection) -> tuple[Edition, bool]:
         """Return ``(edition, created)`` for the default edition.
 
         Missing editions are created with the berdyansk defaults: name
