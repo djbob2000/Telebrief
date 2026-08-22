@@ -1659,9 +1659,10 @@ def _write_config(tmp_path, extra_blocks: dict | None = None) -> str:
 
 
 @pytest.mark.unit
-def test_database_config_defaults(monkeypatch, tmp_path):
+def test_database_config_defaults(monkeypatch, tmp_path, mock_env_vars):
     monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
-    config = load_config(path=_write_minimal_config(tmp_path))
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=_write_minimal_config(tmp_path))
     assert config.database.min_pool_size == 1
     assert config.database.max_pool_size == 4
     assert config.database.domain_schema == "public"
@@ -1669,7 +1670,7 @@ def test_database_config_defaults(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_database_pool_max_must_cover_min(monkeypatch, tmp_path):
+def test_database_pool_max_must_cover_min(monkeypatch, tmp_path, mock_env_vars):
     monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
     path = _write_config(tmp_path, {"database": {"min_pool_size": 4, "max_pool_size": 2}})
     with pytest.raises(ValueError, match="max_pool_size"):
@@ -1677,7 +1678,7 @@ def test_database_pool_max_must_cover_min(monkeypatch, tmp_path):
 
 
 @pytest.mark.unit
-def test_database_disabled_by_default_without_block_or_env(monkeypatch, tmp_path):
+def test_database_disabled_by_default_without_block_or_env(monkeypatch, tmp_path, mock_env_vars):
     """Migration phase: no database block and no DATABASE_URL keeps Postgres off."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
     with patch("src.config_loader.load_dotenv"):
@@ -1688,18 +1689,19 @@ def test_database_disabled_by_default_without_block_or_env(monkeypatch, tmp_path
 
 
 @pytest.mark.unit
-def test_database_enabled_block_parsed_from_env_url(monkeypatch, tmp_path):
+def test_database_enabled_block_parsed_from_env_url(monkeypatch, tmp_path, mock_env_vars):
     """The connection URL comes from DATABASE_URL only and never leaks via repr."""
     monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
     path = _write_config(tmp_path, {"database": {"enabled": True}})
-    config = load_config(path=path)
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=path)
     assert config.database.enabled is True
     assert config.database.url == "postgresql://telebrief:test@localhost/telebrief"
     assert "telebrief:test" not in repr(config.database)
 
 
 @pytest.mark.unit
-def test_database_custom_values_parsed(monkeypatch, tmp_path):
+def test_database_custom_values_parsed(monkeypatch, tmp_path, mock_env_vars):
     monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
     path = _write_config(
         tmp_path,
@@ -1713,7 +1715,8 @@ def test_database_custom_values_parsed(monkeypatch, tmp_path):
             }
         },
     )
-    config = load_config(path=path)
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=path)
     assert config.database == DatabaseConfig(
         enabled=True,
         url="postgresql://telebrief:test@localhost/telebrief",
@@ -1735,7 +1738,7 @@ def test_database_custom_values_parsed(monkeypatch, tmp_path):
         {"min_pool_size": 1, "max_pool_size": 11},
     ],
 )
-def test_database_invalid_pool_sizes_raise(monkeypatch, tmp_path, block):
+def test_database_invalid_pool_sizes_raise(monkeypatch, tmp_path, mock_env_vars, block):
     """Pool sizes must satisfy 1 <= min_pool_size <= max_pool_size <= 10."""
     monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
     path = _write_config(tmp_path, {"database": block})
@@ -1744,7 +1747,7 @@ def test_database_invalid_pool_sizes_raise(monkeypatch, tmp_path, block):
 
 
 @pytest.mark.unit
-def test_database_enabled_requires_database_url(monkeypatch, tmp_path):
+def test_database_enabled_requires_database_url(monkeypatch, tmp_path, mock_env_vars):
     """An enabled database block without DATABASE_URL fails clearly at load time."""
     monkeypatch.delenv("DATABASE_URL", raising=False)
     path = _write_config(tmp_path, {"database": {"enabled": True}})

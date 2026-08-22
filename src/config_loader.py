@@ -736,7 +736,7 @@ def _parse_database_config(yaml_config: dict, *, require_enabled: bool = False) 
 
     return DatabaseConfig(
         enabled=enabled,
-        url=url,
+        url=url.strip(),
         min_pool_size=min_pool_size,
         max_pool_size=max_pool_size,
         domain_schema=domain_schema.strip(),
@@ -990,7 +990,8 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
 
     Args:
         config_path: Path to config.yaml file
-        path: Keyword-only alias for config_path (mirrors load_database_config)
+        path: Keyword-only alias for config_path (mirrors load_database_config).
+            If both are given they must be equal, otherwise ValueError is raised.
 
     Returns:
         Config object with all settings
