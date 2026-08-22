@@ -184,13 +184,15 @@ class TelebriefApp:
         # prevent the rest of the shutdown (close() already guarantees both
         # resources get their teardown attempt).
         if self.infrastructure is not None:
-            self.logger.info("Stopping domain infrastructure...")
-            clear_runtime(self.infrastructure)
-            try:
-                await self.infrastructure.close()
-            except Exception as e:
-                self.logger.error(f"Infrastructure shutdown failed: {e}", exc_info=True)
-            self.infrastructure = None
+            logger = self.logger
+            if logger is not None:
+                logger.info("Stopping domain infrastructure...")
+                clear_runtime(self.infrastructure)
+                try:
+                    await self.infrastructure.close()
+                except Exception as e:
+                    logger.error(f"Infrastructure shutdown failed: {e}", exc_info=True)
+                self.infrastructure = None
 
         self.logger.info("✅ Shutdown complete")
         self.logger.info("=" * 70)
