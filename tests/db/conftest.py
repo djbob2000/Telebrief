@@ -49,20 +49,6 @@ def procrastinate_schema_ready() -> None:
 
 
 @pytest.fixture
-def database_config() -> DatabaseConfig:
-    """DatabaseConfig pointing at the persistent PostgreSQL test database."""
-    url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
-    return DatabaseConfig(
-        enabled=True,
-        url=url,
-        min_pool_size=1,
-        max_pool_size=4,
-        domain_schema="public",
-        procrastinate_schema="procrastinate",
-    )
-
-
-@pytest.fixture
 async def pg_conn(database_config: DatabaseConfig):
     """Async connection to the test database.
 

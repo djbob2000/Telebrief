@@ -1,11 +1,26 @@
 """Pytest configuration and fixtures."""
 
+import os
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
 import pytest
 
-from src.config_loader import ChannelConfig, Config, Settings
+from src.config_loader import ChannelConfig, Config, DatabaseConfig, Settings
+
+
+@pytest.fixture
+def database_config() -> DatabaseConfig:
+    """DatabaseConfig pointing at the persistent PostgreSQL test database."""
+    url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
+    return DatabaseConfig(
+        enabled=True,
+        url=url,
+        min_pool_size=1,
+        max_pool_size=4,
+        domain_schema="public",
+        procrastinate_schema="procrastinate",
+    )
 
 
 @pytest.fixture(autouse=True)
