@@ -22,9 +22,10 @@ from src.db.uow import DatabaseUnitOfWork
 if TYPE_CHECKING:
     import procrastinate
 
-# Supported domain schema range; Plan 1 migrations land versions 1..3.
-SCHEMA_VERSION_MINIMUM = 3
-SCHEMA_VERSION_MAXIMUM = 3
+# Supported domain schema range; Plan 1 migrations land versions 1..3 and
+# Plan 2 Task 1 (source items) lands version 4.
+SCHEMA_VERSION_MINIMUM = 4
+SCHEMA_VERSION_MAXIMUM = 4
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]
 
