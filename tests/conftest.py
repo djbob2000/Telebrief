@@ -18,6 +18,21 @@ def reset_provider_cascade_state():
     ProviderCascade.reset_global_state()
 
 
+@pytest.fixture(autouse=True)
+def reset_telebrief_runtime():
+    """Clear the process-local Telebrief runtime around each test.
+
+    Tests that install a runtime (or leak one from a failed initialize) must
+    not poison other tests; the registry has no unguarded public reset, so
+    this fixture resets the module reference directly on both sides.
+    """
+    from src import runtime
+
+    runtime._runtime = None
+    yield
+    runtime._runtime = None
+
+
 @pytest.fixture
 def mock_env_vars(monkeypatch):
     """Set up mock environment variables."""

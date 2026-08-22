@@ -12,9 +12,11 @@ import signal
 import sys
 from contextlib import suppress
 
+from src.bootstrap import ApplicationInfrastructure, build_infrastructure
 from src.bot_commands import BotCommandHandler
 from src.config_loader import load_config
 from src.mcp_server import build_server
+from src.runtime import clear_runtime, install_runtime
 from src.scheduler import DigestScheduler
 from src.utils import setup_logging
 
@@ -30,6 +32,7 @@ class TelebriefApp:
         self.bot_handler = None
         self.mcp = None
         self.mcp_task = None
+        self.infrastructure: ApplicationInfrastructure | None = None
         self.shutdown_event = asyncio.Event()
 
     async def initialize(self):
@@ -54,13 +57,19 @@ class TelebriefApp:
                 f"daily {self.config.settings.schedule_time} "
                 f"({self.config.settings.lookback_hours}h)"
             )
-            self.logger.info(
-                f"Schedule: {schedule} {self.config.settings.timezone}"
-            )
+            self.logger.info(f"Schedule: {schedule} {self.config.settings.timezone}")
             self.logger.info(f"Target user: {self.config.settings.target_user_id}")
             self.logger.info(
                 f"AI provider: {self.config.settings.ai_provider}, model: {self.config.settings.ai_model}"
             )
+
+            # Bootstrap domain infrastructure only when the PostgreSQL store is
+            # enabled; legacy mode (database.enabled=false) stays DB-free and
+            # must not import src.jobs.app or require DATABASE_URL.
+            if self.config.database.enabled:
+                self.logger.info("Initializing domain database infrastructure...")
+                self.infrastructure = await build_infrastructure(self.config.database)
+                install_runtime(self.infrastructure)
 
             # Initialize scheduler
             self.logger.info("Initializing scheduler...")
@@ -170,6 +179,19 @@ class TelebriefApp:
             with suppress(asyncio.CancelledError):
                 await self.mcp_task
 
+        # Tear down domain infrastructure: clear the process runtime first,
+        # then close Procrastinate and the pool. A failing component must not
+        # prevent the rest of the shutdown (close() already guarantees both
+        # resources get their teardown attempt).
+        if self.infrastructure is not None:
+            self.logger.info("Stopping domain infrastructure...")
+            clear_runtime(self.infrastructure)
+            try:
+                await self.infrastructure.close()
+            except Exception as e:
+                self.logger.error(f"Infrastructure shutdown failed: {e}", exc_info=True)
+            self.infrastructure = None
+
         self.logger.info("✅ Shutdown complete")
         self.logger.info("=" * 70)
 
@@ -223,7 +245,6 @@ async def main():
         )
         sys.exit(0 if success else 1)
 
-
     if args.digest:
         from src.core import generate_and_send_digest
 
@@ -252,7 +273,6 @@ async def main():
         # Ensure clean shutdown
         if not app.shutdown_event.is_set():
             await app.shutdown()
-
 
 
 if __name__ == "__main__":
