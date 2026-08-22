@@ -14,6 +14,8 @@ import psycopg
 import pytest
 
 from src.config_loader import DatabaseConfig
+from src.db.pool import close_pool, open_pool
+from src.db.uow import DatabaseUnitOfWork
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -44,11 +46,40 @@ async def conn(database_config: DatabaseConfig):
         database_config.url, autocommit=True
     )
     try:
-        await conn.execute("TRUNCATE source_editions, sources, editions RESTART IDENTITY CASCADE")
+        await conn.execute(
+            """
+            TRUNCATE source_items, source_item_revisions, source_assets,
+                     source_item_state_events, collection_checkpoints,
+                     collection_runs, source_editions, sources, editions
+            RESTART IDENTITY CASCADE
+            """
+        )
         yield conn
     finally:
-        await conn.execute("TRUNCATE source_editions, sources, editions RESTART IDENTITY CASCADE")
+        await conn.execute(
+            """
+            TRUNCATE source_items, source_item_revisions, source_assets,
+                     source_item_state_events, collection_checkpoints,
+                     collection_runs, source_editions, sources, editions
+            RESTART IDENTITY CASCADE
+            """
+        )
         await conn.close()
+
+
+@pytest.fixture
+async def pool(conn, database_config: DatabaseConfig):
+    """Pooled connections over the same truncated slice as ``conn``."""
+    pool = await open_pool(database_config)
+    try:
+        yield pool
+    finally:
+        await close_pool(pool)
+
+
+@pytest.fixture
+def uow(pool) -> DatabaseUnitOfWork:
+    return DatabaseUnitOfWork(pool)
 
 
 @pytest.fixture

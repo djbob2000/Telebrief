@@ -8,12 +8,16 @@ with IngestionRepository behaviour tests layered on these constraints.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import psycopg
 import psycopg.errors
 import pytest
+
+from src.ingestion.models import ObservedAsset, ObservedItem, ObservedStateEvent
+from src.ingestion.repository import IngestionRepository
 
 PUBLISHED_AT = datetime(2026, 8, 22, 10, 0, tzinfo=timezone.utc)
 
@@ -385,3 +389,279 @@ async def _insert_revision_max_plus_one(
         """,
         (item_id, item_id, PUBLISHED_AT, content_hash, f"text {content_hash}"),
     )
+
+
+def _observation(
+    *,
+    external_id: str = "42",
+    text: str = "hello",
+    parent_external_id: str | None = None,
+    root_external_id: str | None = None,
+) -> ObservedItem:
+    return ObservedItem(
+        kind="telegram_message",
+        external_id=external_id,
+        text=text,
+        author_name="Resident",
+        published_at=PUBLISHED_AT,
+        canonical_url=f"https://t.me/example/{external_id}",
+        metadata={"topic": 7},
+        observed_at=PUBLISHED_AT,
+        parent_external_id=parent_external_id,
+        root_external_id=root_external_id,
+    )
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_get_or_create_item_shell_creates_identity_once(conn, source):
+    """First observation creates the shell; re-observation resolves same row."""
+    repo = IngestionRepository()
+
+    item, created = await repo.get_or_create_item_shell(conn, source.id, _observation())
+
+    assert created is True
+    assert item.id > 0
+    assert item.external_id == "42"
+    assert item.kind == "telegram_message"
+    assert item.author_name == "Resident"
+    assert item.first_collected_at == PUBLISHED_AT
+
+    again, created_again = await repo.get_or_create_item_shell(
+        conn, source.id, _observation(text="hello edited")
+    )
+
+    assert created_again is False
+    assert again.id == item.id
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_ensure_relationships_links_known_and_skips_unknown_references(conn, source):
+    """Resolved parent/root ids are written; unresolved references stay NULL.
+
+    Out-of-order batches self-heal: every later ingest of the item retries
+    ensure_relationships once the missing shell finally exists.
+    """
+    repo = IngestionRepository()
+    parent, _ = await repo.get_or_create_item_shell(conn, source.id, _observation(external_id="10"))
+    reply, _ = await repo.get_or_create_item_shell(conn, source.id, _observation(external_id="11"))
+
+    await repo.ensure_relationships(
+        conn,
+        source_id=source.id,
+        item_id=reply.id,
+        parent_external_id="10",
+        root_external_id="10",
+    )
+    cursor = await conn.execute(
+        "SELECT parent_item_id, root_item_id FROM source_items WHERE id = %s", (reply.id,)
+    )
+    stored_parent, stored_root = await cursor.fetchone()
+    assert stored_parent == parent.id
+    assert stored_root == parent.id
+
+    orphan, _ = await repo.get_or_create_item_shell(
+        conn, source.id, _observation(external_id="12", parent_external_id="ghost")
+    )
+    await repo.ensure_relationships(
+        conn,
+        source_id=source.id,
+        item_id=orphan.id,
+        parent_external_id="ghost",
+        root_external_id=None,
+    )
+    cursor = await conn.execute(
+        "SELECT parent_item_id FROM source_items WHERE id = %s", (orphan.id,)
+    )
+    assert (await cursor.fetchone())[0] is None
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_insert_revision_if_changed_compares_latest_hash_only(conn, source):
+    """Dedup is against the latest revision only; A -> B -> A makes revision 3."""
+    repo = IngestionRepository()
+    item, _ = await repo.get_or_create_item_shell(conn, source.id, _observation())
+
+    first = await repo.insert_revision_if_changed(
+        conn, item.id, _observation(), collected_at=PUBLISHED_AT
+    )
+    assert first is not None
+    assert first.revision_no == 1
+
+    duplicate = await repo.insert_revision_if_changed(
+        conn, item.id, _observation(), collected_at=PUBLISHED_AT
+    )
+    assert duplicate is None
+
+    edited = await repo.insert_revision_if_changed(
+        conn, item.id, _observation(text="hello edited"), collected_at=PUBLISHED_AT
+    )
+    assert edited is not None
+    assert edited.revision_no == 2
+
+    reverted = await repo.insert_revision_if_changed(
+        conn, item.id, _observation(), collected_at=PUBLISHED_AT
+    )
+    assert reverted is not None
+    assert reverted.revision_no == 3
+
+    cursor = await conn.execute(
+        "SELECT count(*) FROM source_item_revisions WHERE source_item_id = %s", (item.id,)
+    )
+    assert (await cursor.fetchone())[0] == 3
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_get_latest_revision_returns_none_or_highest(conn, source):
+    """get_latest_revision orders by revision_no descending."""
+    repo = IngestionRepository()
+    item, _ = await repo.get_or_create_item_shell(conn, source.id, _observation())
+    assert await repo.get_latest_revision(conn, item.id) is None
+
+    await repo.insert_revision_if_changed(conn, item.id, _observation(), collected_at=PUBLISHED_AT)
+    latest = await repo.insert_revision_if_changed(
+        conn, item.id, _observation(text="hello edited"), collected_at=PUBLISHED_AT
+    )
+
+    current = await repo.get_latest_revision(conn, item.id)
+    assert current is not None
+    assert current.id == latest.id
+    assert current.revision_no == 2
+    assert current.text_content == "hello edited"
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_upsert_asset_for_revision_is_idempotent_per_identity(conn, source):
+    """Same (kind, external_url) upserts in place; nothing duplicates."""
+    repo = IngestionRepository()
+    item, _ = await repo.get_or_create_item_shell(conn, source.id, _observation())
+    revision = await repo.insert_revision_if_changed(
+        conn, item.id, _observation(), collected_at=PUBLISHED_AT
+    )
+    assert revision is not None
+    asset = ObservedAsset(
+        item_external_id="42",
+        kind="photo",
+        external_url="https://cdn.example/1.jpg",
+        mime_type="image/jpeg",
+        content_hash="hash-a",
+        metadata={"width": 800},
+    )
+
+    await repo.upsert_asset_for_revision(conn, revision.id, asset)
+    await repo.upsert_asset_for_revision(conn, revision.id, asset)
+
+    cursor = await conn.execute(
+        "SELECT count(*) FROM source_assets WHERE source_item_revision_id = %s", (revision.id,)
+    )
+    assert (await cursor.fetchone())[0] == 1
+
+    changed = replace(asset, content_hash="hash-b", mime_type="image/webp")
+    await repo.upsert_asset_for_revision(conn, revision.id, changed)
+
+    cursor = await conn.execute(
+        """
+        SELECT content_hash, mime_type FROM source_assets
+        WHERE source_item_revision_id = %s
+        """,
+        (revision.id,),
+    )
+    rows = await cursor.fetchall()
+    assert len(rows) == 1
+    assert rows[0][0] == "hash-b"
+    assert rows[0][1] == "image/webp"
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_insert_state_event_appends_and_skips_unknown_items(conn, source):
+    """Events append for known items; unknown anchors are skipped."""
+    repo = IngestionRepository()
+    item, _ = await repo.get_or_create_item_shell(conn, source.id, _observation())
+    event = ObservedStateEvent(
+        item_external_id="42",
+        type="deleted_at_source",
+        observed_at=PUBLISHED_AT,
+        reason="missing from full rescan",
+        evidence={"message_id": 42},
+    )
+
+    event_id = await repo.insert_state_event(conn, source.id, event)
+    assert event_id is not None and event_id > 0
+
+    cursor = await conn.execute(
+        """
+        SELECT source_item_id, type, observed_at, reason, evidence
+        FROM source_item_state_events WHERE id = %s
+        """,
+        (event_id,),
+    )
+    row = await cursor.fetchone()
+    assert row[0] == item.id
+    assert row[1] == "deleted_at_source"
+    assert row[2] == PUBLISHED_AT
+    assert row[3] == "missing from full rescan"
+    assert row[4] == {"message_id": 42}
+
+    skipped = await repo.insert_state_event(
+        conn, source.id, replace(event, item_external_id="999999")
+    )
+    assert skipped is None
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_run_lifecycle_records_outcome_error_kind_and_completion(conn, source):
+    """start_run opens a running row; finish_run closes it with the outcome."""
+    repo = IngestionRepository()
+    run = await repo.start_run(
+        conn, source_id=source.id, trigger="scheduled", started_at=PUBLISHED_AT
+    )
+    assert run.id > 0
+    assert run.status == "running"
+    assert run.trigger == "scheduled"
+
+    await repo.finish_run(
+        conn,
+        run_id=run.id,
+        outcome="rate_limited",
+        completed_at=PUBLISHED_AT,
+        error_kind="flood_wait",
+    )
+
+    cursor = await conn.execute(
+        "SELECT status, completed_at, error_kind FROM collection_runs WHERE id = %s", (run.id,)
+    )
+    status, completed_at, error_kind = await cursor.fetchone()
+    assert status == "rate_limited"
+    assert completed_at == PUBLISHED_AT
+    assert error_kind == "flood_wait"
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_update_checkpoint_upserts_and_preserves_last_success(conn, source):
+    """adapter_state always refreshes; last_success_at survives failed scans."""
+    repo = IngestionRepository()
+    assert await repo.get_checkpoint(conn, source.id) is None
+
+    await repo.update_checkpoint(
+        conn, source_id=source.id, adapter_state={"cursor": 12}, last_success_at=PUBLISHED_AT
+    )
+    checkpoint = await repo.get_checkpoint(conn, source.id)
+    assert checkpoint is not None
+    assert checkpoint.adapter_state == {"cursor": 12}
+    assert checkpoint.last_success_at == PUBLISHED_AT
+    assert checkpoint.consecutive_failures == 0
+
+    await repo.update_checkpoint(
+        conn, source_id=source.id, adapter_state={"cursor": 13}, last_success_at=None
+    )
+    checkpoint = await repo.get_checkpoint(conn, source.id)
+    assert checkpoint is not None
+    assert checkpoint.adapter_state == {"cursor": 13}
+    assert checkpoint.last_success_at == PUBLISHED_AT
