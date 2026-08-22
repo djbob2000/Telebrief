@@ -4,9 +4,11 @@ import logging
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from src.config_loader import (
     ArticleConfig,
+    DatabaseConfig,
     DigestGroupConfig,
     FilterSpec,
     ForumTopicConfig,
@@ -16,6 +18,7 @@ from src.config_loader import (
     StorageConfig,
     effective_source_type,
     load_config,
+    load_database_config,
 )
 
 
@@ -1632,3 +1635,156 @@ def test_mcp_config_rejects_invalid(tmp_path, mock_env_vars, block, match):
     """Malformed mcp blocks fail loudly at load time, not at request time."""
     with pytest.raises(ValueError, match=match):
         load_config(_mcp_config_file(tmp_path, block))
+
+
+# ---------------------------------------------------------------------------
+# DatabaseConfig tests (multisource foundation)
+# ---------------------------------------------------------------------------
+
+
+def _write_minimal_config(tmp_path) -> str:
+    return _write_config(tmp_path)
+
+
+def _write_config(tmp_path, extra_blocks: dict | None = None) -> str:
+    doc = {
+        "channels": [{"id": "@test", "name": "Test"}],
+        "settings": {"target_user_id": 123456789},
+    }
+    if extra_blocks:
+        doc.update(extra_blocks)
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(doc))
+    return str(p)
+
+
+@pytest.mark.unit
+def test_database_config_defaults(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
+    config = load_config(path=_write_minimal_config(tmp_path))
+    assert config.database.min_pool_size == 1
+    assert config.database.max_pool_size == 4
+    assert config.database.domain_schema == "public"
+    assert config.database.procrastinate_schema == "procrastinate"
+
+
+@pytest.mark.unit
+def test_database_pool_max_must_cover_min(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
+    path = _write_config(tmp_path, {"database": {"min_pool_size": 4, "max_pool_size": 2}})
+    with pytest.raises(ValueError, match="max_pool_size"):
+        load_config(path=path)
+
+
+@pytest.mark.unit
+def test_database_disabled_by_default_without_block_or_env(monkeypatch, tmp_path):
+    """Migration phase: no database block and no DATABASE_URL keeps Postgres off."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=_write_minimal_config(tmp_path))
+    assert config.database == DatabaseConfig()
+    assert config.database.enabled is False
+    assert config.database.url == ""
+
+
+@pytest.mark.unit
+def test_database_enabled_block_parsed_from_env_url(monkeypatch, tmp_path):
+    """The connection URL comes from DATABASE_URL only and never leaks via repr."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
+    path = _write_config(tmp_path, {"database": {"enabled": True}})
+    config = load_config(path=path)
+    assert config.database.enabled is True
+    assert config.database.url == "postgresql://telebrief:test@localhost/telebrief"
+    assert "telebrief:test" not in repr(config.database)
+
+
+@pytest.mark.unit
+def test_database_custom_values_parsed(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
+    path = _write_config(
+        tmp_path,
+        {
+            "database": {
+                "enabled": True,
+                "min_pool_size": 2,
+                "max_pool_size": 8,
+                "domain_schema": "telebrief",
+                "procrastinate_schema": "jobs",
+            }
+        },
+    )
+    config = load_config(path=path)
+    assert config.database == DatabaseConfig(
+        enabled=True,
+        url="postgresql://telebrief:test@localhost/telebrief",
+        min_pool_size=2,
+        max_pool_size=8,
+        domain_schema="telebrief",
+        procrastinate_schema="jobs",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"min_pool_size": 0, "max_pool_size": 4},
+        {"min_pool_size": -1, "max_pool_size": 4},
+        {"min_pool_size": 11, "max_pool_size": 12},
+        {"min_pool_size": 4, "max_pool_size": 2},
+        {"min_pool_size": 1, "max_pool_size": 11},
+    ],
+)
+def test_database_invalid_pool_sizes_raise(monkeypatch, tmp_path, block):
+    """Pool sizes must satisfy 1 <= min_pool_size <= max_pool_size <= 10."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
+    path = _write_config(tmp_path, {"database": block})
+    with pytest.raises(ValueError, match="pool"):
+        load_config(path=path)
+
+
+@pytest.mark.unit
+def test_database_enabled_requires_database_url(monkeypatch, tmp_path):
+    """An enabled database block without DATABASE_URL fails clearly at load time."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    path = _write_config(tmp_path, {"database": {"enabled": True}})
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="DATABASE_URL"):
+            load_config(path=path)
+
+
+@pytest.mark.unit
+def test_load_database_config_reads_block_without_telegram_creds(monkeypatch, tmp_path):
+    """load_database_config needs only the database block + DATABASE_URL env var."""
+    for var in ("TELEGRAM_API_ID", "TELEGRAM_API_HASH", "TELEGRAM_BOT_TOKEN", "OPENAI_API_KEY"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://telebrief:test@localhost/telebrief")
+    path = _write_config(tmp_path, {"database": {"enabled": True}})
+    with patch("src.config_loader.load_dotenv"):
+        db = load_database_config(path, require_enabled=True)
+    assert db == DatabaseConfig(
+        enabled=True,
+        url="postgresql://telebrief:test@localhost/telebrief",
+    )
+    assert "telebrief:test" not in repr(db)
+
+
+@pytest.mark.unit
+def test_load_database_config_require_enabled_rejects_disabled(monkeypatch, tmp_path):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with (
+        patch("src.config_loader.load_dotenv"),
+        pytest.raises(ValueError, match="database must be enabled"),
+    ):
+        load_database_config(_write_minimal_config(tmp_path), require_enabled=True)
+
+
+@pytest.mark.unit
+def test_load_database_config_require_enabled_rejects_missing_url(monkeypatch, tmp_path):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    path = _write_config(tmp_path, {"database": {"enabled": True}})
+    with (
+        patch("src.config_loader.load_dotenv"),
+        pytest.raises(ValueError, match="DATABASE_URL"),
+    ):
+        load_database_config(path, require_enabled=True)

@@ -156,6 +156,18 @@ settings:
 #   path: data/messages.db   # sqlite only — relative to project root; mount as volume in Docker
 #   url: ""                  # postgres: postgresql://user:pass@host:5432/db
 
+# Domain database (PostgreSQL) — powers the new domain persistence layer and the
+# Procrastinate background job queue. Migration phase default: disabled; the legacy
+# SQLite storage keeps working untouched while this is off. The connection URL is read
+# from the DATABASE_URL environment variable (.env), never from this file, and is
+# never logged. Bounds: 1 <= min_pool_size <= max_pool_size <= 10.
+# database:
+#   enabled: false              # set true once DATABASE_URL is provisioned
+#   min_pool_size: 1
+#   max_pool_size: 4
+#   domain_schema: "public"
+#   procrastinate_schema: "procrastinate"
+
 # MCP server — expose digests to MCP clients (Claude Code, etc.) over HTTP
 # Runs inside the Telebrief process; tools: get_digest(hours), get_last_digest()
 # Connect with: claude mcp add --transport http telebrief http://127.0.0.1:8765/mcp

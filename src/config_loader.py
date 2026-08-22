@@ -74,6 +74,20 @@ class StorageConfig:
 
 
 @dataclass
+class DatabaseConfig:
+    """Configuration for the PostgreSQL domain store and Procrastinate queue."""
+
+    enabled: bool = False
+    url: str = field(
+        default="", repr=False
+    )  # from DATABASE_URL env var; repr=False prevents credential exposure in logs
+    min_pool_size: int = 1
+    max_pool_size: int = 4
+    domain_schema: str = "public"
+    procrastinate_schema: str = "procrastinate"
+
+
+@dataclass
 class McpConfig:
     """Configuration for the built-in MCP server."""
 
@@ -167,6 +181,7 @@ class Config:
     storage: StorageConfig = field(default_factory=StorageConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
 
     @property
     def gemini_api_key(self) -> str:
@@ -666,6 +681,105 @@ def _parse_storage_config(yaml_config: dict) -> StorageConfig:
     return StorageConfig(enabled=enabled, backend=backend, path=path, url=url)
 
 
+def _parse_database_config(yaml_config: dict, *, require_enabled: bool = False) -> DatabaseConfig:
+    """Parse and validate the optional top-level database: block.
+
+    The connection URL is read exclusively from the DATABASE_URL environment
+    variable and must never be logged. When require_enabled is true (tooling
+    that cannot run without PostgreSQL), a disabled or URL-less configuration
+    is rejected with a clear error.
+
+    Raises:
+        ValueError: If any field has wrong type or an invalid value.
+    """
+    raw = yaml_config.get("database")
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"'database' must be a mapping, got {type(raw).__name__}")
+
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"database.enabled must be a bool, got {type(enabled).__name__}")
+
+    min_pool_size = raw.get("min_pool_size", 1)
+    max_pool_size = raw.get("max_pool_size", 4)
+    if isinstance(min_pool_size, bool) or not isinstance(min_pool_size, int):
+        raise ValueError(f"database.min_pool_size must be an int, got {min_pool_size!r}")
+    if isinstance(max_pool_size, bool) or not isinstance(max_pool_size, int):
+        raise ValueError(f"database.max_pool_size must be an int, got {max_pool_size!r}")
+    if not 1 <= min_pool_size <= max_pool_size <= 10:
+        raise ValueError(
+            "database pool sizes must satisfy 1 <= min_pool_size <= max_pool_size <= 10, "
+            f"got min_pool_size={min_pool_size}, max_pool_size={max_pool_size}"
+        )
+
+    domain_schema = raw.get("domain_schema", "public")
+    if not isinstance(domain_schema, str) or not domain_schema.strip():
+        raise ValueError("database.domain_schema must be a non-empty string")
+
+    procrastinate_schema = raw.get("procrastinate_schema", "procrastinate")
+    if not isinstance(procrastinate_schema, str) or not procrastinate_schema.strip():
+        raise ValueError("database.procrastinate_schema must be a non-empty string")
+
+    url = os.getenv("DATABASE_URL", "")
+
+    if require_enabled and not enabled:
+        raise ValueError(
+            "database must be enabled when require_enabled is set: "
+            "set database.enabled: true in config.yaml"
+        )
+    if enabled and not url.strip():
+        raise ValueError(
+            "DATABASE_URL must be set in the environment when database.enabled is true"
+        )
+
+    return DatabaseConfig(
+        enabled=enabled,
+        url=url,
+        min_pool_size=min_pool_size,
+        max_pool_size=max_pool_size,
+        domain_schema=domain_schema.strip(),
+        procrastinate_schema=procrastinate_schema.strip(),
+    )
+
+
+def load_database_config(
+    path: str = "config.yaml", *, require_enabled: bool = False
+) -> DatabaseConfig:
+    """
+    Load only the PostgreSQL database configuration.
+
+    Unlike load_config(), this does not require Telegram/AI credentials, so it
+    can be used by standalone workers and maintenance commands.
+
+    Args:
+        path: Path to config.yaml file
+        require_enabled: Reject configurations that leave the database disabled
+
+    Returns:
+        DatabaseConfig object
+
+    Raises:
+        FileNotFoundError: If config file not found
+        ValueError: If the database block has invalid values
+    """
+    load_dotenv()
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Configuration file not found: {path}")
+
+    with open(path, "r", encoding="utf-8") as f:
+        yaml_config = yaml.safe_load(f)
+
+    if not isinstance(yaml_config, dict):
+        raise ValueError(
+            f"config.yaml must contain a top-level mapping, got {type(yaml_config).__name__}"
+        )
+
+    return _parse_database_config(yaml_config, require_enabled=require_enabled)
+
+
 def _parse_mcp_config(yaml_config: dict) -> McpConfig:
     """Parse and validate the optional top-level mcp: block.
 
@@ -870,12 +984,13 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
     }
 
 
-def load_config(config_path: str = "config.yaml") -> Config:
+def load_config(config_path: str | None = None, *, path: str | None = None) -> Config:
     """
     Load configuration from YAML file and environment variables.
 
     Args:
         config_path: Path to config.yaml file
+        path: Keyword-only alias for config_path (mirrors load_database_config)
 
     Returns:
         Config object with all settings
@@ -884,6 +999,13 @@ def load_config(config_path: str = "config.yaml") -> Config:
         FileNotFoundError: If config.yaml not found
         ValueError: If required environment variables missing
     """
+    if path is not None:
+        if config_path is not None and config_path != path:
+            raise ValueError("Pass the config file via config_path or path, not both")
+        config_path = path
+    elif config_path is None:
+        config_path = "config.yaml"
+
     # Load environment variables from .env file
     load_dotenv()
 
@@ -899,6 +1021,9 @@ def load_config(config_path: str = "config.yaml") -> Config:
 
     # Parse storage config
     storage_config = _parse_storage_config(yaml_config)
+
+    # Parse domain database config
+    database_config = _parse_database_config(yaml_config)
 
     # Parse prompts config
     prompts_config = _parse_prompts_config(yaml_config)
@@ -970,6 +1095,7 @@ def load_config(config_path: str = "config.yaml") -> Config:
         storage=storage_config,
         prompts=prompts_config,
         mcp=mcp_config,
+        database=database_config,
         **env_vars,
     )
 
