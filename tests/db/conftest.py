@@ -31,6 +31,23 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             )
 
 
+@pytest.fixture(scope="session")
+def procrastinate_schema_ready() -> None:
+    """Ensure the official Procrastinate tables exist in the test database.
+
+    Idempotent: creates the configured namespace if needed (identifier-quoted
+    via src.jobs.admin) and applies the official schema through procrastinate's
+    own library API only when its tables are missing. Runs once per session,
+    before any test that requests it.
+    """
+    import asyncio
+
+    from src.jobs.admin import ensure_official_tables
+
+    url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
+    asyncio.run(ensure_official_tables(url, "procrastinate"))
+
+
 @pytest.fixture
 def database_config() -> DatabaseConfig:
     """DatabaseConfig pointing at the persistent PostgreSQL test database."""
