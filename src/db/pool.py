@@ -14,6 +14,8 @@ dumpers unchanged.
 
 from __future__ import annotations
 
+import logging
+
 import psycopg
 from pgvector import Vector
 from pgvector.psycopg import register_vector_async
@@ -27,6 +29,8 @@ from psycopg_pool import AsyncConnectionPool
 from src.config_loader import DatabaseConfig
 
 __all__ = ["close_pool", "open_pool"]
+
+logger = logging.getLogger(__name__)
 
 
 class _FloatListLoader(Loader):
@@ -58,6 +62,10 @@ async def open_pool(config: DatabaseConfig) -> AsyncConnectionPool:
         if info is not None:
             conn.adapters.register_loader(info.oid, _FloatListLoader)
             conn.adapters.register_loader(info.oid, _FloatListBinaryLoader)
+        else:
+            logger.debug(
+                "pgvector 'vector' type not found; skipping list[float] loader registration"
+            )
         await conn.execute("SET TIME ZONE 'UTC'")
         await conn.execute(
             sql.SQL("SET search_path TO {}, {}, public").format(
