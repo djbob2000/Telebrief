@@ -127,9 +127,10 @@ class TestKnowledgeEditorialAdapter:
         assert card.id == f"story-{story_id}"
         assert card.summary == "Изменение стоимости проезда в общественном транспорте"
         assert len(card.all_source_refs()) == 1
-        assert "telegram:101" in card.all_source_refs()
+        expected_ref = f"telegram:source:{source_id}:item:{item_id}:rev:{rev_id}"
+        assert expected_ref in card.all_source_refs()
         assert len(frozen.writer_bundle.records) == 1
-        assert "telegram:101" in frozen.writer_bundle.records
+        assert expected_ref in frozen.writer_bundle.records
 
     async def test_database_attempt_observer_records_attempts(
         self, conn: psycopg.AsyncConnection, pool, edition
@@ -267,6 +268,170 @@ class TestKnowledgeEditorialAdapter:
 
         # 6. Adapter build & verify Facebook link
         frozen = await adapter.build(run.id)
-        rec = frozen.writer_bundle.records.get("facebook:post:987654")
+        expected_fb_ref = f"facebook:source:{src_id}:item:{item_id}:rev:{rev_id}"
+        rec = frozen.writer_bundle.records.get(expected_fb_ref)
         assert rec is not None
         assert rec.message.link == "https://www.facebook.com/987654"
+
+    async def test_community_source_named_official_stays_attributed_and_elements_reference_only_own_claim(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
+        adapter = KnowledgeEditorialAdapter(uow=uow)
+
+        # 1. Source 1: Community source with "Официально" in its name but role="community"
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role)
+            VALUES ('telegram', 'channel', '@berdyansk_community', 'https://t.me/berdyansk_community', 'Бердянск Официально', 'community')
+            RETURNING id
+            """
+        )
+        src1_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', '101', %s) RETURNING id",
+            (src1_id, _NOW),
+        )
+        item1_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-msg101-src1', 'Сообщение от жителей о ремонте', %s) RETURNING id",
+            (item1_id, _NOW),
+        )
+        rev1_id = (await cur.fetchone())[0]
+
+        # 2. Source 2: Official source with exact same message external_id '101'
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role)
+            VALUES ('telegram', 'channel', '@real_admin', 'https://t.me/real_admin', 'Администрация Города', 'official')
+            RETURNING id
+            """
+        )
+        src2_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', '101', %s) RETURNING id",
+            (src2_id, _NOW),
+        )
+        item2_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-msg101-src2', 'Официальный пресс-релиз администрации', %s) RETURNING id",
+            (item2_id, _NOW),
+        )
+        rev2_id = (await cur.fetchone())[0]
+
+        # Relevance + Extraction setup
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'rh-prov', 'rv') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'ch-prov', 'cv') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev1_id, edition.id, rel_pol_id),
+        )
+        rdec1_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev1_id, edition.id, extr_pol_id, rdec1_id),
+        )
+        extr1_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev2_id, edition.id, rel_pol_id),
+        )
+        rdec2_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev2_id, edition.id, extr_pol_id, rdec2_id),
+        )
+        extr2_id = (await cur.fetchone())[0]
+
+        # Claims from both
+        cur = await conn.execute(
+            """
+            INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at)
+            VALUES (%s, %s, %s, 'Жители пишут о шуме на стройке', 'жители пишут о шуме', %s) RETURNING id
+            """,
+            (extr1_id, rev1_id, edition.id, _NOW),
+        )
+        claim1_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at)
+            VALUES (%s, %s, %s, 'Администрация утвердила график работ', 'график утвержден', %s) RETURNING id
+            """,
+            (extr2_id, rev2_id, edition.id, _NOW),
+        )
+        claim2_id = (await cur.fetchone())[0]
+
+        # Story containing both claims
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Строительные работы в центре города', 'h-s-multi', %s) RETURNING id
+            """,
+            (story_id, _NOW),
+        )
+        s_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s_rev_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, claim1_id, _NOW),
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, claim2_id, _NOW),
+        )
+
+        # Snapshot & select
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-provenance-distinction",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        frozen = await adapter.build(run.id)
+        card = frozen.analysis.cards[0]
+
+        ref1 = f"telegram:source:{src1_id}:item:{item1_id}:rev:{rev1_id}"
+        ref2 = f"telegram:source:{src2_id}:item:{item2_id}:rev:{rev2_id}"
+
+        # Distinct refs despite same message ID '101'
+        assert ref1 != ref2
+        assert ref1 in frozen.writer_bundle.records
+        assert ref2 in frozen.writer_bundle.records
+        assert len(frozen.writer_bundle.records) == 2
+
+        # Claim 1 from community source named "Бердянск Официально" must be in community_observations with attributed status
+        assert len(card.community_observations) == 1
+        comm_elem = card.community_observations[0]
+        assert comm_elem.text == "Жители пишут о шуме на стройке"
+        assert comm_elem.status == "attributed"
+        assert comm_elem.source_refs == [ref1]  # References only its own claim ref!
+
+        # Claim 2 from official source must be in hard_facts with established status
+        assert len(card.hard_facts) == 1
+        off_elem = card.hard_facts[0]
+        assert off_elem.text == "Администрация утвердила график работ"
+        assert off_elem.status == "established"
+        assert off_elem.source_refs == [ref2]  # References only its own claim ref!

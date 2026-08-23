@@ -197,7 +197,8 @@ class KnowledgeEditorialAdapter:
                     """
                     SELECT c.id, c.assertion_text, c.normalized_assertion,
                            s.platform, s.name, si.external_id, si.published_at,
-                           sir.text_content, si.canonical_url, s.url, s.external_id, s.role
+                           sir.text_content, si.canonical_url, s.url, s.external_id, s.role,
+                           s.id AS source_id, si.id AS source_item_id, sir.id AS source_item_revision_id
                     FROM claims c
                     JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
                     JOIN source_items si ON si.id = sir.source_item_id
@@ -210,8 +211,10 @@ class KnowledgeEditorialAdapter:
                 claim_rows = await c_cur.fetchall()
 
                 card_source_refs: list[str] = []
-                hard_facts: list[str] = []
-                community_obs: list[str] = []
+                card_hard_facts: list[StoryElement] = []
+                card_community_obs: list[StoryElement] = []
+
+                from src.editorial_models import StoryElement
 
                 for crow in claim_rows:
                     (
@@ -227,14 +230,14 @@ class KnowledgeEditorialAdapter:
                         s_url,
                         s_ext_id,
                         s_role,
+                        source_id,
+                        source_item_id,
+                        source_item_rev_id,
                     ) = crow
-                    ref_key = f"{platform}:{ext_id}"
+                    ref_key = f"{platform}:source:{source_id}:item:{source_item_id}:rev:{source_item_rev_id}"
                     card_source_refs.append(ref_key)
 
-                    is_official = (
-                        s_role in ("official", "emergency", "civil_service")
-                        or "официал" in (src_name or "").lower()
-                    )
+                    is_official = s_role in ("official", "emergency", "civil_service")
 
                     if ref_key not in records:
                         from src.collector import Message
@@ -280,35 +283,31 @@ class KnowledgeEditorialAdapter:
                             context_text=text_content or assertion,
                         )
 
-                    # Map claim to hard_facts or community_observations
+                    # Build StoryElement directly referencing this Claim's exact ref
                     if is_official:
-                        hard_facts.append(assertion)
+                        card_hard_facts.append(
+                            StoryElement(
+                                text=assertion,
+                                source_refs=[ref_key],
+                                status="established",
+                                attribution=src_name or "официальные источники",
+                            )
+                        )
                     else:
-                        community_obs.append(assertion)
+                        card_community_obs.append(
+                            StoryElement(
+                                text=assertion,
+                                source_refs=[ref_key],
+                                status="attributed",
+                                attribution=src_name or "сообщения жителей",
+                            )
+                        )
 
-                from src.editorial_models import StoryElement
+                representative_refs = list(dict.fromkeys(card_source_refs))
 
-                card_hard_facts = [
-                    StoryElement(
-                        text=f,
-                        source_refs=card_source_refs,
-                        status="established",
-                        attribution="официальные источники",
-                    )
-                    for f in hard_facts
-                ]
-                card_community_obs = [
-                    StoryElement(
-                        text=o,
-                        source_refs=card_source_refs,
-                        status="attributed",
-                        attribution="сообщения жителей",
-                    )
-                    for o in community_obs
-                ]
                 if not card_hard_facts and not card_community_obs:
                     card_hard_facts = [
-                        StoryElement(text=semantic_text, source_refs=card_source_refs)
+                        StoryElement(text=semantic_text, source_refs=representative_refs)
                     ]
 
                 card = StoryCard(
@@ -316,7 +315,7 @@ class KnowledgeEditorialAdapter:
                     topic="Городские события",
                     importance="high" if rank == 1 else "medium",
                     summary=semantic_text,
-                    representative_source_refs=card_source_refs,
+                    representative_source_refs=representative_refs,
                     hard_facts=card_hard_facts,
                     community_observations=card_community_obs,
                     useful_details=[],
