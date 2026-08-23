@@ -206,3 +206,24 @@ settings:
 #   host: "127.0.0.1"
 #   port: 8765
 #   path: "/mcp"
+
+# Facebook provider — public group/page ingestion via authenticated browser session
+# Persistent browser profile storage is maintained under auth_root (directory permission 700).
+# Auth profiles must be initialized manually using `python scripts/bootstrap_facebook_profile.py --profile profile-01`.
+# facebook:
+#   enabled: false
+#   auth_root: "/var/lib/telebrief/auth"
+#   auth_profiles:
+#     - name: "profile-01"
+#       path: "/var/lib/telebrief/auth/profile-01"
+#   sources:
+#     - url: "https://www.facebook.com/groups/berdyansk.news"
+#       name: "Бердянск Новости FB"
+#       auth_profile: "profile-01"
+#       interval_minutes: 60
+#   comments:
+#     include_replies: true
+#     max_comments_per_post: 500
+#     max_replies_per_comment: 100
+#     max_pages_per_refresh: 20
+#     max_duration_per_post_seconds: 120

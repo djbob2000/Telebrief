@@ -528,6 +528,61 @@ Keep `host` on `127.0.0.1`. Telebrief logs a warning at startup if you bind anyw
 
 ---
 
+## 🚀 Multisource Production Deployment & Operations
+
+Telebrief runs as an asynchronous, event-driven multi-source ingestion and publication system backed by PostgreSQL 18 (+ pgvector) and Procrastinate.
+
+### Architecture Overview
+
+```text
+telebrief-app     -> Bot commands, MCP endpoints, and scheduler facade
+telebrief-worker  -> Procrastinate background queue (collection, enrichment, publication)
+postgres          -> PostgreSQL 18 with pgvector (domain storage, vectors, job queue)
+```
+
+### 1. Database Migrations
+
+Apply domain migrations and Procrastinate queue schema:
+
+```bash
+# Apply domain database migrations (versions 1..11)
+python scripts/migrate.py
+
+# Apply Procrastinate queue schema
+PYTHONPATH=. procrastinate --app=src.jobs.app.procrastinate_app schema --apply
+```
+
+### 2. Facebook Profile Bootstrap
+
+Facebook ingestion relies on an authenticated browser session stored in a private directory with `700` permissions (`/var/lib/telebrief/auth`). Automated CAPTCHA solving is strictly avoided; operator login is performed once via interactive bootstrap:
+
+```bash
+# Launch interactive browser to authenticate Facebook profile
+python scripts/bootstrap_facebook_profile.py --profile profile-01 --auth-root /var/lib/telebrief/auth
+```
+
+If Facebook prompts for a checkpoint or CAPTCHA during automated runs, the profile is marked `ACCOUNT_ACTION_REQUIRED` and ingestion for that source is paused without entering infinite retry loops. Re-run the bootstrap script to re-authenticate.
+
+### 3. One-Time Legacy Message Import
+
+To migrate historic Telegram messages from legacy storage into normalized `source_items` and `source_item_revisions`:
+
+```bash
+# Preview legacy records to import and check temporal fidelity
+python scripts/import_legacy_messages.py --dry-run
+
+# Execute idempotent migration
+python scripts/import_legacy_messages.py --apply
+```
+
+After validating that publication generation functions entirely from normalized PostgreSQL storage, the obsolete legacy table can be dropped:
+
+```bash
+psql $DATABASE_URL -f migrations/0011_drop_legacy_messages.sql
+```
+
+---
+
 ## 🛠️ Development & Testing
 
 This project uses [uv](https://docs.astral.sh/uv/) for package management.

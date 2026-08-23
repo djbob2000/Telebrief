@@ -1,8 +1,9 @@
-"""Pytest configuration and fixtures."""
-
 import os
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
+
+if "TELEBRIEF_TEST_DATABASE_URL" in os.environ and "DATABASE_URL" not in os.environ:
+    os.environ["DATABASE_URL"] = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
 
 import pytest
 

@@ -1,46 +1,28 @@
 services:
-  telebrief:
+  telebrief-app:
     image: ghcr.io/djbob2000/telebrief:latest
-    container_name: telebrief
+    container_name: telebrief-app
     restart: unless-stopped
-
-    # Environment variables from .env file
+    depends_on:
+      postgres:
+        condition: service_healthy
     env_file:
       - .env
-
-    # Additional environment variables
     environment:
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TZ=UTC
-
-    # Optional: expose the MCP server (requires mcp.enabled and mcp.host: "0.0.0.0"
-    # in config.yaml, since 127.0.0.1 inside the container is unreachable from the host).
-    # The MCP server has no authentication — keep the host side on 127.0.0.1.
-    # ports:
-    #   - "127.0.0.1:8765:8765"
-
-    # Volumes for persistent data
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-telebrief}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-telebrief}
     volumes:
-      # Configuration file (read-only recommended)
       - ./config.yaml:/app/config.yaml:ro
-
-      # Persistent data directories
       - ./logs:/app/logs
-      # sessions/ must remain read-write: Telethon stores SQLite session files here
       - ./sessions:/app/sessions
       - ./data:/app/data
-
-      # Optional: Mount .env if not using env_file
-      # - ./.env:/app/.env:ro
-
-    # Logging configuration
+      - telebrief_auth:/var/lib/telebrief/auth
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-
-    # Health check
     healthcheck:
       test: ["CMD", "python", "-c", "import os, signal; os.kill(1, 0)"]
       interval: 30s
@@ -48,5 +30,72 @@ services:
       retries: 3
       start_period: 40s
 
-    # Network mode (optional)
-    # network_mode: "host"  # Uncomment if you need host network access
+  telebrief-worker:
+    image: ghcr.io/djbob2000/telebrief:latest
+    container_name: telebrief-worker
+    restart: unless-stopped
+    command: ["procrastinate", "--app=src.jobs.app.procrastinate_app", "worker", "--concurrency=2"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TZ=UTC
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-telebrief}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-telebrief}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./logs:/app/logs
+      - ./sessions:/app/sessions
+      - ./data:/app/data
+      - telebrief_auth:/var/lib/telebrief/auth
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    image: pgvector/pgvector:pg18
+    container_name: telebrief-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-telebrief}
+      POSTGRES_USER: ${POSTGRES_USER:-telebrief}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    command:
+      - "postgres"
+      - "-c"
+      - "shared_buffers=64MB"
+      - "-c"
+      - "effective_cache_size=256MB"
+      - "-c"
+      - "work_mem=2MB"
+      - "-c"
+      - "maintenance_work_mem=32MB"
+      - "-c"
+      - "autovacuum_work_mem=16MB"
+      - "-c"
+      - "temp_buffers=4MB"
+      - "-c"
+      - "max_connections=10"
+      - "-c"
+      - "max_parallel_workers=0"
+      - "-c"
+      - "max_parallel_workers_per_gather=0"
+      - "-c"
+      - "jit=off"
+      - "-c"
+      - "autovacuum_max_workers=1"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-telebrief} -d ${POSTGRES_DB:-telebrief}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  telebrief_auth:

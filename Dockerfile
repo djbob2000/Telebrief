@@ -7,8 +7,9 @@ WORKDIR /app
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python dependencies and Playwright Chromium with OS dependencies
+RUN pip install --no-cache-dir -r requirements.txt \
+    && python -m playwright install --with-deps chromium
 
 # Copy application code
 COPY . .
@@ -16,8 +17,10 @@ COPY . .
 # Create non-root user
 RUN useradd -r -u 1000 -s /usr/sbin/nologin telebrief
 
-# Create necessary directories and set ownership
-RUN mkdir -p logs sessions data && chown -R telebrief:telebrief logs sessions data
+# Create necessary directories, auth storage, and set ownership
+RUN mkdir -p logs sessions data /var/lib/telebrief/auth \
+    && chown -R telebrief:telebrief logs sessions data /var/lib/telebrief/auth \
+    && chmod 700 /var/lib/telebrief/auth
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
