@@ -135,3 +135,42 @@ class StoryRelation:
             relation_type=row[3],
             created_at=row[4],
         )
+
+
+@dataclass(frozen=True)
+class StoryMatchingPolicyVersion:
+    """A `story_matching_policy_versions` row: per-edition retrieval/matcher
+    identity (embedding space, per-signal recall limits, total candidate cap,
+    broad resolved-story lookback, prompt/config hash)."""
+
+    id: int
+    edition_id: int
+    version: int
+    config_hash: str
+    prompt_version: str
+    vector_limit: int
+    lexical_limit: int
+    state_fallback_limit: int
+    total_candidate_limit: int
+    resolved_lookback_days: int
+    embedding_model: str
+    embedding_dimensions: int
+    created_at: dt.datetime
+
+    @classmethod
+    def from_row(cls, row: Any) -> StoryMatchingPolicyVersion:
+        return cls(
+            id=row[0],
+            edition_id=row[1],
+            version=row[2],
+            config_hash=row[3],
+            prompt_version=row[4],
+            vector_limit=row[5],
+            lexical_limit=row[6],
+            state_fallback_limit=row[7],
+            total_candidate_limit=row[8],
+            resolved_lookback_days=row[9],
+            embedding_model=row[10],
+            embedding_dimensions=row[11],
+            created_at=row[12],
+        )
