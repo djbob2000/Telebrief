@@ -154,9 +154,24 @@ class StoryMatchingRun:
     status: str
     error_kind: str | None
     metadata: dict[str, Any]
+    candidates_retrieved_at: dt.datetime | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> StoryMatchingRun:
+        if len(row) == 10:
+            return cls(
+                id=row[0],
+                claim_id=row[1],
+                edition_id=row[2],
+                policy_id=row[3],
+                claim_embedding_id=row[4],
+                started_at=row[5],
+                completed_at=row[6],
+                status=row[7],
+                error_kind=row[8],
+                metadata=row[9],
+                candidates_retrieved_at=None,
+            )
         return cls(
             id=row[0],
             claim_id=row[1],
@@ -168,6 +183,7 @@ class StoryMatchingRun:
             status=row[7],
             error_kind=row[8],
             metadata=row[9],
+            candidates_retrieved_at=row[10],
         )
 
 

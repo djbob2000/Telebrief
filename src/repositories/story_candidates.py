@@ -622,7 +622,8 @@ class LockedMatchingRun:
 
 _RUN_COLUMNS = """
     id, claim_id, edition_id, policy_id, claim_embedding_id,
-    started_at, completed_at, status, error_kind, metadata
+    started_at, completed_at, status, error_kind, metadata,
+    candidates_retrieved_at
 """
 
 _CANDIDATE_COLUMNS = """
@@ -706,9 +707,11 @@ class StoryMatchingRunRepository:
         *,
         run_id: int,
         candidates: Sequence[StoryCandidate],
+        retrieved_at: dt.datetime | None = None,
     ) -> None:
         """Freeze the retrieval result before any AI call: exact revision
         identity, provenance flags, soft scores, deterministic rank."""
+        now = retrieved_at or dt.datetime.now(tz=dt.timezone.utc)
         for rank, candidate in enumerate(candidates, start=1):
             reasons = candidate.retrieval_reasons
             await conn.execute(
@@ -741,6 +744,10 @@ class StoryMatchingRunRepository:
                     rank,
                 ),
             )
+        await conn.execute(
+            "UPDATE story_matching_runs SET candidates_retrieved_at = %s WHERE id = %s",
+            (now, run_id),
+        )
 
     async def frozen_candidates(
         self, conn: psycopg.AsyncConnection, run_id: int

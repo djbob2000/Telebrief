@@ -1516,6 +1516,52 @@ class TestEmptyCandidateSetFlow:
         assert [int(job["args"]["story_revision_id"]) for job in jobs] == [outcome.revision.id]
         assert await _runs_status(conn, outcome.run.id) == "succeeded"
 
+    async def test_empty_candidate_set_frozen_durably_across_retries(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app
+    ):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+
+        # 1. Matcher on first attempt raises an error during matching after retrieval freeze
+        class _FailingMatcher:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def choose(self, claim, views, *, edition_name=None):
+                self.calls.append((claim, list(views)))
+                raise RuntimeError("Simulated transient failure after candidates frozen")
+
+        failing_matcher = _FailingMatcher()
+        with pytest.raises(RuntimeError, match="Simulated transient failure"):
+            await _service(uow, failing_matcher).run(claim.id, policy.id, embedding_id)
+
+        assert len(failing_matcher.calls) == 1
+        assert failing_matcher.calls[0][1] == []  # Empty candidate views
+
+        # Check run is still running and candidates_retrieved_at is sealed
+        from src.repositories.story_candidates import StoryMatchingRunRepository
+
+        runs_repo = StoryMatchingRunRepository()
+        async with uow.transaction() as db:
+            run = await runs_repo.latest_running(db, claim_id=claim.id, policy_id=policy.id)
+            assert run is not None
+            assert run.candidates_retrieved_at is not None
+
+        # 2. Now a new story is created in the database that would match lexically
+        await _seed_story(conn, edition.id, semantic_text=claim.assertion_text)
+
+        # 3. Retry matching on the same run
+        successful_matcher = _FixedMatcher({"assignment": "NEW_STORY"})
+        outcome = await _service(uow, successful_matcher).run(claim.id, policy.id, embedding_id)
+
+        assert len(successful_matcher.calls) == 1
+        # It MUST still see the empty frozen candidate set from the first retrieval, NOT the newly created story!
+        seen_claim, seen_views = successful_matcher.calls[0]
+        assert seen_views == []
+        assert outcome.run.id == run.id
+        assert await _runs_status(conn, outcome.run.id) == "succeeded"
+
 
 @pytest.mark.postgres
 class TestConcurrentWinnerConvergence:

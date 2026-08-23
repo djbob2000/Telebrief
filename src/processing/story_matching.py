@@ -630,13 +630,12 @@ class StoryMatchingService:
                     policy_id=policy_id,
                     claim_embedding_id=claim_embedding_id,
                 )
-            frozen = await self._runs.frozen_candidates(conn, run.id)
-            if not frozen:
+            if run.candidates_retrieved_at is None:
                 retrieved = await self._retriever.retrieve(
                     conn, claim=claim, claim_embedding=embedded.vector, policy=policy
                 )
                 await self._runs.save_candidates(conn, run_id=run.id, candidates=retrieved)
-                frozen = await self._runs.frozen_candidates(conn, run.id)
+            frozen = await self._runs.frozen_candidates(conn, run.id)
             revisions = {
                 revision.id: revision
                 for revision in await self._stories.get_revisions(
