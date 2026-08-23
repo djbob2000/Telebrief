@@ -153,7 +153,75 @@ class TestFacebookBrowserSession:
         session = FacebookBrowserSession(auth_root=tmp_path, profile=profile)
 
         with patch("src.providers.facebook.browser.async_playwright") as mock_ap:
-            with pytest.raises(FacebookHumanActionRequired, match="circuit breaker tripped"):
+            with pytest.raises(FacebookHumanActionRequired, match="disabled"):
                 async with session:
                     pass
             mock_ap.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "status",
+        [
+            "unknown",
+            "auth_required",
+            "checkpoint_required",
+            "account_action_required",
+            "disabled",
+        ],
+    )
+    async def test_blocked_statuses_never_open_browser(self, tmp_path: Path, status: str):
+        """Only `ready` is automatically runnable; every blocked circuit-breaker
+        state must pause the profile before Playwright ever starts."""
+        from unittest.mock import patch
+
+        from src.providers.facebook.auth import FacebookHumanActionRequired
+        from src.providers.facebook.browser import FacebookBrowserSession
+        from src.providers.facebook.models import FacebookAuthProfile
+
+        profile = FacebookAuthProfile(
+            id=1,
+            name=f"blocked-{status}",
+            storage_ref=f"blocked-{status}",
+            status=status,
+        )
+        session = FacebookBrowserSession(auth_root=tmp_path, profile=profile)
+
+        with patch("src.providers.facebook.browser.async_playwright") as mock_ap:
+            with pytest.raises(FacebookHumanActionRequired, match=status):
+                async with session:
+                    pass
+            mock_ap.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_launch_uses_no_stealth_flags_or_fake_user_agent(self, tmp_path: Path):
+        """No anti-detection masking: default launch args must not contain
+        AutomationControlled suppression and no hard-coded User-Agent override."""
+        from unittest.mock import patch
+
+        from src.providers.facebook.browser import FacebookBrowserSession
+        from src.providers.facebook.models import FacebookAuthProfile
+
+        profile = FacebookAuthProfile(
+            id=1,
+            name="ready-profile",
+            storage_ref="ready-profile",
+            status="ready",
+        )
+        session = FacebookBrowserSession(auth_root=tmp_path, profile=profile)
+
+        mock_pw = MagicMock()
+        mock_pw.stop = AsyncMock()
+        mock_pw.chromium.launch_persistent_context = AsyncMock()
+
+        with patch("src.providers.facebook.browser.async_playwright") as mock_ap:
+            mock_ap_builder = MagicMock()
+            mock_ap_builder.start = AsyncMock(return_value=mock_pw)
+            mock_ap.return_value = mock_ap_builder
+
+            async with session as (context, page):
+                assert context is not None and page is not None
+
+        kwargs = mock_pw.chromium.launch_persistent_context.await_args.kwargs
+        args = list(kwargs.get("args") or [])
+        assert all("AutomationControlled" not in arg for arg in args)
+        assert "user_agent" not in kwargs

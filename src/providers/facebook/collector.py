@@ -187,14 +187,14 @@ class FacebookCollector(Collector):
 
         runtime = get_runtime()
         async with runtime.uow.transaction() as conn:
-            auth_profile_name = await resolve_auth_profile_name(
-                conn, source.id, source.collector_options
-            )
+            auth_profile_name = await resolve_auth_profile_name(conn, source.id)
             profile = await self.fb_repo.get_or_create_auth_profile(
                 conn, name=auth_profile_name, storage_ref=auth_profile_name
             )
 
-        if profile.status == FacebookAuthState.DISABLED.value:
+        from src.providers.facebook.auth import is_profile_runnable
+
+        if not is_profile_runnable(profile.status):
             return CollectionBatch(
                 outcome=CollectionOutcome.AUTH_REQUIRED,
                 items=(),
@@ -203,7 +203,7 @@ class FacebookCollector(Collector):
                 adapter_state={},
                 started_at=started_at,
                 completed_at=dt.datetime.now(dt.timezone.utc),
-                error_kind="profile_disabled",
+                error_kind=f"profile_{profile.status}",
             )
 
         items: list[ObservedItem] = []

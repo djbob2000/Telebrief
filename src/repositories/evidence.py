@@ -536,6 +536,30 @@ class VerificationAssessmentRepository:
         )
         return [VerificationAssessment.from_row(row) for row in await cursor.fetchall()]
 
+    async def list_unverified_evidence_runs(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        limit: int = 50,
+    ) -> list[int]:
+        """Find succeeded evidence assessment run IDs for an edition that do not yet have verification rows."""
+        cursor = await conn.execute(
+            """
+            SELECT ear.id
+            FROM evidence_assessment_runs ear
+            LEFT JOIN verification_assessments va ON va.evidence_assessment_run_id = ear.id
+            WHERE ear.edition_id = %s
+              AND ear.status = 'succeeded'
+              AND va.id IS NULL
+            ORDER BY ear.id DESC
+            LIMIT %s
+            """,
+            (edition_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [r[0] for r in rows]
+
 
 # Compatibility aliases
 EvidenceAssessmentPolicyRepository = EvidencePolicyRepository

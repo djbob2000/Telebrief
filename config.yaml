@@ -117,6 +117,7 @@ settings:
   target_user_id: 291027785
   target_chat_id: "@berdiansk_news"
   auto_cleanup_old_digests: false
+  persistent_ingestion: true
   max_messages_per_channel: 5000
   max_prompt_chars: 300000
   api_timeout: 60

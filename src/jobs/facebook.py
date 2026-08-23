@@ -23,13 +23,6 @@ REFRESH_COMMENTS_TASK_NAME = "refresh_facebook_comments"
 DEEP_SWEEP_TASK_NAME = "dispatch_facebook_deep_sweep"
 
 
-def resolve_facebook_execution_lock(source: Source) -> str:
-    """Resolve Facebook profile lock for serialization across sources sharing the profile."""
-    options = source.collector_options or {}
-    auth_profile = options.get("auth_profile") or options.get("auth_profile_id") or "default"
-    return f"facebook-auth-profile:{auth_profile}"
-
-
 @procrastinate_app.task(
     name=REFRESH_COMMENTS_TASK_NAME,
     queue="enrichment",
@@ -86,21 +79,23 @@ async def refresh_facebook_comments(
         source = Source.from_row(row[1:])
 
     # Perform browser collection outside domain transaction
+    from src.providers.facebook.auth import is_profile_runnable
     from src.providers.facebook.browser import FacebookBrowserSession
     from src.repositories.facebook import resolve_auth_profile_name
 
     async with runtime.uow.transaction() as conn:
-        prof_name = await resolve_auth_profile_name(conn, source.id, source.collector_options)
+        prof_name = await resolve_auth_profile_name(conn, source.id)
 
     async with runtime.uow.transaction() as conn:
         profile = await fb_repo.get_or_create_auth_profile(
             conn, name=prof_name, storage_ref=prof_name
         )
 
-    if profile.status == "disabled":
+    if not is_profile_runnable(profile.status):
         logger.warning(
-            "Facebook auth profile %s is disabled; skipping comment refresh for post %s",
+            "Facebook auth profile %s has non-runnable status %s; skipping comment refresh for post %s",
             prof_name,
+            profile.status,
             post_item_id,
         )
         return

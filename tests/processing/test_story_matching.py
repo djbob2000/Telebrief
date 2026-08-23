@@ -2419,3 +2419,40 @@ class TestKnowledgeNoEmbeddingsMode:
         assert matching_view.candidate.retrieved_by_lexical is True
         assert matching_view.candidate.retrieved_by_vector is False
         assert matching_view.candidate.vector_distance is None
+
+    async def test_new_story_in_lexical_mode_does_not_schedule_revision_embedding(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app
+    ):
+        """NEW_STORY in lexical-only mode must not queue embed_story_revision jobs."""
+        rev = await revision_factory()
+        claim = await _make_claim(conn, edition.id, rev.id)
+
+        from src.processing.story_matching import StoryMatchingPolicyService
+
+        policy_svc = StoryMatchingPolicyService()
+        async with uow.transaction() as db:
+            policy = await policy_svc.ensure_current(
+                db,
+                edition_id=edition.id,
+                embedding_model="none",
+                embedding_dimensions=0,
+            )
+
+        matcher = _FixedMatcher(
+            {
+                "assignment": "NEW_STORY",
+                "story_update": {
+                    "semantic_changed": True,
+                    "title": "Лексическая история без векторов",
+                    "summary": "Полностью новая история в lexical-only режиме.",
+                    "current_state": "developing",
+                    "semantic_text": "Уникальный лексический текст без эмбеддингов.",
+                },
+            }
+        )
+        outcome = await _service(uow, matcher).run(claim.id, policy.id, claim_embedding_id=None)
+
+        assert outcome.story_id is not None
+        assert await _runs_status(conn, outcome.run.id) == "succeeded"
+        # No poison embedding jobs may be scheduled for the sentinel vector space.
+        assert await _deferred_jobs(pool, EMBED_REVISION_TASK) == []

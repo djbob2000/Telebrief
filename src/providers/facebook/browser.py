@@ -1,13 +1,7 @@
 """Playwright persistent browser context manager for Facebook (Plan 5 Task 2).
 
-Architecture note on bot evasion / stealth:
-We use Chromium persistent user data directories combined with
-``--disable-blink-features=AutomationControlled`` and a realistic desktop
-User-Agent. Heavy third-party stealth injection plugins (e.g. playwright-stealth)
-are intentionally avoided to prevent fragile monkey-patching that breaks across
-Chromium releases. Instead, authentication state persistence via operator-assisted
-profile bootstrapping provides resilient session longevity without triggering
-automated security challenges.
+Uses standard Chromium persistent user data directories with operator-assisted
+profile bootstrapping to persist session cookies and authentication state.
 """
 
 from __future__ import annotations
@@ -24,6 +18,7 @@ from src.providers.facebook.auth import (
     FacebookHumanActionRequired,
     classify_facebook_page_state,
     ensure_owner_only_directory,
+    is_profile_runnable,
     resolve_profile_dir,
 )
 from src.providers.facebook.models import FacebookAuthProfile
@@ -46,17 +41,17 @@ class FacebookBrowserSession:
         self.profile = profile
         self.headless = headless
         self.launch_args = launch_args or [
-            "--disable-blink-features=AutomationControlled",
             "--no-sandbox",
         ]
         self._playwright: Playwright | None = None
         self._context: BrowserContext | None = None
 
     async def __aenter__(self) -> tuple[BrowserContext, Page]:
-        if self.profile.status in ("disabled", FacebookAuthState.DISABLED.value):
+        if not is_profile_runnable(self.profile.status):
+            state = self.profile.status or FacebookAuthState.DISABLED.value
             raise FacebookHumanActionRequired(
-                FacebookAuthState.DISABLED,
-                f"Facebook auth profile '{self.profile.name}' is disabled (circuit breaker tripped)",
+                state,
+                f"Facebook auth profile '{self.profile.name}' has non-runnable status '{self.profile.status}'",
             )
 
         path = resolve_profile_dir(self.auth_root, self.profile.storage_ref)
@@ -70,10 +65,6 @@ class FacebookBrowserSession:
                 headless=self.headless,
                 args=self.launch_args,
                 viewport={"width": 1280, "height": 800},
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                ),
             )
             page = self._context.pages[0] if self._context.pages else await self._context.new_page()
             return self._context, page

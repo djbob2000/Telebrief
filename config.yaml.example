@@ -220,12 +220,16 @@ settings:
 #   auth_root: "/var/lib/telebrief/auth"
 #   auth_profiles:
 #     - name: "profile-01"
-#       path: "/var/lib/telebrief/auth/profile-01"
+#       storage_ref: "profile-01"
 #   sources:
 #     - url: "https://www.facebook.com/groups/berdyansk.news"
 #       name: "Бердянск Новости FB"
 #       auth_profile: "profile-01"
-#       interval_minutes: 60
+#       scan_times:
+#         - "08:00"
+#         - "14:00"
+#         - "20:00"
+#       timezone: "Europe/Kyiv"
 #   comments:
 #     include_replies: true
 #     max_comments_per_post: 500

@@ -920,3 +920,38 @@ class TestOptionalVerificationAndPublicationIntegration:
             snapshot_at=_NOW,
         )
         assert any(e["story_id"] == story.story_id for e in eligible)
+
+
+@pytest.mark.postgres
+class TestVerificationDeferLogging:
+    """A failed optional-verification defer must log with the traceback attached."""
+
+    async def test_defer_failure_logs_warning_with_traceback(
+        self, uow, pool, conn, edition, revision_factory, monkeypatch, caplog
+    ):
+        import logging
+        from unittest.mock import MagicMock
+
+        import src.jobs.processing as jobs_processing
+        from src.processing.evidence import EvidenceAssessmentService
+
+        class _ExplodingDefer:
+            def configure(self, *, connection=None, lock=None):
+                return SimpleNamespace(defer_async=self._defer_async)
+
+            async def _defer_async(self, **_kwargs):
+                raise RuntimeError("procrastinate defer exploded")
+
+        monkeypatch.setattr(jobs_processing, "verify_evidence", _ExplodingDefer())
+
+        service = EvidenceAssessmentService(uow=uow)
+        fake_conn = MagicMock()
+
+        with caplog.at_level(logging.WARNING, logger="src.processing.evidence"):
+            await service._defer_verification(fake_conn, run_id=42)
+
+        records = [r for r in caplog.records if "could not defer verification" in r.message]
+        assert len(records) == 1
+        # The failure is advisory: evidence success must not be affected and the
+        # operator still needs the full traceback for diagnosis.
+        assert records[0].exc_info is not None

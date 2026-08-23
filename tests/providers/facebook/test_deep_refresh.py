@@ -33,6 +33,7 @@ class TestFacebookDeepSweep:
         source_id = (await cur.fetchone())[0]
 
         # 2. Insert two posts with revisions
+        item_ids = []
         for pid in [101, 102]:
             cur = await conn.execute(
                 """
@@ -43,6 +44,7 @@ class TestFacebookDeepSweep:
                 (source_id, f"post:{pid}", now, now),
             )
             item_id = (await cur.fetchone())[0]
+            item_ids.append(item_id)
             await conn.execute(
                 """
                 INSERT INTO source_item_revisions (source_item_id, revision_no, text_content, collected_at, content_hash)
@@ -70,4 +72,4 @@ class TestFacebookDeepSweep:
         for req in deferred_requests:
             assert req.kind == "facebook_comments"
             assert req.mode == "deep"
-            assert req.metadata.get("post_item_id") in [1, 2, 3, 4, item_id]
+            assert req.metadata.get("post_item_id") in item_ids

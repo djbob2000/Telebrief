@@ -230,7 +230,9 @@ class EvidenceAssessmentService:
                 evidence_assessment_run_id=run_id
             )
         except Exception as err:
-            logger.warning("could not defer verification for run %s: %s", run_id, err)
+            logger.warning(
+                "could not defer verification for run %s: %s", run_id, err, exc_info=True
+            )
 
 
 # Compatibility alias

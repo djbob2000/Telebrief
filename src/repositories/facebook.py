@@ -26,11 +26,8 @@ async def resolve_auth_profile_name(
     """Profile name a Facebook source must browse under.
 
     Resolution order (single source of truth for locks AND browser sessions):
-    1. ``facebook_source_configs.auth_profile_id`` -> profile name (what
-       bootstrap actually persists);
-    2. ``sources.collector_options.auth_profile`` / ``auth_profile_id``
-       (manual overrides);
-    3. ``"default"``.
+    1. ``facebook_source_configs.auth_profile_id`` -> profile name (provider-specific table);
+    2. ``"default"``.
     """
     repo = FacebookRepository()
     cfg = await repo.get_source_config_by_source_id(conn, source_id)
@@ -38,21 +35,23 @@ async def resolve_auth_profile_name(
         prof = await repo.get_auth_profile_by_id(conn, cfg.auth_profile_id)
         if prof is not None:
             return prof.name
-
-    options = collector_options or {}
-    option_profile = options.get("auth_profile") or options.get("auth_profile_id")
-    if isinstance(option_profile, (int, str)) and str(option_profile):
-        candidate = str(option_profile)
-        if candidate.isdigit():
-            prof = await repo.get_auth_profile_by_id(conn, int(candidate))
-            if prof is not None:
-                return prof.name
-        return candidate
     return DEFAULT_AUTH_PROFILE_NAME
 
 
 class FacebookRepository:
     """Repository managing Facebook tables."""
+
+    async def get_source_auth_context(
+        self,
+        conn: psycopg.AsyncConnection,
+        source_id: int,
+    ) -> tuple[FacebookSourceConfig | None, FacebookAuthProfile | None]:
+        """Load Facebook provider config and associated AuthProfile for a source."""
+        cfg = await self.get_source_config_by_source_id(conn, source_id)
+        if cfg is None or cfg.auth_profile_id is None:
+            return cfg, None
+        prof = await self.get_auth_profile_by_id(conn, cfg.auth_profile_id)
+        return cfg, prof
 
     async def get_or_create_auth_profile(
         self,

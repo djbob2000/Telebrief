@@ -93,9 +93,7 @@ class EnrichmentDispatcher:
             )
             row = await cursor.fetchone()
             if row is not None and row[2] == "facebook":
-                resolved = await resolve_auth_profile_name(
-                    conn, int(row[0]), row[1] if isinstance(row[1], dict) else None
-                )
+                resolved = await resolve_auth_profile_name(conn, int(row[0]))
                 if resolved != DEFAULT_AUTH_PROFILE_NAME:
                     return resolved
         except Exception:

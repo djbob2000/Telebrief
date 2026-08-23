@@ -14,9 +14,6 @@ ON claim_extraction_runs(id, source_item_revision_id, edition_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_stories_id_edition
 ON stories(id, edition_id);
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_story_revisions_story_id_id
-ON story_revisions(story_id, id);
-
 -- 2. Exact composite FK from claims to its extraction run
 ALTER TABLE claims
     DROP CONSTRAINT IF EXISTS fk_claims_extraction_run_composite,

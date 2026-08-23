@@ -237,7 +237,7 @@ class KnowledgeEditorialAdapter:
                     ref_key = f"{platform}:source:{source_id}:item:{source_item_id}:rev:{source_item_rev_id}"
                     card_source_refs.append(ref_key)
 
-                    is_official = s_role in ("official", "emergency", "civil_service")
+                    is_official = s_role == "official"
 
                     if ref_key not in records:
                         from src.collector import Message

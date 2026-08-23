@@ -89,7 +89,7 @@ async def _resolve_facebook_execution_lock(conn: Any, source: Source) -> str | N
         return None
     from src.repositories.facebook import resolve_auth_profile_name
 
-    auth_profile = await resolve_auth_profile_name(conn, source.id, source.collector_options)
+    auth_profile = await resolve_auth_profile_name(conn, source.id)
     return f"facebook-auth-profile:{auth_profile}"
 
 

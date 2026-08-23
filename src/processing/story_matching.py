@@ -911,6 +911,13 @@ class StoryMatchingService:
         policy: StoryMatchingPolicyVersion,
         revision: StoryRevision,
     ) -> None:
+        if (
+            not policy.embedding_model
+            or policy.embedding_model.lower() == "none"
+            or policy.embedding_dimensions <= 0
+        ):
+            return
+
         # Lazy on purpose: src.jobs.processing imports this module at top level.
         from src.jobs.processing import embed_story_revision
 

@@ -78,7 +78,13 @@ class TestFacebookPostParser:
 class TestFacebookExecutionLock:
     """Tests cross-source execution lock resolver for Facebook auth profiles."""
 
-    def test_resolve_facebook_execution_lock(self):
+    @pytest.mark.asyncio
+    async def test_resolve_facebook_execution_lock(self):
+        from unittest.mock import AsyncMock
+
+        from src.jobs.ingestion import resolve_execution_lock
+        from src.repositories.facebook import FacebookRepository
+
         now = dt.datetime.now(dt.timezone.utc)
         source = Source(
             id=42,
@@ -89,14 +95,19 @@ class TestFacebookExecutionLock:
             name="Group 1",
             role="community",
             enabled=True,
-            collector_options={"auth_profile": "operator_profile"},
+            collector_options={},
             created_at=now,
             updated_at=now,
         )
-        from src.jobs.facebook import resolve_facebook_execution_lock
-
-        lock = resolve_facebook_execution_lock(source)
-        assert lock == "facebook-auth-profile:operator_profile"
+        mock_conn = AsyncMock()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(
+                FacebookRepository,
+                "get_source_config_by_source_id",
+                AsyncMock(return_value=None),
+            )
+            lock = await resolve_execution_lock(mock_conn, source)
+            assert lock == "facebook-auth-profile:default"
 
 
 @pytest.mark.postgres
@@ -106,15 +117,33 @@ class TestFacebookCollectorIntegration:
     async def test_collector_handles_auth_checkpoint_and_updates_profile_status(
         self, conn: psycopg.AsyncConnection, edition
     ):
+        now = dt.datetime.now(dt.timezone.utc)
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role, enabled)
+            VALUES ('facebook', 'group', 'https://facebook.com/groups/test_group', 'https://facebook.com/groups/test_group', 'Test Group', 'community', true)
+            RETURNING id
+            """
+        )
+        source_id = (await cur.fetchone())[0]
+
         fb_repo = FacebookRepository()
         prof = await fb_repo.get_or_create_auth_profile(
             conn, name="test_prof", storage_ref="test_prof"
         )
+        await fb_repo.update_auth_profile_status(
+            conn, prof.id, status="ready", error_kind=None, error_message=None
+        )
+        await fb_repo.get_or_create_source_config(
+            conn,
+            source_id=source_id,
+            auth_profile_id=prof.id,
+            url="https://facebook.com/groups/test_group",
+        )
         await conn.commit()
 
-        now = dt.datetime.now(dt.timezone.utc)
         source = Source(
-            id=101,
+            id=source_id,
             platform="facebook",
             kind="group",
             external_id="https://facebook.com/groups/test_group",
@@ -122,7 +151,7 @@ class TestFacebookCollectorIntegration:
             name="Test Group",
             role="community",
             enabled=True,
-            collector_options={"auth_profile_id": prof.id},
+            collector_options={},
             created_at=now,
             updated_at=now,
         )

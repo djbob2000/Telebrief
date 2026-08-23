@@ -18,11 +18,35 @@ class FacebookAuthState(str, Enum):
     DISABLED = "disabled"
 
 
+RUNNABLE_AUTH_STATES = frozenset({FacebookAuthState.READY.value, "active", "healthy"})
+BLOCKED_AUTH_STATES = frozenset(
+    {
+        FacebookAuthState.AUTH_REQUIRED.value,
+        FacebookAuthState.CHECKPOINT_REQUIRED.value,
+        FacebookAuthState.ACCOUNT_ACTION_REQUIRED.value,
+        FacebookAuthState.DISABLED.value,
+    }
+)
+
+
+def is_profile_runnable(status: str | None) -> bool:
+    """Return True only if Facebook AuthProfile is in a verified active/ready state."""
+    if not status:
+        return False
+    return status.lower() in RUNNABLE_AUTH_STATES
+
+
 class FacebookHumanActionRequired(Exception):
     """Raised when Facebook requires interactive operator intervention (login, checkpoint, captcha)."""
 
     def __init__(self, state: FacebookAuthState | str, message: str | None = None):
-        self.state = FacebookAuthState(state) if isinstance(state, str) else state
+        if isinstance(state, str):
+            try:
+                self.state = FacebookAuthState(state)
+            except ValueError:
+                self.state = FacebookAuthState.DISABLED
+        else:
+            self.state = state
         msg = message or f"Facebook interactive action required: {self.state.value}"
         super().__init__(msg)
 
