@@ -18,7 +18,7 @@ from src.ingestion.protocol import CollectionContext
 from src.providers.telegram import TelegramCollector
 
 
-class FakeMessageMediaPhoto:
+class FakeMessageMediaPhoto(SimpleNamespace):
     """Stands in for telethon MessageMediaPhoto (class name carries 'Photo')."""
 
 
@@ -155,7 +155,7 @@ async def test_forward_origin_and_media_metadata_retained(sample_config, mock_lo
         post_author=None,
         date=datetime(2026, 8, 20, 9, 30, tzinfo=timezone.utc),
     )
-    message.media = FakeMessageMediaPhoto()
+    message.media = FakeMessageMediaPhoto(photo=SimpleNamespace(id=777))
     collector.client.iter_messages = _iter_messages_result([message])
 
     batch = await collector.scan(_source(), None, _context())
@@ -172,7 +172,31 @@ async def test_forward_origin_and_media_metadata_retained(sample_config, mock_lo
     assert asset.kind == "photo"
     assert asset.mime_type == "image/jpeg"
     assert asset.external_url is None
-    assert asset.content_hash is None
+    # The provider media id is the stable per-photo discriminator that keeps
+    # album members distinct under uq_source_assets_revision_identity.
+    assert asset.content_hash == "777"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_album_photos_get_distinct_asset_identity(sample_config, mock_logger):
+    """Same-kind album assets never collapse onto one identity row."""
+    collector = _collector(sample_config, mock_logger)
+    album = [
+        _telegram_message(61, "фото 1"),
+        _telegram_message(62, "фото 2"),
+        _telegram_message(63, ""),
+    ]
+    for offset, message in enumerate(album):
+        message.grouped_id = 424242
+        message.media = FakeMessageMediaPhoto(photo=SimpleNamespace(id=900 + offset))
+    collector.client.iter_messages = _iter_messages_result(album)
+
+    batch = await collector.scan(_source(), None, _context())
+
+    hashes = {asset.content_hash for asset in batch.assets}
+    assert hashes == {"900", "901", "902"}
+    assert len(batch.assets) == 3
 
 
 @pytest.mark.unit
@@ -196,6 +220,7 @@ async def test_document_asset_metadata(sample_config, mock_logger):
     assert asset.item_external_id == "60"
     assert asset.kind == "document"
     assert asset.mime_type == "application/pdf"
+    assert asset.content_hash == "999888"
     assert asset.metadata["file_name"] == "report.pdf"
     assert asset.metadata["size"] == 2048
     assert asset.metadata["unique_id"] == 999888
@@ -252,12 +277,19 @@ async def test_effective_source_role_falls_back_to_source_role(sample_config, mo
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_incremental_scan_applies_min_id_from_checkpoint(sample_config, mock_logger):
-    """Checkpoint high-watermark becomes min_id and old messages are dropped."""
+async def test_incremental_scan_window_omits_min_id_and_reobserves_behind_watermark(
+    sample_config, mock_logger
+):
+    """The lookback window never filters by min_id so edits re-create revisions.
+
+    Correctness stays UNIQUE(source_id, external_id): re-observing unchanged
+    content is a no-op at the DB level, while an edit behind the watermark
+    finally becomes revision 2.
+    """
     collector = _collector(sample_config, mock_logger)
-    old_message = _telegram_message(90)
+    edited = _telegram_message(90, text="отредактировано")
     new_message = _telegram_message(110)
-    collector.client.iter_messages = _iter_messages_result([old_message, new_message])
+    collector.client.iter_messages = _iter_messages_result([edited, new_message])
     checkpoint = CollectionCheckpoint(
         adapter_state={"high_watermark_message_id": 100},
         last_success_at=NOW - timedelta(minutes=45),
@@ -266,9 +298,70 @@ async def test_incremental_scan_applies_min_id_from_checkpoint(sample_config, mo
     batch = await collector.scan(_source(), checkpoint, _context())
 
     kwargs = collector.client.iter_messages.call_args.kwargs
-    assert kwargs["min_id"] == 100
-    assert [item.external_id for item in batch.items] == ["110"]
-    assert batch.adapter_state["high_watermark_message_id"] == 110
+    assert "min_id" not in kwargs
+    assert sorted(item.external_id for item in batch.items) == ["110", "90"]
+
+
+def _paged_iter_messages(pages_by_call):
+    """iter_messages double dispatching: window call vs catch-up (offset_id) calls."""
+    calls: list[dict] = []
+
+    async def _gen(messages):
+        for message in messages:
+            yield message
+
+    def _side_effect(*args, **kwargs):
+        calls.append(kwargs)
+        if "offset_id" not in kwargs:
+            return _gen(pages_by_call["window"])
+        return _gen(pages_by_call[kwargs["offset_id"]])
+
+    return MagicMock(side_effect=_side_effect), calls
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_burst_beyond_window_pages_down_to_watermark(sample_config, mock_logger):
+    """More messages than the window limit arrived: catch-up pages reach the watermark."""
+    collector = _collector(sample_config, mock_logger)
+    collector.client.iter_messages, calls = _paged_iter_messages(
+        {
+            "window": [_telegram_message(300), _telegram_message(250)],
+            250: [_telegram_message(200), _telegram_message(150)],
+            150: [_telegram_message(110)],
+        }
+    )
+    checkpoint = CollectionCheckpoint(adapter_state={"high_watermark_message_id": 100})
+
+    batch = await collector.scan(_source(), checkpoint, _context())
+
+    assert [item.external_id for item in batch.items] == ["300", "250", "200", "150", "110"]
+    assert batch.adapter_state["high_watermark_message_id"] == 300
+    # The final short page proves the gap closed; no extra page was requested.
+    assert calls[-1]["offset_id"] == 150
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_burst_page_cap_keeps_conservative_watermark(sample_config, mock_logger):
+    """When paging cannot close the gap the watermark only covers fetched ids."""
+    collector = _collector(sample_config, mock_logger)
+    source = _source(collector_options={"max_messages_per_channel": 2})
+    # Every catch-up page is full and never reaches the watermark.
+    collector.client.iter_messages, _ = _paged_iter_messages(
+        {
+            "window": [_telegram_message(5), _telegram_message(4)],
+            4: [_telegram_message(3), _telegram_message(2)],
+            2: [_telegram_message(1), _telegram_message(0)],
+            0: [_telegram_message(-1), _telegram_message(-2)],
+        }
+    )
+    checkpoint = CollectionCheckpoint(adapter_state={"high_watermark_message_id": -50})
+
+    batch = await collector.scan(source, checkpoint, _context())
+
+    assert batch.adapter_state["high_watermark_message_id"] == -3
+    assert batch.items[0].external_id == "5"
 
 
 @pytest.mark.unit
@@ -289,37 +382,54 @@ async def test_initial_scan_without_checkpoint_uses_lookback_window(sample_confi
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_checkpointed_scan_ignores_lookback_boundary(sample_config, mock_logger):
-    """After downtime longer than lookback, the watermark cursor still catches up."""
+async def test_checkpointed_scan_recovers_stale_message_via_catchup(sample_config, mock_logger):
+    """After downtime longer than lookback, catch-up paging recovers unseen ids."""
     collector = _collector(sample_config, mock_logger)
     stale_but_unseen = _telegram_message(200, text="Позднее сообщение")
     stale_but_unseen.date = datetime.now(timezone.utc) - timedelta(hours=72)
-    collector.client.iter_messages = _iter_messages_result([stale_but_unseen])
+    # Window (24h) is empty; the catch-up page below the window returns it.
+    collector.client.iter_messages, _ = _paged_iter_messages({"window": [], 0: [stale_but_unseen]})
     checkpoint = CollectionCheckpoint(adapter_state={"high_watermark_message_id": 100})
 
     batch = await collector.scan(_source(), checkpoint, _context())
 
     assert [item.external_id for item in batch.items] == ["200"]
+    assert batch.adapter_state["high_watermark_message_id"] == 200
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_checkpointed_topic_fetch_drops_min_date_bound(sample_config, mock_logger):
-    """Checkpointed forum scans bound by min_id only — no lookback cutoff."""
+async def test_checkpointed_topic_scan_windows_then_catches_up(sample_config, mock_logger):
+    """Forum scans window without min_id first, then close a detected gap per topic."""
     sample_config.channels[0] = ChannelConfig(
         id="@test_channel",
         name="Test Channel",
         topics=[ForumTopicConfig(id=235525, name="ЖКХ")],
     )
     collector = _collector(sample_config, mock_logger)
-    collector.client.return_value = SimpleNamespace(messages=[_telegram_message(9001)])
+    window_message = _telegram_message(9001)
+    stale = _telegram_message(8050)
+    stale.date = datetime.now(timezone.utc) - timedelta(hours=72)
+
+    async def _search_side_effect(request):
+        if request.min_id == 0:
+            return SimpleNamespace(messages=[window_message])
+        return SimpleNamespace(messages=[stale])
+
+    collector.client.side_effect = _search_side_effect
     checkpoint = CollectionCheckpoint(adapter_state={"high_watermark_message_id": 8000})
 
     await collector.scan(_source(), checkpoint, _context())
 
-    request = collector.client.call_args.args[0]
-    assert request.min_date is None
-    assert request.min_id == 8000
+    requests = [call.args[0] for call in collector.client.call_args_list]
+    assert len(requests) == 2
+    # Window pass: bounded by time, not by the watermark.
+    assert requests[0].min_date is not None
+    assert requests[0].min_id == 0
+    assert requests[0].top_msg_id == 235525
+    # Catch-up pass: bounded by the watermark.
+    assert requests[1].min_id == 8000
+    assert requests[1].top_msg_id == 235525
 
 
 @pytest.mark.unit
@@ -377,8 +487,8 @@ async def test_empty_batch_carries_prior_high_watermark_forward(sample_config, m
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_topic_fetch_passes_top_msg_id_and_min_id(sample_config, mock_logger):
-    """Forum sources fetch per topic with top_msg_id plus checkpoint min_id."""
+async def test_topic_fetch_passes_top_msg_id(sample_config, mock_logger):
+    """Forum sources fetch per topic with top_msg_id in the window pass."""
     sample_config.channels[0] = ChannelConfig(
         id="@test_channel",
         name="Test Channel",
@@ -387,13 +497,15 @@ async def test_topic_fetch_passes_top_msg_id_and_min_id(sample_config, mock_logg
     collector = _collector(sample_config, mock_logger)
     response = SimpleNamespace(messages=[_telegram_message(9001)])
     collector.client.return_value = response
-    checkpoint = CollectionCheckpoint(adapter_state={"high_watermark_message_id": 8000})
+    # The window's oldest id (9001) is below this watermark+1, so no gap exists.
+    checkpoint = CollectionCheckpoint(adapter_state={"high_watermark_message_id": 9050})
 
     batch = await collector.scan(_source(), checkpoint, _context())
 
     request = collector.client.call_args.args[0]
     assert request.top_msg_id == 235525
-    assert request.min_id == 8000
+    assert request.min_id == 0
+    assert collector.client.call_count == 1
     assert [item.external_id for item in batch.items] == ["9001"]
     assert batch.items[0].metadata["topic_id"] == 235525
 
@@ -484,3 +596,42 @@ async def test_missing_session_file_maps_to_account_action_required(sample_confi
 
     assert batch.outcome == CollectionOutcome.ACCOUNT_ACTION_REQUIRED
     assert batch.error_kind == "session_missing"
+
+
+# --- Connection/entity caching -----------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_repeated_scans_connect_and_resolve_entity_once(sample_config, mock_logger):
+    """A long-lived collector must not pay connect+dialogs+resolve per scan."""
+    with patch("src.providers.telegram.os.path.exists", return_value=True):
+        collector = _collector(sample_config, mock_logger)
+    message = _telegram_message(5)
+    collector.client.iter_messages = _iter_messages_result([message])
+    checkpoint = CollectionCheckpoint(adapter_state={"high_watermark_message_id": 1})
+
+    await collector.scan(_source(), checkpoint, _context())
+    await collector.scan(_source(), checkpoint, _context())
+
+    assert collector.client.connect.await_count == 1
+    assert collector.client.get_dialogs.await_count == 1
+    assert collector.client.get_entity.await_count == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unresolvable_entity_is_not_cached(sample_config, mock_logger):
+    """A failed resolution must not poison later scans for the same source."""
+    collector = _collector(sample_config, mock_logger)
+    collector.client.get_entity = AsyncMock(
+        side_effect=[ValueError("Could not find the input entity for PeerChannel"), object()]
+    )
+    collector.client.iter_messages = _iter_messages_result([_telegram_message(6)])
+
+    first = await collector.scan(_source(), None, _context())
+    second = await collector.scan(_source(), None, _context())
+
+    assert first.outcome == CollectionOutcome.SOURCE_NOT_FOUND
+    assert second.outcome == CollectionOutcome.SUCCESS
+    assert collector.client.get_entity.await_count == 2

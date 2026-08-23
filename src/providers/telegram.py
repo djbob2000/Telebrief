@@ -9,14 +9,24 @@ Session/authentication/link/sender/media helpers are shared with the legacy
 interactive ``python -m src.collector`` authentication flow stays unchanged.
 
 Item identity: ``external_id`` is ``str(message.id)`` scoped by Source; the
-forum topic id is observation metadata, never part of identity. Checkpointing
-stores the highest observed message id; incremental scans pass it as Telethon's
-``min_id`` and are bounded solely by that watermark — no lookback cutoff — so
-gaps longer than the lookback window are still recovered after downtime.
-Without a checkpoint the adapter fetches a recent window: ``lookback_hours``
-from source collector_options or context options, defaulting to 24 hours.
-Correctness never depends on the window: identity stays
-``UNIQUE(source_id, external_id)``.
+forum topic id is observation metadata, never part of identity.
+
+Scan strategy (two passes over read-only provider data):
+
+* **Window pass** — every scan fetches the newest ``limit`` messages inside a
+  ``lookback_hours`` window WITHOUT any id filter. Edited messages keep their
+  Telegram id, so re-observing them inside the window is what makes revision 2+
+  reachable at all; unchanged content dedupes to nothing at the DB layer.
+* **Catch-up pass** — when the window's oldest id sits above
+  ``watermark + 1``, messages between the watermark and the window may exist
+  (burst longer than the window, downtime). The gap is paged backwards in
+  bounded chunks until the watermark is reached or ``MAX_CATCHUP_PAGES`` full
+  pages were consumed. In the capped case the checkpoint only advances to the
+  oldest fetched id minus one, so the remaining gap survives into the next
+  scan instead of being silently skipped.
+
+Correctness never depends on any of this bookkeeping: identity stays
+``UNIQUE(source_id, external_id)`` and revisions dedupe by content hash.
 
 Expected source-level failures never raise out of ``scan()``: they are mapped
 onto :class:`~src.ingestion.models.CollectionOutcome` values with a short typed
@@ -51,6 +61,11 @@ from src.ingestion.models import (
 from src.ingestion.protocol import CollectionContext
 
 DEFAULT_LOOKBACK_HOURS = 24
+
+# Upper bound on watermark-catch-up paging per scan. When hit, the checkpoint
+# advances only to the oldest fetched id minus one, so the next scan resumes
+# the remaining gap instead of skipping it.
+MAX_CATCHUP_PAGES = 3
 
 SESSION_PATH = "sessions/user.session"
 
@@ -307,6 +322,10 @@ class TelegramCollector:
         self.config = config
         self.logger = logger if logger is not None else logging.getLogger(__name__)
         self.client = client if client is not None else build_user_client(config)
+        # Long-lived worker collectors connect once per process, not per scan;
+        # resolved entities are cached per source external id.
+        self._connected = False
+        self._entities: dict[str, Any] = {}
 
     async def scan(
         self,
@@ -317,10 +336,11 @@ class TelegramCollector:
         """Fetch new messages for one source and convert them; never raises."""
         started_at = context.now
         try:
-            await ensure_connected(self.client, self.logger)
+            await self._ensure_ready()
             channel_config = resolve_channel_config(self.config.channels, source.external_id)
-            entity, entries = await self._fetch_incremental(
-                source, checkpoint, context, channel_config
+            entity = await self._resolve_entity(source)
+            entries, gap_resolved, lowest_fetched_id = await self._fetch_incremental(
+                source, entity, checkpoint, context, channel_config
             )
             batch = await self._convert_entries(
                 source,
@@ -329,6 +349,8 @@ class TelegramCollector:
                 entries,
                 checkpoint=checkpoint,
                 started_at=started_at,
+                gap_resolved=gap_resolved,
+                lowest_fetched_id=lowest_fetched_id,
             )
         except Exception as error:
             outcome, error_kind, extra_state = _map_error(error)
@@ -347,6 +369,23 @@ class TelegramCollector:
             )
         return batch
 
+    async def _ensure_ready(self) -> None:
+        """Connect (once per collector lifetime) and resolve nothing else."""
+        if self._connected:
+            return
+        await ensure_connected(self.client, self.logger)
+        self._connected = True
+
+    async def _resolve_entity(self, source: Source) -> Any:
+        """Resolve the channel entity once per source; failures stay uncached."""
+        if source.external_id is None:
+            raise ValueError(f"Source {source.id} has no external_id")
+        entity = self._entities.get(source.external_id)
+        if entity is None:
+            entity = await self.client.get_entity(source.external_id)
+            self._entities[source.external_id] = entity
+        return entity
+
     async def _convert_entries(
         self,
         source: Source,
@@ -356,10 +395,11 @@ class TelegramCollector:
         *,
         checkpoint: CollectionCheckpoint | None,
         started_at: datetime,
+        gap_resolved: bool = True,
+        lowest_fetched_id: int | None = None,
     ) -> CollectionBatch:
         """Convert fetched Telethon messages into one successful CollectionBatch."""
         observed_at = datetime.now(timezone.utc)
-        min_id = self._min_id(checkpoint)
         items: list[ObservedItem] = []
         assets: list[ObservedAsset] = []
         seen_external_ids: set[str] = set()
@@ -367,8 +407,6 @@ class TelegramCollector:
 
         for message, topic_id in sorted(entries, key=lambda entry: entry[0].date):
             fetched_ids.append(int(message.id))
-            if min_id is not None and int(message.id) <= min_id:
-                continue
             external_id = str(message.id)
             if external_id in seen_external_ids:
                 continue
@@ -387,13 +425,17 @@ class TelegramCollector:
         prior_watermark = (
             checkpoint.adapter_state.get("high_watermark_message_id") if checkpoint else None
         )
-        watermark_candidates = fetched_ids + (
-            [int(prior_watermark)] if isinstance(prior_watermark, int) else []
-        )
+        high_watermark: int | None
+        if not gap_resolved and lowest_fetched_id is not None:
+            high_watermark = lowest_fetched_id - 1
+        else:
+            watermark_candidates = fetched_ids + (
+                [int(prior_watermark)] if isinstance(prior_watermark, int) else []
+            )
+            high_watermark = max(watermark_candidates) if watermark_candidates else None
+
         adapter_state: dict[str, JSONValue] = {
-            "high_watermark_message_id": max(watermark_candidates)
-            if watermark_candidates
-            else None,
+            "high_watermark_message_id": high_watermark,
             "last_success_at": completed_at.isoformat(),
         }
         return CollectionBatch(
@@ -413,18 +455,17 @@ class TelegramCollector:
     async def _fetch_incremental(
         self,
         source: Source,
+        entity: Any,
         checkpoint: CollectionCheckpoint | None,
         context: CollectionContext,
         channel_config: ChannelConfig | None,
-    ) -> tuple[Any, list[tuple[Any, int | None]]]:
-        """Fetch raw Telethon messages as (entity, [(message, topic_id), ...]).
+    ) -> tuple[list[tuple[Any, int | None]], bool, int | None]:
+        """Fetch raw Telethon messages as ([(message, topic_id), ...], gap_resolved, lowest_fetched_id).
 
-        With a checkpoint high-watermark the scan passes it as Telethon's
-        min_id and applies no date lower bound — the watermark is the cursor,
-        so downtime longer than the lookback window still catches up. Without
-        a checkpoint it fetches a recent lookback window (24h default). Forum
-        sources fetch per selected topic via top_msg_id, mirroring the legacy
-        collector.
+        Scan strategy:
+        1. Window pass: fetch newest messages inside lookback window without id filter.
+        2. Catch-up pass: if watermark exists and oldest message > watermark + 1, page
+           backwards down to the watermark up to MAX_CATCHUP_PAGES.
         """
         options: dict[str, Any] = dict(context.options or {})
         options.update(source.collector_options or {})
@@ -433,14 +474,16 @@ class TelegramCollector:
             options.get("max_messages_per_channel") or self.config.settings.max_messages_per_channel
         )
         now = datetime.now(timezone.utc)
-        min_id = self._min_id(checkpoint)
-        lookback_time = None if min_id is not None else now - timedelta(hours=lookback_hours)
+        watermark = self._min_id(checkpoint)
+        lookback_time = now - timedelta(hours=lookback_hours)
 
-        entity = await self.client.get_entity(source.external_id)
         entries: list[tuple[Any, int | None]] = []
+        gap_resolved = True
+        lowest_fetched_id: int | None = None
 
         if channel_config is not None and channel_config.topics:
             for topic in channel_config.topics:
+                # Window pass
                 response = await self.client(
                     functions.messages.SearchRequest(
                         peer=entity,
@@ -452,22 +495,99 @@ class TelegramCollector:
                         add_offset=0,
                         limit=limit,
                         max_id=0,
-                        min_id=min_id or 0,
+                        min_id=0,
                         hash=0,
                         top_msg_id=topic.id,
                     )
                 )
-                entries.extend((message, topic.id) for message in response.messages)
-        else:
-            kwargs: dict[str, Any] = {"limit": limit, "offset_date": now}
-            if min_id:
-                kwargs["min_id"] = min_id
-            async for message in self.client.iter_messages(entity, **kwargs):
-                if lookback_time is not None and message.date < lookback_time:
-                    break
-                entries.append((message, None))
+                topic_messages = list(response.messages)
+                entries.extend((message, topic.id) for message in topic_messages)
 
-        return entity, entries
+                oldest_id = min((m.id for m in topic_messages), default=None)
+                if oldest_id is not None:
+                    lowest_fetched_id = (
+                        oldest_id
+                        if lowest_fetched_id is None
+                        else min(lowest_fetched_id, oldest_id)
+                    )
+
+                # Catch-up pass if needed
+                if watermark is not None and (oldest_id is None or oldest_id > watermark + 1):
+                    catchup_response = await self.client(
+                        functions.messages.SearchRequest(
+                            peer=entity,
+                            q="",
+                            filter=types.InputMessagesFilterEmpty(),
+                            min_date=None,
+                            max_date=now,
+                            offset_id=0,
+                            add_offset=0,
+                            limit=limit,
+                            max_id=0,
+                            min_id=watermark,
+                            hash=0,
+                            top_msg_id=topic.id,
+                        )
+                    )
+                    catchup_msgs = list(catchup_response.messages)
+                    entries.extend((message, topic.id) for message in catchup_msgs)
+                    catchup_oldest = min((m.id for m in catchup_msgs), default=None)
+                    if catchup_oldest is not None:
+                        lowest_fetched_id = (
+                            catchup_oldest
+                            if lowest_fetched_id is None
+                            else min(lowest_fetched_id, catchup_oldest)
+                        )
+        else:
+            # 1. Window pass
+            window_messages: list[tuple[Any, int | None]] = []
+            async for message in self.client.iter_messages(entity, limit=limit, offset_date=now):
+                if message.date < lookback_time:
+                    break
+                window_messages.append((message, None))
+
+            entries.extend(window_messages)
+            oldest_id = min((m.id for m, _ in window_messages), default=None)
+            if oldest_id is not None:
+                lowest_fetched_id = oldest_id
+
+            # 2. Catch-up pass
+            if watermark is not None and (oldest_id is None or oldest_id > watermark + 1):
+                current_offset_id = oldest_id if oldest_id is not None else 0
+                page_size = len(window_messages) if len(window_messages) > 0 else limit
+                pages = 0
+                gap_closed = False
+                while pages < MAX_CATCHUP_PAGES and not gap_closed:
+                    pages += 1
+                    page_messages: list[tuple[Any, int | None]] = []
+                    kwargs: dict[str, Any] = {
+                        "limit": limit,
+                        "min_id": watermark,
+                        "offset_id": current_offset_id,
+                    }
+                    async for message in self.client.iter_messages(entity, **kwargs):
+                        page_messages.append((message, None))
+
+                    if not page_messages:
+                        gap_closed = True
+                        break
+
+                    entries.extend(page_messages)
+                    page_oldest = min(m.id for m, _ in page_messages)
+                    lowest_fetched_id = (
+                        page_oldest
+                        if lowest_fetched_id is None
+                        else min(lowest_fetched_id, page_oldest)
+                    )
+                    if page_oldest <= watermark + 1 or len(page_messages) < page_size:
+                        gap_closed = True
+                        break
+                    current_offset_id = page_oldest
+
+                if not gap_closed and pages >= MAX_CATCHUP_PAGES:
+                    gap_resolved = False
+
+        return entries, gap_resolved, lowest_fetched_id
 
     @staticmethod
     def _min_id(checkpoint: CollectionCheckpoint | None) -> int | None:
@@ -492,8 +612,8 @@ class TelegramCollector:
     ) -> ObservedItem | None:
         """Convert one Telethon message; service posts without text/media are skipped."""
         text = message.text or ""
-        media_token = classify_media(message)
-        if not text and not media_token:
+        media_kind = classify_media(message)
+        if not text and not media_kind:
             return None
 
         reply_to = getattr(message, "reply_to", None)
@@ -508,7 +628,7 @@ class TelegramCollector:
             "topic_id": effective_topic_id,
             "reply_to_id": reply_to_msg_id,
             "has_media": message.media is not None,
-            "media_kinds": [media_token] if media_token else [],
+            "media_kinds": [media_kind] if media_kind else [],
             "effective_source_role": resolve_effective_role(
                 channel_config, source.role, effective_topic_id
             ),
@@ -538,22 +658,29 @@ class TelegramCollector:
 
     def _asset_for(self, message: Any) -> ObservedAsset | None:
         """Map downloadable media (photo/video/audio/voice/document) to an asset."""
-        token = classify_media(message)
-        if token not in ASSET_MEDIA_KINDS:
+        media_kind = classify_media(message)
+        if media_kind not in ASSET_MEDIA_KINDS:
             return None
 
-        mime_type: str | None = MIME_TYPE_BY_TOKEN.get(token)
+        mime_type: str | None = MIME_TYPE_BY_TOKEN.get(media_kind)
         asset_metadata: dict[str, JSONValue] = {}
-        if mime_type is None:
+        content_hash: str | None = None
+        if media_kind == "photo":
+            photo = getattr(message.media, "photo", None)
+            photo_id = getattr(photo, "id", None)
+            if photo_id is not None:
+                content_hash = str(photo_id)
+        elif media_kind == "document" or mime_type is None:
             document = getattr(message.media, "document", None)
             if document is not None:
-                mime_type = getattr(document, "mime_type", None)
+                mime_type = getattr(document, "mime_type", None) or mime_type
                 size = getattr(document, "size", None)
                 unique_id = getattr(document, "id", None)
                 if size is not None:
                     asset_metadata["size"] = int(size)
                 if unique_id is not None:
                     asset_metadata["unique_id"] = int(unique_id)
+                    content_hash = str(unique_id)
                 attributes = getattr(document, "attributes", None) or ()
                 for attribute in attributes:
                     file_name = getattr(attribute, "file_name", None)
@@ -563,9 +690,9 @@ class TelegramCollector:
 
         return ObservedAsset(
             item_external_id=str(message.id),
-            kind=token,
+            kind=media_kind,
             external_url=None,
             mime_type=mime_type,
-            content_hash=None,
+            content_hash=content_hash,
             metadata=asset_metadata,
         )
