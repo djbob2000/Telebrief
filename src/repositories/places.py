@@ -105,7 +105,8 @@ class PlaceRepository:
 
     async def count_places(self, conn: psycopg.AsyncConnection) -> int:
         cursor = await conn.execute("SELECT count(*) FROM places")
-        return int((await cursor.fetchone())[0])
+        row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
 
     # -- aliases ------------------------------------------------------------
 
@@ -143,7 +144,10 @@ class PlaceRepository:
             """,
             (place_id, alias, key),
         )
-        return PlaceAlias.from_row(await cursor.fetchone()), True
+        inserted_row = await cursor.fetchone()
+        if inserted_row is None:
+            raise RuntimeError("Failed to insert place_alias")
+        return PlaceAlias.from_row(inserted_row), True
 
     async def alias_candidates(
         self, conn: psycopg.AsyncConnection, *, normalized_alias: str
@@ -164,7 +168,8 @@ class PlaceRepository:
 
     async def count_aliases(self, conn: psycopg.AsyncConnection) -> int:
         cursor = await conn.execute("SELECT count(*) FROM place_aliases")
-        return int((await cursor.fetchone())[0])
+        row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
 
     # -- claim evidence -----------------------------------------------------
 
@@ -328,7 +333,8 @@ class PlaceRepository:
             """,
             (claim_id, policy_id),
         )
-        return bool((await cursor.fetchone())[0])
+        row = await cursor.fetchone()
+        return bool(row[0]) if row is not None else True
 
     async def list_mentions_missing_result(
         self,

@@ -63,7 +63,8 @@ async def refresh_facebook_comments(
     async with runtime.uow.transaction() as conn:
         cursor = await conn.execute(
             """
-            SELECT si.source_id, si.external_id, s.platform, s.kind, s.url, s.name, s.role, s.enabled, s.collector_options, s.created_at, s.updated_at
+            SELECT si.external_id,
+                   s.id, s.platform, s.kind, s.external_id, s.url, s.name, s.role, s.enabled, s.collector_options, s.created_at, s.updated_at
             FROM source_items si
             JOIN sources s ON s.id = si.source_id
             WHERE si.id = %s
@@ -75,20 +76,8 @@ async def refresh_facebook_comments(
             logger.warning("Post item %s not found for comment refresh", post_item_id)
             return
 
-        source = Source(
-            id=row[0],
-            platform=row[2],
-            kind=row[3],
-            external_id=row[4],
-            url=row[4],
-            name=row[5],
-            role=row[6],
-            enabled=row[7],
-            collector_options=row[8] or {},
-            created_at=row[9],
-            updated_at=row[10],
-        )
-        post_external_id = row[1]
+        post_external_id = row[0]
+        source = Source.from_row(row[1:])
 
     # Perform browser collection outside domain transaction
     from src.providers.facebook.browser import FacebookBrowserSession

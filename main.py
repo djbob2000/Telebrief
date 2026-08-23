@@ -8,13 +8,15 @@ Starts the scheduler and bot command handler.
 
 import argparse
 import asyncio
+import logging
 import signal
 import sys
 from contextlib import suppress
+from typing import Any
 
 from src.bootstrap import ApplicationInfrastructure, build_infrastructure
 from src.bot_commands import BotCommandHandler
-from src.config_loader import load_config
+from src.config_loader import Config, load_config
 from src.mcp_server import build_server
 from src.runtime import clear_runtime, install_runtime
 from src.scheduler import DigestScheduler
@@ -26,12 +28,12 @@ class TelebriefApp:
 
     def __init__(self):
         """Initialize the application."""
-        self.config = None
-        self.logger = None
-        self.scheduler = None
-        self.bot_handler = None
-        self.mcp = None
-        self.mcp_task = None
+        self.config: Config | None = None
+        self.logger: logging.Logger | None = None
+        self.scheduler: DigestScheduler | None = None
+        self.bot_handler: BotCommandHandler | None = None
+        self.mcp: Any | None = None
+        self.mcp_task: asyncio.Task | None = None
         self.infrastructure: ApplicationInfrastructure | None = None
         self.shutdown_event = asyncio.Event()
 
@@ -109,6 +111,14 @@ class TelebriefApp:
 
     async def run(self):
         """Run the application."""
+        if (
+            self.config is None
+            or self.logger is None
+            or self.scheduler is None
+            or self.bot_handler is None
+        ):
+            raise RuntimeError("Cannot run TelebriefApp before initialize() completes successfully")
+
         # Start scheduler
         self.logger.info("Starting scheduler...")
         self.scheduler.start()
@@ -155,18 +165,21 @@ class TelebriefApp:
 
     async def shutdown(self):
         """Graceful shutdown."""
-        self.logger.info("=" * 70)
-        self.logger.info("🛑 SHUTTING DOWN TELEBRIEF")
-        self.logger.info("=" * 70)
+        if self.logger is not None:
+            self.logger.info("=" * 70)
+            self.logger.info("🛑 SHUTTING DOWN TELEBRIEF")
+            self.logger.info("=" * 70)
 
         # Stop scheduler
         if self.scheduler:
-            self.logger.info("Stopping scheduler...")
+            if self.logger:
+                self.logger.info("Stopping scheduler...")
             self.scheduler.stop()
 
         # Stop bot
         if self.bot_handler:
-            self.logger.info("Stopping bot...")
+            if self.logger:
+                self.logger.info("Stopping bot...")
             await self.bot_handler.stop()
 
         # Stop MCP server
@@ -174,7 +187,8 @@ class TelebriefApp:
         # the way out — cosmetic, right after the line below. Build uvicorn.Server here
         # and flip should_exit instead if that log noise ever matters.
         if self.mcp_task:
-            self.logger.info("Stopping MCP server...")
+            if self.logger:
+                self.logger.info("Stopping MCP server...")
             self.mcp_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self.mcp_task
@@ -194,8 +208,9 @@ class TelebriefApp:
                     logger.error(f"Infrastructure shutdown failed: {e}", exc_info=True)
                 self.infrastructure = None
 
-        self.logger.info("✅ Shutdown complete")
-        self.logger.info("=" * 70)
+        if self.logger is not None:
+            self.logger.info("✅ Shutdown complete")
+            self.logger.info("=" * 70)
 
         # Signal that shutdown is complete
         self.shutdown_event.set()
@@ -232,27 +247,30 @@ async def main():
     app = TelebriefApp()
 
     # Initialize
-    if not await app.initialize():
+    if not await app.initialize() or app.config is None or app.logger is None:
         sys.exit(1)
+
+    config = app.config
+    logger = app.logger
 
     if args.article:
         from src.core import generate_and_publish_article
 
-        hours = args.hours or app.config.settings.article.lookback_hours
-        app.logger.info(
+        hours = args.hours or config.settings.article.lookback_hours
+        logger.info(
             f"Triggering on-demand article generation ({hours}h, dry_run={args.dry_run})..."
         )
         success = await generate_and_publish_article(
-            app.config, app.logger, hours=hours, dry_run=args.dry_run
+            config, logger, hours=hours, dry_run=args.dry_run
         )
         sys.exit(0 if success else 1)
 
     if args.digest:
         from src.core import generate_and_send_digest
 
-        hours = args.hours or app.config.settings.lookback_hours
-        app.logger.info(f"Triggering on-demand digest generation ({hours}h)...")
-        success = await generate_and_send_digest(app.config, app.logger, hours=hours)
+        hours = args.hours or config.settings.lookback_hours
+        logger.info(f"Triggering on-demand digest generation ({hours}h)...")
+        success = await generate_and_send_digest(config, logger, hours=hours)
         sys.exit(0 if success else 1)
 
     # Set up signal handlers for graceful shutdown
@@ -268,7 +286,7 @@ async def main():
         pass
 
     except Exception as e:
-        app.logger.error(f"Fatal error: {e}", exc_info=True)
+        logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
 
     finally:

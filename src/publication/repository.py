@@ -57,7 +57,8 @@ class PublicationPolicyRepository:
             "SELECT COALESCE(MAX(version), 0) + 1 FROM eligibility_policy_versions WHERE edition_id = %s",
             (edition_id,),
         )
-        next_ver = (await cursor.fetchone())[0]
+        ver_row = await cursor.fetchone()
+        next_ver = ver_row[0] if ver_row is not None else 1
 
         cursor = await conn.execute(
             """
@@ -67,7 +68,10 @@ class PublicationPolicyRepository:
             """,
             (edition_id, next_ver, config_hash, prompt_version),
         )
-        return EligibilityPolicyVersion.from_row(await cursor.fetchone())
+        res_row = await cursor.fetchone()
+        if res_row is None:
+            raise RuntimeError("Failed to insert eligibility_policy_version")
+        return EligibilityPolicyVersion.from_row(res_row)
 
     async def get_or_create_selection_policy(
         self,
@@ -94,7 +98,8 @@ class PublicationPolicyRepository:
             "SELECT COALESCE(MAX(version), 0) + 1 FROM editorial_selection_policy_versions WHERE edition_id = %s",
             (edition_id,),
         )
-        next_ver = (await cursor.fetchone())[0]
+        ver_row = await cursor.fetchone()
+        next_ver = ver_row[0] if ver_row is not None else 1
 
         cursor = await conn.execute(
             """
@@ -104,7 +109,10 @@ class PublicationPolicyRepository:
             """,
             (edition_id, next_ver, config_hash, prompt_version),
         )
-        return EditorialSelectionPolicyVersion.from_row(await cursor.fetchone())
+        res_row = await cursor.fetchone()
+        if res_row is None:
+            raise RuntimeError("Failed to insert editorial_selection_policy_version")
+        return EditorialSelectionPolicyVersion.from_row(res_row)
 
     async def get_or_create_writer_policy(
         self,
@@ -131,7 +139,8 @@ class PublicationPolicyRepository:
             "SELECT COALESCE(MAX(version), 0) + 1 FROM writer_policy_versions WHERE edition_id = %s",
             (edition_id,),
         )
-        next_ver = (await cursor.fetchone())[0]
+        ver_row = await cursor.fetchone()
+        next_ver = ver_row[0] if ver_row is not None else 1
 
         cursor = await conn.execute(
             """
@@ -141,7 +150,10 @@ class PublicationPolicyRepository:
             """,
             (edition_id, next_ver, config_hash, prompt_version),
         )
-        return WriterPolicyVersion.from_row(await cursor.fetchone())
+        res_row = await cursor.fetchone()
+        if res_row is None:
+            raise RuntimeError("Failed to insert writer_policy_version")
+        return WriterPolicyVersion.from_row(res_row)
 
 
 class PublicationRepository:

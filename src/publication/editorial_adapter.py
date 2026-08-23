@@ -197,7 +197,7 @@ class KnowledgeEditorialAdapter:
                     """
                     SELECT c.id, c.assertion_text, c.normalized_assertion,
                            s.platform, s.name, si.external_id, si.published_at,
-                           sir.text_content
+                           sir.text_content, si.canonical_url, s.url, s.external_id
                     FROM claims c
                     JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
                     JOIN source_items si ON si.id = sir.source_item_id
@@ -223,6 +223,9 @@ class KnowledgeEditorialAdapter:
                         ext_id,
                         pub_at,
                         text_content,
+                        canonical_url,
+                        s_url,
+                        s_ext_id,
                     ) = crow
                     ref_key = f"{platform}:{ext_id}"
                     card_source_refs.append(ref_key)
@@ -230,15 +233,36 @@ class KnowledgeEditorialAdapter:
                     if ref_key not in records:
                         from src.collector import Message
 
+                        if canonical_url:
+                            link = canonical_url
+                        elif platform == "telegram" and s_ext_id:
+                            clean_chan = s_ext_id.lstrip("@")
+                            clean_msg = str(ext_id).replace("msg:", "")
+                            link = f"https://t.me/{clean_chan}/{clean_msg}"
+                        elif s_url:
+                            link = s_url
+                        else:
+                            clean_ext = str(ext_id).replace("msg:", "")
+                            link = (
+                                f"https://t.me/{clean_ext}"
+                                if clean_ext.isdigit()
+                                else f"https://t.me/{clean_ext.lstrip('@')}"
+                            )
+
+                        msg_num = 0
+                        raw_ext = str(ext_id).replace("msg:", "")
+                        if raw_ext.isdigit():
+                            msg_num = int(raw_ext)
+
                         msg = Message(
                             text=text_content or assertion,
                             sender=src_name or platform,
                             timestamp=pub_at or dt.datetime.now(dt.timezone.utc),
-                            link=f"https://t.me/{ext_id}",
+                            link=link,
                             channel_name=src_name or platform,
                             has_media=False,
                             media_type="",
-                            message_id=int(ext_id) if str(ext_id).isdigit() else 0,
+                            message_id=msg_num,
                         )
                         records[ref_key] = SourceRecord(
                             ref=ref_key,

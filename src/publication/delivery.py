@@ -163,7 +163,8 @@ class PublicationDeliveryService:
                 "SELECT COALESCE(MAX(attempt_no), 0) + 1 FROM publication_delivery_attempts WHERE publication_delivery_id = %s",
                 (delivery_id,),
             )
-            attempt_no = (await cursor.fetchone())[0]
+            ver_row = await cursor.fetchone()
+            attempt_no = ver_row[0] if ver_row is not None else 1
 
         client = self.clients.get(destination.platform, MockDestinationClient())
 
