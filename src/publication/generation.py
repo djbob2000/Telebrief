@@ -65,9 +65,30 @@ class PublicationGenerationService:
         observer = DatabaseGenerationAttemptObserver(uow=self.uow, run_id=run_id, repo=self.repo)
 
         try:
-            title, lead, body = await self.generator.generate_from_frozen_input(
-                frozen, attempt_observer=observer
-            )
+            if run.publication_type in ("digest_grouped", "digest_channel", "digest"):
+                from src.publication.renderers import PublicationDigestRenderer
+
+                renderer = PublicationDigestRenderer(
+                    output_language=getattr(self.config.settings, "output_language", "Russian"),
+                    use_emojis=getattr(self.config.settings, "use_emojis", True),
+                    include_statistics=getattr(self.config.settings, "include_statistics", True),
+                )
+                att_id = await observer.attempt_started(
+                    "story_renderer_fallback", metadata={"renderer": run.publication_type}
+                )
+                if run.publication_type == "digest_channel":
+                    title, lead, body = renderer.render_channel_digest(
+                        frozen, snapshot_at=run.snapshot_at
+                    )
+                else:
+                    title, lead, body = renderer.render_grouped_digest(
+                        frozen, snapshot_at=run.snapshot_at
+                    )
+                await observer.attempt_finished(att_id, "succeeded")
+            else:
+                title, lead, body = await self.generator.generate_from_frozen_input(
+                    frozen, attempt_observer=observer
+                )
         except Exception as exc:
             logger.error("generation failed completely for run %s: %s", run_id, exc)
             async with self.uow.transaction() as conn:
