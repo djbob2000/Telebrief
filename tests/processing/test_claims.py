@@ -325,6 +325,32 @@ class TestCanonicalExtractionRuns:
         still_running = await RUN_REPO.get(conn, second.id)
         assert still_running.status == "running"
 
+    async def test_mark_failed_never_demotes_canonical_winner(self, conn, edition, revision):
+        """TOCTOU guard: a concurrent loser must not demote a just-committed
+        succeeded run into failed — that would orphan its claims and let
+        backfill extract permanent duplicates."""
+        policy = await _insert_extraction_policy(conn, edition.id)
+        decision_id = await _insert_relevant_decision(conn, edition.id, revision.id)
+        winner, _ = await _create_running_run(
+            conn,
+            edition_id=edition.id,
+            revision_id=revision.id,
+            policy_id=policy.id,
+            relevance_decision_id=decision_id,
+        )
+        assert await RUN_REPO.mark_succeeded(conn, winner.id, completed_at=dt.datetime.now(dt.UTC))
+
+        assert not await RUN_REPO.mark_failed(
+            conn, winner.id, error_kind="provider_unavailable", completed_at=dt.datetime.now(dt.UTC)
+        )
+        assert not await RUN_REPO.mark_failed(
+            conn, winner.id, error_kind=None, completed_at=dt.datetime.now(dt.UTC)
+        )
+
+        fetched = await RUN_REPO.get(conn, winner.id)
+        assert fetched.status == "succeeded"
+        assert fetched.error_kind is None
+
 
 class TestProcessingAttempts:
     async def _running_run(self, conn, edition, revision) -> ClaimExtractionRun:
@@ -1063,6 +1089,49 @@ class TestClaimExtractionIdempotenceAndRetries:
         runs = await _run_rows(conn)
         assert runs[0][1] == "failed"
         assert runs[0][2] == "invalid_ai_response"
+
+    async def test_fail_open_finalization_converges_when_canonical_already_won(
+        self, uow, conn, edition, revision
+    ):
+        """A concurrent winner must never be demoted by the fail-open path:
+        finalizing provider unavailability over an already-succeeded run
+        converges on its claims without crashing or changing state."""
+        policy_id, decision_id = await _seed_extraction_setup(conn, edition.id, revision.id)
+        run, created = await RUN_REPO.get_or_create_run(
+            conn,
+            source_item_revision_id=revision.id,
+            edition_id=edition.id,
+            extraction_policy_id=policy_id,
+            relevance_decision_id=decision_id,
+        )
+        assert created
+        assert await RUN_REPO.mark_succeeded(conn, run.id, completed_at=dt.datetime.now(dt.UTC))
+        winner_claims = await CLAIM_REPO.insert_claims(
+            conn,
+            run=run,
+            claims=[
+                NewClaim(
+                    assertion_text="Победа.",
+                    normalized_assertion="Победитель уже записал утверждение.",
+                )
+            ],
+        )
+        provider = ScriptedClaimProvider()
+        service = _extraction_service(uow, provider)
+
+        result = await service.finalize_provider_failure(
+            revision.id, edition.id, decision_id, policy_id
+        )
+
+        # Graceful lost-slot handling: no crash, no degraded verdict, and the
+        # canonical winner's artifacts are returned untouched.
+        assert result.degraded is None
+        assert result.replayed is True
+        assert [c.id for c in result.claims] == [c.id for c in winner_claims]
+        assert result.run.status == "succeeded"
+        fetched = await RUN_REPO.get(conn, run.id)
+        assert fetched.status == "succeeded"
+        assert fetched.error_kind is None
 
 
 @pytest.mark.postgres

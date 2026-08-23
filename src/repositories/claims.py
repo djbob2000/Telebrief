@@ -279,17 +279,22 @@ class ClaimExtractionRunRepository:
         *,
         error_kind: str | None,
         completed_at: dt.datetime,
-    ) -> None:
-        """Transition one run to failed; a failed run never occupies the
-        canonical slot, so a later retry may succeed."""
-        await conn.execute(
+    ) -> bool:
+        """Transition one RUNNING run to failed; a failed run never occupies
+        the canonical slot, so a later retry may succeed. False when the run
+        is not running anymore — most importantly a concurrently SUCCEEDED
+        canonical winner is never demoted (TOCTOU guard mirroring
+        ``mark_succeeded``)."""
+        cursor = await conn.execute(
             """
             UPDATE claim_extraction_runs
             SET status = 'failed', completed_at = %s, error_kind = %s
-            WHERE id = %s
+            WHERE id = %s AND status = 'running'
+            RETURNING id
             """,
             (completed_at, error_kind, run_id),
         )
+        return await cursor.fetchone() is not None
 
     async def start_attempt(
         self,

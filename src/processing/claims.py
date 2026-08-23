@@ -500,10 +500,13 @@ class ClaimExtractionService:
     ) -> ClaimExtractionResult:
         """Terminal fail-open write after retries are exhausted.
 
-        Marks the semantic run failed(provider_unavailable), closes any
-        still-open audit attempt as unavailable, and RETURNS successfully —
-        the item stays relevant-but-claimless and bounded backfill retries
-        later (failed runs never occupy the canonical slot).
+        Marks the RUNNING semantic run failed(provider_unavailable), closes
+        any still-open audit attempt as unavailable, and RETURNS successfully
+        — the item stays relevant-but-claimless and bounded backfill retries
+        later (failed runs never occupy the canonical slot). A concurrently
+        succeeded canonical winner is never demoted: the guarded
+        ``mark_failed`` refuses, and this path converges on the winner's
+        claims instead of reporting degradation.
         """
         del vision_run_id
         async with self.uow.transaction() as conn:
@@ -519,13 +522,19 @@ class ClaimExtractionService:
                 extraction_policy_id=policy_id,
                 relevance_decision_id=relevance_decision_id,
             )
-            if run.status != "succeeded":
-                await self._run_repo.mark_failed(
-                    conn,
-                    run.id,
-                    error_kind="provider_unavailable",
-                    completed_at=_now(),
-                )
+            if run.status == "succeeded":
+                # Lost the race before even finalizing: converge on the
+                # winner atomically visible artifacts, change nothing.
+                claims = await self._claim_repo.list_for_run(conn, run.id)
+                return ClaimExtractionResult(run=run, claims=tuple(claims), replayed=True)
+            demoted = await self._run_repo.mark_failed(
+                conn,
+                run.id,
+                error_kind="provider_unavailable",
+                completed_at=_now(),
+            )
+            lost_slot = not demoted
+            if not lost_slot:
                 open_attempt = await self._run_repo.latest_open_attempt(
                     conn, stage=_ATTEMPT_STAGE, semantic_run_id=run.id
                 )
@@ -537,7 +546,15 @@ class ClaimExtractionService:
                         completed_at=_now(),
                         error_kind="provider_unavailable",
                     )
-            final = await self._run_repo.get(conn, run.id)
+                final = await self._run_repo.get(conn, run.id)
+        if lost_slot:
+            # A concurrent execution flipped the run to succeeded between our
+            # read and write: never report failure over a canonical winner.
+            logger.warning(
+                "finalize_provider_failure lost canonical race for run=%s; converging",
+                run.id,
+            )
+            return await self._replay_after_lost_slot(run)
         logger.warning(
             "claim extraction degraded provider_unavailable run=%s revision=%s",
             run.id,
@@ -617,7 +634,12 @@ class ClaimExtractionService:
     async def _finalize_invalid_response(
         self, run: ClaimExtractionRun, attempt: Any
     ) -> ClaimExtractionResult:
-        """Deterministic parse failures never retry and never block."""
+        """Deterministic parse failures never retry and never block.
+
+        The guarded ``mark_failed`` keeps a concurrently succeeded canonical
+        winner intact; when the slot is already won this converges on the
+        winner's claims instead of reporting degradation.
+        """
         async with self.uow.transaction() as conn:
             await self._run_repo.finish_attempt(
                 conn,
@@ -626,12 +648,19 @@ class ClaimExtractionService:
                 completed_at=_now(),
                 error_kind="invalid_ai_response",
             )
-            await self._run_repo.mark_failed(
+            demoted = await self._run_repo.mark_failed(
                 conn,
                 run.id,
                 error_kind="invalid_ai_response",
                 completed_at=_now(),
             )
+        if not demoted:
+            logger.warning(
+                "invalid response for run=%s but canonical slot already won; converging",
+                run.id,
+            )
+            return await self._replay_after_lost_slot(run)
+        async with self.uow.transaction() as conn:
             final = await self._run_repo.get(conn, run.id)
         logger.warning("claim extraction invalid response run=%s", run.id)
         if final is None:
@@ -673,8 +702,6 @@ class ClaimExtractionService:
             run.source_item_revision_id,
             len(inserted),
         )
-        if final is None:
-            raise RuntimeError(f"claim extraction run {run.id} vanished after success")
         return ClaimExtractionResult(run=final, claims=tuple(inserted))
 
     async def _replay_after_lost_slot(self, run: ClaimExtractionRun) -> ClaimExtractionResult:
