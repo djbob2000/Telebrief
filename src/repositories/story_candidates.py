@@ -628,6 +628,7 @@ _RUN_COLUMNS = """
 _CANDIDATE_COLUMNS = """
     id, run_id, story_id, story_revision_id, story_revision_embedding_id,
     retrieved_by_vector, retrieved_by_lexical, retrieved_by_state,
+    retrieved_by_place, retrieved_by_entity,
     vector_distance, lexical_score, location_overlap, entity_overlap,
     time_score, status_score, rank
 """
@@ -715,10 +716,11 @@ class StoryMatchingRunRepository:
                 INSERT INTO story_matching_candidates (
                     run_id, story_id, story_revision_id, story_revision_embedding_id,
                     retrieved_by_vector, retrieved_by_lexical, retrieved_by_state,
+                    retrieved_by_place, retrieved_by_entity,
                     vector_distance, lexical_score, location_overlap, entity_overlap,
                     time_score, status_score, rank
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     run_id,
@@ -728,6 +730,8 @@ class StoryMatchingRunRepository:
                     "retrieved_by_vector" in reasons,
                     "retrieved_by_lexical" in reasons,
                     "retrieved_by_state" in reasons,
+                    "retrieved_by_place" in reasons,
+                    "retrieved_by_entity" in reasons,
                     candidate.vector_distance,
                     candidate.lexical_score,
                     candidate.location_overlap,

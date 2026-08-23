@@ -185,6 +185,8 @@ class FrozenStoryCandidate:
     retrieved_by_vector: bool
     retrieved_by_lexical: bool
     retrieved_by_state: bool
+    retrieved_by_place: bool
+    retrieved_by_entity: bool
     vector_distance: float | None
     lexical_score: float | None
     location_overlap: float | None
@@ -204,13 +206,15 @@ class FrozenStoryCandidate:
             retrieved_by_vector=bool(row[5]),
             retrieved_by_lexical=bool(row[6]),
             retrieved_by_state=bool(row[7]),
-            vector_distance=row[8],
-            lexical_score=row[9],
-            location_overlap=row[10],
-            entity_overlap=row[11],
-            time_score=row[12],
-            status_score=row[13],
-            rank=row[14],
+            retrieved_by_place=bool(row[8]),
+            retrieved_by_entity=bool(row[9]),
+            vector_distance=row[10],
+            lexical_score=row[11],
+            location_overlap=row[12],
+            entity_overlap=row[13],
+            time_score=row[14],
+            status_score=row[15],
+            rank=row[16],
         )
 
 

@@ -107,9 +107,7 @@ class PlaceResolutionPolicyService:
             policies = await self._repo.list_for_edition(conn, edition_id)
             for policy in policies:
                 if policy.config_hash == resolved_hash and policy.prompt_version == prompt_version:
-                    await self._repo.set_edition_pointer(
-                        conn, edition_id=edition_id, policy_id=policy.id
-                    )
+                    await self._point_edition_at(conn, edition_id=edition_id, policy_id=policy.id)
                     return policy
 
             next_version = max((policy.version for policy in policies), default=0) + 1
@@ -125,12 +123,26 @@ class PlaceResolutionPolicyService:
             except psycopg.errors.UniqueViolation:
                 # A concurrent creator inserted version MAX+1 first; converge.
                 continue
-            await self._repo.set_edition_pointer(conn, edition_id=edition_id, policy_id=policy.id)
+            await self._point_edition_at(conn, edition_id=edition_id, policy_id=policy.id)
             return policy
         raise RuntimeError(
             f"could not ensure current place resolution policy for edition {edition_id} "
             f"after {_ENSURE_CURRENT_RACE_ATTEMPTS} attempts"
         )
+
+    async def _point_edition_at(
+        self, conn: psycopg.AsyncConnection, *, edition_id: int, policy_id: int
+    ) -> None:
+        """Keep the edition pointer fresh WITHOUT rewriting an equal value.
+
+        ensure_current runs on hot read paths (the matching barrier), so the
+        documented mutable exception only fires when the pointer actually
+        moves — read-then-conditional-write inside the caller's transaction.
+        """
+        current = await self._repo.get_edition_pointer(conn, edition_id=edition_id)
+        if current is not None and current.id == policy_id:
+            return
+        await self._repo.set_edition_pointer(conn, edition_id=edition_id, policy_id=policy_id)
 
 
 class ResolutionChoice:

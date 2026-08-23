@@ -479,7 +479,6 @@ class TestPlaceResolutionServiceFlow:
             (mention.id,),
         )
         assert (await runs.fetchone())[0] == 1  # replay wrote no second run
-        del place
 
 
 # ---------------------------------------------------------------------------

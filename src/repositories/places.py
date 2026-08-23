@@ -437,11 +437,13 @@ class PlaceResolutionPolicyRepository:
         self, conn: psycopg.AsyncConnection, *, edition_id: int
     ) -> PlaceResolutionPolicyVersion | None:
         cursor = await conn.execute(
-            f"""
-            SELECT {_POLICY_COLUMNS} FROM place_resolution_policy_versions p
+            """
+            SELECT p.id, p.edition_id, p.version, p.config_hash,
+                   p.prompt_version, p.created_at
+            FROM place_resolution_policy_versions p
             JOIN editions e ON e.current_place_policy_id = p.id
             WHERE e.id = %s
-            """,  # noqa: S608
+            """,
             (edition_id,),
         )
         row = await cursor.fetchone()

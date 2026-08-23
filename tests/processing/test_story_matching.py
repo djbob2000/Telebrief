@@ -2018,16 +2018,78 @@ class TestPlaceAndEntityCandidateStreams:
         assert hit.entity_overlap == pytest.approx(0.5)
         assert unrelated_story.story_id not in by_story
 
-    async def test_place_and_entity_limits_bound_their_streams(
-        self, uow, conn, edition, revision_factory
-    ):
-        from src.repositories.story_candidates import (
-            StoryCandidateRetriever as _R,  # noqa: F401 — constants sanity only
-        )
-
-        del _R
+    def test_place_and_entity_limit_constants_are_pinned_documentation(self):
+        """Documentation pin: PLACE_LIMIT/ENTITY_LIMIT are module constants
+        (versioned-policy candidates for a later migration), pinned here so
+        an accidental change is a visible decision."""
         assert PLACE_LIMIT == 10
         assert ENTITY_LIMIT == 10
+
+    async def test_frozen_place_only_candidate_row_carries_explicit_provenance(
+        self, uow, conn, edition, revision_factory
+    ):
+        from src.repositories.story_candidates import StoryMatchingRunRepository
+
+        city = await _t8_place(conn, canonical_name="Бердянск")
+        district = await _t8_place(conn, canonical_name="Слобідка", parent_place_id=city.id)
+        claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        other_claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        hidden_story = await _seed_story(
+            conn, edition.id, semantic_text="Ярмарка у ратуши открыта для всех."
+        )
+        policy = await _insert_policy(
+            conn, edition.id, vector_limit=0, lexical_limit=10, state_fallback_limit=0
+        )
+        mention = await _t8_mention(conn, claim.id, "Слободка")
+        other_mention = await _t8_mention(conn, other_claim.id, "Слобідка")
+        place_policy = await _PLACE_POLICY_SERVICE_T8.ensure_current(conn, edition_id=edition.id)
+        await _t8_resolve(
+            uow,
+            mention_id=mention.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=district.id,
+        )
+        await _t8_resolve(
+            uow,
+            mention_id=other_mention.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=district.id,
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id) VALUES (%s, %s)",
+            (hidden_story.story_id, other_claim.id),
+        )
+
+        # Freeze boundary one exactly like the orchestrator, then re-read the
+        # persisted candidate ROWS.
+        runs_repo = StoryMatchingRunRepository()
+        async with uow.transaction() as db:
+            run = await runs_repo.insert_running(
+                db,
+                claim_id=claim.id,
+                edition_id=edition.id,
+                policy_id=policy.id,
+                claim_embedding_id=None,
+            )
+            retrieved = await _RETRIEVER.retrieve(
+                db, claim=claim, claim_embedding=[1.0, 0.0], policy=policy
+            )
+            await runs_repo.save_candidates(db, run_id=run.id, candidates=retrieved)
+            frozen = await runs_repo.frozen_candidates(db, run.id)
+
+        hits = [c for c in frozen if c.story_id == hidden_story.story_id]
+        assert len(hits) == 1
+        hit = hits[0]
+        # The admitted stream is persisted EXPLICITLY on the row...
+        assert hit.retrieved_by_place is True
+        assert hit.retrieved_by_vector is False
+        assert hit.retrieved_by_lexical is False
+        assert hit.retrieved_by_state is False
+        assert hit.retrieved_by_entity is False
+        # ...and the score-non-null invariant holds for that stream.
+        assert hit.location_overlap is not None
 
     async def test_place_only_hint_never_forces_same_story(
         self, uow, pool, conn, edition, revision_factory
@@ -2078,7 +2140,6 @@ class TestPlaceAndEntityCandidateStreams:
 
         prompt_text = StoryMatcher._system_prompt(None, None)
         assert "never evidence" in prompt_text
-        del city
 
     async def test_retriever_hints_carry_location_and_entity_scores(self):
         view = MatcherCandidateView(

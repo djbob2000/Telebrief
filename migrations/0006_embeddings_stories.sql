@@ -225,6 +225,11 @@ CREATE TABLE IF NOT EXISTS story_matching_candidates (
     retrieved_by_vector BOOLEAN NOT NULL DEFAULT false,
     retrieved_by_lexical BOOLEAN NOT NULL DEFAULT false,
     retrieved_by_state BOOLEAN NOT NULL DEFAULT false,
+    -- Task 8 provenance flags: persisted explicitly so a frozen candidate
+    -- row always shows WHICH stream admitted it (place/entity scores stay
+    -- non-null exactly when their flag is true).
+    retrieved_by_place BOOLEAN NOT NULL DEFAULT false,
+    retrieved_by_entity BOOLEAN NOT NULL DEFAULT false,
     vector_distance FLOAT8 NULL,
     lexical_score FLOAT8 NULL,
     location_overlap FLOAT8 NULL,
