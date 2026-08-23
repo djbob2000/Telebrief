@@ -21,6 +21,11 @@
 --     pointer can only ever reference a revision OF THE SAME STORY, and a
 --     story may exist briefly without a pointer (NULL) while its first
 --     revision is inserted in the same transaction.
+--   * story_claims is the claim-membership table for stories; spec §19
+--     assignment is exclusive, so UNIQUE(claim_id) pins every claim to at
+--     most ONE story for its whole lifetime. Writers use ON CONFLICT DO
+--     NOTHING, so replayed attachments are idempotent and a claim already
+--     owned by another story is never silently stolen.
 --   * story_matching_runs carries the spec's partial unique index
 --     uq_story_match_success ON (claim_id, policy_id) WHERE status =
 --     'succeeded' — at most one successful match per (claim, policy),
@@ -145,6 +150,19 @@ CREATE TABLE IF NOT EXISTS story_relations (
 
 CREATE INDEX IF NOT EXISTS idx_story_relations_from ON story_relations(from_story_id);
 CREATE INDEX IF NOT EXISTS idx_story_relations_to ON story_relations(to_story_id);
+
+-- Claim membership: spec §19 assignment is exclusive, so UNIQUE(claim_id)
+-- guarantees a claim belongs to at most one story; ON CONFLICT DO NOTHING
+-- keeps repeated attachments idempotent.
+CREATE TABLE IF NOT EXISTS story_claims (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    story_id BIGINT NOT NULL REFERENCES stories(id),
+    claim_id BIGINT NOT NULL REFERENCES claims(id),
+    attached_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_story_claims_claim UNIQUE (claim_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_story_claims_story ON story_claims(story_id);
 
 -- ---------------------------------------------------------------------------
 -- Story matching scaffolding (consumed by Plan 3 Task 7)
