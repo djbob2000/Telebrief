@@ -101,6 +101,11 @@ def should_run_vision(decision, revision, assets, *, mode: str) -> bool:
       media get bounded enrichment ahead of Claim extraction.
     * Any trigger requires at least one asset: nothing observable means nothing
       to analyze, and the item keeps its status.
+
+    The spec's "absent/weak/uncertain text" case is implemented as the
+    AI-emitted ``needs_media`` status: the model itself decides text was too
+    thin and points at unseen media, so this function never re-judges text
+    strength deterministically.
     """
     if mode not in VISION_MODES[1:]:
         return False
@@ -370,6 +375,11 @@ class VisionService:
                 raise ValueError(
                     f"relevance decision {relevance_decision_id} does not match "
                     f"revision {source_item_revision_id}"
+                )
+            policy = await VisionPolicyRepository().get(conn, policy_id)
+            if policy is None or policy.edition_id != decision.edition_id:
+                raise ValueError(
+                    f"vision policy {policy_id} does not belong to edition {decision.edition_id}"
                 )
             run = await self._run_repo.insert(
                 conn,

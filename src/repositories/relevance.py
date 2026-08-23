@@ -518,8 +518,11 @@ class VisionAnalysisRunRepository:
         """Decisions that still owe a vision analysis for the EXACT policy.
 
         Only the LATEST decision per (revision, edition) is considered so
-        superseded parents never re-run; bounded by ``limit`` with an optional
-        exclusive id cursor for chunked backfills.
+        superseded parents never re-run; only TERMINAL runs (succeeded, failed,
+        unavailable) satisfy the debt — a stale ``running`` row left by a
+        crashed attempt must never orphan a needs_media decision forever.
+        Bounded by ``limit`` with an optional exclusive id cursor for chunked
+        backfills.
         """
         cursor = await conn.execute(
             """
@@ -539,7 +542,9 @@ class VisionAnalysisRunRepository:
               AND NOT EXISTS (
                   SELECT 1
                   FROM vision_analysis_runs r
-                  WHERE r.relevance_decision_id = d.id AND r.policy_id = %s
+                  WHERE r.relevance_decision_id = d.id
+                    AND r.policy_id = %s
+                    AND r.status IN ('succeeded', 'failed', 'unavailable')
               )
             ORDER BY d.id
             LIMIT %s

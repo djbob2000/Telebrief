@@ -783,6 +783,50 @@ class TestBackfillVision:
             rows = await cursor.fetchall()
         assert {int(row[0]) for row in rows} == {vision_policy.id}
 
+    async def test_stale_running_runs_do_not_block_requeue(
+        self, pool, uow, conn, edition, revision_factory, production_jobs_app
+    ):
+        """A crashed attempt leaves a stale 'running' run behind; the decision
+        must still be re-queued (only TERMINAL runs satisfy the gap query),
+        while a terminal run for the same policy excludes its decision."""
+        import src.jobs.processing as jobs_processing
+        from src import runtime as runtime_module
+        from src.bootstrap import ApplicationInfrastructure
+
+        runtime_module.install_runtime(
+            ApplicationInfrastructure(pool=pool, uow=uow, procrastinate_app=production_jobs_app)
+        )
+        vision_policy = await _vision_policy(conn, edition.id)
+        runs = VisionAnalysisRunRepository()
+        seeded = {}
+        for label in ("stale_running", "terminal", "fresh"):
+            rev = await revision_factory(with_photo=True)
+            seeded[label] = await _insert_parent(conn, edition.id, rev.id)
+            run = await runs.insert(
+                conn,
+                source_item_revision_id=rev.id,
+                edition_id=edition.id,
+                relevance_decision_id=seeded[label].id,
+                policy_id=vision_policy.id,
+            )
+            if label == "terminal":
+                await runs.complete(conn, run, observations=(), error="no_pixel_data")
+            # "stale_running" deliberately stays 'running'; "fresh" has no run.
+
+        queued = await jobs_processing.backfill_vision(edition.id, vision_policy.id)
+
+        assert queued == 2
+        async with pool.connection() as observer:
+            cursor = await observer.execute(
+                """
+                SELECT args->>'relevance_decision_id'
+                FROM procrastinate.procrastinate_jobs
+                WHERE task_name = 'analyze_vision'
+                """
+            )
+            rows = await cursor.fetchall()
+        assert {int(row[0]) for row in rows} == {seeded["stale_running"].id, seeded["fresh"].id}
+
     async def test_full_mode_backfills_relevant_with_media_too(
         self, pool, uow, conn, edition, revision_factory, production_jobs_app
     ):
