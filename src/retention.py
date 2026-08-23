@@ -42,7 +42,10 @@ class RetentionService:
             expired_artifacts = await self.fb_repo.list_expired_artifacts(conn, cutoff)
 
             for artifact in expired_artifacts:
-                # Delete physical file
+                # Delete physical file first; a failed unlink leaves the row
+                # unmarked so the next cleanup pass retries it instead of
+                # orphaning the file behind a deleted_at stamp.
+                unlink_failed = False
                 if artifact.storage_path:
                     try:
                         p = Path(artifact.storage_path)
@@ -50,16 +53,18 @@ class RetentionService:
                             p.unlink()
                             files_count += 1
                     except Exception as e:
+                        unlink_failed = True
                         logger.warning(
-                            "Failed deleting physical artifact file %s: %s",
+                            "Failed deleting physical artifact file %s; will retry: %s",
                             artifact.storage_path,
                             e,
                         )
 
                 # Preserve provenance metadata; only the physical file is
                 # removed and the row is marked deleted (Plan 5 Task 6).
-                await self.fb_repo.mark_artifact_deleted(conn, artifact.id, cutoff)
-                artifacts_count += 1
+                if not unlink_failed:
+                    await self.fb_repo.mark_artifact_deleted(conn, artifact.id, cutoff)
+                    artifacts_count += 1
 
         logger.info(
             "Retention cleanup completed at %s: removed %d artifacts (%d files deleted)",

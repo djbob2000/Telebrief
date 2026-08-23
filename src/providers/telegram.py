@@ -548,6 +548,12 @@ class TelegramCollector:
                         if catchup_oldest <= watermark + 1 or len(catchup_msgs) < limit:
                             break
                         current_offset_id = catchup_oldest
+                    # Budget exhausted with the gap still open: the unfetched
+                    # span between the stop point and the watermark must NOT
+                    # be jumped over by a watermark advance (same contract as
+                    # the non-topic branch below).
+                    if current_offset_id > watermark + 1 and pages >= MAX_CATCHUP_PAGES:
+                        gap_resolved = False
         else:
             # 1. Window pass
             window_messages: list[tuple[Any, int | None]] = []

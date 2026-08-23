@@ -257,9 +257,13 @@ async def main():
         from src.core import generate_and_publish_article
 
         hours = args.hours or config.settings.article.lookback_hours
-        logger.info(
-            f"Triggering on-demand article generation ({hours}h, dry_run={args.dry_run})..."
-        )
+        if args.dry_run:
+            logger.info(f"Building on-demand article preview ({hours}h, dry_run=True)...")
+        else:
+            logger.info(
+                f"Requesting on-demand article publication ({hours}h)... "
+                "worker performs generation and delivery"
+            )
         success = await generate_and_publish_article(
             config, logger, hours=hours, dry_run=args.dry_run
         )
@@ -269,7 +273,10 @@ async def main():
         from src.core import generate_and_send_digest
 
         hours = args.hours or config.settings.lookback_hours
-        logger.info(f"Triggering on-demand digest generation ({hours}h)...")
+        logger.info(
+            f"Requesting on-demand digest publication ({hours}h)... "
+            "worker performs generation and delivery"
+        )
         success = await generate_and_send_digest(config, logger, hours=hours)
         sys.exit(0 if success else 1)
 

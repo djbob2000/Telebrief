@@ -82,7 +82,7 @@ async def test_handle_digest_processing_message_uses_output_language(english_con
         await handler.handle_digest(update, MagicMock())
 
     processing_text = update.message.reply_text.call_args_list[0][0][0]
-    assert "Generating digest" in processing_text
+    assert "Queueing digest publication" in processing_text
     assert "Генерирую" not in processing_text
 
 
@@ -97,7 +97,7 @@ async def test_handle_digest_success_message_uses_output_language(english_config
         await handler.handle_digest(update, MagicMock())
 
     success_text = update.message.reply_text.call_args_list[1][0][0]
-    assert "Digest ready" in success_text
+    assert "publication queued" in success_text
     assert "Дайджест готов" not in success_text
 
 
@@ -230,7 +230,7 @@ async def test_rate_limit_resets_after_cooldown(english_config, mock_logger):
         await handler.handle_digest(update, MagicMock())
 
         first_texts = [call[0][0] for call in update.message.reply_text.call_args_list]
-        assert any("Generating" in t for t in first_texts), "First call should not be rate-limited"
+        assert any("Queueing" in t for t in first_texts), "First call should not be rate-limited"
 
         update.message.reply_text.reset_mock()
 
@@ -240,7 +240,7 @@ async def test_rate_limit_resets_after_cooldown(english_config, mock_logger):
 
     # Should get the normal "generating" message, not rate limited
     texts = [call[0][0] for call in update.message.reply_text.call_args_list]
-    assert any("Generating" in t for t in texts)
+    assert any("Queueing" in t for t in texts)
 
 
 @pytest.mark.unit
@@ -335,8 +335,8 @@ async def test_handle_article_authorized_success(english_config, mock_logger):
     assert update.message.reply_text.call_count == 2
     processing_text = update.message.reply_text.call_args_list[0][0][0]
     success_text = update.message.reply_text.call_args_list[1][0][0]
-    assert "Generating editorial article" in processing_text
-    assert "successfully generated and published" in success_text
+    assert "Queueing article publication" in processing_text
+    assert "publication queued" in success_text
 
 
 @pytest.mark.unit

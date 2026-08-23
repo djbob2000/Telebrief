@@ -30,8 +30,9 @@ execution lock (Telegram needs none; Plan 5 extends the resolver).
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import procrastinate
 from procrastinate.exceptions import AlreadyEnqueued
@@ -83,13 +84,14 @@ RATE_LIMIT_FALLBACK_BACKOFF_SECONDS = 900
 
 
 # Platform-specific execution locks shared across sources authenticated by one
-def _resolve_facebook_execution_lock(source: Source) -> str | None:
-    options = source.collector_options or {}
-    auth_profile = options.get("auth_profile") or options.get("auth_profile_id") or "default"
+async def _resolve_facebook_execution_lock(conn: Any, source: Source) -> str | None:
+    from src.repositories.facebook import resolve_auth_profile_name
+
+    auth_profile = await resolve_auth_profile_name(conn, source.id, source.collector_options)
     return f"facebook-auth-profile:{auth_profile}"
 
 
-_EXECUTION_LOCK_RESOLVERS: dict[str, Callable[[Source], str | None]] = {
+_EXECUTION_LOCK_RESOLVERS: dict[str, Callable[[Any, Source], Awaitable[str | None]]] = {
     "facebook": _resolve_facebook_execution_lock,
 }
 
@@ -98,10 +100,14 @@ schedule_policy = CollectionSchedulePolicy()
 collector_registry = build_default_collector_registry()
 
 
-def resolve_execution_lock(source: Source) -> str | None:
-    """Optional cross-source execution lock for the source's platform."""
+async def resolve_execution_lock(conn: Any, source: Source) -> str | None:
+    """Optional cross-source execution lock for the source's platform.
+
+    Resolved on a live connection so platform configuration stored in domain
+    tables (e.g. ``facebook_source_configs.auth_profile_id``) drives locking.
+    """
     resolver = _EXECUTION_LOCK_RESOLVERS.get(source.platform)
-    return None if resolver is None else resolver(source)
+    return None if resolver is None else await resolver(conn, source)
 
 
 async def enqueue_source_scan(
@@ -116,13 +122,16 @@ async def enqueue_source_scan(
     runtime = get_runtime()
     app = runtime.procrastinate_app
 
+    execution_lock: str | None = None
     async with runtime.uow.transaction() as conn:
         source = await SourceRepository().get(conn, source_id)
+        if source is not None:
+            # Lock resolution joins the source read so profile configuration
+            # stored in domain tables is honored atomically.
+            execution_lock = await resolve_execution_lock(conn, source)
     if source is None:
         logger.warning(f"enqueue_source_scan: unknown source {source_id}; skipping")
         return None
-
-    execution_lock = resolve_execution_lock(source)
     try:
         return (
             await app.tasks[SCAN_SOURCE_TASK_NAME]

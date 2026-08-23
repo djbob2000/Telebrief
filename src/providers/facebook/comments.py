@@ -245,10 +245,15 @@ class FacebookCommentCollector:
             page_count += 1
             new_found_this_page = False
 
-            # Read visible comment blocks
+            # Prefer structured comment containers; the broad dir='auto'
+            # fallback runs only when none exist, otherwise inner text
+            # fragments of an already-parsed comment would be ingested as
+            # duplicate synthetic "replies" of their own parent.
             comment_nodes = await page.query_selector_all(
-                "div[role='article'][aria-label*='comment' i], div[dir='auto']"
+                "div[role='article'][aria-label*='comment' i]"
             )
+            if not comment_nodes:
+                comment_nodes = await page.query_selector_all("div[dir='auto']")
             for node in comment_nodes:
                 try:
                     text = (await node.inner_text()).strip()

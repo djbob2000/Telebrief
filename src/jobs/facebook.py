@@ -81,10 +81,10 @@ async def refresh_facebook_comments(
 
     # Perform browser collection outside domain transaction
     from src.providers.facebook.browser import FacebookBrowserSession
+    from src.repositories.facebook import resolve_auth_profile_name
 
-    prof_name = "default"
-    if source.collector_options:
-        prof_name = str(source.collector_options.get("auth_profile", "default"))
+    async with runtime.uow.transaction() as conn:
+        prof_name = await resolve_auth_profile_name(conn, source.id, source.collector_options)
 
     async with runtime.uow.transaction() as conn:
         profile = await fb_repo.get_or_create_auth_profile(

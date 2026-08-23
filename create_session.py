@@ -15,7 +15,6 @@ The script will:
 4. This file can then be used in Docker without interactive prompts
 """
 
-
 import asyncio
 import os
 import sys

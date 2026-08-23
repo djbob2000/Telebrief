@@ -172,6 +172,12 @@ class LegacyMessageImporter:
 
         content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
 
+        # Counters are applied to the report only after the transaction
+        # commits, so rolled-back messages never inflate the numbers.
+        pending_items = 0
+        pending_revisions = 0
+        pending_skipped = 0
+
         async with self.uow.transaction() as conn:
             # 1. Get or create source
             cur = await conn.execute(
@@ -205,7 +211,7 @@ class LegacyMessageImporter:
             is_new_item = item_row[1]
 
             if is_new_item:
-                report.items_created += 1
+                pending_items += 1
 
             # Skip duplicate legacy rows for the same message when the newest
             # revision already carries identical content: re-running the
@@ -221,8 +227,9 @@ class LegacyMessageImporter:
                 (item_id,),
             )
             latest_rev_row = await cur.fetchone()
-            if latest_rev_row is not None and latest_rev_row[1] == content_hash:
-                report.revisions_skipped += 1
+            duplicate_content = latest_rev_row is not None and latest_rev_row[1] == content_hash
+            if duplicate_content and latest_rev_row is not None:
+                pending_skipped += 1
                 await conn.execute(
                     """
                     INSERT INTO legacy_imported_messages (
@@ -233,53 +240,57 @@ class LegacyMessageImporter:
                     """,
                     (msg_id, item_id, latest_rev_row[0], temporal_fidelity, now),
                 )
-                return
 
-            # Insert revision
-            cur = await conn.execute(
-                """
-                SELECT COALESCE(MAX(revision_no), 0) + 1 FROM source_item_revisions WHERE source_item_id = %s
-                """,
-                (item_id,),
-            )
-            rev_no_row = await cur.fetchone()
-            if rev_no_row is None:
-                raise RuntimeError(f"Failed to calculate next revision for item {item_id}")
-            next_rev_no = rev_no_row[0]
-
-            cur = await conn.execute(
-                """
-                INSERT INTO source_item_revisions (
-                    source_item_id, revision_no, text_content, collected_at, content_hash, payload
+            if not duplicate_content:
+                # Insert revision
+                cur = await conn.execute(
+                    """
+                    SELECT COALESCE(MAX(revision_no), 0) + 1 FROM source_item_revisions WHERE source_item_id = %s
+                    """,
+                    (item_id,),
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
-                RETURNING id
-                """,
-                (
-                    item_id,
-                    next_rev_no,
-                    text,
-                    trustworthy_collected_at,
-                    content_hash,
-                    Jsonb({"sender": sender, "legacy_link": link, "legacy_id": msg_id}),
-                ),
-            )
-            rev_row = await cur.fetchone()
-            if rev_row is None:
-                raise RuntimeError(f"Failed to insert revision for item {item_id}")
-            rev_id = rev_row[0]
-            report.revisions_created += 1
+                rev_no_row = await cur.fetchone()
+                if rev_no_row is None:
+                    raise RuntimeError(f"Failed to calculate next revision for item {item_id}")
+                next_rev_no = rev_no_row[0]
 
-            # 4. Record migration tracking
-            await conn.execute(
-                """
-                INSERT INTO legacy_imported_messages (
-                    legacy_message_id, source_item_id, source_item_revision_id, temporal_fidelity, imported_at
+                cur = await conn.execute(
+                    """
+                    INSERT INTO source_item_revisions (
+                        source_item_id, revision_no, text_content, collected_at, content_hash, payload
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    RETURNING id
+                    """,
+                    (
+                        item_id,
+                        next_rev_no,
+                        text,
+                        trustworthy_collected_at,
+                        content_hash,
+                        Jsonb({"sender": sender, "legacy_link": link, "legacy_id": msg_id}),
+                    ),
                 )
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (msg_id, item_id, rev_id, temporal_fidelity, now),
-            )
+                rev_row = await cur.fetchone()
+                if rev_row is None:
+                    raise RuntimeError(f"Failed to insert revision for item {item_id}")
+                rev_id = rev_row[0]
+                pending_revisions += 1
+
+                # 4. Record migration tracking
+                await conn.execute(
+                    """
+                    INSERT INTO legacy_imported_messages (
+                        legacy_message_id, source_item_id, source_item_revision_id, temporal_fidelity, imported_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (msg_id, item_id, rev_id, temporal_fidelity, now),
+                )
+
+        report.items_created += pending_items
+        report.revisions_created += pending_revisions
+        report.revisions_skipped += pending_skipped
 
 
 async def main() -> None:

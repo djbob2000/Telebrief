@@ -73,6 +73,38 @@ class EnrichmentPlanner:
 class EnrichmentDispatcher:
     """Dispatches enrichment requests into Procrastinate tasks with locks."""
 
+    async def _resolve_facebook_profile(
+        self,
+        conn: psycopg.AsyncConnection,
+        post_item_id: int,
+        hint: str | None = None,
+    ) -> str:
+        """Profile name from facebook_source_configs; metadata hints are advisory."""
+        from src.repositories.facebook import DEFAULT_AUTH_PROFILE_NAME, resolve_auth_profile_name
+
+        try:
+            cursor = await conn.execute(
+                """
+                SELECT si.source_id, s.collector_options
+                FROM source_items si JOIN sources s ON s.id = si.source_id
+                WHERE si.id = %s
+                """,
+                (post_item_id,),
+            )
+            row = await cursor.fetchone()
+            if row is not None:
+                resolved = await resolve_auth_profile_name(
+                    conn, int(row[0]), row[1] if isinstance(row[1], dict) else None
+                )
+                if resolved != DEFAULT_AUTH_PROFILE_NAME:
+                    return resolved
+        except Exception:
+            logger.warning(
+                "could not resolve auth profile for post item %s", post_item_id, exc_info=True
+            )
+        # No DB configuration: honor the planner's advisory hint if present.
+        return str(hint) if hint else DEFAULT_AUTH_PROFILE_NAME
+
     async def defer(
         self,
         conn: psycopg.AsyncConnection,
@@ -86,7 +118,12 @@ class EnrichmentDispatcher:
         if request.kind == "facebook_comments":
             raw_post_id = request.metadata.get("post_item_id")
             post_item_id = int(raw_post_id) if isinstance(raw_post_id, (int, str)) else 0
-            auth_profile = str(request.metadata.get("auth_profile", "default"))
+            hint_raw = request.metadata.get("auth_profile")
+            auth_profile = await self._resolve_facebook_profile(
+                conn,
+                post_item_id,
+                hint=str(hint_raw) if isinstance(hint_raw, (int, str)) and str(hint_raw) else None,
+            )
             q_lock = f"facebook-comments:{post_item_id}:{request.mode}"
             exec_lock = f"facebook-auth-profile:{auth_profile}"
 

@@ -384,42 +384,51 @@ Input line format: `N. [HH:MM] Sender: Text | URL`
 
 async def main():
     """Test summarizer against persisted source history."""
-    from src.config_loader import load_config
+    from src.bootstrap import build_infrastructure
+    from src.config_loader import load_config, load_database_config
     from src.ingestion.reader import SourceRevisionReader
     from src.ingestion.repository import IngestionRepository
-    from src.runtime import get_runtime
+    from src.runtime import clear_runtime, get_runtime, install_runtime
     from src.utils import setup_logging
 
     config = load_config()
     logger = setup_logging(config.log_level)
 
-    # Read digest inputs from the persisted source history (no live Telegram)
-    runtime = get_runtime()
-    reader = SourceRevisionReader(runtime.uow, IngestionRepository())
-    from datetime import datetime, timedelta, timezone
+    # Open the domain infrastructure (same sequence as src.worker) so the
+    # persistent reader has a pool to work with.
+    infrastructure = await build_infrastructure(load_database_config(require_enabled=True))
+    install_runtime(infrastructure)
+    try:
+        # Read digest inputs from the persisted source history (no live Telegram)
+        runtime = get_runtime()
+        reader = SourceRevisionReader(runtime.uow, IngestionRepository())
+        from datetime import datetime, timedelta, timezone
 
-    now = datetime.now(timezone.utc)
-    messages = await reader.read_telegram_messages(
-        edition_slug="berdyansk",
-        since=now - timedelta(hours=24),
-        until=now,
-    )
+        now = datetime.now(timezone.utc)
+        messages = await reader.read_telegram_messages(
+            edition_slug="berdyansk",
+            since=now - timedelta(hours=24),
+            until=now,
+        )
 
-    # Summarize
-    summarizer = Summarizer(config, logger)
-    result = await summarizer.summarize_all(messages)
+        # Summarize
+        summarizer = Summarizer(config, logger)
+        result = await summarizer.summarize_all(messages)
 
-    print("\n" + "=" * 50)
-    print("OVERVIEW:")
-    print("=" * 50)
-    print(result["overview"])
+        print("\n" + "=" * 50)
+        print("OVERVIEW:")
+        print("=" * 50)
+        print(result["overview"])
 
-    print("\n" + "=" * 50)
-    print("CHANNEL SUMMARIES:")
-    print("=" * 50)
-    for channel, summary in result["channel_summaries"].items():
-        print(f"\n{channel}:")
-        print(summary)
+        print("\n" + "=" * 50)
+        print("CHANNEL SUMMARIES:")
+        print("=" * 50)
+        for channel, summary in result["channel_summaries"].items():
+            print(f"\n{channel}:")
+            print(summary)
+    finally:
+        clear_runtime(infrastructure)
+        await infrastructure.close()
 
 
 if __name__ == "__main__":

@@ -172,7 +172,7 @@ class TestKnowledgeEditorialAdapter:
         cur = await conn.execute(
             """
             INSERT INTO sources (platform, kind, external_id, name, role, enabled)
-            VALUES ('facebook', 'facebook_group', 'group-999', 'Facebook Group', 'social_group', true)
+            VALUES ('facebook', 'facebook_group', 'group-999', 'Facebook Group', 'community', true)
             RETURNING id
             """
         )
@@ -190,7 +190,7 @@ class TestKnowledgeEditorialAdapter:
 
         cur = await conn.execute(
             """
-            INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, created_at)
+            INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at)
             VALUES (%s, 1, 'h-fb1', 'Новость из группы Фейсбука', %s)
             RETURNING id
             """,

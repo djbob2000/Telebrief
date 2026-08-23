@@ -91,6 +91,7 @@ async def deliver_publication_payload(context: Any, delivery_id: int) -> None:
 @procrastinate_app.task(
     name=CREATE_SCHEDULED_PUBLICATION_TASK_NAME,
     queue=PUBLICATION_QUEUE,
+    retry=PUBLICATION_RETRY_STRATEGY,
     pass_context=True,
 )
 async def create_scheduled_publication(

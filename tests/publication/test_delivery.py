@@ -367,7 +367,13 @@ async def test_telegram_channel_adapter_fallback_on_parse_entities():
     client._bot = mock_bot
 
     dest = DeliveryDestination(
-        id=1, edition_id=1, platform="telegram_channel", destination_key="@test_chat"
+        id=1,
+        edition_id=1,
+        platform="telegram_channel",
+        destination_key="@test_chat",
+        config={},
+        is_active=True,
+        created_at=dt.datetime.now(dt.timezone.utc),
     )
     payload = PublicationDeliveryPayload(
         id=1,

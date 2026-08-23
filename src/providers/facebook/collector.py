@@ -25,7 +25,10 @@ from src.providers.facebook.auth import (
     classify_facebook_page_state,
 )
 from src.providers.facebook.browser import FacebookBrowserSession
-from src.repositories.facebook import FacebookRepository
+from src.repositories.facebook import (
+    FacebookRepository,
+    resolve_auth_profile_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -170,21 +173,10 @@ class FacebookCollector(Collector):
         from src.runtime import get_runtime
 
         runtime = get_runtime()
-        auth_profile_name = "default"
-        auth_profile_id = source.collector_options.get("auth_profile_id")
-        auth_profile_name_opt = source.collector_options.get("auth_profile")
         async with runtime.uow.transaction() as conn:
-            cfg = await self.fb_repo.get_source_config_by_source_id(conn, source.id)
-            if cfg is not None:
-                auth_profile_id = cfg.auth_profile_id
-
-            if auth_profile_id is not None:
-                prof = await self.fb_repo.get_auth_profile_by_id(conn, auth_profile_id)
-                if prof is not None:
-                    auth_profile_name = prof.name
-            elif auth_profile_name_opt is not None:
-                auth_profile_name = str(auth_profile_name_opt)
-
+            auth_profile_name = await resolve_auth_profile_name(
+                conn, source.id, source.collector_options
+            )
             profile = await self.fb_repo.get_or_create_auth_profile(
                 conn, name=auth_profile_name, storage_ref=auth_profile_name
             )
