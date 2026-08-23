@@ -16,6 +16,7 @@ JOB_IMPORT_PATHS = (
     "src.jobs.processing",
     "src.jobs.publication",
     "src.jobs.facebook",
+    "src.jobs.schedules",
 )
 
 
@@ -42,8 +43,10 @@ def build_app(
     return app
 
 
-# Production entry point built at import time so `procrastinate
-# --app=src.jobs.app.procrastinate_app` CLI commands resolve it directly.
+# Production app built at import time so `procrastinate
+# --app=src.jobs.app.procrastinate_app schema --apply` resolves it directly.
+# Workers must NOT use the bare procrastinate CLI: it never installs the
+# Telebrief runtime. Run jobs via `python -m src.worker` instead.
 # load_database_config(require_enabled=True) keeps CLI usage free of Telegram
 # and AI credentials while failing clearly when invoked before the database is
 # enabled (database.enabled + DATABASE_URL).

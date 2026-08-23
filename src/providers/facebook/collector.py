@@ -261,19 +261,12 @@ class FacebookCollector(Collector):
                         "the link you followed may be broken",
                     ]
                 ):
+                    logger.info("Facebook source %s page content is unavailable", source.id)
                     return CollectionBatch(
                         outcome=CollectionOutcome.SUCCESS,
                         items=(),
                         assets=(),
-                        state_events=(
-                            ObservedStateEvent(
-                                item_external_id=f"post:{source.external_id or 'unknown'}",
-                                type="inaccessible",
-                                observed_at=now,
-                                reason="content_unavailable",
-                                evidence={},
-                            ),
-                        ),
+                        state_events=(),
                         adapter_state={},
                         started_at=started_at,
                         completed_at=now,
@@ -331,7 +324,7 @@ class FacebookCollector(Collector):
                             author_name=author_name,
                             canonical_url=post_url,
                             media_urls=media_urls,
-                            published_at=dt.datetime.now(dt.timezone.utc),
+                            published_at=None,
                         )
                         items.append(item)
                         assets.extend(item_assets)

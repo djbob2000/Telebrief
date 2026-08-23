@@ -145,7 +145,12 @@ class TestPublicationDeliveryService:
             body="Тело статьи для доставки",
         )
 
-        service = PublicationDeliveryService(uow=uow)
+        from src.publication.delivery import MockDestinationClient
+
+        service = PublicationDeliveryService(
+            uow=uow,
+            clients={"telegram_channel": MockDestinationClient()},
+        )
 
         # 2. Prepare payloads
         deliveries = await service.prepare_payloads(pub.id)

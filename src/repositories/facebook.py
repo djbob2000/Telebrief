@@ -267,7 +267,7 @@ class FacebookRepository:
         cursor = await conn.execute(
             """
             SELECT si.id, si.source_id, si.external_id, r.id AS current_revision_id,
-                   cs.last_scanned_at, cs.completeness
+                   cs.last_scanned_at, cs.completeness, s.collector_options
             FROM source_items si
             JOIN sources s ON s.id = si.source_id AND s.platform = 'facebook'
             JOIN LATERAL (
@@ -294,6 +294,13 @@ class FacebookRepository:
                 current_revision_id=r[3],
                 last_scanned_at=r[4],
                 completeness=r[5],
+                auth_profile=(
+                    (r[6] or {}).get("auth_profile")
+                    or (r[6] or {}).get("auth_profile_id")
+                    or "default"
+                    if isinstance(r[6], dict)
+                    else "default"
+                ),
             )
             for r in rows
         ]

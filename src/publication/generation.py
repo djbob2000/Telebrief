@@ -147,8 +147,11 @@ class PublicationGenerationService:
                 publication_id=publication_id
             )
         except Exception as err:
-            logger.warning(
+            # Re-raise: the transaction must roll back so the run is not left
+            # succeeded with no delivery job ever queued.
+            logger.error(
                 "could not defer prepare_delivery_payloads for publication %s: %s",
                 publication_id,
                 err,
             )
+            raise

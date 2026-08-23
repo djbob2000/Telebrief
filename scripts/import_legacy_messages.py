@@ -16,6 +16,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
+from psycopg.types.json import Jsonb
+
 from src.config_loader import load_database_config
 from src.db.pool import close_pool, open_pool
 from src.db.uow import DatabaseUnitOfWork
@@ -221,7 +223,7 @@ class LegacyMessageImporter:
                 INSERT INTO source_item_revisions (
                     source_item_id, revision_no, text_content, collected_at, content_hash, payload
                 )
-                VALUES (%s, %s, %s, %s, %s, %s::jsonb)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
                 (
@@ -230,7 +232,7 @@ class LegacyMessageImporter:
                     text,
                     trustworthy_collected_at,
                     content_hash,
-                    f'{{"sender": "{sender}", "legacy_link": "{link}", "legacy_id": {msg_id}}}',
+                    Jsonb({"sender": sender, "legacy_link": link, "legacy_id": msg_id}),
                 ),
             )
             rev_row = await cur.fetchone()

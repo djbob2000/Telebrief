@@ -34,7 +34,7 @@ services:
     image: ghcr.io/djbob2000/telebrief:latest
     container_name: telebrief-worker
     restart: unless-stopped
-    command: ["procrastinate", "--app=src.jobs.app.procrastinate_app", "worker", "--concurrency=2"]
+    command: ["python", "-m", "src.worker", "--concurrency=2"]
     depends_on:
       postgres:
         condition: service_healthy

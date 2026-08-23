@@ -232,6 +232,9 @@ class Settings:
     # only for needs_media decisions, "full" additionally enriches already
     # relevant revisions with eligible media ahead of Claim extraction.
     vision_mode: str = "relevance_only"
+    # Minutes before a scheduled publication slot when the Procrastinate
+    # dispatcher fans out PRE_PUBLISH source scans (Plan 4 Task 8).
+    pre_publish_lead_minutes: int = 15
     article: ArticleConfig = field(default_factory=ArticleConfig)
 
 
@@ -1356,6 +1359,16 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         raise ValueError(
             f"settings.vision_mode must be one of {', '.join(VISION_MODES)}, got {vision_mode!r}"
         )
+    pre_publish_lead_minutes = settings_dict.get("pre_publish_lead_minutes", 15)
+    if (
+        not isinstance(pre_publish_lead_minutes, int)
+        or isinstance(pre_publish_lead_minutes, bool)
+        or not 0 <= pre_publish_lead_minutes <= 120
+    ):
+        raise ValueError(
+            "settings.pre_publish_lead_minutes must be an int between 0 and 120, "
+            f"got {pre_publish_lead_minutes!r}"
+        )
 
     settings = Settings(
         schedule_time=settings_dict.get("schedule_time", "08:00"),
@@ -1388,6 +1401,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
             else None
         ),
         vision_mode=vision_mode,
+        pre_publish_lead_minutes=pre_publish_lead_minutes,
         article=_parse_article_config(settings_dict),
     )
 

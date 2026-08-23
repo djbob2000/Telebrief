@@ -22,6 +22,34 @@ from src.publication.repository import DeliveryRepository, PublicationRepository
 logger = logging.getLogger(__name__)
 
 
+def _default_telegram_destination() -> str | None:
+    """Return the configured default Telegram chat for publications, if any."""
+    try:
+        from src.config_loader import load_config
+
+        config = load_config()
+    except Exception:
+        logger.debug("full config unavailable; no default Telegram destination", exc_info=True)
+        return None
+    target = config.settings.target_chat_id or config.settings.target_user_id
+    return str(target) if target else None
+
+
+def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
+    """Render the immutable payload content for a destination platform."""
+    if platform == "telegram_channel":
+        raw_text = f"{pub.title}\n\n{pub.body}"
+        return "telegram_html", {"text": raw_text}
+    if platform == "telegraph":
+        body = (
+            f"# {pub.title}\n\n{pub.body}"
+            if pub.lead is None
+            else (f"# {pub.title}\n\n{pub.lead}\n\n{pub.body}")
+        )
+        return "telegraph_nodes", {"title": pub.title, "body_markdown": body}
+    raise ValueError(f"no delivery payload renderer for platform {platform!r}")
+
+
 class DestinationClient(Protocol):
     """Protocol for platform-specific delivery clients."""
 
@@ -83,7 +111,14 @@ class PublicationDeliveryService:
         self.uow = uow
         self.delivery_repo = delivery_repo or DeliveryRepository()
         self.pub_repo = pub_repo or PublicationRepository()
-        self.clients = clients or {"telegram_channel": MockDestinationClient()}
+        # Default to real platform adapters; tests inject explicit client
+        # mappings (including MockDestinationClient) to control outcomes.
+        if clients is not None:
+            self.clients = clients
+        else:
+            from src.publication.adapters import build_default_clients
+
+            self.clients = build_default_clients()
 
     async def prepare_payloads(
         self,
@@ -98,30 +133,40 @@ class PublicationDeliveryService:
 
             dests = destinations
             if not dests:
-                # Get or create default destination for edition
+                # Resolve the configured default destination for the edition.
                 run = await self.pub_repo.get_run_by_id(conn, pub.publication_run_id)
-                edition_id = run.edition_id if run else 1
+                if run is None:
+                    raise ValueError(
+                        f"publication run {pub.publication_run_id} not found "
+                        f"for publication {publication_id}"
+                    )
+                destination_key = _default_telegram_destination()
+                if not destination_key:
+                    raise ValueError(
+                        "no delivery destinations passed and no default Telegram "
+                        "chat configured (settings.target_chat_id / target_user_id)"
+                    )
                 default_dest = await self.delivery_repo.get_or_create_destination(
                     conn,
-                    edition_id=edition_id,
+                    edition_id=run.edition_id,
                     platform="telegram_channel",
-                    destination_key="@telebrief_default",
+                    destination_key=destination_key,
                 )
                 dests = [default_dest]
 
             created_deliveries: list[PublicationDelivery] = []
             for dest in dests:
-                # Format immutable destination payload
-                raw_text = f"{pub.title}\n\n{pub.body}"
-                payload_bytes = raw_text.encode("utf-8")
+                # Format immutable destination payload per platform
+                payload_format, rendered_content = _render_payload(dest.platform, pub)
+                payload_bytes = repr(rendered_content).encode("utf-8")
                 payload_hash = hashlib.sha256(payload_bytes).hexdigest()
 
                 payload = await self.delivery_repo.create_payload(
                     conn,
                     publication_id=pub.id,
                     destination_id=dest.id,
-                    payload_format="telegram_html",
-                    rendered_content={"text": raw_text},
+                    payload_format=payload_format,
+                    rendered_content=rendered_content,
                     content_hash=payload_hash,
                 )
 
@@ -144,7 +189,7 @@ class PublicationDeliveryService:
             if delivery is None:
                 raise ValueError(f"delivery {delivery_id} not found")
 
-            if delivery.status in ("succeeded", "failed_terminal"):
+            if delivery.status in ("succeeded", "failed"):
                 return delivery
 
             payload = await self.delivery_repo.get_payload(conn, delivery.payload_id)
@@ -166,7 +211,12 @@ class PublicationDeliveryService:
             ver_row = await cursor.fetchone()
             attempt_no = ver_row[0] if ver_row is not None else 1
 
-        client = self.clients.get(destination.platform, MockDestinationClient())
+        client = self.clients.get(destination.platform)
+        if client is None:
+            raise RuntimeError(
+                f"no destination client configured for platform {destination.platform!r} "
+                f"(delivery {delivery_id})"
+            )
 
         # Check if previous attempt was outcome_unknown -> reconcile first
         if delivery.status == "outcome_unknown":
@@ -201,6 +251,43 @@ class PublicationDeliveryService:
                         status="succeeded",
                         external_delivery_id="reconciled-msg-id",
                     )
+                    return await self.delivery_repo.get_delivery_by_id(conn, delivery.id)  # type: ignore
+            if reconciliation == "unknown":
+                # The platform cannot prove whether the earlier attempt
+                # delivered; resending risks a duplicate publication. Keep
+                # outcome_unknown and require explicit operator resolution.
+                logger.error(
+                    "delivery %s outcome cannot be reconciled; manual resolution "
+                    "required (no automatic resend)",
+                    delivery_id,
+                )
+                async with self.uow.transaction() as conn:
+                    await self.delivery_repo.record_delivery_attempt(
+                        conn,
+                        delivery_id=delivery.id,
+                        attempt_no=attempt_no,
+                        status="failed",
+                        error_kind="outcome_unknown",
+                        error_message="reconciliation returned unknown; manual resolution required",
+                        response={"reconciliation": "unknown"},
+                    )
+                    await self.delivery_repo.update_delivery_status(
+                        conn,
+                        delivery.id,
+                        status="outcome_unknown",
+                    )
+                    return await self.delivery_repo.get_delivery_by_id(conn, delivery.id)  # type: ignore
+            elif reconciliation == "not_delivered":
+                # reconciliation == "not_delivered": definitive proof the payload
+                # never arrived; resending the same immutable payload is safe.
+                pass
+            else:
+                logger.error(
+                    "delivery %s unexpected reconciliation status %r; halting resend",
+                    delivery_id,
+                    reconciliation,
+                )
+                async with self.uow.transaction() as conn:
                     return await self.delivery_repo.get_delivery_by_id(conn, delivery.id)  # type: ignore
 
         # Execute remote delivery
@@ -256,7 +343,7 @@ class PublicationDeliveryService:
                 await self.delivery_repo.update_delivery_status(
                     conn,
                     delivery.id,
-                    status="failed_retryable",
+                    status="failed",
                 )
                 return await self.delivery_repo.get_delivery_by_id(conn, delivery.id)  # type: ignore
 
@@ -268,8 +355,12 @@ class PublicationDeliveryService:
                 delivery_id=delivery_id
             )
         except Exception as err:
-            logger.warning(
+            # Re-raise so the surrounding transaction (including the delivery
+            # rows just created) rolls back instead of stranding a pending
+            # delivery that no job will ever pick up.
+            logger.error(
                 "could not defer deliver_publication_payload for delivery %s: %s",
                 delivery_id,
                 err,
             )
+            raise

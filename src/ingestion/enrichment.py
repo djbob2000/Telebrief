@@ -132,11 +132,18 @@ def plan_facebook_comments(decision: Any, revision: Any) -> EnrichmentRequest | 
         return None
 
     post_item_id = getattr(revision, "source_item_id", None)
+    payload = getattr(revision, "payload", {}) or {}
+    auth_profile = (
+        getattr(revision, "auth_profile", None)
+        or (payload.get("auth_profile") if isinstance(payload, dict) else None)
+        or (payload.get("auth_profile_id") if isinstance(payload, dict) else None)
+        or "default"
+    )
     return EnrichmentRequest(
         kind="facebook_comments",
         source_item_revision_id=revision.id,
         mode="incremental",
-        metadata={"post_item_id": post_item_id},
+        metadata={"post_item_id": post_item_id, "auth_profile": auth_profile},
     )
 
 
@@ -145,15 +152,25 @@ async def plan_facebook_pre_publish(
 ) -> list[EnrichmentRequest]:
     """Facebook pre-publish rule: deep comments scan for recent active posts."""
     from src.repositories.facebook import FacebookRepository
+    from src.repositories.sources import SourceRepository
 
     fb_repo = FacebookRepository()
+    src_repo = SourceRepository()
+    source = await src_repo.get(conn, source_id)
+    auth_profile = (
+        (source.collector_options or {}).get("auth_profile")
+        or (source.collector_options or {}).get("auth_profile_id")
+        or "default"
+        if source
+        else "default"
+    )
     posts = await fb_repo.list_recent_active_posts(conn, source_id=source_id, limit=limit)
     return [
         EnrichmentRequest(
             kind="facebook_comments",
             source_item_revision_id=p.current_revision_id,
             mode="deep",
-            metadata={"post_item_id": p.source_item_id},
+            metadata={"post_item_id": p.source_item_id, "auth_profile": auth_profile},
         )
         for p in posts
     ]

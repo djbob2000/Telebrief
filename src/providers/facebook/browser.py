@@ -1,4 +1,14 @@
-"""Playwright persistent browser context manager for Facebook (Plan 5 Task 2)."""
+"""Playwright persistent browser context manager for Facebook (Plan 5 Task 2).
+
+Architecture note on bot evasion / stealth:
+We use Chromium persistent user data directories combined with
+``--disable-blink-features=AutomationControlled`` and a realistic desktop
+User-Agent. Heavy third-party stealth injection plugins (e.g. playwright-stealth)
+are intentionally avoided to prevent fragile monkey-patching that breaks across
+Chromium releases. Instead, authentication state persistence via operator-assisted
+profile bootstrapping provides resilient session longevity without triggering
+automated security challenges.
+"""
 
 from __future__ import annotations
 

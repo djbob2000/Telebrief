@@ -1,12 +1,18 @@
-"""Worker entry point: run the Procrastinate worker for Telebrief queues.
+"""Worker entry point: run the Procrastinate worker for all Telebrief queues.
 
-Usage: ``python -m src.worker``
+Usage: ``python -m src.worker [--concurrency=N]``
+
+This module is the single supported way to run jobs: it opens
+:class:`~src.bootstrap.ApplicationInfrastructure` (domain pool, schema gate,
+queue app) and installs it as the process runtime before serving tasks. The
+bare ``procrastinate ... worker`` CLI must not be used for Telebrief queues —
+it never installs the runtime and every task body requires
+:func:`src.runtime.get_runtime`.
 
 Startup sequence: load the database configuration (no Telegram/AI credentials
-needed), open :class:`~src.bootstrap.ApplicationInfrastructure` (domain pool,
-schema gate, queue app — build_infrastructure opens the app), install it as
-the process runtime, then run workers for the ``collection`` and
-``maintenance`` queues until interrupted.
+needed), open infrastructure, install the runtime, then serve every queue
+(``collection``, ``maintenance``, ``processing``, ``publication``,
+``enrichment``) until interrupted.
 
 Task bodies resolve services through :func:`src.runtime.get_runtime`; no job
 constructs a fresh connection pool. All heavy imports live inside the worker
@@ -15,13 +21,20 @@ coroutine so ``python -c "import src.worker"`` works without DATABASE_URL.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 
-WORKER_QUEUES = ("collection", "maintenance")
+# Every queue used by registered tasks: collection (Telegram/Facebook),
+# maintenance (retention, sweeps), processing (knowledge pipeline),
+# publication (snapshot -> delivery), enrichment (Facebook comment refresh).
+WORKER_QUEUES = ("collection", "maintenance", "processing", "publication", "enrichment", "default")
+DEFAULT_CONCURRENCY = 2
 
 
-async def run_worker() -> None:
+async def run_worker(*, concurrency: int = DEFAULT_CONCURRENCY) -> None:
     """Open infrastructure, install the runtime, and serve jobs until stopped."""
+    if concurrency < 1:
+        raise ValueError("concurrency must be >= 1")
     from src.bootstrap import build_infrastructure
     from src.config_loader import load_database_config
     from src.jobs.app import procrastinate_app
@@ -33,7 +46,10 @@ async def run_worker() -> None:
     infrastructure = await build_infrastructure(config)
     install_runtime(infrastructure)
     try:
-        await procrastinate_app.run_worker_async(queues=list(WORKER_QUEUES))
+        await procrastinate_app.run_worker_async(
+            queues=list(WORKER_QUEUES),
+            concurrency=concurrency,
+        )
     finally:
         clear_runtime(infrastructure)
         # Cached platform collectors hold provider clients (Telethon, ...);
@@ -44,9 +60,17 @@ async def run_worker() -> None:
         await infrastructure.close()
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     """Synchronous entry point for ``python -m src.worker``."""
-    asyncio.run(run_worker())
+    parser = argparse.ArgumentParser(description="Run the Telebrief Procrastinate worker.")
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=DEFAULT_CONCURRENCY,
+        help=f"number of concurrent jobs (default: {DEFAULT_CONCURRENCY})",
+    )
+    args = parser.parse_args(argv)
+    asyncio.run(run_worker(concurrency=args.concurrency))
 
 
 if __name__ == "__main__":

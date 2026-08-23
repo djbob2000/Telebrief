@@ -68,33 +68,49 @@ class PublicationSnapshotService:
                 metadata=metadata,
             )
 
-    async def seal_candidates(self, run_id: int) -> list[PublicationCandidate]:
+    async def seal_candidates(
+        self,
+        run_id: int,
+        *,
+        conn: Any | None = None,
+    ) -> list[PublicationCandidate]:
+        """Seal deterministic candidates for a run.
+
+        When ``conn`` is provided the sealing joins the caller's transaction
+        so a subsequent same-connection job deferral is atomic with the state
+        transition; otherwise a dedicated transaction is opened.
+        """
+        if conn is not None:
+            return await self._seal_on(conn, run_id)
         async with self.uow.transaction() as conn:
-            run = await self.repo.lock_run(conn, run_id)
-            if run is None:
-                raise ValueError(f"publication run {run_id} not found")
+            return await self._seal_on(conn, run_id)
 
-            if run.status != "created":
-                return await self.repo.load_sealed_candidates(conn, run_id)
+    async def _seal_on(self, conn: Any, run_id: int) -> list[PublicationCandidate]:
+        run = await self.repo.lock_run(conn, run_id)
+        if run is None:
+            raise ValueError(f"publication run {run_id} not found")
 
-            eligible_rows = await self.repo.eligible_story_revisions(
+        if run.status != "created":
+            return await self.repo.load_sealed_candidates(conn, run_id)
+
+        eligible_rows = await self.repo.eligible_story_revisions(
+            conn,
+            edition_id=run.edition_id,
+            snapshot_at=run.snapshot_at,
+            eligibility_policy_id=run.eligibility_policy_id,
+        )
+
+        created_candidates: list[PublicationCandidate] = []
+        for rank, row in enumerate(eligible_rows, start=1):
+            cand = await self.repo.insert_candidate(
                 conn,
-                edition_id=run.edition_id,
-                snapshot_at=run.snapshot_at,
-                eligibility_policy_id=run.eligibility_policy_id,
+                run.id,
+                story_id=row["story_id"],
+                story_revision_id=row["story_revision_id"],
+                deterministic_rank=rank,
+                snapshot_features=row.get("snapshot_features", {}),
             )
+            created_candidates.append(cand)
 
-            created_candidates: list[PublicationCandidate] = []
-            for rank, row in enumerate(eligible_rows, start=1):
-                cand = await self.repo.insert_candidate(
-                    conn,
-                    run.id,
-                    story_id=row["story_id"],
-                    story_revision_id=row["story_revision_id"],
-                    deterministic_rank=rank,
-                    snapshot_features=row.get("snapshot_features", {}),
-                )
-                created_candidates.append(cand)
-
-            await self.repo.transition_run(conn, run.id, "candidates_sealed")
-            return created_candidates
+        await self.repo.transition_run(conn, run.id, "candidates_sealed")
+        return created_candidates

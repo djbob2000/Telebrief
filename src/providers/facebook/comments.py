@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import time
 from dataclasses import dataclass, field
@@ -208,8 +209,8 @@ class FacebookCommentCollector:
                             break
 
                     if not cid:
-                        # Derive synthetic stable ID from hash of text if no href
-                        cid = str(abs(hash(text)) % 1000000000)
+                        # Derive synthetic stable ID from sha256 hash of text if no href
+                        cid = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
                     if cid in seen_comment_ids:
                         continue
@@ -222,7 +223,7 @@ class FacebookCommentCollector:
                         post_external_id=post_external_id,
                         comment_id=cid,
                         text=text,
-                        published_at=dt.datetime.now(dt.timezone.utc),
+                        published_at=None,
                     )
                     batch.items.append(item)
                     batch.assets.extend(assets)

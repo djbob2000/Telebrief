@@ -119,6 +119,8 @@ async def create_scheduled_publication(
         snapshot_at=snap_dt,
         request_key=req_key,
     )
-    await service.seal_candidates(run.id)
+    # Seal and defer share one transaction so a failed deferral rolls the
+    # sealing back instead of stranding the run in candidates_sealed.
     async with runtime.uow.transaction() as conn:
+        await service.seal_candidates(run.id, conn=conn)
         await select_stories_for_publication.configure(connection=conn).defer_async(run_id=run.id)

@@ -383,7 +383,12 @@ class TestTemporalPublicationSnapshots:
         assert "Дайджест: Бердянск" in publication.title
 
         # 6. Delivery prepares payloads & delivers
-        deliv_service = PublicationDeliveryService(uow=uow)
+        from src.publication.delivery import MockDestinationClient
+
+        deliv_service = PublicationDeliveryService(
+            uow=uow,
+            clients={"telegram_channel": MockDestinationClient()},
+        )
         deliveries = await deliv_service.prepare_payloads(publication.id)
         assert len(deliveries) == 1
         delivery = await deliv_service.deliver(deliveries[0].id)

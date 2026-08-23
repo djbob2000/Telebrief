@@ -222,7 +222,10 @@ class EvidenceAssessmentService:
                 evidence_assessment_run_id=run_id
             )
         except Exception as err:
-            logger.warning("could not defer verification for run %s: %s", run_id, err)
+            # Re-raise: rolling back prevents an assessment run from being
+            # committed with no verification job ever queued.
+            logger.error("could not defer verification for run %s: %s", run_id, err)
+            raise
 
 
 # Compatibility alias

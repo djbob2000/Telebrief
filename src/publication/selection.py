@@ -207,4 +207,7 @@ class EditorialSelectionService:
 
             await generate_publication.configure(connection=conn).defer_async(run_id=run_id)
         except Exception as err:
-            logger.warning("could not defer generate_publication for run %s: %s", run_id, err)
+            # Re-raise: rolling back keeps the run from being stranded in
+            # selected_inputs_sealed with no generation job queued.
+            logger.error("could not defer generate_publication for run %s: %s", run_id, err)
+            raise

@@ -197,7 +197,7 @@ class KnowledgeEditorialAdapter:
                     """
                     SELECT c.id, c.assertion_text, c.normalized_assertion,
                            s.platform, s.name, si.external_id, si.published_at,
-                           sir.text_content, si.canonical_url, s.url, s.external_id
+                           sir.text_content, si.canonical_url, s.url, s.external_id, s.role
                     FROM claims c
                     JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
                     JOIN source_items si ON si.id = sir.source_item_id
@@ -226,9 +226,15 @@ class KnowledgeEditorialAdapter:
                         canonical_url,
                         s_url,
                         s_ext_id,
+                        s_role,
                     ) = crow
                     ref_key = f"{platform}:{ext_id}"
                     card_source_refs.append(ref_key)
+
+                    is_official = (
+                        s_role in ("official", "emergency", "civil_service")
+                        or "официал" in (src_name or "").lower()
+                    )
 
                     if ref_key not in records:
                         from src.collector import Message
@@ -267,14 +273,12 @@ class KnowledgeEditorialAdapter:
                         records[ref_key] = SourceRecord(
                             ref=ref_key,
                             message=msg,
-                            source_type="official"
-                            if "официал" in (src_name or "").lower()
-                            else "channel",
+                            source_type="official" if is_official else "channel",
                             context_text=text_content or assertion,
                         )
 
                     # Map claim to hard_facts or community_observations
-                    if "официал" in (src_name or "").lower():
+                    if is_official:
                         hard_facts.append(assertion)
                     else:
                         community_obs.append(assertion)

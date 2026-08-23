@@ -144,10 +144,11 @@ async def dispatch_facebook_deep_sweep(timestamp: int) -> None:
         candidates = await fb_repo.list_posts_due_for_deep_refresh(conn, scheduled_at=scheduled_at)
 
     for post in candidates:
+        auth_prof = getattr(post, "auth_profile", "default")
         request = EnrichmentRequest(
             kind="facebook_comments",
             source_item_revision_id=post.current_revision_id,
             mode="deep",
-            metadata={"post_item_id": post.source_item_id},
+            metadata={"post_item_id": post.source_item_id, "auth_profile": auth_prof},
         )
         await dispatcher.defer_without_domain_transaction(request, priority=10)
