@@ -56,8 +56,9 @@ class RetentionService:
                             e,
                         )
 
-                # Delete metadata row
-                await self.fb_repo.delete_artifact(conn, artifact.id)
+                # Preserve provenance metadata; only the physical file is
+                # removed and the row is marked deleted (Plan 5 Task 6).
+                await self.fb_repo.mark_artifact_deleted(conn, artifact.id, cutoff)
                 artifacts_count += 1
 
         logger.info(

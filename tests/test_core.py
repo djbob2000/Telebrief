@@ -3,6 +3,7 @@
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,6 +12,7 @@ import pytest
 
 from src.config_loader import ChannelConfig, FilterSpec, ForumTopicConfig
 from src.core import (
+    DIGEST_PUBLICATION_TYPE,
     _apply_filters,
     _build_digest_parts,
     _channel_config_for_name,
@@ -86,17 +88,10 @@ async def test_build_digest_success(sample_config, mock_logger, sample_messages)
     sample_config.settings.digest_mode = "channel"
 
     with (
-        patch("src.core.MessageCollector") as mock_collector_class,
+        _patch_persistent_read(sample_messages),
         patch("src.core.Summarizer") as mock_summarizer_class,
         patch("src.core.DigestFormatter") as mock_formatter_class,
     ):
-        # Set up mocks
-        mock_collector = MagicMock()
-        mock_collector.connect = AsyncMock()
-        mock_collector.fetch_messages = AsyncMock(return_value={"Test Channel": sample_messages})
-        mock_collector.disconnect = AsyncMock()
-        mock_collector_class.return_value = mock_collector
-
         mock_summarizer = MagicMock()
         mock_summarizer.summarize_all = AsyncMock(
             return_value={
@@ -116,9 +111,6 @@ async def test_build_digest_success(sample_config, mock_logger, sample_messages)
 
         # Assertions
         assert digest == "Header\n\nChannel msg"
-        mock_collector.connect.assert_called_once()
-        mock_collector.fetch_messages.assert_called_once_with(hours=24)
-        mock_collector.disconnect.assert_called_once()
         mock_summarizer.summarize_all.assert_called_once()
 
 
@@ -129,12 +121,10 @@ async def test_build_digest_caches_result(sample_config, mock_logger, sample_mes
     sample_config.settings.digest_mode = "channel"
 
     with (
-        patch("src.core.MessageCollector") as mock_collector_class,
+        _patch_persistent_read(sample_messages),
         patch("src.core.Summarizer") as mock_summarizer_class,
         patch("src.core.DigestFormatter") as mock_formatter_class,
     ):
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-
         mock_summarizer = MagicMock()
         mock_summarizer.summarize_all = AsyncMock(
             return_value={"channel_summaries": {"Test Channel": "Summary"}, "overview": ""}
@@ -183,108 +173,66 @@ def test_validate_hours_accepts_valid_input(hours):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_build_digest_collector_error(sample_config, mock_logger):
-    """Test error handling in message collection."""
-    with patch("src.core.MessageCollector") as mock_collector_class:
-        mock_collector = MagicMock()
-        mock_collector.connect = AsyncMock()
-        mock_collector.fetch_messages = AsyncMock(side_effect=Exception("Collection failed"))
-        mock_collector.disconnect = AsyncMock()
-        mock_collector_class.return_value = mock_collector
-
+async def test_build_digest_persistent_read_error(sample_config, mock_logger):
+    """A persistent-history read failure propagates to the caller."""
+    with patch(
+        "src.core._read_persistent_messages",
+        AsyncMock(side_effect=Exception("Collection failed")),
+    ):
         with pytest.raises(Exception, match="Collection failed"):
             await build_digest(sample_config, mock_logger, hours=24)
 
-        # Should still disconnect
-        mock_collector.disconnect.assert_called_once()
+
+# --- generate_and_send_digest: durable publication request facade ---
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_generate_and_send_digest_success(sample_config, mock_logger, sample_messages):
-    """Test successful digest generation and sending."""
+async def test_generate_and_send_digest_requests_publication(
+    sample_config, mock_logger, sample_messages
+):
+    """The digest entry point defers a durable publication run and touches no senders."""
+    sample_config.settings.persistent_ingestion = True
+    sample_config.database.enabled = True
     sample_config.settings.digest_mode = "channel"
 
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core.Summarizer") as mock_summarizer_class,
-        patch("src.core.DigestFormatter") as mock_formatter_class,
-        patch("src.core.DigestSender") as mock_sender_class,
-    ):
-        # Set up mocks
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
+    requested = {}
 
-        mock_summarizer = MagicMock()
-        mock_summarizer.summarize_all = AsyncMock(
-            return_value={
-                "channel_summaries": {"Test Channel": "Summary"},
-                "overview": "Overview",
-            }
-        )
-        mock_summarizer_class.return_value = mock_summarizer
+    class _FakeResult:
+        run_id = 7
+        request_key = "on-demand:test"
+        publication_type = DIGEST_PUBLICATION_TYPE
 
-        mock_formatter = MagicMock()
-        mock_formatter.format_channel_message = MagicMock(return_value="Channel msg")
-        mock_formatter.format_summary_message = MagicMock(return_value="Header")
-        mock_formatter_class.return_value = mock_formatter
+    async def _fake_request(publication_type, edition_slug="berdyansk", **kwargs):
+        requested["type"] = publication_type
+        requested["config"] = kwargs.get("config")
+        return _FakeResult()
 
-        mock_sender = MagicMock()
-        mock_sender.cleanup_old_digests = AsyncMock()
-        mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=True)
-        mock_sender_class.return_value = mock_sender
-
-        # Run function
+    with patch("src.publication.facade.request_publication", side_effect=_fake_request):
         result = await generate_and_send_digest(
             sample_config, mock_logger, hours=24, user_id=123456789
         )
 
-        # Assertions
-        assert result is True
-        mock_sender.send_channel_messages_with_tracking.assert_called_once_with(
-            [("Test Channel", "Channel msg")], "Header", 123456789
-        )
+    assert result is True
+    assert requested["type"] == DIGEST_PUBLICATION_TYPE
+    assert requested["config"] is sample_config
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_generate_and_send_digest_send_failure(sample_config, mock_logger, sample_messages):
-    """Test handling of send failure."""
-    sample_config.settings.digest_mode = "channel"
+async def test_generate_and_send_digest_request_failure_returns_false(sample_config, mock_logger):
+    """A failed publication request is reported as False, never raised to callers."""
+    from src.publication.facade import PublicationConfigError
 
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core.Summarizer") as mock_summarizer_class,
-        patch("src.core.DigestFormatter") as mock_formatter_class,
-        patch("src.core.DigestSender") as mock_sender_class,
-    ):
-        # Set up mocks (same as success case)
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
+    sample_config.database.enabled = False
 
-        mock_summarizer = MagicMock()
-        mock_summarizer.summarize_all = AsyncMock(
-            return_value={
-                "channel_summaries": {"Test Channel": "Summary"},
-                "overview": "Overview",
-            }
-        )
-        mock_summarizer_class.return_value = mock_summarizer
+    async def _fail(*args, **kwargs):
+        raise PublicationConfigError("database disabled")
 
-        mock_formatter = MagicMock()
-        mock_formatter.format_channel_message = MagicMock(return_value="Channel msg")
-        mock_formatter.format_summary_message = MagicMock(return_value="Header")
-        mock_formatter_class.return_value = mock_formatter
-
-        # Send fails
-        mock_sender = MagicMock()
-        mock_sender.cleanup_old_digests = AsyncMock()
-        mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=False)
-        mock_sender_class.return_value = mock_sender
-
-        # Run function
+    with patch("src.publication.facade.request_publication", side_effect=_fail):
         result = await generate_and_send_digest(sample_config, mock_logger, hours=24)
 
-        # Should return False
-        assert result is False
+    assert result is False
 
 
 @pytest.mark.unit
@@ -297,27 +245,16 @@ async def test_generate_and_send_digest_rejects_bad_hours(sample_config, mock_lo
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_generate_and_send_digest_grouped_success(
-    sample_config, mock_logger, sample_messages
-):
-    """Test digest-grouped flow calls grouper and formatter correctly."""
+async def test_build_digest_grouped_success(sample_config, mock_logger, sample_messages):
+    """Test digest-grouped flow calls grouper and formatter correctly (MCP path)."""
     sample_config.settings.digest_mode = "digest"
 
     with (
-        patch("src.core.MessageCollector") as mock_collector_class,
+        _patch_persistent_read(sample_messages),
         patch("src.core.Summarizer") as mock_summarizer_class,
         patch("src.core.DigestGrouper") as mock_grouper_class,
         patch("src.core.DigestFormatter") as mock_formatter_class,
-        patch("src.core.DigestSender") as mock_sender_class,
     ):
-        # Collector
-        mock_collector = MagicMock()
-        mock_collector.connect = AsyncMock()
-        mock_collector.fetch_messages = AsyncMock(return_value={"Test Channel": sample_messages})
-        mock_collector.disconnect = AsyncMock()
-        mock_collector_class.return_value = mock_collector
-
-        # Summarizer
         mock_summarizer = MagicMock()
         mock_summarizer.summarize_all = AsyncMock(
             return_value={
@@ -327,7 +264,6 @@ async def test_generate_and_send_digest_grouped_success(
         )
         mock_summarizer_class.return_value = mock_summarizer
 
-        # Grouper
         mock_grouper = MagicMock()
         grouped_result = {
             "News": [GroupedPoint(point="Point A", source="Test Channel")],
@@ -336,7 +272,6 @@ async def test_generate_and_send_digest_grouped_success(
         mock_grouper.group_summaries = AsyncMock(return_value=grouped_result)
         mock_grouper_class.return_value = mock_grouper
 
-        # Formatter
         mock_formatter = MagicMock()
         mock_formatter.format_group_digest = MagicMock(return_value="Combined digest")
         mock_formatter.format_group_rich_digest = MagicMock(
@@ -344,18 +279,9 @@ async def test_generate_and_send_digest_grouped_success(
         )
         mock_formatter_class.return_value = mock_formatter
 
-        # Sender
-        mock_sender = MagicMock()
-        mock_sender.cleanup_old_digests = AsyncMock()
-        mock_sender.send_rich_digest = AsyncMock(return_value=True)
-        mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=True)
-        mock_sender_class.return_value = mock_sender
+        document = await build_digest(sample_config, mock_logger, hours=24)
 
-        result = await generate_and_send_digest(
-            sample_config, mock_logger, hours=24, user_id=123456789
-        )
-
-        assert result is True
+        assert document == "Combined digest"
         mock_grouper.group_summaries.assert_called_once()
         mock_formatter.format_group_digest.assert_called_once_with(
             [
@@ -370,34 +296,20 @@ async def test_generate_and_send_digest_grouped_success(
             ],
             hours=24,
         )
-        mock_sender.send_rich_digest.assert_called_once_with(
-            {"rich_message": {"blocks": []}},
-            user_id=123456789,
-            fallback_text="Combined digest",
-        )
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_generate_and_send_digest_grouped_skips_empty_groups(
-    sample_config, mock_logger, sample_messages
-):
+async def test_build_digest_grouped_skips_empty_groups(sample_config, mock_logger, sample_messages):
     """Test that empty groups produce no message."""
     sample_config.settings.digest_mode = "digest"
 
     with (
-        patch("src.core.MessageCollector") as mock_collector_class,
+        _patch_persistent_read(sample_messages),
         patch("src.core.Summarizer") as mock_summarizer_class,
         patch("src.core.DigestGrouper") as mock_grouper_class,
         patch("src.core.DigestFormatter") as mock_formatter_class,
-        patch("src.core.DigestSender") as mock_sender_class,
     ):
-        mock_collector = MagicMock()
-        mock_collector.connect = AsyncMock()
-        mock_collector.fetch_messages = AsyncMock(return_value={"Test Channel": sample_messages})
-        mock_collector.disconnect = AsyncMock()
-        mock_collector_class.return_value = mock_collector
-
         mock_summarizer = MagicMock()
         mock_summarizer.summarize_all = AsyncMock(
             return_value={
@@ -423,17 +335,9 @@ async def test_generate_and_send_digest_grouped_skips_empty_groups(
         )
         mock_formatter_class.return_value = mock_formatter
 
-        mock_sender = MagicMock()
-        mock_sender.cleanup_old_digests = AsyncMock()
-        mock_sender.send_rich_digest = AsyncMock(return_value=True)
-        mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=True)
-        mock_sender_class.return_value = mock_sender
+        document = await build_digest(sample_config, mock_logger, hours=24)
 
-        result = await generate_and_send_digest(
-            sample_config, mock_logger, hours=24, user_id=123456789
-        )
-
-        assert result is True
+        assert document == "Combined digest"
         mock_formatter.format_group_digest.assert_called_once_with(
             [("News", [GroupedPoint(point="Point A", source="Test Channel")])],
             hours=24,
@@ -447,14 +351,11 @@ async def test_digest_mode_uses_grouper(sample_config, mock_logger, sample_messa
     sample_config.settings.digest_mode = "digest"
 
     with (
-        patch("src.core.MessageCollector") as mock_collector_class,
+        _patch_persistent_read(sample_messages),
         patch("src.core.Summarizer") as mock_summarizer_class,
         patch("src.core.DigestGrouper") as mock_grouper_class,
         patch("src.core.DigestFormatter") as mock_formatter_class,
-        patch("src.core.DigestSender") as mock_sender_class,
     ):
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-
         mock_summarizer = MagicMock()
         mock_summarizer.summarize_all = AsyncMock(
             return_value={
@@ -477,15 +378,9 @@ async def test_digest_mode_uses_grouper(sample_config, mock_logger, sample_messa
         )
         mock_formatter_class.return_value = mock_formatter
 
-        mock_sender = MagicMock()
-        mock_sender.cleanup_old_digests = AsyncMock()
-        mock_sender.send_rich_digest = AsyncMock(return_value=True)
-        mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=True)
-        mock_sender_class.return_value = mock_sender
+        document = await build_digest(sample_config, mock_logger, hours=12)
 
-        result = await generate_and_send_digest(sample_config, mock_logger, hours=12, user_id=999)
-
-        assert result is True
+        assert document == "Combined digest"
         mock_grouper.group_summaries.assert_called_once()
         mock_formatter.format_channel_message.assert_not_called()
 
@@ -497,14 +392,11 @@ async def test_channel_mode_skips_grouper(sample_config, mock_logger, sample_mes
     sample_config.settings.digest_mode = "channel"
 
     with (
-        patch("src.core.MessageCollector") as mock_collector_class,
+        _patch_persistent_read(sample_messages),
         patch("src.core.Summarizer") as mock_summarizer_class,
         patch("src.core.DigestFormatter") as mock_formatter_class,
-        patch("src.core.DigestSender") as mock_sender_class,
         patch("src.core.DigestGrouper") as mock_grouper_class,
     ):
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-
         mock_summarizer = MagicMock()
         mock_summarizer.summarize_all = AsyncMock(
             return_value={
@@ -519,29 +411,21 @@ async def test_channel_mode_skips_grouper(sample_config, mock_logger, sample_mes
         mock_formatter.format_summary_message = MagicMock(return_value="Summary")
         mock_formatter_class.return_value = mock_formatter
 
-        mock_sender = MagicMock()
-        mock_sender.cleanup_old_digests = AsyncMock()
-        mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=True)
-        mock_sender_class.return_value = mock_sender
+        document = await build_digest(sample_config, mock_logger, hours=24)
 
-        result = await generate_and_send_digest(
-            sample_config, mock_logger, hours=24, user_id=123456789
-        )
-
-        assert result is True
+        assert document == "Summary\n\nFormatted channel msg"
         # Should NOT have used the grouped flow
         mock_grouper_class.assert_not_called()
         # Should have used per-channel formatting
         mock_formatter.format_channel_message.assert_called_once()
-        mock_sender.send_channel_messages_with_tracking.assert_called_once()
 
 
-def _make_collector_mock(sample_messages):
-    mock_collector = MagicMock()
-    mock_collector.connect = AsyncMock()
-    mock_collector.fetch_messages = AsyncMock(return_value={"Test Channel": sample_messages})
-    mock_collector.disconnect = AsyncMock()
-    return mock_collector
+def _patch_persistent_read(sample_messages):
+    """Patch the persistent-history reader used by every core builder."""
+    return patch(
+        "src.core._read_persistent_messages",
+        AsyncMock(return_value={"Test Channel": sample_messages}),
+    )
 
 
 # --- _apply_filters tests ---
@@ -710,15 +594,11 @@ async def test_collect_messages_applies_configured_filters(
     sample_config, mock_logger, sample_messages
 ):
     """_collect_messages applies configured filters to collected messages."""
-    sample_config.settings.persistent_ingestion = False
-    sample_config.database.enabled = False
     sample_config.settings.filters = [
         _make_filter_spec("src.extensions.filters.MinLengthFilter", min_chars=99999)
     ]
 
-    with patch("src.core.MessageCollector") as mock_collector_class:
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-
+    with _patch_persistent_read(sample_messages):
         result = await _collect_messages(sample_config, mock_logger, 24)
 
     assert result == {"Test Channel": []}
@@ -752,24 +632,17 @@ def test_order_groups_pushes_literal_other_case_insensitive(sample_config):
 async def test_summary_message_dedupes_split_group_names(
     sample_config, mock_logger, sample_messages
 ):
-    """When a group's formatted message is split into >1 chunk, the summary header
-    must list that group exactly once — not once per chunk."""
+    """When a group's formatted message is split into >1 chunk, the joined document
+    still contains the group content exactly once."""
     long_news = "a" * 4500  # exceeds split_message default max_length=4000
     sample_config.settings.digest_mode = "digest"
 
     with (
-        patch("src.core.MessageCollector") as mock_collector_class,
+        _patch_persistent_read(sample_messages),
         patch("src.core.Summarizer") as mock_summarizer_class,
         patch("src.core.DigestGrouper") as mock_grouper_class,
         patch("src.core.DigestFormatter") as mock_formatter_class,
-        patch("src.core.DigestSender") as mock_sender_class,
     ):
-        mock_collector = MagicMock()
-        mock_collector.connect = AsyncMock()
-        mock_collector.fetch_messages = AsyncMock(return_value={"Test Channel": sample_messages})
-        mock_collector.disconnect = AsyncMock()
-        mock_collector_class.return_value = mock_collector
-
         mock_summarizer = MagicMock()
         mock_summarizer.summarize_all = AsyncMock(
             return_value={
@@ -792,29 +665,10 @@ async def test_summary_message_dedupes_split_group_names(
         )
         mock_formatter_class.return_value = mock_formatter
 
-        mock_sender = MagicMock()
-        mock_sender.cleanup_old_digests = AsyncMock()
-        mock_sender.send_rich_digest = AsyncMock(return_value=True)
-        mock_sender.send_channel_messages_with_tracking = AsyncMock(return_value=True)
-        mock_sender_class.return_value = mock_sender
-
-        await generate_and_send_digest(sample_config, mock_logger, hours=24, user_id=123456789)
+        document = await build_digest(sample_config, mock_logger, hours=24)
 
         mock_formatter.format_group_digest.assert_called_once()
-        mock_sender.send_rich_digest.assert_called_once_with(
-            {"rich_message": {"blocks": []}},
-            user_id=123456789,
-            fallback_text=long_news,
-        )
-
-
-def _make_single_channel_collector(messages):
-    """Collector mock for the single-channel path."""
-    mock_collector = MagicMock()
-    mock_collector.connect = AsyncMock()
-    mock_collector.fetch_channel_messages = AsyncMock(return_value=messages)
-    mock_collector.disconnect = AsyncMock()
-    return mock_collector
+        assert long_news in document
 
 
 @pytest.mark.unit
@@ -833,31 +687,35 @@ def test_resolve_channel_lists_known_names(sample_config):
         _resolve_channel(sample_config, "Nope")
 
 
+def _patch_single_channel_reader(sample_messages):
+    """Stub SourceRevisionReader so single-channel reads never touch Telegram."""
+    return patch(
+        "src.core.SourceRevisionReader",
+        lambda uow, repository: SimpleNamespace(
+            read_telegram_messages=AsyncMock(return_value={"Test Channel": sample_messages})
+        ),
+    )
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_collect_channel_messages_falls_back_to_telegram(
+async def test_collect_channel_messages_reads_persistent_history(
     sample_config, mock_logger, sample_messages
 ):
-    """Fallback to live Telegram read with config filters applied."""
-    sample_config.settings.persistent_ingestion = False
-    sample_config.database.enabled = False
-
+    """Single-channel reads come from persisted history with config filters applied."""
+    install_runtime(SimpleNamespace(uow=object()))
     with (
-        patch("src.core.MessageCollector") as mock_collector_class,
+        _patch_single_channel_reader(sample_messages),
         patch("src.core._apply_filters", new_callable=AsyncMock) as mock_filters,
     ):
-        collector = _make_single_channel_collector(sample_messages)
-        mock_collector_class.return_value = collector
         mock_filters.return_value = sample_messages
 
         messages, source = await collect_channel_messages(
             sample_config, mock_logger, "@test_channel", hours=6
         )
 
-        assert source == "telegram"
+        assert source == "persistent"
         assert messages == sample_messages
-        collector.disconnect.assert_called_once()
-        mock_filters.assert_called_once()
         assert mock_filters.call_args[0][0].name == "Test Channel"
 
 
@@ -867,21 +725,18 @@ async def test_collect_channel_messages_keeps_newest_within_limit(
     sample_config, mock_logger, sample_messages
 ):
     """The limit trims the oldest messages, since the newest ones matter most."""
-    sample_config.settings.persistent_ingestion = False
-    sample_config.database.enabled = False
-
+    install_runtime(SimpleNamespace(uow=object()))
     with (
-        patch("src.core.MessageCollector") as mock_collector_class,
+        _patch_single_channel_reader(sample_messages),
         patch("src.core._apply_filters", new_callable=AsyncMock) as mock_filters,
     ):
-        mock_collector_class.return_value = _make_single_channel_collector(sample_messages)
         mock_filters.return_value = sample_messages
 
-        messages, _ = await collect_channel_messages(
+        messages, source = await collect_channel_messages(
             sample_config, mock_logger, "Test Channel", limit=1
         )
 
-        assert messages == sample_messages[-1:]
+        assert (messages, source) == (sample_messages[-1:], "persistent")
 
 
 @pytest.mark.unit
@@ -895,8 +750,47 @@ async def test_collect_channel_messages_rejects_bad_limit(sample_config, mock_lo
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_generate_and_publish_article_workflow(sample_config, mock_logger, tmp_path):
-    """Test the complete generate_and_publish_article orchestration workflow."""
+async def test_generate_and_publish_article_requests_publication(
+    sample_config, mock_logger, tmp_path
+):
+    """Non-dry-run requests a durable article publication; nothing is generated inline."""
+    from src.core import ARTICLE_PUBLICATION_TYPE, generate_and_publish_article
+
+    sample_config.settings.article.fallback_save_dir = str(tmp_path)
+    sample_config.database.enabled = True
+    sample_config.settings.persistent_ingestion = True
+
+    requested = {}
+
+    class _FakeResult:
+        run_id = 11
+        request_key = "on-demand:test"
+
+    async def _fake_request(publication_type, edition_slug="berdyansk", **kwargs):
+        requested["type"] = publication_type
+        return _FakeResult()
+
+    with (
+        patch("src.publication.facade.request_publication", side_effect=_fake_request),
+        patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
+    ):
+        success = await generate_and_publish_article(sample_config, mock_logger, hours=24)
+
+    assert success is True
+    assert requested["type"] == ARTICLE_PUBLICATION_TYPE
+    mock_collect.assert_not_called()
+    assert len(list(tmp_path.glob("*_editorial.md"))) == 0
+
+
+async def _run_article_preview(
+    sample_config,
+    mock_logger,
+    tmp_path,
+    *,
+    gen_side_effect=None,
+    collected=None,
+):
+    """Shared harness: run the dry-run preview over stubbed persistent history."""
     from src.core import generate_and_publish_article
 
     sample_config.settings.article.fallback_save_dir = str(tmp_path)
@@ -906,23 +800,23 @@ async def test_generate_and_publish_article_workflow(sample_config, mock_logger,
         patch(
             "src.article_generator.ArticleGenerator.generate_article", new_callable=AsyncMock
         ) as mock_gen,
-        patch("src.telegraph.TelegraphPublisher.create_page", new_callable=AsyncMock) as mock_page,
-        patch(
-            "src.sender.DigestSender.send_article_instant_view", new_callable=AsyncMock
-        ) as mock_send,
+        patch("src.core.NewsImageGenerator.generate_prompt", new_callable=AsyncMock) as mock_prompt,
     ):
-        mock_collect.return_value = {"Test Channel": [MagicMock()]}
-        mock_gen.return_value = ("Заголовок", "Лид", "# Заголовок\n\nТекст статьи.")
-        mock_page.return_value = "https://telegra.ph/Sample-08-14"
-        mock_send.return_value = True
+        mock_collect.return_value = collected or {"Test Channel": [MagicMock()]}
+        if gen_side_effect is not None:
+            mock_gen.side_effect = gen_side_effect
+        else:
+            mock_gen.return_value = (
+                "Превью Заголовок",
+                "Превью Лид",
+                "# Превью Заголовок\n\nТекст превью.",
+            )
+        mock_prompt.return_value = "prompt"
 
-        success = await generate_and_publish_article(sample_config, mock_logger, hours=24)
-        assert success is True
-        mock_collect.assert_called_once()
-        mock_gen.assert_called_once()
-        mock_page.assert_called_once()
-        mock_send.assert_called_once()
-        assert len(list(tmp_path.glob("*_editorial.md"))) == 1
+        success = await generate_and_publish_article(
+            sample_config, mock_logger, hours=24, dry_run=True
+        )
+    return success
 
 
 @pytest.mark.unit
@@ -931,38 +825,13 @@ async def test_generate_and_publish_article_dry_run_saves_timestamped_preview(
     sample_config, mock_logger, tmp_path
 ):
     """Dry-run mode saves timestamped preview file (preview_<timestamp>_editorial.md)."""
-    from src.core import generate_and_publish_article
+    success = await _run_article_preview(sample_config, mock_logger, tmp_path)
 
-    sample_config.settings.article.fallback_save_dir = str(tmp_path)
-
-    with (
-        patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
-        patch(
-            "src.article_generator.ArticleGenerator.generate_article", new_callable=AsyncMock
-        ) as mock_gen,
-        patch("src.telegraph.TelegraphPublisher.create_page", new_callable=AsyncMock) as mock_page,
-        patch(
-            "src.sender.DigestSender.send_article_instant_view", new_callable=AsyncMock
-        ) as mock_send,
-    ):
-        mock_collect.return_value = {"Test Channel": [MagicMock()]}
-        mock_gen.return_value = (
-            "Превью Заголовок",
-            "Превью Лид",
-            "# Превью Заголовок\n\nТекст превью.",
-        )
-
-        success = await generate_and_publish_article(
-            sample_config, mock_logger, hours=24, dry_run=True
-        )
-        assert success is True
-        mock_page.assert_not_called()
-        mock_send.assert_not_called()
-
-        preview_files = list(tmp_path.glob("preview_*_editorial.md"))
-        assert len(preview_files) == 1
-        assert "Текст превью." in preview_files[0].read_text(encoding="utf-8")
-        assert not (tmp_path / "preview_editorial.md").exists()
+    assert success is True
+    preview_files = list(tmp_path.glob("preview_*_editorial.md"))
+    assert len(preview_files) == 1
+    assert "Текст превью." in preview_files[0].read_text(encoding="utf-8")
+    assert not (tmp_path / "preview_editorial.md").exists()
 
 
 @pytest.mark.unit
@@ -970,14 +839,12 @@ async def test_generate_and_publish_article_dry_run_saves_timestamped_preview(
 async def test_generate_and_publish_article_uses_fallback_when_model_fails(
     sample_config, mock_logger, tmp_path
 ):
-    """A model failure still yields a source-based article for publication."""
+    """A model failure still yields a source-based article preview."""
     from datetime import datetime, timezone
 
     from src.collector import Message
-    from src.core import generate_and_publish_article
 
-    sample_config.settings.article.fallback_save_dir = str(tmp_path)
-    fallback_message = Message(
+    message = Message(
         text="Коммунальная служба сообщила о временном отключении воды",
         sender="Редакция",
         timestamp=datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc),
@@ -987,30 +854,20 @@ async def test_generate_and_publish_article_uses_fallback_when_model_fails(
         media_type="",
     )
 
-    with (
-        patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
-        patch(
-            "src.article_generator.ArticleGenerator.generate_article", new_callable=AsyncMock
-        ) as mock_gen,
-        patch("src.telegraph.TelegraphPublisher.create_page", new_callable=AsyncMock) as mock_page,
-        patch(
-            "src.sender.DigestSender.send_article_instant_view", new_callable=AsyncMock
-        ) as mock_send,
-    ):
-        mock_collect.return_value = {"Test Channel": [fallback_message]}
-        mock_gen.side_effect = RuntimeError("provider unavailable")
-        mock_page.return_value = "https://telegra.ph/Sample-08-15"
-        mock_send.return_value = True
+    success = await _run_article_preview(
+        sample_config,
+        mock_logger,
+        tmp_path,
+        gen_side_effect=RuntimeError("provider down"),
+        collected={"Test Channel": [message]},
+    )
 
-        success = await generate_and_publish_article(sample_config, mock_logger, hours=24)
-
-        assert success is True
-        mock_page.assert_called_once()
-        page_content = mock_page.call_args.kwargs["content_markdown"]
-        assert "Жители сообщали о перебоях с водоснабжением" in page_content
-        assert "временном отключении воды" not in page_content
-        mock_send.assert_called_once()
-        assert list(tmp_path.glob("*_editorial.md"))
+    assert success is True
+    previews = list(tmp_path.glob("preview_*_editorial.md"))
+    assert previews
+    page_content = previews[0].read_text(encoding="utf-8")
+    assert "Жители сообщали о перебоях с водоснабжением" in page_content
+    assert "временном отключении воды" not in page_content
 
 
 @pytest.mark.unit
@@ -1019,13 +876,10 @@ async def test_zero_card_editorial_outcome_does_not_trigger_core_fallback(
     sample_config, mock_logger, tmp_path
 ):
     from datetime import datetime, timezone
-    from unittest.mock import AsyncMock, patch
 
     from src.article_generator import NoSubstantiveEditorialError
     from src.collector import Message
-    from src.core import generate_and_publish_article
 
-    sample_config.settings.article.fallback_save_dir = str(tmp_path)
     message = Message(
         text="Сообщение",
         sender="Житель",
@@ -1036,94 +890,21 @@ async def test_zero_card_editorial_outcome_does_not_trigger_core_fallback(
         media_type="",
     )
 
-    with (
-        patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
-        patch(
-            "src.article_generator.ArticleGenerator.generate_article", new_callable=AsyncMock
-        ) as mock_gen,
-        patch("src.core._build_fallback_article") as mock_fallback,
-        patch("src.telegraph.TelegraphPublisher.create_page", new_callable=AsyncMock) as mock_page,
-    ):
-        mock_collect.return_value = {"Test Channel": [message]}
-        mock_gen.side_effect = NoSubstantiveEditorialError("no publishable local stories")
-
-        success = await generate_and_publish_article(sample_config, mock_logger, hours=24)
-
-        assert success is False
-        mock_fallback.assert_not_called()
-        mock_page.assert_not_called()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_extract_candidate_photo_bytes_success(sample_config, mock_logger):
-    from datetime import datetime, timezone
-
-    from src.collector import Message
-    from src.core import _extract_candidate_photo_bytes
-
-    photo_msg = Message(
-        text="Фото с места ремонта",
-        sender="Корреспондент",
-        timestamp=datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc),
-        link="https://t.me/test/100",
-        channel_name="Test Channel",
-        has_media=True,
-        media_type="Фото",
-        message_id=100,
-        channel_id=-100123456789,
-    )
-
-    fake_bytes = b"fake_source_photo_bytes"
-    mock_collector = MagicMock()
-    mock_collector.connect = AsyncMock()
-    mock_collector.disconnect = AsyncMock()
-    mock_collector.download_message_photo = AsyncMock(return_value=fake_bytes)
-
-    with patch("src.core.MessageCollector", return_value=mock_collector):
-        res = await _extract_candidate_photo_bytes(
-            {"Test Channel": [photo_msg]}, sample_config, mock_logger
+    with patch("src.core._build_fallback_article") as mock_fallback:
+        success = await _run_article_preview(
+            sample_config,
+            mock_logger,
+            tmp_path,
+            gen_side_effect=NoSubstantiveEditorialError("no publishable local stories"),
+            collected={"Test Channel": [message]},
         )
 
-    assert res == fake_bytes
-    mock_collector.download_message_photo.assert_called_once_with(
-        channel_identifier=-100123456789,
-        message_id=100,
-    )
+    assert success is False
+    mock_fallback.assert_not_called()
+    assert list(tmp_path.glob("preview_*_editorial.md")) == []
 
 
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_extract_candidate_photo_bytes_no_photo(sample_config, mock_logger):
-    from datetime import datetime, timezone
-
-    from src.collector import Message
-    from src.core import _extract_candidate_photo_bytes
-
-    text_msg = Message(
-        text="Текстовое сообщение без фото",
-        sender="Корреспондент",
-        timestamp=datetime(2026, 8, 15, 8, 0, tzinfo=timezone.utc),
-        link="https://t.me/test/101",
-        channel_name="Test Channel",
-        has_media=False,
-        media_type="",
-        message_id=101,
-        channel_id=-100123456789,
-    )
-
-    res = await _extract_candidate_photo_bytes(
-        {"Test Channel": [text_msg]}, sample_config, mock_logger
-    )
-    assert res is None
-
-
-# --- persistent_ingestion (transitional DB-read cutover) ---
-
-
-def _forbid_telethon(mock_collector_class) -> None:
-    """Any MessageCollector construction means the flag leaked to the legacy path."""
-    mock_collector_class.side_effect = AssertionError("Telethon must not be used")
+# --- persistent_ingestion cutover guards ---
 
 
 class _BrokenUow:
@@ -1141,12 +922,10 @@ async def test_collect_messages_persistent_surfaces_db_errors_without_telegram_f
     """persistent_ingestion=true: a DB failure raises explicitly and never falls back."""
     sample_config.settings.persistent_ingestion = True
 
-    with patch("src.core.MessageCollector") as mock_collector_class:
-        _forbid_telethon(mock_collector_class)
-        install_runtime(SimpleNamespace(uow=_BrokenUow()))
+    install_runtime(SimpleNamespace(uow=_BrokenUow()))
 
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await _collect_messages(sample_config, mock_logger, 24)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await _collect_messages(sample_config, mock_logger, 24)
 
 
 @pytest.mark.unit
@@ -1176,15 +955,12 @@ async def test_collect_channel_messages_persistent_reads_history_without_telegra
         )
     ]
 
-    with patch("src.core.MessageCollector") as mock_collector_class:
-        _forbid_telethon(mock_collector_class)
-        install_runtime(SimpleNamespace(uow=object()))
-        messages, source = await collect_channel_messages(
-            sample_config, mock_logger, "Test Channel", hours=6
-        )
+    install_runtime(SimpleNamespace(uow=object()))
+    messages, source = await collect_channel_messages(
+        sample_config, mock_logger, "Test Channel", hours=6
+    )
 
     assert (messages, source) == ([sample_messages[1]], "persistent")
-    mock_collector_class.assert_not_called()
 
 
 @pytest.mark.unit
@@ -1192,14 +968,11 @@ async def test_collect_channel_messages_persistent_reads_history_without_telegra
 async def test_generate_and_publish_article_persistent_never_touches_telethon(
     sample_config, mock_logger, tmp_path
 ):
-    """persistent_ingestion=true: article photo lookup fails open without Telethon."""
+    """Dry-run preview builds from persisted history; Telethon is never imported."""
     from datetime import datetime, timezone
 
     from src.collector import Message
-    from src.core import generate_and_publish_article
 
-    sample_config.settings.persistent_ingestion = True
-    sample_config.settings.article.fallback_save_dir = str(tmp_path)
     photo_message = Message(
         text="Фото с места событий",
         sender="User",
@@ -1211,23 +984,17 @@ async def test_generate_and_publish_article_persistent_never_touches_telethon(
         message_id=9,
     )
 
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core._collect_messages", new_callable=AsyncMock) as mock_collect,
-        patch(
-            "src.article_generator.ArticleGenerator.generate_article", new_callable=AsyncMock
-        ) as mock_gen,
-    ):
-        _forbid_telethon(mock_collector_class)
-        mock_collect.return_value = {"Test Channel": [photo_message]}
-        mock_gen.return_value = ("Заголовок", "Лид", "# Заголовок\n\nТекст статьи.")
-
-        success = await generate_and_publish_article(
-            sample_config, mock_logger, hours=24, dry_run=True
-        )
+    success = await _run_article_preview(
+        sample_config,
+        mock_logger,
+        tmp_path,
+        collected={"Test Channel": [photo_message]},
+    )
 
     assert success is True
-    mock_collector_class.assert_not_called()
+    # The retired live-collection path must not be referenced anywhere in core.
+    core_source = Path("src/core.py").read_text(encoding="utf-8")
+    assert "MessageCollector" not in core_source
 
 
 requires_postgres = pytest.mark.skipif(
@@ -1305,12 +1072,9 @@ async def test_build_digest_parts_persistent_reaches_summarization_from_db(
         install_runtime(SimpleNamespace(uow=DatabaseUnitOfWork(pool)))
 
         with (
-            patch("src.core.MessageCollector") as mock_collector_class,
             patch("src.core.Summarizer") as mock_summarizer_class,
             patch("src.core.DigestFormatter") as mock_formatter_class,
         ):
-            _forbid_telethon(mock_collector_class)
-
             captured = {}
 
             async def _capture_summarize(messages_by_channel):
@@ -1363,3 +1127,26 @@ def test_publication_modules_forbid_legacy_storage_and_collector_imports():
             assert (
                 attr not in forbidden_symbols
             ), f"Module {modname} imports forbidden legacy symbol {attr}"
+
+
+def test_production_sources_forbid_legacy_clock_and_collector():
+    """Plan 4 Task 8 / Plan 5 Task 9 guards, kept from regressing by source scan."""
+    production_files = [Path("src") / "core.py", *Path("src").rglob("*.py")]
+    interactive_bootstrap = {Path("src/collector.py").resolve()}
+    for path in {p.resolve() for p in production_files}:
+        text = path.read_text(encoding="utf-8")
+        assert "apscheduler" not in text.lower(), f"{path} imports the retired APScheduler clock"
+        if path not in interactive_bootstrap:
+            # Interactive Telegram session bootstrap may stay in src/collector.py;
+            # every other production module must not build a live collector.
+            assert (
+                "MessageCollector(" not in text
+            ), f"{path} still instantiates the retired live collector"
+
+
+def test_scheduler_dependency_removed_from_manifests():
+    """apscheduler must be gone from runtime dependency manifests."""
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    requirements = Path("requirements.txt").read_text(encoding="utf-8")
+    assert "apscheduler" not in pyproject.lower()
+    assert "apscheduler" not in requirements.lower()

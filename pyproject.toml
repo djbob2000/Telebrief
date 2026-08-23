@@ -6,7 +6,6 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "aiohttp>=3.9.0",
-    "apscheduler>=3.10.0",
     "mcp>=2.0.0",
     "openai>=1.0.0",
     "pgvector>=0.5.0",
@@ -97,7 +96,6 @@ ignore_missing_imports = true
 module = [
     "telethon.*",
     "telegram.*",
-    "apscheduler.*",
     "asyncpg",
     "asyncpg.*",
 ]

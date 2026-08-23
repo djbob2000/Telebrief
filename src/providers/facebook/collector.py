@@ -262,12 +262,18 @@ class FacebookCollector(Collector):
                     ]
                 ):
                     logger.info("Facebook source %s page content is unavailable", source.id)
+                    # Nothing item-scoped can be recorded (we cannot know
+                    # which posts are gone), but the scan-level observation is
+                    # persisted durably via collection_batches.adapter_state.
                     return CollectionBatch(
                         outcome=CollectionOutcome.SUCCESS,
                         items=(),
                         assets=(),
                         state_events=(),
-                        adapter_state={},
+                        adapter_state={
+                            "page_unavailable": True,
+                            "source_url": source.url,
+                        },
                         started_at=started_at,
                         completed_at=now,
                     )

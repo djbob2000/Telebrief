@@ -511,33 +511,43 @@ class TelegramCollector:
                         else min(lowest_fetched_id, oldest_id)
                     )
 
-                # Catch-up pass if needed
+                # Catch-up pass if needed; pages backwards down to the
+                # watermark (bounded) exactly like the non-topic branch, so a
+                # gap larger than one page is not partially skipped.
                 if watermark is not None and (oldest_id is None or oldest_id > watermark + 1):
-                    catchup_response = await self.client(
-                        functions.messages.SearchRequest(
-                            peer=entity,
-                            q="",
-                            filter=types.InputMessagesFilterEmpty(),
-                            min_date=None,
-                            max_date=now,
-                            offset_id=0,
-                            add_offset=0,
-                            limit=limit,
-                            max_id=0,
-                            min_id=watermark,
-                            hash=0,
-                            top_msg_id=topic.id,
+                    current_offset_id = oldest_id if oldest_id is not None else 0
+                    pages = 0
+                    while pages < MAX_CATCHUP_PAGES:
+                        pages += 1
+                        catchup_response = await self.client(
+                            functions.messages.SearchRequest(
+                                peer=entity,
+                                q="",
+                                filter=types.InputMessagesFilterEmpty(),
+                                min_date=None,
+                                max_date=now,
+                                offset_id=current_offset_id,
+                                add_offset=0,
+                                limit=limit,
+                                max_id=0,
+                                min_id=watermark,
+                                hash=0,
+                                top_msg_id=topic.id,
+                            )
                         )
-                    )
-                    catchup_msgs = list(catchup_response.messages)
-                    entries.extend((message, topic.id) for message in catchup_msgs)
-                    catchup_oldest = min((m.id for m in catchup_msgs), default=None)
-                    if catchup_oldest is not None:
+                        catchup_msgs = list(catchup_response.messages)
+                        if not catchup_msgs:
+                            break
+                        entries.extend((message, topic.id) for message in catchup_msgs)
+                        catchup_oldest = min(m.id for m in catchup_msgs)
                         lowest_fetched_id = (
                             catchup_oldest
                             if lowest_fetched_id is None
                             else min(lowest_fetched_id, catchup_oldest)
                         )
+                        if catchup_oldest <= watermark + 1 or len(catchup_msgs) < limit:
+                            break
+                        current_offset_id = catchup_oldest
         else:
             # 1. Window pass
             window_messages: list[tuple[Any, int | None]] = []

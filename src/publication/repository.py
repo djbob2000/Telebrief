@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from typing import Any
+from collections.abc import Callable
+from typing import Any, TypeVar
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -28,6 +29,8 @@ from src.publication.models import (
 
 logger = logging.getLogger(__name__)
 
+_PolicyT = TypeVar("_PolicyT")
+
 
 class PublicationPolicyRepository:
     """Repository for eligibility, selection, and writer policy versions."""
@@ -40,38 +43,14 @@ class PublicationPolicyRepository:
         config_hash: str,
         prompt_version: str,
     ) -> EligibilityPolicyVersion:
-        cursor = await conn.execute(
-            """
-            SELECT id, edition_id, version, config_hash, prompt_version, created_at
-            FROM eligibility_policy_versions
-            WHERE edition_id = %s AND config_hash = %s AND prompt_version = %s
-            ORDER BY version DESC LIMIT 1
-            """,
-            (edition_id, config_hash, prompt_version),
+        return await self._get_or_create_policy(
+            conn,
+            table="eligibility_policy_versions",
+            edition_id=edition_id,
+            config_hash=config_hash,
+            prompt_version=prompt_version,
+            from_row=EligibilityPolicyVersion.from_row,
         )
-        row = await cursor.fetchone()
-        if row is not None:
-            return EligibilityPolicyVersion.from_row(row)
-
-        cursor = await conn.execute(
-            "SELECT COALESCE(MAX(version), 0) + 1 FROM eligibility_policy_versions WHERE edition_id = %s",
-            (edition_id,),
-        )
-        ver_row = await cursor.fetchone()
-        next_ver = ver_row[0] if ver_row is not None else 1
-
-        cursor = await conn.execute(
-            """
-            INSERT INTO eligibility_policy_versions (edition_id, version, config_hash, prompt_version)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id, edition_id, version, config_hash, prompt_version, created_at
-            """,
-            (edition_id, next_ver, config_hash, prompt_version),
-        )
-        res_row = await cursor.fetchone()
-        if res_row is None:
-            raise RuntimeError("Failed to insert eligibility_policy_version")
-        return EligibilityPolicyVersion.from_row(res_row)
 
     async def get_or_create_selection_policy(
         self,
@@ -81,38 +60,14 @@ class PublicationPolicyRepository:
         config_hash: str,
         prompt_version: str,
     ) -> EditorialSelectionPolicyVersion:
-        cursor = await conn.execute(
-            """
-            SELECT id, edition_id, version, config_hash, prompt_version, created_at
-            FROM editorial_selection_policy_versions
-            WHERE edition_id = %s AND config_hash = %s AND prompt_version = %s
-            ORDER BY version DESC LIMIT 1
-            """,
-            (edition_id, config_hash, prompt_version),
+        return await self._get_or_create_policy(
+            conn,
+            table="editorial_selection_policy_versions",
+            edition_id=edition_id,
+            config_hash=config_hash,
+            prompt_version=prompt_version,
+            from_row=EditorialSelectionPolicyVersion.from_row,
         )
-        row = await cursor.fetchone()
-        if row is not None:
-            return EditorialSelectionPolicyVersion.from_row(row)
-
-        cursor = await conn.execute(
-            "SELECT COALESCE(MAX(version), 0) + 1 FROM editorial_selection_policy_versions WHERE edition_id = %s",
-            (edition_id,),
-        )
-        ver_row = await cursor.fetchone()
-        next_ver = ver_row[0] if ver_row is not None else 1
-
-        cursor = await conn.execute(
-            """
-            INSERT INTO editorial_selection_policy_versions (edition_id, version, config_hash, prompt_version)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id, edition_id, version, config_hash, prompt_version, created_at
-            """,
-            (edition_id, next_ver, config_hash, prompt_version),
-        )
-        res_row = await cursor.fetchone()
-        if res_row is None:
-            raise RuntimeError("Failed to insert editorial_selection_policy_version")
-        return EditorialSelectionPolicyVersion.from_row(res_row)
 
     async def get_or_create_writer_policy(
         self,
@@ -122,38 +77,72 @@ class PublicationPolicyRepository:
         config_hash: str,
         prompt_version: str,
     ) -> WriterPolicyVersion:
-        cursor = await conn.execute(
-            """
+        return await self._get_or_create_policy(
+            conn,
+            table="writer_policy_versions",
+            edition_id=edition_id,
+            config_hash=config_hash,
+            prompt_version=prompt_version,
+            from_row=WriterPolicyVersion.from_row,
+        )
+
+    async def _get_or_create_policy(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        table: str,
+        edition_id: int,
+        config_hash: str,
+        prompt_version: str,
+        from_row: Callable[[Any], _PolicyT],
+    ) -> _PolicyT:
+        """Shared get-or-create for the per-edition policy tables.
+
+        A concurrent creator can win the INSERT race; the UniqueViolation is
+        answered by re-reading and converging on its row (duplicate policies
+        are harmless), bounded by a small retry budget.
+        """
+        if table not in (
+            "eligibility_policy_versions",
+            "editorial_selection_policy_versions",
+            "writer_policy_versions",
+        ):
+            raise ValueError(f"unsupported policy table {table!r}")
+        select_sql = f"""
             SELECT id, edition_id, version, config_hash, prompt_version, created_at
-            FROM writer_policy_versions
+            FROM {table}
             WHERE edition_id = %s AND config_hash = %s AND prompt_version = %s
             ORDER BY version DESC LIMIT 1
-            """,
-            (edition_id, config_hash, prompt_version),
-        )
-        row = await cursor.fetchone()
-        if row is not None:
-            return WriterPolicyVersion.from_row(row)
+        """  # noqa: S608 — table is allowlisted above; values are bound params
+        for _ in range(3):
+            cursor = await conn.execute(select_sql, (edition_id, config_hash, prompt_version))
+            row = await cursor.fetchone()
+            if row is not None:
+                return from_row(row)
 
-        cursor = await conn.execute(
-            "SELECT COALESCE(MAX(version), 0) + 1 FROM writer_policy_versions WHERE edition_id = %s",
-            (edition_id,),
-        )
-        ver_row = await cursor.fetchone()
-        next_ver = ver_row[0] if ver_row is not None else 1
+            cursor = await conn.execute(
+                f"SELECT COALESCE(MAX(version), 0) + 1 FROM {table} WHERE edition_id = %s",  # noqa: S608
+                (edition_id,),
+            )
+            ver_row = await cursor.fetchone()
+            next_ver = ver_row[0] if ver_row is not None else 1
 
-        cursor = await conn.execute(
-            """
-            INSERT INTO writer_policy_versions (edition_id, version, config_hash, prompt_version)
-            VALUES (%s, %s, %s, %s)
-            RETURNING id, edition_id, version, config_hash, prompt_version, created_at
-            """,
-            (edition_id, next_ver, config_hash, prompt_version),
-        )
-        res_row = await cursor.fetchone()
-        if res_row is None:
-            raise RuntimeError("Failed to insert writer_policy_version")
-        return WriterPolicyVersion.from_row(res_row)
+            try:
+                insert_sql = f"""
+                    INSERT INTO {table} (edition_id, version, config_hash, prompt_version)
+                    VALUES (%s, %s, %s, %s)
+                    RETURNING id, edition_id, version, config_hash, prompt_version, created_at
+                    """  # noqa: S608 — table is allowlisted above; values are bound params
+                cursor = await conn.execute(
+                    insert_sql, (edition_id, next_ver, config_hash, prompt_version)
+                )
+                res_row = await cursor.fetchone()
+                if res_row is None:
+                    raise RuntimeError(f"Failed to insert {table} row")
+                return from_row(res_row)
+            except psycopg.errors.UniqueViolation:
+                continue
+        raise RuntimeError(f"could not resolve current policy in {table} after race retries")
 
 
 class PublicationRepository:
@@ -320,7 +309,9 @@ class PublicationRepository:
                     ), 0
                 ) AS source_count
             FROM latest_revs lr
+            JOIN stories s ON s.id = lr.story_id
             WHERE lr.current_state NOT IN ('invalid', 'archived', 'rejected')
+              AND s.lifecycle_state <> 'archived'
             ORDER BY lr.revision_created_at DESC, lr.story_id ASC
             """,
             (edition_id, snapshot_at, snapshot_at, snapshot_at, snapshot_at, snapshot_at),
@@ -675,6 +666,36 @@ class PublicationRepository:
         )
         row = await cursor.fetchone()
         return Publication.from_row(row) if row is not None else None
+
+    async def get_latest_delivered_digest_text(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+    ) -> str | None:
+        """Text of the newest successfully delivered telegram_channel payload
+        belonging to a digest publication of the edition, or None."""
+        cursor = await conn.execute(
+            """
+            SELECT pay.rendered_content ->> 'text'
+            FROM publications p
+            JOIN publication_runs pr ON p.publication_run_id = pr.id
+            JOIN publication_delivery_payloads pay ON pay.publication_id = p.id
+            JOIN delivery_destinations d ON pay.destination_id = d.id
+            JOIN publication_deliveries del ON del.payload_id = pay.id
+            WHERE pr.edition_id = %s
+              AND p.publication_type = 'digest_grouped'
+              AND d.platform = 'telegram_channel'
+              AND del.status = 'succeeded'
+            ORDER BY p.created_at DESC, pay.id ASC
+            LIMIT 1
+            """,
+            (edition_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None or row[0] is None:
+            return None
+        return str(row[0])
 
 
 class DeliveryRepository:

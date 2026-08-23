@@ -53,6 +53,7 @@ class ImportReport:
     total_scanned: int = 0
     items_created: int = 0
     revisions_created: int = 0
+    revisions_skipped: int = 0
     already_imported: int = 0
     errors: int = 0
 
@@ -206,7 +207,35 @@ class LegacyMessageImporter:
             if is_new_item:
                 report.items_created += 1
 
-            # 3. Insert revision
+            # Skip duplicate legacy rows for the same message when the newest
+            # revision already carries identical content: re-running the
+            # importer must not pile up no-op revisions. The row is still
+            # marked imported, pointing at the existing revision.
+            cur = await conn.execute(
+                """
+                SELECT id, content_hash FROM source_item_revisions
+                WHERE source_item_id = %s
+                ORDER BY revision_no DESC
+                LIMIT 1
+                """,
+                (item_id,),
+            )
+            latest_rev_row = await cur.fetchone()
+            if latest_rev_row is not None and latest_rev_row[1] == content_hash:
+                report.revisions_skipped += 1
+                await conn.execute(
+                    """
+                    INSERT INTO legacy_imported_messages (
+                        legacy_message_id, source_item_id, source_item_revision_id,
+                        temporal_fidelity, imported_at
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (msg_id, item_id, latest_rev_row[0], temporal_fidelity, now),
+                )
+                return
+
+            # Insert revision
             cur = await conn.execute(
                 """
                 SELECT COALESCE(MAX(revision_no), 0) + 1 FROM source_item_revisions WHERE source_item_id = %s

@@ -31,14 +31,14 @@ from src.processing.story_matching import (
     StoryMatchingService,
     StoryUpdateProposal,
 )
-from src.processing.verification import VerificationService
+from src.processing.verification import VerificationPolicyService, VerificationService
 from src.repositories.claims import (
     ClaimExtractionPolicyRepository,
     ClaimExtractionRunRepository,
     ClaimRepository,
 )
 from src.repositories.embeddings import PURPOSE_CLAIM_QUERY, EmbeddingRepository
-from src.repositories.evidence import EvidenceClusterRepository
+from src.repositories.evidence import EvidenceClusterRepository, VerificationPolicyRepository
 from src.repositories.places import (
     PlaceRepository,
     PlaceResolutionRunRepository,
@@ -507,7 +507,12 @@ class TestKnowledgePipelineE2E:
 
         # Run verification service
         ver_service = VerificationService(uow=uow)
-        ver_assessments = await ver_service.assess(run=ev_run, clusters=clusters)
+        ver_policy = await VerificationPolicyService(VerificationPolicyRepository()).ensure_current(
+            conn, edition_id=edition.id
+        )
+        ver_assessments = await ver_service.assess(
+            run=ev_run, clusters=clusters, policy_id=ver_policy.id
+        )
 
         assert len(ver_assessments) >= 1
         # Contradiction/correction detected -> disputed state without publication gate

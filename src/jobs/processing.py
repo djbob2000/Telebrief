@@ -821,7 +821,7 @@ async def backfill_evidence_assessments(
             WHERE s.edition_id = %s
               AND (
                   s.lifecycle_state IN ('active', 'reopened')
-                  OR (s.lifecycle_state = 'resolved' AND s.created_at >= now() - interval '30 days')
+                  OR (s.lifecycle_state = 'resolved' AND s.created_at >= now() - make_interval(days => %s))
               )
               AND s.current_revision_id IS NOT NULL
               AND NOT EXISTS (
@@ -832,7 +832,7 @@ async def backfill_evidence_assessments(
               )
             LIMIT %s
             """,
-            (edition_id, policy_id, batch_size),
+            (edition_id, RESOLVED_STORY_LOOKBACK_DAYS, policy_id, batch_size),
         )
         stories_to_queue = await cursor.fetchall()
         for story_id, revision_id in stories_to_queue:
@@ -851,3 +851,7 @@ async def backfill_evidence_assessments(
 
 
 backfill_evidence = backfill_evidence_assessments
+
+# Stories resolved longer than this are considered settled; backfill targets
+# active/reopened work plus recently resolved stories only.
+RESOLVED_STORY_LOOKBACK_DAYS = 30

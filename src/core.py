@@ -1,5 +1,11 @@
 """
-Core digest generation function.
+Core digest/article entry points.
+
+Since the Plan 4 cutover this module is a thin compatibility facade around
+the durable publication pipeline (:mod:`src.publication.facade`): scheduled,
+bot, MCP, and CLI callers request a ``PublicationRun`` over frozen knowledge
+and the Procrastinate worker performs selection, generation, and delivery.
+No function here collects from live providers or instantiates a Collector.
 """
 
 import asyncio
@@ -11,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from src.collector import Message, MessageCollector
+from src.collector import Message
 from src.config_loader import ChannelConfig, Config
 from src.extensions.loader import load_class
 from src.formatter import DigestFormatter
@@ -20,7 +26,6 @@ from src.image_generator import NewsImageGenerator
 from src.ingestion.reader import SourceRevisionReader
 from src.ingestion.repository import IngestionRepository
 from src.runtime import get_runtime
-from src.sender import DigestSender
 from src.summarizer import ERROR_SUMMARY_PREFIX, Summarizer
 from src.ui_strings import get_ui_strings
 
@@ -30,9 +35,11 @@ _DIGEST_CACHE_PATH = Path("data/last_digest.json")
 MAX_DIGEST_HOURS = 168  # one week; guards against a caller asking for a year of history
 MAX_CHANNEL_MESSAGES = 5000  # safety ceiling; normal collection is bounded by the time window
 
-# ponytail: one process-wide lock, not per-source; the scheduler, the bot and the
-# MCP server all build digests, and concurrent runs fight over the single
-# Telethon session file. Per-channel locking only if generation becomes a bottleneck.
+DIGEST_PUBLICATION_TYPE = "digest_grouped"
+ARTICLE_PUBLICATION_TYPE = "daily_article"
+
+# ponytail: one process-wide lock for the synchronous compatibility builders;
+# the MCP server and CLI preview can both run them concurrently.
 _digest_lock = asyncio.Lock()
 
 
@@ -104,26 +111,12 @@ async def _apply_configured_filters(
     return filtered
 
 
-async def _collect_messages_legacy_raw(config: Config, logger: logging.Logger, hours: int) -> dict:
-    """Collect messages live over Telethon (legacy path, unchanged behavior)."""
-    logger.info("Collecting messages from Telegram")
-    collector = MessageCollector(config, logger)
-    await collector.connect()
-    try:
-        messages_by_channel = await collector.fetch_messages(hours=hours)
-    finally:
-        await collector.disconnect()
-    total = sum(len(msgs) for msgs in messages_by_channel.values())
-    logger.info(f"Collected {total} messages from {len(messages_by_channel)} channels")
-    return messages_by_channel
-
-
 async def _read_persistent_messages(config: Config, hours: int) -> dict:
     """Read digest inputs from the persisted source history (no live Telegram).
 
-    DB failures propagate explicitly on purpose: silently falling back to a
-    live Telegram read would violate persistent-ingestion semantics, since
-    the digest must reflect what the ingestion path actually persisted.
+    DB failures propagate explicitly on purpose: there is no live Telegram
+    fallback, since the digest must reflect what the ingestion path actually
+    persisted.
     """
     runtime = get_runtime()
     reader = SourceRevisionReader(runtime.uow, IngestionRepository())
@@ -136,18 +129,10 @@ async def _read_persistent_messages(config: Config, hours: int) -> dict:
 
 
 async def _collect_messages(config: Config, logger: logging.Logger, hours: int) -> dict:
-    """Collect digest inputs from PostgreSQL history or live Telegram.
-
-    With ``settings.persistent_ingestion`` enabled this is a pure DB-read
-    compatibility adapter over :class:`SourceRevisionReader` and Telethon is
-    never invoked; otherwise the legacy collector path runs unchanged.
-    """
-    if config.settings.persistent_ingestion or config.database.enabled:
-        messages_by_channel = await _read_persistent_messages(config, hours)
-        total = sum(len(msgs) for msgs in messages_by_channel.values())
-        logger.info(f"Read {total} persisted messages from {len(messages_by_channel)} sources")
-    else:
-        messages_by_channel = await _collect_messages_legacy_raw(config, logger, hours)
+    """Collect digest inputs from PostgreSQL history (the only source)."""
+    messages_by_channel = await _read_persistent_messages(config, hours)
+    total = sum(len(msgs) for msgs in messages_by_channel.values())
+    logger.info(f"Read {total} persisted messages from {len(messages_by_channel)} sources")
 
     messages_by_channel = await _apply_configured_filters(messages_by_channel, config, logger)
     return messages_by_channel
@@ -273,13 +258,47 @@ def _write_last_digest(text: str, hours: int, logger: logging.Logger) -> None:
         logger.error(f"Caching digest failed ({type(e).__name__}), digest continues")
 
 
-def read_last_digest() -> Optional[dict]:
-    """Return the cached digest payload, or None if absent or unreadable."""
+def _read_last_digest_file() -> Optional[dict]:
+    """File-backed compatibility cache reader (legacy deployments/tests)."""
     try:
         data = json.loads(_DIGEST_CACHE_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) and isinstance(data.get("text"), str) else None
+
+
+async def read_last_digest_async() -> Optional[dict]:
+    """Latest successfully delivered digest from PostgreSQL, else file cache.
+
+    The durable pipeline records every delivered digest as an immutable
+    Publication with a telegram_channel payload; that history — not a local
+    file — is the source of truth once the database is enabled.
+    """
+    try:
+        runtime = get_runtime()
+    except RuntimeError:
+        return _read_last_digest_file()
+    from src.publication.repository import PublicationRepository
+    from src.repositories.editions import EditionRepository
+
+    try:
+        async with runtime.uow.transaction() as conn:
+            edition = await EditionRepository().get_by_slug(conn, "berdyansk")
+            if edition is None:
+                return _read_last_digest_file()
+            text = await PublicationRepository().get_latest_delivered_digest_text(
+                conn, edition_id=edition.id
+            )
+    except Exception:
+        return _read_last_digest_file()
+    if not text:
+        return _read_last_digest_file()
+    return {"generated_at": None, "hours": None, "text": text, "source": "publication"}
+
+
+def read_last_digest() -> Optional[dict]:
+    """Compatibility facade: file cache only (see :func:`read_last_digest_async`)."""
+    return _read_last_digest_file()
 
 
 async def _build_grouped_parts(
@@ -421,23 +440,8 @@ async def collect_channel_messages(
     channel_cfg = _resolve_channel(config, channel)
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-    if config.settings.persistent_ingestion or config.database.enabled:
-        messages = await _read_persistent_channel_messages(config, logger, channel_cfg, since)
-        return messages[-limit:], "persistent"
-
-    # ponytail: same process-wide lock as digest builds — one Telethon session file
-    async with _digest_lock:
-        collector = MessageCollector(config, logger)
-        await collector.connect()
-        try:
-            messages = await collector.fetch_channel_messages(channel_cfg, since)
-        finally:
-            await collector.disconnect()
-
-    # filters run outside the lock: they are user code and may block on the network
-    messages = await _apply_filters(channel_cfg, messages, config, logger)
-    logger.info(f"Fetched {len(messages)} live messages for {channel_cfg.name!r}")
-    return messages[-limit:], "telegram"
+    messages = await _read_persistent_channel_messages(config, logger, channel_cfg, since)
+    return messages[-limit:], "persistent"
 
 
 async def _read_persistent_channel_messages(
@@ -482,43 +486,42 @@ async def generate_and_send_digest(
     hours: int = 24,
     user_id: Optional[int] = None,
 ) -> bool:
-    """
-    Build the digest according to the configured digest_mode and send it to Telegram.
+    """Request a durable digest publication over current frozen knowledge.
+
+    Compatibility facade for bot/MCP/CLI callers (Plan 4 Task 8): the run is
+    created, candidates sealed, and the selection -> generation -> delivery
+    chain deferred onto the Procrastinate ``publication`` queue. The worker
+    performs generation and delivery asynchronously; nothing is collected or
+    generated inline here.
 
     Args:
         config: Application configuration
         logger: Logger instance
-        hours: Lookback period
-        user_id: Target user ID
+        hours: Retained for call-site compatibility; the persistent pipeline
+            derives its window from the sealed snapshot, not this value.
+        user_id: Unused delivery detail; destinations are resolved by the
+            delivery service.
 
     Returns:
-        True if successful
+        True when the publication request was durably queued.
 
     Raises:
+        PublicationConfigError: database/persistent_ingestion not enabled.
         ValueError: If hours is outside [1, MAX_DIGEST_HOURS]
     """
     validate_hours(hours)
-
+    del user_id  # delivery destinations come from configuration, not callers
     try:
-        built = await _build_digest_parts(config, logger, hours)
-        if built is None:
-            return False
-        parts, summary_message, rich_document = built
+        from src.publication.facade import request_publication
 
-        sender = DigestSender(config, logger)
-        if config.settings.auto_cleanup_old_digests:
-            await sender.cleanup_old_digests(user_id)
-
-        if rich_document is not None:
-            return await sender.send_rich_digest(
-                rich_document,
-                user_id=user_id,
-                fallback_text=_join_parts(parts, summary_message),
-            )
-        return await sender.send_channel_messages_with_tracking(parts, summary_message, user_id)
-
+        result = await request_publication(
+            DIGEST_PUBLICATION_TYPE,
+            config=config,
+        )
+        logger.info("digest publication requested: run %s (%s)", result.run_id, result.request_key)
+        return True
     except Exception as e:
-        logger.error(f"Digest generation failed: {e}", exc_info=True)
+        logger.error(f"Digest publication request failed: {e}", exc_info=True)
         return False
 
 
@@ -540,68 +543,6 @@ def _build_fallback_article(
     return title, lead, markdown
 
 
-async def _extract_candidate_photo_bytes(
-    messages_by_channel: dict[str, list[Message]],
-    config: Config,
-    logger: logging.Logger,
-) -> Optional[bytes]:
-    """Find the most relevant news photo from collected messages and download its bytes."""
-    if config.settings.persistent_ingestion:
-        # Live Telethon is reserved for the collector under persistent mode;
-        # the article proceeds without reference photo bytes (fail-open).
-        logger.info("Persistent ingestion mode: skipping Telegram candidate photo download")
-        return None
-
-    candidate_msg: Optional[Message] = None
-    photo_keywords = {"photo", "фото", "foto"}
-    for msgs in messages_by_channel.values():
-        for m in msgs:
-            if getattr(m, "has_media", False) is True:
-                media_type = getattr(m, "media_type", "") or ""
-                if isinstance(media_type, str) and any(
-                    k in media_type.lower() for k in photo_keywords
-                ):
-                    m_id = getattr(m, "message_id", None)
-                    ch_id = getattr(m, "channel_id", None) or getattr(m, "channel_name", None)
-                    if isinstance(m_id, int) and (isinstance(ch_id, (int, str))):
-                        candidate_msg = m
-                        break
-        if candidate_msg:
-            break
-
-    if not candidate_msg or candidate_msg.message_id is None:
-        return None
-
-    target_channel = getattr(candidate_msg, "channel_id", None) or getattr(
-        candidate_msg, "channel_name", None
-    )
-    if not target_channel:
-        return None
-
-    final_msg_id: int = candidate_msg.message_id
-    try:
-        collector = MessageCollector(config, logger)
-        await collector.connect()
-        try:
-            photo_bytes = await collector.download_message_photo(
-                channel_identifier=target_channel,
-                message_id=final_msg_id,
-            )
-            if photo_bytes:
-                logger.info(
-                    "Retrieved source photo reference (%d bytes) from msg %s in channel %s",
-                    len(photo_bytes),
-                    candidate_msg.message_id,
-                    candidate_msg.channel_name,
-                )
-                return photo_bytes
-        finally:
-            await collector.disconnect()
-    except Exception as e:
-        logger.warning("Could not download candidate reference photo: %s", e)
-    return None
-
-
 async def generate_and_publish_article(
     config: Config,
     logger: logging.Logger,
@@ -609,35 +550,60 @@ async def generate_and_publish_article(
     user_id: Optional[int] = None,
     dry_run: bool = False,
 ) -> bool:
-    """Collect messages, generate long-form editorial article, publish to Telegra.ph,
+    """Request a durable editorial article publication (Plan 4 Task 8 facade).
 
-    and broadcast Instant View announcement to Telegram.
+    Without ``dry_run`` this is a thin wrapper over
+    :func:`src.publication.facade.request_publication`: the worker performs
+    generation and delivery asynchronously from frozen knowledge.
+
+    With ``dry_run=True`` a synchronous read-only preview is built from the
+    persisted source history instead — no live collection, no Telegraph page,
+    no Telegram send. The preview exists so CLI operators can inspect the
+    editorial material without producing a Publication.
 
     Args:
         config: Application configuration
         logger: Logger instance
-        hours: Lookback window in hours
-        user_id: Target user ID
-        dry_run: If True, generate and print/save article without publishing or sending
+        hours: Lookback window in hours (preview window; ignored by the
+            durable pipeline, which uses its sealed snapshot)
+        user_id: Unused delivery detail; kept for call-site compatibility.
+        dry_run: If True, generate and print/save a preview without publishing
 
     Returns:
-        True if generation and delivery succeeded, False otherwise
+        True when the request was queued (or preview produced), False otherwise
     """
     validate_hours(hours)
+    del user_id
     start_time = datetime.now(timezone.utc)
-    logger.info(
-        f"Starting evening editorial article workflow for last {hours} hours (dry_run={dry_run})"
-    )
+    logger.info(f"Starting editorial article workflow for last {hours} hours (dry_run={dry_run})")
 
+    if not dry_run:
+        try:
+            from src.publication.facade import request_publication
+
+            result = await request_publication(
+                ARTICLE_PUBLICATION_TYPE,
+                config=config,
+            )
+            logger.info(
+                "article publication requested: run %s (%s)",
+                result.run_id,
+                result.request_key,
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Article publication request failed: {e}", exc_info=True)
+            return False
+
+    # Dry-run preview: read-only generation over persisted history only.
     messages_by_channel = await _collect_messages(config, logger, hours)
     total_messages = sum(len(msgs) for msgs in messages_by_channel.values())
     if total_messages == 0:
-        logger.warning("No messages collected for article generation")
+        logger.warning("No persisted messages available for article preview")
         return False
 
     from src.article_generator import ArticleGenerator
     from src.editorial_fallback import NoSubstantiveMaterialError
-    from src.telegraph import TelegraphPublisher
 
     try:
         generator = ArticleGenerator(config, logger)
@@ -654,80 +620,46 @@ async def generate_and_publish_article(
                 messages_by_channel, config.channels
             )
 
-        # Fallback / preview local save
+        # Preview local save
         fallback_dir = Path(config.settings.article.fallback_save_dir)
         try:
             fallback_dir.mkdir(parents=True, exist_ok=True)
             now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d_%H-%M-%S")
-            fallback_file = (
-                fallback_dir / f"preview_{now_str}_editorial.md"
-                if dry_run
-                else fallback_dir / f"{now_str}_editorial.md"
-            )
+            fallback_file = fallback_dir / f"preview_{now_str}_editorial.md"
             fallback_file.write_text(markdown_body, encoding="utf-8")
             logger.info(f"Saved article copy to {fallback_file}")
         except Exception as e:
             logger.warning(f"Could not save local article backup: {e}")
 
-        # Check if any candidate photo is available in collected messages for Image-to-Image redraw
-        reference_image_bytes = await _extract_candidate_photo_bytes(
-            messages_by_channel, config, logger
-        )
-
-        # Generate editorial cover image
+        # Editorial cover image prompt (no reference photo bytes under
+        # persistent ingestion; live Telethon downloads are retired).
         image_generator = NewsImageGenerator(config, logger)
         image_prompt = await image_generator.generate_prompt(
             title=title,
             lead=lead,
             article_text=markdown_body,
-            has_reference_image=reference_image_bytes is not None,
-        )
-        photo_path = await image_generator.generate_image(
-            prompt=image_prompt,
-            reference_image_bytes=reference_image_bytes,
+            has_reference_image=False,
         )
 
-        if dry_run:
-            print("\n" + "=" * 70)
-            print("📰 ТЕСТОВОЕ ПРЕВЬЮ СТАТЬИ (DRY-RUN)")
-            print("=" * 70)
-            print(f"Заголовок: {title}")
-            print(f"Лид: {lead}\n")
-            print(f"Сгенерированный промпт для иллюстрации: {image_prompt}")
-            print(f"Файл иллюстрации: {photo_path or 'Не сгенерирован (fallback)'}\n")
-            print("--- ПОЛНЫЙ ТЕКСТ СТАТЬИ ДЛЯ TELEGRA.PH ---")
-            print(markdown_body)
-            print("\n--- КАК ЭТО БУДЕТ ВЫГЛЯДЕТЬ В TELEGRAM-КАНАЛЕ (ФОТО-ПОСТ) ---")
-            lead_part = f"{lead.strip()}\n\n" if lead.strip() else ""
-            mock_url = "https://telegra.ph/Primer-stati-08-14"
-            print(f"[ ФОТО: {photo_path or 'Иллюстрация к новости'} ]")
-            print(f"📰 *{title.strip()}*\n\n{lead_part}")
-            print(f"[ КНОПКА: ⚡️ Читать статью полностью -> {mock_url} ]")
-            print("=" * 70 + "\n")
-            return True
+        print("\n" + "=" * 70)
+        print("📰 ТЕСТОВОЕ ПРЕВЬЮ СТАТЬИ (DRY-RUN)")
+        print("=" * 70)
+        print(f"Заголовок: {title}")
+        print(f"Лид: {lead}\n")
+        print(f"Сгенерированный промпт для иллюстрации: {image_prompt}\n")
+        print("--- ПОЛНЫЙ ТЕКСТ СТАТЬИ ДЛЯ TELEGRA.PH ---")
+        print(markdown_body)
+        print("\n--- КАК ЭТО БУДЕТ ВЫГЛЯДЕТЬ В TELEGRAM-КАНАЛЕ (ФОТО-ПОСТ) ---")
+        lead_part = f"{lead.strip()}\n\n" if lead.strip() else ""
+        mock_url = "https://telegra.ph/Primer-stati-08-14"
+        print("[ ФОТО: Иллюстрация к новости ]")
+        print(f"📰 *{title.strip()}*\n\n{lead_part}")
+        print(f"[ КНОПКА: ⚡️ Читать статью полностью -> {mock_url} ]")
+        print("=" * 70 + "\n")
 
-        publisher = TelegraphPublisher(
-            access_token=config.settings.article.telegraph_access_token,
-            logger=logger,
-        )
-        telegraph_url = await publisher.create_page(
-            title=title,
-            content_markdown=markdown_body,
-            author_name=config.settings.article.author_name,
-        )
-        logger.info(f"Published article to Telegra.ph: {telegraph_url}")
-
-        sender = DigestSender(config, logger)
-        success = await sender.send_article_with_photo(
-            title=title,
-            lead=lead,
-            telegraph_url=telegraph_url,
-            photo_path=photo_path,
-            user_id=user_id,
-        )
         duration = (datetime.now(timezone.utc) - start_time).total_seconds()
-        logger.info(f"Article workflow finished in {duration:.1f}s (success={success})")
-        return success
+        logger.info(f"Article preview finished in {duration:.1f}s")
+        return True
     except Exception as e:
-        logger.error(f"Article generation/publishing failed: {e}", exc_info=True)
+        logger.error(f"Article preview failed: {e}", exc_info=True)
         return False

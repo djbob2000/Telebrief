@@ -90,8 +90,9 @@ class EvidenceCorrelator:
         contradicting_count = 0
 
         for claim in claims:
-            role = claim.metadata.get("effective_source_role") or "source"
-            unique_sources.add(f"{role}_{claim.id}")
+            # Independent-source proxy: distinct source item revisions, not
+            # claims. Several claims from one revision are one observation.
+            unique_sources.add(f"rev:{claim.source_item_revision_id}")
             if claim.id in contradicting_claim_ids and len(claims) > 1 and members:
                 stance = "CONTRADICTS"
                 contradicting_count += 1

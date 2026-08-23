@@ -130,6 +130,54 @@ def parse_comment_from_data(
     return item, assets
 
 
+_SORT_LABELS = {
+    "newest": ("Newest", "Сначала новые", "Новые"),
+    "all": ("Most relevant", "Все комментарии", "Most relevant"),
+}
+
+
+async def _select_comment_sort(page: Any, requested_sort: str) -> bool:
+    """Try to switch the comments section to the requested sort order.
+
+    Best-effort UI interaction: returns True only when a matching sort entry
+    was actually clicked, so callers never record an effective_sort they did
+    not select.
+    """
+    labels = _SORT_LABELS.get(requested_sort)
+    if not labels:
+        return False
+    for label in labels:
+        try:
+            candidate = page.locator(f"[role='feed'] >> text={label}").first
+            if await candidate.count() == 0:
+                continue
+            await candidate.click(timeout=2000)
+            return True
+        except Exception as exc:
+            logger.debug("sort selection %r not clickable: %s", label, exc)
+            continue
+    return False
+
+
+async def _comment_nesting_depth(node: Any) -> int:
+    """Depth of the comment within nested comment containers.
+
+    0 means a top-level comment; 1+ means a reply nested inside another
+    comment block (Facebook nests reply containers inside their parent).
+    Counts every ``role='article'`` container from the node to the document
+    root and subtracts the node's own container.
+    """
+    try:
+        depth = await node.evaluate(
+            "(el) => { let count = 0, n = el;"
+            " while (n) { if (n.getAttribute && n.getAttribute('role') === 'article') count++;"
+            " n = n.parentElement; } return Math.max(count - 1, 0); }"
+        )
+        return int(depth)
+    except Exception:
+        return 0
+
+
 class FacebookCommentCollector:
     """Collector traversing Facebook comment threads with bounded pagination."""
 
@@ -158,15 +206,24 @@ class FacebookCommentCollector:
         started_at = dt.datetime.now(dt.timezone.utc)
         start_mono = time.monotonic()
 
+        requested_sort = "all" if mode == "deep" else "newest"
         batch = CommentCollectionBatch(
             source_id=source.id,
             post_item_id=post_item_id,
-            requested_sort="all" if mode == "deep" else "newest",
+            requested_sort=requested_sort,
             started_at=started_at,
         )
+        # Only claim the effective sort when the UI selection actually
+        # succeeded; otherwise the platform default is unknown to us.
+        batch.effective_sort = "platform_default"
+        if await _select_comment_sort(page, requested_sort):
+            batch.effective_sort = f"{requested_sort}_selected"
 
         page_count = 0
         seen_comment_ids: set[str] = set()
+        # Depth -> comment id stack for reply threading: Facebook nests reply
+        # containers inside their parent comment block.
+        depth_to_cid: dict[int, str] = {}
 
         while True:
             # Check limits
@@ -186,12 +243,12 @@ class FacebookCommentCollector:
                 break
 
             page_count += 1
+            new_found_this_page = False
 
             # Read visible comment blocks
             comment_nodes = await page.query_selector_all(
                 "div[role='article'][aria-label*='comment' i], div[dir='auto']"
             )
-            new_found = False
             for node in comment_nodes:
                 try:
                     text = (await node.inner_text()).strip()
@@ -216,7 +273,15 @@ class FacebookCommentCollector:
                         continue
 
                     seen_comment_ids.add(cid)
-                    new_found = True
+                    new_found_this_page = True
+
+                    # Threading: the nearest outer comment container wins as parent.
+                    depth = await _comment_nesting_depth(node)
+                    parent_comment_id = depth_to_cid.get(depth - 1) if depth > 0 else None
+                    if depth >= 0:
+                        depth_to_cid[depth] = cid
+                        for deeper in [d for d in depth_to_cid if d > depth]:
+                            del depth_to_cid[deeper]
 
                     item, assets = parse_comment_from_data(
                         source=source,
@@ -224,6 +289,7 @@ class FacebookCommentCollector:
                         comment_id=cid,
                         text=text,
                         published_at=None,
+                        parent_comment_id=parent_comment_id,
                     )
                     batch.items.append(item)
                     batch.assets.extend(assets)
@@ -243,13 +309,19 @@ class FacebookCommentCollector:
                 "div[role='button']:has-text('comments'), span:has-text('View more')"
             )
             if not more_buttons:
-                # No more buttons visible
-                if new_found:
+                # No further pagination affordance is visible. That alone does
+                # NOT prove completeness under platform-curated ("Most
+                # relevant") ordering: complete requires that this full pass
+                # surfaced nothing new after at least one expansion round.
+                if not new_found_this_page and page_count > 1:
                     batch.completeness = "complete"
                     batch.stop_reason = "exhausted"
+                elif not new_found_this_page and page_count == 1:
+                    batch.completeness = "unknown"
+                    batch.stop_reason = "platform_behavior"
                 else:
-                    batch.completeness = "complete" if page_count > 1 else "unknown"
-                    batch.stop_reason = "exhausted" if page_count > 1 else "platform_behavior"
+                    batch.completeness = "unknown"
+                    batch.stop_reason = "no_more_buttons_with_new_content"
                 break
 
             try:
@@ -304,7 +376,7 @@ class FacebookCommentRefreshService:
             ingestion = await self.ingestion_service.ingest_batch_in_transaction(
                 conn,
                 source_id=source_id,
-                trigger=CollectionTrigger.SCHEDULED,
+                trigger=CollectionTrigger.ENRICHMENT,
                 batch=batch.as_collection_batch(),
             )
             await self.fb_repo.update_comment_state(

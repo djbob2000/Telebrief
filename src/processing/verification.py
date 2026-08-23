@@ -98,7 +98,11 @@ class VerificationService:
         clusters: list[EvidenceCluster],
         policy_id: int | None = None,
     ) -> list[VerificationAssessment]:
-        active_policy_id = policy_id or 1
+        if policy_id is None:
+            # Verification rows are policy-bound; guessing an id would corrupt
+            # the audit trail. Callers resolve the policy first.
+            raise ValueError("verification assess() requires an explicit policy_id")
+        active_policy_id = policy_id
         created_assessments: list[VerificationAssessment] = []
         now = dt.datetime.now(dt.timezone.utc)
 
@@ -178,7 +182,10 @@ class VerificationService:
                     run=run, persisted_count=len(assessments_to_insert), degraded=None
                 )
         except Exception as err:
-            logger.warning("verification unavailable for run %s: %s", run_id, err)
+            # Fail-open keeps the pipeline permissive, but the traceback must
+            # surface: a swallowed programming error would otherwise look like
+            # routine provider unavailability.
+            logger.warning("verification unavailable for run %s: %s", run_id, err, exc_info=True)
             return VerificationRunResult(degraded="verification_unavailable")
 
     def _evaluate_cluster(self, cluster: EvidenceCluster) -> tuple[str, str | None, str]:

@@ -83,7 +83,7 @@ async def test_get_digest_rejects_out_of_range_hours(server, hours):
 @pytest.mark.asyncio
 async def test_get_last_digest_without_cache(server):
     """With no cached digest the tool points the model at get_digest."""
-    with patch("src.mcp_server.read_last_digest", return_value=None):
+    with patch("src.mcp_server.read_last_digest_async", new_callable=AsyncMock, return_value=None):
         result = await server.call_tool("get_last_digest", {})
 
         assert "get_digest" in _text(result)
@@ -98,7 +98,9 @@ async def test_get_last_digest_includes_age(server):
         "hours": 24,
         "text": "Header\n\nGroup msg",
     }
-    with patch("src.mcp_server.read_last_digest", return_value=cached):
+    with patch(
+        "src.mcp_server.read_last_digest_async", new_callable=AsyncMock, return_value=cached
+    ):
         result = await server.call_tool("get_last_digest", {})
 
         text = _text(result)

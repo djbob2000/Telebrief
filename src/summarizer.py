@@ -383,19 +383,27 @@ Input line format: `N. [HH:MM] Sender: Text | URL`
 
 
 async def main():
-    """Test summarizer."""
-    from src.collector import MessageCollector
+    """Test summarizer against persisted source history."""
     from src.config_loader import load_config
+    from src.ingestion.reader import SourceRevisionReader
+    from src.ingestion.repository import IngestionRepository
+    from src.runtime import get_runtime
     from src.utils import setup_logging
 
     config = load_config()
     logger = setup_logging(config.log_level)
 
-    # Collect messages
-    collector = MessageCollector(config, logger)
-    await collector.connect()
-    messages = await collector.fetch_messages(hours=24)
-    await collector.disconnect()
+    # Read digest inputs from the persisted source history (no live Telegram)
+    runtime = get_runtime()
+    reader = SourceRevisionReader(runtime.uow, IngestionRepository())
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    messages = await reader.read_telegram_messages(
+        edition_slug="berdyansk",
+        since=now - timedelta(hours=24),
+        until=now,
+    )
 
     # Summarize
     summarizer = Summarizer(config, logger)

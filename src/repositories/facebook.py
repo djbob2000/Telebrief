@@ -367,12 +367,21 @@ class FacebookRepository:
             """
             SELECT id, source_id, artifact_type, storage_path, expires_at, metadata, created_at
             FROM collector_artifacts
-            WHERE expires_at <= %s
+            WHERE expires_at <= %s AND deleted_at IS NULL
             ORDER BY id ASC
             """,
             (cutoff,),
         )
         return [CollectorArtifact.from_row(row) for row in await cursor.fetchall()]
+
+    async def mark_artifact_deleted(
+        self, conn: psycopg.AsyncConnection, artifact_id: int, deleted_at: dt.datetime
+    ) -> None:
+        """Preserve provenance metadata; only the physical file is removed."""
+        await conn.execute(
+            "UPDATE collector_artifacts SET deleted_at = %s WHERE id = %s",
+            (deleted_at, artifact_id),
+        )
 
     async def delete_artifact(self, conn: psycopg.AsyncConnection, artifact_id: int) -> None:
         await conn.execute("DELETE FROM collector_artifacts WHERE id = %s", (artifact_id,))

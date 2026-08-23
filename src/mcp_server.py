@@ -18,7 +18,7 @@ from src.core import (
     MAX_DIGEST_HOURS,
     build_digest,
     collect_channel_messages,
-    read_last_digest,
+    read_last_digest_async,
     validate_hours,
 )
 
@@ -83,7 +83,7 @@ def build_server(config: Config, logger: logging.Logger) -> MCPServer:
         Instant and free. The digest may be stale — its generation time is included
         in the response, so check whether it is recent enough before relying on it.
         """
-        cached = read_last_digest()
+        cached = await read_last_digest_async()
         if cached is None:
             return "No digest has been generated yet. Use get_digest to build one."
         return (

@@ -550,7 +550,10 @@ class RelevanceService:
         evaluate path): run completion, observation rows and the child decision
         must land atomically, and the consultation payload/output here are
         strictly bounded summaries. The child is an immutable new row pointing
-        at ``parent_decision_id``; the parent is never modified.
+        at ``parent_decision_id``; the parent is never modified. Known
+        tradeoff: the pooled connection is held across the AI call, so
+        ``pool.max_size`` bounds how many vision follow-ups can run
+        concurrently — keep it above the worker concurrency.
         """
         revision = await self._ingestion_repo.get_revision(conn, decision.source_item_revision_id)
         if revision is None:

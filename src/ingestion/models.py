@@ -37,6 +37,7 @@ class CollectionTrigger(str, Enum):
     PRE_PUBLISH = "pre_publish"
     MANUAL = "manual"
     BACKFILL = "backfill"
+    ENRICHMENT = "enrichment"
 
 
 @dataclass(frozen=True)

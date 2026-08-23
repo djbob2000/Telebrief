@@ -56,6 +56,11 @@ DISPATCHER_TASK_NAME = "dispatch_due_sources"
 NORMAL_COLLECTION_PRIORITY = 0
 PRE_PUBLISH_PRIORITY = 100
 
+# Upper bound on relevance-triggered enrichment requests fanned out per
+# PRE_PUBLISH source scan; keeps a publication-lead refresh bounded on the
+# 1 GB/1 CPU host.
+PRE_PUBLISH_ENRICHMENT_LIMIT = 10
+
 DISPATCHER_QUEUEING_LOCK = "source-collection-dispatcher"
 
 # Bounded transient retry: max_attempts counts TOTAL executions (the gate is
@@ -169,7 +174,7 @@ async def scan_source(source_id: int, trigger: str) -> None:
         dispatcher = get_enrichment_dispatcher()
         async with runtime.uow.transaction() as conn:
             pre_reqs = await planner.pre_publish_requests(
-                conn, source_id, source.platform, limit=10
+                conn, source_id, source.platform, limit=PRE_PUBLISH_ENRICHMENT_LIMIT
             )
             for req in pre_reqs:
                 await dispatcher.defer(conn, req, priority=PRE_PUBLISH_PRIORITY)

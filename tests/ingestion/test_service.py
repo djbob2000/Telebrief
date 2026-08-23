@@ -146,6 +146,7 @@ def test_collection_trigger_values_match_run_trigger_contract():
         "pre_publish",
         "manual",
         "backfill",
+        "enrichment",
     }
 
 

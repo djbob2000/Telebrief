@@ -52,8 +52,12 @@ def ensure_owner_only_directory(path: Path) -> None:
     if os.name == "posix":
         try:
             os.chmod(path, 0o700)
-        except OSError:
-            pass
+        except OSError as exc:
+            # A profile directory wider than 0700 weakens credential storage;
+            # never continue silently.
+            logging.getLogger(__name__).warning(
+                "Could not chmod 0700 auth directory %s: %s", path, exc
+            )
 
 
 def classify_facebook_url_and_content(url: str, html_or_text: str = "") -> FacebookAuthState:

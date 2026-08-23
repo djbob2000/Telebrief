@@ -445,6 +445,7 @@ class TestVerificationHeuristicMapping:
         assessments = await verification_service.assess(
             run=_evidence_run(),
             clusters=[_cluster_row(9001)],
+            policy_id=1,
         )
 
         assert assessments[0].state == "reported"
@@ -459,10 +460,15 @@ class TestVerificationHeuristicMapping:
         service = VerificationService()
         run = _evidence_run()
 
-        disputed = await service.assess(run=run, clusters=[_cluster_row(1, contradicting=2)])
-        corroborated = await service.assess(run=run, clusters=[_cluster_row(2, supporting=3)])
+        disputed = await service.assess(
+            run=run, clusters=[_cluster_row(1, contradicting=2)], policy_id=1
+        )
+        corroborated = await service.assess(
+            run=run, clusters=[_cluster_row(2, supporting=3)], policy_id=1
+        )
         uncertain = await service.assess(
             run=run,
+            policy_id=1,
             clusters=[
                 EvidenceCluster(
                     id=3,
