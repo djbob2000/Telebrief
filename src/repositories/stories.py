@@ -13,6 +13,7 @@ meaningful change exists — no semantic judgment happens here.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Sequence
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -151,6 +152,38 @@ class StoryRepository:
         )
         row = await cursor.fetchone()
         return None if row is None else row[0]
+
+    async def get_revision(
+        self, conn: psycopg.AsyncConnection, revision_id: int
+    ) -> StoryRevision | None:
+        cursor = await conn.execute(
+            """
+            SELECT id, story_id, revision_no, title, summary, current_state,
+                semantic_text, content_hash, reason, created_at
+            FROM story_revisions WHERE id = %s
+            """,
+            (revision_id,),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else StoryRevision.from_row(row)
+
+    async def get_revisions(
+        self, conn: psycopg.AsyncConnection, revision_ids: Sequence[int]
+    ) -> list[StoryRevision]:
+        """Batch-load immutable revisions by id (deduplicated, ordered by id)."""
+        unique_ids = sorted(set(revision_ids))
+        if not unique_ids:
+            return []
+        cursor = await conn.execute(
+            """
+            SELECT id, story_id, revision_no, title, summary, current_state,
+                semantic_text, content_hash, reason, created_at
+            FROM story_revisions WHERE id = ANY(%s)
+            ORDER BY id
+            """,
+            (unique_ids,),
+        )
+        return [StoryRevision.from_row(row) async for row in cursor]
 
     async def _insert_story_shell(self, conn: psycopg.AsyncConnection, *, edition_id: int) -> int:
         """Insert a candidate story with a NULL pointer; the composite FK is

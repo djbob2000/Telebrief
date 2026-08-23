@@ -34,6 +34,11 @@ from src.processing.relevance import (
     RelevanceService,
     TransientProcessingError,
 )
+from src.processing.story_matching import (
+    StoryMatcher,
+    StoryMatchingService,
+    story_matching_execution_lock,
+)
 from src.processing.vision import (
     MetadataVisionProvider,
     VisionProviderUnavailable,
@@ -50,6 +55,10 @@ from src.repositories.relevance import (
     RelevancePolicyVersionRepository,
     VisionAnalysisRunRepository,
     VisionPolicyRepository,
+)
+from src.repositories.story_candidates import (
+    StoryMatchingPolicyVersionRepository,
+    StoryMatchingRunRepository,
 )
 from src.runtime import get_runtime
 
@@ -81,6 +90,13 @@ VISION_RETRY_STRATEGY = procrastinate.RetryStrategy(
 )
 
 CLAIM_RETRY_STRATEGY = procrastinate.RetryStrategy(
+    max_attempts=3,
+    wait=30,
+    linear_wait=60,
+    retry_exceptions=(TransientProcessingError,),
+)
+
+STORY_MATCH_RETRY_STRATEGY = procrastinate.RetryStrategy(
     max_attempts=3,
     wait=30,
     linear_wait=60,
@@ -160,7 +176,10 @@ def build_claim_extraction_service() -> ClaimExtractionService:
 
 
 def build_embedding_service() -> EmbeddingService:
-    """Assemble the semantic embedding service from the real config."""
+    """Assemble the semantic embedding service from the real config.
+
+    The story-matching handoff is enabled: every visible claim embedding
+    defers ``match_claim`` atomically with its policy resolution."""
     from src.config_loader import load_config
 
     config = load_config()
@@ -170,7 +189,21 @@ def build_embedding_service() -> EmbeddingService:
         logger=logger,
         timeout=embedding_config.timeout,
     )
-    return EmbeddingService(uow=get_runtime().uow, provider=provider)
+    return EmbeddingService(uow=get_runtime().uow, provider=provider, matching_handoff=True)
+
+
+def build_story_matching_service() -> StoryMatchingService:
+    """Assemble the AI-backed story matching orchestrator from the config."""
+    from src.config_loader import load_config
+
+    config = load_config()
+    matcher = StoryMatcher(
+        provider=_create_ai_provider(config),
+        model=config.settings.ai_model,
+        provider_name=config.settings.ai_provider,
+        reasoning_effort=config.settings.reasoning_effort,
+    )
+    return StoryMatchingService(uow=get_runtime().uow, matcher=matcher)
 
 
 @procrastinate_app.task(
@@ -451,6 +484,86 @@ async def embed_story_revision(story_revision_id: int, model: str, dimensions: i
     await build_embedding_service().embed_story_revision(
         story_revision_id, model=model, dimensions=dimensions
     )
+
+
+@procrastinate_app.task(
+    queue=PROCESSING_QUEUE,
+    retry=STORY_MATCH_RETRY_STRATEGY,
+    pass_context=True,
+)
+async def match_claim(context, claim_id: int, policy_id: int, claim_embedding_id: int):
+    """Match one claim (via its frozen embedding) into persistent stories.
+
+    The EXACT policy id and embedding id resolved at defer time are queued
+    as task arguments, so a retried execution keeps its original policy and
+    vector space even when newer versions become current. The per-edition
+    execution lock (story-matching-edition:<edition_id>, set at defer time)
+    serializes matching within one edition; duplicate executions converge on
+    the single canonical succeeded run via uq_story_match_success.
+
+    Retry math mirrors relevance/vision/claims: only the mapped provider
+    outage retries, and the final failed attempt marks the run
+    ``failed(provider_unavailable)`` through the guarded write that never
+    demotes a concurrently succeeded winner.
+    """
+    service = build_story_matching_service()
+    try:
+        return await service.run(claim_id, policy_id, claim_embedding_id)
+    except ProviderUnavailableError:
+        if context.job.attempts < 2:
+            raise TransientProcessingError("story matching provider unavailable") from None
+        return await service.finalize_provider_failure(claim_id, policy_id)
+
+
+async def backfill_story_matching(
+    edition_id: int,
+    policy_id: int,
+    after_claim_embedding_id: int | None = None,
+    *,
+    batch_size: int = BACKFILL_BATCH_SIZE,
+) -> int:
+    """Queue match_claim for compatible embeddings still owing this exact
+    policy a run.
+
+    Covers ClaimEmbeddings persisted before the live handoff existed (Task 5
+    without Task 7) plus any window where a run failed. Bounded slice
+    (batch_size + optional exclusive id cursor); safe to re-run since runs
+    with status succeeded/running/stale count as coverage — failed runs keep
+    their debt visible until a successful matching lands. Duplicate queued
+    jobs converge on the canonical succeeded run.
+    """
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        policy = await StoryMatchingPolicyVersionRepository().get(conn, policy_id)
+        if policy is None or policy.edition_id != edition_id:
+            raise ValueError(
+                f"story matching policy {policy_id} does not belong to edition {edition_id}"
+            )
+        gaps = await StoryMatchingRunRepository().list_claim_embedding_gaps(
+            conn,
+            edition_id=edition_id,
+            policy_id=policy.id,
+            model=policy.embedding_model,
+            dimensions=policy.embedding_dimensions,
+            after_embedding_id=after_claim_embedding_id,
+            limit=batch_size,
+        )
+        for gap in gaps:
+            await match_claim.configure(
+                connection=conn,
+                lock=story_matching_execution_lock(edition_id),
+            ).defer_async(
+                claim_id=gap.claim_id,
+                policy_id=policy.id,
+                claim_embedding_id=gap.embedding_id,
+            )
+    logger.info(
+        "backfill_story_matching queued %d claims edition=%s policy=%s",
+        len(gaps),
+        edition_id,
+        policy_id,
+    )
+    return len(gaps)
 
 
 async def backfill_claim_embeddings(

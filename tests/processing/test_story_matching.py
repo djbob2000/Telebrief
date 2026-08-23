@@ -735,3 +735,841 @@ class TestStoryCandidateRetrieval:
         assert resolved_old.story_id not in by_story
         assert REASON_STATE in by_story[active_old.story_id].retrieval_reasons
         assert REASON_STATE in by_story[resolved_recent.story_id].retrieval_reasons
+
+
+# ---------------------------------------------------------------------------
+# Plan 3 Task 7B: matcher prompt/output contract + orchestrator + wiring
+# ---------------------------------------------------------------------------
+
+from src.domain.stories import StoryRevision as StoryRevisionRow  # noqa: E402
+from src.processing.embeddings import EmbeddingService  # noqa: E402
+from src.processing.story_matching import (  # noqa: E402
+    InvalidMatchResponse,
+    MatcherCandidateView,
+    MatchProposal,
+    StoryMatcher,
+    StoryMatchingService,
+)
+from src.repositories.claims import ClaimRepository  # noqa: E402
+from src.repositories.embeddings import PURPOSE_CLAIM_QUERY  # noqa: E402
+
+_CLAIM_REPO_B = ClaimRepository()
+
+
+async def _fetch_scalar(db, sql: str, params: tuple = ()):  # noqa: ANN001
+    cursor = await db.execute(sql, params)
+    return (await cursor.fetchone())[0]
+
+
+_FULL_ASSERTION = (
+    "Утверждение целиком: водоснабжение на улице Приморской, дом 14, "
+    "отсутствует вторые сутки после прорыва на вводе."
+)
+_CANDIDATE_SEMANTIC_A = (
+    "Полный смысл истории А: прорыв трубопровода на Приморской оставил "
+    "частный сектор без воды, бригада на месте."
+)
+_CANDIDATE_SEMANTIC_B = "Полный смысл истории Б: плановое отключение света в центре."
+
+
+def _claim_row(claim_id: int = 1, edition_id: int = 1) -> object:
+    return SimpleNamespace(
+        id=claim_id,
+        claim_extraction_run_id=1,
+        source_item_revision_id=1,
+        edition_id=edition_id,
+        assertion_text="raw",
+        normalized_assertion=_FULL_ASSERTION,
+        event_time_start=None,
+        event_time_end=None,
+        event_time_precision=None,
+        event_time_confidence=None,
+        event_time_original_text=None,
+        metadata={},
+        created_at=_T0,
+    )
+
+
+def _revision_row(revision_id: int, story_id: int, semantic_text: str) -> StoryRevisionRow:
+    return StoryRevisionRow(
+        id=revision_id,
+        story_id=story_id,
+        revision_no=1,
+        title="Заголовок истории А",
+        summary="Краткое содержание истории А.",
+        current_state="developing",
+        semantic_text=semantic_text,
+        content_hash=f"hash-{revision_id}",
+        reason=None,
+        created_at=_T0,
+    )
+
+
+class _CapturingProvider:
+    """AIProvider double that records chat_completion kwargs verbatim."""
+
+    def __init__(self, response: str):
+        self.response = response
+        self.calls: list[dict] = []
+
+    async def chat_completion(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.response
+
+
+@pytest.mark.postgres
+class TestStoryMatcherPromptContract:
+    async def test_prompt_carries_full_assertion_and_full_candidate_texts(self):
+        provider = _CapturingProvider('{"assignment": "NEW_STORY"}')
+        matcher = StoryMatcher(provider=provider, model="test-model")
+        claim = _claim_row()
+        views = [
+            MatcherCandidateView(
+                candidate=SimpleNamespace(
+                    story_id=11,
+                    story_revision_id=111,
+                    retrieval_reasons=frozenset({"retrieved_by_vector"}),
+                    vector_distance=0.03,
+                    lexical_score=None,
+                ),
+                revision=_revision_row(111, 11, _CANDIDATE_SEMANTIC_A),
+            ),
+            MatcherCandidateView(
+                candidate=SimpleNamespace(
+                    story_id=12,
+                    story_revision_id=122,
+                    retrieval_reasons=frozenset({"retrieved_by_lexical"}),
+                    vector_distance=None,
+                    lexical_score=0.42,
+                ),
+                revision=_revision_row(122, 12, _CANDIDATE_SEMANTIC_B),
+            ),
+        ]
+
+        proposal = await matcher.choose(claim, views)
+
+        assert proposal.assignment == "NEW_STORY"
+        assert len(provider.calls) == 1
+        user_content = provider.calls[0]["messages"][-1]["content"]
+        # The FULL normalized assertion reaches the model verbatim...
+        assert _FULL_ASSERTION in user_content
+        # ...and every candidate's complete texts too — never an isolated hit.
+        assert _CANDIDATE_SEMANTIC_A in user_content
+        assert _CANDIDATE_SEMANTIC_B in user_content
+        assert "Заголовок истории А" in user_content
+        assert "Краткое содержание истории А." in user_content
+        assert "developing" in user_content
+        # Retrieval provenance rides along as metadata only.
+        assert '"vector_distance": 0.03' in user_content
+        assert '"lexical_score": 0.42' in user_content
+        assert "retrieved_by_vector" in user_content
+
+    def test_from_dict_accepts_enum_only_assignments(self):
+        same = MatchProposal.from_dict(
+            {
+                "assignment": "SAME_STORY",
+                "target_story_id": 7,
+                "story_update": {"semantic_changed": False},
+                "confidence": 0.9,
+                "reason": "same pipe burst",
+            }
+        )
+        assert same.assignment == "SAME_STORY"
+        assert same.target_story_id == 7
+        assert same.story_update is not None and same.story_update.semantic_changed is False
+
+        fresh = MatchProposal.from_dict(
+            {
+                "assignment": "NEW_STORY",
+                "story_update": {
+                    "semantic_changed": True,
+                    "title": "Новая история",
+                    "current_state": "open",
+                    "semantic_text": "Целиком новый смысл.",
+                },
+                "relation_proposals": [{"to_story_id": 5, "relation_type": "CONSEQUENCE_OF"}],
+            }
+        )
+        assert fresh.target_story_id is None
+        assert fresh.story_update.semantic_text == "Целиком новый смысл."
+        assert fresh.relation_proposals[0].to_story_id == 5
+        assert fresh.relation_proposals[0].relation_type == "CONSEQUENCE_OF"
+
+    def test_from_dict_rejects_non_enum_assignment_and_targetless_same_story(self):
+        with pytest.raises(InvalidMatchResponse):
+            MatchProposal.from_dict({"assignment": "IRRELEVANT"})
+        with pytest.raises(InvalidMatchResponse):
+            MatchProposal.from_dict({})
+        with pytest.raises(InvalidMatchResponse):
+            MatchProposal.from_dict({"assignment": "SAME_STORY"})
+        with pytest.raises(InvalidMatchResponse):
+            MatchProposal.from_dict("not even a dict")
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator: three-boundary flow over the real database
+# ---------------------------------------------------------------------------
+
+
+async def _seed_claim_embedding(
+    uow, claim_id: int, *, model: str = _MODEL_A, dimensions: int = 2
+) -> int:
+    async with uow.transaction() as db:
+        embedding_id = await _EMBED_REPO.insert_claim_embedding(
+            db,
+            claim_id=claim_id,
+            embedding=[0.5] * dimensions,
+            model=model,
+            dimensions=dimensions,
+            purpose=PURPOSE_CLAIM_QUERY,
+            content_hash=f"h-claim-{claim_id}-{model}-{dimensions}",
+        )
+    assert embedding_id is not None
+    return embedding_id
+
+
+def _service(uow, matcher) -> StoryMatchingService:
+    return StoryMatchingService(uow=uow, matcher=matcher)
+
+
+class _FixedMatcher:
+    """Returns one validated proposal and records what it was shown."""
+
+    def __init__(self, payload: dict):
+        self.payload = payload
+        self.calls: list[tuple[object, list]] = []
+
+    async def choose(self, claim, views, *, edition_name=None):
+        del edition_name
+        self.calls.append((claim, list(views)))
+        return MatchProposal.from_dict(self.payload)
+
+
+async def _runs_status(conn, run_id: int) -> str:
+    cursor = await conn.execute("SELECT status FROM story_matching_runs WHERE id = %s", (run_id,))
+    row = await cursor.fetchone()
+    assert row is not None
+    return str(row[0])
+
+
+async def _deferred_jobs(pool, task_name: str) -> list[dict]:
+    async with pool.connection() as observer:
+        cursor = await observer.execute(
+            "SELECT args, lock FROM procrastinate.procrastinate_jobs "
+            "WHERE task_name = %s ORDER BY id",
+            (task_name,),
+        )
+        return [{"args": dict(row[0]), "lock": row[1]} for row in await cursor.fetchall()]
+
+
+MATCH_TASK = "src.jobs.processing.match_claim"
+EMBED_REVISION_TASK = "src.jobs.processing.embed_story_revision"
+
+
+@pytest.mark.postgres
+class TestSameStoryWithRelationProposals:
+    async def test_same_story_attaches_claim_and_persists_consequence_of_proposal(
+        self, uow, pool, conn, edition, revision_factory
+    ):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        target = await _seed_story(
+            conn, edition.id, semantic_text="Прорыв на Приморской оставил сектор без воды."
+        )
+        other = await _seed_story(
+            conn, edition.id, semantic_text="Совершенно другая история про транспорт."
+        )
+        matcher = _FixedMatcher(
+            {
+                "assignment": "SAME_STORY",
+                "target_story_id": target.story_id,
+                "story_update": {"semantic_changed": False},
+                "relation_proposals": [
+                    {"to_story_id": other.story_id, "relation_type": "CONSEQUENCE_OF"}
+                ],
+                "confidence": 0.87,
+                "reason": "тот же прорыв трубы",
+            }
+        )
+
+        outcome = await _service(uow, matcher).run(claim.id, policy.id, embedding_id)
+
+        assert outcome.revision is None
+        assert outcome.story_id == target.story_id
+        assert await _runs_status(conn, outcome.run.id) == "succeeded"
+        # Claim attached to the matched story.
+        cursor = await conn.execute(
+            "SELECT story_id FROM story_claims WHERE claim_id = %s", (claim.id,)
+        )
+        assert (await cursor.fetchone())[0] == target.story_id
+        # One immutable decision row per run.
+        cursor = await conn.execute(
+            """
+            SELECT assignment, target_story_id, confidence, reason
+            FROM story_match_decisions WHERE run_id = %s
+            """,
+            (outcome.run.id,),
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == "SAME_STORY"
+        assert row[1] == target.story_id
+        assert float(row[2]) == pytest.approx(0.87)
+        assert row[3] == "тот же прорыв трубы"
+        # Independent relation proposal persisted separately.
+        cursor = await conn.execute(
+            """
+            SELECT from_story_id, to_story_id, relation_type
+            FROM story_relation_proposals WHERE run_id = %s
+            """,
+            (outcome.run.id,),
+        )
+        proposal_row = await cursor.fetchone()
+        assert proposal_row == (target.story_id, other.story_id, "CONSEQUENCE_OF")
+        # Canonical invariant: exactly one successful run for the key.
+        cursor = await conn.execute(
+            """
+            SELECT count(*) FROM story_matching_runs
+            WHERE claim_id = %s AND policy_id = %s AND status = 'succeeded'
+            """,
+            (claim.id, policy.id),
+        )
+        assert (await cursor.fetchone())[0] == 1
+
+
+@pytest.mark.postgres
+class TestStaleTargetProtection:
+    async def test_target_revision_changed_before_apply_marks_run_stale_and_requeues(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app
+    ):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        target = await _seed_story(
+            conn, edition.id, semantic_text="Прорыв на Приморской оставил сектор без воды."
+        )
+
+        class _AdvancingMatcher:
+            """Moves the target story forward BETWEEN freeze and apply."""
+
+            def __init__(self, story_id: int):
+                self._story_id = story_id
+
+            async def choose(self, claim_arg, views, *, edition_name=None):
+                del claim_arg, views, edition_name
+                async with uow.transaction() as db:
+                    cursor = await db.execute(
+                        """
+                        INSERT INTO story_revisions (
+                            story_id, revision_no, current_state, semantic_text, content_hash
+                        )
+                        VALUES (%s, 2, 'developing', 'Смысл изменился параллельно.', 'hash-x')
+                        RETURNING id
+                        """,
+                        (self._story_id,),
+                    )
+                    revision_two = (await cursor.fetchone())[0]
+                    await db.execute(
+                        "UPDATE stories SET current_revision_id = %s WHERE id = %s",
+                        (revision_two, self._story_id),
+                    )
+                return MatchProposal.from_dict(
+                    {
+                        "assignment": "SAME_STORY",
+                        "target_story_id": self._story_id,
+                        "story_update": {"semantic_changed": False},
+                    }
+                )
+
+        outcome = await _service(uow, _AdvancingMatcher(target.story_id)).run(
+            claim.id, policy.id, embedding_id
+        )
+
+        assert await _runs_status(conn, outcome.run.id) == "stale"
+        assert outcome.stale_rerun_deferred is True
+        # No attachment happened on the stale read.
+        cursor = await conn.execute(
+            "SELECT count(*) FROM story_claims WHERE claim_id = %s", (claim.id,)
+        )
+        assert (await cursor.fetchone())[0] == 0
+        # No verdict was persisted for the stale run.
+        cursor = await conn.execute(
+            "SELECT count(*) FROM story_match_decisions WHERE run_id = %s",
+            (outcome.run.id,),
+        )
+        assert (await cursor.fetchone())[0] == 0
+        # A fresh matching task was deferred on the same connection.
+        jobs = await _deferred_jobs(pool, MATCH_TASK)
+        assert len(jobs) == 1
+        args = jobs[0]["args"]
+        assert int(args["claim_id"]) == claim.id
+        assert int(args["policy_id"]) == policy.id
+        assert int(args["claim_embedding_id"]) == embedding_id
+
+
+@pytest.mark.postgres
+class TestNewStoryAtomicApply:
+    async def test_new_story_creates_story_revision_claim_proposal_and_embed_atomically(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app
+    ):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        existing = await _seed_story(
+            conn, edition.id, semantic_text="Родственная история про ту же аварию."
+        )
+        matcher = _FixedMatcher(
+            {
+                "assignment": "NEW_STORY",
+                "story_update": {
+                    "semantic_changed": True,
+                    "title": "Вода вернулась в сектор",
+                    "summary": "Подача восстановлена не полностью.",
+                    "current_state": "developing",
+                    "semantic_text": "Новая история целиком: вода вернулась частично.",
+                },
+                "relation_proposals": [
+                    {"to_story_id": existing.story_id, "relation_type": "RELATED_TO"}
+                ],
+            }
+        )
+
+        outcome = await _service(uow, matcher).run(claim.id, policy.id, embedding_id)
+
+        assert outcome.revision is not None
+        assert outcome.revision.revision_no == 1
+        assert outcome.story_id is not None
+        story = await STORY_REPO.get(conn, outcome.story_id)
+        assert story is not None and story.lifecycle_state == "active"
+        revision_one = await STORY_REPO.current_revision_id(conn, outcome.story_id)
+        assert revision_one == outcome.revision.id
+        cursor = await conn.execute(
+            """
+            SELECT title, summary, current_state, semantic_text
+            FROM story_revisions WHERE id = %s
+            """,
+            (outcome.revision.id,),
+        )
+        title, summary, state, semantic = await cursor.fetchone()
+        assert (title, summary, state, semantic) == (
+            "Вода вернулась в сектор",
+            "Подача восстановлена не полностью.",
+            "developing",
+            "Новая история целиком: вода вернулась частично.",
+        )
+        # Founding claim attached atomically.
+        cursor = await conn.execute(
+            "SELECT story_id FROM story_claims WHERE claim_id = %s", (claim.id,)
+        )
+        assert (await cursor.fetchone())[0] == outcome.story_id
+        # Accepted proposal points FROM the freshly created story.
+        cursor = await conn.execute(
+            """
+            SELECT from_story_id, to_story_id, relation_type
+            FROM story_relation_proposals WHERE run_id = %s
+            """,
+            (outcome.run.id,),
+        )
+        assert (await cursor.fetchone()) == (
+            outcome.story_id,
+            existing.story_id,
+            "RELATED_TO",
+        )
+        # Revision #1 embedding deferred in the SAME transaction with the
+        # policy-owned vector space.
+        jobs = await _deferred_jobs(pool, EMBED_REVISION_TASK)
+        assert len(jobs) == 1
+        assert int(jobs[0]["args"]["story_revision_id"]) == outcome.revision.id
+        assert jobs[0]["args"]["model"] == policy.embedding_model
+        assert int(jobs[0]["args"]["dimensions"]) == policy.embedding_dimensions
+        assert await _runs_status(conn, outcome.run.id) == "succeeded"
+
+    async def test_exploding_embed_defer_rolls_back_the_whole_apply(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app, monkeypatch
+    ):
+        import src.jobs.processing as jobs_processing
+        from src import runtime as runtime_module
+        from src.bootstrap import ApplicationInfrastructure
+
+        runtime_module.install_runtime(
+            ApplicationInfrastructure(pool=pool, uow=uow, procrastinate_app=production_jobs_app)
+        )
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+
+        class _ExplodingDefer:
+            def configure(self, **_kwargs):
+                return self
+
+            async def defer_async(self, **_kwargs):
+                raise RuntimeError("embed revision defer exploded")
+
+        monkeypatch.setattr(jobs_processing, "embed_story_revision", _ExplodingDefer())
+        baseline_stories = await conn.execute("SELECT count(*) FROM stories")
+        baseline_count = (await baseline_stories.fetchone())[0]
+
+        with pytest.raises(RuntimeError, match="embed revision defer exploded"):
+            await _service(
+                uow,
+                _FixedMatcher(
+                    {
+                        "assignment": "NEW_STORY",
+                        "story_update": {
+                            "semantic_changed": True,
+                            "current_state": "open",
+                            "semantic_text": "Атомарность проверяется откатом.",
+                        },
+                    }
+                ),
+            ).run(claim.id, policy.id, embedding_id)
+
+        async with pool.connection() as observer:
+            stories_now = await _fetch_scalar(observer, "SELECT count(*) FROM stories")
+            claims_attached = await _fetch_scalar(observer, "SELECT count(*) FROM story_claims")
+            decisions = await _fetch_scalar(observer, "SELECT count(*) FROM story_match_decisions")
+            proposals = await _fetch_scalar(
+                observer, "SELECT count(*) FROM story_relation_proposals"
+            )
+            embed_jobs = await _fetch_scalar(
+                observer,
+                f"SELECT count(*) FROM procrastinate.procrastinate_jobs "
+                f"WHERE task_name = '{EMBED_REVISION_TASK}'",
+            )
+            running_runs = await _fetch_scalar(
+                observer, "SELECT count(*) FROM story_matching_runs WHERE status = 'running'"
+            )
+            succeeded_runs = await _fetch_scalar(
+                observer,
+                "SELECT count(*) FROM story_matching_runs WHERE status = 'succeeded'",
+            )
+        assert stories_now == baseline_count
+        assert claims_attached == 0
+        assert decisions == 0
+        assert proposals == 0
+        assert embed_jobs == 0
+        # The run itself was frozen in boundary one and stays open.
+        assert running_runs == 1
+        assert succeeded_runs == 0
+        del baseline_stories
+
+
+@pytest.mark.postgres
+class TestSameStoryUpdateSemantics:
+    async def test_semantic_changed_false_is_attach_only(
+        self, uow, pool, conn, edition, revision_factory
+    ):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        target = await _seed_story(
+            conn, edition.id, semantic_text="Прорыв на Приморской оставил сектор без воды."
+        )
+        matcher = _FixedMatcher(
+            {
+                "assignment": "SAME_STORY",
+                "target_story_id": target.story_id,
+                "story_update": {"semantic_changed": False},
+            }
+        )
+
+        outcome = await _service(uow, matcher).run(claim.id, policy.id, embedding_id)
+
+        assert outcome.revision is None
+        cursor = await conn.execute(
+            "SELECT count(*) FROM story_revisions WHERE story_id = %s",
+            (target.story_id,),
+        )
+        assert (await cursor.fetchone())[0] == 1
+        assert await STORY_REPO.current_revision_id(conn, target.story_id) == target.revision_id
+        jobs = await _deferred_jobs(pool, EMBED_REVISION_TASK)
+        assert jobs == []
+        cursor = await conn.execute(
+            "SELECT story_id FROM story_claims WHERE claim_id = %s", (claim.id,)
+        )
+        assert (await cursor.fetchone())[0] == target.story_id
+        assert await _runs_status(conn, outcome.run.id) == "succeeded"
+
+    async def test_semantic_changed_true_creates_proposed_revision_and_defers_embedding(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app
+    ):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        target = await _seed_story(
+            conn, edition.id, semantic_text="Прорыв на Приморской оставил сектор без воды."
+        )
+        matcher = _FixedMatcher(
+            {
+                "assignment": "SAME_STORY",
+                "target_story_id": target.story_id,
+                "story_update": {
+                    "semantic_changed": True,
+                    "summary": "Воду дали только в половине домов.",
+                    "current_state": "developing",
+                    "semantic_text": "Обновлённый смысл: подача возобновилась частично.",
+                },
+            }
+        )
+
+        outcome = await _service(uow, matcher).run(claim.id, policy.id, embedding_id)
+
+        assert outcome.revision is not None
+        assert outcome.revision.revision_no == 2
+        assert outcome.revision.summary == "Воду дали только в половине домов."
+        assert outcome.revision.semantic_text == (
+            "Обновлённый смысл: подача возобновилась частично."
+        )
+        assert await STORY_REPO.current_revision_id(conn, target.story_id) == (outcome.revision.id)
+        cursor = await conn.execute(
+            "SELECT story_id FROM story_claims WHERE claim_id = %s", (claim.id,)
+        )
+        assert (await cursor.fetchone())[0] == target.story_id
+        jobs = await _deferred_jobs(pool, EMBED_REVISION_TASK)
+        assert [int(job["args"]["story_revision_id"]) for job in jobs] == [outcome.revision.id]
+        assert {job["args"]["model"] for job in jobs} == {policy.embedding_model}
+        assert await _runs_status(conn, outcome.run.id) == "succeeded"
+
+
+@pytest.mark.postgres
+class TestDuplicateExecutionConvergence:
+    async def test_second_execution_converges_on_single_succeeded_run(
+        self, uow, pool, conn, edition, revision_factory
+    ):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        target = await _seed_story(
+            conn, edition.id, semantic_text="Прорыв на Приморской оставил сектор без воды."
+        )
+        service = _service(
+            uow,
+            _FixedMatcher(
+                {
+                    "assignment": "SAME_STORY",
+                    "target_story_id": target.story_id,
+                    "story_update": {"semantic_changed": False},
+                }
+            ),
+        )
+
+        first = await service.run(claim.id, policy.id, embedding_id)
+        # A duplicate execution would have created a NEW story had it applied.
+        duplicate = await _service(
+            uow,
+            _FixedMatcher({"assignment": "NEW_STORY"}),
+        ).run(claim.id, policy.id, embedding_id)
+
+        assert first.replayed is False
+        assert await _runs_status(conn, first.run.id) == "succeeded"
+        assert duplicate.replayed is True
+        assert duplicate.story_id is None
+        cursor = await conn.execute(
+            """
+            SELECT count(*) FROM story_matching_runs
+            WHERE claim_id = %s AND policy_id = %s AND status = 'succeeded'
+            """,
+            (claim.id, policy.id),
+        )
+        assert (await cursor.fetchone())[0] == 1
+        cursor = await conn.execute("SELECT count(*) FROM stories")
+        total_stories = (await cursor.fetchone())[0]
+        assert total_stories == 1  # only the seeded target; no phantom story
+
+
+@pytest.mark.postgres
+class TestBackfillStoryMatching:
+    async def test_queues_exactly_once_for_compatible_uncovered_embeddings(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app
+    ):
+        from src import runtime as runtime_module
+        from src.bootstrap import ApplicationInfrastructure
+        from src.jobs.processing import backfill_story_matching
+
+        runtime_module.install_runtime(
+            ApplicationInfrastructure(pool=pool, uow=uow, procrastinate_app=production_jobs_app)
+        )
+        covered = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        debt_a = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        debt_b = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        wrong_dims = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        covered_embedding = await _seed_claim_embedding(uow, covered.id)
+        embedding_a = await _seed_claim_embedding(uow, debt_a.id)
+        embedding_b = await _seed_claim_embedding(uow, debt_b.id)
+        await _seed_claim_embedding(uow, wrong_dims.id, dimensions=4)
+        policy = await _insert_policy(conn, edition.id)
+        # A succeeded run covers the first embedding for this exact policy.
+        cursor = await conn.execute(
+            """
+            INSERT INTO story_matching_runs (claim_id, edition_id, policy_id,
+                                             claim_embedding_id, completed_at, status)
+            VALUES (%s, %s, %s, %s, now(), 'succeeded')
+            """,
+            (covered.id, edition.id, policy.id, covered_embedding),
+        )
+        del cursor
+
+        queued = await backfill_story_matching(edition.id, policy.id)
+
+        assert queued == 2
+        jobs = await _deferred_jobs(pool, MATCH_TASK)
+        assert {
+            (int(j["args"]["claim_id"]), int(j["args"]["claim_embedding_id"])) for j in jobs
+        } == {
+            (debt_a.id, embedding_a),
+            (debt_b.id, embedding_b),
+        }
+        assert {int(j["args"]["policy_id"]) for j in jobs} == {policy.id}
+        assert {j["lock"] for j in jobs} == {f"story-matching-edition:{edition.id}"}
+
+        # Simulate the workers having completed every deferred job: each
+        # matching execution lands a succeeded run for its exact policy.
+        for claim_id, embedding_id in ((debt_a.id, embedding_a), (debt_b.id, embedding_b)):
+            await conn.execute(
+                """
+                INSERT INTO story_matching_runs (claim_id, edition_id, policy_id,
+                                                 claim_embedding_id, completed_at, status)
+                VALUES (%s, %s, %s, %s, now(), 'succeeded')
+                """,
+                (claim_id, edition.id, policy.id, embedding_id),
+            )
+
+        # Idempotent: a rerun finds no remaining debt.
+        assert await backfill_story_matching(edition.id, policy.id) == 0
+        assert len(await _deferred_jobs(pool, MATCH_TASK)) == 2
+
+
+# ---------------------------------------------------------------------------
+# Deliverable 2: embed_claim success txn hands off to match_claim atomically
+# ---------------------------------------------------------------------------
+
+
+class _RecordingEmbedProvider:
+    def __init__(self):
+        self.calls: list[str] = []
+
+    async def embed(self, text, *, purpose, model, dimensions):
+        del purpose, model
+        self.calls.append(text)
+        return [0.25] * dimensions
+
+
+def _handoff_service(uow, provider) -> EmbeddingService:
+    return EmbeddingService(uow=uow, provider=provider, matching_handoff=True)
+
+
+@pytest.mark.postgres
+class TestEmbedClaimDefersMatchClaim:
+    async def test_insert_path_creates_policy_and_defers_match_claim_atomically(
+        self, uow, pool, conn, edition, revision, production_jobs_app
+    ):
+        from src import runtime as runtime_module
+        from src.bootstrap import ApplicationInfrastructure
+
+        runtime_module.install_runtime(
+            ApplicationInfrastructure(pool=pool, uow=uow, procrastinate_app=production_jobs_app)
+        )
+        claim = await _make_claim(conn, edition.id, revision.id)
+        service = _handoff_service(uow, _RecordingEmbedProvider())
+
+        embedding_id = await service.embed_claim(claim.id, model=_MODEL_A, dimensions=2)
+
+        assert embedding_id is not None
+        cursor = await conn.execute(
+            """
+            SELECT embedding_model, embedding_dimensions, version
+            FROM story_matching_policy_versions WHERE edition_id = %s
+            """,
+            (edition.id,),
+        )
+        policy_row = await cursor.fetchone()
+        assert policy_row is not None
+        assert (policy_row[0], policy_row[1], policy_row[2]) == (_MODEL_A, 2, 1)
+        jobs = await _deferred_jobs(pool, MATCH_TASK)
+        assert len(jobs) == 1
+        args = jobs[0]["args"]
+        assert int(args["claim_id"]) == claim.id
+        assert int(args["policy_id"]) > 0
+        assert int(args["claim_embedding_id"]) == embedding_id
+        assert jobs[0]["lock"] == f"story-matching-edition:{edition.id}"
+
+    async def test_reuse_path_defers_the_same_handoff(
+        self, uow, pool, conn, edition, revision, production_jobs_app
+    ):
+        from src import runtime as runtime_module
+        from src.bootstrap import ApplicationInfrastructure
+
+        runtime_module.install_runtime(
+            ApplicationInfrastructure(pool=pool, uow=uow, procrastinate_app=production_jobs_app)
+        )
+        claim = await _make_claim(conn, edition.id, revision.id)
+        provider = _RecordingEmbedProvider()
+        service = _handoff_service(uow, provider)
+
+        first_id = await service.embed_claim(claim.id, model=_MODEL_A, dimensions=2)
+        second_id = await service.embed_claim(claim.id, model=_MODEL_A, dimensions=2)
+
+        assert first_id == second_id
+        assert len(provider.calls) == 1  # reused, no second provider call
+        cursor = await conn.execute("SELECT count(*) FROM claim_embeddings")
+        assert (await cursor.fetchone())[0] == 1
+        # Both visibility paths handed off; duplicates converge downstream.
+        jobs = await _deferred_jobs(pool, MATCH_TASK)
+        assert len(jobs) == 2
+        assert {int(job["args"]["claim_embedding_id"]) for job in jobs} == {first_id}
+
+    async def test_default_service_does_not_hand_off(self, uow, conn, edition, revision):
+        claim = await _make_claim(conn, edition.id, revision.id)
+        service = EmbeddingService(uow=uow, provider=_RecordingEmbedProvider())
+
+        embedding_id = await service.embed_claim(claim.id, model=_MODEL_A, dimensions=2)
+
+        assert embedding_id is not None
+        cursor = await conn.execute(
+            "SELECT count(*) FROM story_matching_policy_versions WHERE edition_id = %s",
+            (edition.id,),
+        )
+        assert (await cursor.fetchone())[0] == 0
+
+    async def test_exploding_match_defer_rolls_back_embedding_and_policy(
+        self, uow, pool, conn, edition, revision, production_jobs_app, monkeypatch
+    ):
+        import src.jobs.processing as jobs_processing
+        from src import runtime as runtime_module
+        from src.bootstrap import ApplicationInfrastructure
+
+        runtime_module.install_runtime(
+            ApplicationInfrastructure(pool=pool, uow=uow, procrastinate_app=production_jobs_app)
+        )
+        claim = await _make_claim(conn, edition.id, revision.id)
+
+        class _ExplodingDefer:
+            def configure(self, **_kwargs):
+                return self
+
+            async def defer_async(self, **_kwargs):
+                raise RuntimeError("match defer exploded")
+
+        monkeypatch.setattr(jobs_processing, "match_claim", _ExplodingDefer())
+
+        with pytest.raises(RuntimeError, match="match defer exploded"):
+            await _handoff_service(uow, _RecordingEmbedProvider()).embed_claim(
+                claim.id, model=_MODEL_A, dimensions=2
+            )
+
+        async with pool.connection() as observer:
+            embeddings = await _fetch_scalar(observer, "SELECT count(*) FROM claim_embeddings")
+            policies = await _fetch_scalar(
+                observer,
+                "SELECT count(*) FROM story_matching_policy_versions WHERE edition_id = %s",
+                (edition.id,),
+            )
+            jobs = await _fetch_scalar(
+                observer,
+                f"SELECT count(*) FROM procrastinate.procrastinate_jobs "
+                f"WHERE task_name = '{MATCH_TASK}'",
+            )
+        assert embeddings == 0
+        assert policies == 0
+        assert jobs == 0

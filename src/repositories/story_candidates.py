@@ -45,9 +45,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 from src.domain.claims import Claim
-from src.domain.stories import StoryMatchingPolicyVersion
+from src.domain.stories import (
+    FrozenStoryCandidate,
+    StoryMatchDecisionRecord,
+    StoryMatchingPolicyVersion,
+    StoryMatchingRun,
+)
 from src.repositories.embeddings import (
     PURPOSE_STORY_DOCUMENT,
     EmbeddingRepository,
@@ -405,3 +411,318 @@ def _state_hit(row: Sequence) -> _Hit:
         reasons=frozenset({REASON_STATE}),
         last_activity=row[3],
     )
+
+
+@dataclass(frozen=True)
+class ClaimEmbeddingGapRow:
+    """One backfill target: a compatible claim embedding with no covering
+    matching run (succeeded / running / stale) for the exact policy."""
+
+    embedding_id: int
+    claim_id: int
+
+    @classmethod
+    def from_row(cls, row: Sequence) -> ClaimEmbeddingGapRow:
+        return cls(embedding_id=int(row[0]), claim_id=int(row[1]))
+
+
+@dataclass(frozen=True)
+class LockedMatchingRun:
+    """A FOR UPDATE-locked run row plus its frozen candidates.
+
+    Holding the row lock means no other apply transaction can observe or
+    mutate this run between the stale check and ``mark_succeeded``."""
+
+    run: StoryMatchingRun
+    candidates: list[FrozenStoryCandidate]
+
+    def candidate_for(self, story_id: int) -> FrozenStoryCandidate:
+        """The frozen candidate for one story; missing targets are contract
+        violations of the matcher output, not silent misses."""
+        for candidate in self.candidates:
+            if candidate.story_id == story_id:
+                return candidate
+        raise KeyError(f"story {story_id} is not among the frozen candidates")
+
+
+_RUN_COLUMNS = """
+    id, claim_id, edition_id, policy_id, claim_embedding_id,
+    started_at, completed_at, status, error_kind, metadata
+"""
+
+_CANDIDATE_COLUMNS = """
+    id, run_id, story_id, story_revision_id, story_revision_embedding_id,
+    retrieved_by_vector, retrieved_by_lexical, retrieved_by_state,
+    vector_distance, lexical_score, location_overlap, entity_overlap,
+    time_score, status_score, rank
+"""
+
+
+class StoryMatchingRunRepository:
+    """Persistence for runs, their frozen candidates, decisions and relation
+    proposals. The partial unique index uq_story_match_success ON
+    (claim_id, policy_id) WHERE status='succeeded' is THE canonical
+    duplicate guard: guarded transitions only leave 'running', so a second
+    success for the key surfaces as UniqueViolation at write time."""
+
+    async def insert_running(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        claim_id: int,
+        edition_id: int,
+        policy_id: int,
+        claim_embedding_id: int | None,
+    ) -> StoryMatchingRun:
+        cursor = await conn.execute(
+            f"""
+            INSERT INTO story_matching_runs (
+                claim_id, edition_id, policy_id, claim_embedding_id, status
+            )
+            VALUES (%s, %s, %s, %s, 'running')
+            RETURNING {_RUN_COLUMNS}
+            """,  # noqa: S608 — column list is a module constant; values are bound params
+            (claim_id, edition_id, policy_id, claim_embedding_id),
+        )
+        return StoryMatchingRun.from_row(await cursor.fetchone())
+
+    async def get(self, conn: psycopg.AsyncConnection, run_id: int) -> StoryMatchingRun | None:
+        cursor = await conn.execute(
+            f"""
+            SELECT {_RUN_COLUMNS} FROM story_matching_runs WHERE id = %s
+            """,  # noqa: S608 — column list is a module constant; value is bound
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else StoryMatchingRun.from_row(row)
+
+    async def find_succeeded(
+        self, conn: psycopg.AsyncConnection, *, claim_id: int, policy_id: int
+    ) -> StoryMatchingRun | None:
+        cursor = await conn.execute(
+            f"""
+            SELECT {_RUN_COLUMNS} FROM story_matching_runs
+            WHERE claim_id = %s AND policy_id = %s AND status = 'succeeded'
+            ORDER BY id DESC LIMIT 1
+            """,  # noqa: S608 — column list is a module constant; values are bound params
+            (claim_id, policy_id),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else StoryMatchingRun.from_row(row)
+
+    async def latest_running(
+        self, conn: psycopg.AsyncConnection, *, claim_id: int, policy_id: int
+    ) -> StoryMatchingRun | None:
+        cursor = await conn.execute(
+            f"""
+            SELECT {_RUN_COLUMNS} FROM story_matching_runs
+            WHERE claim_id = %s AND policy_id = %s AND status = 'running'
+            ORDER BY id DESC LIMIT 1
+            """,  # noqa: S608 — column list is a module constant; values are bound params
+            (claim_id, policy_id),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else StoryMatchingRun.from_row(row)
+
+    async def save_candidates(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        run_id: int,
+        candidates: Sequence[StoryCandidate],
+    ) -> None:
+        """Freeze the retrieval result before any AI call: exact revision
+        identity, provenance flags, soft scores, deterministic rank."""
+        for rank, candidate in enumerate(candidates, start=1):
+            reasons = candidate.retrieval_reasons
+            await conn.execute(
+                """
+                INSERT INTO story_matching_candidates (
+                    run_id, story_id, story_revision_id, story_revision_embedding_id,
+                    retrieved_by_vector, retrieved_by_lexical, retrieved_by_state,
+                    vector_distance, lexical_score, location_overlap, entity_overlap,
+                    time_score, status_score, rank
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    run_id,
+                    candidate.story_id,
+                    candidate.story_revision_id,
+                    candidate.story_revision_embedding_id,
+                    "retrieved_by_vector" in reasons,
+                    "retrieved_by_lexical" in reasons,
+                    "retrieved_by_state" in reasons,
+                    candidate.vector_distance,
+                    candidate.lexical_score,
+                    candidate.location_overlap,
+                    candidate.entity_overlap,
+                    candidate.time_score,
+                    candidate.status_score,
+                    rank,
+                ),
+            )
+
+    async def frozen_candidates(
+        self, conn: psycopg.AsyncConnection, run_id: int
+    ) -> list[FrozenStoryCandidate]:
+        cursor = await conn.execute(
+            f"""
+            SELECT {_CANDIDATE_COLUMNS} FROM story_matching_candidates
+            WHERE run_id = %s ORDER BY rank
+            """,  # noqa: S608 — column list is a module constant
+            (run_id,),
+        )
+        return [FrozenStoryCandidate.from_row(row) for row in await cursor.fetchall()]
+
+    async def lock_with_candidates(
+        self, conn: psycopg.AsyncConnection, run_id: int
+    ) -> LockedMatchingRun | None:
+        """SELECT ... FOR UPDATE the run row, then read its frozen candidates.
+
+        The lock spans until the caller's transaction ends, closing the
+        race between the stale check and the final succeeded transition."""
+        cursor = await conn.execute(
+            f"""
+            SELECT {_RUN_COLUMNS} FROM story_matching_runs
+            WHERE id = %s FOR UPDATE
+            """,  # noqa: S608 — column list is a module constant
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return LockedMatchingRun(
+            run=StoryMatchingRun.from_row(row),
+            candidates=await self.frozen_candidates(conn, run_id),
+        )
+
+    async def mark_stale(
+        self, conn: psycopg.AsyncConnection, run_id: int, *, completed_at: dt.datetime
+    ) -> bool:
+        """Guarded running -> stale; returns False when the slot moved on."""
+        cursor = await conn.execute(
+            """
+            UPDATE story_matching_runs SET status = 'stale', completed_at = %s
+            WHERE id = %s AND status = 'running'
+            RETURNING id
+            """,
+            (completed_at, run_id),
+        )
+        return await cursor.fetchone() is not None
+
+    async def mark_succeeded(
+        self, conn: psycopg.AsyncConnection, run_id: int, *, completed_at: dt.datetime
+    ) -> bool:
+        """Guarded running -> succeeded. A concurrent winner for the same
+        (claim_id, policy_id) makes this raise UniqueViolation from
+        uq_story_match_success — the canonical duplicate guard."""
+        cursor = await conn.execute(
+            """
+            UPDATE story_matching_runs SET status = 'succeeded', completed_at = %s
+            WHERE id = %s AND status = 'running'
+            RETURNING id
+            """,
+            (completed_at, run_id),
+        )
+        return await cursor.fetchone() is not None
+
+    async def mark_failed(
+        self,
+        conn: psycopg.AsyncConnection,
+        run_id: int,
+        *,
+        error_kind: str,
+        completed_at: dt.datetime,
+    ) -> bool:
+        """Guarded running -> failed; NEVER demotes a succeeded winner."""
+        cursor = await conn.execute(
+            """
+            UPDATE story_matching_runs SET status = 'failed', error_kind = %s,
+                   completed_at = %s
+            WHERE id = %s AND status = 'running'
+            RETURNING id
+            """,
+            (error_kind, completed_at, run_id),
+        )
+        return await cursor.fetchone() is not None
+
+    async def insert_decision(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        run_id: int,
+        assignment: str,
+        target_story_id: int | None,
+        story_update: dict | None,
+        confidence: float | None,
+        reason: str | None,
+    ) -> StoryMatchDecisionRecord:
+        cursor = await conn.execute(
+            """
+            INSERT INTO story_match_decisions (
+                run_id, assignment, target_story_id, story_update, confidence, reason
+            )
+            VALUES (%s, %s, %s, %s, %s, %s)
+            RETURNING id, run_id, assignment, target_story_id, story_update,
+                confidence, reason, created_at
+            """,
+            (run_id, assignment, target_story_id, Jsonb(story_update), confidence, reason),
+        )
+        return StoryMatchDecisionRecord.from_row(await cursor.fetchone())
+
+    async def insert_relation_proposals(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        run_id: int,
+        entries: Sequence[tuple[int, int, str]],
+    ) -> int:
+        """Append immutable proposals as (from_story_id, to_story_id, type)."""
+        for from_story_id, to_story_id, relation_type in entries:
+            await conn.execute(
+                """
+                INSERT INTO story_relation_proposals (
+                    run_id, from_story_id, to_story_id, relation_type
+                )
+                VALUES (%s, %s, %s, %s)
+                """,
+                (run_id, from_story_id, to_story_id, relation_type),
+            )
+        return len(entries)
+
+    async def list_claim_embedding_gaps(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        policy_id: int,
+        model: str,
+        dimensions: int,
+        after_embedding_id: int | None = None,
+        limit: int = 500,
+    ) -> list[ClaimEmbeddingGapRow]:
+        """Compatible claim embeddings still owing this exact policy a run.
+
+        Coverage statuses are 'succeeded' (done), 'running' (in flight) and
+        'stale' (a fresh task was already re-deferred); failed runs never
+        cover — the debt stays visible until a run lands."""
+        cursor = await conn.execute(
+            """
+            SELECT e.id, e.claim_id
+            FROM claim_embeddings e
+            JOIN claims c ON c.id = e.claim_id
+            WHERE c.edition_id = %s
+              AND e.id > COALESCE(%s, 0)
+              AND e.model = %s AND e.dimensions = %s AND e.purpose = 'claim_query'
+              AND NOT EXISTS (
+                  SELECT 1 FROM story_matching_runs r
+                  WHERE r.claim_id = e.claim_id AND r.policy_id = %s
+                    AND r.status IN ('succeeded', 'running', 'stale')
+              )
+            ORDER BY e.id
+            LIMIT %s
+            """,
+            (edition_id, after_embedding_id, model, dimensions, policy_id, limit),
+        )
+        return [ClaimEmbeddingGapRow.from_row(row) for row in await cursor.fetchall()]

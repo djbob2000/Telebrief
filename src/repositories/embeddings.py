@@ -48,6 +48,29 @@ class StoryVectorCandidate:
 
 
 @dataclass(frozen=True)
+class ClaimEmbeddingRow:
+    """One full immutable claim_embeddings row including the stored vector."""
+
+    id: int
+    claim_id: int
+    model: str
+    dimensions: int
+    purpose: str
+    vector: list[float]
+
+    @classmethod
+    def from_row(cls, row: Sequence) -> ClaimEmbeddingRow:
+        return cls(
+            id=int(row[0]),
+            claim_id=int(row[1]),
+            model=str(row[2]),
+            dimensions=int(row[3]),
+            purpose=str(row[4]),
+            vector=list(row[5]),
+        )
+
+
+@dataclass(frozen=True)
 class StoryRevisionRef:
     """Minimal story-revision projection for embedding input ownership."""
 
@@ -129,6 +152,24 @@ class EmbeddingRepository:
             (claim_id, model, dimensions),
         )
         return [int(row[0]) for row in await cursor.fetchall()]
+
+    async def get_claim_embedding_row(
+        self, conn: psycopg.AsyncConnection, *, embedding_id: int
+    ) -> ClaimEmbeddingRow | None:
+        """The full immutable row (vector included) for one embedding id.
+
+        Callers use this to verify that a queued match_claim job's frozen
+        ``claim_embedding_id`` really lives in the queued policy's vector
+        space before any retrieval runs."""
+        cursor = await conn.execute(
+            """
+            SELECT id, claim_id, model, dimensions, purpose, embedding
+            FROM claim_embeddings WHERE id = %s
+            """,
+            (embedding_id,),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else ClaimEmbeddingRow.from_row(row)
 
     async def insert_story_revision_embedding(
         self,
