@@ -32,11 +32,12 @@ abort the caller's atomic handoff transaction (embed_claim success, stale
 rerun) and silently drop claims; the execution lock only serializes runs,
 never drops them.
 
-Deterministic failures (non-enum assignment, targetless SAME_STORY, a
-``semantic_changed`` proposal without semantic text) never retry: they are
-finalized as ``failed(invalid_ai_response)`` through the same guarded write,
-so failed runs stay visible debt for bounded backfill while a concurrently
-succeeded winner is never demoted.
+Deterministic failures (unparseable model output, non-enum assignment,
+targetless SAME_STORY, a ``semantic_changed`` proposal without semantic
+text) never retry: both the consultation and the apply share one handler
+that finalizes them as ``failed(invalid_match_response)`` through the same
+guarded write, so failed runs stay visible debt for bounded backfill while
+a concurrently succeeded winner is never demoted.
 
 Repositories never commit; the caller owns transaction boundaries.
 """
@@ -553,18 +554,24 @@ class StoryMatchingService:
         if isinstance(context, StoryMatchingRun):  # canonical winner replay
             return StoryMatchingOutcome(run=context, replayed=True)
 
-        decision = await self.matcher.choose(
-            context.claim, context.views, edition_name=context.edition_name
-        )
-        logger.info(
-            "story matcher verdict claim=%s policy=%s run=%s assignment=%s target=%s",
-            claim_id,
-            policy_id,
-            context.run.id,
-            decision.assignment,
-            decision.target_story_id,
-        )
+        # The consultation AND its output validation share one handler:
+        # _parse_json_object -> MatchProposal.from_dict failures are
+        # deterministic contract violations that must reach the guarded
+        # terminal path instead of killing the job with a stuck 'running'
+        # run (which backfill would count as coverage, silently dropping
+        # the claim forever).
         try:
+            decision = await self.matcher.choose(
+                context.claim, context.views, edition_name=context.edition_name
+            )
+            logger.info(
+                "story matcher verdict claim=%s policy=%s run=%s assignment=%s target=%s",
+                claim_id,
+                policy_id,
+                context.run.id,
+                decision.assignment,
+                decision.target_story_id,
+            )
             async with self.uow.transaction() as conn:
                 outcome = await self._apply(conn, context, decision)
         except psycopg.errors.UniqueViolation as exc:
@@ -922,11 +929,11 @@ class StoryMatchingService:
         self, run: StoryMatchingRun, exc: InvalidMatchResponse
     ) -> StoryMatchingOutcome:
         """Deterministic contract violations never retry: the guarded write
-        marks the run failed(invalid_ai_response) unless a concurrent winner
+        marks the run failed(invalid_match_response) unless a concurrent winner
         already holds the canonical slot."""
         async with self.uow.transaction() as conn:
             demoted = await self._runs.mark_failed(
-                conn, run.id, error_kind="invalid_ai_response", completed_at=_now()
+                conn, run.id, error_kind="invalid_match_response", completed_at=_now()
             )
             final = await self._runs.get(conn, run.id)
         if not demoted:
@@ -937,7 +944,7 @@ class StoryMatchingService:
             )
         else:
             logger.warning("invalid match response run=%s: %s", run.id, exc)
-        return StoryMatchingOutcome(run=final, degraded="invalid_ai_response")
+        return StoryMatchingOutcome(run=final, degraded="invalid_match_response")
 
     async def finalize_provider_failure(
         self, claim_id: int, policy_id: int

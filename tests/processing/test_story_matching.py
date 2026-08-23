@@ -1441,6 +1441,178 @@ class TestBackfillStoryMatching:
 
 
 # ---------------------------------------------------------------------------
+@pytest.mark.postgres
+class TestUnparseableMatcherResponses:
+    """Any matcher-response contract violation must degrade safely: guarded
+    terminal run failure (never a stuck 'running' row that backfill would
+    count as coverage) and an operationally successful task return."""
+
+    async def _run_with_raw_output(self, uow, conn, edition, revision_factory, raw: str):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        # The REAL matcher over a provider emitting the raw garbage output —
+        # exercises _parse_json_object -> MatchProposal.from_dict end to end.
+        matcher = StoryMatcher(provider=_CapturingProvider(raw), model="test-model")
+        return await _service(uow, matcher).run(claim.id, policy.id, embedding_id)
+
+    async def _assert_terminal_failure(self, conn, outcome, run_id: int):
+        assert outcome.degraded == "invalid_match_response"
+        assert outcome.decision is None
+        cursor = await conn.execute(
+            "SELECT status, error_kind FROM story_matching_runs WHERE id = %s", (run_id,)
+        )
+        status, error_kind = await cursor.fetchone()
+        assert status == "failed"
+        assert error_kind == "invalid_match_response"
+        cursor = await conn.execute("SELECT count(*) FROM story_match_decisions")
+        assert (await cursor.fetchone())[0] == 0
+        cursor = await conn.execute("SELECT count(*) FROM story_claims")
+        assert (await cursor.fetchone())[0] == 0
+
+    async def test_unparseable_output_fails_run_without_retry(
+        self, uow, conn, edition, revision_factory
+    ):
+        outcome = await self._run_with_raw_output(
+            uow, conn, edition, revision_factory, "Простите, но JSON у меня не получился."
+        )
+        await self._assert_terminal_failure(conn, outcome, outcome.run.id)
+
+    async def test_non_enum_assignment_fails_run_without_retry(
+        self, uow, conn, edition, revision_factory
+    ):
+        outcome = await self._run_with_raw_output(
+            uow, conn, edition, revision_factory, '{"assignment": "IRRELEVANT"}'
+        )
+        await self._assert_terminal_failure(conn, outcome, outcome.run.id)
+
+
+@pytest.mark.postgres
+class TestEmptyCandidateSetFlow:
+    async def test_zero_candidates_consult_matcher_and_land_new_story(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app
+    ):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        # No stories seeded at all: retrieval must freeze an EMPTY candidate
+        # set and still hand the claim to the matcher.
+        matcher = _FixedMatcher({"assignment": "NEW_STORY"})
+
+        outcome = await _service(uow, matcher).run(claim.id, policy.id, embedding_id)
+
+        assert len(matcher.calls) == 1
+        seen_claim, seen_views = matcher.calls[0]
+        assert seen_claim.id == claim.id
+        assert seen_views == []
+        assert outcome.revision is not None and outcome.revision.revision_no == 1
+        story = await STORY_REPO.get(conn, outcome.story_id)
+        assert story is not None and story.lifecycle_state == "active"
+        cursor = await conn.execute(
+            "SELECT story_id FROM story_claims WHERE claim_id = %s", (claim.id,)
+        )
+        assert (await cursor.fetchone())[0] == outcome.story_id
+        jobs = await _deferred_jobs(pool, EMBED_REVISION_TASK)
+        assert [int(job["args"]["story_revision_id"]) for job in jobs] == [outcome.revision.id]
+        assert await _runs_status(conn, outcome.run.id) == "succeeded"
+
+
+@pytest.mark.postgres
+class TestConcurrentWinnerConvergence:
+    """Scenario 11's actual race branch: a competing execution wins
+    uq_story_match_success between our freeze and our mark_succeeded."""
+
+    def _winner_inserting_matcher(
+        self, uow, edition_id: int, policy_id: int, claim_id: int, embedding_id: int
+    ):
+        class _WinnerInsertingMatcher:
+            """Plants the concurrent winner during boundary two."""
+
+            def __init__(self):
+                self.winner_run_id: int | None = None
+
+            async def choose(self, claim_arg, views, *, edition_name=None):
+                del claim_arg, views, edition_name
+                async with uow.transaction() as db:
+                    cursor = await db.execute(
+                        """
+                        INSERT INTO story_matching_runs (
+                            claim_id, edition_id, policy_id, claim_embedding_id, status
+                        )
+                        VALUES (%s, %s, %s, %s, 'running')
+                        RETURNING id
+                        """,
+                        (claim_id, edition_id, policy_id, embedding_id),
+                    )
+                    self.winner_run_id = (await cursor.fetchone())[0]
+                    await db.execute(
+                        """
+                        UPDATE story_matching_runs
+                        SET status = 'succeeded', completed_at = now()
+                        WHERE id = %s
+                        """,
+                        (self.winner_run_id,),
+                    )
+                # Our own execution would have created a phantom NEW_STORY
+                # had the canonical guard not rolled the apply back.
+                return MatchProposal.from_dict({"assignment": "NEW_STORY"})
+
+        return _WinnerInsertingMatcher()
+
+    async def test_unique_violation_converges_on_concurrent_winner_without_duplicates(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app
+    ):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        baseline_stories = await _fetch_scalar(conn, "SELECT count(*) FROM stories")
+        matcher = self._winner_inserting_matcher(uow, edition.id, policy.id, claim.id, embedding_id)
+
+        outcome = await _service(uow, matcher).run(claim.id, policy.id, embedding_id)
+
+        assert outcome.replayed is True
+        assert outcome.story_id is None
+        assert outcome.run is not None and outcome.run.id == matcher.winner_run_id
+        # Exactly one successful run for the key — the winner's.
+        succeeded = await conn.execute(
+            """
+            SELECT id FROM story_matching_runs
+            WHERE claim_id = %s AND policy_id = %s AND status = 'succeeded'
+            """,
+            (claim.id, policy.id),
+        )
+        rows = await succeeded.fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == matcher.winner_run_id
+        # The losing execution's phantom story was rolled back entirely.
+        assert await _fetch_scalar(conn, "SELECT count(*) FROM stories") == baseline_stories
+        assert await _fetch_scalar(conn, "SELECT count(*) FROM story_claims") == 0
+
+    async def test_vanished_winner_after_index_race_raises_runtime_error(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app, monkeypatch
+    ):
+        from src.repositories.story_candidates import StoryMatchingRunRepository
+
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        matcher = self._winner_inserting_matcher(uow, edition.id, policy.id, claim.id, embedding_id)
+
+        async def _winner_never_visible(self_repo, db_conn, *, claim_id, policy_id):
+            del self_repo, db_conn, claim_id, policy_id
+            return None
+
+        monkeypatch.setattr(StoryMatchingRunRepository, "find_succeeded", _winner_never_visible)
+
+        with pytest.raises(RuntimeError, match="no succeeded run exists"):
+            await _service(uow, matcher).run(claim.id, policy.id, embedding_id)
+
+        # The losing apply stayed rolled back; no partial artifacts leaked.
+        assert await _fetch_scalar(conn, "SELECT count(*) FROM stories") == 0
+        assert await _fetch_scalar(conn, "SELECT count(*) FROM story_claims") == 0
+
+
+# ---------------------------------------------------------------------------
 # Deliverable 2: embed_claim success txn hands off to match_claim atomically
 # ---------------------------------------------------------------------------
 
