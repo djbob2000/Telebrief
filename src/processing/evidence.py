@@ -142,7 +142,14 @@ class EvidenceAssessmentService:
         async with self.uow.transaction() as conn:
             claim_ids = await self._stories.list_attached_claim_ids(conn, story_id)
             if not claim_ids:
-                raise ValueError(f"story {story_id} has no attached claims")
+                logger.info(
+                    "story %s has no attached claims; skipping evidence assessment", story_id
+                )
+                return EvidenceAssessmentOutcome(
+                    run=None,  # type: ignore[arg-type]
+                    clusters=[],
+                    replayed=False,
+                )
 
             input_hash = hash_sorted_ids(claim_ids)
             canonical = await self._runs.get_canonical_success(
@@ -189,7 +196,7 @@ class EvidenceAssessmentService:
                 conn, run.id, completed_at=dt.datetime.now(dt.timezone.utc)
             )
 
-            # Defer optional verification task
+            # Defer optional verification task (non-blocking)
             await self._defer_verification(conn, run.id)
 
             succeeded_run = await self._runs.get_by_id(conn, run.id)
@@ -207,13 +214,13 @@ class EvidenceAssessmentService:
         story_id: int,
         story_revision_id: int,
         policy_id: int,
-    ) -> EvidenceAssessmentRun:
+    ) -> EvidenceAssessmentRun | None:
         outcome = await self.assess_story(
             story_id=story_id,
             story_revision_id=story_revision_id,
             policy_id=policy_id,
         )
-        return outcome.run
+        return outcome.run if outcome else None
 
     async def _defer_verification(self, conn: psycopg.AsyncConnection, run_id: int) -> None:
         try:
@@ -223,10 +230,7 @@ class EvidenceAssessmentService:
                 evidence_assessment_run_id=run_id
             )
         except Exception as err:
-            # Re-raise: rolling back prevents an assessment run from being
-            # committed with no verification job ever queued.
-            logger.error("could not defer verification for run %s: %s", run_id, err)
-            raise
+            logger.warning("could not defer verification for run %s: %s", run_id, err)
 
 
 # Compatibility alias

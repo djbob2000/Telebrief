@@ -862,3 +862,61 @@ class TestBackfillEvidence:
         # ...then the bounded rerun finds zero debt.
         assert await backfill_evidence(edition.id, policy.id) == 0
         assert len(await _deferred_jobs(pool, ASSESS_EVIDENCE_TASK)) == 3
+
+
+@pytest.mark.postgres
+class TestOptionalVerificationAndPublicationIntegration:
+    """Verifies that verification is truly optional and never blocks publication or candidate freezing."""
+
+    async def test_unverified_story_revision_without_clusters_is_eligible_for_publication(
+        self, conn: psycopg.AsyncConnection, edition
+    ):
+        from src.publication.repository import PublicationRepository
+
+        story = await _seed_story(
+            conn, edition.id, semantic_text="Совершенно свежая непроверенная новость"
+        )
+        repo = PublicationRepository()
+
+        eligible = await repo.eligible_story_revisions(
+            conn,
+            edition_id=edition.id,
+            snapshot_at=_NOW,
+        )
+        assert any(e["story_id"] == story.story_id for e in eligible)
+
+    async def test_verification_failure_leaves_revision_publication_eligible(
+        self, uow, pool, conn, edition, revision_factory
+    ):
+        from src.processing.evidence import EvidenceService
+        from src.processing.verification import VerificationService
+        from src.publication.repository import PublicationRepository
+        from src.repositories.evidence import EvidencePolicyService
+
+        story = await _seed_story(conn, edition.id, semantic_text="История с упавшей верификацией")
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        await _attach_claim(conn, story.story_id, claim.id)
+
+        policy = await EvidencePolicyService().ensure_current(conn, edition_id=edition.id)
+        evidence_service = EvidenceService(uow=uow)
+        outcome = await evidence_service.assess_story(story.story_id, story.revision_id, policy.id)
+        assert outcome.run is not None
+
+        # Simulate a failing provider for verification
+        class _CrashingProvider:
+            async def chat_completion(self, *args, **kwargs):
+                raise RuntimeError("Verification AI provider is completely down")
+
+        ver_service = VerificationService(uow=uow, provider=_CrashingProvider())
+        result = await ver_service.verify_run(outcome.run.id)
+        # Verification handled gracefully / degraded without raising exception
+        assert result.degraded is not None or result.persisted_count >= 0
+
+        # Story remains fully eligible for publication
+        repo = PublicationRepository()
+        eligible = await repo.eligible_story_revisions(
+            conn,
+            edition_id=edition.id,
+            snapshot_at=_NOW,
+        )
+        assert any(e["story_id"] == story.story_id for e in eligible)

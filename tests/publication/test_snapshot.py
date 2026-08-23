@@ -28,20 +28,20 @@ async def _seed_policies(conn: psycopg.AsyncConnection, edition_id: int) -> tupl
 
 
 async def _seed_story_with_revision(
-    conn: psycopg.AsyncConnection, edition_id: int
+    conn: psycopg.AsyncConnection, edition_id: int, created_at: dt.datetime = _NOW
 ) -> tuple[int, int]:
     cur = await conn.execute(
-        "INSERT INTO stories (edition_id, lifecycle_state) VALUES (%s, 'active') RETURNING id",
-        (edition_id,),
+        "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+        (edition_id, created_at),
     )
     story_id = (await cur.fetchone())[0]
     cur = await conn.execute(
         """
-        INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash)
-        VALUES (%s, 1, 'open', 'Бердянск новость', 'hash-1')
+        INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+        VALUES (%s, 1, 'open', 'Бердянск новость', 'hash-1', %s)
         RETURNING id
         """,
-        (story_id,),
+        (story_id, created_at),
     )
     rev_id = (await cur.fetchone())[0]
     await conn.execute(
@@ -115,3 +115,22 @@ class TestPublicationSnapshotConstraints:
                 story_revision_id=rev_id,
                 deterministic_rank=2,
             )
+
+    async def test_unverified_and_single_source_stories_are_eligible_candidates(
+        self, conn: psycopg.AsyncConnection, edition
+    ):
+        from src.publication.repository import PublicationRepository
+
+        repo = PublicationRepository()
+        story_id, rev_id = await _seed_story_with_revision(conn, edition.id)
+
+        # Neither evidence clusters nor verification assessments exist for this story
+        eligible = await repo.eligible_story_revisions(
+            conn,
+            edition_id=edition.id,
+            snapshot_at=_NOW,
+        )
+
+        assert len(eligible) == 1
+        assert eligible[0]["story_id"] == story_id
+        assert eligible[0]["story_revision_id"] == rev_id
