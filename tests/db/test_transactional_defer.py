@@ -40,7 +40,7 @@ def jobs_import_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
     injected into DATABASE_URL and a minimal enabled config.yaml is provided
     from a temporary working directory before the first import.
     """
-    url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
+    url = os.environ.get("TELEBRIEF_TEST_DATABASE_URL", "")
     monkeypatch.setenv("DATABASE_URL", url)
     (tmp_path / "config.yaml").write_text(
         "database:\n  enabled: true\n",

@@ -130,7 +130,9 @@ async def finalize_cutover(
             return 1
 
         if dry_run:
-            logger.info("Dry-run mode: all %d messages verified imported. Safe to drop.", total_messages)
+            logger.info(
+                "Dry-run mode: all %d messages verified imported. Safe to drop.", total_messages
+            )
             return 0
 
         # 4. Execute deferred SQL and record migration ledger
@@ -142,9 +144,7 @@ async def finalize_cutover(
         logger.info("Executing deferred migration 0011...")
         await conn.execute(sql_text)
 
-        cur = await conn.execute(
-            "SELECT 1 FROM telebrief_schema_migrations WHERE version = 11"
-        )
+        cur = await conn.execute("SELECT 1 FROM telebrief_schema_migrations WHERE version = 11")
         if not await cur.fetchone():
             migration = PendingMigration(
                 version=11,

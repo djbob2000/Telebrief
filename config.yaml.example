@@ -217,6 +217,7 @@ settings:
 # Auth profiles must be initialized manually using `python scripts/bootstrap_facebook_profile.py --profile profile-01`.
 # facebook:
 #   enabled: false
+#   editorial_enabled: true
 #   auth_root: "/var/lib/telebrief/auth"
 #   auth_profiles:
 #     - name: "profile-01"

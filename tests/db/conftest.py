@@ -39,9 +39,25 @@ _TRUNCATE_TABLES = """
 """
 
 
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Skip tests in this directory unless a test database is configured."""
+    del config
+    gate = pathlib.Path(__file__).parent.resolve()
+    for item in items:
+        if item.path.resolve().is_relative_to(gate):
+            item.add_marker(
+                pytest.mark.skipif(
+                    "TELEBRIEF_TEST_DATABASE_URL" not in os.environ,
+                    reason="TELEBRIEF_TEST_DATABASE_URL is not set",
+                )
+            )
+
+
 @pytest.fixture(scope="session")
 def procrastinate_schema_ready() -> None:
     """Ensure the official Procrastinate tables exist in the test database."""
+    if "TELEBRIEF_TEST_DATABASE_URL" not in os.environ:
+        return
     from src.jobs.admin import ensure_official_tables
 
     url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]

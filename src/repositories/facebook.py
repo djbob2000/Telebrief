@@ -303,7 +303,7 @@ class FacebookRepository:
             SELECT si.id, si.source_id, si.external_id, r.id AS current_revision_id,
                    cs.last_scanned_at, cs.completeness, s.collector_options
             FROM source_items si
-            JOIN sources s ON s.id = si.source_id AND s.platform = 'facebook'
+            JOIN sources s ON s.id = si.source_id AND s.platform = 'facebook' AND s.enabled = true
             JOIN LATERAL (
                 SELECT id FROM source_item_revisions
                 WHERE source_item_id = si.id

@@ -435,3 +435,148 @@ class TestKnowledgeEditorialAdapter:
         assert off_elem.text == "Администрация утвердила график работ"
         assert off_elem.status == "established"
         assert off_elem.source_refs == [ref2]  # References only its own claim ref!
+
+    async def test_comment_author_attribution_preserved_in_elements_and_messages(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Important 7: Comment author attribution format: 'author_name (community_name)'."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
+        adapter = KnowledgeEditorialAdapter(uow=uow)
+
+        # 1. Facebook community source
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role)
+            VALUES ('facebook', 'facebook_group', 'group-comm', 'https://facebook.com/groups/comm', 'Бердянск FB', 'community')
+            RETURNING id
+            """
+        )
+        src_id = (await cur.fetchone())[0]
+
+        # 2. Comment 1 with author_name
+        cur = await conn.execute(
+            """
+            INSERT INTO source_items (source_id, kind, external_id, author_name, first_collected_at)
+            VALUES (%s, 'facebook_comment', 'comment:c1', 'Анна Сидорова', %s) RETURNING id
+            """,
+            (src_id, _NOW),
+        )
+        item1_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-c1', 'На Восточном дали воду', %s) RETURNING id",
+            (item1_id, _NOW),
+        )
+        rev1_id = (await cur.fetchone())[0]
+
+        # 3. Comment 2 without author_name
+        cur = await conn.execute(
+            """
+            INSERT INTO source_items (source_id, kind, external_id, author_name, first_collected_at)
+            VALUES (%s, 'facebook_comment', 'comment:c2', NULL, %s) RETURNING id
+            """,
+            (src_id, _NOW),
+        )
+        item2_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-c2', 'А на АКЗ еще нет', %s) RETURNING id",
+            (item2_id, _NOW),
+        )
+        rev2_id = (await cur.fetchone())[0]
+
+        # Policy & runs
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'rh-c', 'rv-c') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev1_id, edition.id, rel_pol_id),
+        )
+        rel_dec1_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev2_id, edition.id, rel_pol_id),
+        )
+        rel_dec2_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'ch-c', 'cv-c') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev1_id, edition.id, extr_pol_id, rel_dec1_id),
+        )
+        extr_run1_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev2_id, edition.id, extr_pol_id, rel_dec2_id),
+        )
+        extr_run2_id = (await cur.fetchone())[0]
+
+        # Claims
+        cur = await conn.execute(
+            "INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at) VALUES (%s, %s, %s, 'На Восточном дали воду', 'на восточном дали воду', %s) RETURNING id",
+            (extr_run1_id, rev1_id, edition.id, _NOW),
+        )
+        claim1_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at) VALUES (%s, %s, %s, 'На АКЗ нет воды', 'на акз нет воды', %s) RETURNING id",
+            (extr_run2_id, rev2_id, edition.id, _NOW),
+        )
+        claim2_id = (await cur.fetchone())[0]
+
+        # Story
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) VALUES (%s, 1, 'open', 'Ситуация с водоснабжением', 'h-c-story', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        s_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s_rev_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s), (%s, %s, %s)",
+            (story_id, claim1_id, _NOW, story_id, claim2_id, _NOW),
+        )
+
+        # Snapshot & Select
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-comment-attribution",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        frozen = await adapter.build(run.id)
+        card = frozen.analysis.cards[0]
+
+        ref1 = f"facebook:source:{src_id}:item:{item1_id}:rev:{rev1_id}"
+        ref2 = f"facebook:source:{src_id}:item:{item2_id}:rev:{rev2_id}"
+
+        # 1. Named comment attribution
+        elem1 = next(e for e in card.community_observations if e.source_refs == [ref1])
+        assert elem1.attribution == "Анна Сидорова (Бердянск FB)"
+        rec1 = frozen.writer_bundle.records[ref1]
+        assert rec1.message.sender == "Анна Сидорова (Бердянск FB)"
+        assert rec1.message.channel_name == "Бердянск FB"
+        assert rec1.source_type == "comment"
+
+        # 2. Anonymous comment fallback attribution
+        elem2 = next(e for e in card.community_observations if e.source_refs == [ref2])
+        assert elem2.attribution == "участник сообщества (Бердянск FB)"
+        rec2 = frozen.writer_bundle.records[ref2]
+        assert rec2.message.sender == "участник сообщества (Бердянск FB)"
+        assert rec2.message.channel_name == "Бердянск FB"
+        assert rec2.source_type == "comment"

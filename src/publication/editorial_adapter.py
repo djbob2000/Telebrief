@@ -171,6 +171,15 @@ class KnowledgeEditorialAdapter:
             if run is None:
                 raise ValueError(f"publication run {run_id} not found")
 
+            ep_cur = await conn.execute(
+                "SELECT config->'excluded_platforms' FROM eligibility_policy_versions WHERE id = %s",
+                (run.eligibility_policy_id,),
+            )
+            ep_row = await ep_cur.fetchone()
+            excluded_platforms = (
+                ep_row[0] if (ep_row and isinstance(ep_row[0], list)) else []
+            ) or []
+
             inputs = await self.repo.load_sealed_inputs(conn, run_id)
             if not inputs:
                 raise ValueError(f"publication run {run_id} has no sealed inputs")
@@ -198,7 +207,8 @@ class KnowledgeEditorialAdapter:
                     SELECT c.id, c.assertion_text, c.normalized_assertion,
                            s.platform, s.name, si.external_id, si.published_at,
                            sir.text_content, si.canonical_url, s.url, s.external_id, s.role,
-                           s.id AS source_id, si.id AS source_item_id, sir.id AS source_item_revision_id
+                           s.id AS source_id, si.id AS source_item_id, sir.id AS source_item_revision_id,
+                           si.kind, si.author_name
                     FROM claims c
                     JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
                     JOIN source_items si ON si.id = sir.source_item_id
@@ -233,11 +243,24 @@ class KnowledgeEditorialAdapter:
                         source_id,
                         source_item_id,
                         source_item_rev_id,
+                        item_kind,
+                        item_author_name,
                     ) = crow
                     ref_key = f"{platform}:source:{source_id}:item:{source_item_id}:rev:{source_item_rev_id}"
                     card_source_refs.append(ref_key)
 
                     is_official = s_role == "official"
+                    is_comment = (item_kind in ("facebook_comment", "comment")) or str(
+                        ext_id
+                    ).startswith("comment:")
+                    container_name = src_name or platform
+                    if is_comment:
+                        author_label = item_author_name or "участник сообщества"
+                        attribution_label = f"{author_label} ({container_name})"
+                    else:
+                        attribution_label = src_name or (
+                            "официальные источники" if is_official else "сообщения жителей"
+                        )
 
                     if ref_key not in records:
                         from src.collector import Message
@@ -266,12 +289,17 @@ class KnowledgeEditorialAdapter:
                         if raw_ext.isdigit():
                             msg_num = int(raw_ext)
 
+                        msg_sender = (
+                            attribution_label
+                            if is_comment
+                            else (item_author_name or src_name or platform)
+                        )
                         msg = Message(
                             text=text_content or assertion,
-                            sender=src_name or platform,
+                            sender=msg_sender,
                             timestamp=pub_at or dt.datetime.now(dt.timezone.utc),
                             link=link,
-                            channel_name=src_name or platform,
+                            channel_name=container_name,
                             has_media=False,
                             media_type="",
                             message_id=msg_num,
@@ -279,7 +307,9 @@ class KnowledgeEditorialAdapter:
                         records[ref_key] = SourceRecord(
                             ref=ref_key,
                             message=msg,
-                            source_type="official" if is_official else "channel",
+                            source_type="official"
+                            if is_official
+                            else ("comment" if is_comment else "channel"),
                             context_text=text_content or assertion,
                         )
 
@@ -290,7 +320,7 @@ class KnowledgeEditorialAdapter:
                                 text=assertion,
                                 source_refs=[ref_key],
                                 status="established",
-                                attribution=src_name or "официальные источники",
+                                attribution=attribution_label,
                             )
                         )
                     else:
@@ -299,13 +329,23 @@ class KnowledgeEditorialAdapter:
                                 text=assertion,
                                 source_refs=[ref_key],
                                 status="attributed",
-                                attribution=src_name or "сообщения жителей",
+                                attribution=attribution_label,
                             )
                         )
 
                 representative_refs = list(dict.fromkeys(card_source_refs))
-                allowed_assertions = [r[2] or r[1] for r in claim_rows if (r[2] or r[1])]
-                card_summary = " ".join(allowed_assertions) if allowed_assertions else semantic_text
+                card_summary = semantic_text
+                if excluded_platforms:
+                    import re
+
+                    for plat in excluded_platforms:
+                        if plat == "facebook":
+                            card_summary = re.sub(
+                                r"https?://(?:www\.)?facebook\.com\S*",
+                                "",
+                                card_summary,
+                                flags=re.IGNORECASE,
+                            ).strip()
 
                 if not card_hard_facts and not card_community_obs:
                     card_hard_facts = [

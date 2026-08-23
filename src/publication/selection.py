@@ -200,8 +200,8 @@ class EditorialSelectionService:
                     )
                     claim_ids = [r[0] for r in await c_cur.fetchall()]
 
-                    # If no allowed claims remain, this story is not eligible for publication inputs
-                    if not claim_ids:
+                    # If platforms are excluded and no allowed claims remain, skip this story
+                    if excluded_platforms and not claim_ids:
                         continue
 
                     ec_cur = await conn.execute(

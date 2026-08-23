@@ -108,3 +108,49 @@ async def test_facebook_jobs_bypass_when_disabled():
             await refresh_facebook_comments(source_item_revision_id=1, post_item_id=1)
             await dispatch_facebook_deep_sweep(timestamp=int(_NOW.timestamp()))
             mock_browser.assert_not_called()
+
+
+async def test_refresh_facebook_comments_skips_when_source_disabled():
+    """Verify that if individual Source is disabled (enabled=False), comment refresh is skipped without browser launch."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_uow = MagicMock()
+    mock_conn = MagicMock()
+    mock_cur = MagicMock()
+    # Row matching SELECT si.external_id, s.id, s.platform... with enabled=False
+    mock_cur.fetchone = AsyncMock(
+        return_value=(
+            "post:123",
+            1,
+            "facebook",
+            "facebook_group",
+            "https://www.facebook.com/groups/test",
+            "https://www.facebook.com/groups/test",
+            "Test Group",
+            "community",
+            False,
+            {},
+            _NOW,
+            _NOW,
+        )
+    )
+    mock_conn.execute = AsyncMock(return_value=mock_cur)
+    mock_cm = AsyncMock()
+    mock_cm.__aenter__ = AsyncMock(return_value=mock_conn)
+    mock_cm.__aexit__ = AsyncMock(return_value=None)
+    mock_uow.transaction = MagicMock(return_value=mock_cm)
+
+    mock_runtime = MagicMock()
+    mock_runtime.uow = mock_uow
+
+    with (
+        patch("src.jobs.facebook.get_runtime", return_value=mock_runtime),
+        patch("src.jobs.facebook.load_config") as mock_cfg,
+        patch("src.providers.facebook.runtime_policy.is_facebook_enabled", return_value=True),
+        patch("src.providers.facebook.browser.FacebookBrowserSession") as mock_browser,
+    ):
+        cfg = MagicMock()
+        cfg.facebook = MagicMock(enabled=True)
+        mock_cfg.return_value = cfg
+        await refresh_facebook_comments(source_item_revision_id=1, post_item_id=1)
+        mock_browser.assert_not_called()

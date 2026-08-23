@@ -2456,3 +2456,65 @@ class TestKnowledgeNoEmbeddingsMode:
         assert await _runs_status(conn, outcome.run.id) == "succeeded"
         # No poison embedding jobs may be scheduled for the sentinel vector space.
         assert await _deferred_jobs(pool, EMBED_REVISION_TASK) == []
+
+    async def test_knowledge_no_embeddings_place_mention_resolution_handoff_to_matching(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app
+    ):
+        """Regression test for Critical 2:
+        knowledge_no_embeddings + ClaimPlaceMention -> resolved/unresolved -> match_claim(None) -> Story
+        """
+        from src.processing.places import PlaceResolutionPolicyService, PlaceResolutionService
+        from src.repositories.places import PlaceRepository
+
+        # 1. Create claim without vector embeddings
+        rev = await revision_factory()
+        claim = await _make_claim(
+            conn,
+            edition.id,
+            rev.id,
+            assertion="В Бердянске на ул. Горького ведутся ремонтные работы",
+        )
+
+        # 2. Attach a ClaimPlaceMention
+        places_repo = PlaceRepository()
+        async with uow.transaction() as db:
+            mention, _ = await places_repo.create_mention(
+                db,
+                claim_id=claim.id,
+                original_text="ул. Горького",
+            )
+            place_pol = await PlaceResolutionPolicyService().ensure_current(
+                db, edition_id=edition.id
+            )
+
+        # 3. Resolve place mention in knowledge_no_embeddings mode
+        place_service = PlaceResolutionService(
+            uow=uow,
+            processing_mode="knowledge_no_embeddings",
+        )
+        res = await place_service.resolve_mention(mention.id, place_pol.id)
+        assert res.status in ("resolved", "unresolved")
+
+        # 4. Assert prerequisite barrier deferred match_claim with claim_embedding_id=None
+        jobs = await _deferred_jobs(pool, MATCH_TASK)
+        assert len(jobs) == 1
+        assert jobs[0]["args"]["claim_id"] == claim.id
+        assert jobs[0]["args"]["claim_embedding_id"] is None
+        policy_id = jobs[0]["args"]["policy_id"]
+
+        # 5. Execute StoryMatchingService with claim_embedding_id=None
+        matcher = _FixedMatcher(
+            {
+                "assignment": "NEW_STORY",
+                "story_update": {
+                    "semantic_changed": True,
+                    "title": "Ремонт на Горького",
+                    "summary": "Ремонтные работы на улице Горького в Бердянске.",
+                    "current_state": "developing",
+                    "semantic_text": "Ремонтные работы на улице Горького.",
+                },
+            }
+        )
+        outcome = await _service(uow, matcher).run(claim.id, policy_id, claim_embedding_id=None)
+        assert outcome.story_id is not None
+        assert await _runs_status(conn, outcome.run.id) == "succeeded"

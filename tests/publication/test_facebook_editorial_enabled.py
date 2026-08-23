@@ -71,27 +71,27 @@ class TestFacebookEditorialEnabled:
         # Source items
         cur = await conn.execute(
             """
-            INSERT INTO source_items (source_id, external_id, published_at)
-            VALUES (%s, 'msg:101', %s) RETURNING id
+            INSERT INTO source_items (source_id, kind, external_id, first_collected_at, published_at)
+            VALUES (%s, 'msg', 'msg:101', %s, %s) RETURNING id
             """,
-            (tg_src_id, _PAST),
+            (tg_src_id, _PAST, _PAST),
         )
         tg_item_id = (await cur.fetchone())[0]
 
         cur = await conn.execute(
             """
-            INSERT INTO source_items (source_id, external_id, published_at)
-            VALUES (%s, 'post:999', %s) RETURNING id
+            INSERT INTO source_items (source_id, kind, external_id, first_collected_at, published_at)
+            VALUES (%s, 'facebook_post', 'post:999', %s, %s) RETURNING id
             """,
-            (fb_src_id, _PAST),
+            (fb_src_id, _PAST, _PAST),
         )
         fb_item_id = (await cur.fetchone())[0]
 
         # Source item revisions
         cur = await conn.execute(
             """
-            INSERT INTO source_item_revisions (source_item_id, text_content, content_hash, created_at)
-            VALUES (%s, 'Телеграм новость: ремонт водопровода', 'hash-tg-1', %s) RETURNING id
+            INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at)
+            VALUES (%s, 1, 'hash-tg-1', 'Телеграм новость: ремонт водопровода', %s) RETURNING id
             """,
             (tg_item_id, _PAST),
         )
@@ -99,29 +99,84 @@ class TestFacebookEditorialEnabled:
 
         cur = await conn.execute(
             """
-            INSERT INTO source_item_revisions (source_item_id, text_content, content_hash, created_at)
-            VALUES (%s, 'Фейсбук комментарий: на Восточном нет воды', 'hash-fb-1', %s) RETURNING id
+            INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at)
+            VALUES (%s, 1, 'hash-fb-1', 'Фейсбук комментарий: на Восточном нет воды', %s) RETURNING id
             """,
             (fb_item_id, _PAST),
         )
         fb_sir_id = (await cur.fetchone())[0]
 
+        # Relevance & extraction policies / runs
+        cur = await conn.execute(
+            """
+            INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version)
+            VALUES (%s, 1, 'h-rel', 'v-rel') RETURNING id
+            """,
+            (edition_id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason)
+            VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id
+            """,
+            (tg_sir_id, edition_id, rel_pol_id),
+        )
+        tg_rel_dec_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason)
+            VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id
+            """,
+            (fb_sir_id, edition_id, rel_pol_id),
+        )
+        fb_rel_dec_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version)
+            VALUES (%s, 1, 'h-extr', 'v-extr') RETURNING id
+            """,
+            (edition_id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status)
+            VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id
+            """,
+            (tg_sir_id, edition_id, extr_pol_id, tg_rel_dec_id),
+        )
+        tg_extr_run_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status)
+            VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id
+            """,
+            (fb_sir_id, edition_id, extr_pol_id, fb_rel_dec_id),
+        )
+        fb_extr_run_id = (await cur.fetchone())[0]
+
         # Claims
         cur = await conn.execute(
             """
-            INSERT INTO claims (source_item_revision_id, assertion_text, normalized_assertion, created_at)
-            VALUES (%s, 'Ремонт водопровода начат', 'Ремонт водопровода начат', %s) RETURNING id
+            INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at)
+            VALUES (%s, %s, %s, 'Ремонт водопровода начат', 'Ремонт водопровода начат', %s) RETURNING id
             """,
-            (tg_sir_id, _PAST),
+            (tg_extr_run_id, tg_sir_id, edition_id, _PAST),
         )
         tg_claim_id = (await cur.fetchone())[0]
 
         cur = await conn.execute(
             """
-            INSERT INTO claims (source_item_revision_id, assertion_text, normalized_assertion, created_at)
-            VALUES (%s, 'На Восточном отключили воду', 'На Восточном отключили воду', %s) RETURNING id
+            INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at)
+            VALUES (%s, %s, %s, 'На Восточном отключили воду', 'На Восточном отключили воду', %s) RETURNING id
             """,
-            (fb_sir_id, _PAST),
+            (fb_extr_run_id, fb_sir_id, edition_id, _PAST),
         )
         fb_claim_id = (await cur.fetchone())[0]
 
@@ -132,6 +187,8 @@ class TestFacebookEditorialEnabled:
             "fb_sir_id": fb_sir_id,
             "tg_claim_id": tg_claim_id,
             "fb_claim_id": fb_claim_id,
+            "tg_extr_run_id": tg_extr_run_id,
+            "fb_extr_run_id": fb_extr_run_id,
         }
 
     async def test_case_1_fb_only_story_is_not_candidate_when_editorial_disabled(
@@ -458,20 +515,20 @@ class TestFacebookEditorialEnabled:
         # State event in past: active
         await conn.execute(
             """
-            INSERT INTO story_state_events (story_id, from_state, to_state, reason, created_at)
-            VALUES (%s, 'open', 'active', 'Created active', %s)
+            INSERT INTO story_state_events (story_id, type, reason, observed_at, created_at)
+            VALUES (%s, 'active', 'Created active', %s, %s)
             """,
-            (story_id, _PAST),
+            (story_id, _PAST, _PAST),
         )
 
         # State event in future (after _NOW): archived
         after_now = _NOW + dt.timedelta(minutes=30)
         await conn.execute(
             """
-            INSERT INTO story_state_events (story_id, from_state, to_state, reason, created_at)
-            VALUES (%s, 'active', 'archived', 'Archived later', %s)
+            INSERT INTO story_state_events (story_id, type, reason, observed_at, created_at)
+            VALUES (%s, 'archived', 'Archived later', %s, %s)
             """,
-            (story_id, after_now),
+            (story_id, after_now, after_now),
         )
 
         uow = DatabaseUnitOfWork(pool)
@@ -523,3 +580,83 @@ class TestFacebookEditorialEnabled:
         )
         lookback = int((await cur.fetchone())[0])
         assert lookback == 72
+
+    async def test_case_7_revision_only_activity_from_excluded_platform_does_not_make_old_story_candidate(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Important 5: Old story with past TG claim + recent FB claim revision -> NOT candidate when FB excluded."""
+        old_time = _NOW - dt.timedelta(hours=48)
+        ids = await self._setup_sources_and_claims(conn, edition.id)
+
+        # 1. Story created 48h ago
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, old_time),
+        )
+        story_id = (await cur.fetchone())[0]
+
+        # 2. Revision 1 created 48h ago with TG claim
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Старая телеграм новость', 'h-old-1', %s) RETURNING id
+            """,
+            (story_id, old_time),
+        )
+        rev1_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev1_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, ids["tg_claim_id"], old_time),
+        )
+
+        # 3. Revision 2 created at _PAST (recent, within 24h) triggered by FB claim
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 2, 'open', 'Обновление из Фейсбука', 'h-fb-2', %s) RETURNING id
+            """,
+            (story_id, _PAST),
+        )
+        rev2_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev2_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, ids["fb_claim_id"], _PAST),
+        )
+
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        cfg = Config(
+            channels=[],
+            settings=Settings(
+                schedule_time="08:00",
+                timezone="UTC",
+                lookback_hours=24,
+                openai_model="gpt-5-nano",
+                openai_temperature=0.7,
+            ),
+            telegram_api_id=12345,
+            telegram_api_hash="h",
+            telegram_bot_token="t",
+            openai_api_key="k",
+            log_level="INFO",
+            facebook=FacebookConfig(enabled=True, editorial_enabled=False),
+        )
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            config=cfg,
+            request_key="req-fb-excluded-revision-activity",
+        )
+        candidates = await snap_service.seal_candidates(run.id)
+        # Because TG claim is 48h old (outside 24h lookback) and FB is excluded,
+        # FB revision activity must NOT make this story a candidate!
+        assert len(candidates) == 0

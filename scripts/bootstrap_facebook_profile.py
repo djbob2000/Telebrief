@@ -16,6 +16,7 @@ from pathlib import Path
 
 from playwright.async_api import async_playwright
 
+from src.config_loader import load_config
 from src.providers.facebook.auth import (
     FacebookAuthState,
     classify_facebook_page_state,
@@ -27,16 +28,31 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
+def resolve_configured_profile(profile_arg: str, config: Any) -> tuple[str, str]:
+    """Return (name, storage_ref) resolved from config or defaulting to profile_arg."""
+    if hasattr(config, "facebook") and config.facebook and hasattr(config.facebook, "auth_profiles"):
+        for p in config.facebook.auth_profiles:
+            if p.name == profile_arg or p.storage_ref == profile_arg:
+                return p.name, p.storage_ref
+    return profile_arg, profile_arg
+
+
 async def bootstrap_profile(
     *,
     auth_root: str,
-    storage_ref: str,
+    profile_arg: str = "default",
     import_cookies_path: str | None = None,
     discard_cookies_file: bool = False,
 ) -> None:
-    profile_path = resolve_profile_dir(auth_root, storage_ref)
+    try:
+        cfg = load_config()
+    except Exception:
+        cfg = None
+
+    profile_name, profile_storage_ref = resolve_configured_profile(profile_arg, cfg)
+    profile_path = resolve_profile_dir(auth_root, profile_storage_ref)
     ensure_owner_only_directory(profile_path)
-    logger.info("Opening browser profile at %s", profile_path)
+    logger.info("Opening browser profile at %s (profile name: %s)", profile_path, profile_name)
 
     async with async_playwright() as pw:
         context = await pw.chromium.launch_persistent_context(
@@ -76,7 +92,11 @@ async def bootstrap_profile(
                 logger.info("✅ Facebook session verified as READY!")
                 final_state = state
                 break
-            if state in (FacebookAuthState.CHECKPOINT, FacebookAuthState.BLOCKED, FacebookAuthState.ACTION_REQUIRED):
+            if state in (
+                FacebookAuthState.CHECKPOINT_REQUIRED,
+                FacebookAuthState.ACCOUNT_ACTION_REQUIRED,
+                FacebookAuthState.DISABLED,
+            ):
                 logger.warning("Facebook session encountered blocking state: %s", state.value)
                 final_state = state
                 break
@@ -87,21 +107,28 @@ async def bootstrap_profile(
 
         # Update database status for the auth profile
         try:
-            from src.config_loader import load_config
-            from src.db.pool import open_pool
-            from src.repositories.facebook import FacebookRepository
             import datetime as dt
 
-            cfg = load_config()
-            if cfg.database.enabled:
+            from src.db.pool import open_pool
+            from src.repositories.facebook import FacebookRepository
+
+            if cfg and cfg.database.enabled:
                 pool = await open_pool(cfg.database)
                 async with pool.connection() as conn:
                     fb_repo = FacebookRepository()
-                    prof = await fb_repo.get_or_create_auth_profile(
-                        conn, name=storage_ref, storage_ref=storage_ref
+                    prof = await fb_repo.get_auth_profile_by_name(conn, profile_name)
+                    if prof is None:
+                        prof = await fb_repo.get_or_create_auth_profile(
+                            conn, name=profile_name, storage_ref=profile_storage_ref
+                        )
+                    db_status = (
+                        "ready" if final_state == FacebookAuthState.READY else final_state.value
                     )
-                    db_status = "ready" if final_state == FacebookAuthState.READY else final_state.value
-                    verified_at = dt.datetime.now(dt.timezone.utc) if final_state == FacebookAuthState.READY else None
+                    verified_at = (
+                        dt.datetime.now(dt.timezone.utc)
+                        if final_state == FacebookAuthState.READY
+                        else None
+                    )
                     await fb_repo.update_auth_profile_status(
                         conn,
                         profile_id=prof.id,
@@ -110,9 +137,16 @@ async def bootstrap_profile(
                     )
                     await conn.commit()
                 await pool.close()
-                logger.info("Updated database status for profile '%s' to '%s'", storage_ref, db_status)
+                logger.info(
+                    "Updated database status for profile '%s' (id=%s) to '%s'",
+                    profile_name,
+                    prof.id,
+                    db_status,
+                )
         except Exception as exc:
-            logger.warning("Could not update database status for profile '%s': %s", storage_ref, exc)
+            logger.warning(
+                "Could not update database status for profile '%s': %s", profile_name, exc
+            )
 
 
 def main() -> None:
@@ -136,7 +170,7 @@ def main() -> None:
     asyncio.run(
         bootstrap_profile(
             auth_root=args.auth_root,
-            storage_ref=args.profile,
+            profile_arg=args.profile,
             import_cookies_path=args.import_cookies,
             discard_cookies_file=args.discard_cookies_file,
         )

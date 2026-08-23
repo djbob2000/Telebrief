@@ -244,12 +244,16 @@ class PlaceResolutionService:
         places: PlaceRepository | None = None,
         policies: PlaceResolutionPolicyRepository | None = None,
         runs: PlaceResolutionRunRepository | None = None,
+        processing_mode: str = "knowledge_full",
+        prerequisites: Any | None = None,
     ) -> None:
         self.uow = uow
         self._resolver = resolver or AliasResolver()
         self._places = places or PlaceRepository()
         self._policies = policies or PlaceResolutionPolicyRepository()
         self._runs = runs or PlaceResolutionRunRepository()
+        self._processing_mode = processing_mode
+        self._prerequisites = prerequisites
 
     async def resolve_mention(self, mention_id: int, policy_id: int):
         """Resolve one mention under the exact queued policy.
@@ -344,8 +348,11 @@ class PlaceResolutionService:
         # Lazy on purpose: src.jobs.processing imports this module's siblings.
         from src.processing.story_matching import StoryMatchingPrerequisiteService
 
-        scheduled = await StoryMatchingPrerequisiteService().maybe_schedule(
-            conn, claim_id=mention.claim_id
+        prereq = self._prerequisites or StoryMatchingPrerequisiteService(
+            processing_mode=self._processing_mode
+        )
+        scheduled = await prereq.maybe_schedule(
+            conn, claim_id=mention.claim_id, processing_mode=self._processing_mode
         )
         if scheduled:
             logger.info(

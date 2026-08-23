@@ -78,7 +78,14 @@ async def refresh_facebook_comments(
         post_external_id = row[0]
         source = Source.from_row(row[1:])
 
-    # Perform browser collection outside domain transaction
+    if not source.enabled:
+        logger.info(
+            "Source %s (%s) is disabled; skipping comment refresh for post %s",
+            source.id,
+            source.name,
+            post_item_id,
+        )
+        return
     from src.providers.facebook.auth import is_profile_runnable
     from src.providers.facebook.browser import FacebookBrowserSession
     from src.repositories.facebook import resolve_auth_profile_name

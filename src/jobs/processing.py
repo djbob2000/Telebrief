@@ -246,7 +246,12 @@ def build_place_resolution_service() -> PlaceResolutionService:
     LLM assist stays unwired until its prompt/config identity joins the
     policy hash, so no AI provider is constructed here yet.
     """
-    return PlaceResolutionService(uow=get_runtime().uow)
+    from src.config_loader import load_config
+
+    config = load_config()
+    telegram_cfg = getattr(config, "telegram", None)
+    processing_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
+    return PlaceResolutionService(uow=get_runtime().uow, processing_mode=processing_mode)
 
 
 @procrastinate_app.task(

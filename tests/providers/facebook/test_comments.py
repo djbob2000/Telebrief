@@ -70,6 +70,64 @@ class TestCommentParsingAndLinkage:
         assert item.parent_external_id == "comment:2001"
         assert item.root_external_id == "post:1001"
 
+    def test_synthetic_id_differs_by_author_for_identical_text(self):
+        source = _make_source()
+        item1, _ = parse_comment_from_data(
+            source=source,
+            post_external_id="post:1001",
+            comment_id="synth_1",
+            text="Да",
+            author_name="Иван",
+            identity_quality="synthetic",
+        )
+        item2, _ = parse_comment_from_data(
+            source=source,
+            post_external_id="post:1001",
+            comment_id="synth_2",
+            text="Да",
+            author_name="Анна",
+            identity_quality="synthetic",
+        )
+        assert item1.author_name == "Иван"
+        assert item2.author_name == "Анна"
+
+    @pytest.mark.asyncio
+    async def test_scanner_extracts_author_name_and_ignores_numeric_profile_link_for_comment_id(
+        self,
+    ):
+        source = _make_source()
+        collector = FacebookCommentCollector()
+        limits = FacebookCommentsConfig(max_comments_per_post=10, max_pages_per_refresh=1)
+
+        # Mock comment node with author link containing 15-digit profile id
+        author_link = MagicMock()
+        author_link.get_attribute = AsyncMock(
+            return_value="https://www.facebook.com/profile.php?id=100088889999111"
+        )
+        author_link.inner_text = AsyncMock(return_value="Иван Петров")
+
+        node = MagicMock()
+        node.inner_text = AsyncMock(return_value="Иван Петров\nДа, действительно так")
+        node.query_selector_all = AsyncMock(return_value=[author_link])
+
+        page = MagicMock()
+        page.query_selector_all = AsyncMock(side_effect=[[node], []])
+
+        batch = await collector.scan_post_with_page(
+            source=source,
+            post_item_id=10,
+            post_external_id="post:1001",
+            page=page,
+            limits=limits,
+        )
+
+        assert len(batch.items) == 1
+        item = batch.items[0]
+        assert item.author_name == "Иван Петров"
+        # Must NOT take the numeric user id from the profile link as native comment id!
+        assert item.metadata.get("identity_quality") == "synthetic"
+        assert "100088889999111" not in item.external_id
+
 
 class TestCommentCompletenessClassification:
     """Tests for stop reasons and partial vs complete classifications."""

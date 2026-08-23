@@ -225,3 +225,44 @@ class TestFacebookBrowserSession:
         args = list(kwargs.get("args") or [])
         assert all("AutomationControlled" not in arg for arg in args)
         assert "user_agent" not in kwargs
+
+
+class TestBootstrapFacebookProfile:
+    """Unit tests for bootstrap_facebook_profile helper functions."""
+
+    def test_resolve_configured_profile_by_name(self):
+        from scripts.bootstrap_facebook_profile import resolve_configured_profile
+        from src.config_loader import FacebookAuthProfileBootstrap, FacebookConfig
+
+        cfg = MagicMock()
+        cfg.facebook = FacebookConfig(
+            auth_profiles=[
+                FacebookAuthProfileBootstrap(name="my-profile", storage_ref="my-storage-dir")
+            ]
+        )
+
+        name, storage_ref = resolve_configured_profile("my-profile", cfg)
+        assert name == "my-profile"
+        assert storage_ref == "my-storage-dir"
+
+    def test_resolve_configured_profile_by_storage_ref(self):
+        from scripts.bootstrap_facebook_profile import resolve_configured_profile
+        from src.config_loader import FacebookAuthProfileBootstrap, FacebookConfig
+
+        cfg = MagicMock()
+        cfg.facebook = FacebookConfig(
+            auth_profiles=[
+                FacebookAuthProfileBootstrap(name="my-profile", storage_ref="my-storage-dir")
+            ]
+        )
+
+        name, storage_ref = resolve_configured_profile("my-storage-dir", cfg)
+        assert name == "my-profile"
+        assert storage_ref == "my-storage-dir"
+
+    def test_resolve_configured_profile_fallback_unconfigured(self):
+        from scripts.bootstrap_facebook_profile import resolve_configured_profile
+
+        name, storage_ref = resolve_configured_profile("custom_prof", None)
+        assert name == "custom_prof"
+        assert storage_ref == "custom_prof"

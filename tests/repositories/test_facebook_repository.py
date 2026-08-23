@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 import psycopg
 import pytest
 
@@ -92,3 +94,52 @@ class TestFacebookAuthProfileResolution:
         assert refreshed is not None
         assert refreshed.status == "disabled"
         assert refreshed.error_kind == "challenge_failed"
+
+    async def test_list_posts_due_for_deep_refresh_filters_disabled_sources(
+        self, repo_conn: psycopg.AsyncConnection
+    ):
+        repo = FacebookRepository()
+        now = dt.datetime.now(dt.timezone.utc)
+        # 1. Enabled FB source + item + revision
+        cur = await repo_conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role, enabled)
+            VALUES ('facebook', 'facebook_group', 'fb_enabled', 'https://fb.com/1', 'FB Enabled', 'community', true)
+            RETURNING id
+            """
+        )
+        s_enabled_id = (await cur.fetchone())[0]
+        cur = await repo_conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at, published_at) VALUES (%s, 'facebook_post', 'post:1', %s, %s) RETURNING id",
+            (s_enabled_id, now, now),
+        )
+        si_enabled_id = (await cur.fetchone())[0]
+        await repo_conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h1', 'Post 1', %s)",
+            (si_enabled_id, now),
+        )
+
+        # 2. Disabled FB source + item + revision
+        cur = await repo_conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role, enabled)
+            VALUES ('facebook', 'facebook_group', 'fb_disabled', 'https://fb.com/2', 'FB Disabled', 'community', false)
+            RETURNING id
+            """
+        )
+        s_disabled_id = (await cur.fetchone())[0]
+        cur = await repo_conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at, published_at) VALUES (%s, 'facebook_post', 'post:2', %s, %s) RETURNING id",
+            (s_disabled_id, now, now),
+        )
+        si_disabled_id = (await cur.fetchone())[0]
+        await repo_conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h2', 'Post 2', %s)",
+            (si_disabled_id, now),
+        )
+
+        # Query candidates for deep refresh
+        candidates = await repo.list_posts_due_for_deep_refresh(repo_conn, scheduled_at=now)
+        cand_item_ids = [c.source_item_id for c in candidates]
+        assert si_enabled_id in cand_item_ids
+        assert si_disabled_id not in cand_item_ids

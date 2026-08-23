@@ -371,6 +371,7 @@ class PublicationRepository:
                         SELECT MAX(event_time)
                         FROM (
                             SELECT lr.revision_created_at AS event_time
+                            WHERE cardinality(%s::text[]) = 0
                             UNION ALL
                             SELECT MAX(sc.attached_at) AS event_time
                             FROM story_claims sc
@@ -383,18 +384,21 @@ class PublicationRepository:
                               AND c.created_at <= %s
                               AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
                             UNION ALL
-                            SELECT MAX(sse.created_at) AS event_time
+                            SELECT MAX(sse.observed_at) AS event_time
                             FROM story_state_events sse
                             WHERE sse.story_id = lr.story_id
-                              AND sse.created_at <= %s
+                              AND sse.observed_at <= %s
                         ) t
                     ) AS last_activity_at,
-                    EXISTS (
-                        SELECT 1
-                        FROM story_revisions sr2
-                        WHERE sr2.story_id = lr.story_id
-                          AND sr2.created_at >= %s
-                          AND sr2.created_at <= %s
+                    (
+                        cardinality(%s::text[]) = 0
+                        AND EXISTS (
+                            SELECT 1
+                            FROM story_revisions sr2
+                            WHERE sr2.story_id = lr.story_id
+                              AND sr2.created_at >= %s
+                              AND sr2.created_at <= %s
+                        )
                     ) AS has_recent_revision,
                     EXISTS (
                         SELECT 1
@@ -413,19 +417,19 @@ class PublicationRepository:
                         SELECT 1
                         FROM story_state_events sse2
                         WHERE sse2.story_id = lr.story_id
-                          AND sse2.created_at >= %s
-                          AND sse2.created_at <= %s
+                          AND sse2.observed_at >= %s
+                          AND sse2.observed_at <= %s
                     ) AS has_recent_event
                 FROM latest_revs lr
                 JOIN stories s ON s.id = lr.story_id
                 WHERE lr.current_state NOT IN ('invalid', 'archived', 'rejected')
                   AND COALESCE(
                       (
-                          SELECT sse.to_state
+                          SELECT sse.type
                           FROM story_state_events sse
                           WHERE sse.story_id = lr.story_id
-                            AND sse.created_at <= %s
-                          ORDER BY sse.created_at DESC, sse.id DESC
+                            AND sse.observed_at <= %s
+                          ORDER BY sse.observed_at DESC, sse.id DESC
                           LIMIT 1
                       ), 'active'
                   ) <> 'archived'
@@ -446,7 +450,8 @@ class PublicationRepository:
                 has_recent_claim,
                 has_recent_event
             FROM story_activity
-            WHERE claim_count > 0 AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
+            WHERE (cardinality(%s::text[]) = 0 OR claim_count > 0)
+              AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
             ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
             """,
             (
@@ -468,6 +473,8 @@ class PublicationRepository:
                 snapshot_at,
                 excluded_platforms,
                 excluded_platforms,
+                # last_activity_at revision_created_at check
+                excluded_platforms,
                 # last_activity_at claims
                 snapshot_at,
                 snapshot_at,
@@ -475,7 +482,8 @@ class PublicationRepository:
                 excluded_platforms,
                 # last_activity_at state_events
                 snapshot_at,
-                # has_recent_revision
+                # has_recent_revision check
+                excluded_platforms,
                 window_start,
                 snapshot_at,
                 # has_recent_claim
@@ -489,6 +497,8 @@ class PublicationRepository:
                 snapshot_at,
                 # historical lifecycle_state
                 snapshot_at,
+                # outer WHERE (cardinality = 0 OR claim_count > 0)
+                excluded_platforms,
                 # outer WHERE story_created_at
                 window_start,
             ),

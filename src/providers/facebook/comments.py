@@ -25,7 +25,6 @@ from src.ingestion.models import (
 from src.ingestion.service import IngestionService
 from src.providers.facebook.collector import (
     PLATFORM_FACEBOOK,
-    extract_post_id_from_url,
 )
 from src.repositories.facebook import FacebookRepository
 
@@ -296,31 +295,47 @@ class FacebookCommentCollector:
                     if not text or len(text) < 2:
                         continue
 
-                    # Extract ID from links
+                    # Extract ID and author from links
                     links = await node.query_selector_all("a[href]")
                     cid = None
+                    author_name = None
                     identity_quality = "synthetic"
                     for link in links:
                         href = await link.get_attribute("href") or ""
                         parsed_cid = extract_comment_id_from_url(href)
-                        if parsed_cid:
+                        if parsed_cid and not cid:
                             cid = parsed_cid
                             identity_quality = "native"
-                            break
-                        pid = extract_post_id_from_url(href)
-                        if pid and pid != post_external_id.replace("post:", ""):
-                            cid = pid
-                            identity_quality = "native"
-                            break
+
+                        # Author name extraction from user profile / author link in comment node
+                        if not author_name:
+                            link_text = (await link.inner_text()).strip()
+                            if (
+                                link_text
+                                and len(link_text) < 60
+                                and not link_text.isdigit()
+                                and not link_text.startswith("#")
+                            ):
+                                if link_text.lower() not in {
+                                    "reply",
+                                    "ответить",
+                                    "нравится",
+                                    "like",
+                                    "share",
+                                    "поделиться",
+                                    "показать перевод",
+                                    "see translation",
+                                }:
+                                    author_name = link_text
 
                     # Threading: the nearest outer comment container wins as parent.
                     depth = await _comment_nesting_depth(node)
                     parent_comment_id = depth_to_cid.get(depth - 1) if depth > 0 else None
 
                     if not cid:
-                        # Scoped synthetic fallback ID: post_external_id + parent_comment_id + normalized_text
+                        # Scoped synthetic fallback ID: post_external_id + parent_comment_id + author_name + normalized_text
                         norm_text = " ".join(text.split())
-                        scope_str = f"{post_external_id}:{parent_comment_id or ''}:{norm_text}"
+                        scope_str = f"{post_external_id}:{parent_comment_id or ''}:{author_name or ''}:{norm_text}"
                         cid = hashlib.sha256(scope_str.encode("utf-8")).hexdigest()[:16]
                         identity_quality = "synthetic"
 
@@ -340,6 +355,7 @@ class FacebookCommentCollector:
                         post_external_id=post_external_id,
                         comment_id=cid,
                         text=text,
+                        author_name=author_name,
                         published_at=None,
                         parent_comment_id=parent_comment_id,
                         identity_quality=identity_quality,
