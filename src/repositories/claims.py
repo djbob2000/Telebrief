@@ -468,6 +468,18 @@ class ClaimRepository:
         rows = await cursor.fetchall()
         return [Claim.from_row(row) for row in rows]
 
+    async def insert_relation(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        from_claim_id: int,
+        to_claim_id: int,
+        relation_type: str,
+    ) -> ClaimRelation:
+        return await self.attach_relation(
+            conn, from_claim_id=from_claim_id, to_claim_id=to_claim_id, relation_type=relation_type
+        )
+
     async def attach_relation(
         self,
         conn: psycopg.AsyncConnection,
@@ -485,6 +497,25 @@ class ClaimRepository:
             (from_claim_id, to_claim_id, relation_type),
         )
         return ClaimRelation.from_row(await cursor.fetchone())
+
+    async def list_relations_for_claims(
+        self,
+        conn: psycopg.AsyncConnection,
+        claim_ids: Sequence[int],
+    ) -> list[ClaimRelation]:
+        unique_ids = sorted(set(claim_ids))
+        if not unique_ids:
+            return []
+        cursor = await conn.execute(
+            """
+            SELECT id, from_claim_id, to_claim_id, relation_type, created_at
+            FROM claim_relations
+            WHERE from_claim_id = ANY(%s) OR to_claim_id = ANY(%s)
+            ORDER BY id ASC
+            """,
+            (unique_ids, unique_ids),
+        )
+        return [ClaimRelation.from_row(row) for row in await cursor.fetchall()]
 
     async def insert_state_event(
         self,

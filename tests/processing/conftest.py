@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import procrastinate
 import psycopg
 import pytest
+from pgvector.psycopg import register_vector_async
 from psycopg_pool import AsyncConnectionPool
 
 from src.config_loader import DatabaseConfig
@@ -22,7 +23,11 @@ from src.db.pool import close_pool, open_pool
 from src.db.uow import DatabaseUnitOfWork
 
 _TRUNCATE_TABLES = """
-    TRUNCATE story_relation_proposals, story_match_decisions,
+    TRUNCATE verification_assessments, verification_policy_versions,
+             evidence_cluster_members, evidence_clusters,
+             evidence_assessment_run_claims, evidence_assessment_runs,
+             evidence_assessment_policy_versions,
+             story_relation_proposals, story_match_decisions,
              story_matching_candidates, story_matching_runs,
              story_matching_policy_versions,
              story_relations, story_state_events, story_claims,
@@ -71,6 +76,7 @@ async def conn(database_config: DatabaseConfig):
     conn: psycopg.AsyncConnection = await psycopg.AsyncConnection.connect(
         database_config.url, autocommit=True
     )
+    await register_vector_async(conn)
     try:
         await _clear_slice(conn)
         yield conn

@@ -78,9 +78,18 @@ EXTRACT_CLAIMS_TASK_NAME = "extract_claims"
 EMBED_CLAIM_TASK_NAME = "embed_claim"
 EMBED_STORY_REVISION_TASK_NAME = "embed_story_revision"
 RESOLVE_PLACE_MENTION_TASK_NAME = "resolve_place_mention"
+ASSESS_EVIDENCE_TASK_NAME = "assess_evidence"
+MAYBE_VERIFY_EVIDENCE_TASK_NAME = "maybe_verify_evidence"
 PROCESSING_QUEUE = "processing"
 
 BACKFILL_BATCH_SIZE = 500
+
+EVIDENCE_RETRY_STRATEGY = procrastinate.RetryStrategy(
+    max_attempts=3,
+    wait=30,
+    linear_wait=60,
+    retry_exceptions=(TransientProcessingError,),
+)
 
 # Total executions = initial attempt + 2 retries; waits mirror the collection
 # strategy: 30s after the first failure, then 90s.
@@ -742,3 +751,103 @@ async def backfill_place_resolutions(
         policy.id,
     )
     return len(gaps)
+
+
+@procrastinate_app.task(
+    name=ASSESS_EVIDENCE_TASK_NAME,
+    queue=PROCESSING_QUEUE,
+    retry=EVIDENCE_RETRY_STRATEGY,
+    pass_context=True,
+)
+async def assess_evidence(
+    context,
+    story_id: int,
+    story_revision_id: int,
+    policy_id: int,
+) -> None:
+    """Assess evidence clustering for a story revision under the queued policy."""
+    from src.processing.evidence import EvidenceAssessmentService
+
+    runtime = get_runtime()
+    service = EvidenceAssessmentService(uow=runtime.uow)
+    await service.assess(
+        story_id=story_id,
+        story_revision_id=story_revision_id,
+        policy_id=policy_id,
+    )
+
+
+@procrastinate_app.task(
+    name=MAYBE_VERIFY_EVIDENCE_TASK_NAME,
+    queue=PROCESSING_QUEUE,
+    retry=EVIDENCE_RETRY_STRATEGY,
+    pass_context=True,
+)
+async def maybe_verify_evidence(
+    context,
+    evidence_assessment_run_id: int,
+) -> None:
+    """Optional lightweight verification for an evidence assessment run."""
+    from src.processing.verification import VerificationService
+    from src.repositories.evidence import (
+        EvidenceAssessmentRunRepository,
+        EvidenceClusterRepository,
+    )
+
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        run = await EvidenceAssessmentRunRepository().get_by_id(conn, evidence_assessment_run_id)
+        if run is None or run.status != "succeeded":
+            return
+        clusters = await EvidenceClusterRepository().list_clusters_for_run(conn, run.id)
+    if not clusters:
+        return
+    service = VerificationService(uow=runtime.uow)
+    await service.assess(run=run, clusters=clusters)
+
+
+async def backfill_evidence_assessments(
+    edition_id: int,
+    policy_id: int,
+    *,
+    batch_size: int = BACKFILL_BATCH_SIZE,
+) -> int:
+    """Queue assess_evidence for active/reopened stories lacking a succeeded assessment under this policy."""
+    from src.repositories.evidence import EvidencePolicyRepository
+
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        policy = await EvidencePolicyRepository().get_by_id(conn, policy_id)
+        if policy is None or policy.edition_id != edition_id:
+            raise ValueError(f"evidence policy {policy_id} does not belong to edition {edition_id}")
+        cursor = await conn.execute(
+            """
+            SELECT s.id, s.current_revision_id
+            FROM stories s
+            WHERE s.edition_id = %s
+              AND s.lifecycle_state IN ('active', 'reopened')
+              AND s.current_revision_id IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM evidence_assessment_runs ear
+                  WHERE ear.story_revision_id = s.current_revision_id
+                    AND ear.policy_id = %s
+                    AND ear.status = 'succeeded'
+              )
+            LIMIT %s
+            """,
+            (edition_id, policy_id, batch_size),
+        )
+        stories_to_queue = await cursor.fetchall()
+        for story_id, revision_id in stories_to_queue:
+            await assess_evidence.configure(connection=conn).defer_async(
+                story_id=story_id,
+                story_revision_id=revision_id,
+                policy_id=policy.id,
+            )
+    logger.info(
+        "backfill_evidence_assessments queued %d stories edition=%s policy=%s",
+        len(stories_to_queue),
+        edition_id,
+        policy.id,
+    )
+    return len(stories_to_queue)

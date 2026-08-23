@@ -83,6 +83,16 @@ class StoryRepository:
             (story_id, claim_id, attached_at),
         )
 
+    async def list_attached_claim_ids(
+        self, conn: psycopg.AsyncConnection, story_id: int
+    ) -> list[int]:
+        """List all claim ids attached to this story, ordered by id."""
+        cursor = await conn.execute(
+            "SELECT claim_id FROM story_claims WHERE story_id = %s ORDER BY claim_id ASC",
+            (story_id,),
+        )
+        return [row[0] for row in await cursor.fetchall()]
+
     async def create_revision_if_semantic_change(
         self,
         conn: psycopg.AsyncConnection,

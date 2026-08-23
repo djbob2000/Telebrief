@@ -750,6 +750,8 @@ class StoryMatchingService:
         )
         if applied.created_revision is not None:
             await self._defer_revision_embedding(conn, context.policy, applied.created_revision)
+        if applied.story_id is not None:
+            await self._defer_evidence_assessment(conn, context.claim.edition_id, applied.story_id)
         await self._runs.mark_succeeded(conn, locked.run.id, completed_at=_now())
         return StoryMatchingOutcome(
             run=locked.run,
@@ -906,6 +908,26 @@ class StoryMatchingService:
             story_revision_id=revision.id,
             model=policy.embedding_model,
             dimensions=policy.embedding_dimensions,
+        )
+
+    async def _defer_evidence_assessment(
+        self,
+        conn: psycopg.AsyncConnection,
+        edition_id: int,
+        story_id: int,
+    ) -> None:
+        # Lazy on purpose: src.jobs.processing imports this module at top level.
+        from src.jobs.processing import assess_evidence
+        from src.processing.evidence import EvidencePolicyService
+
+        current_revision_id = await self._stories.current_revision_id(conn, story_id)
+        if current_revision_id is None:
+            return
+        policy = await EvidencePolicyService().ensure_current(conn, edition_id=edition_id)
+        await assess_evidence.configure(connection=conn).defer_async(
+            story_id=story_id,
+            story_revision_id=current_revision_id,
+            policy_id=policy.id,
         )
 
     # ------------------------------------------------------------------
