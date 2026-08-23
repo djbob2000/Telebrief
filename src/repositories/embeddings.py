@@ -71,6 +71,28 @@ class ClaimEmbeddingRow:
 
 
 @dataclass(frozen=True)
+class ClaimEmbeddingIdentity:
+    """Vector-space identity of one claim embedding (no vector payload).
+
+    The story-matching prerequisite barrier uses the LATEST claim_query row
+    to freeze which space matching runs in."""
+
+    id: int
+    claim_id: int
+    model: str
+    dimensions: int
+
+    @classmethod
+    def from_row(cls, row: Sequence) -> ClaimEmbeddingIdentity:
+        return cls(
+            id=int(row[0]),
+            claim_id=int(row[1]),
+            model=str(row[2]),
+            dimensions=int(row[3]),
+        )
+
+
+@dataclass(frozen=True)
 class StoryRevisionRef:
     """Minimal story-revision projection for embedding input ownership."""
 
@@ -170,6 +192,25 @@ class EmbeddingRepository:
         )
         row = await cursor.fetchone()
         return None if row is None else ClaimEmbeddingRow.from_row(row)
+
+    async def latest_claim_embedding_identity(
+        self, conn: psycopg.AsyncConnection, *, claim_id: int
+    ) -> ClaimEmbeddingIdentity | None:
+        """The newest claim_query vector for one claim (highest id wins).
+
+        The prerequisite barrier freezes matching to this exact space, so
+        "compatible embedding exists" has one deterministic meaning."""
+        cursor = await conn.execute(
+            """
+            SELECT id, claim_id, model, dimensions
+            FROM claim_embeddings
+            WHERE claim_id = %s AND purpose = 'claim_query'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (claim_id,),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else ClaimEmbeddingIdentity.from_row(row)
 
     async def insert_story_revision_embedding(
         self,

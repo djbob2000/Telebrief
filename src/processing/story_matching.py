@@ -64,12 +64,17 @@ from src.domain.stories import (
     StoryRevision,
 )
 from src.ingestion.repository import IngestionRepository
+from src.processing.places import PlaceResolutionPolicyService
 from src.processing.relevance import (
     ProviderUnavailableError,
     _parse_json_object,
 )
 from src.repositories.claims import ClaimRepository
 from src.repositories.embeddings import PURPOSE_CLAIM_QUERY, EmbeddingRepository
+from src.repositories.places import (
+    PlaceRepository,
+    PlaceResolutionPolicyRepository,
+)
 from src.repositories.stories import StoryRepository
 from src.repositories.story_candidates import (
     LockedMatchingRun,
@@ -358,6 +363,8 @@ class MatcherCandidateView:
             "reasons": reasons,
             "vector_distance": getattr(self.candidate, "vector_distance", None),
             "lexical_score": getattr(self.candidate, "lexical_score", None),
+            "location_overlap": getattr(self.candidate, "location_overlap", None),
+            "entity_overlap": getattr(self.candidate, "entity_overlap", None),
         }
 
 
@@ -972,3 +979,94 @@ class StoryMatchingService:
                 "provider failure for run=%s lost the canonical race; converging", run.id
             )
         return StoryMatchingOutcome(run=final, degraded="provider_unavailable")
+
+
+class StoryMatchingPrerequisiteService:
+    """The Task 8 barrier between claim evidence and story matching.
+
+    ``maybe_schedule`` is THE single gate replacing the direct match_claim
+    defer in the embed_claim success transaction. Matching queues ONLY when:
+
+    1. a compatible ClaimEmbedding exists — deterministically the LATEST
+       claim_query vector of the claim (the frozen space every downstream
+       check validates against), and
+    2. EVERY ``claim_place_mentions`` row of the claim holds a completed
+       result (resolved OR explicit unresolved) under the edition's CURRENT
+       place-resolution policy. Claims with zero mentions satisfy the
+       barrier vacuously and queue immediately; unresolved geography never
+       blocks anything once its explicit outcome exists.
+
+    When both hold it freezes the current place-policy id, resolves/creates
+    the exact StoryMatchingPolicyVersion for the embedding's space, and
+    defers ``match_claim(claim_id, policy_id, claim_embedding_id)`` ONCE on
+    the caller's connection — atomic with whatever made the claim ready.
+    Duplicate defers (at-least-once executions) converge downstream on the
+    canonical succeeded run keyed by (claim, policy).
+
+    Returns True only when matching was actually scheduled.
+    """
+
+    def __init__(
+        self,
+        *,
+        claims: ClaimRepository | None = None,
+        embeddings: EmbeddingRepository | None = None,
+        places: PlaceRepository | None = None,
+        place_policies: PlaceResolutionPolicyRepository | None = None,
+        place_policy_service: PlaceResolutionPolicyService | None = None,
+        matching_policy_service: StoryMatchingPolicyService | None = None,
+    ) -> None:
+        self._claims = claims or ClaimRepository()
+        self._embeddings = embeddings or EmbeddingRepository()
+        self._places = places or PlaceRepository()
+        self._place_policies = place_policies or PlaceResolutionPolicyRepository()
+        self._place_policy_service = place_policy_service or PlaceResolutionPolicyService(
+            self._place_policies
+        )
+        self._matching_policy_service = matching_policy_service or StoryMatchingPolicyService()
+
+    async def maybe_schedule(self, conn: psycopg.AsyncConnection, *, claim_id: int) -> bool:
+        claims = await self._claims.get_many(conn, [claim_id])
+        if not claims:
+            raise ValueError(f"claim {claim_id} does not exist")
+        claim = claims[0]
+
+        embedding = await self._embeddings.latest_claim_embedding_identity(conn, claim_id=claim.id)
+        if embedding is None:
+            return False
+
+        place_policy = await self._place_policy_service.ensure_current(
+            conn, edition_id=claim.edition_id
+        )
+        satisfied = await self._places.barrier_satisfied(
+            conn, claim_id=claim.id, policy_id=place_policy.id
+        )
+        if not satisfied:
+            return False
+
+        policy = await self._matching_policy_service.ensure_current(
+            conn,
+            edition_id=claim.edition_id,
+            embedding_model=embedding.model,
+            embedding_dimensions=embedding.dimensions,
+        )
+        # Lazy on purpose: src.jobs.processing imports this module at top level.
+        from src.jobs.processing import match_claim
+
+        await match_claim.configure(
+            connection=conn,
+            lock=story_matching_execution_lock(claim.edition_id),
+        ).defer_async(
+            claim_id=claim.id,
+            policy_id=policy.id,
+            claim_embedding_id=embedding.id,
+        )
+        logger.info(
+            "prerequisites satisfied; deferred match_claim claim=%s policy=%s embedding=%s "
+            "place_policy=%s",
+            claim.id,
+            policy.id,
+            embedding.id,
+            place_policy.id,
+        )
+        return True

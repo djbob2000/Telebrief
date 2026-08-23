@@ -23,7 +23,13 @@ Task 7A scope (Plan 3): the `StoryCandidate` projection, the
   is needed either way,
 * state-fallback — active/reopened stories REGARDLESS of age plus resolved
   stories whose last activity (revision creation moment proxy) falls inside
-  the policy's ``resolved_lookback_days`` window.
+  the policy's ``resolved_lookback_days`` window,
+* place (Task 8) — stories whose attached claims resolved to places shared
+  with THIS claim's resolved mentions, including ancestor/descendant WITHIN
+  relations via a recursive closure over ``places.parent_place_id``
+  (location_overlap 1.0 exact / 0.5 within-heuristic),
+* entity (Task 8) — stories whose current-revision document contains this
+  claim's normalized entities (entity_overlap = contained fraction).
 
 Limits are bounded context/resource controls, NOT semantic thresholds: no
 signal ever drops a candidate that a stream admitted. Streams are merged with
@@ -62,6 +68,20 @@ from src.repositories.embeddings import (
 REASON_VECTOR = "retrieved_by_vector"
 REASON_LEXICAL = "retrieved_by_lexical"
 REASON_STATE = "retrieved_by_state"
+REASON_PLACE = "retrieved_by_place"
+REASON_ENTITY = "retrieved_by_entity"
+
+# Task 8 place/entity stream bounds. Deliberately module constants (not
+# policy columns yet): they are versioned-policy candidates for a future
+# matching-policy migration, and nothing treats them as thresholds.
+PLACE_LIMIT = 10
+ENTITY_LIMIT = 10
+
+# location_overlap semantics: an exact resolved-place match scores 1.0; a
+# WITHIN relation (ancestor or descendant via places.parent_place_id) is a
+# heuristic half-signal. Both are provenance metadata, never thresholds.
+LOCATION_OVERLAP_EXACT = 1.0
+LOCATION_OVERLAP_WITHIN = 0.5
 
 # C-locale databases fold neither the 'simple' text-search dictionary nor
 # lower() beyond ASCII, so Cyrillic/Ukrainian case folding is spelled out
@@ -116,6 +136,8 @@ class _Hit:
     reasons: frozenset[str]
     vector_distance: float | None = None
     lexical_score: float | None = None
+    location_overlap: float | None = None
+    entity_overlap: float | None = None
     last_activity: dt.datetime | None = None
 
 
@@ -151,6 +173,12 @@ def _merge_hit(hits: dict[int, _Hit], incoming: _Hit) -> None:
             current.vector_distance, incoming.vector_distance, lower_is_better=True
         ),
         lexical_score=_better(current.lexical_score, incoming.lexical_score, lower_is_better=False),
+        location_overlap=_better(
+            current.location_overlap, incoming.location_overlap, lower_is_better=False
+        ),
+        entity_overlap=_better(
+            current.entity_overlap, incoming.entity_overlap, lower_is_better=False
+        ),
         last_activity=max(
             (x for x in (current.last_activity, incoming.last_activity) if x is not None),
             default=None,
@@ -281,6 +309,16 @@ class StoryCandidateRetriever:
         for state_row in await state_cursor.fetchall():
             _merge_hit(hits, _state_hit(state_row))
 
+        # Task 8 recall streams: resolved claim places (with WITHIN hierarchy)
+        # and lightweight normalized entities. Independent additions to the
+        # same frozen union; soft signals only, never SAME_STORY evidence.
+        place_cursor = await conn.execute(_PLACE_SQL, _place_params(claim, policy))
+        for place_row in await place_cursor.fetchall():
+            _merge_hit(hits, _place_hit(place_row))
+        entity_cursor = await conn.execute(_ENTITY_SQL, _entity_params(claim, policy))
+        for entity_row in await entity_cursor.fetchall():
+            _merge_hit(hits, _entity_hit(entity_row))
+
         await self._fill_last_activity(conn, hits)
 
         ranked = sorted(
@@ -301,6 +339,8 @@ class StoryCandidateRetriever:
                 retrieval_reasons=frozenset(hit.reasons),
                 vector_distance=hit.vector_distance,
                 lexical_score=hit.lexical_score,
+                location_overlap=hit.location_overlap,
+                entity_overlap=hit.entity_overlap,
             )
             for hit in ranked[: policy.total_candidate_limit]
         ]
@@ -367,6 +407,97 @@ ORDER BY sr.created_at DESC, sr.id DESC
 LIMIT %s
 """  # noqa: S608 — static template; the only runtime values are %s-bound
 
+# Place stream: the recursive closure over THIS claim's resolved places
+# (hops=0 exact, ancestors AND descendants via places.parent_place_id)
+# joined to stories through their attached claims' resolved results.
+# Ancestors and descendants use separate recursive CTEs because Postgres
+# permits exactly one recursive term each; MIN(hops) keeps the best signal
+# per place so any direct hit stays an exact 1.0.
+_PLACE_SQL = f"""
+WITH RECURSIVE seed AS (
+    SELECT DISTINCT r.place_id AS place_id
+    FROM claim_place_mentions m
+    JOIN place_resolution_results r ON r.mention_id = m.id
+    WHERE m.claim_id = %s AND r.status = 'resolved' AND r.place_id IS NOT NULL
+),
+ancestors(place_id, hops) AS (
+    SELECT place_id, 0 FROM seed
+    UNION
+    SELECT p.parent_place_id, a.hops + 1
+    FROM ancestors a JOIN places p ON p.id = a.place_id
+    WHERE p.parent_place_id IS NOT NULL
+),
+descendants(place_id, hops) AS (
+    SELECT place_id, 0 FROM seed
+    UNION
+    SELECT child.id, d.hops + 1
+    FROM descendants d JOIN places child ON child.parent_place_id = d.place_id
+),
+closure(place_id, hops) AS (
+    SELECT place_id, MIN(hops) FROM (
+        SELECT place_id, hops FROM ancestors
+        UNION ALL
+        SELECT place_id, hops FROM descendants
+    ) both_directions
+    GROUP BY place_id
+),
+ranked AS (
+    SELECT s.id AS story_id,
+           sr.id AS revision_id,
+           ({_EMBEDDING_ID_SUBQUERY}) AS embedding_id,
+           CASE WHEN bool_or(c.hops = 0)
+                THEN {LOCATION_OVERLAP_EXACT} ELSE {LOCATION_OVERLAP_WITHIN} END AS location_overlap,
+           MAX(sr.created_at) AS last_activity
+    FROM closure c
+    JOIN place_resolution_results r
+      ON r.place_id = c.place_id AND r.status = 'resolved'
+    JOIN claim_place_mentions m ON m.id = r.mention_id
+    JOIN story_claims sc ON sc.claim_id = m.claim_id
+    JOIN stories s ON s.id = sc.story_id AND s.edition_id = %s
+    JOIN story_revisions sr ON sr.id = s.current_revision_id
+    WHERE s.lifecycle_state IN ('active', 'reopened', 'resolved')
+    GROUP BY s.id, sr.id, embedding_id
+    ORDER BY location_overlap DESC, last_activity DESC, sr.id DESC
+    LIMIT %s
+)
+SELECT story_id, revision_id, embedding_id, location_overlap, last_activity FROM ranked
+"""  # noqa: S608 — static template; the only runtime values are %s-bound
+
+# Entity stream: fraction of the claim's normalized entities whose
+# whitespace-stripped folded form occurs in the current revision document.
+# Both sides fold case explicitly so C-locale databases still match Cyrillic.
+_ENTITY_DOCUMENT = (
+    "regexp_replace("
+    "coalesce(sr.title, '') || ' ' || coalesce(sr.summary, '') || ' ' || sr.semantic_text,"
+    " '\\s+', '', 'g')"
+)
+
+_ENTITY_SQL = f"""
+WITH needles AS (
+    SELECT DISTINCT regexp_replace(ce.normalized_text, '\\s+', '', 'g') AS needle
+    FROM claim_entities ce WHERE ce.claim_id = %s
+),
+totals AS (SELECT count(*)::float8 AS n FROM needles)
+SELECT s.id AS story_id,
+       sr.id AS revision_id,
+       ({_EMBEDDING_ID_SUBQUERY}) AS embedding_id,
+       (SELECT count(*) FROM needles nd
+        WHERE strpos({_casefold(_ENTITY_DOCUMENT)}, {_casefold("nd.needle")}) > 0)::float8 / t.n
+           AS entity_overlap,
+       sr.created_at AS last_activity
+FROM stories s
+JOIN story_revisions sr ON sr.id = s.current_revision_id
+CROSS JOIN totals t
+WHERE s.edition_id = %s
+  AND s.lifecycle_state IN ('active', 'reopened', 'resolved')
+  AND EXISTS (
+      SELECT 1 FROM needles nd
+      WHERE strpos({_casefold(_ENTITY_DOCUMENT)}, {_casefold("nd.needle")}) > 0
+  )
+ORDER BY entity_overlap DESC, last_activity DESC, sr.id DESC
+LIMIT %s
+"""  # noqa: S608 — static template; the only runtime values are %s-bound
+
 
 def _lexical_params(claim: Claim, policy: StoryMatchingPolicyVersion) -> tuple:
     # Placeholder order follows the SQL text: the embedding-id subquery comes
@@ -410,6 +541,50 @@ def _state_hit(row: Sequence) -> _Hit:
         story_revision_embedding_id=None if row[2] is None else int(row[2]),
         reasons=frozenset({REASON_STATE}),
         last_activity=row[3],
+    )
+
+
+def _place_params(claim: Claim, policy: StoryMatchingPolicyVersion) -> tuple:
+    # Placeholder order follows the SQL text: claim id (seed closure), then
+    # the embedding-id subquery (model/dimensions), then edition and limit.
+    return (
+        claim.id,
+        policy.embedding_model,
+        policy.embedding_dimensions,
+        claim.edition_id,
+        PLACE_LIMIT,
+    )
+
+
+def _entity_params(claim: Claim, policy: StoryMatchingPolicyVersion) -> tuple:
+    return (
+        claim.id,
+        policy.embedding_model,
+        policy.embedding_dimensions,
+        claim.edition_id,
+        ENTITY_LIMIT,
+    )
+
+
+def _place_hit(row: Sequence) -> _Hit:
+    return _Hit(
+        story_id=int(row[0]),
+        story_revision_id=int(row[1]),
+        story_revision_embedding_id=None if row[2] is None else int(row[2]),
+        reasons=frozenset({REASON_PLACE}),
+        location_overlap=float(row[3]),
+        last_activity=row[4],
+    )
+
+
+def _entity_hit(row: Sequence) -> _Hit:
+    return _Hit(
+        story_id=int(row[0]),
+        story_revision_id=int(row[1]),
+        story_revision_embedding_id=None if row[2] is None else int(row[2]),
+        reasons=frozenset({REASON_ENTITY}),
+        entity_overlap=float(row[3]),
+        last_activity=row[4],
     )
 
 

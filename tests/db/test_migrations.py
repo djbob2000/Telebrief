@@ -27,15 +27,15 @@ PROBE_NT_REBUILD = 900031
 @pytest.mark.postgres
 async def test_migrate_applies_each_version_once(pg_conn):
     version = await migrate(pg_conn, MIGRATIONS_DIR)
-    assert version >= 6
+    assert version >= 7
     again = await migrate(pg_conn, MIGRATIONS_DIR)
     assert again == version
 
 
 @pytest.mark.postgres
 async def test_require_schema_compatible_returns_current_version(pg_conn):
-    current = await require_schema_compatible(pg_conn, minimum=6, maximum=6)
-    assert current >= 6
+    current = await require_schema_compatible(pg_conn, minimum=7, maximum=7)
+    assert current >= 7
 
 
 @pytest.mark.postgres

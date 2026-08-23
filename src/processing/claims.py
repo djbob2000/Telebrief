@@ -10,9 +10,15 @@ Controller rulings implemented here:
   prompt_version) per edition with latest-version-wins semantics; every
   extraction run pins the exact resolved policy id.
 * Place/entity mentions are stored INSIDE ``claims.metadata`` as
-  ``{"place_mentions": [...], "entities": [...]}`` because the dedicated
-  mention tables arrive with Plan 3 Task 8, which migrates them out; nothing
-  else consumes mentions from metadata meanwhile.
+  ``{"place_mentions": [...], "entities": [...]}`` (T4 staging) AND, since
+  Plan 3 Task 8, materialized into the dedicated ``claim_place_mentions`` /
+  ``claim_entities`` rows. With ``place_resolution_handoff`` enabled (the
+  production wiring), the SAME success transaction resolves-or-creates the
+  edition's current place-resolution policy and defers one
+  ``resolve_place_mention(mention_id, policy_id)`` per newly-created
+  mention; claims with zero mentions satisfy the matching barrier
+  vacuously at embedding time. Legacy metadata rows migrate via the
+  bounded idempotent backfill; metadata itself is never rewritten.
 
 Pipeline shape (spec §15): at most one run per
 (source_item_revision_id, edition_id, extraction_policy_id) may ever reach
@@ -54,12 +60,18 @@ from src.domain.claims import (
     NewClaim,
 )
 from src.ingestion.repository import IngestionRepository
+from src.processing.places import (
+    PlaceResolutionPolicyService,
+    normalize_place_text,
+    staging_strings,
+)
 from src.processing.relevance import ProviderUnavailableError, _parse_json_object
 from src.repositories.claims import (
     ClaimExtractionPolicyRepository,
     ClaimExtractionRunRepository,
     ClaimRepository,
 )
+from src.repositories.places import PlaceRepository
 
 logger = logging.getLogger(__name__)
 
@@ -360,6 +372,9 @@ class ClaimExtractionService:
         claim_repo: ClaimRepository | None = None,
         context_builder: ClaimExtractionContextBuilder | None = None,
         embedding_config: EmbeddingConfig | None = None,
+        place_resolution_handoff: bool = False,
+        places_repo: PlaceRepository | None = None,
+        place_policy_service: PlaceResolutionPolicyService | None = None,
     ) -> None:
         self.uow = uow
         # Uniform cascade semantics even for single-slot providers.
@@ -369,6 +384,13 @@ class ClaimExtractionService:
         self.reasoning_effort = reasoning_effort
         self.max_output_tokens = max_output_tokens
         self._embedding_config = embedding_config
+        # Place-resolution handoff is opt-in at the wiring layer (mirrors the
+        # embedding service's matching_handoff): when enabled, newly created
+        # claims materialize their mentions/entities and defer one
+        # resolve_place_mention per new mention on the success transaction.
+        self._place_handoff = place_resolution_handoff
+        self._places = places_repo or PlaceRepository()
+        self._place_policy_service = place_policy_service or PlaceResolutionPolicyService()
         self._ingestion_repo = ingestion_repo or IngestionRepository()
         self._policy_repo = policy_repo or ClaimExtractionPolicyRepository()
         self._run_repo = run_repo or ClaimExtractionRunRepository()
@@ -688,6 +710,8 @@ class ClaimExtractionService:
                 won = await self._run_repo.mark_succeeded(conn, run.id, completed_at=completed_at)
                 if not won:
                     raise CanonicalSlotLost(f"canonical success held elsewhere for run {run.id}")
+                if self._place_handoff:
+                    await self._materialize_place_evidence(conn, inserted)
                 await self._defer_embed_claims(conn, inserted)
                 final = await self._run_repo.get(conn, run.id)
         except psycopg.errors.UniqueViolation as exc:
@@ -736,6 +760,58 @@ class ClaimExtractionService:
             len(inserted),
             config.model,
             config.dimensions,
+        )
+
+    async def _materialize_place_evidence(
+        self,
+        conn: psycopg.AsyncConnection,
+        inserted: Sequence[Claim],
+    ) -> None:
+        """Materialize T8 evidence rows and defer place resolution ATOMICALLY.
+
+        Runs INSIDE the success transaction: claim_place_mentions /
+        claim_entities rows are created idempotently from the staging
+        metadata (original mention text preserved verbatim), the edition's
+        current place-resolution policy is resolved-or-created once, and one
+        ``resolve_place_mention(mention_id, policy_id)`` is deferred per
+        NEWLY-CREATED mention on THIS connection — a crash can never leave a
+        visible mention without its queued resolution. Claims with zero
+        mentions defer nothing; their barrier side is vacuously satisfied.
+        """
+        claims_with_evidence = [
+            claim
+            for claim in inserted
+            if staging_strings(claim.metadata, "place_mentions")
+            or staging_strings(claim.metadata, "entities")
+        ]
+        if not claims_with_evidence:
+            return
+        policy = await self._place_policy_service.ensure_current(
+            conn, edition_id=claims_with_evidence[0].edition_id
+        )
+        # Lazy on purpose: src.jobs.processing imports this module at top level.
+        from src.jobs.processing import resolve_place_mention
+
+        deferred = 0
+        for claim in claims_with_evidence:
+            for raw in staging_strings(claim.metadata, "place_mentions"):
+                mention, created = await self._places.create_mention(
+                    conn, claim_id=claim.id, original_text=raw
+                )
+                if created:
+                    await resolve_place_mention.configure(connection=conn).defer_async(
+                        mention_id=mention.id, policy_id=policy.id
+                    )
+                    deferred += 1
+            for raw in staging_strings(claim.metadata, "entities"):
+                await self._places.create_entity(
+                    conn, claim_id=claim.id, normalized_text=normalize_place_text(raw)
+                )
+        logger.info(
+            "materialized place evidence for %d claims (policy=%s, deferred=%d)",
+            len(claims_with_evidence),
+            policy.id,
+            deferred,
         )
 
     async def _replay_after_lost_slot(self, run: ClaimExtractionRun) -> ClaimExtractionResult:

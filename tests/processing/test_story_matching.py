@@ -1745,3 +1745,475 @@ class TestEmbedClaimDefersMatchClaim:
         assert embeddings == 0
         assert policies == 0
         assert jobs == 0
+
+
+# ---------------------------------------------------------------------------
+# Plan 3 Task 8: place/entity candidate streams + matching prerequisite barrier
+# ---------------------------------------------------------------------------
+
+from src.domain.places import ClaimPlaceMention  # noqa: E402
+from src.processing.places import PlaceResolutionPolicyService  # noqa: E402
+from src.repositories.places import (  # noqa: E402
+    PlaceRepository,
+    PlaceResolutionRunRepository,
+)
+from src.repositories.story_candidates import (  # noqa: E402
+    ENTITY_LIMIT,
+    LOCATION_OVERLAP_EXACT,
+    LOCATION_OVERLAP_WITHIN,
+    PLACE_LIMIT,
+    REASON_ENTITY,
+    REASON_PLACE,
+)
+
+_PLACE_REPO_T8 = PlaceRepository()
+_PLACE_POLICY_SERVICE_T8 = PlaceResolutionPolicyService()
+_T8_RUN_REPO = PlaceResolutionRunRepository()
+
+_T8_COUNTER = {"n": 100}
+
+
+async def _t8_claim(conn: psycopg.AsyncConnection, edition_id: int, source_item_revision_id: int):
+    _T8_COUNTER["n"] += 1
+    n = _T8_COUNTER["n"]
+    relevance_policy = await _RELEVANCE_POLICY_REPO.insert(
+        conn,
+        edition_id=edition_id,
+        version=n,
+        config_hash=f"relevance-cfg-{n}",
+        prompt_version="relevance-prompt-1",
+    )
+    decision = await _DECISION_REPO.insert_root(
+        conn,
+        source_item_revision_id=source_item_revision_id,
+        edition_id=edition_id,
+        relevance_policy_id=relevance_policy.id,
+        status="relevant",
+        confidence=None,
+        reason="test setup",
+    )
+    extraction_policy = await _EXTRACTION_POLICY_REPO.insert(
+        conn,
+        edition_id=edition_id,
+        version=n,
+        config_hash=f"extraction-cfg-{n}",
+        prompt_version="extraction-prompt-1",
+    )
+    run, _created = await _RUN_REPO.get_or_create_run(
+        conn,
+        source_item_revision_id=source_item_revision_id,
+        edition_id=edition_id,
+        extraction_policy_id=extraction_policy.id,
+        relevance_decision_id=decision.id,
+    )
+    assert await _RUN_REPO.mark_succeeded(conn, run.id, completed_at=_T0)
+    assertion = f"Утверждение Т8 номер {n}: вода пришла на улицу Приморскую в АКЗ."
+    claims = await _CLAIM_REPO.insert_claims(
+        conn,
+        run=run,
+        claims=[NewClaim(assertion_text=assertion, normalized_assertion=assertion.lower())],
+    )
+    return claims[0]
+
+
+async def _t8_place(
+    conn: psycopg.AsyncConnection,
+    *,
+    canonical_name: str,
+    parent_place_id: int | None = None,
+    aliases: tuple[str, ...] = (),
+):
+    place = await _PLACE_REPO_T8.insert_place(
+        conn, canonical_name=canonical_name, parent_place_id=parent_place_id
+    )
+    for alias in aliases:
+        await _PLACE_REPO_T8.insert_alias(conn, place_id=place.id, alias=alias)
+    return place
+
+
+async def _t8_mention(
+    conn: psycopg.AsyncConnection, claim_id: int, original_text: str
+) -> ClaimPlaceMention:
+    mention, _created = await _PLACE_REPO_T8.create_mention(
+        conn, claim_id=claim_id, original_text=original_text
+    )
+    return mention
+
+
+async def _t8_resolve(
+    uow,
+    *,
+    mention_id: int,
+    edition_id: int,
+    policy_id: int,
+    place_id: int | None,
+) -> None:
+    async with uow.transaction() as db:
+        run = await _T8_RUN_REPO.insert_running(
+            db, mention_id=mention_id, edition_id=edition_id, policy_id=policy_id
+        )
+        await _PLACE_REPO_T8.insert_resolution_result(
+            db,
+            run_id=run.id,
+            mention_id=mention_id,
+            policy_id=policy_id,
+            place_id=place_id,
+            status="resolved" if place_id is not None else "unresolved",
+            reason="test",
+        )
+        await _T8_RUN_REPO.mark_succeeded(db, run.id, completed_at=_T0)
+
+
+async def _t8_entity(conn: psycopg.AsyncConnection, claim_id: int, text: str) -> None:
+    await _PLACE_REPO_T8.create_entity(conn, claim_id=claim_id, normalized_text=text)
+
+
+@pytest.mark.postgres
+class TestPlaceAndEntityCandidateStreams:
+    async def test_within_hierarchy_gives_positive_location_overlap(
+        self, uow, conn, edition, revision_factory
+    ):
+        city = await _t8_place(conn, canonical_name="Бердянск")
+        district = await _t8_place(conn, canonical_name="АКЗ", parent_place_id=city.id)
+        street = await _t8_place(conn, canonical_name="Приморская", parent_place_id=district.id)
+        claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        street_story_claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        district_story_claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+
+        exact_story = await _seed_story(
+            conn,
+            edition.id,
+            semantic_text="Совершенно непохожий текст без общих слов с утверждением.",
+        )
+        within_story = await _seed_story(
+            conn,
+            edition.id,
+            semantic_text="Ещё один лексически далёкий текст про район города.",
+        )
+        policy = await _insert_policy(
+            conn, edition.id, vector_limit=0, lexical_limit=0, state_fallback_limit=0
+        )
+
+        street_mention = await _t8_mention(conn, claim.id, "Приморская")
+        exact_claim_mention = await _t8_mention(conn, street_story_claim.id, "Приморская")
+        district_claim_mention = await _t8_mention(conn, district_story_claim.id, "АКЗ")
+        place_policy = await _PLACE_POLICY_SERVICE_T8.ensure_current(conn, edition_id=edition.id)
+        await _t8_resolve(
+            uow,
+            mention_id=street_mention.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=street.id,
+        )
+        await _t8_resolve(
+            uow,
+            mention_id=exact_claim_mention.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=street.id,
+        )
+        await _t8_resolve(
+            uow,
+            mention_id=district_claim_mention.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=district.id,
+        )
+        # Stories reach the place stream THROUGH their attached claims.
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id) VALUES (%s, %s)",
+            (exact_story.story_id, street_story_claim.id),
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id) VALUES (%s, %s)",
+            (within_story.story_id, district_story_claim.id),
+        )
+
+        candidates = await _retrieve(uow, claim, policy)
+
+        by_story = {c.story_id: c for c in candidates}
+        # Street ⊂ district WITHIN relation admits the district story with a
+        # positive heuristic signal — never a threshold, only provenance.
+        assert by_story[within_story.story_id].location_overlap == pytest.approx(
+            LOCATION_OVERLAP_WITHIN
+        )
+        assert REASON_PLACE in by_story[within_story.story_id].retrieval_reasons
+        # The same resolved place is an exact hit worth the full signal.
+        assert by_story[exact_story.story_id].location_overlap == pytest.approx(
+            LOCATION_OVERLAP_EXACT
+        )
+
+    async def test_place_stream_alone_admits_story_missed_by_other_streams(
+        self, uow, conn, edition, revision_factory
+    ):
+        city = await _t8_place(conn, canonical_name="Бердянск")
+        district = await _t8_place(conn, canonical_name="Слободка", parent_place_id=city.id)
+        claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        other_claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        hidden_story = await _seed_story(
+            conn,
+            edition.id,
+            semantic_text="Транспортная развязка открыта для движения.",
+        )
+        policy = await _insert_policy(
+            conn,
+            edition.id,
+            vector_limit=0,
+            lexical_limit=10,
+            state_fallback_limit=0,
+        )
+        mention = await _t8_mention(conn, claim.id, "Слобідка")
+        other_mention = await _t8_mention(conn, other_claim.id, "Слободка")
+        place_policy = await _PLACE_POLICY_SERVICE_T8.ensure_current(conn, edition_id=edition.id)
+        await _t8_resolve(
+            uow,
+            mention_id=mention.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=district.id,
+        )
+        await _t8_resolve(
+            uow,
+            mention_id=other_mention.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=district.id,
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id) VALUES (%s, %s)",
+            (hidden_story.story_id, other_claim.id),
+        )
+
+        candidates = await _retrieve(uow, claim, policy)
+
+        # Vector/state limits are zero and no token overlaps lexically, so ONLY
+        # the place stream can have admitted this frozen candidate.
+        hits = [c for c in candidates if c.story_id == hidden_story.story_id]
+        assert len(hits) == 1
+        assert hits[0].retrieval_reasons == frozenset({REASON_PLACE})
+        assert hits[0].vector_distance is None and hits[0].lexical_score is None
+
+    async def test_entity_stream_records_fraction_overlap_provenance(
+        self, uow, conn, edition, revision_factory
+    ):
+        claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        water_story = await _seed_story(
+            conn,
+            edition.id,
+            semantic_text="Водоканал восстановил подачу воды частично.",
+        )
+        unrelated_story = await _seed_story(
+            conn, edition.id, semantic_text="Автобусный маршрут изменён."
+        )
+        policy = await _insert_policy(conn, edition.id, vector_limit=0, state_fallback_limit=0)
+        await _t8_entity(conn, claim.id, "водоканал")
+        await _t8_entity(conn, claim.id, "приморская")
+
+        candidates = await _retrieve(uow, claim, policy)
+
+        by_story = {c.story_id: c for c in candidates}
+        hit = by_story[water_story.story_id]
+        assert REASON_ENTITY in hit.retrieval_reasons
+        # One of two normalized entities present in the story document → 0.5.
+        assert hit.entity_overlap == pytest.approx(0.5)
+        assert unrelated_story.story_id not in by_story
+
+    async def test_place_and_entity_limits_bound_their_streams(
+        self, uow, conn, edition, revision_factory
+    ):
+        from src.repositories.story_candidates import (
+            StoryCandidateRetriever as _R,  # noqa: F401 — constants sanity only
+        )
+
+        del _R
+        assert PLACE_LIMIT == 10
+        assert ENTITY_LIMIT == 10
+
+    async def test_place_only_hint_never_forces_same_story(
+        self, uow, pool, conn, edition, revision_factory
+    ):
+        city = await _t8_place(conn, canonical_name="Бердянск")
+        district = await _t8_place(conn, canonical_name="Коса", parent_place_id=city.id)
+        claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        other_claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        target = await _seed_story(
+            conn,
+            edition.id,
+            semantic_text="Совершенно иной смысл: концерт на набережной.",
+        )
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        policy = await _insert_policy(conn, edition.id)
+        mention = await _t8_mention(conn, claim.id, "Коса")
+        other_mention = await _t8_mention(conn, other_claim.id, "Коса")
+        place_policy = await _PLACE_POLICY_SERVICE_T8.ensure_current(conn, edition_id=edition.id)
+        await _t8_resolve(
+            uow,
+            mention_id=mention.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=district.id,
+        )
+        await _t8_resolve(
+            uow,
+            mention_id=other_mention.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=district.id,
+        )
+        # The matcher refuses to merge despite the shared place hint.
+        matcher = _FixedMatcher({"assignment": "NEW_STORY"})
+
+        outcome = await _service(uow, matcher).run(claim.id, policy.id, embedding_id)
+
+        assert outcome.story_id is not None and outcome.story_id != target.story_id
+        cursor = await conn.execute(
+            "SELECT assignment FROM story_match_decisions WHERE run_id = %s",
+            (outcome.run.id,),
+        )
+        assert (await cursor.fetchone())[0] == "NEW_STORY"
+        # The soft-signal rule is pinned in the matcher contract itself:
+        # retrieval hints are provenance metadata, never evidence, so a place
+        # overlap alone can never force SAME_STORY.
+        from src.processing.story_matching import StoryMatcher
+
+        prompt_text = StoryMatcher._system_prompt(None, None)
+        assert "never evidence" in prompt_text
+        del city
+
+    async def test_retriever_hints_carry_location_and_entity_scores(self):
+        view = MatcherCandidateView(
+            candidate=SimpleNamespace(
+                story_id=1,
+                story_revision_id=11,
+                retrieval_reasons=frozenset({REASON_PLACE}),
+                vector_distance=None,
+                lexical_score=None,
+                location_overlap=LOCATION_OVERLAP_EXACT,
+                entity_overlap=0.5,
+            ),
+            revision=_revision_row(11, 1, "текст"),
+        )
+        assert view.hints["location_overlap"] == LOCATION_OVERLAP_EXACT
+        assert view.hints["entity_overlap"] == pytest.approx(0.5)
+
+
+@pytest.mark.postgres
+class TestStoryMatchingPrerequisiteBarrier:
+    """maybe_schedule(): queue match_claim ONLY when a compatible claim
+    embedding exists AND every place mention holds a current-policy result."""
+
+    @pytest.fixture(autouse=True)
+    def _install_runtime(self, uow, pool, production_jobs_app):
+        from src import runtime as runtime_module
+        from src.bootstrap import ApplicationInfrastructure
+
+        runtime_module.install_runtime(
+            ApplicationInfrastructure(pool=pool, uow=uow, procrastinate_app=production_jobs_app)
+        )
+
+    async def _prerequisite(self):
+        from src.processing.story_matching import StoryMatchingPrerequisiteService
+
+        return StoryMatchingPrerequisiteService()
+
+    async def test_no_compatible_embedding_returns_false_without_deferring(
+        self, uow, pool, conn, edition, revision_factory
+    ):
+        claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        prerequisite = await self._prerequisite()
+
+        async with uow.transaction() as db:
+            scheduled = await prerequisite.maybe_schedule(db, claim_id=claim.id)
+
+        assert scheduled is False
+        assert await _deferred_jobs(pool, MATCH_TASK) == []
+
+    async def test_missing_result_blocks_matching(self, uow, pool, conn, edition, revision_factory):
+        claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        await _seed_claim_embedding(uow, claim.id)
+        await _t8_mention(conn, claim.id, "неразрешённое место")
+        prerequisite = await self._prerequisite()
+
+        async with uow.transaction() as db:
+            scheduled = await prerequisite.maybe_schedule(db, claim_id=claim.id)
+
+        assert scheduled is False
+        assert await _deferred_jobs(pool, MATCH_TASK) == []
+
+    async def test_explicit_unresolved_result_satisfies_barrier_and_defers_once(
+        self, uow, pool, conn, edition, revision_factory
+    ):
+        claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        mention = await _t8_mention(conn, claim.id, "неизвестный хутор")
+        place_policy = await _PLACE_POLICY_SERVICE_T8.ensure_current(conn, edition_id=edition.id)
+        await _t8_resolve(
+            uow,
+            mention_id=mention.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=None,
+        )
+        prerequisite = await self._prerequisite()
+
+        async with uow.transaction() as db:
+            scheduled = await prerequisite.maybe_schedule(db, claim_id=claim.id)
+
+        assert scheduled is True
+        jobs = await _deferred_jobs(pool, MATCH_TASK)
+        assert len(jobs) == 1
+        args = jobs[0]["args"]
+        assert int(args["claim_id"]) == claim.id
+        assert int(args["claim_embedding_id"]) == embedding_id
+        assert int(args["policy_id"]) > 0
+        assert jobs[0]["lock"] == f"story-matching-edition:{edition.id}"
+
+    async def test_no_mentions_schedules_immediately(
+        self, uow, pool, conn, edition, revision_factory
+    ):
+        claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        embedding_id = await _seed_claim_embedding(uow, claim.id)
+        prerequisite = await self._prerequisite()
+
+        async with uow.transaction() as db:
+            scheduled = await prerequisite.maybe_schedule(db, claim_id=claim.id)
+
+        assert scheduled is True
+        jobs = await _deferred_jobs(pool, MATCH_TASK)
+        assert len(jobs) == 1
+        assert int(jobs[0]["args"]["claim_embedding_id"]) == embedding_id
+
+    async def test_barrier_opens_only_after_last_resolution(
+        self, uow, pool, conn, edition, revision_factory
+    ):
+        claim = await _t8_claim(conn, edition.id, (await revision_factory()).id)
+        await _seed_claim_embedding(uow, claim.id)
+        first = await _t8_mention(conn, claim.id, "АКЗ")
+        second = await _t8_mention(conn, claim.id, "Коса")
+        place_policy = await _PLACE_POLICY_SERVICE_T8.ensure_current(conn, edition_id=edition.id)
+        district = await _t8_place(conn, canonical_name="АКЗ", aliases=("АКЗ",))
+        kosa = await _t8_place(conn, canonical_name="Коса", aliases=("Коса",))
+        await _t8_resolve(
+            uow,
+            mention_id=first.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=district.id,
+        )
+        prerequisite = await self._prerequisite()
+
+        async with uow.transaction() as db:
+            partially = await prerequisite.maybe_schedule(db, claim_id=claim.id)
+        assert partially is False
+
+        await _t8_resolve(
+            uow,
+            mention_id=second.id,
+            edition_id=edition.id,
+            policy_id=place_policy.id,
+            place_id=kosa.id,
+        )
+        async with uow.transaction() as db:
+            fully = await prerequisite.maybe_schedule(db, claim_id=claim.id)
+        assert fully is True
+        assert len(await _deferred_jobs(pool, MATCH_TASK)) == 1

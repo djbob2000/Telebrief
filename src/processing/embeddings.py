@@ -17,15 +17,17 @@ Rulings implemented here:
 * The provider call runs OUTSIDE any transaction so a slow embedding API
   never holds a pooled connection; persistence happens in its own single
   transaction with ON CONFLICT DO NOTHING + winner re-read for races.
-* With ``matching_handoff`` enabled (Plan 3 Task 7), the transaction that
+* With ``matching_handoff`` enabled (Plan 3 Task 7/8), the transaction that
   makes a claim embedding visible — BOTH the insert path and the reuse
-  path — atomically resolves/creates the edition's current story-matching
-  policy and defers ``match_claim(claim_id, policy_id, claim_embedding_id)``
-  on the SAME connection. Retries never silently switch policy version:
-  the resolved policy id is frozen into the task arguments. Duplicate
-  defers (a retried embed_claim re-hits the reuse path) converge
-  downstream on the canonical succeeded run. The per-edition execution
-  lock serializes matching without ever dropping a queued claim.
+  path — atomically hands the claim to
+  :class:`~src.processing.story_matching.StoryMatchingPrerequisiteService`.
+  The prerequisite service owns everything downstream: a compatible claim
+  embedding must exist (it just did) and every ClaimPlaceMention needs a
+  current-policy result (resolved or explicit unresolved) before it freezes
+  the matching policy and defers ``match_claim`` ONCE on the SAME
+  connection. Duplicate defers converge downstream on the canonical
+  succeeded run. The per-edition execution lock serializes matching without
+  ever dropping a queued claim.
 
 The atomic pipeline handoff lives in
 :class:`src.processing.claims.ClaimExtractionService._persist_success`:
@@ -44,10 +46,7 @@ import psycopg
 from src.db.uow import DatabaseUnitOfWork
 from src.domain.claims import Claim
 from src.embedding_providers import EmbeddingPurpose, validate_vector
-from src.processing.story_matching import (
-    StoryMatchingPolicyService,
-    story_matching_execution_lock,
-)
+from src.processing.story_matching import StoryMatchingPrerequisiteService
 from src.repositories.claims import ClaimRepository
 from src.repositories.embeddings import (
     PURPOSE_CLAIM_QUERY,
@@ -98,16 +97,17 @@ class EmbeddingService:
         repo: EmbeddingRepository | None = None,
         claim_repo: ClaimRepository | None = None,
         matching_handoff: bool = False,
-        matching_policy_service: StoryMatchingPolicyService | None = None,
+        matching_prerequisites: StoryMatchingPrerequisiteService | None = None,
     ) -> None:
         self.uow = uow
         self.provider = provider
         self._repo = repo or EmbeddingRepository()
         self._claim_repo = claim_repo or ClaimRepository()
         # Story-matching handoff is opt-in at the wiring layer: when enabled,
-        # every visible claim embedding defers match_claim atomically.
+        # every visible claim embedding is handed to the prerequisite barrier
+        # (which queues match_claim only when its place-evidence side holds).
         self._matching_handoff = matching_handoff
-        self._matching_policy_service = matching_policy_service or StoryMatchingPolicyService()
+        self._prerequisites = matching_prerequisites or StoryMatchingPrerequisiteService()
 
     async def _embed_object(
         self,
@@ -171,10 +171,9 @@ class EmbeddingService:
 
         Returns the immutable embedding row id (the existing row on reuse).
         With ``matching_handoff`` enabled, whichever transaction makes the
-        row visible also resolves/creates the edition's current story-
-        matching policy and defers ``match_claim`` on the same connection —
-        so an embedding can never be visible without its queued matching
-        job (and vice versa on rollback).
+        row visible also hands the claim to the story-matching prerequisite
+        barrier on the same connection — matching queues only when every
+        place mention holds its current-policy resolution outcome.
         """
         async with self.uow.transaction() as conn:
             claims = await self._claim_repo.get_many(conn, [claim_id])
@@ -185,12 +184,9 @@ class EmbeddingService:
         # itself, not return None from inside it (await None would explode).
         on_visible = (
             (
-                lambda conn, *, embedding_id: self._defer_match_claim(
+                lambda conn, *, embedding_id: self._handoff_to_matching(
                     conn,
                     claim=claim,
-                    embedding_id=embedding_id,
-                    model=model,
-                    dimensions=dimensions,
                 )
             )
             if self._matching_handoff
@@ -210,47 +206,26 @@ class EmbeddingService:
             on_visible=on_visible,
         )
 
-    async def _defer_match_claim(
+    async def _handoff_to_matching(
         self,
         conn: psycopg.AsyncConnection,
         *,
         claim: Claim,
-        embedding_id: int,
-        model: str,
-        dimensions: int,
     ) -> None:
-        """Resolve-or-create the current matching policy and queue matching.
+        """Hand the claim to the story-matching prerequisite barrier.
 
-        Runs INSIDE the visibility transaction; the resolved policy id is
-        frozen into the task arguments, so a retried job keeps its exact
-        prompt/config identity. The per-edition execution lock is set at
-        defer time (procrastinate ``lock``, verified against 3.9): jobs
-        sharing it never run simultaneously, while queueing_lock would
-        abort this very transaction via AlreadyEnqueued.
+        Runs INSIDE the visibility transaction. The prerequisite service
+        checks the compatible-embedding + place-evidence barrier, freezes
+        the exact policy ids, and defers ``match_claim`` once on THIS
+        connection when everything holds; otherwise it returns False and
+        the (re)resolution flow queues matching later, on its own success.
         """
-        policy = await self._matching_policy_service.ensure_current(
-            conn,
-            edition_id=claim.edition_id,
-            embedding_model=model,
-            embedding_dimensions=dimensions,
-        )
-        # Lazy on purpose: src.jobs.processing imports this module at top level.
-        from src.jobs.processing import match_claim
-
-        await match_claim.configure(
-            connection=conn,
-            lock=story_matching_execution_lock(claim.edition_id),
-        ).defer_async(
-            claim_id=claim.id,
-            policy_id=policy.id,
-            claim_embedding_id=embedding_id,
-        )
-        logger.info(
-            "deferred match_claim claim=%s policy=%s embedding=%s",
-            claim.id,
-            policy.id,
-            embedding_id,
-        )
+        scheduled = await self._prerequisites.maybe_schedule(conn, claim_id=claim.id)
+        if not scheduled:
+            logger.info(
+                "matching prerequisites unsatisfied for claim=%s; deferral withheld",
+                claim.id,
+            )
 
     async def embed_story_revision(
         self, story_revision_id: int, *, model: str, dimensions: int

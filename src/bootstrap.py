@@ -24,10 +24,11 @@ if TYPE_CHECKING:
 
 # Supported domain schema range; Plan 1 migrations land versions 1..3,
 # Plan 2 Task 1 (source items) lands version 4, Plan 3 Task 1
-# (relevance + claims) lands version 5, and Plan 3 Task 5
-# (embeddings + stories) lands version 6.
-SCHEMA_VERSION_MINIMUM = 6
-SCHEMA_VERSION_MAXIMUM = 6
+# (relevance + claims) lands version 5, Plan 3 Task 5
+# (embeddings + stories) lands version 6, and Plan 3 Task 8
+# (places + versioned place resolution) lands version 7.
+SCHEMA_VERSION_MINIMUM = 7
+SCHEMA_VERSION_MAXIMUM = 7
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]
 

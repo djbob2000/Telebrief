@@ -29,6 +29,10 @@ from src.ingestion.repository import IngestionRepository
 from src.jobs.app import procrastinate_app
 from src.processing.claims import ClaimExtractionService
 from src.processing.embeddings import EmbeddingService
+from src.processing.places import (
+    PlaceResolutionService,
+    backfill_place_mentions_rows,
+)
 from src.processing.relevance import (
     ProviderUnavailableError,
     RelevanceService,
@@ -50,6 +54,10 @@ from src.repositories.claims import (
     ClaimExtractionRunRepository,
 )
 from src.repositories.embeddings import EmbeddingRepository
+from src.repositories.places import (
+    PlaceRepository,
+    PlaceResolutionPolicyRepository,
+)
 from src.repositories.relevance import (
     EditionRelevanceDecisionRepository,
     RelevancePolicyVersionRepository,
@@ -69,6 +77,7 @@ ANALYZE_VISION_TASK_NAME = "analyze_vision"
 EXTRACT_CLAIMS_TASK_NAME = "extract_claims"
 EMBED_CLAIM_TASK_NAME = "embed_claim"
 EMBED_STORY_REVISION_TASK_NAME = "embed_story_revision"
+RESOLVE_PLACE_MENTION_TASK_NAME = "resolve_place_mention"
 PROCESSING_QUEUE = "processing"
 
 BACKFILL_BATCH_SIZE = 500
@@ -97,6 +106,13 @@ CLAIM_RETRY_STRATEGY = procrastinate.RetryStrategy(
 )
 
 STORY_MATCH_RETRY_STRATEGY = procrastinate.RetryStrategy(
+    max_attempts=3,
+    wait=30,
+    linear_wait=60,
+    retry_exceptions=(TransientProcessingError,),
+)
+
+PLACE_RESOLUTION_RETRY_STRATEGY = procrastinate.RetryStrategy(
     max_attempts=3,
     wait=30,
     linear_wait=60,
@@ -172,6 +188,9 @@ def build_claim_extraction_service() -> ClaimExtractionService:
         reasoning_effort=config.settings.reasoning_effort,
         # Frozen into each embed_claim defer so retries keep the queued space.
         embedding_config=config.embedding,
+        # T8: materialize mentions/entities and defer resolve_place_mention
+        # per new mention on the success transaction.
+        place_resolution_handoff=True,
     )
 
 
@@ -204,6 +223,16 @@ def build_story_matching_service() -> StoryMatchingService:
         reasoning_effort=config.settings.reasoning_effort,
     )
     return StoryMatchingService(uow=get_runtime().uow, matcher=matcher)
+
+
+def build_place_resolution_service() -> PlaceResolutionService:
+    """Assemble the place resolution service from the real config.
+
+    The shipped resolver is deterministic (seeded alias lookup); the optional
+    LLM assist stays unwired until its prompt/config identity joins the
+    policy hash, so no AI provider is constructed here yet.
+    """
+    return PlaceResolutionService(uow=get_runtime().uow)
 
 
 @procrastinate_app.task(
@@ -515,6 +544,36 @@ async def match_claim(context, claim_id: int, policy_id: int, claim_embedding_id
         return await service.finalize_provider_failure(claim_id, policy_id)
 
 
+@procrastinate_app.task(
+    name=RESOLVE_PLACE_MENTION_TASK_NAME,
+    queue=PROCESSING_QUEUE,
+    retry=PLACE_RESOLUTION_RETRY_STRATEGY,
+    pass_context=True,
+)
+async def resolve_place_mention(context, mention_id: int, policy_id: int):
+    """Resolve one immutable claim place mention under the exact queued policy.
+
+    The EXACT policy id resolved at defer time is a frozen task argument, so
+    a retried execution keeps its original prompt/config identity. A NULL
+    ``place_id`` with status 'unresolved' is a COMPLETED outcome that
+    satisfies the matching barrier — unresolved geography never blocks.
+
+    Retry math mirrors relevance/vision/claims/matching: max_attempts=3
+    counts TOTAL executions and only ProviderUnavailableError maps to the
+    retryable TransientProcessingError; on the final failed attempt the run
+    completes failed(provider_unavailable) through the guarded write (never
+    demoting a succeeded winner) and the task returns successfully.
+    Duplicate executions replay the canonical result without new rows.
+    """
+    service = build_place_resolution_service()
+    try:
+        return await service.resolve_mention(mention_id, policy_id)
+    except ProviderUnavailableError:
+        if context.job.attempts < 2:
+            raise TransientProcessingError("place resolution provider unavailable") from None
+        return await service.finalize_provider_failure(mention_id, policy_id)
+
+
 async def backfill_story_matching(
     edition_id: int,
     policy_id: int,
@@ -631,3 +690,55 @@ async def backfill_story_revision_embeddings(
         dimensions,
     )
     return len(gap_ids)
+
+
+async def backfill_place_mentions(*, batch_size: int = BACKFILL_BATCH_SIZE) -> int:
+    """Migrate legacy T4-staging metadata mentions/entities into rows.
+
+    Bounded slice; idempotent (NOT EXISTS per place/claim key) and the
+    claims.metadata staging record is never modified. Duplicate rows are
+    impossible on re-run, so at-least-once scheduling is safe.
+    """
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        created = await backfill_place_mentions_rows(conn, batch_size=batch_size)
+    logger.info("backfill_place_mentions created %d evidence rows", created)
+    return created
+
+
+async def backfill_place_resolutions(
+    edition_id: int,
+    policy_id: int,
+    *,
+    batch_size: int = BACKFILL_BATCH_SIZE,
+) -> int:
+    """Queue resolve_place_mention for mentions still owing this exact policy
+    a completed result.
+
+    Covers ClaimPlaceMentions persisted before the live handoff existed
+    (Task 4 without Task 8) plus any window where a run failed — failed runs
+    never occupy the canonical slot. Bounded slice; safe to re-run since
+    resolved/unresolved results count as coverage and duplicate jobs converge
+    on the canonical winner.
+    """
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        policy = await PlaceResolutionPolicyRepository().get(conn, policy_id)
+        if policy is None or policy.edition_id != edition_id:
+            raise ValueError(
+                f"place resolution policy {policy_id} does not belong to edition {edition_id}"
+            )
+        gaps = await PlaceRepository().list_mentions_missing_result(
+            conn, policy_id=policy.id, limit=batch_size
+        )
+        for mention in gaps:
+            await resolve_place_mention.configure(connection=conn).defer_async(
+                mention_id=mention.id, policy_id=policy.id
+            )
+    logger.info(
+        "backfill_place_resolutions queued %d mentions edition=%s policy=%s",
+        len(gaps),
+        edition_id,
+        policy.id,
+    )
+    return len(gaps)
