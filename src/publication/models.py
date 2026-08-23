@@ -16,17 +16,29 @@ class EligibilityPolicyVersion:
     version: int
     config_hash: str
     prompt_version: str
-    created_at: dt.datetime
+    config: dict[str, Any] = field(default_factory=dict)
+    created_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
 
     @classmethod
     def from_row(cls, row: Any) -> EligibilityPolicyVersion:
+        if len(row) == 6:
+            return cls(
+                id=row[0],
+                edition_id=row[1],
+                version=row[2],
+                config_hash=row[3],
+                prompt_version=row[4],
+                config={},
+                created_at=row[5],
+            )
         return cls(
             id=row[0],
             edition_id=row[1],
             version=row[2],
             config_hash=row[3],
             prompt_version=row[4],
-            created_at=row[5],
+            config=row[5] if isinstance(row[5], dict) else {},
+            created_at=row[6],
         )
 
 
@@ -39,17 +51,29 @@ class EditorialSelectionPolicyVersion:
     version: int
     config_hash: str
     prompt_version: str
-    created_at: dt.datetime
+    config: dict[str, Any] = field(default_factory=dict)
+    created_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
 
     @classmethod
     def from_row(cls, row: Any) -> EditorialSelectionPolicyVersion:
+        if len(row) == 6:
+            return cls(
+                id=row[0],
+                edition_id=row[1],
+                version=row[2],
+                config_hash=row[3],
+                prompt_version=row[4],
+                config={},
+                created_at=row[5],
+            )
         return cls(
             id=row[0],
             edition_id=row[1],
             version=row[2],
             config_hash=row[3],
             prompt_version=row[4],
-            created_at=row[5],
+            config=row[5] if isinstance(row[5], dict) else {},
+            created_at=row[6],
         )
 
 
@@ -62,17 +86,29 @@ class WriterPolicyVersion:
     version: int
     config_hash: str
     prompt_version: str
-    created_at: dt.datetime
+    config: dict[str, Any] = field(default_factory=dict)
+    created_at: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.timezone.utc))
 
     @classmethod
     def from_row(cls, row: Any) -> WriterPolicyVersion:
+        if len(row) == 6:
+            return cls(
+                id=row[0],
+                edition_id=row[1],
+                version=row[2],
+                config_hash=row[3],
+                prompt_version=row[4],
+                config={},
+                created_at=row[5],
+            )
         return cls(
             id=row[0],
             edition_id=row[1],
             version=row[2],
             config_hash=row[3],
             prompt_version=row[4],
-            created_at=row[5],
+            config=row[5] if isinstance(row[5], dict) else {},
+            created_at=row[6],
         )
 
 

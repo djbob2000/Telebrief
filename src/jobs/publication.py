@@ -101,10 +101,12 @@ async def create_scheduled_publication(
     snapshot_at: str,
 ) -> None:
     """Create scheduled publication run and seal candidates."""
+    from src.config_loader import load_config
     from src.publication.snapshot import PublicationSnapshotService
     from src.repositories.editions import EditionRepository
 
     runtime = get_runtime()
+    config = load_config()
     snap_dt = dt.datetime.fromisoformat(snapshot_at)
     async with runtime.uow.transaction() as conn:
         edition = await EditionRepository().get_by_slug(conn, edition_slug)
@@ -119,6 +121,7 @@ async def create_scheduled_publication(
         publication_type=publication_type,
         snapshot_at=snap_dt,
         request_key=req_key,
+        config=config,
     )
     # Seal and defer share one transaction so a failed deferral rolls the
     # sealing back instead of stranding the run in candidates_sealed.

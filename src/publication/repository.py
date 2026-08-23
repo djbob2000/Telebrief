@@ -42,6 +42,7 @@ class PublicationPolicyRepository:
         edition_id: int,
         config_hash: str,
         prompt_version: str,
+        config: dict[str, Any] | None = None,
     ) -> EligibilityPolicyVersion:
         return await self._get_or_create_policy(
             conn,
@@ -49,6 +50,7 @@ class PublicationPolicyRepository:
             edition_id=edition_id,
             config_hash=config_hash,
             prompt_version=prompt_version,
+            config=config,
             from_row=EligibilityPolicyVersion.from_row,
         )
 
@@ -59,6 +61,7 @@ class PublicationPolicyRepository:
         edition_id: int,
         config_hash: str,
         prompt_version: str,
+        config: dict[str, Any] | None = None,
     ) -> EditorialSelectionPolicyVersion:
         return await self._get_or_create_policy(
             conn,
@@ -66,6 +69,7 @@ class PublicationPolicyRepository:
             edition_id=edition_id,
             config_hash=config_hash,
             prompt_version=prompt_version,
+            config=config,
             from_row=EditorialSelectionPolicyVersion.from_row,
         )
 
@@ -76,6 +80,7 @@ class PublicationPolicyRepository:
         edition_id: int,
         config_hash: str,
         prompt_version: str,
+        config: dict[str, Any] | None = None,
     ) -> WriterPolicyVersion:
         return await self._get_or_create_policy(
             conn,
@@ -83,6 +88,7 @@ class PublicationPolicyRepository:
             edition_id=edition_id,
             config_hash=config_hash,
             prompt_version=prompt_version,
+            config=config,
             from_row=WriterPolicyVersion.from_row,
         )
 
@@ -94,6 +100,7 @@ class PublicationPolicyRepository:
         edition_id: int,
         config_hash: str,
         prompt_version: str,
+        config: dict[str, Any] | None = None,
         from_row: Callable[[Any], _PolicyT],
     ) -> _PolicyT:
         """Shared get-or-create for the per-edition policy tables.
@@ -109,7 +116,7 @@ class PublicationPolicyRepository:
         ):
             raise ValueError(f"unsupported policy table {table!r}")
         select_sql = f"""
-            SELECT id, edition_id, version, config_hash, prompt_version, created_at
+            SELECT id, edition_id, version, config_hash, prompt_version, config, created_at
             FROM {table}
             WHERE edition_id = %s AND config_hash = %s AND prompt_version = %s
             ORDER BY version DESC LIMIT 1
@@ -129,12 +136,19 @@ class PublicationPolicyRepository:
 
             try:
                 insert_sql = f"""
-                    INSERT INTO {table} (edition_id, version, config_hash, prompt_version)
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id, edition_id, version, config_hash, prompt_version, created_at
+                    INSERT INTO {table} (edition_id, version, config_hash, prompt_version, config)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id, edition_id, version, config_hash, prompt_version, config, created_at
                     """  # noqa: S608 — table is allowlisted above; values are bound params
                 cursor = await conn.execute(
-                    insert_sql, (edition_id, next_ver, config_hash, prompt_version)
+                    insert_sql,
+                    (
+                        edition_id,
+                        next_ver,
+                        config_hash,
+                        prompt_version,
+                        Jsonb(config or {}),
+                    ),
                 )
                 res_row = await cursor.fetchone()
                 if res_row is None:
@@ -263,7 +277,22 @@ class PublicationRepository:
         snapshot_at: dt.datetime,
         eligibility_policy_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Query stories and their latest revision visible at snapshot_at."""
+        """Query stories and their latest revision visible at snapshot_at with recent activity."""
+        lookback_hours = 24
+        if eligibility_policy_id is not None:
+            cur = await conn.execute(
+                "SELECT config->>'lookback_hours' FROM eligibility_policy_versions WHERE id = %s",
+                (eligibility_policy_id,),
+            )
+            pol_row = await cur.fetchone()
+            if pol_row is not None and pol_row[0] is not None:
+                try:
+                    lookback_hours = int(pol_row[0])
+                except (ValueError, TypeError):
+                    lookback_hours = 24
+
+        window_start = snapshot_at - dt.timedelta(hours=lookback_hours)
+
         cursor = await conn.execute(
             """
             WITH latest_revs AS (
@@ -279,60 +308,181 @@ class PublicationRepository:
                 WHERE s.edition_id = %s
                   AND sr.created_at <= %s
                 ORDER BY sr.story_id, sr.revision_no DESC, sr.created_at DESC
+            ),
+            story_activity AS (
+                SELECT
+                    lr.story_id,
+                    lr.story_revision_id,
+                    lr.revision_no,
+                    lr.current_state,
+                    lr.semantic_text,
+                    lr.revision_created_at,
+                    s.created_at AS story_created_at,
+                    COALESCE(
+                        (
+                            SELECT count(DISTINCT sc.claim_id)
+                            FROM story_claims sc
+                            JOIN claims c ON c.id = sc.claim_id
+                            WHERE sc.story_id = lr.story_id
+                              AND sc.attached_at <= %s
+                              AND c.created_at <= %s
+                        ), 0
+                    ) AS claim_count,
+                    COALESCE(
+                        (
+                            SELECT count(DISTINCT sc.claim_id)
+                            FROM story_claims sc
+                            JOIN claims c ON c.id = sc.claim_id
+                            WHERE sc.story_id = lr.story_id
+                              AND sc.attached_at >= %s
+                              AND sc.attached_at <= %s
+                              AND c.created_at <= %s
+                        ), 0
+                    ) AS new_claims_count,
+                    COALESCE(
+                        (
+                            SELECT count(DISTINCT sir.source_item_id)
+                            FROM story_claims sc
+                            JOIN claims c ON c.id = sc.claim_id
+                            JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                            WHERE sc.story_id = lr.story_id
+                              AND sc.attached_at <= %s
+                              AND c.created_at <= %s
+                        ), 0
+                    ) AS source_count,
+                    (
+                        SELECT MAX(event_time)
+                        FROM (
+                            SELECT lr.revision_created_at AS event_time
+                            UNION ALL
+                            SELECT MAX(sc.attached_at) AS event_time
+                            FROM story_claims sc
+                            WHERE sc.story_id = lr.story_id
+                              AND sc.attached_at <= %s
+                            UNION ALL
+                            SELECT MAX(sse.created_at) AS event_time
+                            FROM story_state_events sse
+                            WHERE sse.story_id = lr.story_id
+                              AND sse.created_at <= %s
+                        ) t
+                    ) AS last_activity_at,
+                    EXISTS (
+                        SELECT 1
+                        FROM story_revisions sr2
+                        WHERE sr2.story_id = lr.story_id
+                          AND sr2.created_at >= %s
+                          AND sr2.created_at <= %s
+                    ) AS has_recent_revision,
+                    EXISTS (
+                        SELECT 1
+                        FROM story_claims sc2
+                        WHERE sc2.story_id = lr.story_id
+                          AND sc2.attached_at >= %s
+                          AND sc2.attached_at <= %s
+                    ) AS has_recent_claim,
+                    EXISTS (
+                        SELECT 1
+                        FROM story_state_events sse2
+                        WHERE sse2.story_id = lr.story_id
+                          AND sse2.created_at >= %s
+                          AND sse2.created_at <= %s
+                    ) AS has_recent_event
+                FROM latest_revs lr
+                JOIN stories s ON s.id = lr.story_id
+                WHERE lr.current_state NOT IN ('invalid', 'archived', 'rejected')
+                  AND s.lifecycle_state <> 'archived'
             )
             SELECT
-                lr.story_id,
-                lr.story_revision_id,
-                lr.revision_no,
-                lr.current_state,
-                lr.semantic_text,
-                lr.revision_created_at,
-                COALESCE(
-                    (
-                        SELECT count(DISTINCT sc.claim_id)
-                        FROM story_claims sc
-                        JOIN claims c ON c.id = sc.claim_id
-                        WHERE sc.story_id = lr.story_id
-                          AND sc.attached_at <= %s
-                          AND c.created_at <= %s
-                    ), 0
-                ) AS claim_count,
-                COALESCE(
-                    (
-                        SELECT count(DISTINCT sir.source_item_id)
-                        FROM story_claims sc
-                        JOIN claims c ON c.id = sc.claim_id
-                        JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
-                        WHERE sc.story_id = lr.story_id
-                          AND sc.attached_at <= %s
-                          AND c.created_at <= %s
-                    ), 0
-                ) AS source_count
-            FROM latest_revs lr
-            JOIN stories s ON s.id = lr.story_id
-            WHERE lr.current_state NOT IN ('invalid', 'archived', 'rejected')
-              AND s.lifecycle_state <> 'archived'
-            ORDER BY lr.revision_created_at DESC, lr.story_id ASC
+                story_id,
+                story_revision_id,
+                revision_no,
+                current_state,
+                semantic_text,
+                revision_created_at,
+                claim_count,
+                source_count,
+                new_claims_count,
+                last_activity_at,
+                story_created_at,
+                has_recent_revision,
+                has_recent_claim,
+                has_recent_event
+            FROM story_activity
+            WHERE (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
+            ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
             """,
-            (edition_id, snapshot_at, snapshot_at, snapshot_at, snapshot_at, snapshot_at),
+            (
+                edition_id,
+                snapshot_at,
+                snapshot_at,
+                snapshot_at,
+                window_start,
+                snapshot_at,
+                snapshot_at,
+                snapshot_at,
+                snapshot_at,
+                snapshot_at,
+                snapshot_at,
+                window_start,
+                snapshot_at,
+                window_start,
+                snapshot_at,
+                window_start,
+                snapshot_at,
+                window_start,
+            ),
         )
         rows = await cursor.fetchall()
         candidates = []
         for r in rows:
+            story_id = r[0]
+            story_rev_id = r[1]
+            rev_no = r[2]
+            current_state = r[3]
+            semantic_text = r[4]
+            rev_created_at = r[5]
+            claim_count = r[6]
+            source_count = r[7]
+            new_claims_count = r[8]
+            last_activity_at = r[9]
+            story_created_at = r[10]
+            has_recent_revision = r[11]
+            has_recent_claim = r[12]
+            has_recent_event = r[13]
+
+            if story_created_at >= window_start:
+                activity_type = "new_story"
+            elif new_claims_count > 0 or has_recent_claim:
+                activity_type = "new_claims"
+            elif has_recent_revision:
+                activity_type = "revised"
+            elif has_recent_event:
+                activity_type = "state_change"
+            else:
+                activity_type = "activity"
+
             candidates.append(
                 {
-                    "story_id": r[0],
-                    "story_revision_id": r[1],
-                    "revision_no": r[2],
-                    "current_state": r[3],
-                    "semantic_text": r[4],
-                    "created_at": r[5],
-                    "claim_count": r[6],
-                    "source_count": r[7],
+                    "story_id": story_id,
+                    "story_revision_id": story_rev_id,
+                    "revision_no": rev_no,
+                    "current_state": current_state,
+                    "semantic_text": semantic_text,
+                    "created_at": rev_created_at,
+                    "claim_count": claim_count,
+                    "source_count": source_count,
+                    "new_claims_count": new_claims_count,
+                    "last_activity_at": last_activity_at,
+                    "activity_type": activity_type,
                     "snapshot_features": {
-                        "claim_count": r[6],
-                        "source_count": r[7],
-                        "semantic_text": r[4],
+                        "claim_count": claim_count,
+                        "source_count": source_count,
+                        "new_claims_count": new_claims_count,
+                        "last_activity_at": (
+                            last_activity_at.isoformat() if last_activity_at else None
+                        ),
+                        "activity_type": activity_type,
+                        "semantic_text": semantic_text,
                     },
                 }
             )

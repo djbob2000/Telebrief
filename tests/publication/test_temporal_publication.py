@@ -411,3 +411,211 @@ class TestTemporalPublicationSnapshots:
             inputs = await pub_repo.load_sealed_inputs(replay_conn, run.id)
             assert len(inputs) == 1
             assert inputs[0].story_revision_id == story_rev1_id  # Frozen at rev 1, not rev 2!
+
+    async def test_old_active_story_with_no_recent_activity_is_excluded(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        service = PublicationSnapshotService(uow=uow)
+
+        # Story and revision created 48h before snapshot_at
+        t_48h_ago = _T_19_58 - dt.timedelta(hours=48)
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, t_48h_ago),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Старая новость без активности', 'hash-old-1', %s)
+            RETURNING id
+            """,
+            (story_id, t_48h_ago),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+
+        run = await service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_T_19_58,
+            request_key="test-old-story-excluded",
+        )
+        candidates = await service.seal_candidates(run.id)
+        assert len(candidates) == 0
+
+    async def test_old_story_with_fresh_claim_in_window_is_included(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        service = PublicationSnapshotService(uow=uow)
+
+        # Story created 48h ago
+        t_48h_ago = _T_19_58 - dt.timedelta(hours=48)
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, t_48h_ago),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Старая новость с новым развитием', 'hash-old-2', %s)
+            RETURNING id
+            """,
+            (story_id, t_48h_ago),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+
+        # Source item & claim created 1h before snapshot_at
+        t_1h_ago = _T_19_58 - dt.timedelta(hours=1)
+        cur = await conn.execute(
+            "INSERT INTO sources (platform, kind, external_id, url, name) VALUES ('telegram', 'channel', '-10088', 'https://t.me/c88', 'Chan88') RETURNING id"
+        )
+        src_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', '88', %s) RETURNING id",
+            (src_id, t_1h_ago),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h88', 'txt88', %s) RETURNING id",
+            (item_id, t_1h_ago),
+        )
+        item_rev_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'hr88', 'vr88') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (item_rev_id, edition.id, rel_pol_id),
+        )
+        rel_dec_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'he88', 've88') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (item_rev_id, edition.id, extr_pol_id, rel_dec_id),
+        )
+        extr_run_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at) VALUES (%s, %s, %s, 'Новый факт', 'новый факт', %s) RETURNING id",
+            (extr_run_id, item_rev_id, edition.id, t_1h_ago),
+        )
+        claim_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, claim_id, t_1h_ago),
+        )
+
+        run = await service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_T_19_58,
+            request_key="test-old-story-fresh-claim",
+        )
+        candidates = await service.seal_candidates(run.id)
+        assert len(candidates) == 1
+        assert candidates[0].story_id == story_id
+        assert candidates[0].snapshot_features.get("new_claims_count") == 1
+
+    async def test_single_source_recent_story_is_eligible(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        service = PublicationSnapshotService(uow=uow)
+
+        t_2h_ago = _T_19_58 - dt.timedelta(hours=2)
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, t_2h_ago),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Одиночный пост из соцсетей', 'h-single-1', %s)
+            RETURNING id
+            """,
+            (story_id, t_2h_ago),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+
+        run = await service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_T_19_58,
+            request_key="test-single-source-eligible",
+        )
+        candidates = await service.seal_candidates(run.id)
+        assert len(candidates) == 1
+        assert candidates[0].story_id == story_id
+
+    async def test_lookback_change_creates_new_eligibility_policy(
+        self, conn: psycopg.AsyncConnection, edition
+    ):
+        from src.config_loader import Config, Settings
+
+        policy_service = PublicationPolicyService()
+
+        cfg_24 = Config(
+            channels=[],
+            settings=Settings(
+                schedule_time="09:00",
+                timezone="UTC",
+                openai_model="gpt-4",
+                openai_temperature=0.7,
+                lookback_hours=24,
+            ),
+            telegram_api_id=1,
+            telegram_api_hash="h",
+            telegram_bot_token="t",
+            openai_api_key="k",
+            log_level="INFO",
+        )
+        policies_24 = await policy_service.ensure_current(
+            conn,
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            config=cfg_24,
+        )
+        assert policies_24.eligibility.config.get("lookback_hours") == 24
+
+        cfg_12 = Config(
+            channels=[],
+            settings=Settings(
+                schedule_time="09:00",
+                timezone="UTC",
+                openai_model="gpt-4",
+                openai_temperature=0.7,
+                lookback_hours=12,
+            ),
+            telegram_api_id=1,
+            telegram_api_hash="h",
+            telegram_bot_token="t",
+            openai_api_key="k",
+            log_level="INFO",
+        )
+        policies_12 = await policy_service.ensure_current(
+            conn,
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            config=cfg_12,
+        )
+        assert policies_12.eligibility.config.get("lookback_hours") == 12
+        assert policies_12.eligibility.id != policies_24.eligibility.id
+        assert policies_12.eligibility.version != policies_24.eligibility.version

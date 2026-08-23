@@ -116,6 +116,7 @@ async def request_publication(
         publication_type=publication_type,
         snapshot_at=snap,
         request_key=key,
+        config=config,
     )
     # Seal and defer share one transaction: a failed defer rolls the sealing
     # back instead of stranding the run in candidates_sealed forever.
