@@ -442,7 +442,8 @@ class PublicationRepository:
         input_row = PublicationInput.from_row(await cursor.fetchone())
 
         if claim_ids:
-            await conn.executemany(
+            cur = conn.cursor()
+            await cur.executemany(
                 """
                 INSERT INTO publication_input_claims (publication_input_id, claim_id)
                 VALUES (%s, %s) ON CONFLICT DO NOTHING
@@ -451,7 +452,8 @@ class PublicationRepository:
             )
 
         if evidence_cluster_ids:
-            await conn.executemany(
+            cur = conn.cursor()
+            await cur.executemany(
                 """
                 INSERT INTO publication_input_evidence_clusters (publication_input_id, evidence_cluster_id)
                 VALUES (%s, %s) ON CONFLICT DO NOTHING
@@ -625,6 +627,21 @@ class PublicationRepository:
         row = await cursor.fetchone()
         return Publication.from_row(row) if row is not None else None
 
+    async def get_publication_by_id(
+        self, conn: psycopg.AsyncConnection, pub_id: int
+    ) -> Publication | None:
+        cursor = await conn.execute(
+            """
+            SELECT id, publication_run_id, winning_generation_attempt_id,
+                   publication_type, title, lead, body, metadata, created_at
+            FROM publications
+            WHERE id = %s
+            """,
+            (pub_id,),
+        )
+        row = await cursor.fetchone()
+        return Publication.from_row(row) if row is not None else None
+
     async def get_latest_publication(
         self,
         conn: psycopg.AsyncConnection,
@@ -681,6 +698,20 @@ class DeliveryRepository:
             (edition_id, platform, destination_key, Jsonb(config or {})),
         )
         return DeliveryDestination.from_row(await cursor.fetchone())
+
+    async def get_destination_by_id(
+        self, conn: psycopg.AsyncConnection, destination_id: int
+    ) -> DeliveryDestination | None:
+        cursor = await conn.execute(
+            """
+            SELECT id, edition_id, platform, destination_key, config, is_active, created_at
+            FROM delivery_destinations
+            WHERE id = %s
+            """,
+            (destination_id,),
+        )
+        row = await cursor.fetchone()
+        return DeliveryDestination.from_row(row) if row is not None else None
 
     async def list_active_destinations(
         self, conn: psycopg.AsyncConnection, edition_id: int

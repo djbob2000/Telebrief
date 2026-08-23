@@ -66,8 +66,11 @@ async def generate_publication(context: Any, run_id: int) -> None:
 )
 async def prepare_delivery_payloads(context: Any, publication_id: int) -> None:
     """Prepare immutable delivery payloads for a created publication."""
-    # To be fully wired in Task 7
-    logger.info("prepare_delivery_payloads queued for publication %s", publication_id)
+    from src.publication.delivery import PublicationDeliveryService
+
+    runtime = get_runtime()
+    service = PublicationDeliveryService(uow=runtime.uow)
+    await service.prepare_payloads(publication_id)
 
 
 @procrastinate_app.task(
@@ -78,8 +81,11 @@ async def prepare_delivery_payloads(context: Any, publication_id: int) -> None:
 )
 async def deliver_publication_payload(context: Any, delivery_id: int) -> None:
     """Deliver a prepared publication payload."""
-    # To be fully wired in Task 7
-    logger.info("deliver_publication_payload queued for delivery %s", delivery_id)
+    from src.publication.delivery import PublicationDeliveryService
+
+    runtime = get_runtime()
+    service = PublicationDeliveryService(uow=runtime.uow)
+    await service.deliver(delivery_id)
 
 
 @procrastinate_app.task(
