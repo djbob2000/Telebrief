@@ -220,7 +220,11 @@ class TestStoryRepositoryCurrentRevisionInvariant:
         second = await _create_story_with_claim(conn, edition.id, second_source.id)
 
         # Deferral moves the check from statement time to commit time; the
-        # cross-story pointer is still rejected by the database.
+        # cross-story pointer is still rejected by the database. The flag
+        # proves the UPDATE itself succeeded at statement time, so ONLY a
+        # commit-time violation satisfies this test (a no-op SET CONSTRAINTS
+        # with an immediate check would raise before the flag is set).
+        update_applied = False
         with pytest.raises(psycopg.errors.ForeignKeyViolation):
             async with conn.transaction():
                 await conn.execute("SET CONSTRAINTS ALL DEFERRED")
@@ -228,6 +232,9 @@ class TestStoryRepositoryCurrentRevisionInvariant:
                     "UPDATE stories SET current_revision_id = %s WHERE id = %s",
                     (first.revision.id, second.story_id),
                 )
+                update_applied = True
+
+        assert update_applied is True
 
 
 class TestStoryRepositoryRevisionsAndLifecycle:
