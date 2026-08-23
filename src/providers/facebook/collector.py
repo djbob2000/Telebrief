@@ -1,0 +1,381 @@
+"""Facebook post collector using semantic selectors and persistent browser sessions (Plan 5 Task 3)."""
+
+from __future__ import annotations
+
+import datetime as dt
+import logging
+import re
+from typing import Any
+from urllib.parse import parse_qs, urlparse
+
+from src.domain.sources import Source
+from src.ingestion.models import (
+    CollectionBatch,
+    CollectionCheckpoint,
+    CollectionOutcome,
+    CollectionTrigger,
+    ObservedAsset,
+    ObservedItem,
+    ObservedStateEvent,
+)
+from src.ingestion.protocol import CollectionContext, Collector
+from src.providers.facebook.auth import (
+    FacebookAuthState,
+    FacebookHumanActionRequired,
+    classify_facebook_page_state,
+)
+from src.providers.facebook.browser import FacebookBrowserSession
+from src.repositories.facebook import FacebookRepository
+
+logger = logging.getLogger(__name__)
+
+PLATFORM_FACEBOOK = "facebook"
+KIND_FACEBOOK_POST = "facebook_post"
+
+
+def extract_post_id_from_url(url: str) -> str | None:
+    """Extract canonical post ID from various Facebook URL formats."""
+    if not url:
+        return None
+
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    if "story_fbid" in qs and qs["story_fbid"]:
+        return qs["story_fbid"][0]
+    if "fbid" in qs and qs["fbid"]:
+        return qs["fbid"][0]
+
+    path = parsed.path.rstrip("/")
+    m = re.search(r"/(?:posts|permalink|videos|photos)/(\d+)", path)
+    if m:
+        return m.group(1)
+
+    m = re.search(r"/groups/[^/]+/(?:posts|permalink)/(\d+)", path)
+    if m:
+        return m.group(1)
+
+    m = re.search(r"(\d{10,})", path)
+    if m:
+        return m.group(1)
+
+    return None
+
+
+def canonicalize_post_url(source_url: str, post_id: str) -> str:
+    """Build a canonical permalink URL for a post."""
+    parsed = urlparse(source_url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    path = parsed.path.rstrip("/")
+    if "/groups/" in path:
+        group_part = path.split("/posts")[0].split("/permalink")[0]
+        return f"{base}{group_part}/posts/{post_id}/"
+    return f"{base}/{path.strip('/')}/posts/{post_id}/" if path else f"{base}/posts/{post_id}/"
+
+
+def parse_post_from_data(
+    *,
+    source: Source,
+    post_id: str,
+    text: str,
+    author_name: str | None = None,
+    author_id: str | None = None,
+    published_at: dt.datetime | None = None,
+    canonical_url: str | None = None,
+    media_urls: list[str] | None = None,
+    extra_metadata: dict[str, Any] | None = None,
+    observed_at: dt.datetime | None = None,
+) -> tuple[ObservedItem, list[ObservedAsset]]:
+    """Create a standardized ObservedItem and attachments for a Facebook post."""
+    now = observed_at or dt.datetime.now(dt.timezone.utc)
+    canonical = canonical_url or canonicalize_post_url(source.url or "", post_id)
+    external_id = f"post:{post_id}"
+
+    assets: list[ObservedAsset] = []
+    if media_urls:
+        for idx, murl in enumerate(media_urls):
+            is_img = any(ext in murl.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"])
+            assets.append(
+                ObservedAsset(
+                    item_external_id=external_id,
+                    kind="image" if is_img else "video",
+                    external_url=murl,
+                    mime_type="image/jpeg" if is_img else "video/mp4",
+                    content_hash=None,
+                    metadata={"ordering": idx},
+                )
+            )
+
+    metadata = {
+        "platform": PLATFORM_FACEBOOK,
+        "kind": KIND_FACEBOOK_POST,
+        "post_id": post_id,
+        "source_url": source.url,
+        "author_id": author_id,
+        **(extra_metadata or {}),
+    }
+
+    item = ObservedItem(
+        kind=KIND_FACEBOOK_POST,
+        external_id=external_id,
+        text=text,
+        author_name=author_name,
+        published_at=published_at,
+        canonical_url=canonical,
+        metadata=metadata,
+        observed_at=now,
+    )
+    return item, assets
+
+
+class FacebookCollector(Collector):
+    """Collector for Facebook group and page posts."""
+
+    def __init__(
+        self,
+        auth_root: str = "/var/lib/telebrief/auth",
+        fb_repo: FacebookRepository | None = None,
+    ) -> None:
+        self.auth_root = auth_root
+        self.fb_repo = fb_repo or FacebookRepository()
+
+    async def scan(
+        self,
+        source: Source,
+        checkpoint: CollectionCheckpoint | None,
+        context: CollectionContext,
+    ) -> CollectionBatch:
+        """Collector protocol implementation."""
+        return await self.collect(source, checkpoint, trigger=CollectionTrigger.SCHEDULED)
+
+    async def collect(
+        self,
+        source: Source,
+        checkpoint: CollectionCheckpoint | None,
+        trigger: CollectionTrigger,
+    ) -> CollectionBatch:
+        """Scan posts from the explicit source URL."""
+        started_at = dt.datetime.now(dt.timezone.utc)
+        if not source.url:
+            return CollectionBatch(
+                outcome=CollectionOutcome.PERMANENT,
+                items=(),
+                assets=(),
+                state_events=(),
+                adapter_state={},
+                started_at=started_at,
+                completed_at=dt.datetime.now(dt.timezone.utc),
+                error_kind="missing_source_url",
+            )
+
+        from src.runtime import get_runtime
+
+        runtime = get_runtime()
+        auth_profile_name = "default"
+        auth_profile_id = source.collector_options.get("auth_profile_id")
+        auth_profile_name_opt = source.collector_options.get("auth_profile")
+        async with runtime.uow.transaction() as conn:
+            cfg = await self.fb_repo.get_source_config_by_source_id(conn, source.id)
+            if cfg is not None:
+                auth_profile_id = cfg.auth_profile_id
+
+            if auth_profile_id is not None:
+                prof = await self.fb_repo.get_auth_profile_by_id(conn, auth_profile_id)
+                if prof is not None:
+                    auth_profile_name = prof.name
+            elif auth_profile_name_opt is not None:
+                auth_profile_name = str(auth_profile_name_opt)
+
+            profile = await self.fb_repo.get_or_create_auth_profile(
+                conn, name=auth_profile_name, storage_ref=auth_profile_name
+            )
+
+        if profile.status == FacebookAuthState.DISABLED.value:
+            return CollectionBatch(
+                outcome=CollectionOutcome.AUTH_REQUIRED,
+                items=(),
+                assets=(),
+                state_events=(),
+                adapter_state={},
+                started_at=started_at,
+                completed_at=dt.datetime.now(dt.timezone.utc),
+                error_kind="profile_disabled",
+            )
+
+        items: list[ObservedItem] = []
+        assets: list[ObservedAsset] = []
+        state_events: list[ObservedStateEvent] = []
+
+        try:
+            async with FacebookBrowserSession(self.auth_root, profile, headless=True) as (_, page):
+                try:
+                    await page.goto(source.url, wait_until="domcontentloaded", timeout=45000)
+                except Exception:
+                    return CollectionBatch(
+                        outcome=CollectionOutcome.TRANSIENT,
+                        items=(),
+                        assets=(),
+                        state_events=(),
+                        adapter_state={},
+                        started_at=started_at,
+                        completed_at=dt.datetime.now(dt.timezone.utc),
+                        error_kind="navigation_timeout",
+                    )
+
+                session_state = await classify_facebook_page_state(page)
+                if session_state in (
+                    FacebookAuthState.AUTH_REQUIRED,
+                    FacebookAuthState.CHECKPOINT_REQUIRED,
+                    FacebookAuthState.ACCOUNT_ACTION_REQUIRED,
+                ):
+                    async with runtime.uow.transaction() as conn:
+                        await self.fb_repo.update_auth_profile_status(
+                            conn,
+                            profile.id,
+                            status=session_state.value,
+                            error_kind=session_state.value,
+                            error_message=f"Encountered {session_state.value} on {source.url}",
+                        )
+                    outcome = (
+                        CollectionOutcome.AUTH_REQUIRED
+                        if session_state == FacebookAuthState.AUTH_REQUIRED
+                        else CollectionOutcome.ACCOUNT_ACTION_REQUIRED
+                    )
+                    return CollectionBatch(
+                        outcome=outcome,
+                        items=(),
+                        assets=(),
+                        state_events=(),
+                        adapter_state={},
+                        started_at=started_at,
+                        completed_at=dt.datetime.now(dt.timezone.utc),
+                        error_kind=session_state.value,
+                    )
+
+                content = (await page.content()).lower()
+                now = dt.datetime.now(dt.timezone.utc)
+                if any(
+                    m in content
+                    for m in [
+                        "this content isn't available right now",
+                        "this page isn't available",
+                        "the link you followed may be broken",
+                    ]
+                ):
+                    return CollectionBatch(
+                        outcome=CollectionOutcome.SUCCESS,
+                        items=(),
+                        assets=(),
+                        state_events=(
+                            ObservedStateEvent(
+                                item_external_id=f"post:{source.external_id or 'unknown'}",
+                                type="inaccessible",
+                                observed_at=now,
+                                reason="content_unavailable",
+                                evidence={},
+                            ),
+                        ),
+                        adapter_state={},
+                        started_at=started_at,
+                        completed_at=now,
+                    )
+
+                # Scroll down 3 times to load feed posts
+                for _ in range(3):
+                    await page.evaluate("window.scrollBy(0, window.innerHeight * 2);")
+                    await page.wait_for_timeout(1500)
+
+                articles = await page.query_selector_all(
+                    "div[role='article'], div[role='feed'] > div"
+                )
+                for article in articles:
+                    try:
+                        text_content = (await article.inner_text()).strip()
+                        if not text_content or len(text_content) < 10:
+                            continue
+
+                        links = await article.query_selector_all("a[href]")
+                        post_id = None
+                        post_url = None
+                        for link in links:
+                            href = await link.get_attribute("href") or ""
+                            pid = extract_post_id_from_url(href)
+                            if pid:
+                                post_id = pid
+                                post_url = href
+                                break
+
+                        if not post_id:
+                            continue
+
+                        author_name = None
+                        if links:
+                            first_link_text = (await links[0].inner_text()).strip()
+                            if first_link_text and len(first_link_text) < 60:
+                                author_name = first_link_text
+
+                        media_urls: list[str] = []
+                        images = await article.query_selector_all("img[src]")
+                        for img in images:
+                            src = await img.get_attribute("src") or ""
+                            if (
+                                src.startswith("http")
+                                and "emoji" not in src
+                                and "static" not in src
+                            ):
+                                media_urls.append(src)
+
+                        item, item_assets = parse_post_from_data(
+                            source=source,
+                            post_id=post_id,
+                            text=text_content,
+                            author_name=author_name,
+                            canonical_url=post_url,
+                            media_urls=media_urls,
+                            published_at=dt.datetime.now(dt.timezone.utc),
+                        )
+                        items.append(item)
+                        assets.extend(item_assets)
+                    except Exception as e:
+                        logger.debug("Failed parsing article node: %s", e)
+
+        except FacebookHumanActionRequired as e:
+            async with runtime.uow.transaction() as conn:
+                await self.fb_repo.update_auth_profile_status(
+                    conn,
+                    profile.id,
+                    status=e.state.value,
+                    error_kind=e.state.value,
+                    error_message=str(e),
+                )
+            return CollectionBatch(
+                outcome=CollectionOutcome.AUTH_REQUIRED,
+                items=(),
+                assets=(),
+                state_events=(),
+                adapter_state={},
+                started_at=started_at,
+                completed_at=dt.datetime.now(dt.timezone.utc),
+                error_kind=e.state.value,
+            )
+        except Exception as e:
+            logger.exception("Unexpected error in FacebookCollector: %s", e)
+            return CollectionBatch(
+                outcome=CollectionOutcome.TRANSIENT,
+                items=(),
+                assets=(),
+                state_events=(),
+                adapter_state={},
+                started_at=started_at,
+                completed_at=dt.datetime.now(dt.timezone.utc),
+                error_kind="unexpected_browser_error",
+            )
+
+        return CollectionBatch(
+            outcome=CollectionOutcome.SUCCESS,
+            items=tuple(items),
+            assets=tuple(assets),
+            state_events=tuple(state_events),
+            adapter_state={},
+            started_at=started_at,
+            completed_at=dt.datetime.now(dt.timezone.utc),
+        )

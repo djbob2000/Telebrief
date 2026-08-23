@@ -7,13 +7,18 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 
+import procrastinate
 import psycopg
 import pytest
+from procrastinate.testing import InMemoryConnector
 from psycopg_pool import AsyncConnectionPool
 
+from src.bootstrap import ApplicationInfrastructure
 from src.config_loader import DatabaseConfig
 from src.db.migrations import migrate
 from src.db.pool import close_pool, open_pool
+from src.db.uow import DatabaseUnitOfWork
+from src.runtime import install_runtime
 
 REPO_ROOT = Path(__file__).parent.parent.parent.parent
 MIGRATIONS_DIR = REPO_ROOT / "migrations"
@@ -30,6 +35,14 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
                     reason="TELEBRIEF_TEST_DATABASE_URL is not set",
                 )
             )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def ensure_test_env(tmp_path_factory) -> None:
+    if "TELEBRIEF_TEST_DATABASE_URL" not in os.environ:
+        return
+    url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
+    os.environ["DATABASE_URL"] = url
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -79,6 +92,25 @@ async def pool() -> AsyncIterator[AsyncConnectionPool]:
         yield p
     finally:
         await close_pool(p)
+
+
+@pytest.fixture
+def uow(pool: AsyncConnectionPool) -> DatabaseUnitOfWork:
+    return DatabaseUnitOfWork(pool)
+
+
+@pytest.fixture(autouse=True)
+def install_test_runtime(
+    pool: AsyncConnectionPool, uow: DatabaseUnitOfWork
+) -> ApplicationInfrastructure:
+    fake_app = procrastinate.App(connector=InMemoryConnector())
+    rt = ApplicationInfrastructure(
+        pool=pool,
+        uow=uow,
+        procrastinate_app=fake_app,
+    )
+    install_runtime(rt)
+    return rt
 
 
 @pytest.fixture

@@ -76,11 +76,17 @@ TRANSIENT_RETRY_STRATEGY = procrastinate.RetryStrategy(
 # provider retry-after; otherwise the persisted value comes from the batch.
 RATE_LIMIT_FALLBACK_BACKOFF_SECONDS = 900
 
+
 # Platform-specific execution locks shared across sources authenticated by one
-# account. Plan 2 registers no resolver (each Telegram source scans
-# independently); Plan 5 registers the Facebook AuthProfile lock here without
-# changing any caller.
-_EXECUTION_LOCK_RESOLVERS: dict[str, Callable[[Source], str | None]] = {}
+def _resolve_facebook_execution_lock(source: Source) -> str | None:
+    options = source.collector_options or {}
+    auth_profile = options.get("auth_profile") or options.get("auth_profile_id") or "default"
+    return f"facebook-auth-profile:{auth_profile}"
+
+
+_EXECUTION_LOCK_RESOLVERS: dict[str, Callable[[Source], str | None]] = {
+    "facebook": _resolve_facebook_execution_lock,
+}
 
 schedule_policy = CollectionSchedulePolicy()
 

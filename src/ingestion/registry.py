@@ -379,11 +379,19 @@ def _build_telegram_collector() -> Collector:
     return TelegramCollector(load_config())
 
 
-def build_default_collector_registry() -> CollectorRegistry:
-    """Production wiring: Plan 2 registers Telegram only.
+def _build_facebook_collector() -> Collector:
+    """Build the Facebook collector from configuration; imports stay lazy."""
+    from src.config_loader import load_config
+    from src.providers.facebook.collector import FacebookCollector
 
-    Plan 5 adds Facebook here without changing any caller.
-    """
+    cfg = load_config()
+    auth_root = getattr(cfg.facebook, "auth_root", "/var/lib/telebrief/auth")
+    return FacebookCollector(auth_root=auth_root)
+
+
+def build_default_collector_registry() -> CollectorRegistry:
+    """Production wiring: registers Telegram and Facebook collectors."""
     registry = CollectorRegistry()
     registry.register(PLATFORM_TELEGRAM, _build_telegram_collector)
+    registry.register("facebook", _build_facebook_collector)
     return registry
