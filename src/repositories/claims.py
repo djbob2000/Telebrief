@@ -20,6 +20,7 @@ from src.domain.claims import (
     ClaimExtractionRun,
     ClaimRelation,
     ClaimStateEvent,
+    EditionRelevanceDecision,
     NewClaim,
     ProcessingAttempt,
 )
@@ -61,6 +62,25 @@ class ClaimExtractionPolicyRepository:
         )
         row = await cursor.fetchone()
         return None if row is None else ClaimExtractionPolicyVersion.from_row(row)
+
+    async def list_for_edition(
+        self, conn: psycopg.AsyncConnection, edition_id: int
+    ) -> list[ClaimExtractionPolicyVersion]:
+        """All policy versions of one edition in ascending version order.
+
+        The editions table carries NO current-claim-policy pointer column, so
+        "current" is resolved by identity (config_hash, prompt_version) with
+        latest-version-wins semantics in the service layer.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT id, edition_id, version, config_hash, prompt_version, created_at
+            FROM claim_extraction_policy_versions WHERE edition_id = %s ORDER BY version
+            """,
+            (edition_id,),
+        )
+        rows = await cursor.fetchall()
+        return [ClaimExtractionPolicyVersion.from_row(row) for row in rows]
 
 
 class ClaimExtractionRunRepository:
@@ -126,6 +146,106 @@ class ClaimExtractionRunRepository:
         )
         row = await cursor.fetchone()
         return None if row is None else ClaimExtractionRun.from_row(row)
+
+    async def latest_for_key(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        source_item_revision_id: int,
+        edition_id: int,
+        extraction_policy_id: int,
+    ) -> ClaimExtractionRun | None:
+        """Newest run for the semantic key regardless of status.
+
+        Identity ids are monotonic, so id order is creation order. The service
+        layer reuses a still-``running`` run from this query so provider
+        retries keep one semantic run and only append attempt rows; succeeded
+        runs are canonical (see ``_canonical_success``), failed runs never
+        block a fresh chain.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT id, source_item_revision_id, edition_id, extraction_policy_id,
+                   relevance_decision_id, started_at, completed_at, status,
+                   error_kind, metadata
+            FROM claim_extraction_runs
+            WHERE source_item_revision_id = %s AND edition_id = %s
+              AND extraction_policy_id = %s
+            ORDER BY id DESC LIMIT 1
+            """,
+            (source_item_revision_id, edition_id, extraction_policy_id),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else ClaimExtractionRun.from_row(row)
+
+    async def latest_open_attempt(
+        self, conn: psycopg.AsyncConnection, *, stage: str, semantic_run_id: int
+    ) -> ProcessingAttempt | None:
+        """Newest still-running attempt row for one semantic run, if any.
+
+        Used by terminal fail-open finalization to close the audit history of
+        an execution that died with the provider unavailable.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT stage, semantic_run_id, attempt_no, provider, model,
+                started_at, completed_at, status, error_kind, metadata
+            FROM processing_attempts
+            WHERE stage = %s AND semantic_run_id = %s AND status = 'running'
+            ORDER BY attempt_no DESC LIMIT 1
+            """,
+            (stage, semantic_run_id),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else ProcessingAttempt.from_row(row)
+
+    async def list_decisions_missing_success(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        extraction_policy_id: int,
+        after_decision_id: int | None = None,
+        limit: int = 500,
+    ) -> list[EditionRelevanceDecision]:
+        """Relevant decisions that still owe a SUCCESSFUL extraction for the
+        exact policy (bounded slice with optional exclusive id cursor).
+
+        Only the LATEST decision per (revision, edition) qualifies so
+        superseded parents never re-run. A SUCCEEDED run satisfies the debt;
+        failed or running runs do NOT — fail-open items must be retried by
+        backfill, and duplicate deferrals are safe because concurrent
+        executions converge on the single canonical success.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT d.id, d.source_item_revision_id, d.edition_id, d.relevance_policy_id,
+                   d.status, d.confidence, d.reason, d.provider, d.model,
+                   d.parent_decision_id, d.created_at
+            FROM edition_relevance_decisions d
+            WHERE d.edition_id = %s
+              AND d.status = 'relevant'
+              AND d.id > COALESCE(%s, 0)
+              AND d.id = (
+                  SELECT MAX(latest.id)
+                  FROM edition_relevance_decisions latest
+                  WHERE latest.source_item_revision_id = d.source_item_revision_id
+                    AND latest.edition_id = d.edition_id
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM claim_extraction_runs r
+                  WHERE r.relevance_decision_id = d.id
+                    AND r.extraction_policy_id = %s
+                    AND r.status = 'succeeded'
+              )
+            ORDER BY d.id
+            LIMIT %s
+            """,
+            (edition_id, after_decision_id, extraction_policy_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [EditionRelevanceDecision.from_row(row) for row in rows]
 
     async def mark_succeeded(
         self, conn: psycopg.AsyncConnection, run_id: int, *, completed_at: dt.datetime
@@ -298,6 +418,27 @@ class ClaimRepository:
             )
             inserted.append(Claim.from_row(await cursor.fetchone()))
         return inserted
+
+    async def list_for_run(
+        self, conn: psycopg.AsyncConnection, claim_extraction_run_id: int
+    ) -> list[Claim]:
+        """All claims of one extraction run in insertion (id) order.
+
+        Replay paths converge on these rows instead of re-running the model.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT id, claim_extraction_run_id, source_item_revision_id,
+                   edition_id, assertion_text, normalized_assertion,
+                   event_time_start, event_time_end, event_time_precision,
+                   event_time_confidence, event_time_original_text, metadata,
+                   created_at
+            FROM claims WHERE claim_extraction_run_id = %s ORDER BY id
+            """,
+            (claim_extraction_run_id,),
+        )
+        rows = await cursor.fetchall()
+        return [Claim.from_row(row) for row in rows]
 
     async def get_many(
         self, conn: psycopg.AsyncConnection, claim_ids: Sequence[int]

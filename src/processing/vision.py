@@ -77,6 +77,13 @@ class VisionProviderUnavailable(RuntimeError):
     """
 
 
+def _default_claim_policy_service() -> Any:
+    """Lazy default for the claim handoff (avoids a circular module import)."""
+    from src.processing.claims import ClaimExtractionPolicyService
+
+    return ClaimExtractionPolicyService()
+
+
 def vision_config_hash(*, mode: str) -> str:
     """Stable identity of the behaviour-affecting vision configuration.
 
@@ -287,6 +294,8 @@ class VisionService:
         max_provider_calls_per_run: int = MAX_PROVIDER_CALLS_PER_RUN,
         max_size_pixels: int = MAX_SIZE_DESCRIPTOR_PIXELS,
         analyze_timeout: float = 30.0,
+        claims_enabled: bool = False,
+        claim_policy_service: Any = None,
     ) -> None:
         self.uow = uow
         self.provider = provider
@@ -294,6 +303,11 @@ class VisionService:
         self._ingestion_repo = ingestion_repo or IngestionRepository()
         self._run_repo = run_repo or VisionAnalysisRunRepository()
         self._decision_repo = decision_repo or EditionRelevanceDecisionRepository()
+        # Claim-extraction handoff (Task 4): opt-in at the wiring layer. When
+        # enabled, a ready_for_claims handoff defers extract_claims INSIDE the
+        # same transaction that completes the vision run / child decision.
+        self._claims_enabled = claims_enabled
+        self._claim_policy_service = claim_policy_service
         self.max_assets_per_run = max_assets_per_run
         self.max_provider_calls_per_run = max_provider_calls_per_run
         self.max_size_pixels = max_size_pixels
@@ -431,15 +445,52 @@ class VisionService:
         )
         if decision.status == "needs_media" and observations:
             child = await self._relevance_service.decide_with_vision(conn, decision, observations)
-            return VisionHandoff(
+            handoff = VisionHandoff(
                 relevance_decision_id=child.id,
                 vision_run_id=run.id,
                 ready_for_claims=child.status == "relevant",
             )
-        return VisionHandoff(
-            relevance_decision_id=decision.id,
-            vision_run_id=run.id if observations else None,
-            ready_for_claims=decision.status == "relevant",
+        else:
+            handoff = VisionHandoff(
+                relevance_decision_id=decision.id,
+                vision_run_id=run.id if observations else None,
+                ready_for_claims=decision.status == "relevant",
+            )
+        if handoff.ready_for_claims and self._claims_enabled:
+            # Atomic with run completion / child decision above: a crash can
+            # never complete vision without its claims follow-up. Redelivery
+            # replay (_handoff_for) deliberately does NOT re-defer — the first
+            # execution already committed this defer with the same txn.
+            await self._defer_extract_claims(conn, handoff)
+        return handoff
+
+    async def _defer_extract_claims(
+        self, conn: psycopg.AsyncConnection, handoff: VisionHandoff
+    ) -> None:
+        policy_service = self._claim_policy_service or _default_claim_policy_service()
+        decision = await self._decision_repo.get(conn, handoff.relevance_decision_id)
+        if decision is None:
+            raise ValueError(
+                f"relevance decision {handoff.relevance_decision_id} vanished "
+                "before the claim handoff"
+            )
+        policy = await policy_service.ensure_current(conn, edition_id=decision.edition_id)
+        # Lazy on purpose: src.jobs.processing imports this module at top level.
+        from src.jobs.processing import extract_claims
+
+        await extract_claims.configure(connection=conn).defer_async(
+            source_item_revision_id=decision.source_item_revision_id,
+            edition_id=decision.edition_id,
+            relevance_decision_id=handoff.relevance_decision_id,
+            policy_id=policy.id,
+            vision_run_id=handoff.vision_run_id,
+        )
+        logger.info(
+            "deferred extract_claims revision=%s decision=%s policy=%s vision_run=%s",
+            decision.source_item_revision_id,
+            handoff.relevance_decision_id,
+            policy.id,
+            handoff.vision_run_id,
         )
 
     @staticmethod

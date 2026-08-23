@@ -23,9 +23,10 @@ import logging
 
 import procrastinate
 
-from src.ai_providers import create_provider
+from src.ai_providers import AIProvider, create_provider
 from src.ingestion.repository import IngestionRepository
 from src.jobs.app import procrastinate_app
+from src.processing.claims import ClaimExtractionService
 from src.processing.relevance import (
     ProviderUnavailableError,
     RelevanceService,
@@ -36,6 +37,10 @@ from src.processing.vision import (
     VisionProviderUnavailable,
     VisionService,
     should_run_vision,
+)
+from src.repositories.claims import (
+    ClaimExtractionPolicyRepository,
+    ClaimExtractionRunRepository,
 )
 from src.repositories.relevance import (
     EditionRelevanceDecisionRepository,
@@ -49,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 EVALUATE_RELEVANCE_TASK_NAME = "evaluate_relevance"
 ANALYZE_VISION_TASK_NAME = "analyze_vision"
+EXTRACT_CLAIMS_TASK_NAME = "extract_claims"
 PROCESSING_QUEUE = "processing"
 
 BACKFILL_BATCH_SIZE = 500
@@ -69,6 +75,32 @@ VISION_RETRY_STRATEGY = procrastinate.RetryStrategy(
     retry_exceptions=(TransientProcessingError,),
 )
 
+CLAIM_RETRY_STRATEGY = procrastinate.RetryStrategy(
+    max_attempts=3,
+    wait=30,
+    linear_wait=60,
+    retry_exceptions=(TransientProcessingError,),
+)
+
+
+def _create_ai_provider(config) -> AIProvider:
+    """One AI cascade assembled from the real config for all processing tasks."""
+    return create_provider(
+        provider_name=config.settings.ai_provider,
+        logger=logger,
+        openai_api_key=config.openai_api_key,
+        openai_base_url=config.openai_base_url,
+        anthropic_api_key=config.anthropic_api_key,
+        google_api_key=config.google_api_key,
+        google_api_keys=config.google_api_backup_keys,
+        openrouter_api_key=config.openrouter_api_key,
+        openrouter_base_url=config.openrouter_base_url,
+        openrouter_model=config.openrouter_model,
+        ollama_base_url=config.settings.ollama_base_url,
+        api_timeout=config.settings.api_timeout,
+        reasoning_effort=config.settings.reasoning_effort,
+    )
+
 
 def build_relevance_service() -> RelevanceService:
     """Assemble the AI-backed relevance service from the real config."""
@@ -77,25 +109,12 @@ def build_relevance_service() -> RelevanceService:
     config = load_config()
     return RelevanceService(
         uow=get_runtime().uow,
-        provider=create_provider(
-            provider_name=config.settings.ai_provider,
-            logger=logger,
-            openai_api_key=config.openai_api_key,
-            openai_base_url=config.openai_base_url,
-            anthropic_api_key=config.anthropic_api_key,
-            google_api_key=config.google_api_key,
-            google_api_keys=config.google_api_backup_keys,
-            openrouter_api_key=config.openrouter_api_key,
-            openrouter_base_url=config.openrouter_base_url,
-            openrouter_model=config.openrouter_model,
-            ollama_base_url=config.settings.ollama_base_url,
-            api_timeout=config.settings.api_timeout,
-            reasoning_effort=config.settings.reasoning_effort,
-        ),
+        provider=_create_ai_provider(config),
         model=config.settings.ai_model,
         provider_name=config.settings.ai_provider,
         reasoning_effort=config.settings.reasoning_effort,
         vision_mode=config.settings.vision_mode,
+        claims_enabled=True,
     )
 
 
@@ -115,6 +134,21 @@ def build_vision_service() -> VisionService:
         provider=MetadataVisionProvider(),
         relevance_service=build_relevance_service(),
         analyze_timeout=float(config.settings.api_timeout),
+        claims_enabled=True,
+    )
+
+
+def build_claim_extraction_service() -> ClaimExtractionService:
+    """Assemble the AI-backed claim extraction service from the real config."""
+    from src.config_loader import load_config
+
+    config = load_config()
+    return ClaimExtractionService(
+        uow=get_runtime().uow,
+        provider=_create_ai_provider(config),
+        model=config.settings.ai_model,
+        provider_name=config.settings.ai_provider,
+        reasoning_effort=config.settings.reasoning_effort,
     )
 
 
@@ -164,6 +198,51 @@ async def analyze_vision(
             raise TransientProcessingError("vision provider unavailable") from None
         return await service.finalize_provider_failure(
             source_item_revision_id, relevance_decision_id, policy_id
+        )
+
+
+@procrastinate_app.task(
+    name=EXTRACT_CLAIMS_TASK_NAME,
+    queue=PROCESSING_QUEUE,
+    retry=CLAIM_RETRY_STRATEGY,
+    pass_context=True,
+)
+async def extract_claims(
+    context,
+    source_item_revision_id: int,
+    edition_id: int,
+    relevance_decision_id: int,
+    policy_id: int,
+    vision_run_id: int | None = None,
+):
+    """Extract immutable claims for one relevant decision under the exact policy.
+
+    Same retry math as relevance/vision (Plan 2 lesson): max_attempts=3 counts
+    TOTAL executions; only ProviderUnavailableError maps to the retryable
+    TransientProcessingError. On the final failed attempt the run completes as
+    ``failed(provider_unavailable)`` and the task returns successfully —
+    fail-open: the item stays relevant-but-claimless, bounded backfill retries
+    it later, and the pipeline never blocks on the AI. Duplicate or retried
+    executions converge on the single canonical succeeded run.
+    """
+    service = build_claim_extraction_service()
+    try:
+        return await service.extract(
+            source_item_revision_id,
+            edition_id,
+            relevance_decision_id,
+            policy_id,
+            vision_run_id,
+        )
+    except ProviderUnavailableError:
+        if context.job.attempts < 2:
+            raise TransientProcessingError("claim extraction provider unavailable") from None
+        return await service.finalize_provider_failure(
+            source_item_revision_id,
+            edition_id,
+            relevance_decision_id,
+            policy_id,
+            vision_run_id,
         )
 
 
@@ -269,3 +348,64 @@ async def backfill_vision(
 
 def _decisions() -> EditionRelevanceDecisionRepository:
     return EditionRelevanceDecisionRepository()
+
+
+async def backfill_claims(
+    edition_id: int,
+    extraction_policy_id: int,
+    after_decision_id: int | None = None,
+    *,
+    batch_size: int = BACKFILL_BATCH_SIZE,
+    vision_mode: str | None = None,
+) -> int:
+    """Queue extract_claims for relevant decisions still owing this policy a
+    SUCCESSFUL extraction.
+
+    Bounded slice (batch_size + optional exclusive id cursor); safe to re-run:
+    duplicate jobs converge on the canonical succeeded run. Only a SUCCEEDED
+    run satisfies the debt — failed/unavailable prior runs re-queue so the
+    fail-open boundary is always caught up later, and stale running rows do
+    not orphan items either. When ``vision_mode == "full"``, candidates with
+    media are skipped so bounded vision enrichment routes them first (same
+    handoff rules as the live pipeline); pass the configured mode explicitly
+    when invoking from full-mode deployments.
+    """
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        policy = await ClaimExtractionPolicyRepository().get(conn, extraction_policy_id)
+        if policy is None or policy.edition_id != edition_id:
+            raise ValueError(
+                f"claim extraction policy {extraction_policy_id} does not belong "
+                f"to edition {edition_id}"
+            )
+        candidates = await ClaimExtractionRunRepository().list_decisions_missing_success(
+            conn,
+            edition_id=edition_id,
+            extraction_policy_id=extraction_policy_id,
+            after_decision_id=after_decision_id,
+            limit=batch_size,
+        )
+        ingestion_repo = IngestionRepository()
+        deferred = 0
+        for decision in candidates:
+            if vision_mode == "full":
+                assets = await ingestion_repo.list_asset_summaries(
+                    conn, decision.source_item_revision_id
+                )
+                if assets:
+                    continue
+            await extract_claims.configure(connection=conn).defer_async(
+                source_item_revision_id=decision.source_item_revision_id,
+                edition_id=decision.edition_id,
+                relevance_decision_id=decision.id,
+                policy_id=extraction_policy_id,
+            )
+            deferred += 1
+    logger.info(
+        "backfill_claims queued %d decisions for edition=%s policy=%s vision_mode=%s",
+        deferred,
+        edition_id,
+        extraction_policy_id,
+        vision_mode or "default",
+    )
+    return deferred

@@ -247,6 +247,39 @@ class IngestionRepository:
             for row in rows
         ]
 
+    async def get_reply_context(
+        self, conn: psycopg.AsyncConnection, revision_id: int
+    ) -> tuple[str | None, str | None]:
+        """Latest-revision texts of the item's parent and root conversation
+        items, in that order (None when absent/unlinked).
+
+        Claim extraction uses these ONLY to resolve ellipsis and deictic
+        language in replies; the target revision remains the sole provenance.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT parent.text_content, root.text_content
+            FROM source_item_revisions r
+            JOIN source_items i ON i.id = r.source_item_id
+            LEFT JOIN LATERAL (
+                SELECT pr.text_content FROM source_item_revisions pr
+                WHERE pr.source_item_id = i.parent_item_id
+                ORDER BY pr.revision_no DESC LIMIT 1
+            ) parent ON i.parent_item_id IS NOT NULL
+            LEFT JOIN LATERAL (
+                SELECT rr.text_content FROM source_item_revisions rr
+                WHERE rr.source_item_id = i.root_item_id
+                ORDER BY rr.revision_no DESC LIMIT 1
+            ) root ON i.root_item_id IS NOT NULL
+            WHERE r.id = %s
+            """,
+            (revision_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None, None
+        return (row[0], row[1])
+
     async def get_edition_name(self, conn: psycopg.AsyncConnection, edition_id: int) -> str | None:
         """Display name of one edition (relevance prompt context)."""
         cursor = await conn.execute("SELECT name FROM editions WHERE id = %s", (edition_id,))

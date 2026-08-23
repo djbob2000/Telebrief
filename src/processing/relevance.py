@@ -39,7 +39,7 @@ import hashlib
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import psycopg
 import yaml
@@ -57,6 +57,9 @@ from src.repositories.relevance import (
     EditionRelevanceDecisionRepository,
     RelevancePolicyVersionRepository,
 )
+
+if TYPE_CHECKING:
+    from src.processing.claims import ClaimExtractionPolicyService
 
 logger = logging.getLogger(__name__)
 
@@ -259,6 +262,8 @@ class RelevanceService:
         decision_repo: EditionRelevanceDecisionRepository | None = None,
         vision_mode: str | None = None,
         vision_policy_service: VisionPolicyService | None = None,
+        claims_enabled: bool = False,
+        claim_policy_service: ClaimExtractionPolicyService | None = None,
     ) -> None:
         self.uow = uow
         # Uniform cascade semantics even for single-slot providers.
@@ -275,6 +280,11 @@ class RelevanceService:
         # atomic post-decision defer inside _persist_result.
         self._vision_mode = vision_mode
         self._vision_policy_service = vision_policy_service or VisionPolicyService()
+        # Claim-extraction handoff is likewise opt-in: when enabled, every
+        # relevant decision NOT pending full-vision defers extract_claims
+        # atomically inside the same insert transaction (Task 4).
+        self._claims_enabled = claims_enabled
+        self._claim_policy_service = claim_policy_service
 
     async def evaluate(
         self, source_item_revision_id: int, edition_id: int, policy_id: int
@@ -412,7 +422,12 @@ class RelevanceService:
                         provider=self.provider_name,
                         model=self.model,
                     )
-                    await self._maybe_defer_vision(conn, decision=decision, material=material)
+                    vision_pending = await self._maybe_defer_vision(
+                        conn, decision=decision, material=material
+                    )
+                    await self._maybe_defer_claims(
+                        conn, decision=decision, vision_pending=vision_pending
+                    )
                     return decision
             except psycopg.errors.UniqueViolation:
                 # Duplicate execution: the canonical root row already exists
@@ -434,19 +449,20 @@ class RelevanceService:
         *,
         decision: EditionRelevanceDecision,
         material: RevisionMaterial | None,
-    ) -> None:
+    ) -> bool:
         """Atomically schedule bounded vision for media-dependent decisions.
 
         Runs inside the SAME transaction that persisted the fresh decision, so
         a crash can never leave a decided item without its media follow-up.
         Disabled entirely unless the wiring supplied a vision mode; duplicate
-        executions converge before reaching this point.
+        executions converge before reaching this point. Returns whether a
+        vision job was deferred (claims must then wait for its handoff).
         """
         if self._vision_mode is None or material is None:
-            return
+            return False
         assets = list(material.assets) if material.assets else []
         if not should_run_vision(decision, material, assets, mode=self._vision_mode):
-            return
+            return False
         vision_policy = await self._vision_policy_service.ensure_current(
             conn, edition_id=decision.edition_id, mode=self._vision_mode
         )
@@ -463,6 +479,43 @@ class RelevanceService:
             decision.source_item_revision_id,
             decision.id,
             vision_policy.id,
+        )
+        return True
+
+    async def _maybe_defer_claims(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        decision: EditionRelevanceDecision,
+        vision_pending: bool,
+    ) -> None:
+        """Atomically hand a text-supported relevant decision to claim
+        extraction (Plan 3 Task 4).
+
+        Fires inside the SAME insert transaction as the fresh decision; full-
+        mode items whose media went to Vision wait for the post-vision handoff
+        instead (VisionHandoff.ready_for_claims). Disabled unless the wiring
+        enabled claims.
+        """
+        if not self._claims_enabled or decision.status != "relevant" or vision_pending:
+            return
+        policy_service = self._claim_policy_service or _default_claim_policy_service()
+        policy = await policy_service.ensure_current(conn, edition_id=decision.edition_id)
+        # Lazy on purpose: src.jobs.processing imports this module at top level.
+        from src.jobs.processing import extract_claims
+
+        await extract_claims.configure(connection=conn).defer_async(
+            source_item_revision_id=decision.source_item_revision_id,
+            edition_id=decision.edition_id,
+            relevance_decision_id=decision.id,
+            policy_id=policy.id,
+            vision_run_id=None,
+        )
+        logger.info(
+            "deferred extract_claims revision=%s decision=%s policy=%s",
+            decision.source_item_revision_id,
+            decision.id,
+            policy.id,
         )
 
     async def decide_with_vision(
@@ -599,6 +652,13 @@ class RelevanceService:
             sort_keys=True,
             indent=2,
         )
+
+
+def _default_claim_policy_service() -> ClaimExtractionPolicyService:
+    """Lazy default for the claim handoff (avoids a circular module import)."""
+    from src.processing.claims import ClaimExtractionPolicyService
+
+    return ClaimExtractionPolicyService()
 
 
 def _parse_json_object(response: str) -> Any:
