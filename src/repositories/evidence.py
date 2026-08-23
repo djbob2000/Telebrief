@@ -91,6 +91,42 @@ class EvidencePolicyRepository:
         return [EvidenceAssessmentPolicyVersion.from_row(row) for row in await cursor.fetchall()]
 
 
+DEFAULT_EVIDENCE_PROMPT_VERSION = "evidence-prompt-v1"
+DEFAULT_EVIDENCE_CONFIG_HASH = "evidence-cfg-default"
+
+
+class EvidencePolicyService:
+    """Service to ensure and load active EvidenceAssessmentPolicyVersions."""
+
+    def __init__(self, policies: EvidencePolicyRepository | None = None) -> None:
+        self._policies = policies or EvidencePolicyRepository()
+
+    async def ensure_current(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        config_hash: str = DEFAULT_EVIDENCE_CONFIG_HASH,
+        prompt_version: str = DEFAULT_EVIDENCE_PROMPT_VERSION,
+    ) -> EvidenceAssessmentPolicyVersion:
+        latest = await self._policies.get_latest(conn, edition_id)
+        if (
+            latest is not None
+            and latest.config_hash == config_hash
+            and latest.prompt_version == prompt_version
+        ):
+            return latest
+
+        next_version = (latest.version + 1) if latest else 1
+        return await self._policies.insert(
+            conn,
+            edition_id=edition_id,
+            version=next_version,
+            config_hash=config_hash,
+            prompt_version=prompt_version,
+        )
+
+
 class EvidenceAssessmentRunRepository:
     """Repository for evidence_assessment_runs and exact claim frozen sets."""
 
@@ -258,6 +294,14 @@ class EvidenceClusterRepository:
     ) -> list[EvidenceCluster]:
         created: list[EvidenceCluster] = []
         for prop in clusters:
+            supporting = prop.supporting_claims
+            contradicting = prop.contradicting_claims
+            if supporting == 0 and contradicting == 0 and prop.members:
+                supporting = sum(1 for m in prop.members if m.stance == "SUPPORTS")
+                contradicting = sum(1 for m in prop.members if m.stance == "CONTRADICTS")
+            unique_sources = prop.unique_sources or max(supporting + contradicting, 1)
+            groups = prop.estimated_independent_source_groups or unique_sources
+
             meta_json = json.dumps(prop.metadata or {})
             cursor = await conn.execute(
                 """
@@ -275,10 +319,10 @@ class EvidenceClusterRepository:
                     prop.supersedes_cluster_id,
                     prop.label,
                     prop.summary,
-                    prop.supporting_claims,
-                    prop.contradicting_claims,
-                    prop.unique_sources,
-                    prop.estimated_independent_source_groups,
+                    supporting,
+                    contradicting,
+                    unique_sources,
+                    groups,
                     meta_json,
                 ),
             )
@@ -432,6 +476,51 @@ class VerificationAssessmentRepository:
             raise RuntimeError("failed to insert verification_assessments")
         return VerificationAssessment.from_row(row)
 
+    async def count_for_run(
+        self, conn: psycopg.AsyncConnection, *, run_id: int, policy_id: int | None = None
+    ) -> int:
+        if policy_id is not None:
+            cursor = await conn.execute(
+                """
+                SELECT count(*) FROM verification_assessments
+                WHERE evidence_assessment_run_id = %s AND verification_policy_id = %s
+                """,
+                (run_id, policy_id),
+            )
+        else:
+            cursor = await conn.execute(
+                """
+                SELECT count(*) FROM verification_assessments
+                WHERE evidence_assessment_run_id = %s
+                """,
+                (run_id,),
+            )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def insert_assessments(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        assessments: Sequence[VerificationAssessment],
+    ) -> list[VerificationAssessment]:
+        created: list[VerificationAssessment] = []
+        for a in assessments:
+            res = await self.insert_assessment(
+                conn,
+                evidence_assessment_run_id=a.evidence_assessment_run_id,
+                verification_policy_id=a.verification_policy_id,
+                cluster_id=a.cluster_id,
+                state=a.state,
+                risk_level=a.risk_level,
+                reason=a.reason,
+                provider=a.provider,
+                model=a.model,
+                metadata=a.metadata,
+            )
+            created.append(res)
+        return created
+
     async def list_for_run(
         self, conn: psycopg.AsyncConnection, run_id: int
     ) -> list[VerificationAssessment]:
@@ -446,3 +535,7 @@ class VerificationAssessmentRepository:
             (run_id,),
         )
         return [VerificationAssessment.from_row(row) for row in await cursor.fetchall()]
+
+
+# Compatibility aliases
+EvidenceAssessmentPolicyRepository = EvidencePolicyRepository

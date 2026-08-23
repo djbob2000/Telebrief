@@ -154,7 +154,7 @@ async def _seed_story(
     await conn.execute(
         "UPDATE stories SET current_revision_id = %s WHERE id = %s", (revision_id, story_id)
     )
-    return SimpleNamespace(story_id=story_id, revision_id=revision_id)
+    return SimpleNamespace(story_id=story_id, revision_id=revision_id, semantic_text=semantic_text)
 
 
 async def _attach_claim(conn: psycopg.AsyncConnection, story_id: int, claim_id: int) -> None:
@@ -536,7 +536,7 @@ class TestVerificationPersistence:
         # The success transaction deferred verification atomically.
         async with pool.connection() as observer:
             jobs_cursor = await observer.execute(
-                "SELECT count(*) FROM procrastinate.procrastinate_jobs " "WHERE task_name = %s",
+                "SELECT count(*) FROM procrastinate.procrastinate_jobs WHERE task_name = %s",
                 (VERIFY_EVIDENCE_TASK_NAME,),
             )
             assert (await jobs_cursor.fetchone())[0] == 1
@@ -643,7 +643,7 @@ async def _insert_matching_policy(conn, edition_id: int):
 async def _deferred_jobs(pool, task_name: str) -> list[dict]:
     async with pool.connection() as observer:
         cursor = await observer.execute(
-            "SELECT args FROM procrastinate.procrastinate_jobs " "WHERE task_name = %s ORDER BY id",
+            "SELECT args FROM procrastinate.procrastinate_jobs WHERE task_name = %s ORDER BY id",
             (task_name,),
         )
         return [{"args": dict(row[0])} for row in await cursor.fetchall()]

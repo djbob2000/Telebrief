@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 from collections.abc import Sequence
+from typing import Any
 
 import psycopg
 
@@ -12,6 +13,7 @@ from src.db.uow import DatabaseUnitOfWork
 from src.domain.claims import Claim, ClaimRelation
 from src.domain.evidence import (
     ClusterMemberProposal,
+    EvidenceAssessmentOutcome,
     EvidenceAssessmentPolicyVersion,
     EvidenceAssessmentRun,
     EvidenceClusterProposal,
@@ -121,7 +123,7 @@ class EvidenceAssessmentService:
         claims: ClaimRepository | None = None,
         runs: EvidenceAssessmentRunRepository | None = None,
         clusters: EvidenceClusterRepository | None = None,
-        correlator: EvidenceCorrelator | None = None,
+        correlator: Any | None = None,
     ) -> None:
         self.uow = uow
         self._stories = stories or StoryRepository()
@@ -130,13 +132,12 @@ class EvidenceAssessmentService:
         self._clusters = clusters or EvidenceClusterRepository()
         self._correlator = correlator or EvidenceCorrelator()
 
-    async def assess(
+    async def assess_story(
         self,
-        *,
         story_id: int,
         story_revision_id: int,
         policy_id: int,
-    ) -> EvidenceAssessmentRun:
+    ) -> EvidenceAssessmentOutcome:
         async with self.uow.transaction() as conn:
             claim_ids = await self._stories.list_attached_claim_ids(conn, story_id)
             if not claim_ids:
@@ -150,7 +151,10 @@ class EvidenceAssessmentService:
                 input_hash=input_hash,
             )
             if canonical is not None:
-                return canonical
+                existing_clusters = await self._clusters.list_clusters_for_run(conn, canonical.id)
+                return EvidenceAssessmentOutcome(
+                    run=canonical, clusters=existing_clusters, replayed=True
+                )
 
             story = await self._stories.get(conn, story_id)
             if story is None:
@@ -167,10 +171,19 @@ class EvidenceAssessmentService:
             await self._runs.freeze_run_claims(conn, run.id, claim_ids)
 
             claims = await self._claims.get_many(conn, claim_ids)
-            relations = await self._claims.list_relations_for_claims(conn, claim_ids)
-            cluster_proposals = self._correlator.correlate(claims, relations)
+            if hasattr(self._correlator, "cluster"):
+                maybe_coroutine = self._correlator.cluster(claims)
+                if hasattr(maybe_coroutine, "__await__"):
+                    cluster_proposals = await maybe_coroutine
+                else:
+                    cluster_proposals = maybe_coroutine
+            else:
+                relations = await self._claims.list_relations_for_claims(conn, claim_ids)
+                cluster_proposals = self._correlator.correlate(claims, relations)
 
-            await self._clusters.insert_clusters(conn, run_id=run.id, clusters=cluster_proposals)
+            persisted_clusters = await self._clusters.insert_clusters(
+                conn, run_id=run.id, clusters=cluster_proposals
+            )
             await self._runs.mark_succeeded(
                 conn, run.id, completed_at=dt.datetime.now(dt.timezone.utc)
             )
@@ -183,14 +196,34 @@ class EvidenceAssessmentService:
                 raise RuntimeError(
                     f"evidence assessment run {run.id} not found after mark_succeeded"
                 )
-            return succeeded_run
+            return EvidenceAssessmentOutcome(
+                run=succeeded_run, clusters=persisted_clusters, replayed=False
+            )
+
+    async def assess(
+        self,
+        *,
+        story_id: int,
+        story_revision_id: int,
+        policy_id: int,
+    ) -> EvidenceAssessmentRun:
+        outcome = await self.assess_story(
+            story_id=story_id,
+            story_revision_id=story_revision_id,
+            policy_id=policy_id,
+        )
+        return outcome.run
 
     async def _defer_verification(self, conn: psycopg.AsyncConnection, run_id: int) -> None:
         try:
-            from src.jobs.processing import maybe_verify_evidence
+            from src.jobs.processing import verify_evidence
 
-            await maybe_verify_evidence.configure(connection=conn).defer_async(
+            await verify_evidence.configure(connection=conn).defer_async(
                 evidence_assessment_run_id=run_id
             )
         except Exception as err:
             logger.warning("could not defer verification for run %s: %s", run_id, err)
+
+
+# Compatibility alias
+EvidenceService = EvidenceAssessmentService

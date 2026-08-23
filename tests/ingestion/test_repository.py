@@ -717,15 +717,23 @@ async def test_run_lifecycle_records_outcome_error_kind_and_completion(conn, sou
         outcome="rate_limited",
         completed_at=PUBLISHED_AT,
         error_kind="flood_wait",
+        seen_count=5,
+        new_count=2,
+        updated_count=1,
     )
 
     cursor = await conn.execute(
-        "SELECT status, completed_at, error_kind FROM collection_runs WHERE id = %s", (run.id,)
+        """
+        SELECT status, completed_at, error_kind, seen_count, new_count, updated_count
+        FROM collection_runs WHERE id = %s
+        """,
+        (run.id,),
     )
-    status, completed_at, error_kind = await cursor.fetchone()
+    status, completed_at, error_kind, seen_count, new_count, updated_count = await cursor.fetchone()
     assert status == "rate_limited"
     assert completed_at == PUBLISHED_AT
     assert error_kind == "flood_wait"
+    assert (seen_count, new_count, updated_count) == (5, 2, 1)
 
 
 @pytest.mark.postgres
@@ -741,6 +749,7 @@ async def test_update_checkpoint_upserts_and_preserves_last_success(conn, source
         adapter_state={"cursor": 12},
         last_scan_at=PUBLISHED_AT,
         last_success_at=PUBLISHED_AT,
+        success=True,
     )
     checkpoint = await repo.get_checkpoint(conn, source.id)
     assert checkpoint is not None
@@ -748,6 +757,8 @@ async def test_update_checkpoint_upserts_and_preserves_last_success(conn, source
     assert checkpoint.last_success_at == PUBLISHED_AT
     assert checkpoint.last_scan_at == PUBLISHED_AT
     assert checkpoint.consecutive_failures == 0
+    # The explicit provider cursor rides in adapter_state["cursor"] when given.
+    assert checkpoint.cursor == 12
 
     failed_scan_at = datetime(2026, 8, 22, 11, 0, tzinfo=timezone.utc)
     await repo.update_checkpoint(
@@ -756,9 +767,78 @@ async def test_update_checkpoint_upserts_and_preserves_last_success(conn, source
         adapter_state={"cursor": 13},
         last_scan_at=failed_scan_at,
         last_success_at=None,
+        success=False,
     )
     checkpoint = await repo.get_checkpoint(conn, source.id)
     assert checkpoint is not None
     assert checkpoint.adapter_state == {"cursor": 13}
     assert checkpoint.last_success_at == PUBLISHED_AT
     assert checkpoint.last_scan_at == failed_scan_at
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_update_checkpoint_counts_consecutive_failures_and_resets(conn, source):
+    """Failed scans accumulate consecutive_failures; the next success resets."""
+    repo = IngestionRepository()
+    first_failure = datetime(2026, 8, 22, 11, 0, tzinfo=timezone.utc)
+    second_failure = datetime(2026, 8, 22, 11, 5, tzinfo=timezone.utc)
+    recovery = datetime(2026, 8, 22, 11, 9, tzinfo=timezone.utc)
+
+    await repo.update_checkpoint(
+        conn,
+        source_id=source.id,
+        adapter_state={},
+        last_scan_at=first_failure,
+        last_success_at=None,
+        success=False,
+    )
+    await repo.update_checkpoint(
+        conn,
+        source_id=source.id,
+        adapter_state={},
+        last_scan_at=second_failure,
+        last_success_at=None,
+        success=False,
+    )
+    checkpoint = await repo.get_checkpoint(conn, source.id)
+    assert checkpoint is not None
+    assert checkpoint.consecutive_failures == 2
+
+    await repo.update_checkpoint(
+        conn,
+        source_id=source.id,
+        adapter_state={},
+        last_scan_at=recovery,
+        last_success_at=recovery,
+        success=True,
+    )
+    checkpoint = await repo.get_checkpoint(conn, source.id)
+    assert checkpoint is not None
+    assert checkpoint.consecutive_failures == 0
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_update_checkpoint_without_cursor_keeps_previous_cursor(conn, source):
+    """Adapters that publish no cursor never erase an earlier one."""
+    repo = IngestionRepository()
+    await repo.update_checkpoint(
+        conn,
+        source_id=source.id,
+        adapter_state={"cursor": {"topic": 7}},
+        last_scan_at=PUBLISHED_AT,
+        last_success_at=PUBLISHED_AT,
+        success=True,
+    )
+    await repo.update_checkpoint(
+        conn,
+        source_id=source.id,
+        adapter_state={},
+        last_scan_at=PUBLISHED_AT,
+        last_success_at=PUBLISHED_AT,
+        success=True,
+    )
+    checkpoint = await repo.get_checkpoint(conn, source.id)
+    assert checkpoint is not None
+    assert checkpoint.cursor == {"topic": 7}

@@ -12,6 +12,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+SUPPORTS = "SUPPORTS"
+CONTRADICTS = "CONTRADICTS"
+UNCERTAIN = "UNCERTAIN"
+CONTEXTUAL = "CONTEXTUAL"
+
+STANCE_TYPES = (SUPPORTS, CONTRADICTS, UNCERTAIN, CONTEXTUAL)
+
 
 def hash_sorted_ids(claim_ids: Sequence[int]) -> str:
     """Compute a deterministic SHA-256 hash over an order-independent set of claim ids."""
@@ -149,6 +156,12 @@ class EvidenceClusterMember:
         )
 
 
+# Compatibility aliases
+ProposedCluster = EvidenceClusterProposal
+ClusterMember = ClusterMemberProposal
+ClusterMemberProposalType = ClusterMemberProposal
+
+
 @dataclass(frozen=True)
 class VerificationPolicyVersion:
     """A `verification_policy_versions` row."""
@@ -189,8 +202,8 @@ class VerificationAssessment:
     reason: str | None
     provider: str | None
     model: str | None
-    metadata: dict[str, Any]
     created_at: dt.datetime
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_row(cls, row: Any) -> VerificationAssessment:
@@ -207,3 +220,12 @@ class VerificationAssessment:
             metadata=row[9] if isinstance(row[9], dict) else {},
             created_at=row[10],
         )
+
+
+@dataclass(frozen=True)
+class EvidenceAssessmentOutcome:
+    """Outcome of assessing a story revision."""
+
+    run: EvidenceAssessmentRun
+    clusters: list[EvidenceCluster]
+    replayed: bool = False

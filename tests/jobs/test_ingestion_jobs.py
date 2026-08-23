@@ -125,6 +125,55 @@ def test_collector_registry_unknown_platform_raises_lookup_error():
 
 
 @pytest.mark.unit
+def test_collector_registry_reports_registered_platforms():
+    collector = _CountingCollector()
+    registry = CollectorRegistry()
+    registry.register("telegram", collector.build)
+
+    assert "telegram" in registry.registered_platforms()
+    assert "facebook" not in registry.registered_platforms()
+
+
+class _ClosableCollector:
+    """Records aclose calls so shutdown wiring can be asserted."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+    async def scan(self, source, checkpoint, context):  # pragma: no cover - shape only
+        raise AssertionError("scan not expected in registry tests")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_registry_aclose_closes_cached_instances():
+    collector = _ClosableCollector()
+    registry = CollectorRegistry()
+    registry.register("telegram", lambda: collector)
+    registry.select("telegram")
+
+    await registry.aclose()
+
+    assert collector.closed is True
+    # A closed cache must not hand out stale instances afterwards.
+    assert registry._instances == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_collector_registry_aclose_tolerates_collectors_without_aclose():
+    collector = _CountingCollector()
+    registry = CollectorRegistry()
+    registry.register("telegram", lambda: collector)
+    registry.select("telegram")
+
+    await registry.aclose()
+
+
+@pytest.mark.unit
 def test_worker_module_imports_without_database_url():
     """`python -c "import src.worker"` must not demand DATABASE_URL.
 
@@ -461,6 +510,20 @@ async def test_dispatch_skips_disabled_sources(db_conn, infrastructure) -> None:
     from src.jobs.ingestion import dispatch_due_sources
 
     await _seed_source(db_conn, enabled=False)
+
+    await dispatch_due_sources(timestamp=_scheduled_ts(10, 30))
+
+    assert await _queued_jobs(infrastructure.procrastinate_app) == []
+
+
+@requires_db
+async def test_dispatch_skips_platforms_without_registered_collector(
+    db_conn, infrastructure
+) -> None:
+    """Unknown-platform sources never enter the per-minute failure pile-up."""
+    from src.jobs.ingestion import dispatch_due_sources
+
+    await _seed_source(db_conn, name="Facebook Page", platform="facebook")
 
     await dispatch_due_sources(timestamp=_scheduled_ts(10, 30))
 

@@ -79,7 +79,9 @@ EMBED_CLAIM_TASK_NAME = "embed_claim"
 EMBED_STORY_REVISION_TASK_NAME = "embed_story_revision"
 RESOLVE_PLACE_MENTION_TASK_NAME = "resolve_place_mention"
 ASSESS_EVIDENCE_TASK_NAME = "assess_evidence"
-MAYBE_VERIFY_EVIDENCE_TASK_NAME = "maybe_verify_evidence"
+ASSESS_EVIDENCE_TASK = ASSESS_EVIDENCE_TASK_NAME
+VERIFY_EVIDENCE_TASK_NAME = "verify_evidence"
+MAYBE_VERIFY_EVIDENCE_TASK_NAME = VERIFY_EVIDENCE_TASK_NAME
 PROCESSING_QUEUE = "processing"
 
 BACKFILL_BATCH_SIZE = 500
@@ -778,32 +780,24 @@ async def assess_evidence(
 
 
 @procrastinate_app.task(
-    name=MAYBE_VERIFY_EVIDENCE_TASK_NAME,
+    name=VERIFY_EVIDENCE_TASK_NAME,
     queue=PROCESSING_QUEUE,
     retry=EVIDENCE_RETRY_STRATEGY,
     pass_context=True,
 )
-async def maybe_verify_evidence(
+async def verify_evidence(
     context,
     evidence_assessment_run_id: int,
 ) -> None:
     """Optional lightweight verification for an evidence assessment run."""
     from src.processing.verification import VerificationService
-    from src.repositories.evidence import (
-        EvidenceAssessmentRunRepository,
-        EvidenceClusterRepository,
-    )
 
     runtime = get_runtime()
-    async with runtime.uow.transaction() as conn:
-        run = await EvidenceAssessmentRunRepository().get_by_id(conn, evidence_assessment_run_id)
-        if run is None or run.status != "succeeded":
-            return
-        clusters = await EvidenceClusterRepository().list_clusters_for_run(conn, run.id)
-    if not clusters:
-        return
     service = VerificationService(uow=runtime.uow)
-    await service.assess(run=run, clusters=clusters)
+    await service.verify_run(evidence_assessment_run_id)
+
+
+maybe_verify_evidence = verify_evidence
 
 
 async def backfill_evidence_assessments(
@@ -812,7 +806,7 @@ async def backfill_evidence_assessments(
     *,
     batch_size: int = BACKFILL_BATCH_SIZE,
 ) -> int:
-    """Queue assess_evidence for active/reopened stories lacking a succeeded assessment under this policy."""
+    """Queue assess_evidence for active/reopened/recent-resolved stories lacking a succeeded assessment under this policy."""
     from src.repositories.evidence import EvidencePolicyRepository
 
     runtime = get_runtime()
@@ -825,7 +819,10 @@ async def backfill_evidence_assessments(
             SELECT s.id, s.current_revision_id
             FROM stories s
             WHERE s.edition_id = %s
-              AND s.lifecycle_state IN ('active', 'reopened')
+              AND (
+                  s.lifecycle_state IN ('active', 'reopened')
+                  OR (s.lifecycle_state = 'resolved' AND s.created_at >= now() - interval '30 days')
+              )
               AND s.current_revision_id IS NOT NULL
               AND NOT EXISTS (
                   SELECT 1 FROM evidence_assessment_runs ear
@@ -851,3 +848,6 @@ async def backfill_evidence_assessments(
         policy.id,
     )
     return len(stories_to_queue)
+
+
+backfill_evidence = backfill_evidence_assessments

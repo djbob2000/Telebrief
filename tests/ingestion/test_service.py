@@ -346,6 +346,76 @@ async def test_out_of_order_parent_resolves_after_all_shells_exist(service, sour
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
+async def test_run_counters_record_seen_new_updated(service, source):
+    """CollectionRun bookkeeping mirrors the batch: seen vs new items vs revisions."""
+    first = await service.ingest_batch(
+        source.id,
+        CollectionTrigger.SCHEDULED,
+        _batch(items=(_observation(external_id="1"), _observation(external_id="2"))),
+    )
+    assert (first.new_items, first.new_revisions) == (2, 2)
+
+    async with service.uow.pool.connection() as conn:
+        cursor = await conn.execute(
+            "SELECT seen_count, new_count, updated_count FROM collection_runs WHERE id = %s",
+            (first.collection_run_id,),
+        )
+        row = await cursor.fetchone()
+    assert row == (2, 2, 2)
+
+    second = await service.ingest_batch(
+        source.id,
+        CollectionTrigger.SCHEDULED,
+        _batch(
+            items=(
+                _observation(external_id="1"),
+                _observation(external_id="2", text="edited"),
+            )
+        ),
+    )
+    assert (second.new_items, second.new_revisions) == (0, 1)
+
+    async with service.uow.pool.connection() as conn:
+        cursor = await conn.execute(
+            "SELECT seen_count, new_count, updated_count FROM collection_runs WHERE id = %s",
+            (second.collection_run_id,),
+        )
+        row = await cursor.fetchone()
+    assert row == (2, 0, 1)
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_self_referential_parent_reference_is_ignored(service, source):
+    """A message replying to itself must not create a self-referencing FK link."""
+    result = await service.ingest_batch(
+        source.id,
+        CollectionTrigger.SCHEDULED,
+        _batch(
+            items=(
+                _observation(
+                    external_id="77",
+                    parent_external_id="77",
+                    root_external_id="77",
+                ),
+            )
+        ),
+    )
+    assert result.new_items == 1
+
+    async with service.uow.pool.connection() as conn:
+        cursor = await conn.execute(
+            "SELECT parent_item_id, root_item_id FROM source_items WHERE external_id = '77'",
+            (),
+        )
+        row = await cursor.fetchone()
+    assert row is not None
+    assert row[0] is None
+    assert row[1] is None
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
 async def test_failed_batch_updates_checkpoint_without_success_time(service, source):
     """Transient outcomes refresh adapter_state but keep the last success."""
     success = await service.ingest_batch(

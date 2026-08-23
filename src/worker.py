@@ -36,6 +36,11 @@ async def run_worker() -> None:
         await procrastinate_app.run_worker_async(queues=list(WORKER_QUEUES))
     finally:
         clear_runtime(infrastructure)
+        # Cached platform collectors hold provider clients (Telethon, ...);
+        # release them before the pool/connector they may still reference.
+        from src.jobs.ingestion import collector_registry
+
+        await collector_registry.aclose()
         await infrastructure.close()
 
 

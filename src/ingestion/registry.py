@@ -293,6 +293,10 @@ class CollectorRegistry:
         self._factories[platform] = factory
         self._instances.pop(platform, None)
 
+    def registered_platforms(self) -> frozenset[str]:
+        """Platforms with a collector factory, for dispatcher pre-filtering."""
+        return frozenset(self._factories)
+
     def select(self, platform: str) -> Collector:
         """Return (building and caching on first use) the platform collector."""
         if platform not in self._factories:
@@ -300,6 +304,18 @@ class CollectorRegistry:
         if platform not in self._instances:
             self._instances[platform] = self._factories[platform]()
         return self._instances[platform]
+
+    async def aclose(self) -> None:
+        """Release every cached collector's provider client (worker shutdown).
+
+        Collectors without ``aclose`` (test fakes, stateless adapters) are
+        simply dropped from the cache.
+        """
+        for instance in list(self._instances.values()):
+            closer = getattr(instance, "aclose", None)
+            if closer is not None:
+                await closer()
+        self._instances.clear()
 
 
 def _build_telegram_collector() -> Collector:

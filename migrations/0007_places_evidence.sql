@@ -3,6 +3,9 @@
 -- lightweight entities, versioned place-resolution scaffolding, and the
 -- nullable edition-current place-policy pointer.
 --
+-- Plan 3 Task 9 amendment (in place): immutable evidence assessments plus
+-- optional lightweight verification.
+--
 -- Design choices where the plan leaves freedom:
 --   * place_aliases.normalized_alias is INDEXED, never unique: several real
 --     Berdyansk areas share colloquial labels (the city profile repeats
@@ -162,3 +165,136 @@ ON place_resolution_results(mention_id, policy_id);
 CREATE INDEX IF NOT EXISTS idx_place_resolution_results_place
 ON place_resolution_results(place_id)
 WHERE place_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- Plan 3 Task 9 amendment: immutable evidence assessments + optional
+-- lightweight verification
+-- ---------------------------------------------------------------------------
+
+-- Evidence counts and verification states are ADVISORY ONLY: no column in
+-- this section (or anywhere in the schema) resembles a publication gate
+-- (publication_blocking/eligible/allowed/publishable are banned by design).
+-- Runs, frozen claim sets, clusters, members, and assessments are immutable
+-- once written; the only UPDATE paths are run status transitions.
+
+CREATE TABLE IF NOT EXISTS evidence_assessment_policy_versions (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    edition_id BIGINT NOT NULL REFERENCES editions(id),
+    version INTEGER NOT NULL,
+    config_hash TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_evidence_policy_edition_version UNIQUE (edition_id, version)
+);
+
+-- Composite FK target for edition-consistent policy references (0005 pattern).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_evidence_policy_id_edition
+ON evidence_assessment_policy_versions(id, edition_id);
+
+CREATE TABLE IF NOT EXISTS evidence_assessment_runs (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    story_id BIGINT NOT NULL REFERENCES stories(id),
+    story_revision_id BIGINT NOT NULL REFERENCES story_revisions(id),
+    edition_id BIGINT NOT NULL REFERENCES editions(id),
+    policy_id BIGINT NOT NULL,
+    input_hash TEXT NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ NULL,
+    status TEXT NOT NULL
+        CONSTRAINT evidence_assessment_runs_status_check
+        CHECK (status IN ('running', 'succeeded', 'failed', 'unavailable')),
+    error_kind TEXT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    CONSTRAINT fk_evidence_runs_policy
+        FOREIGN KEY (policy_id, edition_id)
+        REFERENCES evidence_assessment_policy_versions(id, edition_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_assessment_runs_story
+ON evidence_assessment_runs(story_id);
+
+-- Canonical invariant: at most one SUCCEEDED assessment per
+-- (story_revision, policy, exact input claim-set hash) — a changed claim set
+-- starts a new canonical key without requiring a semantic StoryRevision, and
+-- concurrent executions converge on the single winner.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_evidence_assessment_canonical
+ON evidence_assessment_runs(story_revision_id, policy_id, input_hash)
+WHERE status = 'succeeded';
+
+CREATE INDEX IF NOT EXISTS idx_evidence_assessment_runs_key
+ON evidence_assessment_runs(story_revision_id, policy_id, input_hash);
+
+-- Frozen exact inputs: the claim ids the correlator actually saw.
+CREATE TABLE IF NOT EXISTS evidence_assessment_run_claims (
+    run_id BIGINT NOT NULL REFERENCES evidence_assessment_runs(id),
+    claim_id BIGINT NOT NULL REFERENCES claims(id),
+    PRIMARY KEY (run_id, claim_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_assessment_run_claims_claim
+ON evidence_assessment_run_claims(claim_id);
+
+CREATE TABLE IF NOT EXISTS evidence_clusters (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    run_id BIGINT NOT NULL REFERENCES evidence_assessment_runs(id),
+    supersedes_cluster_id BIGINT NULL REFERENCES evidence_clusters(id),
+    label TEXT NULL,
+    summary TEXT NULL,
+    supporting_claims INTEGER NOT NULL DEFAULT 0,
+    contradicting_claims INTEGER NOT NULL DEFAULT 0,
+    unique_sources INTEGER NOT NULL DEFAULT 0,
+    estimated_independent_source_groups INTEGER NOT NULL DEFAULT 0,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_clusters_run ON evidence_clusters(run_id);
+
+CREATE TABLE IF NOT EXISTS evidence_cluster_members (
+    cluster_id BIGINT NOT NULL REFERENCES evidence_clusters(id),
+    claim_id BIGINT NOT NULL REFERENCES claims(id),
+    stance TEXT NOT NULL
+        CONSTRAINT evidence_cluster_members_stance_check
+        CHECK (stance IN ('SUPPORTS', 'CONTRADICTS', 'UNCERTAIN', 'CONTEXTUAL')),
+    PRIMARY KEY (cluster_id, claim_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_evidence_cluster_members_claim
+ON evidence_cluster_members(claim_id);
+
+-- Optional verification: soft descriptive states (spec §22), never a truth
+-- score and never an admission decision. Rows are append-only.
+CREATE TABLE IF NOT EXISTS verification_policy_versions (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    edition_id BIGINT NOT NULL REFERENCES editions(id),
+    version INTEGER NOT NULL,
+    config_hash TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT uq_verification_policy_edition_version UNIQUE (edition_id, version)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_verification_policy_id_edition
+ON verification_policy_versions(id, edition_id);
+
+CREATE TABLE IF NOT EXISTS verification_assessments (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    evidence_assessment_run_id BIGINT NOT NULL REFERENCES evidence_assessment_runs(id),
+    verification_policy_id BIGINT NOT NULL
+        REFERENCES verification_policy_versions(id),
+    cluster_id BIGINT NULL REFERENCES evidence_clusters(id),
+    state TEXT NOT NULL
+        CONSTRAINT verification_assessments_state_check
+        CHECK (state IN ('reported', 'corroborated', 'officially_supported', 'disputed', 'retracted')),
+    risk_level TEXT NULL
+        CONSTRAINT verification_assessments_risk_level_check
+        CHECK (risk_level IN ('low', 'medium', 'high')),
+    reason TEXT NULL,
+    provider TEXT NULL,
+    model TEXT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_verification_assessments_run
+ON verification_assessments(evidence_assessment_run_id);

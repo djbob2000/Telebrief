@@ -99,12 +99,24 @@ class IngestionService:
 
         for observation in batch.items:
             item = item_by_external_id[observation.external_id]
+            # A malformed observation that references itself as its own
+            # parent/root must never create a self-referencing FK link.
+            parent_external_id = (
+                None
+                if observation.parent_external_id == observation.external_id
+                else observation.parent_external_id
+            )
+            root_external_id = (
+                None
+                if observation.root_external_id == observation.external_id
+                else observation.root_external_id
+            )
             await self.repo.ensure_relationships(
                 conn,
                 source_id=source_id,
                 item_id=item.id,
-                parent_external_id=observation.parent_external_id,
-                root_external_id=observation.root_external_id,
+                parent_external_id=parent_external_id,
+                root_external_id=root_external_id,
             )
             revision = await self.repo.insert_revision_if_changed(
                 conn, item.id, observation, collected_at=observation.observed_at
@@ -131,6 +143,7 @@ class IngestionService:
             last_success_at=batch.completed_at
             if batch.outcome == CollectionOutcome.SUCCESS
             else None,
+            success=batch.outcome == CollectionOutcome.SUCCESS,
         )
         await self.repo.finish_run(
             conn,
@@ -138,6 +151,9 @@ class IngestionService:
             outcome=batch.outcome.value,
             completed_at=batch.completed_at,
             error_kind=batch.error_kind,
+            seen_count=len(batch.items),
+            new_count=new_items,
+            updated_count=len(new_revision_ids),
         )
         await self._defer_relevance_jobs(
             conn, source_id=source_id, new_revision_ids=new_revision_ids

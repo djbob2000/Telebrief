@@ -402,14 +402,26 @@ class IngestionRepository:
         outcome: str,
         completed_at: datetime,
         error_kind: str | None = None,
+        seen_count: int = 0,
+        new_count: int = 0,
+        updated_count: int = 0,
     ) -> None:
         await conn.execute(
             """
             UPDATE collection_runs
-            SET status = %s, completed_at = %s, error_kind = %s
+            SET status = %s, completed_at = %s, error_kind = %s,
+                seen_count = %s, new_count = %s, updated_count = %s
             WHERE id = %s
             """,
-            (outcome, completed_at, error_kind, run_id),
+            (
+                outcome,
+                completed_at,
+                error_kind,
+                seen_count,
+                new_count,
+                updated_count,
+                run_id,
+            ),
         )
 
     async def update_checkpoint(
@@ -420,23 +432,44 @@ class IngestionRepository:
         adapter_state: dict[str, JSONValue],
         last_scan_at: datetime,
         last_success_at: datetime | None,
+        success: bool = True,
     ) -> None:
-        """Upsert the checkpoint; every scan stamps last_scan_at, failed scans
-        keep the previous success time."""
+        """Upsert the checkpoint after one scan.
+
+        Every scan stamps ``last_scan_at``; failed scans keep the previous
+        success time and accumulate ``consecutive_failures`` (reset by the next
+        success). An explicit provider cursor published as
+        ``adapter_state["cursor"]`` lands in the ``cursor`` column and survives
+        scans that publish none.
+        """
+        cursor_value = adapter_state.get("cursor")
         await conn.execute(
             """
             INSERT INTO collection_checkpoints (
-                source_id, last_scan_at, last_success_at, adapter_state
+                source_id, last_scan_at, last_success_at, cursor,
+                consecutive_failures, adapter_state
             )
-            VALUES (%s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_id) DO UPDATE SET
                 last_scan_at = EXCLUDED.last_scan_at,
                 adapter_state = EXCLUDED.adapter_state,
+                cursor = COALESCE(EXCLUDED.cursor, collection_checkpoints.cursor),
                 last_success_at = COALESCE(
                     EXCLUDED.last_success_at, collection_checkpoints.last_success_at
-                )
+                ),
+                consecutive_failures = CASE
+                    WHEN EXCLUDED.consecutive_failures = 0 THEN 0
+                    ELSE collection_checkpoints.consecutive_failures + 1
+                END
             """,
-            (source_id, last_scan_at, last_success_at, Jsonb(adapter_state)),
+            (
+                source_id,
+                last_scan_at,
+                last_success_at,
+                Jsonb(cursor_value) if cursor_value is not None else None,
+                0 if success else 1,
+                Jsonb(adapter_state),
+            ),
         )
 
     async def get_checkpoint(

@@ -193,7 +193,22 @@ async def dispatch_due_sources(timestamp: int) -> None:
     runtime = get_runtime()
     async with runtime.uow.transaction() as conn:
         candidates = await IngestionRepository().list_collection_candidates(conn)
+
+    # Sources on platforms without a registered collector would otherwise turn
+    # into a permanently failing scan_source job every dispatcher minute.
+    registered = collector_registry.registered_platforms()
+    unregistered = sorted(
+        {source.platform for source, _ in candidates if source.platform not in registered}
+    )
+    if unregistered:
+        logger.warning(
+            "dispatch_due_sources: no collector registered for platform(s) "
+            f"{', '.join(unregistered)}; skipping those sources"
+        )
+
     for source, checkpoint in candidates:
+        if source.platform not in registered:
+            continue
         if schedule_policy.is_due(source, checkpoint, scheduled_at):
             await enqueue_source_scan(
                 source_id=source.id,
