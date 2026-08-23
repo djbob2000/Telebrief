@@ -173,6 +173,63 @@ class IngestionRepository:
         row = await cursor.fetchone()
         return None if row is None else SourceItemRevision.from_row(row)
 
+    async def get_revision(
+        self, conn: psycopg.AsyncConnection, revision_id: int
+    ) -> SourceItemRevision | None:
+        """Fetch one immutable revision by id (relevance processing input)."""
+        cursor = await conn.execute(
+            """
+            SELECT id, source_item_id, revision_no, collected_at, content_hash,
+                   text_content, payload
+            FROM source_item_revisions
+            WHERE id = %s
+            """,
+            (revision_id,),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else SourceItemRevision.from_row(row)
+
+    async def list_asset_summaries(
+        self, conn: psycopg.AsyncConnection, revision_id: int
+    ) -> list[dict]:
+        """Light asset descriptors for one revision in insertion order.
+
+        Relevance prompts include attachment kinds so the model can answer
+        ``needs_media`` when the decisive evidence lives inside unseen media.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT kind, metadata
+            FROM source_assets
+            WHERE source_item_revision_id = %s
+            ORDER BY id
+            """,
+            (revision_id,),
+        )
+        rows = await cursor.fetchall()
+        return [{"kind": row[0], "metadata": row[1]} for row in rows]
+
+    async def get_edition_name(self, conn: psycopg.AsyncConnection, edition_id: int) -> str | None:
+        """Display name of one edition (relevance prompt context)."""
+        cursor = await conn.execute("SELECT name FROM editions WHERE id = %s", (edition_id,))
+        row = await cursor.fetchone()
+        return None if row is None else str(row[0])
+
+    async def list_source_edition_ids(
+        self, conn: psycopg.AsyncConnection, source_id: int
+    ) -> list[int]:
+        """Edition ids the source is bound to, in stable id order.
+
+        The relevance wiring fans every new revision out to one exact-policy
+        job per bound edition.
+        """
+        cursor = await conn.execute(
+            "SELECT edition_id FROM source_editions WHERE source_id = %s ORDER BY edition_id",
+            (source_id,),
+        )
+        rows = await cursor.fetchall()
+        return [int(row[0]) for row in rows]
+
     async def upsert_asset_for_revision(
         self, conn: psycopg.AsyncConnection, revision_id: int, asset: ObservedAsset
     ) -> None:

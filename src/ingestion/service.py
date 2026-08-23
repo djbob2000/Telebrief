@@ -6,11 +6,18 @@ The service is the only ingestion component that owns transaction bounds:
 provider-specific application services can co-commit provider coverage state
 with generic source history. Collectors finish their network work in
 ``scan()`` before persistence starts; nothing provider-specific happens here.
+
+Plan 3 relevance wiring: before the transaction ends, every newly-created
+revision fans out to one exact-policy ``evaluate_relevance`` deferral per
+bound edition — resolved on the SAME connection, so revisions, their current
+relevance policy, and their queued jobs commit (or roll back) together. The
+policy id is fixed at queue time; Procrastinate retries never re-resolve it.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import psycopg
 
@@ -18,6 +25,9 @@ from src.db.uow import DatabaseUnitOfWork
 from src.domain.ingestion import SourceItem
 from src.ingestion.models import CollectionBatch, CollectionOutcome, CollectionTrigger
 from src.ingestion.repository import IngestionRepository
+
+if TYPE_CHECKING:
+    from src.processing.relevance import IngestionRelevanceWiring
 
 
 @dataclass(frozen=True)
@@ -33,9 +43,25 @@ class IngestionResult:
 class IngestionService:
     """Persist collector batches atomically into generic source history."""
 
-    def __init__(self, uow: DatabaseUnitOfWork, repo: IngestionRepository) -> None:
+    def __init__(
+        self,
+        uow: DatabaseUnitOfWork,
+        repo: IngestionRepository,
+        *,
+        relevance_wiring: "IngestionRelevanceWiring | None" = None,
+    ) -> None:
         self.uow = uow
         self.repo = repo
+        self._relevance_wiring = relevance_wiring
+
+    @property
+    def relevance_wiring(self) -> "IngestionRelevanceWiring":
+        """Lazily built default wiring (lenient config identity resolution)."""
+        if self._relevance_wiring is None:
+            from src.processing.relevance import IngestionRelevanceWiring
+
+            self._relevance_wiring = IngestionRelevanceWiring.create()
+        return self._relevance_wiring
 
     async def ingest_batch(
         self,
@@ -113,9 +139,50 @@ class IngestionService:
             completed_at=batch.completed_at,
             error_kind=batch.error_kind,
         )
+        await self._defer_relevance_jobs(
+            conn, source_id=source_id, new_revision_ids=new_revision_ids
+        )
         return IngestionResult(
             collection_run_id=run.id,
             new_items=new_items,
             new_revisions=len(new_revision_ids),
             new_revision_ids=tuple(new_revision_ids),
         )
+
+    async def _defer_relevance_jobs(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        source_id: int,
+        new_revision_ids: list[int],
+    ) -> None:
+        """Resolve each bound edition's exact current policy and defer the job.
+
+        The evaluate_relevance task import is lazy on purpose: importing it at
+        module scope would build the Procrastinate app (and demand database
+        config) for every consumer of this service.
+        """
+        if not new_revision_ids:
+            return
+        wiring = self.relevance_wiring
+        edition_ids = await self.repo.list_source_edition_ids(conn, source_id)
+        if not edition_ids:
+            return
+
+        from src.jobs.processing import evaluate_relevance
+
+        relevance_policy_service = wiring.policy_service
+        current_config_hash = wiring.config_hash
+        for revision_id in new_revision_ids:
+            for edition_id in edition_ids:
+                policy = await relevance_policy_service.ensure_current(
+                    conn,
+                    edition_id=edition_id,
+                    config_hash=current_config_hash,
+                    prompt_version=wiring.prompt_version,
+                )
+                await evaluate_relevance.configure(connection=conn).defer_async(
+                    source_item_revision_id=revision_id,
+                    edition_id=edition_id,
+                    policy_id=policy.id,
+                )

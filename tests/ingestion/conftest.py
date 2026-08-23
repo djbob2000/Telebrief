@@ -7,9 +7,11 @@ set, every test collected under tests/ingestion is skipped instead of failing.
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 
+import procrastinate
 import psycopg
 import pytest
 
@@ -32,6 +34,22 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             )
 
 
+_TRUNCATE_TABLES = """
+    TRUNCATE source_items, source_item_revisions, source_assets,
+             source_item_state_events, collection_checkpoints,
+             collection_runs, source_editions, sources, editions
+    RESTART IDENTITY CASCADE
+"""
+
+
+async def _clear_slice(conn: psycopg.AsyncConnection) -> None:
+    await conn.execute(_TRUNCATE_TABLES)
+    # Procrastinate's own DELETE trigger references its tables unqualified,
+    # so cleanup needs the queue schema on the search path.
+    await conn.execute("SET search_path TO public, procrastinate")
+    await conn.execute("DELETE FROM procrastinate.procrastinate_jobs")
+
+
 @pytest.fixture
 async def conn(database_config: DatabaseConfig):
     """Autocommit connection to a clean slice of the test database.
@@ -46,24 +64,10 @@ async def conn(database_config: DatabaseConfig):
         database_config.url, autocommit=True
     )
     try:
-        await conn.execute(
-            """
-            TRUNCATE source_items, source_item_revisions, source_assets,
-                     source_item_state_events, collection_checkpoints,
-                     collection_runs, source_editions, sources, editions
-            RESTART IDENTITY CASCADE
-            """
-        )
+        await _clear_slice(conn)
         yield conn
     finally:
-        await conn.execute(
-            """
-            TRUNCATE source_items, source_item_revisions, source_assets,
-                     source_item_state_events, collection_checkpoints,
-                     collection_runs, source_editions, sources, editions
-            RESTART IDENTITY CASCADE
-            """
-        )
+        await _clear_slice(conn)
         await conn.close()
 
 
@@ -94,3 +98,58 @@ async def source(conn: psycopg.AsyncConnection) -> SimpleNamespace:
     )
     row = await cursor.fetchone()
     return SimpleNamespace(id=row[0])
+
+
+@pytest.fixture
+async def edition(conn: psycopg.AsyncConnection) -> SimpleNamespace:
+    """One registered edition for relevance-policy bindings."""
+    cursor = await conn.execute(
+        "INSERT INTO editions (slug, name) VALUES ('berdyansk', 'Berdyansk') RETURNING id"
+    )
+    row = await cursor.fetchone()
+    return SimpleNamespace(id=row[0])
+
+
+@pytest.fixture(scope="session")
+def procrastinate_schema_ready() -> None:
+    """Ensure the official Procrastinate tables exist in the test database."""
+    import asyncio
+
+    from src.jobs.admin import ensure_official_tables
+
+    url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
+    asyncio.run(ensure_official_tables(url, "procrastinate"))
+
+
+@pytest.fixture
+def jobs_import_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> str:
+    """Environment so importing src.jobs.app works without repo-root DB config.
+
+    The production module builds ``procrastinate_app`` at import time from
+    ``load_database_config(require_enabled=True)``, so the test database URL is
+    injected into DATABASE_URL and a minimal enabled config.yaml is provided
+    from a temporary working directory before the first import.
+    """
+    url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
+    monkeypatch.setenv("DATABASE_URL", url)
+    (tmp_path / "config.yaml").write_text(
+        "database:\n  enabled: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    return url
+
+
+@pytest.fixture
+async def production_jobs_app(
+    jobs_import_env: str, procrastinate_schema_ready: None
+) -> AsyncIterator[procrastinate.App]:
+    """Opened production Procrastinate app bound to the test database.
+
+    Production tasks (evaluate_relevance) are registered against the singleton
+    app in src.jobs.app; opening that singleton lets ingestion defer real jobs.
+    """
+    from src.jobs.app import procrastinate_app
+
+    async with procrastinate_app.open_async():
+        yield procrastinate_app

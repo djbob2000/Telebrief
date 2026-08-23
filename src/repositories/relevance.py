@@ -176,6 +176,66 @@ class EditionRelevanceDecisionRepository:
         row = await cursor.fetchone()
         return None if row is None else EditionRelevanceDecision.from_row(row)
 
+    async def get_root(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        source_item_revision_id: int,
+        edition_id: int,
+        relevance_policy_id: int,
+    ) -> EditionRelevanceDecision | None:
+        """The canonical root decision for the exact triple; duplicate-execution
+        executions converge on this row instead of inserting a second verdict."""
+        cursor = await conn.execute(
+            """
+            SELECT id, source_item_revision_id, edition_id, relevance_policy_id,
+                   status, confidence, reason, provider, model, parent_decision_id,
+                   created_at
+            FROM edition_relevance_decisions
+            WHERE source_item_revision_id = %s AND edition_id = %s
+              AND relevance_policy_id = %s AND parent_decision_id IS NULL
+            """,
+            (source_item_revision_id, edition_id, relevance_policy_id),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else EditionRelevanceDecision.from_row(row)
+
+    async def list_revision_ids_missing_root(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        relevance_policy_id: int,
+        after_revision_id: int | None = None,
+        limit: int = 500,
+    ) -> list[int]:
+        """Revisions bound to the edition that lack a ROOT decision for the
+        exact policy, in stable id order, bounded by ``limit`` and optionally
+        by an exclusive id cursor for chunked backfills."""
+        cursor = await conn.execute(
+            """
+            SELECT r.id
+            FROM source_item_revisions r
+            JOIN source_items i ON i.id = r.source_item_id
+            JOIN source_editions se ON se.source_id = i.source_id
+            WHERE se.edition_id = %s
+              AND r.id > COALESCE(%s, 0)
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM edition_relevance_decisions d
+                  WHERE d.source_item_revision_id = r.id
+                    AND d.edition_id = se.edition_id
+                    AND d.relevance_policy_id = %s
+                    AND d.parent_decision_id IS NULL
+              )
+            ORDER BY r.id
+            LIMIT %s
+            """,
+            (edition_id, after_revision_id, relevance_policy_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return [int(row[0]) for row in rows]
+
     async def latest_for_revision_edition(
         self,
         conn: psycopg.AsyncConnection,
