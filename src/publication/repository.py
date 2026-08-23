@@ -254,6 +254,87 @@ class PublicationRepository:
             (new_status, error_kind, completed_at, run_id),
         )
 
+    async def eligible_story_revisions(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        snapshot_at: dt.datetime,
+        eligibility_policy_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Query stories and their latest revision visible at snapshot_at."""
+        cursor = await conn.execute(
+            """
+            WITH latest_revs AS (
+                SELECT DISTINCT ON (sr.story_id)
+                    sr.story_id,
+                    sr.id AS story_revision_id,
+                    sr.revision_no,
+                    sr.current_state,
+                    sr.semantic_text,
+                    sr.created_at AS revision_created_at
+                FROM story_revisions sr
+                JOIN stories s ON s.id = sr.story_id
+                WHERE s.edition_id = %s
+                  AND sr.created_at <= %s
+                ORDER BY sr.story_id, sr.revision_no DESC, sr.created_at DESC
+            )
+            SELECT
+                lr.story_id,
+                lr.story_revision_id,
+                lr.revision_no,
+                lr.current_state,
+                lr.semantic_text,
+                lr.revision_created_at,
+                COALESCE(
+                    (
+                        SELECT count(DISTINCT sc.claim_id)
+                        FROM story_claims sc
+                        JOIN claims c ON c.id = sc.claim_id
+                        WHERE sc.story_id = lr.story_id
+                          AND sc.attached_at <= %s
+                          AND c.created_at <= %s
+                    ), 0
+                ) AS claim_count,
+                COALESCE(
+                    (
+                        SELECT count(DISTINCT sir.source_item_id)
+                        FROM story_claims sc
+                        JOIN claims c ON c.id = sc.claim_id
+                        JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                        WHERE sc.story_id = lr.story_id
+                          AND sc.attached_at <= %s
+                          AND c.created_at <= %s
+                    ), 0
+                ) AS source_count
+            FROM latest_revs lr
+            WHERE lr.current_state NOT IN ('invalid', 'archived', 'rejected')
+            ORDER BY lr.revision_created_at DESC, lr.story_id ASC
+            """,
+            (edition_id, snapshot_at, snapshot_at, snapshot_at, snapshot_at, snapshot_at),
+        )
+        rows = await cursor.fetchall()
+        candidates = []
+        for r in rows:
+            candidates.append(
+                {
+                    "story_id": r[0],
+                    "story_revision_id": r[1],
+                    "revision_no": r[2],
+                    "current_state": r[3],
+                    "semantic_text": r[4],
+                    "created_at": r[5],
+                    "claim_count": r[6],
+                    "source_count": r[7],
+                    "snapshot_features": {
+                        "claim_count": r[6],
+                        "source_count": r[7],
+                        "semantic_text": r[4],
+                    },
+                }
+            )
+        return candidates
+
     async def insert_candidate(
         self,
         conn: psycopg.AsyncConnection,
