@@ -27,7 +27,7 @@ PROBE_NT_REBUILD = 900031
 @pytest.mark.postgres
 async def test_migrate_applies_each_version_once(pg_conn):
     version = await migrate(pg_conn, MIGRATIONS_DIR)
-    assert version >= 3
+    assert version >= 5
     again = await migrate(pg_conn, MIGRATIONS_DIR)
     assert again == version
 

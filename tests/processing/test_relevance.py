@@ -333,3 +333,48 @@ class TestVisionPolicies:
                 # (policy_id, edition_id) does not exist.
                 (revision.id, edition.id, policy.id),
             )
+
+    async def test_vision_run_decision_edition_mismatch_rejected(
+        self, conn, edition, second_edition, revision
+    ):
+        """Raw-SQL guard: a vision run cannot link a relevance decision that
+        belongs to a different edition (composite decision FK)."""
+        vision_policy = await VisionPolicyRepository().insert(
+            conn,
+            edition_id=edition.id,
+            version=1,
+            mode="relevance_only",
+            config_hash="vision-cfg",
+            prompt_version="vision-prompt-1",
+        )
+        foreign_relevance_policy = await RelevancePolicyVersionRepository().insert(
+            conn,
+            edition_id=second_edition.id,
+            version=1,
+            config_hash="cfg-abc",
+            prompt_version="relevance-prompt-1",
+        )
+        foreign_decision = await EditionRelevanceDecisionRepository().insert_root(
+            conn,
+            source_item_revision_id=revision.id,
+            edition_id=second_edition.id,
+            relevance_policy_id=foreign_relevance_policy.id,
+            status="needs_media",
+            confidence=None,
+            reason="decision owned by another edition",
+        )
+
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            await conn.execute(
+                """
+                INSERT INTO vision_analysis_runs (
+                    source_item_revision_id, edition_id, relevance_decision_id,
+                    policy_id, status
+                )
+                VALUES (%s, %s, %s, %s, 'running')
+                """,
+                # Run belongs to edition A but the decision belongs to
+                # edition B: the pair (relevance_decision_id, edition_id)
+                # does not exist.
+                (revision.id, edition.id, foreign_decision.id, vision_policy.id),
+            )

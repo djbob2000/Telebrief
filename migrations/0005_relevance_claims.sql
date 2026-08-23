@@ -11,15 +11,16 @@
 --   * vision_analysis_runs gains an explicit NOT NULL edition_id column (the
 --     task's column list omitted it, but the mandated composite policy FK is
 --     impossible without it).
---   * claim_extraction_runs.relevance_decision_id is NOT NULL and guarded by
---     a composite FK (relevance_decision_id, edition_id) -> decisions(id,
---     edition_id), enforcing the spec §15 chain decision -> run inside one
---     edition. Requires UNIQUE (id, edition_id) on decisions.
+--   * claim_extraction_runs.relevance_decision_id is NOT NULL and both it and
+--     vision_analysis_runs.relevance_decision_id are guarded by composite FKs
+--     (relevance_decision_id, edition_id) -> decisions(id, edition_id),
+--     enforcing spec §15 chain decision -> run inside one edition. Requires
+--     UNIQUE (id, edition_id) on decisions.
 --   * reason TEXT on decisions is NOT NULL: fail-open outcomes must always
 --     explain themselves; provider/model stay nullable (deterministic or
 --     fallback paths).
 --   * claims.assertion_text / normalized_assertion are NOT NULL: an immutable
---   * assertion without text has no meaning, and normalized_assertion is the
+--     assertion without text has no meaning, and normalized_assertion is the
 --     canonical embedding input downstream.
 --   * processing_attempts has NO FK to any run table: stage discriminates the
 --     semantic target polymorphically; it is audit history, not a queue, and
@@ -49,6 +50,10 @@ ON relevance_policy_versions(id, edition_id);
 
 -- Edition pointer consistency: the current relevance policy of an edition
 -- must itself belong to that edition. NULL permitted (no policy chosen yet).
+-- Drop-first guard keeps manual re-runs idempotent.
+ALTER TABLE editions
+    DROP CONSTRAINT IF EXISTS fk_editions_current_relevance_policy;
+
 ALTER TABLE editions
     ADD CONSTRAINT fk_editions_current_relevance_policy
     FOREIGN KEY (current_relevance_policy_id, id)
@@ -105,7 +110,7 @@ CREATE TABLE IF NOT EXISTS vision_analysis_runs (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     source_item_revision_id BIGINT NOT NULL REFERENCES source_item_revisions(id),
     edition_id BIGINT NOT NULL REFERENCES editions(id),
-    relevance_decision_id BIGINT NULL REFERENCES edition_relevance_decisions(id),
+    relevance_decision_id BIGINT NULL,
     policy_id BIGINT NOT NULL,
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     completed_at TIMESTAMPTZ NULL,
@@ -116,7 +121,10 @@ CREATE TABLE IF NOT EXISTS vision_analysis_runs (
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     CONSTRAINT fk_vision_analysis_runs_policy
         FOREIGN KEY (policy_id, edition_id)
-        REFERENCES vision_policy_versions(id, edition_id)
+        REFERENCES vision_policy_versions(id, edition_id),
+    CONSTRAINT fk_vision_analysis_runs_decision_edition
+        FOREIGN KEY (relevance_decision_id, edition_id)
+        REFERENCES edition_relevance_decisions(id, edition_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_vision_analysis_runs_revision_edition
