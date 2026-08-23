@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import psycopg
 import pytest
 
-from src.config_loader import ChannelConfig, FilterSpec, ForumTopicConfig, StorageConfig
+from src.config_loader import ChannelConfig, FilterSpec, ForumTopicConfig
 from src.core import (
     _apply_filters,
     _build_digest_parts,
@@ -544,207 +544,6 @@ def _make_collector_mock(sample_messages):
     return mock_collector
 
 
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_collect_messages_storage_disabled(sample_config, mock_logger, sample_messages):
-    """storage.enabled=False: create_storage returns None, save_messages never called."""
-    sample_config.storage = StorageConfig(enabled=False)
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
-    ):
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-        mock_create.return_value = None
-
-        result = await _collect_messages(sample_config, mock_logger, 24)
-
-        mock_create.assert_called_once_with(sample_config.storage)
-        assert result == {"Test Channel": sample_messages}
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_collect_messages_storage_enabled_saves_flat_list(
-    sample_config, mock_logger, sample_messages
-):
-    """storage.enabled=True: save_messages called with all messages flattened."""
-    sample_config.storage = StorageConfig(enabled=True, backend="sqlite", path=":memory:")
-    mock_backend = MagicMock()
-    mock_backend.save_messages = AsyncMock(return_value=len(sample_messages))
-    mock_backend.close = AsyncMock()
-
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
-    ):
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-        mock_create.return_value = mock_backend
-
-        result = await _collect_messages(sample_config, mock_logger, 24)
-
-        mock_create.assert_called_once_with(sample_config.storage)
-        mock_backend.save_messages.assert_called_once_with(sample_messages)
-        mock_backend.close.assert_called_once()
-        assert result == {"Test Channel": sample_messages}
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_collect_messages_storage_error_logged_digest_continues(
-    sample_config, mock_logger, sample_messages
-):
-    """save_messages raises: error logged, _collect_messages still returns messages."""
-    sample_config.storage = StorageConfig(enabled=True, backend="sqlite", path=":memory:")
-    mock_backend = MagicMock()
-    mock_backend.save_messages = AsyncMock(side_effect=RuntimeError("disk full"))
-    mock_backend.close = AsyncMock()
-
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
-    ):
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-        mock_create.return_value = mock_backend
-
-        result = await _collect_messages(sample_config, mock_logger, 24)
-
-        mock_logger.error.assert_called_once()
-        assert "RuntimeError" in mock_logger.error.call_args[0][0]
-        assert result == {"Test Channel": sample_messages}
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_collect_messages_close_called_even_on_save_error(
-    sample_config, mock_logger, sample_messages
-):
-    """close() called in finally even when save_messages raises."""
-    sample_config.storage = StorageConfig(enabled=True, backend="sqlite", path=":memory:")
-    mock_backend = MagicMock()
-    mock_backend.save_messages = AsyncMock(side_effect=RuntimeError("oops"))
-    mock_backend.close = AsyncMock()
-
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
-    ):
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-        mock_create.return_value = mock_backend
-
-        await _collect_messages(sample_config, mock_logger, 24)
-
-        mock_backend.close.assert_called_once()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_collect_messages_storage_init_failure_is_non_fatal(
-    sample_config, mock_logger, sample_messages
-):
-    """create_storage raises: error logged, _collect_messages still returns messages."""
-    sample_config.storage = StorageConfig(enabled=True, backend="sqlite", path=":memory:")
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
-    ):
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-        mock_create.side_effect = RuntimeError("cannot open db")
-
-        result = await _collect_messages(sample_config, mock_logger, 24)
-
-        mock_logger.error.assert_called_once()
-        assert "RuntimeError" in mock_logger.error.call_args[0][0]
-        assert result == {"Test Channel": sample_messages}
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_build_digest_calls_storage_when_enabled(sample_config, mock_logger, sample_messages):
-    """build_digest saves messages to storage when enabled."""
-    sample_config.storage = StorageConfig(enabled=True, backend="sqlite", path=":memory:")
-    mock_backend = MagicMock()
-    mock_backend.save_messages = AsyncMock(return_value=len(sample_messages))
-    mock_backend.close = AsyncMock()
-
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core.Summarizer") as mock_summarizer_class,
-        patch("src.core.DigestFormatter") as mock_formatter_class,
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
-    ):
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-        mock_create.return_value = mock_backend
-
-        mock_summarizer = MagicMock()
-        mock_summarizer.summarize_all = AsyncMock(
-            return_value={"channel_summaries": {}, "overview": ""}
-        )
-        mock_summarizer_class.return_value = mock_summarizer
-
-        mock_formatter = MagicMock()
-        mock_formatter.create_digest = MagicMock(return_value="digest")
-        mock_formatter_class.return_value = mock_formatter
-
-        await build_digest(sample_config, mock_logger, hours=24)
-
-        mock_create.assert_called_once_with(sample_config.storage)
-        mock_backend.save_messages.assert_called_once_with(sample_messages)
-        mock_backend.close.assert_called_once()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_save_to_storage_close_failure_is_non_fatal(
-    sample_config, mock_logger, sample_messages
-):
-    """storage.close() raises: error logged, no exception propagated."""
-    from src.core import _save_to_storage
-
-    sample_config.storage = StorageConfig(enabled=True, backend="sqlite", path=":memory:")
-    mock_backend = MagicMock()
-    mock_backend.save_messages = AsyncMock(return_value=len(sample_messages))
-    mock_backend.close = AsyncMock(side_effect=RuntimeError("close boom"))
-
-    with patch("src.core.create_storage", new_callable=AsyncMock) as mock_create:
-        mock_create.return_value = mock_backend
-        await _save_to_storage(sample_config, {"Test Channel": sample_messages}, mock_logger)
-
-    mock_logger.error.assert_called()
-    error_calls = [str(c) for c in mock_logger.error.call_args_list]
-    assert any("close" in c.lower() for c in error_calls)
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_build_digest_storage_disabled_does_not_save(
-    sample_config, mock_logger, sample_messages
-):
-    """build_digest skips storage when disabled."""
-    sample_config.storage = StorageConfig(enabled=False)
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core.Summarizer") as mock_summarizer_class,
-        patch("src.core.DigestFormatter") as mock_formatter_class,
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
-    ):
-        mock_collector_class.return_value = _make_collector_mock(sample_messages)
-        mock_create.return_value = None
-
-        mock_summarizer = MagicMock()
-        mock_summarizer.summarize_all = AsyncMock(
-            return_value={"channel_summaries": {}, "overview": ""}
-        )
-        mock_summarizer_class.return_value = mock_summarizer
-
-        mock_formatter = MagicMock()
-        mock_formatter.create_digest = MagicMock(return_value="digest")
-        mock_formatter_class.return_value = mock_formatter
-
-        await build_digest(sample_config, mock_logger, hours=24)
-
-        mock_create.assert_called_once_with(sample_config.storage)
-
-
 # --- _apply_filters tests ---
 
 
@@ -907,29 +706,22 @@ async def test_apply_filters_filter_exception_skips_that_filter_preserves_list(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_collect_messages_applies_filters_before_storage(
+async def test_collect_messages_applies_configured_filters(
     sample_config, mock_logger, sample_messages
 ):
-    """_collect_messages applies filters; only filtered messages reach storage."""
+    """_collect_messages applies configured filters to collected messages."""
+    sample_config.settings.persistent_ingestion = False
+    sample_config.database.enabled = False
     sample_config.settings.filters = [
         _make_filter_spec("src.extensions.filters.MinLengthFilter", min_chars=99999)
     ]
-    sample_config.storage = StorageConfig(enabled=True, backend="sqlite", path=":memory:")
-    mock_backend = MagicMock()
-    mock_backend.save_messages = AsyncMock(return_value=0)
-    mock_backend.close = AsyncMock()
 
-    with (
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
-    ):
+    with patch("src.core.MessageCollector") as mock_collector_class:
         mock_collector_class.return_value = _make_collector_mock(sample_messages)
-        mock_create.return_value = mock_backend
 
         result = await _collect_messages(sample_config, mock_logger, 24)
 
     assert result == {"Test Channel": []}
-    mock_backend.save_messages.assert_called_once_with([])
 
 
 @pytest.mark.unit
@@ -1043,53 +835,17 @@ def test_resolve_channel_lists_known_names(sample_config):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_collect_channel_messages_prefers_storage(
+async def test_collect_channel_messages_falls_back_to_telegram(
     sample_config, mock_logger, sample_messages
 ):
-    """Stored messages are served without touching Telegram, newest-first flipped to chronological."""
-    mock_backend = MagicMock()
-    mock_backend.query_messages = AsyncMock(return_value=list(reversed(sample_messages)))
-    mock_backend.close = AsyncMock()
+    """Fallback to live Telegram read with config filters applied."""
+    sample_config.settings.persistent_ingestion = False
+    sample_config.database.enabled = False
 
     with (
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
-        patch("src.core.MessageCollector") as mock_collector_class,
-    ):
-        mock_create.return_value = mock_backend
-
-        messages, source = await collect_channel_messages(
-            sample_config, mock_logger, "Test Channel", hours=12, limit=50
-        )
-
-        assert source == "storage"
-        assert messages == sample_messages
-        assert mock_backend.query_messages.call_args.kwargs["channel_name"] == "Test Channel"
-        assert mock_backend.query_messages.call_args.kwargs["limit"] == 50
-        mock_backend.close.assert_called_once()
-        mock_collector_class.assert_not_called()
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "storage_result",
-    [None, []],
-    ids=["storage_disabled", "storage_empty"],
-)
-async def test_collect_channel_messages_falls_back_to_telegram(
-    sample_config, mock_logger, sample_messages, storage_result
-):
-    """No usable stored data means a live read, with the config filters applied."""
-    mock_backend = MagicMock()
-    mock_backend.query_messages = AsyncMock(return_value=[])
-    mock_backend.close = AsyncMock()
-
-    with (
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
         patch("src.core.MessageCollector") as mock_collector_class,
         patch("src.core._apply_filters", new_callable=AsyncMock) as mock_filters,
     ):
-        mock_create.return_value = None if storage_result is None else mock_backend
         collector = _make_single_channel_collector(sample_messages)
         mock_collector_class.return_value = collector
         mock_filters.return_value = sample_messages
@@ -1107,37 +863,17 @@ async def test_collect_channel_messages_falls_back_to_telegram(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_collect_channel_messages_falls_back_when_storage_raises(
-    sample_config, mock_logger, sample_messages
-):
-    """A broken store logs and degrades to Telegram instead of failing the call."""
-    with (
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
-        patch("src.core.MessageCollector") as mock_collector_class,
-        patch("src.core._apply_filters", new_callable=AsyncMock) as mock_filters,
-    ):
-        mock_create.side_effect = RuntimeError("db down")
-        mock_collector_class.return_value = _make_single_channel_collector(sample_messages)
-        mock_filters.return_value = sample_messages
-
-        _, source = await collect_channel_messages(sample_config, mock_logger, "Test Channel")
-
-        assert source == "telegram"
-        assert "RuntimeError" in mock_logger.error.call_args[0][0]
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
 async def test_collect_channel_messages_keeps_newest_within_limit(
     sample_config, mock_logger, sample_messages
 ):
     """The limit trims the oldest messages, since the newest ones matter most."""
+    sample_config.settings.persistent_ingestion = False
+    sample_config.database.enabled = False
+
     with (
-        patch("src.core.create_storage", new_callable=AsyncMock) as mock_create,
         patch("src.core.MessageCollector") as mock_collector_class,
         patch("src.core._apply_filters", new_callable=AsyncMock) as mock_filters,
     ):
-        mock_create.return_value = None
         mock_collector_class.return_value = _make_single_channel_collector(sample_messages)
         mock_filters.return_value = sample_messages
 
@@ -1152,12 +888,9 @@ async def test_collect_channel_messages_keeps_newest_within_limit(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("limit", [0, -1, 5001, True, 2.5, "10"])
 async def test_collect_channel_messages_rejects_bad_limit(sample_config, mock_logger, limit):
-    """An out-of-range limit fails before any storage or Telegram work happens."""
-    with patch("src.core.create_storage", new_callable=AsyncMock) as mock_create:
-        with pytest.raises(ValueError, match="limit must be between"):
-            await collect_channel_messages(sample_config, mock_logger, "Test Channel", limit=limit)
-
-        mock_create.assert_not_called()
+    """An out-of-range limit fails before any collection work happens."""
+    with pytest.raises(ValueError, match="limit must be between"):
+        await collect_channel_messages(sample_config, mock_logger, "Test Channel", limit=limit)
 
 
 @pytest.mark.unit
@@ -1611,3 +1344,22 @@ async def test_build_digest_parts_persistent_reaches_summarization_from_db(
         await conn.execute(_TRUNCATE)
         await conn.close()
         await close_pool(pool)
+
+
+def test_publication_modules_forbid_legacy_storage_and_collector_imports():
+    """Plan 5 Task 9: Publication pipeline must have zero dependencies on legacy storage/collector."""
+    import importlib
+    import pkgutil
+
+    import src.publication
+
+    forbidden_symbols = {"create_storage", "SQLiteBackend", "PostgresBackend", "MessageCollector"}
+
+    for _, modname, _ in pkgutil.walk_packages(
+        src.publication.__path__, src.publication.__name__ + "."
+    ):
+        mod = importlib.import_module(modname)
+        for attr in dir(mod):
+            assert (
+                attr not in forbidden_symbols
+            ), f"Module {modname} imports forbidden legacy symbol {attr}"

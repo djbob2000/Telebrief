@@ -523,7 +523,7 @@ async def test_dispatch_skips_platforms_without_registered_collector(
     """Unknown-platform sources never enter the per-minute failure pile-up."""
     from src.jobs.ingestion import dispatch_due_sources
 
-    await _seed_source(db_conn, name="Facebook Page", platform="facebook")
+    await _seed_source(db_conn, name="Unsupported Network", platform="unsupported_network")
 
     await dispatch_due_sources(timestamp=_scheduled_ts(10, 30))
 

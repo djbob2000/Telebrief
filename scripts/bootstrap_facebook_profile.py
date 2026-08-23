@@ -83,9 +83,15 @@ async def bootstrap_profile(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Bootstrap Facebook persistent browser profile")
-    parser.add_argument("--profile", default="default", help="Profile storage ref or name (default: default)")
-    parser.add_argument("--auth-root", default="data/auth/facebook", help="Path to auth root directory")
-    parser.add_argument("--import-cookies", default=None, help="Optional JSON file with exported cookies")
+    parser.add_argument(
+        "--profile", default="default", help="Profile storage ref or name (default: default)"
+    )
+    parser.add_argument(
+        "--auth-root", default="data/auth/facebook", help="Path to auth root directory"
+    )
+    parser.add_argument(
+        "--import-cookies", default=None, help="Optional JSON file with exported cookies"
+    )
     parser.add_argument(
         "--discard-cookies-file",
         action="store_true",

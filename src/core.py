@@ -21,7 +21,6 @@ from src.ingestion.reader import SourceRevisionReader
 from src.ingestion.repository import IngestionRepository
 from src.runtime import get_runtime
 from src.sender import DigestSender
-from src.storage import create_storage
 from src.summarizer import ERROR_SUMMARY_PREFIX, Summarizer
 from src.ui_strings import get_ui_strings
 
@@ -35,39 +34,6 @@ MAX_CHANNEL_MESSAGES = 5000  # safety ceiling; normal collection is bounded by t
 # MCP server all build digests, and concurrent runs fight over the single
 # Telethon session file. Per-channel locking only if generation becomes a bottleneck.
 _digest_lock = asyncio.Lock()
-
-
-async def _save_to_storage(
-    config: Config, messages_by_channel: dict, logger: logging.Logger
-) -> None:
-    """Persist collected messages to the configured storage backend, if enabled."""
-    sc = config.storage
-    storage = None
-    try:
-        storage = await create_storage(sc)
-    except Exception as e:
-        logger.error(
-            f"Storage init failed ({type(e).__name__}), digest continues",
-            exc_info=True,
-        )
-    if storage:
-        try:
-            flat = [msg for msgs in messages_by_channel.values() for msg in msgs]
-            saved = await storage.save_messages(flat)
-            logger.info(f"Stored {saved} messages ({sc.backend})")
-        except Exception as e:
-            logger.error(
-                f"Storage write failed ({type(e).__name__}), digest continues",
-                exc_info=True,
-            )
-        finally:
-            try:
-                await storage.close()
-            except Exception as e:
-                logger.error(
-                    f"Storage close failed ({type(e).__name__})",
-                    exc_info=True,
-                )
 
 
 async def _apply_filters(
@@ -176,17 +142,14 @@ async def _collect_messages(config: Config, logger: logging.Logger, hours: int) 
     compatibility adapter over :class:`SourceRevisionReader` and Telethon is
     never invoked; otherwise the legacy collector path runs unchanged.
     """
-    if config.settings.persistent_ingestion:
+    if config.settings.persistent_ingestion or config.database.enabled:
         messages_by_channel = await _read_persistent_messages(config, hours)
         total = sum(len(msgs) for msgs in messages_by_channel.values())
         logger.info(f"Read {total} persisted messages from {len(messages_by_channel)} sources")
     else:
         messages_by_channel = await _collect_messages_legacy_raw(config, logger, hours)
 
-    # Transitional compatibility only: Source history was already persisted raw.
     messages_by_channel = await _apply_configured_filters(messages_by_channel, config, logger)
-
-    await _save_to_storage(config, messages_by_channel, logger)
     return messages_by_channel
 
 
@@ -421,37 +384,6 @@ async def _build_digest_parts(
         return built
 
 
-async def _channel_from_storage(
-    config: Config,
-    logger: logging.Logger,
-    channel_cfg: ChannelConfig,
-    since: datetime,
-    limit: int,
-) -> Optional[list[Message]]:
-    """Read one channel from storage. None when storage is off, empty or unreadable."""
-    try:
-        storage = await create_storage(config.storage)
-    except Exception as e:
-        logger.error(f"Storage init failed ({type(e).__name__}), falling back to Telegram")
-        return None
-    if storage is None:
-        return None
-    try:
-        messages = await storage.query_messages(
-            channel_name=channel_cfg.name, since=since, limit=limit
-        )
-    except Exception as e:
-        logger.error(f"Storage read failed ({type(e).__name__}), falling back to Telegram")
-        return None
-    finally:
-        try:
-            await storage.close()
-        except Exception as e:
-            logger.error(f"Storage close failed ({type(e).__name__})", exc_info=True)
-    messages.reverse()  # query_messages returns newest first; callers read chronologically
-    return messages or None
-
-
 def _resolve_channel(config: Config, channel: str) -> ChannelConfig:
     """Find the configured channel by its name or its id.
 
@@ -475,22 +407,8 @@ async def collect_channel_messages(
 ) -> tuple[list[Message], str]:
     """Fetch one channel's messages, preferring stored ones over a live Telegram read.
 
-    With ``settings.persistent_ingestion`` enabled this reads persisted source
+    With ``settings.persistent_ingestion`` or ``database.enabled`` this reads persisted source
     history only; storage snapshots and live Telegram reads are never consulted.
-
-    Args:
-        config: Application configuration
-        logger: Logger instance
-        channel: Channel name or id as configured under channels[*]
-        hours: Lookback window
-        limit: Maximum messages to return, newest kept
-
-    Returns:
-        (messages in chronological order, source) where source is "storage",
-        "persistent" (persisted source history; no live fallback), or "telegram"
-
-    Raises:
-        ValueError: If hours or limit are out of range, or channel is not configured
     """
     validate_hours(hours)
     if (
@@ -503,14 +421,9 @@ async def collect_channel_messages(
     channel_cfg = _resolve_channel(config, channel)
     since = datetime.now(timezone.utc) - timedelta(hours=hours)
 
-    if config.settings.persistent_ingestion:
+    if config.settings.persistent_ingestion or config.database.enabled:
         messages = await _read_persistent_channel_messages(config, logger, channel_cfg, since)
         return messages[-limit:], "persistent"
-
-    stored = await _channel_from_storage(config, logger, channel_cfg, since, limit)
-    if stored is not None:
-        logger.info(f"Read {len(stored)} stored messages for {channel_cfg.name!r}")
-        return stored, "storage"
 
     # ponytail: same process-wide lock as digest builds — one Telethon session file
     async with _digest_lock:

@@ -7,17 +7,14 @@ import asyncio
 import datetime as dt
 import hashlib
 import logging
-import os
 import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 # Ensure project root is in sys.path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import psycopg
 
 from src.config_loader import load_database_config
 from src.db.pool import close_pool, open_pool
@@ -183,7 +180,10 @@ class LegacyMessageImporter:
                 """,
                 (source_key, f"https://t.me/{source_key.lstrip('@')}", source_key),
             )
-            source_id = (await cur.fetchone())[0]
+            src_row = await cur.fetchone()
+            if src_row is None:
+                raise RuntimeError(f"Failed to create or retrieve source {source_key}")
+            source_id = src_row[0]
 
             # 2. Get or create source item
             cur = await conn.execute(
@@ -196,6 +196,8 @@ class LegacyMessageImporter:
                 (source_id, external_id, published_at, trustworthy_collected_at),
             )
             item_row = await cur.fetchone()
+            if item_row is None:
+                raise RuntimeError(f"Failed to create or retrieve source item {external_id}")
             item_id = item_row[0]
             is_new_item = item_row[1]
 
@@ -209,7 +211,10 @@ class LegacyMessageImporter:
                 """,
                 (item_id,),
             )
-            next_rev_no = (await cur.fetchone())[0]
+            rev_no_row = await cur.fetchone()
+            if rev_no_row is None:
+                raise RuntimeError(f"Failed to calculate next revision for item {item_id}")
+            next_rev_no = rev_no_row[0]
 
             cur = await conn.execute(
                 """
@@ -228,7 +233,10 @@ class LegacyMessageImporter:
                     f'{{"sender": "{sender}", "legacy_link": "{link}", "legacy_id": {msg_id}}}',
                 ),
             )
-            rev_id = (await cur.fetchone())[0]
+            rev_row = await cur.fetchone()
+            if rev_row is None:
+                raise RuntimeError(f"Failed to insert revision for item {item_id}")
+            rev_id = rev_row[0]
             report.revisions_created += 1
 
             # 4. Record migration tracking
@@ -245,7 +253,9 @@ class LegacyMessageImporter:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="Import legacy messages into multisource schema.")
-    parser.add_argument("--dry-run", action="store_true", help="Perform dry run without database writes")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Perform dry run without database writes"
+    )
     parser.add_argument("--batch-size", type=int, default=500, help="Batch size for processing")
     parser.add_argument("--limit", type=int, default=None, help="Max messages to import")
     args = parser.parse_args()

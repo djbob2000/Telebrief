@@ -34,7 +34,7 @@ async def test_migrate_applies_each_version_once(pg_conn):
 
 @pytest.mark.postgres
 async def test_require_schema_compatible_returns_current_version(pg_conn):
-    current = await require_schema_compatible(pg_conn, minimum=7, maximum=7)
+    current = await require_schema_compatible(pg_conn, minimum=7, maximum=11)
     assert current >= 7
 
 

@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 # (embeddings + stories) lands version 6, and Plan 3 Task 8
 # (places + versioned place resolution) lands version 7.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 7
+SCHEMA_VERSION_MAXIMUM = 11
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]
 

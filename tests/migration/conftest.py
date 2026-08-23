@@ -50,6 +50,20 @@ async def ensure_schema_migrations() -> None:
         await migrate(conn, MIGRATIONS_DIR)
 
 
+_ENSURE_MESSAGES_TABLE = """
+CREATE TABLE IF NOT EXISTS messages (
+    id BIGSERIAL PRIMARY KEY,
+    channel_name TEXT NOT NULL,
+    sender TEXT NOT NULL,
+    text TEXT NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    link TEXT NOT NULL,
+    has_media BOOLEAN NOT NULL DEFAULT FALSE,
+    media_type TEXT NOT NULL DEFAULT '',
+    collected_at TIMESTAMPTZ NULL DEFAULT now()
+);
+"""
+
 _TRUNCATE_TABLES = """
     TRUNCATE legacy_imported_messages, messages,
              source_item_revisions, source_items,
@@ -61,6 +75,7 @@ _TRUNCATE_TABLES = """
 @pytest.fixture
 async def conn(database_config: DatabaseConfig) -> AsyncIterator[psycopg.AsyncConnection]:
     conn = await psycopg.AsyncConnection.connect(database_config.url, autocommit=False)
+    await conn.execute(_ENSURE_MESSAGES_TABLE)
     await conn.execute(_TRUNCATE_TABLES)
     await conn.commit()
     try:

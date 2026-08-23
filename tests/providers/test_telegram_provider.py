@@ -454,7 +454,7 @@ async def test_conversion_failure_fails_soft_transient(sample_config, mock_logge
 
     class ExplodingMessage:
         id = 7
-        date = NOW
+        date = datetime.now(timezone.utc)
 
         @property
         def text(self):
