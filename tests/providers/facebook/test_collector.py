@@ -8,7 +8,6 @@ import pytest
 
 from src.domain.sources import Source
 from src.ingestion.models import CollectionOutcome, CollectionTrigger
-from src.jobs.facebook import resolve_facebook_execution_lock
 from src.providers.facebook.auth import FacebookAuthState, FacebookHumanActionRequired
 from src.providers.facebook.collector import (
     FacebookCollector,
@@ -94,6 +93,8 @@ class TestFacebookExecutionLock:
             created_at=now,
             updated_at=now,
         )
+        from src.jobs.facebook import resolve_facebook_execution_lock
+
         lock = resolve_facebook_execution_lock(source)
         assert lock == "facebook-auth-profile:operator_profile"
 

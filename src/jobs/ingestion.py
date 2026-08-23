@@ -159,6 +159,21 @@ async def scan_source(source_id: int, trigger: str) -> None:
     ingestion_service = IngestionService(uow=runtime.uow, repo=IngestionRepository())
     await ingestion_service.ingest_batch(source_id, trigger_value, batch)
 
+    if trigger_value == CollectionTrigger.PRE_PUBLISH:
+        from src.ingestion.enrichment import (
+            get_enrichment_dispatcher,
+            get_enrichment_planner,
+        )
+
+        planner = get_enrichment_planner()
+        dispatcher = get_enrichment_dispatcher()
+        async with runtime.uow.transaction() as conn:
+            pre_reqs = await planner.pre_publish_requests(
+                conn, source_id, source.platform, limit=10
+            )
+            for req in pre_reqs:
+                await dispatcher.defer(conn, req, priority=PRE_PUBLISH_PRIORITY)
+
     if batch.outcome == CollectionOutcome.TRANSIENT:
         # Partial observations are committed above; the retry strategy may now
         # re-run this job safely.

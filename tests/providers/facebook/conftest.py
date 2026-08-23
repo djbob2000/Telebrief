@@ -43,6 +43,9 @@ def ensure_test_env(tmp_path_factory) -> None:
         return
     url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
     os.environ["DATABASE_URL"] = url
+    p = tmp_path_factory.mktemp("fb_test_cfg")
+    (p / "config.yaml").write_text("database:\n  enabled: true\n", encoding="utf-8")
+    os.chdir(p)
 
 
 @pytest.fixture(scope="session", autouse=True)

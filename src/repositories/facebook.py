@@ -255,6 +255,84 @@ class FacebookRepository:
             ),
         )
 
+    async def list_posts_due_for_deep_refresh(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        scheduled_at: dt.datetime,
+        lookback_days: int = 7,
+        max_posts: int = 50,
+    ) -> list[Any]:
+        cutoff = scheduled_at - dt.timedelta(days=lookback_days)
+        cursor = await conn.execute(
+            """
+            SELECT si.id, si.source_id, si.external_id, r.id AS current_revision_id,
+                   cs.last_scanned_at, cs.completeness
+            FROM source_items si
+            JOIN sources s ON s.id = si.source_id AND s.platform = 'facebook'
+            JOIN LATERAL (
+                SELECT id FROM source_item_revisions
+                WHERE source_item_id = si.id
+                ORDER BY revision_no DESC LIMIT 1
+            ) r ON true
+            LEFT JOIN facebook_comment_collection_state cs ON cs.source_item_id = si.id
+            WHERE si.kind = 'facebook_post'
+              AND (si.published_at >= %s OR si.first_collected_at >= %s)
+            ORDER BY cs.last_scanned_at ASC NULLS FIRST, si.published_at DESC
+            LIMIT %s
+            """,
+            (cutoff, cutoff, max_posts),
+        )
+        from types import SimpleNamespace
+
+        rows = await cursor.fetchall()
+        return [
+            SimpleNamespace(
+                source_item_id=r[0],
+                source_id=r[1],
+                external_id=r[2],
+                current_revision_id=r[3],
+                last_scanned_at=r[4],
+                completeness=r[5],
+            )
+            for r in rows
+        ]
+
+    async def list_recent_active_posts(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        source_id: int,
+        limit: int = 10,
+    ) -> list[Any]:
+        cursor = await conn.execute(
+            """
+            SELECT si.id, si.source_id, si.external_id, r.id AS current_revision_id
+            FROM source_items si
+            JOIN LATERAL (
+                SELECT id FROM source_item_revisions
+                WHERE source_item_id = si.id
+                ORDER BY revision_no DESC LIMIT 1
+            ) r ON true
+            WHERE si.source_id = %s AND si.kind = 'facebook_post'
+            ORDER BY si.published_at DESC NULLS LAST, si.id DESC
+            LIMIT %s
+            """,
+            (source_id, limit),
+        )
+        from types import SimpleNamespace
+
+        rows = await cursor.fetchall()
+        return [
+            SimpleNamespace(
+                source_item_id=r[0],
+                source_id=r[1],
+                external_id=r[2],
+                current_revision_id=r[3],
+            )
+            for r in rows
+        ]
+
     async def insert_artifact(
         self,
         conn: psycopg.AsyncConnection,

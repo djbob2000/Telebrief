@@ -428,6 +428,7 @@ class RelevanceService:
                     await self._maybe_defer_claims(
                         conn, decision=decision, vision_pending=vision_pending
                     )
+                    await self._maybe_defer_enrichment(conn, decision=decision)
                     return decision
             except psycopg.errors.UniqueViolation:
                 # Duplicate execution: the canonical root row already exists
@@ -517,6 +518,25 @@ class RelevanceService:
             decision.id,
             policy.id,
         )
+
+    async def _maybe_defer_enrichment(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        decision: EditionRelevanceDecision,
+    ) -> None:
+        """Schedule provider-neutral enrichment requests for relevant revisions (Plan 5 Task 5)."""
+        if decision.status != "relevant":
+            return
+        revision = await self._ingestion_repo.get_revision(conn, decision.source_item_revision_id)
+        if revision is None:
+            return
+        from src.ingestion.enrichment import get_enrichment_dispatcher, get_enrichment_planner
+
+        planner = get_enrichment_planner()
+        dispatcher = get_enrichment_dispatcher()
+        for req in planner.requests_for(decision, revision):
+            await dispatcher.defer(conn, req, priority=0)
 
     async def decide_with_vision(
         self,
