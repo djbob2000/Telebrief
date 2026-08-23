@@ -147,7 +147,10 @@ def build_bootstrap_source(channel: Any, interval_minutes: int) -> NewSource:
 
 
 async def _fetch_existing(
-    conn: psycopg.AsyncConnection, external_id: str
+    conn: psycopg.AsyncConnection,
+    platform: str,
+    kind: str,
+    external_id: str,
 ) -> SimpleNamespace | None:
     """Read the mutable-by-bootstrap fields plus the ownership mode."""
     cursor = await conn.execute(
@@ -156,7 +159,7 @@ async def _fetch_existing(
         FROM sources
         WHERE platform = %s AND kind = %s AND external_id = %s
         """,
-        (PLATFORM_TELEGRAM, KIND_CHANNEL, external_id),
+        (platform, kind, external_id),
     )
     row = await cursor.fetchone()
     if row is None:
@@ -180,14 +183,7 @@ class SourceRegistry:
     async def bootstrap_from_config(
         self, conn: psycopg.AsyncConnection, config: Config
     ) -> BootstrapResult:
-        """Upsert every configured Telegram channel and bind it to the edition.
-
-        Ensures the default ``berdyansk`` edition first, then walks the
-        configured channels in order: DB-managed rows are counted and skipped,
-        bootstrap-managed rows are refreshed through the guarded upsert, and
-        each managed row is bound to the edition (binding itself is
-        idempotent). Never commits.
-        """
+        """Upsert every configured Telegram channel and Facebook source and bind them to the edition."""
         created = updated = unchanged = skipped = 0
 
         edition, edition_created = await self._ensure_edition(conn)
@@ -197,7 +193,7 @@ class SourceRegistry:
 
         for channel in config.channels:
             external_id = str(channel.id)
-            existing = await _fetch_existing(conn, external_id)
+            existing = await _fetch_existing(conn, PLATFORM_TELEGRAM, KIND_CHANNEL, external_id)
             if existing is not None and existing.management_mode == "database":
                 skipped += 1
                 continue
@@ -205,8 +201,6 @@ class SourceRegistry:
             candidate = build_bootstrap_source(channel, interval_minutes)
             source = await upsert_bootstrap_source(conn, candidate)
             if source is None:
-                # Raced flip to 'database' between the read and the upsert:
-                # treat exactly like the pre-checked skip.
                 skipped += 1
                 continue
 
@@ -218,6 +212,65 @@ class SourceRegistry:
                 unchanged += 1
 
             bindings_created += await self._bind(conn, source.id, edition.id)
+
+        # Bootstrap Facebook auth profiles and sources
+        if getattr(config, "facebook", None) is not None and config.facebook.sources:
+            from src.repositories.facebook import FacebookRepository
+
+            fb_repo = FacebookRepository()
+            for prof in config.facebook.auth_profiles:
+                await fb_repo.get_or_create_auth_profile(
+                    conn, name=prof.name, storage_ref=prof.storage_ref
+                )
+
+            for fb_source in config.facebook.sources:
+                external_id = fb_source.url
+                existing = await _fetch_existing(conn, "facebook", fb_source.kind, external_id)
+                if existing is not None and existing.management_mode == "database":
+                    skipped += 1
+                    continue
+
+                fb_candidate = NewSource(
+                    platform="facebook",
+                    kind=fb_source.kind,
+                    external_id=external_id,
+                    url=fb_source.url,
+                    name=fb_source.name,
+                    role=fb_source.role,
+                    enabled=fb_source.enabled,
+                    collector_options={
+                        "schedule": {
+                            "type": "daily_times",
+                            "daily_times": fb_source.scan_times,
+                            "timezone": fb_source.timezone,
+                        }
+                    },
+                )
+                source = await upsert_bootstrap_source(conn, fb_candidate)
+                if source is None:
+                    skipped += 1
+                    continue
+
+                auth_profile = await fb_repo.get_or_create_auth_profile(
+                    conn, name=fb_source.auth_profile, storage_ref=fb_source.auth_profile
+                )
+                await fb_repo.get_or_create_source_config(
+                    conn,
+                    source_id=source.id,
+                    auth_profile_id=auth_profile.id,
+                    url=fb_source.url,
+                    scan_times=fb_source.scan_times,
+                    timezone=fb_source.timezone,
+                )
+
+                if existing is None:
+                    created += 1
+                elif _differs(existing, source):
+                    updated += 1
+                else:
+                    unchanged += 1
+
+                bindings_created += await self._bind(conn, source.id, edition.id)
 
         return BootstrapResult(
             sources_created=created,
