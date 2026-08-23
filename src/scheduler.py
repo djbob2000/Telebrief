@@ -94,6 +94,29 @@ class DigestScheduler:
         self.logger.info("📅 SCHEDULED DIGEST JOB STARTED")
         self.logger.info("=" * 60)
 
+        if self.config.database.enabled:
+            try:
+                import datetime as dt
+
+                from src.jobs.publication import create_scheduled_publication
+                from src.runtime import get_runtime
+
+                runtime = get_runtime()
+                now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+                async with runtime.uow.transaction() as conn:
+                    await create_scheduled_publication.configure(connection=conn).defer_async(
+                        edition_slug="berdyansk",
+                        publication_type="digest_grouped",
+                        snapshot_at=now_iso,
+                    )
+                self.logger.info("✅ Scheduled digest publication run queued via Procrastinate")
+                return
+            except Exception as e:
+                self.logger.warning(
+                    "Could not defer scheduled digest via Procrastinate: %s; falling back to legacy generator",
+                    e,
+                )
+
         try:
             success = await generate_and_send_digest(
                 config=self.config,
@@ -114,6 +137,29 @@ class DigestScheduler:
         self.logger.info("=" * 60)
         self.logger.info("📰 SCHEDULED ARTICLE JOB STARTED")
         self.logger.info("=" * 60)
+
+        if self.config.database.enabled:
+            try:
+                import datetime as dt
+
+                from src.jobs.publication import create_scheduled_publication
+                from src.runtime import get_runtime
+
+                runtime = get_runtime()
+                now_iso = dt.datetime.now(dt.timezone.utc).isoformat()
+                async with runtime.uow.transaction() as conn:
+                    await create_scheduled_publication.configure(connection=conn).defer_async(
+                        edition_slug="berdyansk",
+                        publication_type="article",
+                        snapshot_at=now_iso,
+                    )
+                self.logger.info("✅ Scheduled article publication run queued via Procrastinate")
+                return
+            except Exception as e:
+                self.logger.warning(
+                    "Could not defer scheduled article via Procrastinate: %s; falling back to legacy generator",
+                    e,
+                )
 
         try:
             from src.core import generate_and_publish_article
