@@ -65,6 +65,8 @@ def discover_migrations(migrations_dir: Path) -> list[PendingMigration]:
 
     by_version: dict[int, PendingMigration] = {}
     for path in sorted(migrations_dir.iterdir()):
+        if not path.is_file():
+            continue
         match = MIGRATION_FILENAME_RE.match(path.name)
         if match is None:
             continue
