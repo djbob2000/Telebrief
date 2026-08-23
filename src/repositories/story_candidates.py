@@ -278,29 +278,30 @@ class StoryCandidateRetriever:
         conn: psycopg.AsyncConnection,
         *,
         claim: Claim,
-        claim_embedding: Sequence[float],
+        claim_embedding: Sequence[float] | None = None,
         policy: StoryMatchingPolicyVersion,
     ) -> list[StoryCandidate]:
         hits: dict[int, _Hit] = {}
 
-        for vector_row in await self._embeddings.find_story_candidates(
-            conn,
-            edition_id=claim.edition_id,
-            query_embedding=claim_embedding,
-            model=policy.embedding_model,
-            dimensions=policy.embedding_dimensions,
-            limit=policy.vector_limit,
-        ):
-            _merge_hit(
-                hits,
-                _Hit(
-                    story_id=vector_row.story_id,
-                    story_revision_id=vector_row.story_revision_id,
-                    story_revision_embedding_id=vector_row.embedding_id,
-                    reasons=frozenset({REASON_VECTOR}),
-                    vector_distance=vector_row.vector_distance,
-                ),
-            )
+        if claim_embedding:
+            for vector_row in await self._embeddings.find_story_candidates(
+                conn,
+                edition_id=claim.edition_id,
+                query_embedding=claim_embedding,
+                model=policy.embedding_model,
+                dimensions=policy.embedding_dimensions,
+                limit=policy.vector_limit,
+            ):
+                _merge_hit(
+                    hits,
+                    _Hit(
+                        story_id=vector_row.story_id,
+                        story_revision_id=vector_row.story_revision_id,
+                        story_revision_embedding_id=vector_row.embedding_id,
+                        reasons=frozenset({REASON_VECTOR}),
+                        vector_distance=vector_row.vector_distance,
+                    ),
+                )
 
         lexical_cursor = await conn.execute(_LEXICAL_SQL, _lexical_params(claim, policy))
         for lexical_row in await lexical_cursor.fetchall():
@@ -623,7 +624,7 @@ class LockedMatchingRun:
 _RUN_COLUMNS = """
     id, claim_id, edition_id, policy_id, claim_embedding_id,
     started_at, completed_at, status, error_kind, metadata,
-    candidates_retrieved_at
+    candidates_retrieved_at, retrieval_mode
 """
 
 _CANDIDATE_COLUMNS = """
@@ -650,16 +651,17 @@ class StoryMatchingRunRepository:
         edition_id: int,
         policy_id: int,
         claim_embedding_id: int | None,
+        retrieval_mode: str = "knowledge_full",
     ) -> StoryMatchingRun:
         cursor = await conn.execute(
             f"""
             INSERT INTO story_matching_runs (
-                claim_id, edition_id, policy_id, claim_embedding_id, status
+                claim_id, edition_id, policy_id, claim_embedding_id, status, retrieval_mode
             )
-            VALUES (%s, %s, %s, %s, 'running')
+            VALUES (%s, %s, %s, %s, 'running', %s)
             RETURNING {_RUN_COLUMNS}
             """,  # noqa: S608 — column list is a module constant; values are bound params
-            (claim_id, edition_id, policy_id, claim_embedding_id),
+            (claim_id, edition_id, policy_id, claim_embedding_id, retrieval_mode),
         )
         return StoryMatchingRun.from_row(await cursor.fetchone())
 

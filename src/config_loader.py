@@ -68,6 +68,13 @@ class CollectionConfig:
 
 
 @dataclass
+class TelegramConfig:
+    """Telegram operational settings (processing mode control)."""
+
+    processing_mode: str = "knowledge_full"  # "knowledge_full" | "knowledge_no_embeddings"
+
+
+@dataclass
 class EmbeddingConfig:
     """Semantic embedding settings (Plan 3 Task 5).
 
@@ -267,6 +274,7 @@ class Config:
     mcp: McpConfig = field(default_factory=McpConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     collection: CollectionConfig = field(default_factory=CollectionConfig)
+    telegram: TelegramConfig = field(default_factory=TelegramConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     facebook: FacebookConfig = field(default_factory=FacebookConfig)
 
@@ -1009,6 +1017,22 @@ def _parse_prompts_config(yaml_config: dict) -> PromptsConfig:
     return PromptsConfig(base_template=base_template, composer=composer)
 
 
+def _parse_telegram_config(yaml_config: dict) -> TelegramConfig:
+    """Parse and validate the optional top-level telegram: block."""
+    raw = yaml_config.get("telegram")
+    if raw is None:
+        return TelegramConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(f"'telegram' must be a mapping, got {type(raw).__name__}")
+
+    mode = raw.get("processing_mode", "knowledge_full")
+    if mode not in ("knowledge_full", "knowledge_no_embeddings"):
+        raise ValueError(
+            f"telegram.processing_mode must be 'knowledge_full' or 'knowledge_no_embeddings', got {mode!r}"
+        )
+    return TelegramConfig(processing_mode=mode)
+
+
 def _parse_facebook_config(yaml_config: dict) -> FacebookConfig:
     """Parse and validate the optional top-level facebook: block."""
     raw = yaml_config.get("facebook")
@@ -1332,6 +1356,9 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
     # Parse MCP server config
     mcp_config = _parse_mcp_config(yaml_config)
 
+    # Parse Telegram config
+    telegram_config = _parse_telegram_config(yaml_config)
+
     # Parse Facebook config
     facebook_config = _parse_facebook_config(yaml_config)
 
@@ -1432,6 +1459,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         mcp=mcp_config,
         database=database_config,
         collection=collection_config,
+        telegram=telegram_config,
         embedding=_parse_embedding_config(yaml_config, api_key=env_vars["google_api_key"]),
         facebook=facebook_config,
         **env_vars,

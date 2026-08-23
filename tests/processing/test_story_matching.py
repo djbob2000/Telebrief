@@ -53,7 +53,12 @@ def _next_n() -> int:
     return _COUNTER["n"]
 
 
-async def _make_claim(conn: psycopg.AsyncConnection, edition_id: int, source_item_revision_id: int):
+async def _make_claim(
+    conn: psycopg.AsyncConnection,
+    edition_id: int,
+    source_item_revision_id: int,
+    assertion: str | None = None,
+):
     """Spec §15 chain: relevance decision -> succeeded run -> one claim."""
     n = _next_n()
     relevance_policy = await _RELEVANCE_POLICY_REPO.insert(
@@ -87,14 +92,14 @@ async def _make_claim(conn: psycopg.AsyncConnection, edition_id: int, source_ite
         relevance_decision_id=decision.id,
     )
     assert await _RUN_REPO.mark_succeeded(conn, run.id, completed_at=_T0)
-    assertion = f"Утверждение номер {n}: вода пришла на улицу Приморскую."
+    assertion_text = assertion or f"Утверждение номер {n}: вода пришла на улицу Приморскую."
     claims = await _CLAIM_REPO.insert_claims(
         conn,
         run=run,
         claims=[
             NewClaim(
-                assertion_text=assertion,
-                normalized_assertion=assertion.lower(),
+                assertion_text=assertion_text,
+                normalized_assertion=assertion_text.lower(),
             )
         ],
     )
@@ -2324,3 +2329,93 @@ class TestStoryMatchingPrerequisiteBarrier:
             fully = await prerequisite.maybe_schedule(db, claim_id=claim.id)
         assert fully is True
         assert len(await _deferred_jobs(pool, MATCH_TASK)) == 1
+
+
+@pytest.mark.postgres
+class TestKnowledgeNoEmbeddingsMode:
+    """Tests for zero-external-embedding execution in knowledge_no_embeddings mode."""
+
+    async def test_prerequisite_schedules_without_embedding(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app
+    ):
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        from src.processing.story_matching import StoryMatchingPrerequisiteService
+
+        prereq = StoryMatchingPrerequisiteService()
+
+        # In default knowledge_full mode without embedding -> returns False
+        async with uow.transaction() as db:
+            scheduled = await prereq.maybe_schedule(
+                db, claim_id=claim.id, processing_mode="knowledge_full"
+            )
+        assert scheduled is False
+
+        # In knowledge_no_embeddings mode -> returns True and defers match_claim with claim_embedding_id=None
+        async with uow.transaction() as db:
+            scheduled = await prereq.maybe_schedule(
+                db, claim_id=claim.id, processing_mode="knowledge_no_embeddings"
+            )
+        assert scheduled is True
+
+        jobs = await _deferred_jobs(pool, MATCH_TASK)
+        assert len(jobs) == 1
+        assert jobs[0]["args"]["claim_id"] == claim.id
+        assert jobs[0]["args"]["claim_embedding_id"] is None
+
+    async def test_matching_runs_and_retrieves_lexically_without_vector(
+        self, uow, conn, edition, revision_factory, production_jobs_app
+    ):
+        # 1. Seed an existing story with clear lexical keywords
+        seeded = await _seed_story(
+            conn,
+            edition.id,
+            title="Водоканал Бердянска",
+            summary="Ремонт водопровода на Восточном проспекте",
+            semantic_text="Водоканал Бердянска ведет ремонт водопровода на Восточном проспекте",
+        )
+        story_id = seeded.story_id
+
+        # 2. Make a claim sharing lexical tokens
+        rev = await revision_factory()
+        claim = await _make_claim(
+            conn,
+            edition.id,
+            rev.id,
+            assertion="Водоканал Бердянска сообщил об отключении воды на Восточном",
+        )
+
+        # 3. Create a policy for knowledge_no_embeddings (embedding_model="none", dimensions=0)
+        from src.processing.story_matching import StoryMatchingPolicyService
+
+        policy_svc = StoryMatchingPolicyService()
+        async with uow.transaction() as db:
+            policy = await policy_svc.ensure_current(
+                db,
+                edition_id=edition.id,
+                embedding_model="none",
+                embedding_dimensions=0,
+            )
+
+        # 4. Run StoryMatchingService with claim_embedding_id=None
+        matcher = _FixedMatcher({"assignment": "SAME_STORY", "target_story_id": story_id})
+        svc = _service(uow, matcher)
+        outcome = await svc.run(claim.id, policy.id, claim_embedding_id=None)
+
+        from src.repositories.story_candidates import StoryMatchingRunRepository
+
+        assert outcome.replayed is False
+        assert await _runs_status(conn, outcome.run.id) == "succeeded"
+        async with uow.transaction() as db:
+            refreshed_run = await StoryMatchingRunRepository().get(db, outcome.run.id)
+            assert refreshed_run is not None
+            assert refreshed_run.retrieval_mode == "knowledge_no_embeddings"
+            assert refreshed_run.claim_embedding_id is None
+
+        # Verify candidate was retrieved via lexical recall
+        seen_claim, views = matcher.calls[0]
+        assert len(views) >= 1
+        matching_view = next((v for v in views if v.candidate.story_id == story_id), None)
+        assert matching_view is not None
+        assert matching_view.candidate.retrieved_by_lexical is True
+        assert matching_view.candidate.retrieved_by_vector is False
+        assert matching_view.candidate.vector_distance is None

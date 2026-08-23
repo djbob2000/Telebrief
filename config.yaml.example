@@ -23,6 +23,11 @@ channels:
   # ❌ Wrong:     id: "-1001234567890" (has quotes)
   # ❌ Wrong:     id: -1234567890     (missing -100 prefix)
 
+# Telegram operational settings
+# processing_mode: "knowledge_full" (default with vector embeddings) or "knowledge_no_embeddings" (lexical/time/place clustering without external embeddings)
+# telegram:
+#   processing_mode: "knowledge_full"
+
 # Application settings
 settings:
   # Scheduling

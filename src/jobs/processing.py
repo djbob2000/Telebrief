@@ -531,7 +531,9 @@ async def embed_story_revision(story_revision_id: int, model: str, dimensions: i
     retry=STORY_MATCH_RETRY_STRATEGY,
     pass_context=True,
 )
-async def match_claim(context, claim_id: int, policy_id: int, claim_embedding_id: int):
+async def match_claim(
+    context, claim_id: int, policy_id: int, claim_embedding_id: int | None = None
+):
     """Match one claim (via its frozen embedding) into persistent stories.
 
     The EXACT policy id and embedding id resolved at defer time are queued

@@ -45,6 +45,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -713,6 +714,25 @@ class ClaimExtractionService:
                 if self._place_handoff:
                     await self._materialize_place_evidence(conn, inserted)
                 await self._defer_embed_claims(conn, inserted)
+                # In knowledge_no_embeddings mode, schedule matching directly for claims with no place mentions
+                processing_mode = "knowledge_full"
+                with suppress(Exception):
+                    from src.runtime import get_runtime
+
+                    rt = get_runtime()
+                    cfg = getattr(rt, "config", None)
+                    telegram_cfg = getattr(cfg, "telegram", None)
+                    processing_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
+
+                if processing_mode == "knowledge_no_embeddings" or self._embedding_config is None:
+                    from src.processing.story_matching import StoryMatchingPrerequisiteService
+
+                    prereq = StoryMatchingPrerequisiteService()
+                    for claim in inserted:
+                        if not staging_strings(claim.metadata, "place_mentions"):
+                            await prereq.maybe_schedule(
+                                conn, claim_id=claim.id, processing_mode="knowledge_no_embeddings"
+                            )
                 final = await self._run_repo.get(conn, run.id)
         except psycopg.errors.UniqueViolation as exc:
             if getattr(exc, "diag", None) is None or exc.diag.constraint_name != (
@@ -743,6 +763,18 @@ class ClaimExtractionService:
         queued vector. Model/dimensions are copied from the config into the
         task arguments so retries keep the exact queued vector space.
         """
+        processing_mode = "knowledge_full"
+        with suppress(Exception):
+            from src.runtime import get_runtime
+
+            rt = get_runtime()
+            cfg = getattr(rt, "config", None)
+            telegram_cfg = getattr(cfg, "telegram", None)
+            processing_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
+
+        if processing_mode == "knowledge_no_embeddings":
+            return
+
         config = self._embedding_config
         if config is None or not inserted:
             return

@@ -554,7 +554,7 @@ class StoryMatchingService:
         self._ingestion = ingestion or IngestionRepository()
 
     async def run(
-        self, claim_id: int, policy_id: int, claim_embedding_id: int
+        self, claim_id: int, policy_id: int, claim_embedding_id: int | None = None
     ) -> StoryMatchingOutcome:
         """Execute the three-boundary flow for one claim/policy/embedding."""
         context = await self._create_run_and_candidates(claim_id, policy_id, claim_embedding_id)
@@ -597,7 +597,7 @@ class StoryMatchingService:
     # ------------------------------------------------------------------
 
     async def _create_run_and_candidates(
-        self, claim_id: int, policy_id: int, claim_embedding_id: int
+        self, claim_id: int, policy_id: int, claim_embedding_id: int | None
     ) -> _MatchingContext | StoryMatchingRun:
         """Freeze everything the matcher will see, then hand the frozen
         snapshot out of the transaction.
@@ -618,7 +618,14 @@ class StoryMatchingService:
                 raise ValueError(f"claim {claim_id} does not exist")
             claim = claims[0]
             policy = await self._load_policy(conn, policy_id, claim.edition_id)
-            embedded = await self._load_embedding(conn, claim_id, claim_embedding_id, policy)
+            embedded = (
+                await self._load_embedding(conn, claim_id, claim_embedding_id, policy)
+                if claim_embedding_id is not None
+                else None
+            )
+            retrieval_mode = (
+                "knowledge_no_embeddings" if claim_embedding_id is None else "knowledge_full"
+            )
             edition_name = await self._ingestion.get_edition_name(conn, claim.edition_id)
 
             run = await self._runs.latest_running(conn, claim_id=claim_id, policy_id=policy_id)
@@ -629,10 +636,14 @@ class StoryMatchingService:
                     edition_id=claim.edition_id,
                     policy_id=policy_id,
                     claim_embedding_id=claim_embedding_id,
+                    retrieval_mode=retrieval_mode,
                 )
             if run.candidates_retrieved_at is None:
                 retrieved = await self._retriever.retrieve(
-                    conn, claim=claim, claim_embedding=embedded.vector, policy=policy
+                    conn,
+                    claim=claim,
+                    claim_embedding=embedded.vector if embedded is not None else None,
+                    policy=policy,
                 )
                 await self._runs.save_candidates(conn, run_id=run.id, candidates=retrieved)
             frozen = await self._runs.frozen_candidates(conn, run.id)
@@ -1046,14 +1057,31 @@ class StoryMatchingPrerequisiteService:
         )
         self._matching_policy_service = matching_policy_service or StoryMatchingPolicyService()
 
-    async def maybe_schedule(self, conn: psycopg.AsyncConnection, *, claim_id: int) -> bool:
+    async def maybe_schedule(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        claim_id: int,
+        processing_mode: str | None = None,
+    ) -> bool:
         claims = await self._claims.get_many(conn, [claim_id])
         if not claims:
             raise ValueError(f"claim {claim_id} does not exist")
         claim = claims[0]
 
+        if processing_mode is None:
+            try:
+                from src.runtime import get_runtime
+
+                rt = get_runtime()
+                cfg = getattr(rt, "config", None)
+                telegram_cfg = getattr(cfg, "telegram", None)
+                processing_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
+            except Exception:
+                processing_mode = "knowledge_full"
+
         embedding = await self._embeddings.latest_claim_embedding_identity(conn, claim_id=claim.id)
-        if embedding is None:
+        if embedding is None and processing_mode != "knowledge_no_embeddings":
             return False
 
         place_policy = await self._place_policy_service.ensure_current(
@@ -1065,11 +1093,15 @@ class StoryMatchingPrerequisiteService:
         if not satisfied:
             return False
 
+        embedding_model = embedding.model if embedding is not None else "none"
+        embedding_dimensions = embedding.dimensions if embedding is not None else 0
+        claim_embedding_id = embedding.id if embedding is not None else None
+
         policy = await self._matching_policy_service.ensure_current(
             conn,
             edition_id=claim.edition_id,
-            embedding_model=embedding.model,
-            embedding_dimensions=embedding.dimensions,
+            embedding_model=embedding_model,
+            embedding_dimensions=embedding_dimensions,
         )
         # Lazy on purpose: src.jobs.processing imports this module at top level.
         from src.jobs.processing import match_claim
@@ -1080,14 +1112,14 @@ class StoryMatchingPrerequisiteService:
         ).defer_async(
             claim_id=claim.id,
             policy_id=policy.id,
-            claim_embedding_id=embedding.id,
+            claim_embedding_id=claim_embedding_id,
         )
         logger.info(
             "prerequisites satisfied; deferred match_claim claim=%s policy=%s embedding=%s "
             "place_policy=%s",
             claim.id,
             policy.id,
-            embedding.id,
+            claim_embedding_id,
             place_policy.id,
         )
         return True
