@@ -99,8 +99,166 @@ class TestPublicationGenerationConstraints:
                 """
                 INSERT INTO publications (
                     publication_run_id, winning_generation_attempt_id,
-                    publication_type, title, body
-                ) VALUES (%s, %s, 'article', 'Заголовок', NULL)
+                    publication_type, title, lead, body
+                ) VALUES (%s, %s, %s, %s, %s, NULL)
                 """,
-                (run.id, attempt.id),
+                (run.id, attempt.id, "article", "Title", "Lead"),
             )
+
+
+@pytest.mark.postgres
+class TestPublicationGenerationService:
+    """Tests PublicationGenerationService with real database, adapters, and mock generators."""
+
+    async def test_generation_service_produces_publication_and_records_winning_attempt(
+        self, conn: psycopg.AsyncConnection, pool, edition, monkeypatch
+    ):
+        from src.config_loader import Config
+        from src.db.uow import DatabaseUnitOfWork
+        from src.publication.generation import PublicationGenerationService
+        from src.publication.selection import EditorialSelectionService, HeuristicSelectionModel
+        from src.publication.snapshot import PublicationSnapshotService
+
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
+
+        # 1. Seed source, source_item, revision
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name)
+            VALUES ('telegram', 'channel', '-100555', 'https://t.me/b_news', 'Бердянск Новости') RETURNING id
+            """
+        )
+        source_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', '501', %s) RETURNING id",
+            (source_id, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-501', 'Реконструкция набережной завершена', %s) RETURNING id",
+            (item_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+
+        # 2. Seed relevance + claim extraction
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'rh', 'rv') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev_id, edition.id, rel_pol_id),
+        )
+        rel_dec_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'ch', 'cv') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev_id, edition.id, extr_pol_id, rel_dec_id),
+        )
+        extr_run_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at)
+            VALUES (%s, %s, %s, 'На набережной открыли новую пешеходную зону', 'на набережной открыли новую пешеходную зону', %s)
+            RETURNING id
+            """,
+            (extr_run_id, rev_id, edition.id, _NOW),
+        )
+        claim_id = (await cur.fetchone())[0]
+
+        # 3. Seed story
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Открытие набережной после ремонта', 'h-s501', %s)
+            RETURNING id
+            """,
+            (story_id, _NOW),
+        )
+        s_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s_rev_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, claim_id, _NOW),
+        )
+
+        # 4. Snapshot & Select
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-gen-winning-attempt",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        # 5. Mock generator
+        class MockArticleGenerator:
+            async def generate_from_frozen_input(self, frozen, attempt_observer=None):
+                if attempt_observer is not None:
+                    att_id = await attempt_observer.attempt_started(
+                        "writer", provider="mock", model="mock-1"
+                    )
+                    await attempt_observer.attempt_finished(att_id, "succeeded")
+                return (
+                    "В Бердянске завершили реконструкцию набережной",
+                    "Лид новости",
+                    "Полный текст статьи об открытии пешеходной зоны.",
+                )
+
+        from src.config_loader import Settings
+
+        settings = Settings(
+            schedule_time="09:00",
+            timezone="UTC",
+            lookback_hours=24,
+            openai_model="gpt-4",
+            openai_temperature=0.7,
+            ai_provider="mock",
+        )
+        config = Config(
+            channels=[],
+            settings=settings,
+            telegram_api_id=1,
+            telegram_api_hash="hash",
+            telegram_bot_token="token",
+            openai_api_key="key",
+            log_level="INFO",
+        )
+
+        service = PublicationGenerationService(
+            uow=uow,
+            config=config,
+            generator=MockArticleGenerator(),
+        )
+
+        pub = await service.generate(run.id)
+        assert pub.publication_run_id == run.id
+        assert pub.title == "В Бердянске завершили реконструкцию набережной"
+        assert pub.body == "Полный текст статьи об открытии пешеходной зоны."
+        assert pub.winning_generation_attempt_id > 0
+
+        # Check run status transitioned to succeeded
+        run_after = await PublicationRepository().get_run_by_id(conn, run.id)
+        assert run_after.status == "succeeded"
+        assert run_after.completed_at is not None
+
+        # 6. Idempotent re-run returns same publication
+        pub_again = await service.generate(run.id)
+        assert pub_again.id == pub.id

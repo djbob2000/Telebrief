@@ -51,8 +51,11 @@ async def select_stories_for_publication(context: Any, run_id: int) -> None:
 )
 async def generate_publication(context: Any, run_id: int) -> None:
     """Generate publication from sealed inputs."""
-    # To be fully wired in Task 5
-    logger.info("generate_publication queued for run %s", run_id)
+    from src.publication.generation import PublicationGenerationService
+
+    runtime = get_runtime()
+    service = PublicationGenerationService(uow=runtime.uow)
+    await service.generate(run_id)
 
 
 @procrastinate_app.task(
