@@ -1,0 +1,210 @@
+"""AI Editorial selection service over frozen candidate sets (Plan 4 Task 3)."""
+
+from __future__ import annotations
+
+import datetime as dt
+import logging
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+import psycopg
+
+from src.db.uow import DatabaseUnitOfWork
+from src.publication.models import (
+    PublicationCandidate,
+    PublicationInput,
+    PublicationRun,
+    PublicationSelectionDecision,
+)
+from src.publication.repository import PublicationRepository
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SelectionProposal:
+    """Proposal from the selector model for one candidate story."""
+
+    story_id: int
+    story_revision_id: int
+    decision: str  # 'INCLUDE', 'OMIT'
+    presentation_intent: str | None = (
+        None  # 'lead', 'normal', 'brief', 'unverified_operational', 'follow_up'
+    )
+    confidence: float | None = None
+    reason: str | None = None
+    rank: int | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class SelectionModel(Protocol):
+    """Protocol for models or heuristics performing editorial selection."""
+
+    async def select_stories(
+        self,
+        *,
+        run: PublicationRun,
+        candidates: list[PublicationCandidate],
+    ) -> list[SelectionProposal]:
+        raise NotImplementedError
+
+
+class HeuristicSelectionModel:
+    """Default rule-based selection model when no AI model is configured."""
+
+    async def select_stories(
+        self,
+        *,
+        run: PublicationRun,
+        candidates: list[PublicationCandidate],
+    ) -> list[SelectionProposal]:
+        proposals: list[SelectionProposal] = []
+        for rank, cand in enumerate(candidates, start=1):
+            intent = "lead" if rank == 1 else "normal"
+            proposals.append(
+                SelectionProposal(
+                    story_id=cand.story_id,
+                    story_revision_id=cand.story_revision_id,
+                    decision="INCLUDE",
+                    presentation_intent=intent,
+                    confidence=0.9,
+                    reason="Automatically included by heuristic selection",
+                    rank=rank,
+                )
+            )
+        return proposals
+
+
+class EditorialSelectionService:
+    """Service to run editorial selection over sealed candidates and freeze publication inputs."""
+
+    def __init__(
+        self,
+        *,
+        uow: DatabaseUnitOfWork,
+        repo: PublicationRepository | None = None,
+        model: SelectionModel | None = None,
+    ) -> None:
+        self.uow = uow
+        self.repo = repo or PublicationRepository()
+        self.model = model or HeuristicSelectionModel()
+
+    async def select(self, run_id: int) -> list[PublicationInput]:
+        async with self.uow.transaction() as conn:
+            run = await self.repo.lock_run(conn, run_id)
+            if run is None:
+                raise ValueError(f"publication run {run_id} not found")
+
+            if run.status != "candidates_sealed":
+                if run.status in ("selected_inputs_sealed", "generating", "succeeded"):
+                    return await self.repo.load_sealed_inputs(conn, run_id)
+                raise RuntimeError(
+                    f"cannot select for publication run {run_id} in status '{run.status}' (expected 'candidates_sealed')"
+                )
+
+            candidates = await self.repo.load_sealed_candidates(conn, run_id)
+            if not candidates:
+                # No candidates to select: transition to selected_inputs_sealed with empty inputs
+                await self.repo.transition_run(conn, run_id, "selected_inputs_sealed")
+                return []
+
+            allowed_keys = {(c.story_id, c.story_revision_id): c for c in candidates}
+
+        # Model call outside transaction
+        raw_proposals = await self.model.select_stories(run=run, candidates=candidates)
+
+        # Validate proposals: must only reference candidates in allowed_keys
+        validated_proposals: list[tuple[PublicationCandidate, SelectionProposal]] = []
+        for prop in raw_proposals:
+            cand = allowed_keys.get((prop.story_id, prop.story_revision_id))
+            if cand is None:
+                logger.warning(
+                    "selector proposed unknown story (%s, %s) not in candidates of run %s",
+                    prop.story_id,
+                    prop.story_revision_id,
+                    run_id,
+                )
+                continue
+            validated_proposals.append((cand, prop))
+
+        async with self.uow.transaction() as conn:
+            # Re-lock run
+            locked_run = await self.repo.lock_run(conn, run_id)
+            if locked_run is None or locked_run.status != "candidates_sealed":
+                return await self.repo.load_sealed_inputs(conn, run_id)
+
+            selected_inputs: list[PublicationInput] = []
+            include_rank = 1
+
+            for cand, prop in validated_proposals:
+                decision_rec = PublicationSelectionDecision(
+                    id=0,
+                    publication_run_id=run_id,
+                    candidate_id=cand.id,
+                    decision=prop.decision,
+                    presentation_intent=prop.presentation_intent,
+                    confidence=prop.confidence,
+                    reason=prop.reason,
+                    rank=prop.rank,
+                    metadata=prop.metadata or {},
+                    created_at=dt.datetime.now(dt.timezone.utc),
+                )
+                inserted_decision = await self.repo.insert_selection_decision(
+                    conn, run_id, decision_rec
+                )
+
+                if prop.decision == "INCLUDE":
+                    # Query claims and evidence clusters attached <= snapshot_at
+                    c_cur = await conn.execute(
+                        """
+                        SELECT sc.claim_id
+                        FROM story_claims sc
+                        JOIN claims c ON c.id = sc.claim_id
+                        WHERE sc.story_id = %s
+                          AND sc.attached_at <= %s
+                          AND c.created_at <= %s
+                        ORDER BY sc.claim_id ASC
+                        """,
+                        (cand.story_id, run.snapshot_at, run.snapshot_at),
+                    )
+                    claim_ids = [r[0] for r in await c_cur.fetchall()]
+
+                    ec_cur = await conn.execute(
+                        """
+                        SELECT DISTINCT ec.id
+                        FROM evidence_clusters ec
+                        JOIN evidence_assessment_runs ear ON ear.id = ec.run_id
+                        WHERE ear.story_id = %s
+                          AND ear.completed_at <= %s
+                          AND ear.status = 'succeeded'
+                        ORDER BY ec.id ASC
+                        """,
+                        (cand.story_id, run.snapshot_at),
+                    )
+                    evidence_cluster_ids = [r[0] for r in await ec_cur.fetchall()]
+
+                    inp = await self.repo.freeze_selected_input(
+                        conn,
+                        run_id,
+                        story_id=cand.story_id,
+                        story_revision_id=cand.story_revision_id,
+                        selection_decision_id=inserted_decision.id,
+                        presentation_intent=prop.presentation_intent,
+                        rank=include_rank,
+                        claim_ids=claim_ids,
+                        evidence_cluster_ids=evidence_cluster_ids,
+                    )
+                    selected_inputs.append(inp)
+                    include_rank += 1
+
+            await self.repo.transition_run(conn, run_id, "selected_inputs_sealed")
+            await self._defer_generation(conn, run_id)
+            return selected_inputs
+
+    async def _defer_generation(self, conn: psycopg.AsyncConnection, run_id: int) -> None:
+        try:
+            from src.jobs.publication import generate_publication
+
+            await generate_publication.configure(connection=conn).defer_async(run_id=run_id)
+        except Exception as err:
+            logger.warning("could not defer generate_publication for run %s: %s", run_id, err)
