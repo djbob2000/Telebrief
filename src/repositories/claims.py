@@ -490,11 +490,13 @@ class ClaimRepository:
     ) -> ClaimRelation:
         cursor = await conn.execute(
             """
-            INSERT INTO claim_relations (from_claim_id, to_claim_id, relation_type)
-            VALUES (%s, %s, %s)
+            INSERT INTO claim_relations (from_claim_id, to_claim_id, edition_id, relation_type)
+            SELECT %s, %s, edition_id, %s
+            FROM claims
+            WHERE id = %s
             RETURNING id, from_claim_id, to_claim_id, relation_type, created_at
             """,
-            (from_claim_id, to_claim_id, relation_type),
+            (from_claim_id, to_claim_id, relation_type, from_claim_id),
         )
         return ClaimRelation.from_row(await cursor.fetchone())
 

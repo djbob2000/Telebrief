@@ -154,9 +154,7 @@ async def _apply_non_transactional(
         # Restore the caller's session search_path rather than resetting:
         # unqualified queries issued after migrate() must keep resolving the
         # way they did before.
-        await conn.execute(
-            sql.SQL("SET search_path TO {}").format(sql.Literal(previous_search_path))
-        )
+        await conn.execute("SELECT set_config('search_path', %s, false)", (previous_search_path,))
     finally:
         await conn.set_autocommit(previous_autocommit)
 

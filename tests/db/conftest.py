@@ -1,90 +1,107 @@
-"""Fixtures for PostgreSQL-backed tests in tests/db.
-
-Tests here are gated on TELEBRIEF_TEST_DATABASE_URL: when the variable is not
-set, every test collected under tests/db is skipped instead of failing.
-"""
+"""Fixtures for database-level invariant tests in tests/db."""
 
 from __future__ import annotations
 
+import asyncio
 import os
-import uuid
-from pathlib import Path
+import pathlib
 
 import psycopg
 import pytest
-from psycopg import sql
+from pgvector.psycopg import register_vector_async
 
 from src.config_loader import DatabaseConfig
 
-
-def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Skip tests in this directory unless a test database is configured."""
-    del config
-    gate = Path(__file__).parent.resolve()
-    for item in items:
-        if item.path.resolve().is_relative_to(gate):
-            item.add_marker(
-                pytest.mark.skipif(
-                    "TELEBRIEF_TEST_DATABASE_URL" not in os.environ,
-                    reason="TELEBRIEF_TEST_DATABASE_URL is not set",
-                )
-            )
+_TRUNCATE_TABLES = """
+    TRUNCATE verification_assessments, verification_policy_versions,
+             evidence_cluster_members, evidence_clusters,
+             evidence_assessment_run_claims, evidence_assessment_runs,
+             evidence_assessment_policy_versions,
+             story_relation_proposals, story_match_decisions,
+             story_matching_candidates, story_matching_runs,
+             story_matching_policy_versions,
+             story_relations, story_state_events, story_claims,
+             story_revision_embeddings, story_revisions, stories,
+             claim_embeddings,
+             place_resolution_results, place_resolution_runs,
+             place_resolution_policy_versions,
+             claim_entities, claim_place_mentions, place_aliases, places,
+             claim_state_events, claim_relations, claims,
+             claim_extraction_runs, claim_extraction_policy_versions,
+             processing_attempts,
+             vision_observations, vision_analysis_runs,
+             vision_policy_versions,
+             edition_relevance_decisions, relevance_policy_versions,
+             source_items, source_item_revisions, source_assets,
+             source_item_state_events, collection_checkpoints,
+             collection_runs, source_editions, sources, editions
+    RESTART IDENTITY CASCADE
+"""
 
 
 @pytest.fixture(scope="session")
 def procrastinate_schema_ready() -> None:
-    """Ensure the official Procrastinate tables exist in the test database.
-
-    Idempotent: creates the configured namespace if needed (identifier-quoted
-    via src.jobs.admin) and applies the official schema through procrastinate's
-    own library API only when its tables are missing. Runs once per session,
-    before any test that requests it.
-    """
-    import asyncio
-
+    """Ensure the official Procrastinate tables exist in the test database."""
     from src.jobs.admin import ensure_official_tables
 
     url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
     asyncio.run(ensure_official_tables(url, "procrastinate"))
 
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
+MIGRATIONS_DIR = REPO_ROOT / "migrations"
+
+
 @pytest.fixture
 async def pg_conn(database_config: DatabaseConfig):
-    """Async connection to the test database.
+    """Autocommit connection ensuring standard migrations are applied."""
+    conn = await psycopg.AsyncConnection.connect(database_config.url, autocommit=True)
+    await conn.execute("DELETE FROM telebrief_schema_migrations WHERE version >= 900000")
+    from src.db.migrations import migrate
 
-    Not autocommit: anything a test leaves uncommitted (for example the
-    TRUNCATE in the compatibility test) is rolled back on teardown so the
-    persistent database keeps its applied migration ledger.
-    """
-    conn: psycopg.AsyncConnection = await psycopg.AsyncConnection.connect(database_config.url)
+    await migrate(conn, MIGRATIONS_DIR)
     try:
         yield conn
     finally:
-        await conn.rollback()
+        await conn.execute("DELETE FROM telebrief_schema_migrations WHERE version >= 900000")
+        await migrate(conn, MIGRATIONS_DIR)
         await conn.close()
 
 
 @pytest.fixture
 async def isolated_pg_conn(database_config: DatabaseConfig):
-    """Autocommit connection scoped to a disposable schema with its own ledger.
-
-    migrate() derives the target schema from search_path, so pointing this
-    connection at a throwaway schema gives migration-probe tests an isolated
-    telebrief_schema_migrations table that never collides with the real one.
-    """
-    schema_name = f"telebrief_test_{uuid.uuid4().hex[:10]}"
-    conn: psycopg.AsyncConnection = await psycopg.AsyncConnection.connect(
-        database_config.url, autocommit=True
-    )
-    await conn.execute(
-        sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema_name))
-    )
-    await conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema_name)))
-    await conn.execute(sql.SQL("SET search_path TO {}").format(sql.Identifier(schema_name)))
+    """Isolated autocommit connection for individual test probes."""
+    conn = await psycopg.AsyncConnection.connect(database_config.url, autocommit=True)
+    await conn.execute("CREATE EXTENSION IF NOT EXISTS vector CASCADE")
+    await conn.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm CASCADE")
+    await register_vector_async(conn)
     try:
+        await conn.execute(
+            "DROP TABLE IF EXISTS rollback_probe_ok, nontransactional_probe, order_probe_900003, order_probe_900004 CASCADE"
+        )
+        await conn.execute("TRUNCATE telebrief_schema_migrations")
         yield conn
     finally:
         await conn.execute(
-            sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema_name))
+            "DROP TABLE IF EXISTS rollback_probe_ok, nontransactional_probe, order_probe_900003, order_probe_900004 CASCADE"
         )
+        await conn.execute("TRUNCATE telebrief_schema_migrations")
+        from src.db.migrations import migrate
+
+        await migrate(conn, MIGRATIONS_DIR)
+        await conn.close()
+
+
+@pytest.fixture
+async def conn(database_config: DatabaseConfig):
+    """Autocommit connection to a clean slice of the test database."""
+    conn: psycopg.AsyncConnection = await psycopg.AsyncConnection.connect(
+        database_config.url, autocommit=True
+    )
+    await register_vector_async(conn)
+    try:
+        await conn.execute(_TRUNCATE_TABLES)
+        yield conn
+    finally:
+        await conn.execute(_TRUNCATE_TABLES)
         await conn.close()

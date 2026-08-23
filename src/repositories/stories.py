@@ -76,11 +76,13 @@ class StoryRepository:
         """
         await conn.execute(
             """
-            INSERT INTO story_claims (story_id, claim_id, attached_at)
-            VALUES (%s, %s, %s)
+            INSERT INTO story_claims (story_id, claim_id, edition_id, attached_at)
+            SELECT s.id, %s, s.edition_id, %s
+            FROM stories s
+            WHERE s.id = %s
             ON CONFLICT DO NOTHING
             """,
-            (story_id, claim_id, attached_at),
+            (claim_id, attached_at, story_id),
         )
 
     async def list_attached_claim_ids(
