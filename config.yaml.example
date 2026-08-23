@@ -177,7 +177,7 @@ settings:
 # database:
 #   enabled: false              # set true once DATABASE_URL is provisioned
 #   min_pool_size: 1
-#   max_pool_size: 4
+#   max_pool_size: 3
 #   domain_schema: "public"
 #   procrastinate_schema: "procrastinate"
 

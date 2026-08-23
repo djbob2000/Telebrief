@@ -124,7 +124,7 @@ class DatabaseConfig:
         default="", repr=False
     )  # from DATABASE_URL env var; repr=False prevents credential exposure in logs
     min_pool_size: int = 1
-    max_pool_size: int = 4
+    max_pool_size: int = 3
     domain_schema: str = "public"
     procrastinate_schema: str = "procrastinate"
 
@@ -881,7 +881,7 @@ def _parse_database_config(yaml_config: dict, *, require_enabled: bool = False) 
         raise ValueError(f"database.enabled must be a bool, got {type(enabled).__name__}")
 
     min_pool_size = raw.get("min_pool_size", 1)
-    max_pool_size = raw.get("max_pool_size", 4)
+    max_pool_size = raw.get("max_pool_size", 3)
     if isinstance(min_pool_size, bool) or not isinstance(min_pool_size, int):
         raise ValueError(f"database.min_pool_size must be an int, got {min_pool_size!r}")
     if isinstance(max_pool_size, bool) or not isinstance(max_pool_size, int):

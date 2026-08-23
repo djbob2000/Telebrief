@@ -9,7 +9,7 @@ import procrastinate
 from src.config_loader import DatabaseConfig, load_database_config
 
 PROCASTINATE_POOL_MIN_SIZE = 1
-PROCASTINATE_POOL_MAX_SIZE = 2
+PROCASTINATE_POOL_MAX_SIZE = 1
 JOB_IMPORT_PATHS = (
     "src.jobs.maintenance",
     "src.jobs.ingestion",
