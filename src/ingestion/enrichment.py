@@ -116,6 +116,12 @@ class EnrichmentDispatcher:
         from src.jobs.facebook import refresh_facebook_comments
 
         if request.kind == "facebook_comments":
+            from src.providers.facebook.runtime_policy import is_facebook_enabled
+
+            if not is_facebook_enabled():
+                logger.info("defer: facebook disabled; skipping facebook_comments enrichment")
+                return None
+
             raw_post_id = request.metadata.get("post_item_id")
             post_item_id = int(raw_post_id) if isinstance(raw_post_id, (int, str)) else 0
             hint_raw = request.metadata.get("auth_profile")
@@ -156,6 +162,11 @@ class EnrichmentDispatcher:
 
 def plan_facebook_comments(decision: Any, revision: Any) -> EnrichmentRequest | None:
     """Facebook rule: relevant posts schedule comments enrichment."""
+    from src.providers.facebook.runtime_policy import is_facebook_enabled
+
+    if not is_facebook_enabled():
+        return None
+
     if getattr(decision, "status", None) != "relevant":
         return None
 
@@ -188,6 +199,11 @@ async def plan_facebook_pre_publish(
     conn: psycopg.AsyncConnection, source_id: int, limit: int = 10
 ) -> list[EnrichmentRequest]:
     """Facebook pre-publish rule: deep comments scan for recent active posts."""
+    from src.providers.facebook.runtime_policy import is_facebook_enabled
+
+    if not is_facebook_enabled():
+        return []
+
     from src.repositories.facebook import FacebookRepository
     from src.repositories.sources import SourceRepository
 

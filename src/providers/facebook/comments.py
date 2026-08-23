@@ -202,6 +202,18 @@ class FacebookCommentCollector:
         mode: str = "incremental",
     ) -> CommentCollectionBatch:
         """Scan comments using an active Playwright page."""
+        from src.providers.facebook.runtime_policy import is_facebook_enabled
+
+        if not is_facebook_enabled():
+            return CommentCollectionBatch(
+                source_id=source.id,
+                post_item_id=post_item_id,
+                requested_sort="all" if mode == "deep" else "newest",
+                effective_sort="all" if mode == "deep" else "newest",
+                completeness="complete",
+                stop_reason="disabled",
+            )
+
         cfg = limits or self.comments_config
         started_at = dt.datetime.now(dt.timezone.utc)
         start_mono = time.monotonic()

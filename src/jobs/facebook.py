@@ -39,12 +39,18 @@ async def refresh_facebook_comments(
     source_item_revision_id: int, post_item_id: int, mode: str = "incremental"
 ) -> None:
     """Scan and persist comments and replies for a Facebook post."""
+    from src.providers.facebook.runtime_policy import is_facebook_enabled
+
+    cfg = load_config()
+    if not is_facebook_enabled(cfg):
+        logger.info("refresh_facebook_comments: facebook integration disabled; skipping")
+        return
+
     runtime = get_runtime()
     fb_repo = FacebookRepository()
     ingestion_repo = IngestionRepository()
     ingestion_service = IngestionService(uow=runtime.uow, repo=ingestion_repo)
 
-    cfg = load_config()
     comments_cfg = getattr(cfg.facebook, "comments", None)
     auth_root = getattr(cfg.facebook, "auth_root", "/var/lib/telebrief/auth")
 
@@ -141,6 +147,13 @@ async def refresh_facebook_comments(
 )
 async def dispatch_facebook_deep_sweep(timestamp: int) -> None:
     """Periodic maintenance sweep scheduling deep comment refresh on active posts."""
+    from src.providers.facebook.runtime_policy import is_facebook_enabled
+
+    cfg = load_config()
+    if not is_facebook_enabled(cfg):
+        logger.info("dispatch_facebook_deep_sweep: facebook integration disabled; skipping")
+        return
+
     from src.ingestion.enrichment import EnrichmentRequest, get_enrichment_dispatcher
 
     runtime = get_runtime()

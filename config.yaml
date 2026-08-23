@@ -144,3 +144,6 @@ settings:
 
 database:
   enabled: true
+
+facebook:
+  enabled: false

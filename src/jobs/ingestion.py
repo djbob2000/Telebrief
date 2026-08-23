@@ -132,6 +132,12 @@ async def enqueue_source_scan(
     if source is None:
         logger.warning(f"enqueue_source_scan: unknown source {source_id}; skipping")
         return None
+    if source.platform == "facebook":
+        from src.providers.facebook.runtime_policy import is_facebook_enabled
+
+        if not is_facebook_enabled():
+            logger.info("enqueue_source_scan: facebook disabled; skipping source %s", source_id)
+            return None
     try:
         return (
             await app.tasks[SCAN_SOURCE_TASK_NAME]
@@ -164,6 +170,13 @@ async def scan_source(source_id: int, trigger: str) -> None:
     if source is None or not source.enabled:
         logger.warning(f"scan_source: source {source_id} missing or disabled; skipping")
         return
+
+    if source.platform == "facebook":
+        from src.providers.facebook.runtime_policy import is_facebook_enabled
+
+        if not is_facebook_enabled():
+            logger.info("scan_source: facebook disabled; skipping source %s", source_id)
+            return
 
     # Network work stays outside every domain transaction.
     collector = collector_registry.select(source.platform)

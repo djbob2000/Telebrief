@@ -383,15 +383,21 @@ def _build_facebook_collector() -> Collector:
     """Build the Facebook collector from configuration; imports stay lazy."""
     from src.config_loader import load_config
     from src.providers.facebook.collector import FacebookCollector
+    from src.providers.facebook.runtime_policy import is_facebook_enabled
 
     cfg = load_config()
+    if not is_facebook_enabled(cfg):
+        raise LookupError("facebook integration is disabled by facebook.enabled=false")
     auth_root = getattr(cfg.facebook, "auth_root", "/var/lib/telebrief/auth")
     return FacebookCollector(auth_root=auth_root)
 
 
-def build_default_collector_registry() -> CollectorRegistry:
-    """Production wiring: registers Telegram and Facebook collectors."""
+def build_default_collector_registry(config: Config | None = None) -> CollectorRegistry:
+    """Production wiring: registers Telegram and (if enabled) Facebook collectors."""
+    from src.providers.facebook.runtime_policy import is_facebook_enabled
+
     registry = CollectorRegistry()
     registry.register(PLATFORM_TELEGRAM, _build_telegram_collector)
-    registry.register("facebook", _build_facebook_collector)
+    if is_facebook_enabled(config):
+        registry.register("facebook", _build_facebook_collector)
     return registry

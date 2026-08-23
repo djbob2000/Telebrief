@@ -158,6 +158,19 @@ class FacebookCollector(Collector):
     ) -> CollectionBatch:
         """Scan posts from the explicit source URL."""
         started_at = dt.datetime.now(dt.timezone.utc)
+        from src.providers.facebook.runtime_policy import is_facebook_enabled
+
+        if not is_facebook_enabled():
+            return CollectionBatch(
+                outcome=CollectionOutcome.SUCCESS,
+                items=(),
+                assets=(),
+                state_events=(),
+                adapter_state=checkpoint.adapter_state if checkpoint else {},
+                started_at=started_at,
+                completed_at=dt.datetime.now(dt.timezone.utc),
+            )
+
         if not source.url:
             return CollectionBatch(
                 outcome=CollectionOutcome.PERMANENT,

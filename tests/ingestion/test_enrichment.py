@@ -45,8 +45,9 @@ class TestEnrichmentPlanner:
         planner = EnrichmentPlanner()
         planner.register_rule(plan_facebook_comments)
 
-        reqs = planner.requests_for(decision, revision)
-        assert reqs == []
+        with patch("src.providers.facebook.runtime_policy.is_facebook_enabled", return_value=True):
+            reqs = planner.requests_for(decision, revision)
+            assert reqs == []
 
     def test_relevant_facebook_post_produces_comments_enrichment_request(self):
         decision = _make_relevance_decision(status="relevant")
@@ -55,13 +56,25 @@ class TestEnrichmentPlanner:
         planner = EnrichmentPlanner()
         planner.register_rule(plan_facebook_comments)
 
-        reqs = planner.requests_for(decision, revision)
-        assert len(reqs) == 1
-        req = reqs[0]
-        assert req.kind == "facebook_comments"
-        assert req.source_item_revision_id == 100
-        assert req.mode == "incremental"
-        assert req.metadata["post_item_id"] == 77
+        with patch("src.providers.facebook.runtime_policy.is_facebook_enabled", return_value=True):
+            reqs = planner.requests_for(decision, revision)
+            assert len(reqs) == 1
+            req = reqs[0]
+            assert req.kind == "facebook_comments"
+            assert req.source_item_revision_id == 100
+            assert req.mode == "incremental"
+            assert req.metadata["post_item_id"] == 77
+
+    def test_disabled_facebook_produces_no_enrichment_request(self):
+        decision = _make_relevance_decision(status="relevant")
+        revision = _make_revision(platform="facebook", kind="facebook_post", source_item_id=77)
+
+        planner = EnrichmentPlanner()
+        planner.register_rule(plan_facebook_comments)
+
+        with patch("src.providers.facebook.runtime_policy.is_facebook_enabled", return_value=False):
+            reqs = planner.requests_for(decision, revision)
+            assert reqs == []
 
     def test_relevant_telegram_post_produces_no_facebook_enrichment_request(self):
         decision = _make_relevance_decision(status="relevant")
@@ -70,8 +83,9 @@ class TestEnrichmentPlanner:
         planner = EnrichmentPlanner()
         planner.register_rule(plan_facebook_comments)
 
-        reqs = planner.requests_for(decision, revision)
-        assert reqs == []
+        with patch("src.providers.facebook.runtime_policy.is_facebook_enabled", return_value=True):
+            reqs = planner.requests_for(decision, revision)
+            assert reqs == []
 
 
 @pytest.mark.postgres
@@ -89,22 +103,40 @@ class TestEnrichmentDispatcherIntegration:
             metadata={"post_item_id": 55, "auth_profile": "primary"},
         )
 
-        with patch("src.jobs.facebook.refresh_facebook_comments.configure") as mock_conf:
-            mock_task = MagicMock()
-            mock_task.defer_async = AsyncMock(return_value=12345)
-            mock_conf.return_value = mock_task
+        with patch("src.providers.facebook.runtime_policy.is_facebook_enabled", return_value=True):
+            with patch("src.jobs.facebook.refresh_facebook_comments.configure") as mock_conf:
+                mock_task = MagicMock()
+                mock_task.defer_async = AsyncMock(return_value=12345)
+                mock_conf.return_value = mock_task
 
-            job_id = await dispatcher.defer(conn, request, priority=5)
+                job_id = await dispatcher.defer(conn, request, priority=5)
 
-            assert job_id == 12345
-            mock_conf.assert_called_once_with(
-                connection=conn,
-                lock="facebook-auth-profile:primary",
-                queueing_lock="facebook-comments:55:incremental",
-                priority=5,
-            )
-            mock_task.defer_async.assert_called_once_with(
-                source_item_revision_id=100,
-                post_item_id=55,
-                mode="incremental",
-            )
+                assert job_id == 12345
+                mock_conf.assert_called_once_with(
+                    connection=conn,
+                    lock="facebook-auth-profile:primary",
+                    queueing_lock="facebook-comments:55:incremental",
+                    priority=5,
+                )
+                mock_task.defer_async.assert_awaited_once_with(
+                    source_item_revision_id=100,
+                    post_item_id=55,
+                    mode="incremental",
+                )
+
+    async def test_defer_facebook_comments_bypasses_when_disabled(
+        self, conn: psycopg.AsyncConnection, jobs_import_env: str
+    ):
+        dispatcher = get_enrichment_dispatcher()
+        request = EnrichmentRequest(
+            kind="facebook_comments",
+            source_item_revision_id=100,
+            mode="incremental",
+            metadata={"post_item_id": 55, "auth_profile": "primary"},
+        )
+
+        with patch("src.providers.facebook.runtime_policy.is_facebook_enabled", return_value=False):
+            with patch("src.jobs.facebook.refresh_facebook_comments.configure") as mock_conf:
+                job_id = await dispatcher.defer(conn, request, priority=5)
+                assert job_id is None
+                mock_conf.assert_not_called()
