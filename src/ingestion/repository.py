@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import psycopg
 from psycopg.types.json import Jsonb
@@ -24,6 +25,9 @@ from src.ingestion.models import (
     ObservedItem,
     ObservedStateEvent,
 )
+
+if TYPE_CHECKING:
+    from src.processing.vision import AssetDescriptor
 
 
 class IngestionRepository:
@@ -208,6 +212,40 @@ class IngestionRepository:
         )
         rows = await cursor.fetchall()
         return [{"kind": row[0], "metadata": row[1]} for row in rows]
+
+    async def list_asset_descriptors(
+        self, conn: psycopg.AsyncConnection, revision_id: int
+    ) -> list["AssetDescriptor"]:
+        """Vision-input asset descriptors (ids + size/URL facts) in id order.
+
+        No pixel bytes are loaded: Plan 2 ingestion stores metadata and the
+        provider URL only, so vision operates on descriptors until a media
+        downloader exists.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT id, kind, external_url, mime_type, width, height, duration
+            FROM source_assets
+            WHERE source_item_revision_id = %s
+            ORDER BY id
+            """,
+            (revision_id,),
+        )
+        rows = await cursor.fetchall()
+        from src.processing.vision import AssetDescriptor
+
+        return [
+            AssetDescriptor(
+                asset_id=row[0],
+                kind=row[1],
+                external_url=row[2],
+                mime_type=row[3],
+                width=row[4],
+                height=row[5],
+                duration=row[6],
+            )
+            for row in rows
+        ]
 
     async def get_edition_name(self, conn: psycopg.AsyncConnection, edition_id: int) -> str | None:
         """Display name of one edition (relevance prompt context)."""

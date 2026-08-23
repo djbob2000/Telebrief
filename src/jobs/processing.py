@@ -24,21 +24,31 @@ import logging
 import procrastinate
 
 from src.ai_providers import create_provider
+from src.ingestion.repository import IngestionRepository
 from src.jobs.app import procrastinate_app
 from src.processing.relevance import (
     ProviderUnavailableError,
     RelevanceService,
     TransientProcessingError,
 )
+from src.processing.vision import (
+    MetadataVisionProvider,
+    VisionProviderUnavailable,
+    VisionService,
+    should_run_vision,
+)
 from src.repositories.relevance import (
     EditionRelevanceDecisionRepository,
     RelevancePolicyVersionRepository,
+    VisionAnalysisRunRepository,
+    VisionPolicyRepository,
 )
 from src.runtime import get_runtime
 
 logger = logging.getLogger(__name__)
 
 EVALUATE_RELEVANCE_TASK_NAME = "evaluate_relevance"
+ANALYZE_VISION_TASK_NAME = "analyze_vision"
 PROCESSING_QUEUE = "processing"
 
 BACKFILL_BATCH_SIZE = 500
@@ -46,6 +56,13 @@ BACKFILL_BATCH_SIZE = 500
 # Total executions = initial attempt + 2 retries; waits mirror the collection
 # strategy: 30s after the first failure, then 90s.
 RELEVANCE_RETRY_STRATEGY = procrastinate.RetryStrategy(
+    max_attempts=3,
+    wait=30,
+    linear_wait=60,
+    retry_exceptions=(TransientProcessingError,),
+)
+
+VISION_RETRY_STRATEGY = procrastinate.RetryStrategy(
     max_attempts=3,
     wait=30,
     linear_wait=60,
@@ -78,6 +95,26 @@ def build_relevance_service() -> RelevanceService:
         model=config.settings.ai_model,
         provider_name=config.settings.ai_provider,
         reasoning_effort=config.settings.reasoning_effort,
+        vision_mode=config.settings.vision_mode,
+    )
+
+
+def build_vision_service() -> VisionService:
+    """Assemble the bounded vision service from the real config.
+
+    The shipped provider is the offline descriptor classifier: Plan 2
+    ingestion stores no pixel bytes, so until a media downloader plus a
+    pixel-capable adapter exist, runs derive observations from asset
+    descriptors (and concrete adapters may report assets unavailable).
+    """
+    from src.config_loader import load_config
+
+    config = load_config()
+    return VisionService(
+        uow=get_runtime().uow,
+        provider=MetadataVisionProvider(),
+        relevance_service=build_relevance_service(),
+        analyze_timeout=float(config.settings.api_timeout),
     )
 
 
@@ -99,6 +136,34 @@ async def evaluate_relevance(
             raise TransientProcessingError("relevance provider unavailable") from None
         return await service.persist_uncertain(
             source_item_revision_id, edition_id, policy_id, reason="provider_unavailable"
+        )
+
+
+@procrastinate_app.task(
+    name=ANALYZE_VISION_TASK_NAME,
+    queue=PROCESSING_QUEUE,
+    retry=VISION_RETRY_STRATEGY,
+    pass_context=True,
+)
+async def analyze_vision(
+    context, source_item_revision_id: int, relevance_decision_id: int, policy_id: int
+):
+    """Run one bounded vision analysis and land its fail-open handoff.
+
+    Same retry math as relevance: only VisionProviderUnavailable (mapped to
+    TransientProcessingError) retries; the final failed attempt completes the
+    run as unavailable and returns the handoff — ready_for_claims stays True
+    for text-supported relevant decisions, while needs_media items without
+    observations remain unresolved (never a false irrelevant).
+    """
+    service = build_vision_service()
+    try:
+        return await service.run(source_item_revision_id, relevance_decision_id, policy_id)
+    except VisionProviderUnavailable:
+        if context.job.attempts < 2:
+            raise TransientProcessingError("vision provider unavailable") from None
+        return await service.finalize_provider_failure(
+            source_item_revision_id, relevance_decision_id, policy_id
         )
 
 
@@ -142,6 +207,64 @@ async def backfill_relevance(
         policy_id,
     )
     return len(gap_ids)
+
+
+async def backfill_vision(
+    edition_id: int,
+    vision_policy_id: int,
+    after_decision_id: int | None = None,
+    *,
+    batch_size: int = BACKFILL_BATCH_SIZE,
+) -> int:
+    """Queue analyze_vision for decisions that still owe this exact policy a run.
+
+    Bounded slice (batch_size + optional id cursor); safe to re-run since the
+    gap query targets only latest-per-revision decisions without a run for the
+    exact vision policy, and duplicate jobs converge on succeeded-run replay.
+    ``needs_media`` always qualifies (with media); ``relevant`` joins only in
+    full mode, and should_run_vision re-gates each candidate before deferral.
+    """
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        policy = await VisionPolicyRepository().get(conn, vision_policy_id)
+        if policy is None or policy.edition_id != edition_id:
+            raise ValueError(
+                f"vision policy {vision_policy_id} does not belong to edition {edition_id}"
+            )
+        statuses = ["needs_media"] + (["relevant"] if policy.mode == "full" else [])
+        candidates = await VisionAnalysisRunRepository().list_decisions_missing_run(
+            conn,
+            edition_id=edition_id,
+            policy_id=vision_policy_id,
+            statuses=statuses,
+            after_decision_id=after_decision_id,
+            limit=batch_size,
+        )
+        ingestion_repo = IngestionRepository()
+        deferred = 0
+        for decision in candidates:
+            revision = await ingestion_repo.get_revision(conn, decision.source_item_revision_id)
+            assets = await ingestion_repo.list_asset_summaries(
+                conn, decision.source_item_revision_id
+            )
+            if revision is None or not should_run_vision(
+                decision, revision, assets, mode=policy.mode
+            ):
+                continue
+            await analyze_vision.configure(connection=conn).defer_async(
+                source_item_revision_id=decision.source_item_revision_id,
+                relevance_decision_id=decision.id,
+                policy_id=vision_policy_id,
+            )
+            deferred += 1
+    logger.info(
+        "backfill_vision queued %d decisions for edition=%s vision_policy=%s mode=%s",
+        deferred,
+        edition_id,
+        vision_policy_id,
+        policy.mode,
+    )
+    return deferred
 
 
 def _decisions() -> EditionRelevanceDecisionRepository:

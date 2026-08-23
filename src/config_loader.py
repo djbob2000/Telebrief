@@ -169,6 +169,11 @@ class Settings:
     # invoked at publication time. Requires database.enabled=true.
     persistent_ingestion: bool = False
     reasoning_effort: str | None = None
+    # Plan 3 Task 3: bounded Vision analysis mode for media-dependent
+    # relevance. "off" never spends vision calls, "relevance_only" runs them
+    # only for needs_media decisions, "full" additionally enriches already
+    # relevant revisions with eligible media ahead of Claim extraction.
+    vision_mode: str = "relevance_only"
     article: ArticleConfig = field(default_factory=ArticleConfig)
 
 
@@ -229,6 +234,7 @@ class Config:
 
 SUPPORTED_LANGUAGES = ("English", "Russian", "Spanish", "German", "French")
 SOURCE_TYPES = ("news", "community", "official", "classifieds", "mixed")
+VISION_MODES = ("off", "relevance_only", "full")
 
 
 def _normalize_source_type(value: object, label: str, *, allow_none: bool = False) -> str | None:
@@ -1100,6 +1106,11 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         raw_global_filters if raw_global_filters is not None else [],
         "settings.filters",
     )
+    vision_mode = settings_dict.get("vision_mode", "relevance_only")
+    if not isinstance(vision_mode, str) or vision_mode not in VISION_MODES:
+        raise ValueError(
+            f"settings.vision_mode must be one of {', '.join(VISION_MODES)}, got {vision_mode!r}"
+        )
 
     settings = Settings(
         schedule_time=settings_dict.get("schedule_time", "08:00"),
@@ -1131,6 +1142,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
             if settings_dict.get("reasoning_effort") is not None
             else None
         ),
+        vision_mode=vision_mode,
         article=_parse_article_config(settings_dict),
     )
 

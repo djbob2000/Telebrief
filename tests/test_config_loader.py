@@ -1841,3 +1841,32 @@ def test_persistent_ingestion_accepted_with_database_enabled(monkeypatch, tmp_pa
     with patch("src.config_loader.load_dotenv"):
         config = load_config(path=path)
     assert config.settings.persistent_ingestion is True
+
+
+# --- settings.vision_mode (Plan 3 Task 3: bounded Vision analysis) ---
+
+
+@pytest.mark.unit
+def test_vision_mode_defaults_to_relevance_only(monkeypatch, tmp_path, mock_env_vars):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=_write_minimal_config(tmp_path))
+    assert config.settings.vision_mode == "relevance_only"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["off", "relevance_only", "full"])
+def test_vision_mode_accepts_all_supported_modes(monkeypatch, tmp_path, mock_env_vars, mode):
+    path = _write_config(tmp_path, {"settings": {"target_user_id": 123456789, "vision_mode": mode}})
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=path)
+    assert config.settings.vision_mode == mode
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("mode", ["sometimes", "", 42, None])
+def test_vision_mode_rejects_unknown_values(monkeypatch, tmp_path, mock_env_vars, mode):
+    path = _write_config(tmp_path, {"settings": {"target_user_id": 123456789, "vision_mode": mode}})
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="vision_mode"):
+            load_config(path=path)

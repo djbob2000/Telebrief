@@ -52,6 +52,7 @@ from src.ai_providers import (
 from src.db.uow import DatabaseUnitOfWork
 from src.domain.claims import EditionRelevanceDecision, RelevancePolicyVersion
 from src.ingestion.repository import IngestionRepository
+from src.processing.vision import VisionPolicyService, should_run_vision
 from src.repositories.relevance import (
     EditionRelevanceDecisionRepository,
     RelevancePolicyVersionRepository,
@@ -256,6 +257,8 @@ class RelevanceService:
         ingestion_repo: IngestionRepository | None = None,
         policy_repo: RelevancePolicyVersionRepository | None = None,
         decision_repo: EditionRelevanceDecisionRepository | None = None,
+        vision_mode: str | None = None,
+        vision_policy_service: VisionPolicyService | None = None,
     ) -> None:
         self.uow = uow
         # Uniform cascade semantics even for single-slot providers.
@@ -267,6 +270,11 @@ class RelevanceService:
         self._ingestion_repo = ingestion_repo or IngestionRepository()
         self._policy_repo = policy_repo or RelevancePolicyVersionRepository()
         self._decision_repo = decision_repo or EditionRelevanceDecisionRepository()
+        # Vision scheduling is opt-in at the wiring layer: None disables it
+        # entirely (no policy rows, no deferrals); a mode string enables the
+        # atomic post-decision defer inside _persist_result.
+        self._vision_mode = vision_mode
+        self._vision_policy_service = vision_policy_service or VisionPolicyService()
 
     async def evaluate(
         self, source_item_revision_id: int, edition_id: int, policy_id: int
@@ -293,6 +301,7 @@ class RelevanceService:
             edition_id=edition_id,
             policy=policy,
             result=result,
+            material=material,
         )
 
     async def persist_uncertain(
@@ -310,6 +319,7 @@ class RelevanceService:
             edition_id=edition_id,
             policy=policy,
             result=RelevanceResult(status="uncertain", confidence=None, reason=reason),
+            material=None,
         )
 
     async def decide_revision(
@@ -386,11 +396,12 @@ class RelevanceService:
         edition_id: int,
         policy: RelevancePolicyVersion,
         result: RelevanceResult,
+        material: RevisionMaterial | None = None,
     ) -> EditionRelevanceDecision:
         async with self.uow.transaction() as conn:
             try:
                 async with conn.transaction():
-                    return await self._decision_repo.insert_root(
+                    decision = await self._decision_repo.insert_root(
                         conn,
                         source_item_revision_id=source_item_revision_id,
                         edition_id=edition_id,
@@ -401,9 +412,12 @@ class RelevanceService:
                         provider=self.provider_name,
                         model=self.model,
                     )
+                    await self._maybe_defer_vision(conn, decision=decision, material=material)
+                    return decision
             except psycopg.errors.UniqueViolation:
                 # Duplicate execution: the canonical root row already exists
                 # and is immutable, so return it instead of the fresh verdict.
+                # Vision stays deferred by the execution that won the insert.
                 existing = await self._decision_repo.get_root(
                     conn,
                     source_item_revision_id=source_item_revision_id,
@@ -413,6 +427,133 @@ class RelevanceService:
                 if existing is None:
                     raise
                 return existing
+
+    async def _maybe_defer_vision(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        decision: EditionRelevanceDecision,
+        material: RevisionMaterial | None,
+    ) -> None:
+        """Atomically schedule bounded vision for media-dependent decisions.
+
+        Runs inside the SAME transaction that persisted the fresh decision, so
+        a crash can never leave a decided item without its media follow-up.
+        Disabled entirely unless the wiring supplied a vision mode; duplicate
+        executions converge before reaching this point.
+        """
+        if self._vision_mode is None or material is None:
+            return
+        assets = list(material.assets) if material.assets else []
+        if not should_run_vision(decision, material, assets, mode=self._vision_mode):
+            return
+        vision_policy = await self._vision_policy_service.ensure_current(
+            conn, edition_id=decision.edition_id, mode=self._vision_mode
+        )
+        # Lazy on purpose: src.jobs.processing imports this module at top level.
+        from src.jobs.processing import analyze_vision
+
+        await analyze_vision.configure(connection=conn).defer_async(
+            source_item_revision_id=decision.source_item_revision_id,
+            relevance_decision_id=decision.id,
+            policy_id=vision_policy.id,
+        )
+        logger.info(
+            "deferred analyze_vision revision=%s decision=%s vision_policy=%s",
+            decision.source_item_revision_id,
+            decision.id,
+            vision_policy.id,
+        )
+
+    async def decide_with_vision(
+        self,
+        conn: psycopg.AsyncConnection,
+        decision: EditionRelevanceDecision,
+        observations: Any,
+    ) -> EditionRelevanceDecision:
+        """Post-vision child verdict consuming source text + observations.
+
+        Deliberately executes inside the caller's transaction (unlike the main
+        evaluate path): run completion, observation rows and the child decision
+        must land atomically, and the consultation payload/output here are
+        strictly bounded summaries. The child is an immutable new row pointing
+        at ``parent_decision_id``; the parent is never modified.
+        """
+        revision = await self._ingestion_repo.get_revision(conn, decision.source_item_revision_id)
+        if revision is None:
+            raise ValueError(
+                f"source item revision {decision.source_item_revision_id} does not exist"
+            )
+        edition_name = await self._ingestion_repo.get_edition_name(conn, decision.edition_id)
+        if edition_name is None:
+            raise ValueError(f"edition {decision.edition_id} does not exist")
+        policy = await self._policy_repo.get(conn, decision.relevance_policy_id)
+        if policy is None:
+            raise ValueError(f"relevance policy {decision.relevance_policy_id} does not exist")
+
+        summaries = [
+            {"kind": obs.kind, "text": obs.text, "metadata": getattr(obs, "metadata", {})}
+            for obs in observations
+        ]
+        response = await self._complete(
+            messages=[
+                {"role": "system", "content": self._vision_followup_system_prompt(edition_name)},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "text": (revision.text_content or "").strip() or _NO_TEXT_PLACEHOLDER,
+                            "metadata": revision.payload,
+                            "vision_observations": summaries,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        indent=2,
+                    ),
+                },
+            ]
+        )
+        result = RelevanceResult.from_dict(_parse_json_object(response))
+        logger.info(
+            "post-vision verdict revision=%s edition=%s parent=%s status=%s",
+            decision.source_item_revision_id,
+            decision.edition_id,
+            decision.id,
+            result.status,
+        )
+        return await self._decision_repo.insert_child(
+            conn,
+            source_item_revision_id=decision.source_item_revision_id,
+            edition_id=decision.edition_id,
+            relevance_policy_id=decision.relevance_policy_id,
+            status=result.status,
+            confidence=result.confidence,
+            reason=result.reason,
+            provider=self.provider_name,
+            model=self.model,
+            parent_decision_id=decision.id,
+        )
+
+    def _vision_followup_system_prompt(self, edition: str) -> str:
+        return (
+            f'You are the local-news relevance editor for the "{edition}" edition. '
+            "You previously asked to see the attached media of one source post. "
+            "Bounded machine observations of that media are now provided; they "
+            "are derived evidence, not a replacement for the source text.\n\n"
+            "Rules:\n"
+            "- Judge only the source text, metadata and observations you are "
+            "given; never invent additional evidence.\n"
+            "- Observations may be incomplete or uncertain: treat them as "
+            "hints, not proof.\n"
+            "- If the observations still leave the decisive question open, "
+            "answer uncertain rather than guessing.\n\n"
+            "Return EXACTLY one JSON object and nothing else:\n"
+            '{"status": "<relevant|irrelevant|uncertain|needs_media>", '
+            '"confidence": <number 0.0-1.0 or null>, "reason": "<short explanation>"}\n\n'
+            '- "relevant"/"irrelevant" carry the same meanings as before; '
+            '"uncertain" when the material still cannot settle it; "needs_media" '
+            "only if even the observed media is not what the text depends on."
+        )
 
     def _system_prompt(self, edition: str, policy: RelevancePolicyVersion) -> str:
         return (
