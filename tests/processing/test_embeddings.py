@@ -749,3 +749,324 @@ class TestClaimSuccessDefersEmbedClaim:
                 "WHERE task_name = 'src.jobs.processing.embed_claim'"
             )
             assert (await cursor.fetchone())[0] == 0
+
+
+# ---------------------------------------------------------------------------
+# Rollback proof: an exploding embed deferral aborts the whole success txn
+# ---------------------------------------------------------------------------
+
+
+class _ExplodingEmbedDeferral:
+    """Stand-in embed_claim task whose defer_async always raises."""
+
+    def configure(self, **_kwargs):
+        return self
+
+    async def defer_async(self, **_kwargs):
+        raise RuntimeError("embed defer exploded")
+
+
+async def _fetch_scalar(db: psycopg.AsyncConnection, sql: str):
+    cursor = await db.execute(sql)
+    return (await cursor.fetchone())[0]
+
+
+@pytest.mark.postgres
+class TestEmbedHandoffAtomicity:
+    async def test_exploding_embed_defer_rolls_back_claims_success_and_jobs(
+        self, uow, pool, conn, edition, revision_factory, production_jobs_app, monkeypatch
+    ):
+        """Claims, canonical success, and queued embed jobs commit or die together."""
+        import json
+
+        import src.jobs.processing as jobs_processing
+        from src import runtime as runtime_module
+        from src.bootstrap import ApplicationInfrastructure
+        from src.config_loader import EmbeddingConfig
+        from src.processing.claims import ClaimExtractionService
+
+        runtime_module.install_runtime(
+            ApplicationInfrastructure(pool=pool, uow=uow, procrastinate_app=production_jobs_app)
+        )
+        revision = await revision_factory(text_content="Утром воду отключили снова.")
+        _seed_counters["wire"] = _seed_counters.get("wire", 0) + 1
+        n = _seed_counters["wire"]
+        relevance_policy = await RelevancePolicyVersionRepository().insert(
+            conn,
+            edition_id=edition.id,
+            version=1000 + n,
+            config_hash=f"atomic-rel-{n}",
+            prompt_version="pv",
+        )
+        decision = await EditionRelevanceDecisionRepository().insert_root(
+            conn,
+            source_item_revision_id=revision.id,
+            edition_id=edition.id,
+            relevance_policy_id=relevance_policy.id,
+            status="relevant",
+            confidence=None,
+            reason="atomicity setup",
+        )
+        extraction_policy = await ClaimExtractionPolicyRepository().insert(
+            conn,
+            edition_id=edition.id,
+            version=1000 + n,
+            config_hash=f"atomic-claim-{n}",
+            prompt_version="pv",
+        )
+
+        class _OneClaimProvider:
+            async def chat_completion(self, **kwargs):
+                del kwargs
+                return json.dumps(
+                    {
+                        "claims": [
+                            {
+                                "assertion_text": "Воду отключили.",
+                                "normalized_assertion": AKZ_NORMALIZED,
+                            }
+                        ]
+                    }
+                )
+
+        service = ClaimExtractionService(
+            uow=uow,
+            provider=_OneClaimProvider(),
+            model="test-model",
+            provider_name="fake",
+            embedding_config=EmbeddingConfig(),
+        )
+        monkeypatch.setattr(jobs_processing, "embed_claim", _ExplodingEmbedDeferral())
+
+        with pytest.raises(RuntimeError, match="embed defer exploded"):
+            await service.extract(revision.id, edition.id, decision.id, extraction_policy.id)
+
+        async with pool.connection() as observer:
+            claims = await _fetch_scalar(observer, "SELECT count(*) FROM claims")
+            succeeded_runs = await _fetch_scalar(
+                observer,
+                "SELECT count(*) FROM claim_extraction_runs WHERE status = 'succeeded'",
+            )
+            embedding_rows = await _fetch_scalar(observer, "SELECT count(*) FROM claim_embeddings")
+            queued_jobs = await _fetch_scalar(
+                observer,
+                "SELECT count(*) FROM procrastinate.procrastinate_jobs "
+                "WHERE task_name = 'src.jobs.processing.embed_claim'",
+            )
+        assert claims == 0
+        assert succeeded_runs == 0
+        assert embedding_rows == 0
+        assert queued_jobs == 0
+
+
+# ---------------------------------------------------------------------------
+# Backfill: bounded gap discovery queues exactly the missing vector spaces
+# ---------------------------------------------------------------------------
+
+
+def _install_processing_runtime(uow, pool, production_jobs_app) -> None:
+    from src import runtime as runtime_module
+    from src.bootstrap import ApplicationInfrastructure
+
+    runtime_module.install_runtime(
+        ApplicationInfrastructure(pool=pool, uow=uow, procrastinate_app=production_jobs_app)
+    )
+
+
+async def _deferred_args(pool, task_name: str) -> list[dict]:
+    async with pool.connection() as observer:
+        cursor = await observer.execute(
+            f"SELECT args FROM procrastinate.procrastinate_jobs "
+            f"WHERE task_name = '{task_name}' ORDER BY id"
+        )
+        return [dict(row[0]) for row in await cursor.fetchall()]
+
+
+@pytest.mark.postgres
+class TestBackfillClaimEmbeddings:
+    async def test_queues_only_missing_claims_with_frozen_model_dims(
+        self, uow, pool, conn, edition, revision, production_jobs_app
+    ):
+        _install_processing_runtime(uow, pool, production_jobs_app)
+        embedded = await _seed_claim(
+            conn, edition.id, revision.id, normalized="Первое утверждение для бэкфилла."
+        )
+        missing_a = await _seed_claim(
+            conn, edition.id, revision.id, normalized="Второе утверждение для бэкфилла."
+        )
+        missing_b = await _seed_claim(
+            conn, edition.id, revision.id, normalized="Третье утверждение для бэкфилла."
+        )
+        async with _txn(uow) as db:
+            await EmbeddingRepository().insert_claim_embedding(
+                db,
+                claim_id=embedded.id,
+                embedding=[0.25] * 1536,
+                model=MODEL_A,
+                dimensions=1536,
+                purpose=PURPOSE_CLAIM_QUERY,
+                content_hash="h-embedded",
+            )
+
+        from src.jobs.processing import backfill_claim_embeddings
+
+        queued = await backfill_claim_embeddings(MODEL_A, 1536)
+
+        assert queued == 2
+        jobs = await _deferred_args(pool, "src.jobs.processing.embed_claim")
+        assert {int(job["claim_id"]) for job in jobs} == {missing_a.id, missing_b.id}
+        assert {job["model"] for job in jobs} == {MODEL_A}
+        assert {int(job["dimensions"]) for job in jobs} == {1536}
+
+    async def test_different_model_or_dimensions_counts_as_fresh_debt(
+        self, uow, pool, conn, edition, revision, production_jobs_app
+    ):
+        _install_processing_runtime(uow, pool, production_jobs_app)
+        claim = await _seed_claim(
+            conn, edition.id, revision.id, normalized="Одно утверждение, два новых пространства."
+        )
+        async with _txn(uow) as db:
+            await EmbeddingRepository().insert_claim_embedding(
+                db,
+                claim_id=claim.id,
+                embedding=[0.25] * 1536,
+                model=MODEL_A,
+                dimensions=1536,
+                purpose=PURPOSE_CLAIM_QUERY,
+                content_hash="h-base",
+            )
+
+        from src.jobs.processing import backfill_claim_embeddings
+
+        queued_other_model = await backfill_claim_embeddings(MODEL_B, 1536)
+        queued_other_dims = await backfill_claim_embeddings(MODEL_A, 768)
+
+        assert queued_other_model == 1
+        assert queued_other_dims == 1
+        jobs = await _deferred_args(pool, "src.jobs.processing.embed_claim")
+        assert {(job["model"], int(job["dimensions"])) for job in jobs} == {
+            (MODEL_B, 1536),
+            (MODEL_A, 768),
+        }
+
+    async def test_rerun_after_debt_cleared_queues_nothing(
+        self, uow, pool, conn, edition, revision, production_jobs_app
+    ):
+        _install_processing_runtime(uow, pool, production_jobs_app)
+        first = await _seed_claim(conn, edition.id, revision.id, normalized="Повторный прогон раз.")
+        second = await _seed_claim(
+            conn, edition.id, revision.id, normalized="Повторный прогон два."
+        )
+
+        from src.jobs.processing import backfill_claim_embeddings
+
+        assert await backfill_claim_embeddings(MODEL_A, 1536) == 2
+
+        # Simulate the workers having completed every deferred job.
+        repo = EmbeddingRepository()
+        async with _txn(uow) as db:
+            for claim_id in (first.id, second.id):
+                await repo.insert_claim_embedding(
+                    db,
+                    claim_id=claim_id,
+                    embedding=[0.25] * 1536,
+                    model=MODEL_A,
+                    dimensions=1536,
+                    purpose=PURPOSE_CLAIM_QUERY,
+                    content_hash=f"h-{claim_id}",
+                )
+
+        assert await backfill_claim_embeddings(MODEL_A, 1536) == 0
+        jobs = await _deferred_args(pool, "src.jobs.processing.embed_claim")
+        assert len(jobs) == 2
+
+
+@pytest.mark.postgres
+class TestBackfillStoryRevisionEmbeddings:
+    async def test_queues_only_missing_revisions_with_frozen_model_dims(
+        self, uow, pool, conn, edition, production_jobs_app
+    ):
+        _install_processing_runtime(uow, pool, production_jobs_app)
+        embedded = await _seed_story_revision(conn, edition.id, semantic_text="уже векторизована")
+        missing_a = await _seed_story_revision(conn, edition.id, semantic_text="первая без вектора")
+        missing_b = await _seed_story_revision(conn, edition.id, semantic_text="вторая без вектора")
+        async with _txn(uow) as db:
+            await EmbeddingRepository().insert_story_revision_embedding(
+                db,
+                story_revision_id=embedded.revision_id,
+                embedding=[0.25] * 1536,
+                model=MODEL_A,
+                dimensions=1536,
+                purpose=PURPOSE_STORY_DOCUMENT,
+                content_hash="h-embedded",
+            )
+
+        from src.jobs.processing import backfill_story_revision_embeddings
+
+        queued = await backfill_story_revision_embeddings(MODEL_A, 1536)
+
+        assert queued == 2
+        jobs = await _deferred_args(pool, "src.jobs.processing.embed_story_revision")
+        assert {int(job["story_revision_id"]) for job in jobs} == {
+            missing_a.revision_id,
+            missing_b.revision_id,
+        }
+        assert {job["model"] for job in jobs} == {MODEL_A}
+        assert {int(job["dimensions"]) for job in jobs} == {1536}
+
+    async def test_different_model_or_dimensions_counts_as_fresh_debt(
+        self, uow, pool, conn, edition, production_jobs_app
+    ):
+        _install_processing_runtime(uow, pool, production_jobs_app)
+        seeded = await _seed_story_revision(conn, edition.id, semantic_text="одно пространство")
+        async with _txn(uow) as db:
+            await EmbeddingRepository().insert_story_revision_embedding(
+                db,
+                story_revision_id=seeded.revision_id,
+                embedding=[0.25] * 1536,
+                model=MODEL_A,
+                dimensions=1536,
+                purpose=PURPOSE_STORY_DOCUMENT,
+                content_hash="h-base",
+            )
+
+        from src.jobs.processing import backfill_story_revision_embeddings
+
+        queued_other_model = await backfill_story_revision_embeddings(MODEL_B, 1536)
+        queued_other_dims = await backfill_story_revision_embeddings(MODEL_A, 768)
+
+        assert queued_other_model == 1
+        assert queued_other_dims == 1
+        jobs = await _deferred_args(pool, "src.jobs.processing.embed_story_revision")
+        assert {(job["model"], int(job["dimensions"])) for job in jobs} == {
+            (MODEL_B, 1536),
+            (MODEL_A, 768),
+        }
+
+    async def test_rerun_after_debt_cleared_queues_nothing(
+        self, uow, pool, conn, edition, production_jobs_app
+    ):
+        _install_processing_runtime(uow, pool, production_jobs_app)
+        first = await _seed_story_revision(conn, edition.id, semantic_text="повтор раз")
+        second = await _seed_story_revision(conn, edition.id, semantic_text="повтор два")
+
+        from src.jobs.processing import backfill_story_revision_embeddings
+
+        assert await backfill_story_revision_embeddings(MODEL_A, 1536) == 2
+
+        repo = EmbeddingRepository()
+        async with _txn(uow) as db:
+            for revision_id in (first.revision_id, second.revision_id):
+                await repo.insert_story_revision_embedding(
+                    db,
+                    story_revision_id=revision_id,
+                    embedding=[0.25] * 1536,
+                    model=MODEL_A,
+                    dimensions=1536,
+                    purpose=PURPOSE_STORY_DOCUMENT,
+                    content_hash=f"h-{revision_id}",
+                )
+
+        assert await backfill_story_revision_embeddings(MODEL_A, 1536) == 0
+        jobs = await _deferred_args(pool, "src.jobs.processing.embed_story_revision")
+        assert len(jobs) == 2
