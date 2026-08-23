@@ -1,0 +1,31 @@
+{
+  "source": {
+    "platform": "facebook",
+    "kind": "group",
+    "external_id": "https://facebook.com/groups/berdyansk_life",
+    "url": "https://facebook.com/groups/berdyansk_life",
+    "name": "Бердянск Жизнь",
+    "role": "community"
+  },
+  "post": {
+    "external_id": "post:998877",
+    "text": "Обсуждение дорожной ситуации в городе сегодня.",
+    "author_name": "Администратор",
+    "comments": [
+      {
+        "external_id": "comment:112233",
+        "text": "На Мелитопольском у Кабельщиков движение перекрыто, машины разворачивают",
+        "author_name": "Иван Житель",
+        "expected_status": "relevant",
+        "is_single_source_fact": true
+      },
+      {
+        "external_id": "comment:445566",
+        "text": "Это всё начальник ЖЭКа виноват, он украл все деньги!",
+        "author_name": "Аноним",
+        "expected_status": "relevant",
+        "is_unverified_accusation": true
+      }
+    ]
+  }
+}
