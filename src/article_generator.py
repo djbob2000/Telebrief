@@ -604,6 +604,160 @@ class ArticleGenerator:
 
         return draft
 
+    async def generate_from_frozen_input(
+        self,
+        frozen_input: Any,
+        attempt_observer: Any | None = None,
+    ) -> Tuple[str, str, str]:
+        """Generate article directly from a sealed FrozenEditorialInput."""
+        return await self.generate_from_analysis_and_bundle(
+            analysis=frozen_input.analysis,
+            writer_bundle=frozen_input.writer_bundle,
+            attempt_observer=attempt_observer,
+        )
+
+    async def generate_from_analysis_and_bundle(  # noqa: C901
+        self,
+        analysis: EditorialAnalysis,
+        writer_bundle: PreparedBundle,
+        attempt_observer: Any | None = None,
+        bundle_for_fallback: PreparedBundle | None = None,
+    ) -> Tuple[str, str, str]:
+        """Core writer and fallback pipeline from pre-built Story Cards and source bundle."""
+        if not analysis.cards:
+            self.logger.info(
+                "Editorial analysis found no publishable local stories for the reporting period"
+            )
+            raise NoSubstantiveEditorialError(
+                "no publishable local stories remain for reporting period"
+            )
+
+        fallback_bundle = bundle_for_fallback or writer_bundle
+
+        if not writer_bundle.records:
+            return await self._fallback(
+                fallback_bundle, "editorial analysis returned no resolvable representative refs"
+            )
+
+        if self.story_context_enricher is not None:
+            writer_bundle.story_contexts = self.story_context_enricher.enrich(
+                analysis, writer_bundle
+            )
+
+        self.logger.info("Selected %d source records for writer", len(writer_bundle.records))
+        self.logger.info(
+            "Drafting article from %d Story Cards / %d source records",
+            len(analysis.cards),
+            len(writer_bundle.records),
+        )
+        self._save_debug_artifact("writer_bundle.txt", writer_bundle.prompt_text)
+        self._save_debug_artifact("writer_input.txt", writer_bundle.prompt_text)
+        self._save_debug_artifact(
+            "writer_bundle.json",
+            {
+                "total_messages": writer_bundle.total_messages,
+                "candidate_count": writer_bundle.candidate_count,
+                "records": list(writer_bundle.records.keys()),
+            },
+        )
+
+        writer_attempt_id = 0
+        if attempt_observer is not None:
+            writer_attempt_id = await attempt_observer.attempt_started(
+                "writer",
+                provider=self.config.settings.ai_provider,
+                model=self.model,
+            )
+
+        try:
+            draft = await self.writer.write(analysis, writer_bundle)
+            deterministic_preflight(draft.to_markdown())
+            self._save_debug_artifact("writer_draft.json", draft.to_dict())
+            if attempt_observer is not None and writer_attempt_id > 0:
+                await attempt_observer.attempt_finished(writer_attempt_id, "succeeded")
+        except Exception as exc:
+            if attempt_observer is not None and writer_attempt_id > 0:
+                await attempt_observer.attempt_finished(
+                    writer_attempt_id, "failed", error_kind=type(exc).__name__
+                )
+            reason = f"writer unavailable: {type(exc).__name__}"
+            return await self._execute_fallback_chain(
+                analysis, fallback_bundle, reason, attempt_observer=attempt_observer
+            )
+
+        try:
+            draft = await self._repair_and_check(draft, analysis, writer_bundle)
+        except UnsafeDraftError as exc:
+            reason = str(exc)
+            return await self._execute_fallback_chain(
+                analysis, fallback_bundle, reason, attempt_observer=attempt_observer
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Editorial audit/repair failed; publishing writer output: %s",
+                type(exc).__name__,
+            )
+
+        markdown = draft.to_markdown()
+        try:
+            deterministic_preflight(markdown)
+        except ValueError as exc:
+            reason = f"deterministic preflight failed: {exc}"
+            return await self._execute_fallback_chain(
+                analysis, fallback_bundle, reason, attempt_observer=attempt_observer
+            )
+
+        try:
+            publication_copy_preflight(markdown)
+        except ValueError as exc:
+            self.logger.warning(
+                "Publication-copy polish warning; publishing full Writer prose: %s",
+                exc,
+            )
+            self._save_debug_artifact("publication_copy_warning.txt", str(exc))
+
+        self._save_debug_artifact("final_article.md", markdown)
+        return self._parse_article_response(markdown)
+
+    async def _execute_fallback_chain(
+        self,
+        analysis: EditorialAnalysis,
+        bundle: PreparedBundle,
+        reason: str,
+        attempt_observer: Any | None = None,
+    ) -> Tuple[str, str, str]:
+        # 1. Try validated story card fallback
+        sc_attempt_id = 0
+        if attempt_observer is not None:
+            sc_attempt_id = await attempt_observer.attempt_started("story_renderer_fallback")
+        try:
+            res = await self._render_story_card_fallback(analysis, reason)
+            if attempt_observer is not None and sc_attempt_id > 0:
+                await attempt_observer.attempt_finished(sc_attempt_id, "succeeded")
+            return res
+        except Exception as card_exc:
+            if attempt_observer is not None and sc_attempt_id > 0:
+                await attempt_observer.attempt_finished(
+                    sc_attempt_id, "failed", error_kind=type(card_exc).__name__
+                )
+            self.logger.warning("Validated Story Card render failed: %s", type(card_exc).__name__)
+
+        # 2. Try deterministic fallback
+        det_attempt_id = 0
+        if attempt_observer is not None:
+            det_attempt_id = await attempt_observer.attempt_started("deterministic_fallback")
+        try:
+            res = await self._fallback(bundle, reason)
+            if attempt_observer is not None and det_attempt_id > 0:
+                await attempt_observer.attempt_finished(det_attempt_id, "succeeded")
+            return res
+        except Exception as det_exc:
+            if attempt_observer is not None and det_attempt_id > 0:
+                await attempt_observer.attempt_finished(
+                    det_attempt_id, "failed", error_kind=type(det_exc).__name__
+                )
+            raise
+
     async def generate_article(  # noqa: C901
         self, messages_by_channel: Dict[str, List[Message]]
     ) -> Tuple[str, str, str]:
@@ -639,80 +793,8 @@ class ArticleGenerator:
             )
 
         writer_bundle = self._select_writer_bundle(analysis, bundle)
-        if not writer_bundle.records:
-            return await self._fallback(
-                bundle, "editorial analysis returned no resolvable representative refs"
-            )
-        if self.story_context_enricher is not None:
-            writer_bundle.story_contexts = self.story_context_enricher.enrich(
-                analysis, writer_bundle
-            )
-        self.logger.info("Selected %d source records for writer", len(writer_bundle.records))
-        self.logger.info(
-            "Drafting article from %d Story Cards / %d source records",
-            len(analysis.cards),
-            len(writer_bundle.records),
+        return await self.generate_from_analysis_and_bundle(
+            analysis=analysis,
+            writer_bundle=writer_bundle,
+            bundle_for_fallback=bundle,
         )
-        self._save_debug_artifact("writer_bundle.txt", writer_bundle.prompt_text)
-        self._save_debug_artifact("writer_input.txt", writer_bundle.prompt_text)
-        self._save_debug_artifact(
-            "writer_bundle.json",
-            {
-                "total_messages": writer_bundle.total_messages,
-                "candidate_count": writer_bundle.candidate_count,
-                "records": list(writer_bundle.records.keys()),
-            },
-        )
-
-        try:
-            draft = await self.writer.write(analysis, writer_bundle)
-            deterministic_preflight(draft.to_markdown())
-            self._save_debug_artifact("writer_draft.json", draft.to_dict())
-        except Exception as exc:
-            reason = f"writer unavailable: {type(exc).__name__}"
-            try:
-                return await self._render_story_card_fallback(analysis, reason)
-            except Exception as card_exc:
-                self.logger.warning(
-                    "Validated Story Card render failed: %s", type(card_exc).__name__
-                )
-                return await self._fallback(bundle, reason)
-
-        try:
-            draft = await self._repair_and_check(draft, analysis, writer_bundle)
-        except UnsafeDraftError as exc:
-            reason = str(exc)
-            try:
-                return await self._render_story_card_fallback(analysis, reason)
-            except Exception as card_exc:
-                self.logger.warning(
-                    "Validated Story Card render failed: %s", type(card_exc).__name__
-                )
-                return await self._fallback(bundle, reason)
-        except Exception as exc:
-            self.logger.warning(
-                "Editorial audit/repair failed; publishing writer output: %s",
-                type(exc).__name__,
-            )
-
-        markdown = draft.to_markdown()
-        try:
-            deterministic_preflight(markdown)
-        except ValueError as exc:
-            reason = f"deterministic preflight failed: {exc}"
-            try:
-                return await self._render_story_card_fallback(analysis, reason)
-            except Exception:
-                return await self._fallback(bundle, reason)
-
-        try:
-            publication_copy_preflight(markdown)
-        except ValueError as exc:
-            self.logger.warning(
-                "Publication-copy polish warning; publishing full Writer prose: %s",
-                exc,
-            )
-            self._save_debug_artifact("publication_copy_warning.txt", str(exc))
-
-        self._save_debug_artifact("final_article.md", markdown)
-        return self._parse_article_response(markdown)
