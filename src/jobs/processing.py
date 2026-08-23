@@ -24,9 +24,11 @@ import logging
 import procrastinate
 
 from src.ai_providers import AIProvider, create_provider
+from src.embedding_providers import GoogleGeminiEmbeddingProvider
 from src.ingestion.repository import IngestionRepository
 from src.jobs.app import procrastinate_app
 from src.processing.claims import ClaimExtractionService
+from src.processing.embeddings import EmbeddingService
 from src.processing.relevance import (
     ProviderUnavailableError,
     RelevanceService,
@@ -42,6 +44,7 @@ from src.repositories.claims import (
     ClaimExtractionPolicyRepository,
     ClaimExtractionRunRepository,
 )
+from src.repositories.embeddings import EmbeddingRepository
 from src.repositories.relevance import (
     EditionRelevanceDecisionRepository,
     RelevancePolicyVersionRepository,
@@ -55,6 +58,8 @@ logger = logging.getLogger(__name__)
 EVALUATE_RELEVANCE_TASK_NAME = "evaluate_relevance"
 ANALYZE_VISION_TASK_NAME = "analyze_vision"
 EXTRACT_CLAIMS_TASK_NAME = "extract_claims"
+EMBED_CLAIM_TASK_NAME = "embed_claim"
+EMBED_STORY_REVISION_TASK_NAME = "embed_story_revision"
 PROCESSING_QUEUE = "processing"
 
 BACKFILL_BATCH_SIZE = 500
@@ -149,7 +154,23 @@ def build_claim_extraction_service() -> ClaimExtractionService:
         model=config.settings.ai_model,
         provider_name=config.settings.ai_provider,
         reasoning_effort=config.settings.reasoning_effort,
+        # Frozen into each embed_claim defer so retries keep the queued space.
+        embedding_config=config.embedding,
     )
+
+
+def build_embedding_service() -> EmbeddingService:
+    """Assemble the semantic embedding service from the real config."""
+    from src.config_loader import load_config
+
+    config = load_config()
+    embedding_config = config.embedding
+    provider = GoogleGeminiEmbeddingProvider(
+        api_key=embedding_config.api_key or config.gemini_api_key,
+        logger=logger,
+        timeout=embedding_config.timeout,
+    )
+    return EmbeddingService(uow=get_runtime().uow, provider=provider)
 
 
 @procrastinate_app.task(
@@ -409,3 +430,91 @@ async def backfill_claims(
         vision_mode or "default",
     )
     return deferred
+
+
+@procrastinate_app.task(queue=PROCESSING_QUEUE)
+async def embed_claim(claim_id: int, model: str, dimensions: int) -> None:
+    """Embed one whole claim into the exact queued model/dimension space.
+
+    ``model`` and ``dimensions`` are frozen task arguments copied from the
+    embedding config at defer time, so a retried execution keeps writing into
+    the space it was queued for even after a config change. Duplicate
+    executions converge on the one immutable row per
+    (claim, model, dimensions, purpose, content_hash).
+    """
+    await build_embedding_service().embed_claim(claim_id, model=model, dimensions=dimensions)
+
+
+@procrastinate_app.task(queue=PROCESSING_QUEUE)
+async def embed_story_revision(story_revision_id: int, model: str, dimensions: int) -> None:
+    """Embed one whole story revision (its compact semantic_text)."""
+    await build_embedding_service().embed_story_revision(
+        story_revision_id, model=model, dimensions=dimensions
+    )
+
+
+async def backfill_claim_embeddings(
+    model: str,
+    dimensions: int,
+    after_claim_id: int | None = None,
+    *,
+    batch_size: int = BACKFILL_BATCH_SIZE,
+) -> int:
+    """Queue embed_claim for claims missing that exact model/dimension vector.
+
+    Covers claims created while Task 4 ran without Task 5 and any window
+    after an embedding-config change. Bounded slice (batch_size + optional
+    exclusive id cursor); safe to re-run since duplicate jobs converge on the
+    immutable row. Old embedding rows are never updated — new spaces get new
+    rows.
+    """
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        gap_ids = await EmbeddingRepository().list_claim_ids_missing_embedding(
+            conn,
+            model=model,
+            dimensions=dimensions,
+            after_claim_id=after_claim_id,
+            limit=batch_size,
+        )
+        for claim_id in gap_ids:
+            await embed_claim.configure(connection=conn).defer_async(
+                claim_id=claim_id, model=model, dimensions=dimensions
+            )
+    logger.info(
+        "backfill_claim_embeddings queued %d claims model=%s dimensions=%d",
+        len(gap_ids),
+        model,
+        dimensions,
+    )
+    return len(gap_ids)
+
+
+async def backfill_story_revision_embeddings(
+    model: str,
+    dimensions: int,
+    after_story_revision_id: int | None = None,
+    *,
+    batch_size: int = BACKFILL_BATCH_SIZE,
+) -> int:
+    """Queue embed_story_revision for revisions missing the exact vector."""
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        gap_ids = await EmbeddingRepository().list_story_revision_ids_missing_embedding(
+            conn,
+            model=model,
+            dimensions=dimensions,
+            after_story_revision_id=after_story_revision_id,
+            limit=batch_size,
+        )
+        for revision_id in gap_ids:
+            await embed_story_revision.configure(connection=conn).defer_async(
+                story_revision_id=revision_id, model=model, dimensions=dimensions
+            )
+    logger.info(
+        "backfill_story_revision_embeddings queued %d revisions model=%s dimensions=%d",
+        len(gap_ids),
+        model,
+        dimensions,
+    )
+    return len(gap_ids)

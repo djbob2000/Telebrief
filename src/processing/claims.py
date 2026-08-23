@@ -45,6 +45,7 @@ from typing import Any
 import psycopg
 
 from src.ai_providers import AIProvider, ProviderCascadeError, ensure_provider_cascade
+from src.config_loader import EmbeddingConfig
 from src.db.uow import DatabaseUnitOfWork
 from src.domain.claims import (
     Claim,
@@ -358,6 +359,7 @@ class ClaimExtractionService:
         run_repo: ClaimExtractionRunRepository | None = None,
         claim_repo: ClaimRepository | None = None,
         context_builder: ClaimExtractionContextBuilder | None = None,
+        embedding_config: EmbeddingConfig | None = None,
     ) -> None:
         self.uow = uow
         # Uniform cascade semantics even for single-slot providers.
@@ -366,6 +368,7 @@ class ClaimExtractionService:
         self.provider_name = provider_name
         self.reasoning_effort = reasoning_effort
         self.max_output_tokens = max_output_tokens
+        self._embedding_config = embedding_config
         self._ingestion_repo = ingestion_repo or IngestionRepository()
         self._policy_repo = policy_repo or ClaimExtractionPolicyRepository()
         self._run_repo = run_repo or ClaimExtractionRunRepository()
@@ -685,6 +688,7 @@ class ClaimExtractionService:
                 won = await self._run_repo.mark_succeeded(conn, run.id, completed_at=completed_at)
                 if not won:
                     raise CanonicalSlotLost(f"canonical success held elsewhere for run {run.id}")
+                await self._defer_embed_claims(conn, inserted)
                 final = await self._run_repo.get(conn, run.id)
         except psycopg.errors.UniqueViolation as exc:
             if getattr(exc, "diag", None) is None or exc.diag.constraint_name != (
@@ -703,6 +707,36 @@ class ClaimExtractionService:
             len(inserted),
         )
         return ClaimExtractionResult(run=final, claims=tuple(inserted))
+
+    async def _defer_embed_claims(
+        self,
+        conn: psycopg.AsyncConnection,
+        inserted: Sequence[Claim],
+    ) -> None:
+        """Queue one embedding job per newly created claim INSIDE the success
+        transaction: claims, canonical success, and their embed defers commit
+        atomically — a crash can never leave a succeeded claim without its
+        queued vector. Model/dimensions are copied from the config into the
+        task arguments so retries keep the exact queued vector space.
+        """
+        config = self._embedding_config
+        if config is None or not inserted:
+            return
+        # Lazy on purpose: src.jobs.processing imports this module at top level.
+        from src.jobs.processing import embed_claim
+
+        for claim in inserted:
+            await embed_claim.configure(connection=conn).defer_async(
+                claim_id=claim.id,
+                model=config.model,
+                dimensions=config.dimensions,
+            )
+        logger.info(
+            "deferred %d embed_claim jobs (model=%s dimensions=%d)",
+            len(inserted),
+            config.model,
+            config.dimensions,
+        )
 
     async def _replay_after_lost_slot(self, run: ClaimExtractionRun) -> ClaimExtractionResult:
         """Converge on whichever concurrent execution won the canonical slot."""

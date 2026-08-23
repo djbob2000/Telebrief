@@ -184,6 +184,18 @@ settings:
 # collection:
 #   telegram_interval_minutes: 45
 
+# Semantic embeddings (knowledge pipeline) — one whole-object vector per claim
+# and per story revision, stored immutably in pgvector. model + dimensions
+# name ONE vector space: they are frozen into every embedding job, and changing
+# them schedules a new backfill instead of touching old rows.
+# dimensions must satisfy 128 <= dimensions <= 3072. The API key is the shared
+# GEMINI_API_KEY (.env) — never stored or logged via this file.
+# embedding:
+#   provider: "google"
+#   model: "gemini-embedding-2"
+#   dimensions: 1536
+#   timeout: 45
+
 # MCP server — expose digests to MCP clients (Claude Code, etc.) over HTTP
 # Runs inside the Telebrief process; tools: get_digest(hours), get_last_digest()
 # Connect with: claude mcp add --transport http telebrief http://127.0.0.1:8765/mcp

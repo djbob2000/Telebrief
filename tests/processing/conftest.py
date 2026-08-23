@@ -22,7 +22,13 @@ from src.db.pool import close_pool, open_pool
 from src.db.uow import DatabaseUnitOfWork
 
 _TRUNCATE_TABLES = """
-    TRUNCATE claim_state_events, claim_relations, claims,
+    TRUNCATE story_relation_proposals, story_match_decisions,
+             story_matching_candidates, story_matching_runs,
+             story_matching_policy_versions,
+             story_relations, story_state_events,
+             story_revision_embeddings, story_revisions, stories,
+             claim_embeddings,
+             claim_state_events, claim_relations, claims,
              claim_extraction_runs, claim_extraction_policy_versions,
              processing_attempts,
              vision_observations, vision_analysis_runs,

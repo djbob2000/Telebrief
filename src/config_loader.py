@@ -67,6 +67,27 @@ class CollectionConfig:
 
 
 @dataclass
+class EmbeddingConfig:
+    """Semantic embedding settings (Plan 3 Task 5).
+
+    ``model`` and ``dimensions`` name one immutable vector space: both values
+    are copied into every embedding job so retries keep writing into exactly
+    the space they were queued for. Changing them schedules a new backfill;
+    old embedding rows are never mutated or reinterpreted.
+
+    The API key reuses the shared Gemini key resolution (GEMINI_API_KEY /
+    GOOGLE_API_KEY env vars — no separate embedding credentials exist).
+    ``repr=False`` makes the credential structurally unloggable.
+    """
+
+    provider: str = "google"
+    model: str = "gemini-embedding-2"
+    dimensions: int = 1536
+    timeout: int = 45
+    api_key: str = field(default="", repr=False)
+
+
+@dataclass
 class PromptsConfig:
     """Configuration for prompt template and composer."""
 
@@ -183,28 +204,30 @@ class Config:
 
     channels: List[ChannelConfig]
     settings: Settings
-
     # Environment variables
     telegram_api_id: int
     telegram_api_hash: str
     telegram_bot_token: str
     openai_api_key: str
     log_level: str
-    google_api_key: str = ""
-    google_api_key_2: str = ""
-    google_api_key_3: str = ""
+    # All Gemini credentials are excluded from repr so a stray log of the
+    # Config object can never leak them (same rule as storage/database URLs).
+    google_api_key: str = field(default="", repr=False)
+    google_api_key_2: str = field(default="", repr=False)
+    google_api_key_3: str = field(default="", repr=False)
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "openrouter/free"
     openrouter_image_model: str = "google/gemini-3.1-flash-lite-image"
     openai_base_url: str = ""
     anthropic_api_key: str = ""
-    google_api_keys: list[str] = field(default_factory=list)
+    google_api_keys: list[str] = field(default_factory=list, repr=False)
     storage: StorageConfig = field(default_factory=StorageConfig)
     prompts: PromptsConfig = field(default_factory=PromptsConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     collection: CollectionConfig = field(default_factory=CollectionConfig)
+    embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
 
     @property
     def gemini_api_key(self) -> str:
@@ -733,6 +756,60 @@ def _parse_collection_config(yaml_config: dict) -> CollectionConfig:
     return CollectionConfig(telegram_interval_minutes=interval)
 
 
+EMBEDDING_PROVIDERS = frozenset({"google"})
+MIN_EMBEDDING_DIMENSIONS = 128
+MAX_EMBEDDING_DIMENSIONS = 3072
+
+
+def _parse_embedding_config(yaml_config: dict, *, api_key: str = "") -> EmbeddingConfig:
+    """Parse and validate the optional top-level embedding: block.
+
+    Absent block yields EmbeddingConfig() (Google gemini-embedding-2 at
+    1536 dimensions). ``api_key`` comes from the shared Gemini key resolved
+    in _load_and_validate_env_vars; it is never echoed by repr().
+
+    Raises:
+        ValueError: If any field has a wrong type or invalid value.
+    """
+    raw = yaml_config.get("embedding")
+    if raw is None:
+        return EmbeddingConfig(api_key=api_key)
+    if not isinstance(raw, dict):
+        raise ValueError(f"'embedding' must be a mapping, got {type(raw).__name__}")
+
+    provider = raw.get("provider", "google")
+    if provider not in EMBEDDING_PROVIDERS:
+        raise ValueError(
+            f"embedding.provider must be one of {', '.join(sorted(EMBEDDING_PROVIDERS))}, "
+            f"got {provider!r}"
+        )
+
+    model = raw.get("model", "gemini-embedding-2")
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("embedding.model must be a non-empty string")
+
+    dimensions = raw.get("dimensions", 1536)
+    if isinstance(dimensions, bool) or not isinstance(dimensions, int):
+        raise ValueError(f"embedding.dimensions must be an integer, got {dimensions!r}")
+    if not MIN_EMBEDDING_DIMENSIONS <= dimensions <= MAX_EMBEDDING_DIMENSIONS:
+        raise ValueError(
+            "embedding.dimensions must be an integer between "
+            f"{MIN_EMBEDDING_DIMENSIONS} and {MAX_EMBEDDING_DIMENSIONS}, got {dimensions}"
+        )
+
+    timeout = raw.get("timeout", 45)
+    if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
+        raise ValueError(f"embedding.timeout must be a positive integer, got {timeout!r}")
+
+    return EmbeddingConfig(
+        provider=provider,
+        model=model.strip(),
+        dimensions=int(dimensions),
+        timeout=int(timeout),
+        api_key=api_key,
+    )
+
+
 def _parse_database_config(yaml_config: dict, *, require_enabled: bool = False) -> DatabaseConfig:
     """Parse and validate the optional top-level database: block.
 
@@ -1173,6 +1250,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         mcp=mcp_config,
         database=database_config,
         collection=collection_config,
+        embedding=_parse_embedding_config(yaml_config, api_key=env_vars["google_api_key"]),
         **env_vars,
     )
 

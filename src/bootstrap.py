@@ -23,10 +23,11 @@ if TYPE_CHECKING:
     import procrastinate
 
 # Supported domain schema range; Plan 1 migrations land versions 1..3,
-# Plan 2 Task 1 (source items) lands version 4, and Plan 3 Task 1
-# (relevance + claims) lands version 5.
-SCHEMA_VERSION_MINIMUM = 5
-SCHEMA_VERSION_MAXIMUM = 5
+# Plan 2 Task 1 (source items) lands version 4, Plan 3 Task 1
+# (relevance + claims) lands version 5, and Plan 3 Task 5
+# (embeddings + stories) lands version 6.
+SCHEMA_VERSION_MINIMUM = 6
+SCHEMA_VERSION_MAXIMUM = 6
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]
 

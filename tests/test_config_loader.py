@@ -10,6 +10,7 @@ from src.config_loader import (
     ArticleConfig,
     DatabaseConfig,
     DigestGroupConfig,
+    EmbeddingConfig,
     FilterSpec,
     ForumTopicConfig,
     McpConfig,
@@ -1870,3 +1871,121 @@ def test_vision_mode_rejects_unknown_values(monkeypatch, tmp_path, mock_env_vars
     with patch("src.config_loader.load_dotenv"):
         with pytest.raises(ValueError, match="vision_mode"):
             load_config(path=path)
+
+
+# --- config.embedding (Plan 3 Task 5: semantic embeddings) ---
+
+
+@pytest.mark.unit
+def test_embedding_config_defaults(monkeypatch, tmp_path, mock_env_vars):
+    """Embeddings default to Google gemini-embedding-2 at 1536 dimensions."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=_write_minimal_config(tmp_path))
+    assert config.embedding == EmbeddingConfig(
+        provider="google", model="gemini-embedding-2", dimensions=1536, timeout=45
+    )
+
+
+@pytest.mark.unit
+def test_embedding_config_always_present(monkeypatch, tmp_path, mock_env_vars):
+    """config.embedding exists even when the YAML block is absent entirely."""
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=_write_minimal_config(tmp_path))
+    assert config.embedding.provider == "google"
+    assert config.embedding.dimensions == 1536
+
+
+@pytest.mark.unit
+def test_embedding_config_custom_block(monkeypatch, tmp_path, mock_env_vars):
+    path = _write_config(
+        tmp_path,
+        {
+            "embedding": {
+                "provider": "google",
+                "model": "gemini-embedding-2",
+                "dimensions": 768,
+                "timeout": 20,
+            }
+        },
+    )
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=path)
+    assert config.embedding.model == "gemini-embedding-2"
+    assert config.embedding.dimensions == 768
+    assert config.embedding.timeout == 20
+
+
+@pytest.mark.unit
+def test_embedding_config_accepts_dimension_bounds(monkeypatch, tmp_path, mock_env_vars):
+    """Both inclusive bounds of the supported dimensionality range parse."""
+    for dims in (128, 3072):
+        path = _write_config(tmp_path, {"embedding": {"dimensions": dims}})
+        with patch("src.config_loader.load_dotenv"):
+            config = load_config(path=path)
+        assert config.embedding.dimensions == dims
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dims", [64, 127, 3073, 8192])
+def test_embedding_config_rejects_dimensions_out_of_bounds(
+    monkeypatch, tmp_path, mock_env_vars, dims
+):
+    path = _write_config(tmp_path, {"embedding": {"dimensions": dims}})
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="dimensions must be an integer between 128 and 3072"):
+            load_config(path=path)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("dims", ["1536", 1536.0, True, None])
+def test_embedding_config_rejects_non_integer_dimensions(
+    monkeypatch, tmp_path, mock_env_vars, dims
+):
+    path = _write_config(tmp_path, {"embedding": {"dimensions": dims}})
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="embedding.dimensions must be an integer"):
+            load_config(path=path)
+
+
+@pytest.mark.unit
+def test_embedding_config_rejects_unknown_provider(monkeypatch, tmp_path, mock_env_vars):
+    path = _write_config(tmp_path, {"embedding": {"provider": "openai"}})
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="embedding.provider"):
+            load_config(path=path)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("timeout", [0, -5])
+def test_embedding_config_rejects_non_positive_timeout(
+    monkeypatch, tmp_path, mock_env_vars, timeout
+):
+    path = _write_config(tmp_path, {"embedding": {"timeout": timeout}})
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="embedding.timeout must be a positive integer"):
+            load_config(path=path)
+
+
+@pytest.mark.unit
+def test_embedding_config_rejects_empty_model(monkeypatch, tmp_path, mock_env_vars):
+    path = _write_config(tmp_path, {"embedding": {"model": "  "}})
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="embedding.model must be a non-empty string"):
+            load_config(path=path)
+
+
+@pytest.mark.unit
+def test_embedding_api_key_never_appears_in_repr(monkeypatch, tmp_path, mock_env_vars):
+    """The Gemini key rides on EmbeddingConfig but is structurally unloggable."""
+    secret = "gemini-secret-key-abc123"
+    monkeypatch.setenv("GEMINI_API_KEY", secret)
+    path = _write_config(tmp_path, {"settings": {"target_user_id": 123456789}})
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=path)
+    assert config.embedding.api_key == secret
+    assert secret not in repr(config.embedding)
+    assert secret not in repr(config)
