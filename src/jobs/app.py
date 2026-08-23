@@ -10,7 +10,13 @@ from src.config_loader import DatabaseConfig, load_database_config
 
 PROCASTINATE_POOL_MIN_SIZE = 1
 PROCASTINATE_POOL_MAX_SIZE = 2
-JOB_IMPORT_PATHS = ("src.jobs.maintenance", "src.jobs.ingestion", "src.jobs.processing")
+JOB_IMPORT_PATHS = (
+    "src.jobs.maintenance",
+    "src.jobs.ingestion",
+    "src.jobs.processing",
+    "src.jobs.publication",
+    "src.jobs.facebook",
+)
 
 
 def build_app(

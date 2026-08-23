@@ -15,3 +15,17 @@ async def retry_stalled_jobs(context: JobContext, timestamp: int) -> None:
     stalled_jobs = await procrastinate_app.job_manager.get_stalled_jobs()
     for job in stalled_jobs:
         await procrastinate_app.job_manager.retry_job(job)
+
+
+@procrastinate_app.periodic(cron="15 3 * * *", periodic_id="retention-cleanup")
+@procrastinate_app.task(queue="maintenance", queueing_lock="retention-cleanup")
+async def retention_cleanup(timestamp: int) -> None:
+    """Periodic cleanup of expired diagnostic artifacts."""
+    import datetime as dt
+
+    from src.retention import RetentionService
+    from src.runtime import get_runtime
+
+    runtime = get_runtime()
+    service = RetentionService(uow=runtime.uow)
+    await service.cleanup(now=dt.datetime.fromtimestamp(timestamp, dt.timezone.utc))
