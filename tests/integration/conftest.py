@@ -89,14 +89,15 @@ _TRUNCATE_TABLES = """
 
 @pytest.fixture
 async def conn(database_config: DatabaseConfig) -> AsyncIterator[psycopg.AsyncConnection]:
-    conn = await psycopg.AsyncConnection.connect(database_config.url, autocommit=False)
+    from pgvector.psycopg import register_vector_async
+
+    conn = await psycopg.AsyncConnection.connect(database_config.url, autocommit=True)
+    await register_vector_async(conn)
     await conn.execute(_TRUNCATE_TABLES)
-    await conn.commit()
     try:
         yield conn
     finally:
         await conn.execute(_TRUNCATE_TABLES)
-        await conn.commit()
         await conn.close()
 
 

@@ -1665,7 +1665,7 @@ def test_database_config_defaults(monkeypatch, tmp_path, mock_env_vars):
     with patch("src.config_loader.load_dotenv"):
         config = load_config(path=_write_minimal_config(tmp_path))
     assert config.database.min_pool_size == 1
-    assert config.database.max_pool_size == 4
+    assert config.database.max_pool_size == 3
     assert config.database.domain_schema == "public"
     assert config.database.procrastinate_schema == "procrastinate"
 
