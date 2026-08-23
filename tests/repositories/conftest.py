@@ -44,8 +44,12 @@ async def repo_conn(database_config: DatabaseConfig):
         database_config.url, autocommit=True
     )
     try:
-        await conn.execute("TRUNCATE source_editions, sources, editions RESTART IDENTITY CASCADE")
+        await conn.execute(
+            "TRUNCATE source_editions, sources, editions, facebook_source_configs, facebook_auth_profiles RESTART IDENTITY CASCADE"
+        )
         yield conn
     finally:
-        await conn.execute("TRUNCATE source_editions, sources, editions RESTART IDENTITY CASCADE")
+        await conn.execute(
+            "TRUNCATE source_editions, sources, editions, facebook_source_configs, facebook_auth_profiles RESTART IDENTITY CASCADE"
+        )
         await conn.close()

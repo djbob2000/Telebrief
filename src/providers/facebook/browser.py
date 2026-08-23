@@ -53,6 +53,12 @@ class FacebookBrowserSession:
         self._context: BrowserContext | None = None
 
     async def __aenter__(self) -> tuple[BrowserContext, Page]:
+        if self.profile.status in ("disabled", FacebookAuthState.DISABLED.value):
+            raise FacebookHumanActionRequired(
+                FacebookAuthState.DISABLED,
+                f"Facebook auth profile '{self.profile.name}' is disabled (circuit breaker tripped)",
+            )
+
         path = resolve_profile_dir(self.auth_root, self.profile.storage_ref)
         ensure_owner_only_directory(path)
 

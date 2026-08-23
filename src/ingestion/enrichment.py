@@ -85,14 +85,14 @@ class EnrichmentDispatcher:
         try:
             cursor = await conn.execute(
                 """
-                SELECT si.source_id, s.collector_options
+                SELECT si.source_id, s.collector_options, s.platform
                 FROM source_items si JOIN sources s ON s.id = si.source_id
                 WHERE si.id = %s
                 """,
                 (post_item_id,),
             )
             row = await cursor.fetchone()
-            if row is not None:
+            if row is not None and row[2] == "facebook":
                 resolved = await resolve_auth_profile_name(
                     conn, int(row[0]), row[1] if isinstance(row[1], dict) else None
                 )

@@ -85,6 +85,8 @@ RATE_LIMIT_FALLBACK_BACKOFF_SECONDS = 900
 
 # Platform-specific execution locks shared across sources authenticated by one
 async def _resolve_facebook_execution_lock(conn: Any, source: Source) -> str | None:
+    if source.platform != "facebook":
+        return None
     from src.repositories.facebook import resolve_auth_profile_name
 
     auth_profile = await resolve_auth_profile_name(conn, source.id, source.collector_options)

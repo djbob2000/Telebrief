@@ -135,3 +135,25 @@ class TestFacebookBrowserSession:
 
         mock_pw.stop.assert_awaited_once()
         assert session._playwright is None
+
+    @pytest.mark.asyncio
+    async def test_disabled_profile_raises_before_playwright_starts(self, tmp_path: Path):
+        from unittest.mock import patch
+
+        from src.providers.facebook.auth import FacebookHumanActionRequired
+        from src.providers.facebook.browser import FacebookBrowserSession
+        from src.providers.facebook.models import FacebookAuthProfile
+
+        profile = FacebookAuthProfile(
+            id=1,
+            name="disabled-profile",
+            storage_ref="disabled-profile",
+            status="disabled",
+        )
+        session = FacebookBrowserSession(auth_root=tmp_path, profile=profile)
+
+        with patch("src.providers.facebook.browser.async_playwright") as mock_ap:
+            with pytest.raises(FacebookHumanActionRequired, match="circuit breaker tripped"):
+                async with session:
+                    pass
+            mock_ap.assert_not_called()

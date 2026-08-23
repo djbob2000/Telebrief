@@ -102,7 +102,9 @@ def uow(pool: AsyncConnectionPool) -> DatabaseUnitOfWork:
 @pytest.fixture(autouse=True)
 def install_test_runtime(
     pool: AsyncConnectionPool, uow: DatabaseUnitOfWork
-) -> ApplicationInfrastructure:
+) -> AsyncIterator[ApplicationInfrastructure]:
+    from unittest.mock import patch
+
     fake_app = procrastinate.App(connector=InMemoryConnector())
     rt = ApplicationInfrastructure(
         pool=pool,
@@ -110,7 +112,8 @@ def install_test_runtime(
         procrastinate_app=fake_app,
     )
     install_runtime(rt)
-    return rt
+    with patch("src.providers.facebook.runtime_policy.is_facebook_enabled", return_value=True):
+        yield rt
 
 
 @pytest.fixture
