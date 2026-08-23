@@ -43,7 +43,6 @@ async def bootstrap_profile(
             user_data_dir=str(profile_path),
             headless=False,
             viewport={"width": 1280, "height": 800},
-            args=["--disable-blink-features=AutomationControlled"],
         )
 
         if import_cookies_path:
@@ -68,17 +67,52 @@ async def bootstrap_profile(
         logger.info("Please log in to Facebook in the opened browser window.")
         logger.info("Once logged in, verify you are on the home feed or group page.")
 
+        final_state = FacebookAuthState.UNKNOWN
         # Monitor state periodically
         while True:
             await asyncio.sleep(3)
             state = await classify_facebook_page_state(page)
             if state == FacebookAuthState.READY:
                 logger.info("✅ Facebook session verified as READY!")
+                final_state = state
+                break
+            if state in (FacebookAuthState.CHECKPOINT, FacebookAuthState.BLOCKED, FacebookAuthState.ACTION_REQUIRED):
+                logger.warning("Facebook session encountered blocking state: %s", state.value)
+                final_state = state
                 break
             logger.info("Current session state: %s. Waiting for login completion...", state.value)
 
         await context.close()
         logger.info("Browser session saved successfully in %s", profile_path)
+
+        # Update database status for the auth profile
+        try:
+            from src.config_loader import load_config
+            from src.db.pool import open_pool
+            from src.repositories.facebook import FacebookRepository
+            import datetime as dt
+
+            cfg = load_config()
+            if cfg.database.enabled:
+                pool = await open_pool(cfg.database)
+                async with pool.connection() as conn:
+                    fb_repo = FacebookRepository()
+                    prof = await fb_repo.get_or_create_auth_profile(
+                        conn, name=storage_ref, storage_ref=storage_ref
+                    )
+                    db_status = "ready" if final_state == FacebookAuthState.READY else final_state.value
+                    verified_at = dt.datetime.now(dt.timezone.utc) if final_state == FacebookAuthState.READY else None
+                    await fb_repo.update_auth_profile_status(
+                        conn,
+                        profile_id=prof.id,
+                        status=db_status,
+                        verified_at=verified_at,
+                    )
+                    await conn.commit()
+                await pool.close()
+                logger.info("Updated database status for profile '%s' to '%s'", storage_ref, db_status)
+        except Exception as exc:
+            logger.warning("Could not update database status for profile '%s': %s", storage_ref, exc)
 
 
 def main() -> None:

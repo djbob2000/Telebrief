@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import logging
 import time
+import urllib.parse
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -71,6 +72,27 @@ class CommentCollectionBatch:
         )
 
 
+def extract_comment_id_from_url(url: str | None) -> str | None:
+    """Extract Facebook comment/reply ID from query parameters or path."""
+    if not url:
+        return None
+    try:
+        parsed = urllib.parse.urlparse(url)
+        query = urllib.parse.parse_qs(parsed.query)
+        if "reply_comment_id" in query and query["reply_comment_id"]:
+            return str(query["reply_comment_id"][0])
+        if "comment_id" in query and query["comment_id"]:
+            return str(query["comment_id"][0])
+        parts = parsed.path.strip("/").split("/")
+        if "comments" in parts:
+            idx = parts.index("comments")
+            if idx + 1 < len(parts) and parts[idx + 1].isdigit():
+                return parts[idx + 1]
+    except Exception as exc:
+        logger.debug("Failed to extract comment ID from URL %s: %s", url, exc)
+    return None
+
+
 def parse_comment_from_data(
     *,
     source: Source,
@@ -84,6 +106,7 @@ def parse_comment_from_data(
     canonical_url: str | None = None,
     media_urls: list[str] | None = None,
     observed_at: dt.datetime | None = None,
+    identity_quality: str = "native",
 ) -> tuple[ObservedItem, list[ObservedAsset]]:
     """Construct an ObservedItem for a comment or nested reply."""
     now = observed_at or dt.datetime.now(dt.timezone.utc)
@@ -113,6 +136,7 @@ def parse_comment_from_data(
         "parent_comment_id": parent_comment_id,
         "post_external_id": post_external_id,
         "author_id": author_id,
+        "identity_quality": identity_quality,
     }
 
     item = ObservedItem(
@@ -132,7 +156,7 @@ def parse_comment_from_data(
 
 _SORT_LABELS = {
     "newest": ("Newest", "Сначала новые", "Новые"),
-    "all": ("Most relevant", "Все комментарии", "Most relevant"),
+    "all": ("All comments", "Все комментарии", "All"),
 }
 
 
@@ -275,16 +299,30 @@ class FacebookCommentCollector:
                     # Extract ID from links
                     links = await node.query_selector_all("a[href]")
                     cid = None
+                    identity_quality = "synthetic"
                     for link in links:
                         href = await link.get_attribute("href") or ""
+                        parsed_cid = extract_comment_id_from_url(href)
+                        if parsed_cid:
+                            cid = parsed_cid
+                            identity_quality = "native"
+                            break
                         pid = extract_post_id_from_url(href)
                         if pid and pid != post_external_id.replace("post:", ""):
                             cid = pid
+                            identity_quality = "native"
                             break
 
+                    # Threading: the nearest outer comment container wins as parent.
+                    depth = await _comment_nesting_depth(node)
+                    parent_comment_id = depth_to_cid.get(depth - 1) if depth > 0 else None
+
                     if not cid:
-                        # Derive synthetic stable ID from sha256 hash of text if no href
-                        cid = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+                        # Scoped synthetic fallback ID: post_external_id + parent_comment_id + normalized_text
+                        norm_text = " ".join(text.split())
+                        scope_str = f"{post_external_id}:{parent_comment_id or ''}:{norm_text}"
+                        cid = hashlib.sha256(scope_str.encode("utf-8")).hexdigest()[:16]
+                        identity_quality = "synthetic"
 
                     if cid in seen_comment_ids:
                         continue
@@ -292,9 +330,6 @@ class FacebookCommentCollector:
                     seen_comment_ids.add(cid)
                     new_found_this_page = True
 
-                    # Threading: the nearest outer comment container wins as parent.
-                    depth = await _comment_nesting_depth(node)
-                    parent_comment_id = depth_to_cid.get(depth - 1) if depth > 0 else None
                     if depth >= 0:
                         depth_to_cid[depth] = cid
                         for deeper in [d for d in depth_to_cid if d > depth]:
@@ -307,6 +342,7 @@ class FacebookCommentCollector:
                         text=text,
                         published_at=None,
                         parent_comment_id=parent_comment_id,
+                        identity_quality=identity_quality,
                     )
                     batch.items.append(item)
                     batch.assets.extend(assets)
@@ -326,12 +362,12 @@ class FacebookCommentCollector:
                 "div[role='button']:has-text('comments'), span:has-text('View more')"
             )
             if not more_buttons:
-                # No further pagination affordance is visible. That alone does
-                # NOT prove completeness under platform-curated ("Most
-                # relevant") ordering: complete requires that this full pass
-                # surfaced nothing new after at least one expansion round.
+                # No further pagination affordance is visible.
+                # Invariant: effective_sort != 'all_selected' can NEVER be complete.
                 if not new_found_this_page and page_count > 1:
-                    batch.completeness = "complete"
+                    batch.completeness = (
+                        "complete" if batch.effective_sort == "all_selected" else "partial"
+                    )
                     batch.stop_reason = "exhausted"
                 elif not new_found_this_page and page_count == 1:
                     batch.completeness = "unknown"
@@ -348,6 +384,9 @@ class FacebookCommentCollector:
                 batch.completeness = "unknown"
                 batch.stop_reason = "platform_behavior"
                 break
+
+        if batch.effective_sort != "all_selected" and batch.completeness == "complete":
+            batch.completeness = "partial"
 
         batch.completed_at = dt.datetime.now(dt.timezone.utc)
         batch.total_comments_observed = len(batch.items)

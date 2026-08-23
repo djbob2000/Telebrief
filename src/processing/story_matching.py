@@ -894,8 +894,6 @@ class StoryMatchingService:
         from src.jobs.processing import match_claim
 
         claim_embedding_id = locked.run.claim_embedding_id
-        if claim_embedding_id is None:
-            raise RuntimeError(f"matching run {locked.run.id} lost its claim embedding id")
         await match_claim.configure(
             connection=conn,
             lock=story_matching_execution_lock(context.claim.edition_id),
@@ -1054,6 +1052,7 @@ class StoryMatchingPrerequisiteService:
         place_policies: PlaceResolutionPolicyRepository | None = None,
         place_policy_service: PlaceResolutionPolicyService | None = None,
         matching_policy_service: StoryMatchingPolicyService | None = None,
+        processing_mode: str = "knowledge_full",
     ) -> None:
         self._claims = claims or ClaimRepository()
         self._embeddings = embeddings or EmbeddingRepository()
@@ -1063,6 +1062,7 @@ class StoryMatchingPrerequisiteService:
             self._place_policies
         )
         self._matching_policy_service = matching_policy_service or StoryMatchingPolicyService()
+        self._processing_mode = processing_mode
 
     async def maybe_schedule(
         self,
@@ -1076,19 +1076,9 @@ class StoryMatchingPrerequisiteService:
             raise ValueError(f"claim {claim_id} does not exist")
         claim = claims[0]
 
-        if processing_mode is None:
-            try:
-                from src.runtime import get_runtime
-
-                rt = get_runtime()
-                cfg = getattr(rt, "config", None)
-                telegram_cfg = getattr(cfg, "telegram", None)
-                processing_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
-            except Exception:
-                processing_mode = "knowledge_full"
-
+        mode = processing_mode if processing_mode is not None else self._processing_mode
         embedding = await self._embeddings.latest_claim_embedding_identity(conn, claim_id=claim.id)
-        if embedding is None and processing_mode != "knowledge_no_embeddings":
+        if embedding is None and mode != "knowledge_no_embeddings":
             return False
 
         place_policy = await self._place_policy_service.ensure_current(

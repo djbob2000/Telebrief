@@ -159,20 +159,50 @@ class EditorialSelectionService:
                 )
 
                 if prop.decision == "INCLUDE":
-                    # Query claims and evidence clusters attached <= snapshot_at
+                    # Load eligibility policy config to check excluded_platforms
+                    cur = await conn.execute(
+                        "SELECT config->'excluded_platforms' FROM eligibility_policy_versions WHERE id = %s",
+                        (run.eligibility_policy_id,),
+                    )
+                    pol_row = await cur.fetchone()
+                    excluded_platforms: list[str] = []
+                    if (
+                        pol_row is not None
+                        and pol_row[0] is not None
+                        and isinstance(pol_row[0], list)
+                    ):
+                        excluded_platforms = [
+                            str(p).strip().lower() for p in pol_row[0] if str(p).strip()
+                        ]
+
+                    # Query claims attached <= snapshot_at excluding excluded platforms
                     c_cur = await conn.execute(
                         """
                         SELECT sc.claim_id
                         FROM story_claims sc
                         JOIN claims c ON c.id = sc.claim_id
+                        JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                        JOIN source_items si ON si.id = sir.source_item_id
+                        JOIN sources src ON src.id = si.source_id
                         WHERE sc.story_id = %s
                           AND sc.attached_at <= %s
                           AND c.created_at <= %s
+                          AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
                         ORDER BY sc.claim_id ASC
                         """,
-                        (cand.story_id, run.snapshot_at, run.snapshot_at),
+                        (
+                            cand.story_id,
+                            run.snapshot_at,
+                            run.snapshot_at,
+                            excluded_platforms,
+                            excluded_platforms,
+                        ),
                     )
                     claim_ids = [r[0] for r in await c_cur.fetchall()]
+
+                    # If no allowed claims remain, this story is not eligible for publication inputs
+                    if not claim_ids:
+                        continue
 
                     ec_cur = await conn.execute(
                         """
@@ -182,9 +212,15 @@ class EditorialSelectionService:
                         WHERE ear.story_id = %s
                           AND ear.completed_at <= %s
                           AND ear.status = 'succeeded'
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM evidence_cluster_members ecm
+                              WHERE ecm.cluster_id = ec.id
+                                AND ecm.claim_id <> ALL(%s::bigint[])
+                          )
                         ORDER BY ec.id ASC
                         """,
-                        (cand.story_id, run.snapshot_at),
+                        (cand.story_id, run.snapshot_at, claim_ids),
                     )
                     evidence_cluster_ids = [r[0] for r in await ec_cur.fetchall()]
 

@@ -2,12 +2,8 @@
 -- Safety guard: only drop messages if table exists, legacy_imported_messages exists, and all rows are imported into legacy_imported_messages.
 DO $$
 BEGIN
-    IF EXISTS (
-        SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'messages'
-    ) THEN
-        IF NOT EXISTS (
-            SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'legacy_imported_messages'
-        ) THEN
+    IF to_regclass('messages') IS NOT NULL THEN
+        IF to_regclass('legacy_imported_messages') IS NULL THEN
             RAISE EXCEPTION 'Cannot drop messages: legacy_imported_messages tracking table does not exist. Run scripts/import_legacy_messages.py first.';
         END IF;
 

@@ -304,17 +304,19 @@ class KnowledgeEditorialAdapter:
                         )
 
                 representative_refs = list(dict.fromkeys(card_source_refs))
+                allowed_assertions = [r[2] or r[1] for r in claim_rows if (r[2] or r[1])]
+                card_summary = " ".join(allowed_assertions) if allowed_assertions else semantic_text
 
                 if not card_hard_facts and not card_community_obs:
                     card_hard_facts = [
-                        StoryElement(text=semantic_text, source_refs=representative_refs)
+                        StoryElement(text=card_summary, source_refs=representative_refs)
                     ]
 
                 card = StoryCard(
                     id=f"story-{inp.story_id}",
                     topic="Городские события",
                     importance="high" if rank == 1 else "medium",
-                    summary=semantic_text,
+                    summary=card_summary,
                     representative_source_refs=representative_refs,
                     hard_facts=card_hard_facts,
                     community_observations=card_community_obs,

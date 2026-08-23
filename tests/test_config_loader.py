@@ -1989,3 +1989,27 @@ def test_embedding_api_key_never_appears_in_repr(monkeypatch, tmp_path, mock_env
     assert config.embedding.api_key == secret
     assert secret not in repr(config.embedding)
     assert secret not in repr(config)
+
+
+@pytest.mark.unit
+def test_facebook_config_editorial_enabled_defaults_and_override(tmp_path, mock_env_vars):
+    """facebook.editorial_enabled defaults to True and can be set to False."""
+    path1 = _write_config(tmp_path, {"facebook": {"enabled": True}})
+    with patch("src.config_loader.load_dotenv"):
+        cfg1 = load_config(path=path1)
+    assert cfg1.facebook.enabled is True
+    assert cfg1.facebook.editorial_enabled is True
+
+    path2 = _write_config(tmp_path, {"facebook": {"enabled": True, "editorial_enabled": False}})
+    with patch("src.config_loader.load_dotenv"):
+        cfg2 = load_config(path=path2)
+    assert cfg2.facebook.enabled is True
+    assert cfg2.facebook.editorial_enabled is False
+
+
+@pytest.mark.unit
+def test_facebook_config_rejects_invalid_editorial_enabled(tmp_path, mock_env_vars):
+    path = _write_config(tmp_path, {"facebook": {"editorial_enabled": "invalid"}})
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="facebook.editorial_enabled must be a bool"):
+            load_config(path=path)

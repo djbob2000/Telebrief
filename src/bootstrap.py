@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 # (places + versioned place resolution) lands version 7, and the
 # retention/trigger migration lands version 12.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 16
+SCHEMA_VERSION_MAXIMUM = 17
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]
 

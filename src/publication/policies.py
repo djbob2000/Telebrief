@@ -52,18 +52,55 @@ class PublicationPolicyService:
         writer_prompt_version: str = DEFAULT_WRITER_PROMPT_VERSION,
     ) -> PublicationPolicySet:
         lookback_hours = 24
+        excluded_platforms: list[str] = []
         if config is not None:
-            if hasattr(config, "settings") and hasattr(config.settings, "lookback_hours"):
+            is_article = publication_type in ("daily_article", "article")
+            if (
+                is_article
+                and hasattr(config, "settings")
+                and hasattr(config.settings, "article")
+                and hasattr(config.settings.article, "lookback_hours")
+            ):
+                lookback_hours = int(config.settings.article.lookback_hours)
+            elif (
+                is_article
+                and hasattr(config, "article")
+                and hasattr(config.article, "lookback_hours")
+            ):
+                lookback_hours = int(config.article.lookback_hours)
+            elif hasattr(config, "settings") and hasattr(config.settings, "lookback_hours"):
                 lookback_hours = int(config.settings.lookback_hours)
             elif isinstance(config, dict):
-                lookback_hours = int(
-                    config.get(
-                        "lookback_hours",
-                        config.get("settings", {}).get("lookback_hours", 24),
-                    )
+                art_dict = config.get("article") or (
+                    config.get("settings", {}).get("article")
+                    if isinstance(config.get("settings"), dict)
+                    else None
                 )
+                if is_article and isinstance(art_dict, dict) and "lookback_hours" in art_dict:
+                    lookback_hours = int(art_dict["lookback_hours"])
+                else:
+                    lookback_hours = int(
+                        config.get(
+                            "lookback_hours",
+                            config.get("settings", {}).get("lookback_hours", 24)
+                            if isinstance(config.get("settings"), dict)
+                            else 24,
+                        )
+                    )
 
-        eligibility_config = {"lookback_hours": lookback_hours}
+            fb_cfg = getattr(config, "facebook", None)
+            if fb_cfg is not None:
+                if not getattr(fb_cfg, "editorial_enabled", True):
+                    excluded_platforms.append("facebook")
+            elif isinstance(config, dict):
+                fb_dict = config.get("facebook")
+                if isinstance(fb_dict, dict) and not fb_dict.get("editorial_enabled", True):
+                    excluded_platforms.append("facebook")
+
+        eligibility_config = {
+            "lookback_hours": lookback_hours,
+            "excluded_platforms": sorted(set(excluded_platforms)),
+        }
         if eligibility_config_hash == DEFAULT_ELIGIBILITY_CONFIG_HASH:
             eligibility_config_hash = compute_config_hash(eligibility_config)
 

@@ -5,9 +5,6 @@ from __future__ import annotations
 import datetime as dt
 from unittest.mock import patch
 
-import psycopg
-import pytest
-
 from src.domain.sources import Source
 from src.ingestion.models import CollectionTrigger
 from src.jobs.facebook import (
@@ -22,14 +19,42 @@ _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
 
 
 def test_is_facebook_enabled_policy():
-    assert is_facebook_enabled(None) is False
     assert is_facebook_enabled({}) is False
     assert is_facebook_enabled({"facebook": {"enabled": False}}) is False
     assert is_facebook_enabled({"facebook": {"enabled": True}}) is True
+    with patch("src.config_loader.load_config", return_value={"facebook": {"enabled": True}}):
+        assert is_facebook_enabled(None) is True
+    with patch("src.config_loader.load_config", return_value={"facebook": {"enabled": False}}):
+        assert is_facebook_enabled(None) is False
 
 
-@pytest.mark.postgres
-async def test_facebook_collector_bypasses_when_disabled(conn: psycopg.AsyncConnection):
+def test_production_registry_registers_facebook_when_enabled():
+    from src.config_loader import Config, FacebookConfig, Settings
+    from src.ingestion.registry import build_default_collector_registry
+
+    fb_cfg = FacebookConfig(enabled=True)
+    cfg = Config(
+        channels=[],
+        settings=Settings(
+            schedule_time="08:00",
+            timezone="UTC",
+            lookback_hours=24,
+            openai_model="gpt-5-nano",
+            openai_temperature=0.7,
+        ),
+        telegram_api_id=123456,
+        telegram_api_hash="hash",
+        telegram_bot_token="token",
+        openai_api_key="key",
+        log_level="INFO",
+        facebook=fb_cfg,
+    )
+    registry = build_default_collector_registry(cfg)
+    assert "facebook" in registry.registered_platforms()
+    assert "telegram" in registry.registered_platforms()
+
+
+async def test_facebook_collector_bypasses_when_disabled():
     source = Source(
         id=1,
         platform="facebook",
@@ -51,7 +76,6 @@ async def test_facebook_collector_bypasses_when_disabled(conn: psycopg.AsyncConn
         assert batch.assets == ()
 
 
-@pytest.mark.postgres
 async def test_facebook_comment_collector_bypasses_when_disabled():
     collector = FacebookCommentCollector(auth_root="/tmp")
     source = Source(
@@ -78,8 +102,7 @@ async def test_facebook_comment_collector_bypasses_when_disabled():
         assert batch.stop_reason == "disabled"
 
 
-@pytest.mark.postgres
-async def test_facebook_jobs_bypass_when_disabled(conn: psycopg.AsyncConnection):
+async def test_facebook_jobs_bypass_when_disabled():
     with patch("src.providers.facebook.runtime_policy.is_facebook_enabled", return_value=False):
         with patch("src.providers.facebook.browser.FacebookBrowserSession") as mock_browser:
             await refresh_facebook_comments(source_item_revision_id=1, post_item_id=1)

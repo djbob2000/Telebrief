@@ -169,6 +169,7 @@ class FacebookSourceBootstrap:
 @dataclass
 class FacebookConfig:
     enabled: bool = False
+    editorial_enabled: bool = True
     auth_root: str = "/var/lib/telebrief/auth"
     auth_profiles: list[FacebookAuthProfileBootstrap] = field(default_factory=list)
     sources: list[FacebookSourceBootstrap] = field(default_factory=list)
@@ -1045,6 +1046,12 @@ def _parse_facebook_config(yaml_config: dict) -> FacebookConfig:
     if not isinstance(enabled, bool):
         raise ValueError(f"facebook.enabled must be a bool, got {type(enabled).__name__}")
 
+    editorial_enabled = raw.get("editorial_enabled", True)
+    if not isinstance(editorial_enabled, bool):
+        raise ValueError(
+            f"facebook.editorial_enabled must be a bool, got {type(editorial_enabled).__name__}"
+        )
+
     auth_root = raw.get("auth_root", "/var/lib/telebrief/auth")
     if not isinstance(auth_root, str) or not auth_root.strip():
         raise ValueError("facebook.auth_root must be a non-empty string")
@@ -1153,6 +1160,7 @@ def _parse_facebook_config(yaml_config: dict) -> FacebookConfig:
 
     return FacebookConfig(
         enabled=enabled,
+        editorial_enabled=editorial_enabled,
         auth_root=auth_root.strip(),
         auth_profiles=auth_profiles,
         sources=sources,

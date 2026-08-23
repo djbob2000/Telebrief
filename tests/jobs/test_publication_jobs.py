@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from unittest.mock import AsyncMock, patch
 
 import psycopg
@@ -15,6 +16,11 @@ from src.jobs.publication import (
 from src.publication.snapshot import PublicationSnapshotService
 
 _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
+
+pytestmark = pytest.mark.skipif(
+    "TELEBRIEF_TEST_DATABASE_URL" not in os.environ,
+    reason="TELEBRIEF_TEST_DATABASE_URL is not set",
+)
 
 
 @pytest.mark.postgres

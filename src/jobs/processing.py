@@ -191,14 +191,17 @@ def build_claim_extraction_service() -> ClaimExtractionService:
     from src.config_loader import load_config
 
     config = load_config()
+    telegram_cfg = getattr(config, "telegram", None)
+    processing_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
     return ClaimExtractionService(
         uow=get_runtime().uow,
         provider=_create_ai_provider(config),
         model=config.settings.ai_model,
         provider_name=config.settings.ai_provider,
         reasoning_effort=config.settings.reasoning_effort,
+        processing_mode=processing_mode,
         # Frozen into each embed_claim defer so retries keep the queued space.
-        embedding_config=config.embedding,
+        embedding_config=config.embedding if processing_mode == "knowledge_full" else None,
         # T8: materialize mentions/entities and defer resolve_place_mention
         # per new mention on the success transaction.
         place_resolution_handoff=True,

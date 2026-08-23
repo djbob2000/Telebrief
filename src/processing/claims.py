@@ -45,7 +45,6 @@ import hashlib
 import json
 import logging
 from collections.abc import Sequence
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -372,6 +371,7 @@ class ClaimExtractionService:
         run_repo: ClaimExtractionRunRepository | None = None,
         claim_repo: ClaimRepository | None = None,
         context_builder: ClaimExtractionContextBuilder | None = None,
+        processing_mode: str = "knowledge_full",
         embedding_config: EmbeddingConfig | None = None,
         place_resolution_handoff: bool = False,
         places_repo: PlaceRepository | None = None,
@@ -384,6 +384,7 @@ class ClaimExtractionService:
         self.provider_name = provider_name
         self.reasoning_effort = reasoning_effort
         self.max_output_tokens = max_output_tokens
+        self._processing_mode = processing_mode
         self._embedding_config = embedding_config
         # Place-resolution handoff is opt-in at the wiring layer (mirrors the
         # embedding service's matching_handoff): when enabled, newly created
@@ -714,24 +715,17 @@ class ClaimExtractionService:
                 if self._place_handoff:
                     await self._materialize_place_evidence(conn, inserted)
                 await self._defer_embed_claims(conn, inserted)
-                # In knowledge_no_embeddings mode, schedule matching directly for claims with no place mentions
-                processing_mode = "knowledge_full"
-                with suppress(Exception):
-                    from src.runtime import get_runtime
-
-                    rt = get_runtime()
-                    cfg = getattr(rt, "config", None)
-                    telegram_cfg = getattr(cfg, "telegram", None)
-                    processing_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
-
-                if processing_mode == "knowledge_no_embeddings" or self._embedding_config is None:
+                if (
+                    self._processing_mode == "knowledge_no_embeddings"
+                    or self._embedding_config is None
+                ):
                     from src.processing.story_matching import StoryMatchingPrerequisiteService
 
-                    prereq = StoryMatchingPrerequisiteService()
+                    prereq = StoryMatchingPrerequisiteService(processing_mode=self._processing_mode)
                     for claim in inserted:
                         if not staging_strings(claim.metadata, "place_mentions"):
                             await prereq.maybe_schedule(
-                                conn, claim_id=claim.id, processing_mode="knowledge_no_embeddings"
+                                conn, claim_id=claim.id, processing_mode=self._processing_mode
                             )
                 final = await self._run_repo.get(conn, run.id)
         except psycopg.errors.UniqueViolation as exc:
@@ -763,16 +757,7 @@ class ClaimExtractionService:
         queued vector. Model/dimensions are copied from the config into the
         task arguments so retries keep the exact queued vector space.
         """
-        processing_mode = "knowledge_full"
-        with suppress(Exception):
-            from src.runtime import get_runtime
-
-            rt = get_runtime()
-            cfg = getattr(rt, "config", None)
-            telegram_cfg = getattr(cfg, "telegram", None)
-            processing_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
-
-        if processing_mode == "knowledge_no_embeddings":
+        if self._processing_mode == "knowledge_no_embeddings":
             return
 
         config = self._embedding_config

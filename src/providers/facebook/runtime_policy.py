@@ -9,10 +9,9 @@ def is_facebook_enabled(config: Any = None) -> bool:
     """Return True if Facebook integration is enabled in config or runtime settings."""
     if config is None:
         try:
-            from src.runtime import get_runtime
+            from src.config_loader import load_config
 
-            runtime = get_runtime()
-            config = getattr(runtime, "config", None)
+            config = load_config()
         except Exception:
             return False
 

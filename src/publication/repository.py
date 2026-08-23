@@ -279,17 +279,23 @@ class PublicationRepository:
     ) -> list[dict[str, Any]]:
         """Query stories and their latest revision visible at snapshot_at with recent activity."""
         lookback_hours = 24
+        excluded_platforms: list[str] = []
         if eligibility_policy_id is not None:
             cur = await conn.execute(
-                "SELECT config->>'lookback_hours' FROM eligibility_policy_versions WHERE id = %s",
+                "SELECT config->>'lookback_hours', config->'excluded_platforms' FROM eligibility_policy_versions WHERE id = %s",
                 (eligibility_policy_id,),
             )
             pol_row = await cur.fetchone()
-            if pol_row is not None and pol_row[0] is not None:
-                try:
-                    lookback_hours = int(pol_row[0])
-                except (ValueError, TypeError):
-                    lookback_hours = 24
+            if pol_row is not None:
+                if pol_row[0] is not None:
+                    try:
+                        lookback_hours = int(pol_row[0])
+                    except (ValueError, TypeError):
+                        lookback_hours = 24
+                if pol_row[1] is not None and isinstance(pol_row[1], list):
+                    excluded_platforms = [
+                        str(p).strip().lower() for p in pol_row[1] if str(p).strip()
+                    ]
 
         window_start = snapshot_at - dt.timedelta(hours=lookback_hours)
 
@@ -323,9 +329,13 @@ class PublicationRepository:
                             SELECT count(DISTINCT sc.claim_id)
                             FROM story_claims sc
                             JOIN claims c ON c.id = sc.claim_id
+                            JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                            JOIN source_items si ON si.id = sir.source_item_id
+                            JOIN sources src ON src.id = si.source_id
                             WHERE sc.story_id = lr.story_id
                               AND sc.attached_at <= %s
                               AND c.created_at <= %s
+                              AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
                         ), 0
                     ) AS claim_count,
                     COALESCE(
@@ -333,10 +343,14 @@ class PublicationRepository:
                             SELECT count(DISTINCT sc.claim_id)
                             FROM story_claims sc
                             JOIN claims c ON c.id = sc.claim_id
+                            JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                            JOIN source_items si ON si.id = sir.source_item_id
+                            JOIN sources src ON src.id = si.source_id
                             WHERE sc.story_id = lr.story_id
                               AND sc.attached_at >= %s
                               AND sc.attached_at <= %s
                               AND c.created_at <= %s
+                              AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
                         ), 0
                     ) AS new_claims_count,
                     COALESCE(
@@ -345,9 +359,12 @@ class PublicationRepository:
                             FROM story_claims sc
                             JOIN claims c ON c.id = sc.claim_id
                             JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                            JOIN source_items si ON si.id = sir.source_item_id
+                            JOIN sources src ON src.id = si.source_id
                             WHERE sc.story_id = lr.story_id
                               AND sc.attached_at <= %s
                               AND c.created_at <= %s
+                              AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
                         ), 0
                     ) AS source_count,
                     (
@@ -357,8 +374,14 @@ class PublicationRepository:
                             UNION ALL
                             SELECT MAX(sc.attached_at) AS event_time
                             FROM story_claims sc
+                            JOIN claims c ON c.id = sc.claim_id
+                            JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                            JOIN source_items si ON si.id = sir.source_item_id
+                            JOIN sources src ON src.id = si.source_id
                             WHERE sc.story_id = lr.story_id
                               AND sc.attached_at <= %s
+                              AND c.created_at <= %s
+                              AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
                             UNION ALL
                             SELECT MAX(sse.created_at) AS event_time
                             FROM story_state_events sse
@@ -376,9 +399,15 @@ class PublicationRepository:
                     EXISTS (
                         SELECT 1
                         FROM story_claims sc2
+                        JOIN claims c2 ON c2.id = sc2.claim_id
+                        JOIN source_item_revisions sir2 ON sir2.id = c2.source_item_revision_id
+                        JOIN source_items si2 ON si2.id = sir2.source_item_id
+                        JOIN sources src2 ON src2.id = si2.source_id
                         WHERE sc2.story_id = lr.story_id
                           AND sc2.attached_at >= %s
                           AND sc2.attached_at <= %s
+                          AND c2.created_at <= %s
+                          AND (cardinality(%s::text[]) = 0 OR src2.platform <> ALL(%s::text[]))
                     ) AS has_recent_claim,
                     EXISTS (
                         SELECT 1
@@ -390,7 +419,16 @@ class PublicationRepository:
                 FROM latest_revs lr
                 JOIN stories s ON s.id = lr.story_id
                 WHERE lr.current_state NOT IN ('invalid', 'archived', 'rejected')
-                  AND s.lifecycle_state <> 'archived'
+                  AND COALESCE(
+                      (
+                          SELECT sse.to_state
+                          FROM story_state_events sse
+                          WHERE sse.story_id = lr.story_id
+                            AND sse.created_at <= %s
+                          ORDER BY sse.created_at DESC, sse.id DESC
+                          LIMIT 1
+                      ), 'active'
+                  ) <> 'archived'
             )
             SELECT
                 story_id,
@@ -408,38 +446,98 @@ class PublicationRepository:
                 has_recent_claim,
                 has_recent_event
             FROM story_activity
-            WHERE (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
+            WHERE claim_count > 0 AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
             ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
             """,
             (
                 edition_id,
                 snapshot_at,
+                # claim_count
                 snapshot_at,
                 snapshot_at,
+                excluded_platforms,
+                excluded_platforms,
+                # new_claims_count
                 window_start,
                 snapshot_at,
                 snapshot_at,
+                excluded_platforms,
+                excluded_platforms,
+                # source_count
                 snapshot_at,
                 snapshot_at,
+                excluded_platforms,
+                excluded_platforms,
+                # last_activity_at claims
                 snapshot_at,
                 snapshot_at,
+                excluded_platforms,
+                excluded_platforms,
+                # last_activity_at state_events
+                snapshot_at,
+                # has_recent_revision
                 window_start,
                 snapshot_at,
+                # has_recent_claim
                 window_start,
                 snapshot_at,
+                snapshot_at,
+                excluded_platforms,
+                excluded_platforms,
+                # has_recent_event
                 window_start,
                 snapshot_at,
+                # historical lifecycle_state
+                snapshot_at,
+                # outer WHERE story_created_at
                 window_start,
             ),
         )
         rows = await cursor.fetchall()
+
+        # If platforms are excluded, derive filtered editorial text for snapshot features
+        filtered_story_texts: dict[int, str] = {}
+        if excluded_platforms and rows:
+            c_text_cur = await conn.execute(
+                """
+                SELECT sc.story_id, c.normalized_assertion
+                FROM story_claims sc
+                JOIN claims c ON c.id = sc.claim_id
+                JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                JOIN source_items si ON si.id = sir.source_item_id
+                JOIN sources src ON src.id = si.source_id
+                WHERE sc.story_id = ANY(%s)
+                  AND sc.attached_at <= %s
+                  AND c.created_at <= %s
+                  AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
+                ORDER BY sc.story_id, sc.claim_id ASC
+                """,
+                (
+                    [r[0] for r in rows],
+                    snapshot_at,
+                    snapshot_at,
+                    excluded_platforms,
+                    excluded_platforms,
+                ),
+            )
+            c_text_rows = await c_text_cur.fetchall()
+            from collections import defaultdict
+
+            story_assertions = defaultdict(list)
+            for sid, norm_assert in c_text_rows:
+                if norm_assert:
+                    story_assertions[sid].append(norm_assert.strip())
+            for sid, asserts in story_assertions.items():
+                filtered_story_texts[sid] = " ".join(asserts)
+
         candidates = []
         for r in rows:
             story_id = r[0]
             story_rev_id = r[1]
             rev_no = r[2]
             current_state = r[3]
-            semantic_text = r[4]
+            raw_semantic_text = r[4]
+            semantic_text = filtered_story_texts.get(story_id) or raw_semantic_text
             rev_created_at = r[5]
             claim_count = r[6]
             source_count = r[7]

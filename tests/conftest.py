@@ -16,7 +16,12 @@ from src.config_loader import ChannelConfig, Config, DatabaseConfig, Settings
 @pytest.fixture
 def database_config() -> DatabaseConfig:
     """DatabaseConfig pointing at the persistent PostgreSQL test database."""
-    url = os.environ["TELEBRIEF_TEST_DATABASE_URL"]
+    url = os.environ.get(
+        "TELEBRIEF_TEST_DATABASE_URL",
+        os.environ.get(
+            "DATABASE_URL", "postgresql://telebrief:telebrief@localhost:5432/telebrief_test"
+        ),
+    )
     return DatabaseConfig(
         enabled=True,
         url=url,
