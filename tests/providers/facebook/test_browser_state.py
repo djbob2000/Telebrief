@@ -98,3 +98,40 @@ class TestFacebookSessionClassification:
         exc = FacebookHumanActionRequired(FacebookAuthState.CHECKPOINT_REQUIRED)
         assert str(exc) == "Facebook interactive action required: checkpoint_required"
         assert exc.state == FacebookAuthState.CHECKPOINT_REQUIRED
+
+
+class TestFacebookBrowserSession:
+    """Tests for browser context manager lifecycle and error cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_stops_playwright_if_launch_fails(self, tmp_path: Path):
+        from unittest.mock import patch
+
+        from src.providers.facebook.browser import FacebookBrowserSession
+        from src.providers.facebook.models import FacebookAuthProfile
+
+        profile = FacebookAuthProfile(
+            id=1,
+            name="test-profile",
+            storage_ref="test-profile",
+            status="ready",
+        )
+        session = FacebookBrowserSession(auth_root=tmp_path, profile=profile)
+
+        mock_pw = MagicMock()
+        mock_pw.stop = AsyncMock()
+        mock_pw.chromium.launch_persistent_context = AsyncMock(
+            side_effect=RuntimeError("Chromium binary missing")
+        )
+
+        with patch("src.providers.facebook.browser.async_playwright") as mock_ap:
+            mock_ap_builder = MagicMock()
+            mock_ap_builder.start = AsyncMock(return_value=mock_pw)
+            mock_ap.return_value = mock_ap_builder
+
+            with pytest.raises(RuntimeError, match="Chromium binary missing"):
+                async with session:
+                    pass
+
+        mock_pw.stop.assert_awaited_once()
+        assert session._playwright is None

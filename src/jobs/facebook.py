@@ -91,6 +91,14 @@ async def refresh_facebook_comments(
             conn, name=prof_name, storage_ref=prof_name
         )
 
+    if profile.status == "disabled":
+        logger.warning(
+            "Facebook auth profile %s is disabled; skipping comment refresh for post %s",
+            prof_name,
+            post_item_id,
+        )
+        return
+
     post_url = source.url
     if "/posts/" not in (source.url or "") and post_external_id:
         from src.providers.facebook.collector import canonicalize_post_url

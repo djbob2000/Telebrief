@@ -58,19 +58,23 @@ class FacebookBrowserSession:
 
         pw = await async_playwright().start()
         self._playwright = pw
-        self._context = await pw.chromium.launch_persistent_context(
-            user_data_dir=str(path),
-            headless=self.headless,
-            args=self.launch_args,
-            viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-            ),
-        )
-
-        page = self._context.pages[0] if self._context.pages else await self._context.new_page()
-        return self._context, page
+        try:
+            self._context = await pw.chromium.launch_persistent_context(
+                user_data_dir=str(path),
+                headless=self.headless,
+                args=self.launch_args,
+                viewport={"width": 1280, "height": 800},
+                user_agent=(
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                ),
+            )
+            page = self._context.pages[0] if self._context.pages else await self._context.new_page()
+            return self._context, page
+        except Exception:
+            await pw.stop()
+            self._playwright = None
+            raise
 
     async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         if self._context is not None:

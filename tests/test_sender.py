@@ -564,3 +564,34 @@ async def test_send_article_with_photo_fallback_when_file_missing(sample_config,
 
     assert success is True
     mock_bot.send_message.assert_called_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_send_article_with_photo_long_header_does_not_crash(
+    sample_config, mock_logger, tmp_path
+):
+    """Test photo caption slicing when title is extremely long (>1000 chars)."""
+    sample_config.settings.target_chat_id = "@berdiansk_news"
+    fake_img = tmp_path / "test.jpg"
+    fake_img.write_bytes(b"dummy image data")
+
+    with patch("src.sender.Bot") as mock_bot_class:
+        mock_bot = MagicMock()
+        mock_bot.send_photo = AsyncMock()
+        mock_bot_class.return_value = mock_bot
+
+        sender = DigestSender(sample_config, mock_logger)
+        huge_title = "А" * 1050
+        success = await sender.send_article_with_photo(
+            title=huge_title,
+            lead="Какой-то длинный лид",
+            telegraph_url="https://telegra.ph/V-Berdyanske-08-14",
+            photo_path=fake_img,
+            user_id=123456789,
+        )
+
+    assert success is True
+    mock_bot.send_photo.assert_called_once()
+    kwargs = mock_bot.send_photo.call_args.kwargs
+    assert kwargs["chat_id"] == "@berdiansk_news"

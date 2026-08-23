@@ -37,16 +37,31 @@ def _default_telegram_destination() -> str | None:
 
 def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
     """Render the immutable payload content for a destination platform."""
+    body_text = (pub.body or "").strip()
+    title_text = (pub.title or "").strip()
+    lead_text = (pub.lead or "").strip()
+
     if platform == "telegram_channel":
-        raw_text = f"{pub.title}\n\n{pub.body}"
+        if body_text.startswith(f"# {title_text}") or body_text.startswith(title_text):
+            raw_text = body_text
+        elif title_text:
+            raw_text = f"{title_text}\n\n{body_text}"
+        else:
+            raw_text = body_text
         return "telegram_html", {"text": raw_text}
+
     if platform == "telegraph":
-        body = (
-            f"# {pub.title}\n\n{pub.body}"
-            if pub.lead is None
-            else (f"# {pub.title}\n\n{pub.lead}\n\n{pub.body}")
-        )
-        return "telegraph_nodes", {"title": pub.title, "body_markdown": body}
+        if body_text.startswith("# "):
+            body = body_text
+        elif title_text:
+            if lead_text and not body_text.startswith(lead_text):
+                body = f"# {title_text}\n\n{lead_text}\n\n{body_text}"
+            else:
+                body = f"# {title_text}\n\n{body_text}"
+        else:
+            body = body_text
+        return "telegraph_nodes", {"title": title_text, "body_markdown": body}
+
     raise ValueError(f"no delivery payload renderer for platform {platform!r}")
 
 
@@ -179,7 +194,8 @@ class PublicationDeliveryService:
                     idempotency_key=idempotency_key,
                 )
                 created_deliveries.append(delivery)
-                await self._defer_deliver_payload(conn, delivery.id)
+                if delivery.status not in ("succeeded", "failed"):
+                    await self._defer_deliver_payload(conn, delivery.id)
 
             return created_deliveries
 
@@ -251,7 +267,10 @@ class PublicationDeliveryService:
                         status="succeeded",
                         external_delivery_id="reconciled-msg-id",
                     )
-                    return await self.delivery_repo.get_delivery_by_id(conn, delivery.id)  # type: ignore
+                    res = await self.delivery_repo.get_delivery_by_id(conn, delivery.id)
+                    if res is None:
+                        raise RuntimeError(f"delivery {delivery.id} not found after reconciliation")
+                    return res
             if reconciliation == "unknown":
                 # The platform cannot prove whether the earlier attempt
                 # delivered; resending risks a duplicate publication. Keep
@@ -276,7 +295,10 @@ class PublicationDeliveryService:
                         delivery.id,
                         status="outcome_unknown",
                     )
-                    return await self.delivery_repo.get_delivery_by_id(conn, delivery.id)  # type: ignore
+                    res = await self.delivery_repo.get_delivery_by_id(conn, delivery.id)
+                    if res is None:
+                        raise RuntimeError(f"delivery {delivery.id} not found after reconciliation")
+                    return res
             elif reconciliation == "not_delivered":
                 # reconciliation == "not_delivered": definitive proof the payload
                 # never arrived; resending the same immutable payload is safe.
@@ -288,7 +310,10 @@ class PublicationDeliveryService:
                     reconciliation,
                 )
                 async with self.uow.transaction() as conn:
-                    return await self.delivery_repo.get_delivery_by_id(conn, delivery.id)  # type: ignore
+                    res = await self.delivery_repo.get_delivery_by_id(conn, delivery.id)
+                    if res is None:
+                        raise RuntimeError(f"delivery {delivery.id} not found")
+                    return res
 
         # Execute remote delivery
         try:
@@ -309,7 +334,10 @@ class PublicationDeliveryService:
                     status="succeeded",
                     external_delivery_id=ext_id,
                 )
-                return await self.delivery_repo.get_delivery_by_id(conn, delivery.id)  # type: ignore
+                res = await self.delivery_repo.get_delivery_by_id(conn, delivery.id)
+                if res is None:
+                    raise RuntimeError(f"delivery {delivery.id} not found after success")
+                return res
 
         except TimeoutError as exc:
             logger.warning("delivery %s timed out with unknown outcome: %s", delivery_id, exc)
@@ -327,7 +355,10 @@ class PublicationDeliveryService:
                     delivery.id,
                     status="outcome_unknown",
                 )
-                return await self.delivery_repo.get_delivery_by_id(conn, delivery.id)  # type: ignore
+                res = await self.delivery_repo.get_delivery_by_id(conn, delivery.id)
+                if res is None:
+                    raise RuntimeError(f"delivery {delivery.id} not found after timeout") from exc
+                return res
 
         except Exception as exc:
             logger.error("delivery %s failed: %s", delivery_id, exc)
@@ -345,7 +376,10 @@ class PublicationDeliveryService:
                     delivery.id,
                     status="failed",
                 )
-                return await self.delivery_repo.get_delivery_by_id(conn, delivery.id)  # type: ignore
+                res = await self.delivery_repo.get_delivery_by_id(conn, delivery.id)
+                if res is None:
+                    raise RuntimeError(f"delivery {delivery.id} not found after failure") from exc
+                return res
 
     async def _defer_deliver_payload(self, conn: psycopg.AsyncConnection, delivery_id: int) -> None:
         try:

@@ -239,3 +239,149 @@ class TestPublicationDeliveryService:
         assert deliv2.status == "succeeded"
         assert client.reconcile_count == 1
         assert client.send_count == 1  # did not re-send!
+
+    async def test_create_delivery_idempotency_on_conflict(
+        self, conn: psycopg.AsyncConnection, edition
+    ):
+        pub_repo = PublicationRepository()
+        deliv_repo = DeliveryRepository()
+        policy_ids = await _seed_policies(conn, edition.id)
+
+        run = await pub_repo.get_or_create_run(
+            conn,
+            edition_id=edition.id,
+            publication_type="article",
+            request_key="test-idempotent-deliv",
+            snapshot_at=_NOW,
+            policy_ids=policy_ids,
+        )
+        attempt = await pub_repo.insert_generation_attempt(
+            conn, run_id=run.id, attempt_no=1, kind="writer"
+        )
+        pub = await pub_repo.create_publication(
+            conn,
+            run_id=run.id,
+            winning_attempt_id=attempt.id,
+            publication_type="article",
+            title="Заголовок для повторного создания",
+            lead="Лид",
+            body="Тело",
+        )
+        dest = await deliv_repo.get_or_create_destination(
+            conn,
+            edition_id=edition.id,
+            platform="telegram_channel",
+            destination_key="@idem_test_channel",
+        )
+        payload1 = await deliv_repo.create_payload(
+            conn,
+            publication_id=pub.id,
+            destination_id=dest.id,
+            payload_format="telegram_html",
+            rendered_content={"text": "text 1"},
+            content_hash="h1",
+        )
+        payload2 = await deliv_repo.create_payload(
+            conn,
+            publication_id=pub.id,
+            destination_id=dest.id,
+            payload_format="telegram_html",
+            rendered_content={"text": "text 2"},
+            content_hash="h2",
+        )
+
+        d1 = await deliv_repo.create_delivery(
+            conn,
+            publication_id=pub.id,
+            destination_id=dest.id,
+            payload_id=payload1.id,
+            idempotency_key="key-1",
+        )
+        # Calling create_delivery again for the same (publication_id, destination_id) updates payload_id without error
+        d2 = await deliv_repo.create_delivery(
+            conn,
+            publication_id=pub.id,
+            destination_id=dest.id,
+            payload_id=payload2.id,
+            idempotency_key="key-2",
+        )
+        assert d1.id == d2.id
+        assert d2.payload_id == payload2.id
+
+
+def test_render_payload_deduplicates_headings():
+    from types import SimpleNamespace
+
+    from src.publication.delivery import _render_payload
+
+    # When body already starts with '# Headline', telegram and telegraph don't duplicate it
+    pub1 = SimpleNamespace(
+        title="Главная новость дня",
+        lead="Лид новости",
+        body="# Главная новость дня\n\nЛид новости\n\nТекст статьи...",
+    )
+    fmt_tg, content_tg = _render_payload("telegram_channel", pub1)
+    assert fmt_tg == "telegram_html"
+    assert content_tg["text"] == "# Главная новость дня\n\nЛид новости\n\nТекст статьи..."
+
+    fmt_tph, content_tph = _render_payload("telegraph", pub1)
+    assert fmt_tph == "telegraph_nodes"
+    assert content_tph["title"] == "Главная новость дня"
+    assert content_tph["body_markdown"] == "# Главная новость дня\n\nЛид новости\n\nТекст статьи..."
+
+    # When body is plain text without title header, render_payload adds the title
+    pub2 = SimpleNamespace(
+        title="Короткая заметка",
+        lead=None,
+        body="Просто текст без заголовка",
+    )
+    _, content_tg2 = _render_payload("telegram_channel", pub2)
+    assert content_tg2["text"] == "Короткая заметка\n\nПросто текст без заголовка"
+
+    _, content_tph2 = _render_payload("telegraph", pub2)
+    assert content_tph2["body_markdown"] == "# Короткая заметка\n\nПросто текст без заголовка"
+
+
+@pytest.mark.asyncio
+async def test_telegram_channel_adapter_fallback_on_parse_entities():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from telegram.error import TelegramError
+
+    from src.publication.adapters import TelegramChannelDestinationClient
+    from src.publication.models import DeliveryDestination, PublicationDeliveryPayload
+
+    client = TelegramChannelDestinationClient(bot_token="test-token")
+    mock_bot = MagicMock()
+
+    sent_msg = MagicMock()
+    sent_msg.message_id = 999
+
+    # First call with parse_mode=HTML raises entity parse error; second call with parse_mode=None succeeds
+    mock_bot.send_message = AsyncMock(
+        side_effect=[
+            TelegramError("Can't parse entities: can't find end tag"),
+            sent_msg,
+        ]
+    )
+    client._bot = mock_bot
+
+    dest = DeliveryDestination(
+        id=1, edition_id=1, platform="telegram_channel", destination_key="@test_chat"
+    )
+    payload = PublicationDeliveryPayload(
+        id=1,
+        publication_id=1,
+        destination_id=1,
+        payload_format="telegram_html",
+        rendered_content={"text": "Текст с <b>незакрытым тегом"},
+        content_hash="hash",
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+    result = await client.send_payload(destination=dest, payload=payload)
+    assert result["status"] == "sent"
+    assert result["external_message_id"] == "999"
+    assert mock_bot.send_message.call_count == 2
+    # Verify fallback call used parse_mode=None
+    assert mock_bot.send_message.call_args_list[1].kwargs["parse_mode"] is None

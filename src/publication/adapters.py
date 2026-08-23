@@ -53,7 +53,7 @@ class TelegramChannelDestinationClient(DestinationClient):
         payload: PublicationDeliveryPayload,
     ) -> dict[str, Any]:
         from telegram.constants import ParseMode
-        from telegram.error import TimedOut
+        from telegram.error import TelegramError, TimedOut
 
         text = str(payload.rendered_content.get("text", ""))
         if not text:
@@ -65,10 +65,26 @@ class TelegramChannelDestinationClient(DestinationClient):
                 parse_mode=ParseMode.HTML,
                 disable_web_page_preview=True,
             )
-        except TimedOut as exc:
+        except (TimedOut, asyncio.TimeoutError) as exc:
             raise TimeoutError(f"telegram send timed out: {exc}") from exc
-        except asyncio.TimeoutError as exc:
-            raise TimeoutError(f"telegram send timed out: {exc}") from exc
+        except TelegramError as exc:
+            if "Can't parse entities" in str(exc):
+                logger.warning(
+                    "HTML entity parse error delivering payload %s to %s; retrying with plain text",
+                    payload.id,
+                    destination.destination_key,
+                )
+                try:
+                    message = await self._get_bot().send_message(
+                        chat_id=destination.destination_key,
+                        text=text,
+                        parse_mode=None,
+                        disable_web_page_preview=True,
+                    )
+                except (TimedOut, asyncio.TimeoutError) as timeout_exc:
+                    raise TimeoutError(f"telegram send timed out: {timeout_exc}") from timeout_exc
+            else:
+                raise
         return {
             "external_message_id": str(message.message_id),
             "status": "sent",

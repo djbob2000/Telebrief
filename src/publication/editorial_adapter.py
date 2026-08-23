@@ -247,6 +247,9 @@ class KnowledgeEditorialAdapter:
                             link = f"https://t.me/{clean_chan}/{clean_msg}"
                         elif s_url:
                             link = s_url
+                        elif platform == "facebook":
+                            clean_ext = str(ext_id).replace("post:", "").replace("comment:", "")
+                            link = f"https://www.facebook.com/{clean_ext}"
                         else:
                             clean_ext = str(ext_id).replace("msg:", "")
                             link = (

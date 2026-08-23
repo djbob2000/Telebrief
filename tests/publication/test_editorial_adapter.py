@@ -159,3 +159,114 @@ class TestKnowledgeEditorialAdapter:
         assert observer.attempts[1].kind == "story_renderer_fallback"
         assert observer.last_successful_content_attempt is not None
         assert observer.last_successful_content_attempt.id == att2_id
+
+    async def test_knowledge_editorial_adapter_facebook_link_generation(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        adapter = KnowledgeEditorialAdapter(uow=uow)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow)
+
+        # 1. Seed Facebook source & item with no canonical_url / s_url
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, name, role, enabled)
+            VALUES ('facebook', 'facebook_group', 'group-999', 'Facebook Group', 'social_group', true)
+            RETURNING id
+            """
+        )
+        src_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO source_items (source_id, external_id, kind, first_collected_at)
+            VALUES (%s, 'post:987654', 'facebook_post', %s)
+            RETURNING id
+            """,
+            (src_id, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, created_at)
+            VALUES (%s, 1, 'h-fb1', 'Новость из группы Фейсбука', %s)
+            RETURNING id
+            """,
+            (item_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+
+        # 2. Seed relevance + claim extraction
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'rh-fb', 'rv-fb') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev_id, edition.id, rel_pol_id),
+        )
+        rel_dec_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'ch-fb', 'cv-fb') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev_id, edition.id, extr_pol_id, rel_dec_id),
+        )
+        extr_run_id = (await cur.fetchone())[0]
+
+        # 3. Seed claim
+        cur = await conn.execute(
+            """
+            INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at)
+            VALUES (%s, %s, %s, 'Ремонт набережной завершен', 'ремонт набережной завершен', %s)
+            RETURNING id
+            """,
+            (extr_run_id, rev_id, edition.id, _NOW),
+        )
+        claim_id = (await cur.fetchone())[0]
+
+        # 4. Seed story
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Ремонт набережной', 'h-sfb', %s)
+            RETURNING id
+            """,
+            (story_id, _NOW),
+        )
+        s_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s_rev_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, claim_id, _NOW),
+        )
+
+        # 5. Snapshot & Select
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-fb-adapter-build",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        # 6. Adapter build & verify Facebook link
+        frozen = await adapter.build(run.id)
+        rec = frozen.writer_bundle.records.get("facebook:post:987654")
+        assert rec is not None
+        assert rec.message.link == "https://www.facebook.com/987654"

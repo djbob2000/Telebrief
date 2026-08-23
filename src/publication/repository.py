@@ -821,6 +821,8 @@ class DeliveryRepository:
             INSERT INTO publication_deliveries (
                 publication_id, destination_id, payload_id, idempotency_key
             ) VALUES (%s, %s, %s, %s)
+            ON CONFLICT (publication_id, destination_id) DO UPDATE SET
+                payload_id = EXCLUDED.payload_id
             RETURNING id, publication_id, destination_id, payload_id,
                       idempotency_key, status, external_delivery_id, metadata,
                       created_at, completed_at

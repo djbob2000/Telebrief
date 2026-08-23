@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
@@ -144,7 +145,7 @@ async def _fan_out_pre_publish_scans() -> int:
     return queued
 
 
-async def _iter_enabled_source_ids():
+async def _iter_enabled_source_ids() -> AsyncIterator[int]:
     from src.repositories.sources import SourceRepository
     from src.runtime import get_runtime
 

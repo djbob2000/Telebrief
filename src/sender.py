@@ -624,13 +624,15 @@ class DigestSender:
                 title=title, lead=lead, telegraph_url=telegraph_url, user_id=user_id
             )
 
-        # Telegram photo caption limit is 1024 characters
         title_clean = title.strip()
         lead_clean = lead.strip()
         header = f"📰 *{title_clean}*\n\n"
-        max_lead_chars = 1000 - len(header)
-        if len(lead_clean) > max_lead_chars:
-            lead_clean = lead_clean[:max_lead_chars].rsplit(" ", 1)[0] + "..."
+        max_lead_chars = max(0, 1000 - len(header))
+        if max_lead_chars == 0:
+            lead_clean = ""
+        elif len(lead_clean) > max_lead_chars:
+            trimmed = lead_clean[:max_lead_chars].rsplit(" ", 1)[0]
+            lead_clean = f"{trimmed}..." if trimmed else "..."
 
         caption = f"{header}{lead_clean}" if lead_clean else f"📰 *{title_clean}*"
 
