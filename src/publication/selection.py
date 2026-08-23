@@ -87,7 +87,12 @@ class EditorialSelectionService:
     ) -> None:
         self.uow = uow
         self.repo = repo or PublicationRepository()
-        self.model = model or HeuristicSelectionModel()
+        if model is not None:
+            self.model = model
+        else:
+            from src.publication.selection_ai import FailOpenSelectionModel
+
+            self.model = FailOpenSelectionModel()
 
     async def select(self, run_id: int) -> list[PublicationInput]:
         async with self.uow.transaction() as conn:
