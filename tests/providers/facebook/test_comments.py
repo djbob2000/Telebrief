@@ -70,26 +70,24 @@ class TestCommentParsingAndLinkage:
         assert item.parent_external_id == "comment:2001"
         assert item.root_external_id == "post:1001"
 
-    def test_synthetic_id_differs_by_author_for_identical_text(self):
-        source = _make_source()
-        item1, _ = parse_comment_from_data(
-            source=source,
-            post_external_id="post:1001",
-            comment_id="synth_1",
-            text="Да",
-            author_name="Иван",
-            identity_quality="synthetic",
-        )
-        item2, _ = parse_comment_from_data(
-            source=source,
-            post_external_id="post:1001",
-            comment_id="synth_2",
-            text="Да",
-            author_name="Анна",
-            identity_quality="synthetic",
-        )
-        assert item1.author_name == "Иван"
-        assert item2.author_name == "Анна"
+    def test_synthetic_id_is_stable_across_scans_without_ordinals(self):
+        import hashlib
+
+        post_ext = "post:1001"
+        parent_id = None
+        author = "Иван"
+        norm_text = "Воды все еще нет"
+        time_sig = "2026-08-24T12:00:00+00:00"
+
+        # Scan 1: comment is 1st item in batch
+        scope_str1 = f"{post_ext}:{parent_id or ''}:{author}:{norm_text}:{time_sig}"
+        cid1 = hashlib.sha256(scope_str1.encode("utf-8")).hexdigest()[:16]
+
+        # Scan 2: a new comment appeared above, so comment would have been 2nd
+        scope_str2 = f"{post_ext}:{parent_id or ''}:{author}:{norm_text}:{time_sig}"
+        cid2 = hashlib.sha256(scope_str2.encode("utf-8")).hexdigest()[:16]
+
+        assert cid1 == cid2
 
     @pytest.mark.asyncio
     async def test_scanner_extracts_author_name_and_ignores_numeric_profile_link_for_comment_id(

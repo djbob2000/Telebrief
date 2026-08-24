@@ -475,6 +475,32 @@ class VisionService:
                 "before the claim handoff"
             )
         policy = await policy_service.ensure_current(conn, edition_id=decision.edition_id)
+
+        # Resolve platform to freeze processing_mode forward-looking
+        cur = await conn.execute(
+            """
+            SELECT s.platform
+            FROM source_item_revisions sir
+            JOIN source_items si ON si.id = sir.source_item_id
+            JOIN sources s ON s.id = si.source_id
+            WHERE sir.id = %s
+            """,
+            (decision.source_item_revision_id,),
+        )
+        p_row = await cur.fetchone()
+        platform = p_row[0] if p_row else "unknown"
+        if platform == "telegram":
+            try:
+                from src.config_loader import load_config
+
+                cfg = load_config()
+                telegram_cfg = getattr(cfg, "telegram", None)
+                mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
+            except Exception:
+                mode = "knowledge_full"
+        else:
+            mode = "knowledge_full"
+
         # Lazy on purpose: src.jobs.processing imports this module at top level.
         from src.jobs.processing import extract_claims
 
@@ -484,13 +510,15 @@ class VisionService:
             relevance_decision_id=handoff.relevance_decision_id,
             policy_id=policy.id,
             vision_run_id=handoff.vision_run_id,
+            processing_mode=mode,
         )
         logger.info(
-            "deferred extract_claims revision=%s decision=%s policy=%s vision_run=%s",
+            "deferred extract_claims revision=%s decision=%s policy=%s vision_run=%s mode=%s",
             decision.source_item_revision_id,
             handoff.relevance_decision_id,
             policy.id,
             handoff.vision_run_id,
+            mode,
         )
 
     @staticmethod

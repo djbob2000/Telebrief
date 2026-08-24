@@ -680,6 +680,7 @@ class PublicationRepository:
         presentation_intent: str | None = None,
         rank: int = 1,
         claim_ids: list[int] | None = None,
+        claim_roles: dict[int, str] | None = None,
         evidence_cluster_ids: list[int] | None = None,
     ) -> PublicationInput:
         cursor = await conn.execute(
@@ -704,12 +705,15 @@ class PublicationRepository:
 
         if claim_ids:
             cur = conn.cursor()
+            roles = claim_roles or {}
             await cur.executemany(
                 """
-                INSERT INTO publication_input_claims (publication_input_id, claim_id)
-                VALUES (%s, %s) ON CONFLICT DO NOTHING
+                INSERT INTO publication_input_claims (publication_input_id, claim_id, source_role)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (publication_input_id, claim_id) DO UPDATE
+                SET source_role = EXCLUDED.source_role
                 """,
-                [(input_row.id, cid) for cid in claim_ids],
+                [(input_row.id, cid, roles.get(cid)) for cid in claim_ids],
             )
 
         if evidence_cluster_ids:

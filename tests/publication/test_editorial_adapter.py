@@ -167,7 +167,7 @@ class TestKnowledgeEditorialAdapter:
         uow = DatabaseUnitOfWork(pool)
         adapter = KnowledgeEditorialAdapter(uow=uow)
         snap_service = PublicationSnapshotService(uow=uow)
-        sel_service = EditorialSelectionService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
 
         # 1. Seed Facebook source & item with no canonical_url / s_url
         cur = await conn.execute(
@@ -715,3 +715,108 @@ class TestKnowledgeEditorialAdapter:
         assert card.community_observations[0].status == "attributed"
         assert card.community_observations[0].attribution == "Иван Петров (Администрация города)"
         assert frozen.writer_bundle.records[comment_ref].source_type == "comment"
+
+    async def test_frozen_source_role_survives_source_role_mutation(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
+        adapter = KnowledgeEditorialAdapter(uow=uow)
+
+        # 1. Seed source with community role
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role)
+            VALUES ('telegram', 'channel', '-100999', 'https://t.me/test_comm', 'Community Channel', 'community')
+            RETURNING id
+            """
+        )
+        src_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', '999', %s) RETURNING id",
+            (src_id, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-999', 'Ремонтные работы на трубе', %s) RETURNING id",
+            (item_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+
+        # 2. Seed relevance + claim extraction
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'rh', 'rv') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev_id, edition.id, rel_pol_id),
+        )
+        rel_dec_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'ch', 'cv') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev_id, edition.id, extr_pol_id, rel_dec_id),
+        )
+        extr_run_id = (await cur.fetchone())[0]
+
+        # 3. Seed claim
+        cur = await conn.execute(
+            "INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at) VALUES (%s, %s, %s, 'Ремонт трубы начат', 'ремонт трубы начат', %s) RETURNING id",
+            (extr_run_id, rev_id, edition.id, _NOW),
+        )
+        claim_id = (await cur.fetchone())[0]
+
+        # 4. Seed story
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) VALUES (%s, 1, 'open', 'Ремонт трубы', 'h-s-mut', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        s_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s_rev_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, claim_id, _NOW),
+        )
+
+        # 5. Seal publication candidates and inputs
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-frozen-source-role-key",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        # 6. Mutate source role in database from community to official
+        await conn.execute("UPDATE sources SET role = 'official' WHERE id = %s", (src_id,))
+
+        # 7. Adapter build on the sealed run must preserve the sealed 'community' role
+        frozen = await adapter.build(run.id)
+        card = frozen.analysis.cards[0]
+
+        # Because source_role was sealed as 'community', claim remains attributed, not established
+        assert len(card.hard_facts) == 0
+        assert len(card.community_observations) == 1
+        assert card.community_observations[0].status == "attributed"
+        assert (
+            frozen.writer_bundle.records[
+                f"telegram:source:{src_id}:item:{item_id}:rev:{rev_id}"
+            ].source_type
+            == "channel"
+        )

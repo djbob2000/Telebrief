@@ -346,7 +346,7 @@ async def extract_claims(
     it later, and the pipeline never blocks on the AI. Duplicate or retried
     executions converge on the single canonical succeeded run.
     """
-    platform = "telegram"
+    platform = "unknown"
     if processing_mode is None:
         try:
             runtime = get_runtime()

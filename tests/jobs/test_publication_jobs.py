@@ -65,7 +65,15 @@ async def test_select_stories_job_runs_with_fail_open_selection(
 
     # Job executes select_stories_for_publication
     context = {}
-    with patch("src.jobs.publication.generate_publication.configure") as mock_gen_conf:
+    from src.processing.relevance import ProviderUnavailableError
+
+    with (
+        patch("src.jobs.publication.generate_publication.configure") as mock_gen_conf,
+        patch(
+            "src.publication.selection_ai.AIPublicationSelectionModel.select_stories",
+            side_effect=ProviderUnavailableError("simulated provider offline"),
+        ),
+    ):
         mock_task = AsyncMock()
         mock_gen_conf.return_value = mock_task
         await select_stories_for_publication(context, run.id)

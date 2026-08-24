@@ -248,12 +248,12 @@ class TestTemporalPublicationSnapshots:
         from src.db.uow import DatabaseUnitOfWork
         from src.publication.delivery import PublicationDeliveryService
         from src.publication.generation import PublicationGenerationService
-        from src.publication.selection import EditorialSelectionService
+        from src.publication.selection import EditorialSelectionService, HeuristicSelectionModel
         from src.publication.snapshot import PublicationSnapshotService
 
         uow = DatabaseUnitOfWork(pool)
         snapshot_service = PublicationSnapshotService(uow=uow)
-        selection_service = EditorialSelectionService(uow=uow)
+        selection_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
 
         # 1. Setup Source + Item + Revision at 19:40
         cur = await conn.execute(

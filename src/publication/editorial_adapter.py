@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -205,22 +206,24 @@ class KnowledgeEditorialAdapter:
                 if cand_row and isinstance(cand_row[0], dict):
                     projected_text = cand_row[0].get("semantic_text")
 
-                # Fetch claims and their sources
+                # Fetch claims and their sources (respecting frozen source_role from publication_input_claims)
                 c_cur = await conn.execute(
                     """
                     SELECT c.id, c.assertion_text, c.normalized_assertion,
                            s.platform, s.name, si.external_id, si.published_at,
-                           sir.text_content, si.canonical_url, s.url, s.external_id, s.role,
+                           sir.text_content, si.canonical_url, s.url, s.external_id,
+                           COALESCE(pic.source_role, s.role) AS effective_role,
                            s.id AS source_id, si.id AS source_item_id, sir.id AS source_item_revision_id,
                            si.kind, si.author_name
                     FROM claims c
                     JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
                     JOIN source_items si ON si.id = sir.source_item_id
                     JOIN sources s ON s.id = si.source_id
+                    LEFT JOIN publication_input_claims pic ON pic.publication_input_id = %s AND pic.claim_id = c.id
                     WHERE c.id = ANY(%s)
                     ORDER BY c.id ASC
                     """,
-                    (inp.claim_ids or [0],),
+                    (inp.id, inp.claim_ids or [0]),
                 )
                 claim_rows = await c_cur.fetchall()
 
@@ -372,11 +375,22 @@ class KnowledgeEditorialAdapter:
                 )
                 cards.append(card)
 
+            def _format_record_header(r: SourceRecord) -> str:
+                chan = getattr(r.message, "channel_name", None) or r.source_type
+                ts = getattr(r.message, "timestamp", None)
+                if ts:
+                    ts_str = (
+                        ts.strftime("%Y-%m-%d %H:%M UTC")
+                        if isinstance(ts, dt.datetime)
+                        else str(ts)
+                    )
+                    return f"[{r.ref} ({chan}, {ts_str})]"
+                return f"[{r.ref} ({chan})]"
+
             bundle = PreparedBundle(
                 records=records,
                 prompt_text="\n\n".join(
-                    f"[{r.ref} ({getattr(r.message, 'channel_name', r.source_type)})] {r.context_text}"
-                    for r in records.values()
+                    f"{_format_record_header(r)} {r.context_text}" for r in records.values()
                 ),
                 total_messages=len(records),
                 candidate_count=len(records),

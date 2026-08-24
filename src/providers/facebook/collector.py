@@ -37,6 +37,29 @@ PLATFORM_FACEBOOK = "facebook"
 KIND_FACEBOOK_POST = "facebook_post"
 
 
+try:
+    import zoneinfo
+except ImportError:
+    from backports import zoneinfo  # type: ignore
+
+_DEFAULT_FB_TZ = zoneinfo.ZoneInfo("Europe/Kyiv")
+
+
+def _resolve_source_tz(source: Source | None) -> dt.tzinfo:
+    """Resolve configured timezone from source collector options, falling back to Europe/Kyiv."""
+    if source and source.collector_options:
+        opts = source.collector_options
+        tz_name = (
+            opts.get("schedule", {}).get("timezone")
+            if isinstance(opts.get("schedule"), dict)
+            else None
+        ) or opts.get("timezone")
+        if tz_name and isinstance(tz_name, str):
+            with contextlib.suppress(Exception):
+                return zoneinfo.ZoneInfo(tz_name)
+    return _DEFAULT_FB_TZ
+
+
 def extract_post_id_from_url(url: str) -> str | None:
     """Extract canonical post ID from various Facebook URL formats."""
     if not url:
@@ -48,6 +71,8 @@ def extract_post_id_from_url(url: str) -> str | None:
         return qs["story_fbid"][0]
     if "fbid" in qs and qs["fbid"]:
         return qs["fbid"][0]
+    if "post_id" in qs and qs["post_id"]:
+        return qs["post_id"][0]
 
     path = parsed.path.rstrip("/")
     m = re.search(r"/(?:posts|permalink|videos|photos)/(\d+)", path)
@@ -55,10 +80,6 @@ def extract_post_id_from_url(url: str) -> str | None:
         return m.group(1)
 
     m = re.search(r"/groups/[^/]+/(?:posts|permalink)/(\d+)", path)
-    if m:
-        return m.group(1)
-
-    m = re.search(r"(\d{10,})", path)
     if m:
         return m.group(1)
 
@@ -74,6 +95,49 @@ def canonicalize_post_url(source_url: str, post_id: str) -> str:
         group_part = path.split("/posts")[0].split("/permalink")[0]
         return f"{base}{group_part}/posts/{post_id}/"
     return f"{base}/{path.strip('/')}/posts/{post_id}/" if path else f"{base}/posts/{post_id}/"
+
+
+async def _extract_clean_post_text(node: Any) -> str:
+    """Extract post body text excluding nested comments, action buttons, toolbars, and controls."""
+    try:
+        raw_text = await node.evaluate(
+            """(el) => {
+                const clone = el.cloneNode(true);
+                clone.querySelectorAll('[role="article"]').forEach(n => n.remove());
+                clone.querySelectorAll('button, [role="button"], [role="toolbar"], ul, form').forEach(n => n.remove());
+                return clone.innerText || clone.textContent || '';
+            }"""
+        )
+        if not raw_text:
+            return ""
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        ignored_lines = {
+            "like",
+            "нравится",
+            "подобається",
+            "comment",
+            "комментировать",
+            "коментувати",
+            "share",
+            "поделиться",
+            "поділитися",
+            "see translation",
+            "показать перевод",
+            "показати переклад",
+            "edited",
+            "отредактировано",
+            "відредаговано",
+            "write a comment...",
+            "напишите комментарий...",
+            "напишіть коментар...",
+        }
+        filtered = [line for line in lines if line.lower() not in ignored_lines]
+        return "\n".join(filtered).strip()
+    except Exception:
+        try:
+            return (await node.inner_text()).strip()
+        except Exception:
+            return ""
 
 
 _RU_MONTHS = {
@@ -122,21 +186,24 @@ _EN_MONTHS = {
 _ALL_MONTHS = {**_RU_MONTHS, **_UA_MONTHS, **_EN_MONTHS}
 
 
-def parse_facebook_timestamp_str(
-    text: str, reference_time: dt.datetime | None = None
-) -> dt.datetime | None:
-    """Parse relative or absolute Facebook timestamp string into UTC datetime."""
+def parse_facebook_timestamp_with_fidelity(
+    text: str,
+    reference_time: dt.datetime | None = None,
+    source_tz: dt.tzinfo | None = None,
+) -> tuple[dt.datetime | None, str]:
+    """Parse relative or absolute Facebook timestamp string into UTC datetime and fidelity."""
     if not text:
-        return None
+        return None, "unknown"
     raw = text.strip().lower()
     ref = reference_time or dt.datetime.now(dt.timezone.utc)
     if ref.tzinfo is None:
         ref = ref.replace(tzinfo=dt.timezone.utc)
+    target_tz = source_tz or _DEFAULT_FB_TZ
 
     # 1. Epoch integer timestamp (data-utime)
     if raw.isdigit() and len(raw) >= 9:
         with contextlib.suppress(Exception):
-            return dt.datetime.fromtimestamp(int(raw), tz=dt.timezone.utc)
+            return dt.datetime.fromtimestamp(int(raw), tz=dt.timezone.utc), "precise_epoch"
 
     # 2. ISO 8601 string
     with contextlib.suppress(Exception):
@@ -144,60 +211,80 @@ def parse_facebook_timestamp_str(
         parsed = dt.datetime.fromisoformat(iso_cand)
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=dt.timezone.utc)
-        return parsed
+        return parsed.astimezone(dt.timezone.utc), "precise_iso"
 
     # 3. Immediate relative: "Just now", "только что", "щойно"
     if raw in ("just now", "только что", "щойно", "сейчас", "now"):
-        return ref
+        return ref, "relative"
 
     # 4. Minutes: e.g. "5 mins", "5 мин", "5 хв", "5m"
     m = re.search(r"(\d+)\s*(?:m|min|mins|минут|мин|хв|хвилини|хвилин)\b", raw)
     if m:
-        return ref - dt.timedelta(minutes=int(m.group(1)))
+        return ref - dt.timedelta(minutes=int(m.group(1))), "relative"
 
     # 5. Hours: e.g. "2 hrs", "2 ч", "2 год", "2h"
     m = re.search(r"(\d+)\s*(?:h|hr|hrs|hours|час|часа|часов|ч|год|години|годин)\b", raw)
     if m:
-        return ref - dt.timedelta(hours=int(m.group(1)))
+        return ref - dt.timedelta(hours=int(m.group(1))), "relative"
 
     # 6. Days: e.g. "3 days", "3 дн", "3 дні", "3d"
     m = re.search(r"(\d+)\s*(?:d|day|days|дн|дня|дней|днів|д)\b", raw)
     if m:
-        return ref - dt.timedelta(days=int(m.group(1)))
+        return ref - dt.timedelta(days=int(m.group(1))), "relative"
+
+    ref_local = ref.astimezone(target_tz)
 
     # 7. "Yesterday at 14:30" / "вчера в 14:30" / "вчора о 14:30"
     m = re.search(r"(?:yesterday|вчера|вчора)\s+(?:at|в|о)\s+(\d{1,2}):(\d{2})", raw)
     if m:
         hr, mn = int(m.group(1)), int(m.group(2))
-        yesterday = ref - dt.timedelta(days=1)
-        return yesterday.replace(hour=hr, minute=mn, second=0, microsecond=0)
+        yesterday_local = (ref_local - dt.timedelta(days=1)).replace(
+            hour=hr, minute=mn, second=0, microsecond=0
+        )
+        return yesterday_local.astimezone(dt.timezone.utc), "absolute_local"
 
     # 8. "Today at 14:30" / "сегодня в 14:30" / "сьогодні о 14:30"
     m = re.search(r"(?:today|сегодня|сьогодні)\s+(?:at|в|о)\s+(\d{1,2}):(\d{2})", raw)
     if m:
         hr, mn = int(m.group(1)), int(m.group(2))
-        return ref.replace(hour=hr, minute=mn, second=0, microsecond=0)
+        today_local = ref_local.replace(hour=hr, minute=mn, second=0, microsecond=0)
+        return today_local.astimezone(dt.timezone.utc), "absolute_local"
 
     # 9. Day + month + optional year + optional time: e.g. "24 фев в 14:00", "24 February at 14:00"
     m = re.search(r"(\d{1,2})\s+([a-zа-яіє]+)(?:\s+(\d{4}))?(?:[^\d]+(\d{1,2}):(\d{2}))?", raw)
     if m:
         day = int(m.group(1))
         mon_str = m.group(2)[:3]
-        year = int(m.group(3)) if m.group(3) else ref.year
+        year = int(m.group(3)) if m.group(3) else ref_local.year
         hour = int(m.group(4)) if m.group(4) else 0
         minute = int(m.group(5)) if m.group(5) else 0
         mon = _ALL_MONTHS.get(mon_str)
         if mon:
             with contextlib.suppress(Exception):
-                return dt.datetime(year, mon, day, hour, minute, tzinfo=dt.timezone.utc)
+                local_dt = dt.datetime(year, mon, day, hour, minute, tzinfo=target_tz)
+                return local_dt.astimezone(dt.timezone.utc), "absolute_local"
 
-    return None
+    return None, "unknown"
+
+
+def parse_facebook_timestamp_str(
+    text: str,
+    reference_time: dt.datetime | None = None,
+    source_tz: dt.tzinfo | None = None,
+) -> dt.datetime | None:
+    """Parse relative or absolute Facebook timestamp string into UTC datetime."""
+    parsed, _ = parse_facebook_timestamp_with_fidelity(
+        text, reference_time=reference_time, source_tz=source_tz
+    )
+    return parsed
 
 
 async def extract_facebook_node_timestamp(
-    node: Any, reference_time: dt.datetime | None = None
-) -> tuple[dt.datetime | None, str]:
-    """Extract publication timestamp and fidelity from a post or comment DOM node."""
+    node: Any,
+    reference_time: dt.datetime | None = None,
+    source_tz: dt.tzinfo | None = None,
+) -> tuple[dt.datetime | None, str, str | None]:
+    """Extract publication timestamp, fidelity, and raw string from a post or comment DOM node."""
     ref = reference_time or dt.datetime.now(dt.timezone.utc)
     try:
         attr_data = await node.evaluate(
@@ -229,22 +316,16 @@ async def extract_facebook_node_timestamp(
         )
         for item in attr_data:
             val = item.get("val", "")
-            t_type = item.get("type", "")
-            if t_type == "utime":
-                parsed = parse_facebook_timestamp_str(val, reference_time=ref)
-                if parsed:
-                    return parsed, "precise"
-            elif t_type in ("datetime", "title"):
-                parsed = parse_facebook_timestamp_str(val, reference_time=ref)
-                if parsed:
-                    return parsed, "precise"
-            elif t_type == "text":
-                parsed = parse_facebook_timestamp_str(val, reference_time=ref)
-                if parsed:
-                    return parsed, "relative"
+            if not val:
+                continue
+            parsed, fidelity = parse_facebook_timestamp_with_fidelity(
+                val, reference_time=ref, source_tz=source_tz
+            )
+            if parsed:
+                return parsed, fidelity, str(val)
     except Exception as exc:
         logger.debug("Failed extracting node timestamp: %s", exc)
-    return None, "unknown"
+    return None, "unknown", None
 
 
 def parse_post_from_data(
@@ -260,6 +341,7 @@ def parse_post_from_data(
     extra_metadata: dict[str, Any] | None = None,
     observed_at: dt.datetime | None = None,
     temporal_fidelity: str | None = None,
+    raw_timestamp: str | None = None,
 ) -> tuple[ObservedItem, list[ObservedAsset]]:
     """Create a standardized ObservedItem and attachments for a Facebook post."""
     now = observed_at or dt.datetime.now(dt.timezone.utc)
@@ -289,6 +371,7 @@ def parse_post_from_data(
         "source_url": source.url,
         "author_id": author_id,
         "temporal_fidelity": fidelity,
+        "raw_timestamp": raw_timestamp,
         **(extra_metadata or {}),
     }
 
@@ -468,7 +551,7 @@ class FacebookCollector(Collector):
                 )
                 for article in articles:
                     try:
-                        text_content = (await article.inner_text()).strip()
+                        text_content = await _extract_clean_post_text(article)
                         if not text_content or len(text_content) < 10:
                             continue
 
@@ -503,8 +586,9 @@ class FacebookCollector(Collector):
                             ):
                                 media_urls.append(src)
 
-                        pub_at, fidelity = await extract_facebook_node_timestamp(
-                            article, reference_time=started_at
+                        source_tz = _resolve_source_tz(source)
+                        pub_at, fidelity, raw_ts = await extract_facebook_node_timestamp(
+                            article, reference_time=started_at, source_tz=source_tz
                         )
 
                         item, item_assets = parse_post_from_data(
@@ -516,6 +600,7 @@ class FacebookCollector(Collector):
                             media_urls=media_urls,
                             published_at=pub_at,
                             temporal_fidelity=fidelity,
+                            raw_timestamp=raw_ts,
                             observed_at=started_at,
                         )
                         items.append(item)

@@ -65,8 +65,10 @@ class IngestionRepository:
                 published_at, first_collected_at, metadata
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (source_id, external_id) DO NOTHING
-            RETURNING id, source_id, kind, external_id, parent_item_id,
+            ON CONFLICT (source_id, external_id) DO UPDATE
+            SET published_at = EXCLUDED.published_at
+            WHERE source_items.published_at IS NULL AND EXCLUDED.published_at IS NOT NULL
+            RETURNING (xmax = 0) AS is_inserted, id, source_id, kind, external_id, parent_item_id,
                 root_item_id, author_name, author_external_id, canonical_url,
                 published_at, first_collected_at, metadata
             """,
@@ -83,7 +85,8 @@ class IngestionRepository:
         )
         row = await cursor.fetchone()
         if row is not None:
-            return SourceItem.from_row(row), True
+            is_inserted = bool(row[0])
+            return SourceItem.from_row(row[1:]), is_inserted
 
         item = await self.get_item(conn, source_id=source_id, external_id=observation.external_id)
         if item is None:

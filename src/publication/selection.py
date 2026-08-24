@@ -178,7 +178,7 @@ class EditorialSelectionService:
                     # Query claims attached <= snapshot_at excluding excluded platforms
                     c_cur = await conn.execute(
                         """
-                        SELECT sc.claim_id
+                        SELECT sc.claim_id, src.role
                         FROM story_claims sc
                         JOIN claims c ON c.id = sc.claim_id
                         JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
@@ -198,7 +198,9 @@ class EditorialSelectionService:
                             excluded_platforms,
                         ),
                     )
-                    claim_ids = [r[0] for r in await c_cur.fetchall()]
+                    c_rows = await c_cur.fetchall()
+                    claim_ids = [r[0] for r in c_rows]
+                    claim_roles = {r[0]: r[1] for r in c_rows}
 
                     # If platforms are excluded and no allowed claims remain, skip this story
                     if excluded_platforms and not claim_ids:
@@ -233,6 +235,7 @@ class EditorialSelectionService:
                         presentation_intent=prop.presentation_intent,
                         rank=include_rank,
                         claim_ids=claim_ids,
+                        claim_roles=claim_roles,
                         evidence_cluster_ids=evidence_cluster_ids,
                     )
                     selected_inputs.append(inp)

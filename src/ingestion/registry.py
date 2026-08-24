@@ -214,7 +214,11 @@ class SourceRegistry:
             bindings_created += await self._bind(conn, source.id, edition.id)
 
         # Bootstrap Facebook auth profiles and sources
-        if getattr(config, "facebook", None) is not None and config.facebook.sources:
+        if (
+            getattr(config, "facebook", None) is not None
+            and config.facebook.enabled
+            and config.facebook.sources
+        ):
             from src.repositories.facebook import FacebookRepository
 
             fb_repo = FacebookRepository()

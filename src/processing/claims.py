@@ -903,6 +903,9 @@ class ClaimExtractionService:
                 "target_message": {
                     "text": (context.assertion_text or "").strip()
                     or "(no textual content was captured for this item)",
+                    "published_at": (
+                        context.published_at.isoformat() if context.published_at else None
+                    ),
                     "metadata": context.payload,
                 },
                 "conversation_context": conversation_context,

@@ -842,3 +842,45 @@ async def test_update_checkpoint_without_cursor_keeps_previous_cursor(conn, sour
     checkpoint = await repo.get_checkpoint(conn, source.id)
     assert checkpoint is not None
     assert checkpoint.cursor == {"topic": 7}
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_get_or_create_item_shell_monotonically_enriches_published_at(conn, source):
+    """Monotonic enrichment: NULL published_at is updated when subsequent scan provides known timestamp."""
+    repo = IngestionRepository()
+
+    obs1 = ObservedItem(
+        kind="facebook_post",
+        external_id="post:777",
+        text="Sample post text",
+        author_name=None,
+        canonical_url=None,
+        metadata={},
+        published_at=None,
+        observed_at=PUBLISHED_AT,
+    )
+    item1, created1 = await repo.get_or_create_item_shell(conn, source.id, obs1)
+    assert created1 is True
+    assert item1.published_at is None
+
+    # Second observation of the same post with parsed published_at
+    known_time = datetime(2026, 8, 22, 9, 30, tzinfo=timezone.utc)
+    obs2 = ObservedItem(
+        kind="facebook_post",
+        external_id="post:777",
+        text="Sample post text",
+        author_name=None,
+        canonical_url=None,
+        metadata={},
+        published_at=known_time,
+        observed_at=PUBLISHED_AT,
+    )
+    item2, created2 = await repo.get_or_create_item_shell(conn, source.id, obs2)
+    assert created2 is False
+    assert item2.published_at == known_time
+
+    # Verify DB has the enriched published_at
+    fetched = await repo.get_item(conn, source_id=source.id, external_id="post:777")
+    assert fetched is not None
+    assert fetched.published_at == known_time

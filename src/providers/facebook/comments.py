@@ -25,6 +25,7 @@ from src.ingestion.models import (
 from src.ingestion.service import IngestionService
 from src.providers.facebook.collector import (
     PLATFORM_FACEBOOK,
+    _resolve_source_tz,
     extract_facebook_node_timestamp,
 )
 from src.repositories.facebook import FacebookRepository
@@ -108,6 +109,7 @@ def parse_comment_from_data(
     observed_at: dt.datetime | None = None,
     identity_quality: str = "native",
     temporal_fidelity: str | None = None,
+    raw_timestamp: str | None = None,
 ) -> tuple[ObservedItem, list[ObservedAsset]]:
     """Construct an ObservedItem for a comment or nested reply."""
     now = observed_at or dt.datetime.now(dt.timezone.utc)
@@ -140,6 +142,7 @@ def parse_comment_from_data(
         "author_id": author_id,
         "identity_quality": identity_quality,
         "temporal_fidelity": fidelity,
+        "raw_timestamp": raw_timestamp,
     }
 
     item = ObservedItem(
@@ -352,6 +355,7 @@ class FacebookCommentCollector:
                     links = await node.query_selector_all("a[href]")
                     cid = None
                     author_name = None
+                    author_id = None
                     canonical_url = None
                     identity_quality = "synthetic"
                     for link in links:
@@ -361,6 +365,17 @@ class FacebookCommentCollector:
                             cid = parsed_cid
                             canonical_url = href
                             identity_quality = "native"
+
+                        # Author ID from profile link
+                        if not author_id and (
+                            "/user/" in href or "/profile.php" in href or "facebook.com/" in href
+                        ):
+                            clean_href = href.split("?")[0].rstrip("/")
+                            if not any(
+                                k in clean_href.lower()
+                                for k in ["/posts/", "/permalink/", "/groups/", "/photo", "/video"]
+                            ):
+                                author_id = clean_href
 
                         # Author name extraction from user profile / author link in comment node
                         if not author_name:
@@ -388,15 +403,27 @@ class FacebookCommentCollector:
                     if not text or len(text) < 2:
                         continue
 
+                    source_tz = _resolve_source_tz(source)
+                    pub_at, fidelity, raw_ts = await extract_facebook_node_timestamp(
+                        node, reference_time=started_at, source_tz=source_tz
+                    )
+
                     if not cid:
-                        # Scoped synthetic fallback ID: post_external_id + parent_comment_id + author_name + ordinal + normalized_text
+                        # Stable synthetic fallback ID: post_external_id + parent_comment_id + author_id/name + normalized text + timestamp
                         norm_text = " ".join(text.split())
-                        scope_str = f"{post_external_id}:{parent_comment_id or ''}:{author_name or ''}:{len(batch.items)}:{norm_text}"
+                        time_sig = pub_at.isoformat() if pub_at else (raw_ts or "")
+                        author_sig = author_id or author_name or ""
+                        scope_str = f"{post_external_id}:{parent_comment_id or ''}:{author_sig}:{norm_text}:{time_sig}"
                         cid = hashlib.sha256(scope_str.encode("utf-8")).hexdigest()[:16]
                         identity_quality = "synthetic"
 
                     if cid in seen_comment_ids:
-                        continue
+                        if identity_quality == "synthetic":
+                            dup_count = sum(1 for s in seen_comment_ids if s.startswith(cid[:12]))
+                            cid = f"{cid[:12]}_{dup_count}"
+                            identity_quality = "synthetic_ambiguous"
+                        else:
+                            continue
 
                     seen_comment_ids.add(cid)
                     new_found_this_page = True
@@ -411,21 +438,19 @@ class FacebookCommentCollector:
                             parent_reply_counts.get(parent_comment_id, 0) + 1
                         )
 
-                    pub_at, fidelity = await extract_facebook_node_timestamp(
-                        node, reference_time=started_at
-                    )
-
                     item, assets = parse_comment_from_data(
                         source=source,
                         post_external_id=post_external_id,
                         comment_id=cid,
                         text=text,
                         author_name=author_name,
+                        author_id=author_id,
                         published_at=pub_at,
                         canonical_url=canonical_url,
                         parent_comment_id=parent_comment_id,
                         identity_quality=identity_quality,
                         temporal_fidelity=fidelity,
+                        raw_timestamp=raw_ts,
                         observed_at=started_at,
                     )
                     batch.items.append(item)
