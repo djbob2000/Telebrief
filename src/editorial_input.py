@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 import unicodedata
 from collections.abc import Iterable
@@ -138,7 +139,12 @@ class EditorialInputBuilder:
         for channel_messages in messages_by_channel.values():
             messages.extend(channel_messages)
         return sorted(
-            messages, key=lambda item: (item.timestamp, item.channel_name, item.message_id or 0)
+            messages,
+            key=lambda item: (
+                item.timestamp or dt.datetime.min.replace(tzinfo=dt.timezone.utc),
+                item.channel_name,
+                item.message_id or 0,
+            ),
         )
 
     @staticmethod
@@ -210,7 +216,7 @@ class EditorialInputBuilder:
                 lines.append(f"forward_origin: {', '.join(fwd_parts)}")
             lines.extend(
                 [
-                    f"time={message.timestamp.isoformat()} sender={message.sender}",
+                    f"time={message.timestamp.isoformat() if message.timestamp else 'unknown'} sender={message.sender}",
                     f"text: {message.text}",
                 ]
             )

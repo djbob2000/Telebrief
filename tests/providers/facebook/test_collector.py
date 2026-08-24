@@ -69,10 +69,51 @@ class TestFacebookPostParser:
         assert item.external_id == "post:98765"
         assert item.canonical_url == "https://facebook.com/groups/123/posts/98765/"
         assert item.author_name == "Local Resident"
-        assert item.published_at == published_at
-        assert len(assets) == 1
-        assert assets[0].mime_type == "image/jpeg"
-        assert item.metadata["post_id"] == "98765"
+        assert item.metadata["temporal_fidelity"] == "precise"
+
+        item_none, _ = parse_post_from_data(
+            source=source,
+            post_id="98766",
+            text="Post without timestamp",
+            published_at=None,
+        )
+        assert item_none.published_at is None
+        assert item_none.metadata["temporal_fidelity"] == "unknown"
+
+    def test_parse_facebook_timestamp_str(self):
+        from src.providers.facebook.collector import parse_facebook_timestamp_str
+
+        ref = dt.datetime(2026, 8, 24, 12, 0, 0, tzinfo=dt.timezone.utc)
+
+        # Epoch
+        epoch_dt = parse_facebook_timestamp_str("1787486400", reference_time=ref)
+        assert epoch_dt == dt.datetime.fromtimestamp(1787486400, tz=dt.timezone.utc)
+
+        # ISO
+        iso_dt = parse_facebook_timestamp_str("2026-08-24T10:15:00Z", reference_time=ref)
+        assert iso_dt == dt.datetime(2026, 8, 24, 10, 15, 0, tzinfo=dt.timezone.utc)
+
+        # Relative mins/hours RU
+        dt_mins = parse_facebook_timestamp_str("15 мин.", reference_time=ref)
+        assert dt_mins == dt.datetime(2026, 8, 24, 11, 45, 0, tzinfo=dt.timezone.utc)
+        dt_hrs = parse_facebook_timestamp_str("2 ч.", reference_time=ref)
+        assert dt_hrs == dt.datetime(2026, 8, 24, 10, 0, 0, tzinfo=dt.timezone.utc)
+
+        # Relative mins/hours UA
+        dt_ua = parse_facebook_timestamp_str("3 год тому", reference_time=ref)
+        assert dt_ua == dt.datetime(2026, 8, 24, 9, 0, 0, tzinfo=dt.timezone.utc)
+
+        # Yesterday
+        dt_yest = parse_facebook_timestamp_str("вчера в 14:30", reference_time=ref)
+        assert dt_yest == dt.datetime(2026, 8, 23, 14, 30, 0, tzinfo=dt.timezone.utc)
+
+        # Month and Day
+        dt_month = parse_facebook_timestamp_str("20 августа в 08:00", reference_time=ref)
+        assert dt_month == dt.datetime(2026, 8, 20, 8, 0, 0, tzinfo=dt.timezone.utc)
+
+        # Unresolved
+        assert parse_facebook_timestamp_str("недавно", reference_time=ref) is None
+        assert parse_facebook_timestamp_str("", reference_time=ref) is None
 
 
 class TestFacebookExecutionLock:

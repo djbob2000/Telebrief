@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import logging
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -171,15 +170,6 @@ class KnowledgeEditorialAdapter:
             if run is None:
                 raise ValueError(f"publication run {run_id} not found")
 
-            ep_cur = await conn.execute(
-                "SELECT config->'excluded_platforms' FROM eligibility_policy_versions WHERE id = %s",
-                (run.eligibility_policy_id,),
-            )
-            ep_row = await ep_cur.fetchone()
-            excluded_platforms = (
-                ep_row[0] if (ep_row and isinstance(ep_row[0], list)) else []
-            ) or []
-
             inputs = await self.repo.load_sealed_inputs(conn, run_id)
             if not inputs:
                 raise ValueError(f"publication run {run_id} has no sealed inputs")
@@ -200,6 +190,20 @@ class KnowledgeEditorialAdapter:
                 )
                 sr_row = await sr_cur.fetchone()
                 semantic_text = sr_row[0] if sr_row else "Городская новость"
+
+                # Fetch candidate snapshot_features (which holds the frozen projected text respecting excluded platforms)
+                cand_cur = await conn.execute(
+                    """
+                    SELECT snapshot_features
+                    FROM publication_candidates
+                    WHERE publication_run_id = %s AND story_id = %s AND story_revision_id = %s
+                    """,
+                    (run_id, inp.story_id, inp.story_revision_id),
+                )
+                cand_row = await cand_cur.fetchone()
+                projected_text = None
+                if cand_row and isinstance(cand_row[0], dict):
+                    projected_text = cand_row[0].get("semantic_text")
 
                 # Fetch claims and their sources
                 c_cur = await conn.execute(
@@ -249,10 +253,10 @@ class KnowledgeEditorialAdapter:
                     ref_key = f"{platform}:source:{source_id}:item:{source_item_id}:rev:{source_item_rev_id}"
                     card_source_refs.append(ref_key)
 
-                    is_official = s_role == "official"
                     is_comment = (item_kind in ("facebook_comment", "comment")) or str(
                         ext_id
                     ).startswith("comment:")
+                    is_official = (s_role == "official") and not is_comment
                     container_name = src_name or platform
                     if is_comment:
                         author_label = item_author_name or "участник сообщества"
@@ -297,7 +301,7 @@ class KnowledgeEditorialAdapter:
                         msg = Message(
                             text=text_content or assertion,
                             sender=msg_sender,
-                            timestamp=pub_at or dt.datetime.now(dt.timezone.utc),
+                            timestamp=pub_at,
                             link=link,
                             channel_name=container_name,
                             has_media=False,
@@ -307,9 +311,11 @@ class KnowledgeEditorialAdapter:
                         records[ref_key] = SourceRecord(
                             ref=ref_key,
                             message=msg,
-                            source_type="official"
-                            if is_official
-                            else ("comment" if is_comment else "channel"),
+                            source_type=(
+                                "comment"
+                                if is_comment
+                                else ("official" if is_official else "channel")
+                            ),
                             context_text=text_content or assertion,
                         )
 
@@ -334,18 +340,19 @@ class KnowledgeEditorialAdapter:
                         )
 
                 representative_refs = list(dict.fromkeys(card_source_refs))
-                card_summary = semantic_text
-                if excluded_platforms:
-                    import re
-
-                    for plat in excluded_platforms:
-                        if plat == "facebook":
-                            card_summary = re.sub(
-                                r"https?://(?:www\.)?facebook\.com\S*",
-                                "",
-                                card_summary,
-                                flags=re.IGNORECASE,
-                            ).strip()
+                if projected_text:
+                    card_summary = projected_text
+                elif claim_rows:
+                    claim_assertions = [
+                        crow[2] or crow[1] for crow in claim_rows if (crow[2] or crow[1])
+                    ]
+                    card_summary = (
+                        " ".join(dict.fromkeys(claim_assertions))
+                        if claim_assertions
+                        else semantic_text
+                    )
+                else:
+                    card_summary = semantic_text
 
                 if not card_hard_facts and not card_community_obs:
                     card_hard_facts = [

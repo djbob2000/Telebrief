@@ -198,6 +198,110 @@ class TestCommentCompletenessClassification:
         assert batch.completeness == "partial"
         assert batch.stop_reason == "max_pages"
 
+    @pytest.mark.asyncio
+    async def test_include_replies_false_skips_nested_replies(self):
+        source = _make_source()
+        collector = FacebookCommentCollector()
+        limits = FacebookCommentsConfig(
+            max_comments_per_post=50,
+            max_pages_per_refresh=1,
+            include_replies=False,
+        )
+
+        def make_eval(depth: int, text: str):
+            async def _eval(js: str, *args, **kwargs):
+                if "Math.max" in js:
+                    return depth
+                return text
+
+            return _eval
+
+        # Mock page returning 1 top-level comment and 1 nested reply
+        top_node = MagicMock()
+        top_node.inner_text = AsyncMock(return_value="Author 1\nTop level comment")
+        top_node.query_selector_all = AsyncMock(return_value=[])
+        top_node.evaluate = AsyncMock(side_effect=make_eval(0, "Top level comment"))
+
+        reply_node = MagicMock()
+        reply_node.inner_text = AsyncMock(return_value="Author 2\nNested reply")
+        reply_node.query_selector_all = AsyncMock(return_value=[])
+        reply_node.evaluate = AsyncMock(side_effect=make_eval(1, "Nested reply"))
+
+        page = MagicMock()
+        page.query_selector_all = AsyncMock(
+            side_effect=[
+                [top_node, reply_node],
+                [],
+            ]
+        )
+
+        batch = await collector.scan_post_with_page(
+            source=source,
+            post_item_id=10,
+            post_external_id="post:1001",
+            page=page,
+            limits=limits,
+        )
+
+        # Only 1 top-level comment collected
+        assert len(batch.items) == 1
+        assert batch.items[0].text == "Top level comment"
+
+    @pytest.mark.asyncio
+    async def test_max_replies_per_comment_bounds_nested_replies(self):
+        source = _make_source()
+        collector = FacebookCommentCollector()
+        limits = FacebookCommentsConfig(
+            max_comments_per_post=50,
+            max_pages_per_refresh=1,
+            include_replies=True,
+            max_replies_per_comment=1,
+        )
+
+        def make_eval(depth: int, text: str):
+            async def _eval(js: str, *args, **kwargs):
+                if "Math.max" in js:
+                    return depth
+                return text
+
+            return _eval
+
+        top_node = MagicMock()
+        top_node.inner_text = AsyncMock(return_value="Author 1\nTop level comment")
+        top_node.query_selector_all = AsyncMock(return_value=[])
+        top_node.evaluate = AsyncMock(side_effect=make_eval(0, "Top level comment"))
+
+        reply_node_1 = MagicMock()
+        reply_node_1.inner_text = AsyncMock(return_value="Author 2\nNested reply 1")
+        reply_node_1.query_selector_all = AsyncMock(return_value=[])
+        reply_node_1.evaluate = AsyncMock(side_effect=make_eval(1, "Nested reply 1"))
+
+        reply_node_2 = MagicMock()
+        reply_node_2.inner_text = AsyncMock(return_value="Author 3\nNested reply 2")
+        reply_node_2.query_selector_all = AsyncMock(return_value=[])
+        reply_node_2.evaluate = AsyncMock(side_effect=make_eval(1, "Nested reply 2"))
+
+        page = MagicMock()
+        page.query_selector_all = AsyncMock(
+            side_effect=[
+                [top_node, reply_node_1, reply_node_2],
+                [],
+            ]
+        )
+
+        batch = await collector.scan_post_with_page(
+            source=source,
+            post_item_id=10,
+            post_external_id="post:1001",
+            page=page,
+            limits=limits,
+        )
+
+        # 1 top level + 1 bounded reply = 2 items
+        assert len(batch.items) == 2
+        assert batch.items[0].text == "Top level comment"
+        assert batch.items[1].text == "Nested reply 1"
+
 
 @pytest.mark.postgres
 class TestCommentRefreshServiceIntegration:

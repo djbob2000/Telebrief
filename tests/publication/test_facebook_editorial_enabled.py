@@ -264,7 +264,7 @@ class TestFacebookEditorialEnabled:
         cur = await conn.execute(
             """
             INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
-            VALUES (%s, 1, 'open', 'Смешанная новость: вода и ремонт на https://facebook.com/groups/123', 'h-mixed-1', %s) RETURNING id
+            VALUES (%s, 1, 'open', 'Ремонт водопровода начат. На Восточном отключили воду.', 'h-mixed-1', %s) RETURNING id
             """,
             (story_id, _PAST),
         )
@@ -310,7 +310,8 @@ class TestFacebookEditorialEnabled:
         assert len(candidates) == 1
         cand = candidates[0]
         assert cand.snapshot_features["claim_count"] == 1
-        assert "facebook" not in cand.snapshot_features["semantic_text"].lower()
+        assert "ремонт водопровода" in cand.snapshot_features["semantic_text"].lower()
+        assert "восточном" not in cand.snapshot_features["semantic_text"].lower()
 
         # Run selection
         sel_service = EditorialSelectionService(uow=uow, model=SimpleSelectionModel())
@@ -325,7 +326,9 @@ class TestFacebookEditorialEnabled:
         editorial_input = await adapter.build(run.id)
         assert len(editorial_input.analysis.cards) == 1
         card = editorial_input.analysis.cards[0]
-        assert "facebook" not in card.summary.lower()
+        assert "ремонт водопровода" in card.summary.lower()
+        assert "восточном" not in card.summary.lower()
+        assert "отключили" not in card.summary.lower()
         assert "facebook.com" not in editorial_input.writer_bundle.prompt_text
         for r in editorial_input.writer_bundle.records.values():
             assert "facebook" not in r.ref.lower()

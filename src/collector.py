@@ -31,11 +31,11 @@ class Message:
 
     text: str
     sender: str
-    timestamp: datetime
-    link: str
-    channel_name: str
-    has_media: bool
-    media_type: str
+    timestamp: datetime | None = None
+    link: str = ""
+    channel_name: str = ""
+    has_media: bool = False
+    media_type: str = ""
     message_id: int | None = None
     reply_to_id: int | None = None
     topic_id: int | None = None
@@ -148,7 +148,7 @@ class MessageCollector:
             self.logger.error(f"Error fetching from {channel_config.name}: {e}")
             raise
 
-        messages.sort(key=lambda m: m.timestamp)
+        messages.sort(key=lambda m: m.timestamp or datetime.min.replace(tzinfo=timezone.utc))
         return messages
 
     async def _fetch_channel_with_retries(
@@ -246,7 +246,7 @@ class MessageCollector:
             if project_message is not None:
                 messages.append(project_message)
 
-        messages.sort(key=lambda m: m.timestamp)
+        messages.sort(key=lambda m: m.timestamp or datetime.min.replace(tzinfo=timezone.utc))
         return messages
 
     async def _to_project_message(

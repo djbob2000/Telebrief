@@ -42,7 +42,7 @@ itself is one windowed SQL statement over caller-owned connections.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.collector import Message
 from src.db.uow import DatabaseUnitOfWork
@@ -219,5 +219,5 @@ class SourceRevisionReader:
                 continue
             messages_by_channel.setdefault(message.channel_name, []).append(message)
         for messages in messages_by_channel.values():
-            messages.sort(key=lambda m: m.timestamp)
+            messages.sort(key=lambda m: m.timestamp or datetime.min.replace(tzinfo=timezone.utc))
         return messages_by_channel

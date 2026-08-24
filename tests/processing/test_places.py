@@ -565,6 +565,7 @@ class TestClaimsApplyDefersPlaceResolution:
         assert len(jobs) == 1
         assert int(jobs[0]["mention_id"]) == mentions[0].id
         assert int(jobs[0]["policy_id"]) > 0
+        assert jobs[0].get("processing_mode") == "knowledge_full"
         policies = await _POLICY_REPO.list_for_edition(conn, edition.id)
         assert int(jobs[0]["policy_id"]) == policies[-1].id
 

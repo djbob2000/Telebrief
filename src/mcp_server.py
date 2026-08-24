@@ -37,7 +37,8 @@ def _format_messages(channel: str, messages: list[Message], source: str, hours: 
     """Render collected messages as the flat text the model reads."""
     header = f"channel: {channel} (from {source}, {len(messages)} msgs, last {hours}h)"
     body = "\n\n".join(
-        f"[{msg.timestamp.isoformat()}] {msg.sender}\n{msg.text}\n{msg.link}" for msg in messages
+        f"[{msg.timestamp.isoformat() if msg.timestamp else 'unknown'}] {msg.sender}\n{msg.text}\n{msg.link}"
+        for msg in messages
     )
     return f"{header}\n\n{body}"
 

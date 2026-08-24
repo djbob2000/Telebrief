@@ -240,6 +240,7 @@ class ClaimExtractionContext:
     parent_text: str | None = None
     root_text: str | None = None
     payload: dict[str, Any] = field(default_factory=dict)
+    published_at: dt.datetime | None = None
 
 
 class ClaimExtractionPolicyService:
@@ -324,12 +325,21 @@ class ClaimExtractionContextBuilder:
         root_text = _truncate(raw_root, CONTEXT_CHAR_BUDGET // 2)
         parent_budget = max(0, CONTEXT_CHAR_BUDGET - len(root_text or ""))
         parent_text = _truncate(raw_parent, parent_budget)
+
+        cur = await conn.execute(
+            "SELECT published_at FROM source_items WHERE id = %s",
+            (revision.source_item_id,),
+        )
+        si_row = await cur.fetchone()
+        published_at = si_row[0] if si_row else None
+
         return ClaimExtractionContext(
             revision_id=revision.id,
             assertion_text=revision.text_content,
             parent_text=parent_text,
             root_text=root_text,
             payload=dict(revision.payload or {}),
+            published_at=published_at,
         )
 
 
@@ -817,7 +827,9 @@ class ClaimExtractionService:
                 )
                 if created:
                     await resolve_place_mention.configure(connection=conn).defer_async(
-                        mention_id=mention.id, policy_id=policy.id
+                        mention_id=mention.id,
+                        policy_id=policy.id,
+                        processing_mode=self._processing_mode,
                     )
                     deferred += 1
             for raw in staging_strings(claim.metadata, "entities"):

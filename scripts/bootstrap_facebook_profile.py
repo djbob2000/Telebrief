@@ -16,7 +16,7 @@ from pathlib import Path
 
 from playwright.async_api import async_playwright
 
-from src.config_loader import load_config
+from src.config_loader import Config, load_config
 from src.providers.facebook.auth import (
     FacebookAuthState,
     classify_facebook_page_state,
@@ -28,9 +28,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
-def resolve_configured_profile(profile_arg: str, config: Any) -> tuple[str, str]:
+def resolve_configured_profile(profile_arg: str, config: Config | None) -> tuple[str, str]:
     """Return (name, storage_ref) resolved from config or defaulting to profile_arg."""
-    if hasattr(config, "facebook") and config.facebook and hasattr(config.facebook, "auth_profiles"):
+    if config and hasattr(config, "facebook") and config.facebook and hasattr(config.facebook, "auth_profiles"):
         for p in config.facebook.auth_profiles:
             if p.name == profile_arg or p.storage_ref == profile_arg:
                 return p.name, p.storage_ref
@@ -39,7 +39,7 @@ def resolve_configured_profile(profile_arg: str, config: Any) -> tuple[str, str]
 
 async def bootstrap_profile(
     *,
-    auth_root: str,
+    auth_root: str | None = None,
     profile_arg: str = "default",
     import_cookies_path: str | None = None,
     discard_cookies_file: bool = False,
@@ -49,8 +49,18 @@ async def bootstrap_profile(
     except Exception:
         cfg = None
 
+    effective_auth_root = (
+        auth_root
+        or (
+            getattr(cfg.facebook, "auth_root", None)
+            if (cfg and hasattr(cfg, "facebook") and cfg.facebook)
+            else None
+        )
+        or "data/auth/facebook"
+    )
+
     profile_name, profile_storage_ref = resolve_configured_profile(profile_arg, cfg)
-    profile_path = resolve_profile_dir(auth_root, profile_storage_ref)
+    profile_path = resolve_profile_dir(effective_auth_root, profile_storage_ref)
     ensure_owner_only_directory(profile_path)
     logger.info("Opening browser profile at %s (profile name: %s)", profile_path, profile_name)
 
@@ -106,13 +116,13 @@ async def bootstrap_profile(
         logger.info("Browser session saved successfully in %s", profile_path)
 
         # Update database status for the auth profile
-        try:
-            import datetime as dt
+        if cfg and cfg.database.enabled:
+            try:
+                import datetime as dt
 
-            from src.db.pool import open_pool
-            from src.repositories.facebook import FacebookRepository
+                from src.db.pool import open_pool
+                from src.repositories.facebook import FacebookRepository
 
-            if cfg and cfg.database.enabled:
                 pool = await open_pool(cfg.database)
                 async with pool.connection() as conn:
                     fb_repo = FacebookRepository()
@@ -143,10 +153,11 @@ async def bootstrap_profile(
                     prof.id,
                     db_status,
                 )
-        except Exception as exc:
-            logger.warning(
-                "Could not update database status for profile '%s': %s", profile_name, exc
-            )
+            except Exception as exc:
+                logger.error(
+                    "Could not update database status for profile '%s': %s", profile_name, exc
+                )
+                raise SystemExit(1) from exc
 
 
 def main() -> None:
@@ -155,7 +166,9 @@ def main() -> None:
         "--profile", default="default", help="Profile storage ref or name (default: default)"
     )
     parser.add_argument(
-        "--auth-root", default="data/auth/facebook", help="Path to auth root directory"
+        "--auth-root",
+        default=None,
+        help="Path to auth root directory (defaults to cfg.facebook.auth_root or data/auth/facebook)",
     )
     parser.add_argument(
         "--import-cookies", default=None, help="Optional JSON file with exported cookies"

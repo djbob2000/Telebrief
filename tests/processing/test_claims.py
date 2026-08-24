@@ -1214,7 +1214,9 @@ class TestExtractClaimsTaskGate:
         )
         provider = ScriptedClaimProvider(outage, outage, outage)
         service = _extraction_service(uow, provider)
-        monkeypatch.setattr(jobs_processing, "build_claim_extraction_service", lambda: service)
+        monkeypatch.setattr(
+            jobs_processing, "build_claim_extraction_service", lambda *args, **kwargs: service
+        )
 
         task = jobs_processing.extract_claims
         with pytest.raises(TransientProcessingError):

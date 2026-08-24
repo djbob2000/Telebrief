@@ -25,6 +25,7 @@ from src.ingestion.models import (
 from src.ingestion.service import IngestionService
 from src.providers.facebook.collector import (
     PLATFORM_FACEBOOK,
+    extract_facebook_node_timestamp,
 )
 from src.repositories.facebook import FacebookRepository
 
@@ -106,6 +107,7 @@ def parse_comment_from_data(
     media_urls: list[str] | None = None,
     observed_at: dt.datetime | None = None,
     identity_quality: str = "native",
+    temporal_fidelity: str | None = None,
 ) -> tuple[ObservedItem, list[ObservedAsset]]:
     """Construct an ObservedItem for a comment or nested reply."""
     now = observed_at or dt.datetime.now(dt.timezone.utc)
@@ -128,6 +130,7 @@ def parse_comment_from_data(
                 )
             )
 
+    fidelity = temporal_fidelity or ("precise" if published_at is not None else "unknown")
     metadata: dict[str, JSONValue] = {
         "platform": PLATFORM_FACEBOOK,
         "kind": KIND_FACEBOOK_COMMENT,
@@ -136,6 +139,7 @@ def parse_comment_from_data(
         "post_external_id": post_external_id,
         "author_id": author_id,
         "identity_quality": identity_quality,
+        "temporal_fidelity": fidelity,
     }
 
     item = ObservedItem(
@@ -151,6 +155,43 @@ def parse_comment_from_data(
         root_external_id=root_external_id,
     )
     return item, assets
+
+
+async def _extract_clean_comment_text(node: Any, author_name: str | None = None) -> str:
+    """Extract comment body text excluding nested replies, buttons, and author header."""
+    try:
+        raw_text = await node.evaluate(
+            """(el) => {
+                const clone = el.cloneNode(true);
+                clone.querySelectorAll('[role="article"]').forEach(n => n.remove());
+                clone.querySelectorAll('button, [role="button"], [role="toolbar"], ul, form').forEach(n => n.remove());
+                return clone.innerText || clone.textContent || '';
+            }"""
+        )
+        if not raw_text:
+            return ""
+        lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        if author_name and lines and lines[0] == author_name.strip():
+            lines = lines[1:]
+        ignored_lines = {
+            "reply",
+            "ответить",
+            "нравится",
+            "like",
+            "share",
+            "поделиться",
+            "показать перевод",
+            "see translation",
+            "edited",
+            "отредактировано",
+        }
+        filtered = [line for line in lines if line.lower() not in ignored_lines]
+        return "\n".join(filtered).strip()
+    except Exception:
+        try:
+            return (await node.inner_text()).strip()
+        except Exception:
+            return ""
 
 
 _SORT_LABELS = {
@@ -259,6 +300,7 @@ class FacebookCommentCollector:
         # Depth -> comment id stack for reply threading: Facebook nests reply
         # containers inside their parent comment block.
         depth_to_cid: dict[int, str] = {}
+        parent_reply_counts: dict[str, int] = {}
 
         while True:
             # Check limits
@@ -291,20 +333,33 @@ class FacebookCommentCollector:
                 comment_nodes = await page.query_selector_all("div[dir='auto']")
             for node in comment_nodes:
                 try:
-                    text = (await node.inner_text()).strip()
-                    if not text or len(text) < 2:
-                        continue
+                    # Threading: the nearest outer comment container wins as parent.
+                    depth = await _comment_nesting_depth(node)
+                    parent_comment_id = depth_to_cid.get(depth - 1) if depth > 0 else None
 
-                    # Extract ID and author from links
+                    # Enforce reply configuration knobs
+                    if depth > 0 or parent_comment_id is not None:
+                        if not cfg.include_replies:
+                            continue
+                        if (
+                            parent_comment_id
+                            and parent_reply_counts.get(parent_comment_id, 0)
+                            >= cfg.max_replies_per_comment
+                        ):
+                            continue
+
+                    # Extract ID, author, and canonical URL from links
                     links = await node.query_selector_all("a[href]")
                     cid = None
                     author_name = None
+                    canonical_url = None
                     identity_quality = "synthetic"
                     for link in links:
                         href = await link.get_attribute("href") or ""
                         parsed_cid = extract_comment_id_from_url(href)
                         if parsed_cid and not cid:
                             cid = parsed_cid
+                            canonical_url = href
                             identity_quality = "native"
 
                         # Author name extraction from user profile / author link in comment node
@@ -328,14 +383,15 @@ class FacebookCommentCollector:
                                 }:
                                     author_name = link_text
 
-                    # Threading: the nearest outer comment container wins as parent.
-                    depth = await _comment_nesting_depth(node)
-                    parent_comment_id = depth_to_cid.get(depth - 1) if depth > 0 else None
+                    # Extract isolated comment text excluding nested replies, buttons, and author header
+                    text = await _extract_clean_comment_text(node, author_name)
+                    if not text or len(text) < 2:
+                        continue
 
                     if not cid:
-                        # Scoped synthetic fallback ID: post_external_id + parent_comment_id + author_name + normalized_text
+                        # Scoped synthetic fallback ID: post_external_id + parent_comment_id + author_name + ordinal + normalized_text
                         norm_text = " ".join(text.split())
-                        scope_str = f"{post_external_id}:{parent_comment_id or ''}:{author_name or ''}:{norm_text}"
+                        scope_str = f"{post_external_id}:{parent_comment_id or ''}:{author_name or ''}:{len(batch.items)}:{norm_text}"
                         cid = hashlib.sha256(scope_str.encode("utf-8")).hexdigest()[:16]
                         identity_quality = "synthetic"
 
@@ -350,15 +406,27 @@ class FacebookCommentCollector:
                         for deeper in [d for d in depth_to_cid if d > depth]:
                             del depth_to_cid[deeper]
 
+                    if parent_comment_id:
+                        parent_reply_counts[parent_comment_id] = (
+                            parent_reply_counts.get(parent_comment_id, 0) + 1
+                        )
+
+                    pub_at, fidelity = await extract_facebook_node_timestamp(
+                        node, reference_time=started_at
+                    )
+
                     item, assets = parse_comment_from_data(
                         source=source,
                         post_external_id=post_external_id,
                         comment_id=cid,
                         text=text,
                         author_name=author_name,
-                        published_at=None,
+                        published_at=pub_at,
+                        canonical_url=canonical_url,
                         parent_comment_id=parent_comment_id,
                         identity_quality=identity_quality,
+                        temporal_fidelity=fidelity,
+                        observed_at=started_at,
                     )
                     batch.items.append(item)
                     batch.assets.extend(assets)

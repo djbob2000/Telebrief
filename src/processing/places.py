@@ -255,13 +255,19 @@ class PlaceResolutionService:
         self._processing_mode = processing_mode
         self._prerequisites = prerequisites
 
-    async def resolve_mention(self, mention_id: int, policy_id: int):
+    async def resolve_mention(
+        self,
+        mention_id: int,
+        policy_id: int,
+        processing_mode: str | None = None,
+    ):
         """Resolve one mention under the exact queued policy.
 
         Returns the canonical :class:`PlaceResolutionResult` — either freshly
         written or replayed from an earlier completed execution. ``place_id``
         is None for explicit unresolved outcomes (still COMPLETED).
         """
+        mode = processing_mode or self._processing_mode
         async with self.uow.transaction() as conn:
             mention = await self._places.get_mention(conn, mention_id)
             if mention is None:
@@ -309,7 +315,7 @@ class PlaceResolutionService:
             await self._runs.mark_succeeded(conn, run.id, completed_at=_now())
             if inserted:
                 # Barrier may open exactly here: evaluate on the SAME conn.
-                await self._maybe_schedule_matching(conn, mention)
+                await self._maybe_schedule_matching(conn, mention, processing_mode=mode)
             return result
 
     async def finalize_provider_failure(self, mention_id: int, policy_id: int):
@@ -343,16 +349,20 @@ class PlaceResolutionService:
             logger.warning("provider failure for place run=%s lost the race; converging", run.id)
         return final
 
-    async def _maybe_schedule_matching(self, conn: psycopg.AsyncConnection, mention) -> None:
+    async def _maybe_schedule_matching(
+        self,
+        conn: psycopg.AsyncConnection,
+        mention,
+        processing_mode: str | None = None,
+    ) -> None:
         """Hand the owning claim to the prerequisite barrier on OUR connection."""
         # Lazy on purpose: src.jobs.processing imports this module's siblings.
         from src.processing.story_matching import StoryMatchingPrerequisiteService
 
-        prereq = self._prerequisites or StoryMatchingPrerequisiteService(
-            processing_mode=self._processing_mode
-        )
+        mode = processing_mode or self._processing_mode
+        prereq = self._prerequisites or StoryMatchingPrerequisiteService(processing_mode=mode)
         scheduled = await prereq.maybe_schedule(
-            conn, claim_id=mention.claim_id, processing_mode=self._processing_mode
+            conn, claim_id=mention.claim_id, processing_mode=mode
         )
         if scheduled:
             logger.info(

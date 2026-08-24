@@ -339,7 +339,7 @@ Input line format: `N. [HH:MM] Sender: Text | URL`
         """
         formatted = []
         for i, msg in enumerate(messages, 1):
-            timestamp = msg.timestamp.strftime("%H:%M")
+            timestamp = msg.timestamp.strftime("%H:%M") if msg.timestamp else "unknown"
             text = (
                 (msg.text[:500] if len(msg.text) > 500 else msg.text)
                 .replace("\r", " ")

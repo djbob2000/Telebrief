@@ -580,3 +580,138 @@ class TestKnowledgeEditorialAdapter:
         assert rec2.message.sender == "участник сообщества (Бердянск FB)"
         assert rec2.message.channel_name == "Бердянск FB"
         assert rec2.source_type == "comment"
+
+    async def test_official_source_comments_are_attributed_not_established(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Comments under official pages must be community observations, not official hard facts."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
+        adapter = KnowledgeEditorialAdapter(uow=uow)
+
+        # Official Facebook source (role='official')
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role)
+            VALUES ('facebook', 'page', 'fb-admin-page', 'https://facebook.com/admin', 'Администрация города', 'official')
+            RETURNING id
+            """
+        )
+        src_id = (await cur.fetchone())[0]
+
+        # 1. Official Post item
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, author_name, first_collected_at, published_at) VALUES (%s, 'facebook_post', 'post:1001', 'Администрация города', %s, %s) RETURNING id",
+            (src_id, _NOW, _NOW),
+        )
+        post_item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-post-1', 'Ремонтные работы на водоводе завершены', %s) RETURNING id",
+            (post_item_id, _NOW),
+        )
+        post_rev_id = (await cur.fetchone())[0]
+
+        # 2. Comment under Official Post (role='official' source, but kind='facebook_comment')
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, author_name, first_collected_at, parent_item_id, published_at) VALUES (%s, 'facebook_comment', 'comment:2001', 'Иван Петров', %s, %s, %s) RETURNING id",
+            (src_id, _NOW, post_item_id, _NOW),
+        )
+        comment_item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-comm-1', 'Воды всё ещё нет на 3 этаже', %s) RETURNING id",
+            (comment_item_id, _NOW),
+        )
+        comment_rev_id = (await cur.fetchone())[0]
+
+        # Policies
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'rh-off', 'rv-off') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok'), (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (post_rev_id, edition.id, rel_pol_id, comment_rev_id, edition.id, rel_pol_id),
+        )
+        rel_dec_ids = [r[0] for r in await cur.fetchall()]
+
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'ch-off', 'cv-off') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded'), (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (
+                post_rev_id,
+                edition.id,
+                extr_pol_id,
+                rel_dec_ids[0],
+                comment_rev_id,
+                edition.id,
+                extr_pol_id,
+                rel_dec_ids[1],
+            ),
+        )
+        run_ids = [r[0] for r in await cur.fetchall()]
+
+        # Claims
+        cur = await conn.execute(
+            "INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at) VALUES (%s, %s, %s, 'Ремонтные работы завершены', 'ремонтные работы завершены', %s) RETURNING id",
+            (run_ids[0], post_rev_id, edition.id, _NOW),
+        )
+        post_claim_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at) VALUES (%s, %s, %s, 'Воды нет на 3 этаже', 'воды нет на 3 этаже', %s) RETURNING id",
+            (run_ids[1], comment_rev_id, edition.id, _NOW),
+        )
+        comment_claim_id = (await cur.fetchone())[0]
+
+        # Story
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) VALUES (%s, 1, 'open', 'Ремонт водопровода', 'h-s-off', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        s_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s_rev_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s), (%s, %s, %s)",
+            (story_id, post_claim_id, _NOW, story_id, comment_claim_id, _NOW),
+        )
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-official-comments-isolation",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        frozen = await adapter.build(run.id)
+        card = frozen.analysis.cards[0]
+
+        post_ref = f"facebook:source:{src_id}:item:{post_item_id}:rev:{post_rev_id}"
+        comment_ref = f"facebook:source:{src_id}:item:{comment_item_id}:rev:{comment_rev_id}"
+
+        # Post is an official hard fact with status="established"
+        assert len(card.hard_facts) == 1
+        assert card.hard_facts[0].source_refs == [post_ref]
+        assert card.hard_facts[0].status == "established"
+        assert card.hard_facts[0].attribution == "Администрация города"
+        assert frozen.writer_bundle.records[post_ref].source_type == "official"
+
+        # Comment under the official post is a community observation with status="attributed"
+        assert len(card.community_observations) == 1
+        assert card.community_observations[0].source_refs == [comment_ref]
+        assert card.community_observations[0].status == "attributed"
+        assert card.community_observations[0].attribution == "Иван Петров (Администрация города)"
+        assert frozen.writer_bundle.records[comment_ref].source_type == "comment"

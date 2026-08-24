@@ -186,22 +186,31 @@ def build_vision_service() -> VisionService:
     )
 
 
-def build_claim_extraction_service() -> ClaimExtractionService:
-    """Assemble the AI-backed claim extraction service from the real config."""
+def build_claim_extraction_service(
+    processing_mode: str | None = None,
+    platform: str | None = None,
+) -> ClaimExtractionService:
+    """Assemble the AI-backed claim extraction service with platform/mode scoping."""
     from src.config_loader import load_config
 
     config = load_config()
-    telegram_cfg = getattr(config, "telegram", None)
-    processing_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
+    if processing_mode is not None:
+        mode = processing_mode
+    elif platform == "telegram":
+        telegram_cfg = getattr(config, "telegram", None)
+        mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
+    else:
+        mode = "knowledge_full"
+
     return ClaimExtractionService(
         uow=get_runtime().uow,
         provider=_create_ai_provider(config),
         model=config.settings.ai_model,
         provider_name=config.settings.ai_provider,
         reasoning_effort=config.settings.reasoning_effort,
-        processing_mode=processing_mode,
+        processing_mode=mode,
         # Frozen into each embed_claim defer so retries keep the queued space.
-        embedding_config=config.embedding if processing_mode == "knowledge_full" else None,
+        embedding_config=config.embedding if mode == "knowledge_full" else None,
         # T8: materialize mentions/entities and defer resolve_place_mention
         # per new mention on the success transaction.
         place_resolution_handoff=True,
@@ -239,8 +248,11 @@ def build_story_matching_service() -> StoryMatchingService:
     return StoryMatchingService(uow=get_runtime().uow, matcher=matcher)
 
 
-def build_place_resolution_service() -> PlaceResolutionService:
-    """Assemble the place resolution service from the real config.
+def build_place_resolution_service(
+    processing_mode: str | None = None,
+    platform: str | None = None,
+) -> PlaceResolutionService:
+    """Assemble the place resolution service with frozen/platform processing mode.
 
     The shipped resolver is deterministic (seeded alias lookup); the optional
     LLM assist stays unwired until its prompt/config identity joins the
@@ -249,9 +261,15 @@ def build_place_resolution_service() -> PlaceResolutionService:
     from src.config_loader import load_config
 
     config = load_config()
-    telegram_cfg = getattr(config, "telegram", None)
-    processing_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
-    return PlaceResolutionService(uow=get_runtime().uow, processing_mode=processing_mode)
+    if processing_mode is not None:
+        mode = processing_mode
+    elif platform == "telegram":
+        telegram_cfg = getattr(config, "telegram", None)
+        mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
+    else:
+        mode = "knowledge_full"
+
+    return PlaceResolutionService(uow=get_runtime().uow, processing_mode=mode)
 
 
 @procrastinate_app.task(
@@ -316,6 +334,7 @@ async def extract_claims(
     relevance_decision_id: int,
     policy_id: int,
     vision_run_id: int | None = None,
+    processing_mode: str | None = None,
 ):
     """Extract immutable claims for one relevant decision under the exact policy.
 
@@ -327,7 +346,32 @@ async def extract_claims(
     it later, and the pipeline never blocks on the AI. Duplicate or retried
     executions converge on the single canonical succeeded run.
     """
-    service = build_claim_extraction_service()
+    platform = "telegram"
+    if processing_mode is None:
+        try:
+            runtime = get_runtime()
+            async with runtime.uow.transaction() as conn:
+                cur = await conn.execute(
+                    """
+                    SELECT s.platform
+                    FROM source_item_revisions sir
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources s ON s.id = si.source_id
+                    WHERE sir.id = %s
+                    """,
+                    (source_item_revision_id,),
+                )
+                p_row = await cur.fetchone()
+                if p_row:
+                    platform = p_row[0]
+        except Exception as exc:
+            logger.debug(
+                "Could not resolve platform for revision %s: %s", source_item_revision_id, exc
+            )
+        service = build_claim_extraction_service(platform=platform)
+    else:
+        service = build_claim_extraction_service(processing_mode=processing_mode)
+
     try:
         return await service.extract(
             source_item_revision_id,
@@ -571,7 +615,12 @@ async def match_claim(
     retry=PLACE_RESOLUTION_RETRY_STRATEGY,
     pass_context=True,
 )
-async def resolve_place_mention(context, mention_id: int, policy_id: int):
+async def resolve_place_mention(
+    context,
+    mention_id: int,
+    policy_id: int,
+    processing_mode: str = "knowledge_full",
+):
     """Resolve one immutable claim place mention under the exact queued policy.
 
     The EXACT policy id resolved at defer time is a frozen task argument, so
@@ -586,9 +635,9 @@ async def resolve_place_mention(context, mention_id: int, policy_id: int):
     demoting a succeeded winner) and the task returns successfully.
     Duplicate executions replay the canonical result without new rows.
     """
-    service = build_place_resolution_service()
+    service = build_place_resolution_service(processing_mode=processing_mode)
     try:
-        return await service.resolve_mention(mention_id, policy_id)
+        return await service.resolve_mention(mention_id, policy_id, processing_mode=processing_mode)
     except ProviderUnavailableError:
         if context.job.attempts < 2:
             raise TransientProcessingError("place resolution provider unavailable") from None
