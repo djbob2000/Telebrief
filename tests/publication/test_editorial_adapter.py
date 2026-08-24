@@ -820,3 +820,190 @@ class TestKnowledgeEditorialAdapter:
             ].source_type
             == "channel"
         )
+
+    async def test_frozen_source_attribution_snapshot_survives_source_name_mutation(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Mutating source name/url after input sealing does not alter frozen attribution."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
+        adapter = KnowledgeEditorialAdapter(uow=uow)
+
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role)
+            VALUES ('telegram', 'channel', '@orig_chan', 'https://t.me/orig_chan', 'Оригинальный Канал', 'community')
+            RETURNING id
+            """
+        )
+        src_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', '999', %s) RETURNING id",
+            (src_id, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-msg999', 'Текст новости', %s) RETURNING id",
+            (item_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'rh', 'rv') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev_id, edition.id, rel_pol_id),
+        )
+        rel_dec_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'ch', 'cv') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev_id, edition.id, extr_pol_id, rel_dec_id),
+        )
+        extr_run_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at) VALUES (%s, %s, %s, 'Новость дня', 'новость дня', %s) RETURNING id",
+            (extr_run_id, rev_id, edition.id, _NOW),
+        )
+        claim_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) VALUES (%s, 1, 'open', 'Сюжет', 'h-s-snap', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        s_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s_rev_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, claim_id, _NOW),
+        )
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-frozen-source-name-key",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        # Mutate source name in sources table
+        await conn.execute(
+            "UPDATE sources SET name = 'Переименованный Канал', url = 'https://t.me/renamed' WHERE id = %s",
+            (src_id,),
+        )
+
+        # Adapter build must use the frozen source name 'Оригинальный Канал'
+        frozen = await adapter.build(run.id)
+        rec = frozen.writer_bundle.records[f"telegram:source:{src_id}:item:{item_id}:rev:{rev_id}"]
+        assert rec.message.channel_name == "Оригинальный Канал"
+        assert "Оригинальный Канал" in frozen.writer_bundle.prompt_text
+        assert "Переименованный Канал" not in frozen.writer_bundle.prompt_text
+
+    async def test_relative_timestamp_renders_approx_in_writer_prompt(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Relative Facebook timestamp is explicitly rendered with (approx) in prompt text."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
+        adapter = KnowledgeEditorialAdapter(uow=uow)
+
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role)
+            VALUES ('facebook', 'group', 'https://facebook.com/groups/rel_test', 'https://facebook.com/groups/rel_test', 'FB Group', 'community')
+            RETURNING id
+            """
+        )
+        src_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO source_items (source_id, kind, external_id, published_at, first_collected_at, metadata)
+            VALUES (%s, 'facebook_post', 'post:rel_1', %s, %s, '{"temporal_fidelity": "relative", "raw_timestamp": "2 ч."}'::jsonb)
+            RETURNING id
+            """,
+            (src_id, _NOW, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-fb-rel', 'Пост с относительным временем', %s) RETURNING id",
+            (item_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'rh', 'rv') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev_id, edition.id, rel_pol_id),
+        )
+        rel_dec_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'ch', 'cv') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev_id, edition.id, extr_pol_id, rel_dec_id),
+        )
+        extr_run_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at) VALUES (%s, %s, %s, 'Воды нет 2 часа', 'воды нет 2 часа', %s) RETURNING id",
+            (extr_run_id, rev_id, edition.id, _NOW),
+        )
+        claim_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) VALUES (%s, 1, 'open', 'Сюжет воды', 'h-s-rel', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        s_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s_rev_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, claim_id, _NOW),
+        )
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-approx-ts-key",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        frozen = await adapter.build(run.id)
+        prompt_text = frozen.writer_bundle.prompt_text
+        assert "~2 ч. (approx)" in prompt_text or "(approx)" in prompt_text

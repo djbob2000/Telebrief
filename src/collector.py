@@ -42,6 +42,8 @@ class Message:
     forward_origin_name: str | None = None
     forward_origin_username: str | None = None
     channel_id: int | str | None = None
+    temporal_fidelity: str | None = None
+    raw_timestamp: str | None = None
 
 
 class MessageCollector:

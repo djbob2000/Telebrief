@@ -234,8 +234,14 @@ def build_embedding_service() -> EmbeddingService:
     return EmbeddingService(uow=get_runtime().uow, provider=provider, matching_handoff=True)
 
 
-def build_story_matching_service() -> StoryMatchingService:
-    """Assemble the AI-backed story matching orchestrator from the config."""
+def build_story_matching_service(
+    processing_mode: str | None = None,
+) -> StoryMatchingService:
+    """Assemble the AI-backed story matching orchestrator from the config.
+
+    Accepts optional processing_mode for forward-compatibility with future
+    policy-driven matcher variations.
+    """
     from src.config_loader import load_config
 
     config = load_config()
@@ -503,6 +509,7 @@ async def backfill_claims(
     *,
     batch_size: int = BACKFILL_BATCH_SIZE,
     vision_mode: str | None = None,
+    processing_mode: str | None = None,
 ) -> int:
     """Queue extract_claims for relevant decisions still owing this policy a
     SUCCESSFUL extraction.
@@ -545,14 +552,16 @@ async def backfill_claims(
                 edition_id=decision.edition_id,
                 relevance_decision_id=decision.id,
                 policy_id=extraction_policy_id,
+                processing_mode=processing_mode,
             )
             deferred += 1
     logger.info(
-        "backfill_claims queued %d decisions for edition=%s policy=%s vision_mode=%s",
+        "backfill_claims queued %d decisions for edition=%s policy=%s vision_mode=%s mode=%s",
         deferred,
         edition_id,
         extraction_policy_id,
         vision_mode or "default",
+        processing_mode or "default",
     )
     return deferred
 
@@ -563,11 +572,15 @@ async def embed_claim(claim_id: int, model: str, dimensions: int) -> None:
 
     ``model`` and ``dimensions`` are frozen task arguments copied from the
     embedding config at defer time, so a retried execution keeps writing into
-    the space it was queued for even after a config change. Duplicate
-    executions converge on the one immutable row per
+    its original space even if the ambient config changed. Duplicate or
+    retried executions overwrite the exact same immutable row idempotently
     (claim, model, dimensions, purpose, content_hash).
     """
-    await build_embedding_service().embed_claim(claim_id, model=model, dimensions=dimensions)
+    service = build_embedding_service()
+    try:
+        await service.embed_claim(claim_id=claim_id, model=model, dimensions=dimensions)
+    except ProviderUnavailableError:
+        raise TransientProcessingError("claim embedding provider unavailable") from None
 
 
 @procrastinate_app.task(queue=PROCESSING_QUEUE)
@@ -584,9 +597,13 @@ async def embed_story_revision(story_revision_id: int, model: str, dimensions: i
     pass_context=True,
 )
 async def match_claim(
-    context, claim_id: int, policy_id: int, claim_embedding_id: int | None = None
+    context,
+    claim_id: int,
+    policy_id: int,
+    claim_embedding_id: int | None = None,
+    processing_mode: str = "knowledge_full",
 ):
-    """Match one claim (via its frozen embedding) into persistent stories.
+    """Match one claim (via its frozen embedding or lexical fallback) into persistent stories.
 
     The EXACT policy id and embedding id resolved at defer time are queued
     as task arguments, so a retried execution keeps its original policy and
@@ -600,7 +617,7 @@ async def match_claim(
     ``failed(provider_unavailable)`` through the guarded write that never
     demotes a concurrently succeeded winner.
     """
-    service = build_story_matching_service()
+    service = build_story_matching_service(processing_mode=processing_mode)
     try:
         return await service.run(claim_id, policy_id, claim_embedding_id)
     except ProviderUnavailableError:
@@ -650,13 +667,15 @@ async def backfill_story_matching(
     after_claim_embedding_id: int | None = None,
     *,
     batch_size: int = BACKFILL_BATCH_SIZE,
+    processing_mode: str | None = None,
 ) -> int:
-    """Queue match_claim for compatible embeddings still owing this exact
+    """Queue match_claim for compatible embeddings or claims still owing this exact
     policy a run.
 
     Covers ClaimEmbeddings persisted before the live handoff existed (Task 5
-    without Task 7) plus any window where a run failed. Bounded slice
-    (batch_size + optional exclusive id cursor); safe to re-run since runs
+    without Task 7) plus any window where a run failed. In knowledge_no_embeddings
+    mode, gap resolution queries claims directly without requiring embeddings.
+    Bounded slice (batch_size + optional exclusive id cursor); safe to re-run since runs
     with status succeeded/running/stale count as coverage — failed runs keep
     their debt visible until a successful matching lands. Duplicate queued
     jobs converge on the canonical succeeded run.
@@ -668,31 +687,59 @@ async def backfill_story_matching(
             raise ValueError(
                 f"story matching policy {policy_id} does not belong to edition {edition_id}"
             )
-        gaps = await StoryMatchingRunRepository().list_claim_embedding_gaps(
-            conn,
-            edition_id=edition_id,
-            policy_id=policy.id,
-            model=policy.embedding_model,
-            dimensions=policy.embedding_dimensions,
-            after_embedding_id=after_claim_embedding_id,
-            limit=batch_size,
-        )
-        for gap in gaps:
-            await match_claim.configure(
-                connection=conn,
-                lock=story_matching_execution_lock(edition_id),
-            ).defer_async(
-                claim_id=gap.claim_id,
+
+        is_no_embeddings = processing_mode == "knowledge_no_embeddings" or getattr(
+            policy, "embedding_model", None
+        ) in (None, "", "none")
+        if is_no_embeddings:
+            claim_ids = await StoryMatchingRunRepository().list_claim_matching_gaps(
+                conn,
+                edition_id=edition_id,
                 policy_id=policy.id,
-                claim_embedding_id=gap.embedding_id,
+                after_claim_id=after_claim_embedding_id,
+                limit=batch_size,
             )
+            for cid in claim_ids:
+                await match_claim.configure(
+                    connection=conn,
+                    lock=story_matching_execution_lock(edition_id),
+                ).defer_async(
+                    claim_id=cid,
+                    policy_id=policy.id,
+                    claim_embedding_id=None,
+                    processing_mode="knowledge_no_embeddings",
+                )
+            queued_count = len(claim_ids)
+        else:
+            gaps = await StoryMatchingRunRepository().list_claim_embedding_gaps(
+                conn,
+                edition_id=edition_id,
+                policy_id=policy.id,
+                model=policy.embedding_model,
+                dimensions=policy.embedding_dimensions,
+                after_embedding_id=after_claim_embedding_id,
+                limit=batch_size,
+            )
+            for gap in gaps:
+                await match_claim.configure(
+                    connection=conn,
+                    lock=story_matching_execution_lock(edition_id),
+                ).defer_async(
+                    claim_id=gap.claim_id,
+                    policy_id=policy.id,
+                    claim_embedding_id=gap.embedding_id,
+                    processing_mode=processing_mode or "knowledge_full",
+                )
+            queued_count = len(gaps)
+
     logger.info(
-        "backfill_story_matching queued %d claims edition=%s policy=%s",
-        len(gaps),
+        "backfill_story_matching queued %d claims edition=%s policy=%s mode=%s",
+        queued_count,
         edition_id,
         policy_id,
+        processing_mode or "default",
     )
-    return len(gaps)
+    return queued_count
 
 
 async def backfill_claim_embeddings(

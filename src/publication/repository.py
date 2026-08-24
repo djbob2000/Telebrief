@@ -368,6 +368,32 @@ class PublicationRepository:
                         ), 0
                     ) AS source_count,
                     (
+                        SELECT MAX(COALESCE(si.published_at, si.first_collected_at))
+                        FROM story_claims sc
+                        JOIN claims c ON c.id = sc.claim_id
+                        JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                        JOIN source_items si ON si.id = sir.source_item_id
+                        JOIN sources src ON src.id = si.source_id
+                        WHERE sc.story_id = lr.story_id
+                          AND sc.attached_at <= %s
+                          AND c.created_at <= %s
+                          AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
+                    ) AS newest_source_published_at,
+                    (
+                        SELECT si.metadata->>'temporal_fidelity'
+                        FROM story_claims sc
+                        JOIN claims c ON c.id = sc.claim_id
+                        JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                        JOIN source_items si ON si.id = sir.source_item_id
+                        JOIN sources src ON src.id = si.source_id
+                        WHERE sc.story_id = lr.story_id
+                          AND sc.attached_at <= %s
+                          AND c.created_at <= %s
+                          AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
+                        ORDER BY COALESCE(si.published_at, si.first_collected_at) DESC NULLS LAST
+                        LIMIT 1
+                    ) AS newest_source_temporal_fidelity,
+                    (
                         SELECT MAX(event_time)
                         FROM (
                             SELECT lr.revision_created_at AS event_time
@@ -448,7 +474,9 @@ class PublicationRepository:
                 story_created_at,
                 has_recent_revision,
                 has_recent_claim,
-                has_recent_event
+                has_recent_event,
+                newest_source_published_at,
+                newest_source_temporal_fidelity
             FROM story_activity
             WHERE (cardinality(%s::text[]) = 0 OR claim_count > 0)
               AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
@@ -469,6 +497,16 @@ class PublicationRepository:
                 excluded_platforms,
                 excluded_platforms,
                 # source_count
+                snapshot_at,
+                snapshot_at,
+                excluded_platforms,
+                excluded_platforms,
+                # newest_source_published_at
+                snapshot_at,
+                snapshot_at,
+                excluded_platforms,
+                excluded_platforms,
+                # newest_source_temporal_fidelity
                 snapshot_at,
                 snapshot_at,
                 excluded_platforms,
@@ -557,6 +595,17 @@ class PublicationRepository:
             has_recent_revision = r[11]
             has_recent_claim = r[12]
             has_recent_event = r[13]
+            newest_source_published_at = r[14]
+            newest_source_temporal_fidelity = r[15]
+
+            source_age_hours = (
+                round((snapshot_at - newest_source_published_at).total_seconds() / 3600.0, 1)
+                if (
+                    newest_source_published_at
+                    and isinstance(newest_source_published_at, dt.datetime)
+                )
+                else None
+            )
 
             if story_created_at >= window_start:
                 activity_type = "new_story"
@@ -591,6 +640,18 @@ class PublicationRepository:
                         ),
                         "activity_type": activity_type,
                         "semantic_text": semantic_text,
+                        "source_published_at": (
+                            newest_source_published_at.isoformat()
+                            if newest_source_published_at
+                            else None
+                        ),
+                        "newest_source_published_at": (
+                            newest_source_published_at.isoformat()
+                            if newest_source_published_at
+                            else None
+                        ),
+                        "source_age_hours": source_age_hours,
+                        "temporal_fidelity": newest_source_temporal_fidelity or "unknown",
                     },
                 }
             )
@@ -704,16 +765,53 @@ class PublicationRepository:
         input_row = PublicationInput.from_row(await cursor.fetchone())
 
         if claim_ids:
-            cur = conn.cursor()
+            # Query current source attribution metadata to permanently freeze in the snapshot
+            src_cur = await conn.execute(
+                """
+                SELECT c.id, s.id, s.platform, s.name, s.role, s.url, s.external_id
+                FROM claims c
+                JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                JOIN source_items si ON si.id = sir.source_item_id
+                JOIN sources s ON s.id = si.source_id
+                WHERE c.id = ANY(%s)
+                """,
+                (claim_ids,),
+            )
+            src_rows = await src_cur.fetchall()
+            meta_by_cid = {
+                r[0]: {
+                    "source_id": r[1],
+                    "platform": r[2],
+                    "name": r[3],
+                    "role": r[4],
+                    "url": r[5],
+                    "external_id": r[6],
+                }
+                for r in src_rows
+            }
             roles = claim_roles or {}
+            insert_rows = []
+            for cid in claim_ids:
+                smeta = meta_by_cid.get(cid, {})
+                srole = roles.get(cid) or smeta.get("role")
+                sname = smeta.get("name")
+                insert_rows.append(
+                    (input_row.id, cid, srole, sname, Jsonb(smeta) if smeta else None)
+                )
+
+            cur = conn.cursor()
             await cur.executemany(
                 """
-                INSERT INTO publication_input_claims (publication_input_id, claim_id, source_role)
-                VALUES (%s, %s, %s)
+                INSERT INTO publication_input_claims (
+                    publication_input_id, claim_id, source_role, source_name, source_snapshot
+                )
+                VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (publication_input_id, claim_id) DO UPDATE
-                SET source_role = EXCLUDED.source_role
+                SET source_role = EXCLUDED.source_role,
+                    source_name = EXCLUDED.source_name,
+                    source_snapshot = EXCLUDED.source_snapshot
                 """,
-                [(input_row.id, cid, roles.get(cid)) for cid in claim_ids],
+                insert_rows,
             )
 
         if evidence_cluster_ids:

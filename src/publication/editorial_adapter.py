@@ -206,15 +206,21 @@ class KnowledgeEditorialAdapter:
                 if cand_row and isinstance(cand_row[0], dict):
                     projected_text = cand_row[0].get("semantic_text")
 
-                # Fetch claims and their sources (respecting frozen source_role from publication_input_claims)
+                # Fetch claims and their sources (respecting frozen attribution snapshot from publication_input_claims)
                 c_cur = await conn.execute(
                     """
                     SELECT c.id, c.assertion_text, c.normalized_assertion,
-                           s.platform, s.name, si.external_id, si.published_at,
-                           sir.text_content, si.canonical_url, s.url, s.external_id,
-                           COALESCE(pic.source_role, s.role) AS effective_role,
+                           COALESCE(pic.source_snapshot->>'platform', s.platform) AS platform,
+                           COALESCE(pic.source_name, pic.source_snapshot->>'name', s.name) AS name,
+                           si.external_id, si.published_at,
+                           sir.text_content, si.canonical_url,
+                           COALESCE(pic.source_snapshot->>'url', s.url) AS url,
+                           COALESCE(pic.source_snapshot->>'external_id', s.external_id) AS s_external_id,
+                           COALESCE(pic.source_role, pic.source_snapshot->>'role', s.role) AS effective_role,
                            s.id AS source_id, si.id AS source_item_id, sir.id AS source_item_revision_id,
-                           si.kind, si.author_name
+                           si.kind, si.author_name,
+                           si.metadata->>'temporal_fidelity' AS temporal_fidelity,
+                           si.metadata->>'raw_timestamp' AS raw_timestamp
                     FROM claims c
                     JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
                     JOIN source_items si ON si.id = sir.source_item_id
@@ -252,6 +258,8 @@ class KnowledgeEditorialAdapter:
                         source_item_rev_id,
                         item_kind,
                         item_author_name,
+                        temp_fidelity,
+                        raw_ts,
                     ) = crow
                     ref_key = f"{platform}:source:{source_id}:item:{source_item_id}:rev:{source_item_rev_id}"
                     card_source_refs.append(ref_key)
@@ -310,6 +318,8 @@ class KnowledgeEditorialAdapter:
                             has_media=False,
                             media_type="",
                             message_id=msg_num,
+                            temporal_fidelity=temp_fidelity,
+                            raw_timestamp=raw_ts,
                         )
                         records[ref_key] = SourceRecord(
                             ref=ref_key,
@@ -378,13 +388,28 @@ class KnowledgeEditorialAdapter:
             def _format_record_header(r: SourceRecord) -> str:
                 chan = getattr(r.message, "channel_name", None) or r.source_type
                 ts = getattr(r.message, "timestamp", None)
+                fidelity = getattr(r.message, "temporal_fidelity", None)
+                raw_ts = getattr(r.message, "raw_timestamp", None)
                 if ts:
-                    ts_str = (
-                        ts.strftime("%Y-%m-%d %H:%M UTC")
-                        if isinstance(ts, dt.datetime)
-                        else str(ts)
-                    )
+                    if fidelity == "relative" and raw_ts:
+                        ts_str = f"~{raw_ts} (approx)"
+                    elif fidelity == "relative":
+                        ts_str = (
+                            f"~{ts.strftime('%Y-%m-%d %H:%M UTC')} (approx)"
+                            if isinstance(ts, dt.datetime)
+                            else f"~{ts} (approx)"
+                        )
+                    elif fidelity == "unknown" and raw_ts:
+                        ts_str = f"{raw_ts} (approx)"
+                    else:
+                        ts_str = (
+                            ts.strftime("%Y-%m-%d %H:%M UTC")
+                            if isinstance(ts, dt.datetime)
+                            else str(ts)
+                        )
                     return f"[{r.ref} ({chan}, {ts_str})]"
+                elif raw_ts:
+                    return f"[{r.ref} ({chan}, {raw_ts})]"
                 return f"[{r.ref} ({chan})]"
 
             bundle = PreparedBundle(

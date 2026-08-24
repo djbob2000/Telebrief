@@ -289,13 +289,17 @@ async def extract_facebook_node_timestamp(
     try:
         attr_data = await node.evaluate(
             """(el) => {
+                const clone = el.cloneNode(true);
+                clone.querySelectorAll('[role="article"]').forEach(n => n.remove());
+                clone.querySelectorAll('button, [role="button"], [role="toolbar"], ul, form').forEach(n => n.remove());
+
                 const candidates = [];
-                const utimeEl = el.querySelector('[data-utime], [data-time]') || (el.hasAttribute && (el.hasAttribute('data-utime') || el.hasAttribute('data-time')) ? el : null);
+                const utimeEl = clone.querySelector('[data-utime], [data-time]') || (clone.hasAttribute && (clone.hasAttribute('data-utime') || clone.hasAttribute('data-time')) ? clone : null);
                 if (utimeEl) {
                     const u = utimeEl.getAttribute('data-utime') || utimeEl.getAttribute('data-time');
                     if (u) candidates.push({type: 'utime', val: u});
                 }
-                const timeEls = el.querySelectorAll('time, abbr');
+                const timeEls = clone.querySelectorAll('time, abbr');
                 for (const t of timeEls) {
                     const dtAttr = t.getAttribute('datetime');
                     if (dtAttr) candidates.push({type: 'datetime', val: dtAttr});
@@ -304,7 +308,7 @@ async def extract_facebook_node_timestamp(
                     const text = (t.innerText || t.textContent || '').trim();
                     if (text) candidates.push({type: 'text', val: text});
                 }
-                const timestampLinks = el.querySelectorAll('a[href*="/posts/"], a[href*="story_fbid"], a[href*="comment_id"], a[href*="permalink"]');
+                const timestampLinks = clone.querySelectorAll('a[href*="/posts/"], a[href*="story_fbid"], a[href*="comment_id"], a[href*="permalink"]');
                 for (const l of timestampLinks) {
                     const title = l.getAttribute('title');
                     if (title) candidates.push({type: 'title', val: title});

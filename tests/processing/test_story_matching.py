@@ -1444,6 +1444,45 @@ class TestBackfillStoryMatching:
         assert await backfill_story_matching(edition.id, policy.id) == 0
         assert len(await _deferred_jobs(pool, MATCH_TASK)) == 2
 
+    async def test_queues_for_no_embeddings_mode_without_claim_embeddings(
+        self, conn, pool, uow, edition, revision_factory, production_jobs_app
+    ):
+        """In knowledge_no_embeddings mode, backfill finds uncovered claims without requiring embeddings."""
+        from src import runtime as runtime_module
+        from src.bootstrap import ApplicationInfrastructure
+        from src.jobs.processing import backfill_story_matching
+
+        runtime_module.install_runtime(
+            ApplicationInfrastructure(pool=pool, uow=uow, procrastinate_app=production_jobs_app)
+        )
+        claim1 = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        claim2 = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        claim_covered = await _make_claim(conn, edition.id, (await revision_factory()).id)
+
+        policy = await _insert_policy(conn, edition.id)
+
+        # Cover claim_covered with a succeeded run (no embedding)
+        await conn.execute(
+            """
+            INSERT INTO story_matching_runs (claim_id, edition_id, policy_id,
+                                             claim_embedding_id, completed_at, status)
+            VALUES (%s, %s, %s, NULL, now(), 'succeeded')
+            """,
+            (claim_covered.id, edition.id, policy.id),
+        )
+
+        queued = await backfill_story_matching(
+            edition.id, policy.id, processing_mode="knowledge_no_embeddings"
+        )
+        assert queued == 2
+
+        jobs = await _deferred_jobs(pool, MATCH_TASK)
+        matching_jobs = [j for j in jobs if int(j["args"]["claim_id"]) in {claim1.id, claim2.id}]
+        assert len(matching_jobs) == 2
+        for j in matching_jobs:
+            assert j["args"]["claim_embedding_id"] is None
+            assert j["args"].get("processing_mode") == "knowledge_no_embeddings"
+
 
 # ---------------------------------------------------------------------------
 @pytest.mark.postgres

@@ -914,3 +914,35 @@ class StoryMatchingRunRepository:
             (edition_id, after_embedding_id, model, dimensions, policy_id, limit),
         )
         return [ClaimEmbeddingGapRow.from_row(row) for row in await cursor.fetchall()]
+
+    async def list_claim_matching_gaps(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        policy_id: int,
+        after_claim_id: int | None = None,
+        limit: int = 500,
+    ) -> list[int]:
+        """Claims in this edition still owing this exact policy a run without requiring embeddings.
+
+        Coverage statuses are 'succeeded' (done), 'running' (in flight) and
+        'stale'; failed runs never cover — the debt stays visible until a run lands.
+        """
+        cursor = await conn.execute(
+            """
+            SELECT c.id
+            FROM claims c
+            WHERE c.edition_id = %s
+              AND c.id > COALESCE(%s, 0)
+              AND NOT EXISTS (
+                  SELECT 1 FROM story_matching_runs r
+                  WHERE r.claim_id = c.id AND r.policy_id = %s
+                    AND r.status IN ('succeeded', 'running', 'stale')
+              )
+            ORDER BY c.id
+            LIMIT %s
+            """,
+            (edition_id, after_claim_id, policy_id, limit),
+        )
+        return [row[0] for row in await cursor.fetchall()]

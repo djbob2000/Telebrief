@@ -116,7 +116,7 @@ class SQLiteBackend:
                 msg.channel_name,
                 msg.sender,
                 msg.text,
-                msg.timestamp.isoformat(),
+                msg.timestamp.isoformat() if msg.timestamp else None,
                 msg.link,
                 int(msg.has_media),
                 msg.media_type,

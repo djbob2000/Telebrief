@@ -884,3 +884,125 @@ async def test_get_or_create_item_shell_monotonically_enriches_published_at(conn
     fetched = await repo.get_item(conn, source_id=source.id, external_id="post:777")
     assert fetched is not None
     assert fetched.published_at == known_time
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_content_hash_ignores_volatile_metadata_and_avoids_spurious_revisions(conn, source):
+    """Changing volatile observation metadata (raw_timestamp, temporal_fidelity) must not create new revisions."""
+    repo = IngestionRepository()
+
+    obs1 = ObservedItem(
+        kind="facebook_post",
+        external_id="post:888",
+        text="На АКЗ нет воды",
+        author_name="Автор",
+        canonical_url="https://facebook.com/groups/1/posts/888",
+        metadata={
+            "platform": "facebook",
+            "post_id": "888",
+            "raw_timestamp": "2 ч.",
+            "temporal_fidelity": "relative",
+            "observed_at": "2026-08-24T12:00:00Z",
+        },
+        published_at=datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc),
+        observed_at=datetime(2026, 8, 24, 12, 0, tzinfo=timezone.utc),
+    )
+    item, _ = await repo.get_or_create_item_shell(conn, source.id, obs1)
+    rev1 = await repo.insert_revision_if_changed(conn, item.id, obs1, collected_at=obs1.observed_at)
+    assert rev1 is not None
+    assert rev1.revision_no == 1
+
+    # Hour later: raw_timestamp changed to "3 ч.", observed_at changed to 13:00
+    obs2 = ObservedItem(
+        kind="facebook_post",
+        external_id="post:888",
+        text="На АКЗ нет воды",
+        author_name="Автор",
+        canonical_url="https://facebook.com/groups/1/posts/888",
+        metadata={
+            "platform": "facebook",
+            "post_id": "888",
+            "raw_timestamp": "3 ч.",
+            "temporal_fidelity": "relative",
+            "observed_at": "2026-08-24T13:00:00Z",
+        },
+        published_at=datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc),
+        observed_at=datetime(2026, 8, 24, 13, 0, tzinfo=timezone.utc),
+    )
+    rev2 = await repo.insert_revision_if_changed(conn, item.id, obs2, collected_at=obs2.observed_at)
+    assert rev2 is None, "Volatile metadata change must not trigger a new revision"
+
+    # Actual text change DOES trigger revision 2
+    obs3 = ObservedItem(
+        kind="facebook_post",
+        external_id="post:888",
+        text="На АКЗ дали воду",
+        author_name="Автор",
+        canonical_url="https://facebook.com/groups/1/posts/888",
+        metadata={
+            "platform": "facebook",
+            "post_id": "888",
+            "raw_timestamp": "3 ч.",
+            "temporal_fidelity": "relative",
+        },
+        published_at=datetime(2026, 8, 24, 10, 0, tzinfo=timezone.utc),
+        observed_at=datetime(2026, 8, 24, 13, 0, tzinfo=timezone.utc),
+    )
+    rev3 = await repo.insert_revision_if_changed(conn, item.id, obs3, collected_at=obs3.observed_at)
+    assert rev3 is not None
+    assert rev3.revision_no == 2
+    assert rev3.text_content == "На АКЗ дали воду"
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_get_or_create_item_shell_upgrades_temporal_fidelity(conn, source):
+    """Subsequent observation with higher temporal fidelity upgrades published_at and fidelity."""
+    repo = IngestionRepository()
+
+    rel_time = datetime(2026, 8, 24, 10, 5, tzinfo=timezone.utc)
+    obs_rel = ObservedItem(
+        kind="facebook_post",
+        external_id="post:999",
+        text="Water outage",
+        author_name=None,
+        canonical_url=None,
+        metadata={"temporal_fidelity": "relative", "raw_timestamp": "2 ч."},
+        published_at=rel_time,
+        observed_at=datetime(2026, 8, 24, 12, 5, tzinfo=timezone.utc),
+    )
+    item1, _ = await repo.get_or_create_item_shell(conn, source.id, obs_rel)
+    assert item1.published_at == rel_time
+    assert item1.metadata.get("temporal_fidelity") == "relative"
+
+    # Later scan discovers precise data-utime timestamp
+    precise_time = datetime(2026, 8, 24, 10, 0, 15, tzinfo=timezone.utc)
+    obs_precise = ObservedItem(
+        kind="facebook_post",
+        external_id="post:999",
+        text="Water outage",
+        author_name=None,
+        canonical_url=None,
+        metadata={"temporal_fidelity": "precise_epoch", "raw_timestamp": "1724493615"},
+        published_at=precise_time,
+        observed_at=datetime(2026, 8, 24, 13, 0, tzinfo=timezone.utc),
+    )
+    item2, _ = await repo.get_or_create_item_shell(conn, source.id, obs_precise)
+    assert item2.published_at == precise_time
+    assert item2.metadata.get("temporal_fidelity") == "precise_epoch"
+
+    # Subsequent scan with relative fidelity does NOT downgrade precise timestamp
+    obs_rel2 = ObservedItem(
+        kind="facebook_post",
+        external_id="post:999",
+        text="Water outage",
+        author_name=None,
+        canonical_url=None,
+        metadata={"temporal_fidelity": "relative", "raw_timestamp": "3 ч."},
+        published_at=datetime(2026, 8, 24, 10, 10, tzinfo=timezone.utc),
+        observed_at=datetime(2026, 8, 24, 13, 10, tzinfo=timezone.utc),
+    )
+    item3, _ = await repo.get_or_create_item_shell(conn, source.id, obs_rel2)
+    assert item3.published_at == precise_time
+    assert item3.metadata.get("temporal_fidelity") == "precise_epoch"

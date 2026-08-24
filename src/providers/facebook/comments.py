@@ -409,21 +409,32 @@ class FacebookCommentCollector:
                     )
 
                     if not cid:
-                        # Stable synthetic fallback ID: post_external_id + parent_comment_id + author_id/name + normalized text + timestamp
+                        # Stable synthetic fallback ID: post_external_id + parent_comment_id + author_id/name + normalized text
+                        # Only include timestamp for stable absolute/precise timestamps, never scan-relative ones
                         norm_text = " ".join(text.split())
-                        time_sig = pub_at.isoformat() if pub_at else (raw_ts or "")
+                        time_sig = (
+                            pub_at.isoformat()
+                            if (
+                                pub_at
+                                and fidelity
+                                in (
+                                    "precise",
+                                    "precise_iso",
+                                    "precise_epoch",
+                                    "absolute_local",
+                                    "exact",
+                                )
+                            )
+                            else ""
+                        )
                         author_sig = author_id or author_name or ""
                         scope_str = f"{post_external_id}:{parent_comment_id or ''}:{author_sig}:{norm_text}:{time_sig}"
                         cid = hashlib.sha256(scope_str.encode("utf-8")).hexdigest()[:16]
                         identity_quality = "synthetic"
 
                     if cid in seen_comment_ids:
-                        if identity_quality == "synthetic":
-                            dup_count = sum(1 for s in seen_comment_ids if s.startswith(cid[:12]))
-                            cid = f"{cid[:12]}_{dup_count}"
-                            identity_quality = "synthetic_ambiguous"
-                        else:
-                            continue
+                        # Re-observation of the same synthetic or native comment during pagination
+                        continue
 
                     seen_comment_ids.add(cid)
                     new_found_this_page = True

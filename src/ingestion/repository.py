@@ -66,8 +66,83 @@ class IngestionRepository:
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (source_id, external_id) DO UPDATE
-            SET published_at = EXCLUDED.published_at
-            WHERE source_items.published_at IS NULL AND EXCLUDED.published_at IS NOT NULL
+            SET published_at = CASE
+                    WHEN (
+                        CASE COALESCE(EXCLUDED.metadata->>'temporal_fidelity', '')
+                            WHEN 'exact' THEN 3
+                            WHEN 'precise' THEN 3
+                            WHEN 'precise_epoch' THEN 3
+                            WHEN 'precise_iso' THEN 3
+                            WHEN 'absolute_local' THEN 2
+                            WHEN 'relative' THEN 1
+                            ELSE (CASE WHEN EXCLUDED.published_at IS NOT NULL THEN 1 ELSE 0 END)
+                        END
+                    ) > (
+                        CASE COALESCE(source_items.metadata->>'temporal_fidelity', '')
+                            WHEN 'exact' THEN 3
+                            WHEN 'precise' THEN 3
+                            WHEN 'precise_epoch' THEN 3
+                            WHEN 'precise_iso' THEN 3
+                            WHEN 'absolute_local' THEN 2
+                            WHEN 'relative' THEN 1
+                            ELSE (CASE WHEN source_items.published_at IS NOT NULL THEN 1 ELSE 0 END)
+                        END
+                    ) OR source_items.published_at IS NULL THEN EXCLUDED.published_at
+                    ELSE source_items.published_at
+                END,
+                metadata = CASE
+                    WHEN (
+                        CASE COALESCE(EXCLUDED.metadata->>'temporal_fidelity', '')
+                            WHEN 'exact' THEN 3
+                            WHEN 'precise' THEN 3
+                            WHEN 'precise_epoch' THEN 3
+                            WHEN 'precise_iso' THEN 3
+                            WHEN 'absolute_local' THEN 2
+                            WHEN 'relative' THEN 1
+                            ELSE (CASE WHEN EXCLUDED.published_at IS NOT NULL THEN 1 ELSE 0 END)
+                        END
+                    ) > (
+                        CASE COALESCE(source_items.metadata->>'temporal_fidelity', '')
+                            WHEN 'exact' THEN 3
+                            WHEN 'precise' THEN 3
+                            WHEN 'precise_epoch' THEN 3
+                            WHEN 'precise_iso' THEN 3
+                            WHEN 'absolute_local' THEN 2
+                            WHEN 'relative' THEN 1
+                            ELSE (CASE WHEN source_items.published_at IS NOT NULL THEN 1 ELSE 0 END)
+                        END
+                    ) THEN jsonb_set(
+                        source_items.metadata,
+                        '{temporal_fidelity}',
+                        COALESCE(EXCLUDED.metadata->'temporal_fidelity', '"unknown"'::jsonb)
+                    )
+                    ELSE source_items.metadata
+                END
+            WHERE (
+                source_items.published_at IS NULL AND EXCLUDED.published_at IS NOT NULL
+            ) OR (
+                (
+                    CASE COALESCE(EXCLUDED.metadata->>'temporal_fidelity', '')
+                        WHEN 'exact' THEN 3
+                        WHEN 'precise' THEN 3
+                        WHEN 'precise_epoch' THEN 3
+                        WHEN 'precise_iso' THEN 3
+                        WHEN 'absolute_local' THEN 2
+                        WHEN 'relative' THEN 1
+                        ELSE (CASE WHEN EXCLUDED.published_at IS NOT NULL THEN 1 ELSE 0 END)
+                    END
+                ) > (
+                    CASE COALESCE(source_items.metadata->>'temporal_fidelity', '')
+                        WHEN 'exact' THEN 3
+                        WHEN 'precise' THEN 3
+                        WHEN 'precise_epoch' THEN 3
+                        WHEN 'precise_iso' THEN 3
+                        WHEN 'absolute_local' THEN 2
+                        WHEN 'relative' THEN 1
+                        ELSE (CASE WHEN source_items.published_at IS NOT NULL THEN 1 ELSE 0 END)
+                    END
+                )
+            )
             RETURNING (xmax = 0) AS is_inserted, id, source_id, kind, external_id, parent_item_id,
                 root_item_id, author_name, author_external_id, canonical_url,
                 published_at, first_collected_at, metadata
@@ -561,9 +636,27 @@ def _checkpoint_from_row(row: tuple) -> CollectionCheckpoint | None:
     )
 
 
+_VOLATILE_OBSERVATION_METADATA_KEYS = frozenset(
+    {
+        "raw_timestamp",
+        "temporal_fidelity",
+        "observed_at",
+        "identity_quality",
+        "scan_at",
+        "collected_at",
+        "scan_id",
+    }
+)
+
+
 def _content_hash(observation: ObservedItem) -> str:
+    semantic_metadata = {
+        k: v
+        for k, v in observation.metadata.items()
+        if k not in _VOLATILE_OBSERVATION_METADATA_KEYS
+    }
     canonical = json.dumps(
-        {"metadata": observation.metadata, "text": observation.text},
+        {"metadata": semantic_metadata, "text": observation.text},
         sort_keys=True,
         ensure_ascii=False,
         separators=(",", ":"),

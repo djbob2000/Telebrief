@@ -90,6 +90,79 @@ class TestCommentParsingAndLinkage:
         assert cid1 == cid2
 
     @pytest.mark.asyncio
+    async def test_pagination_deduplicates_synthetic_comments_without_a_1_duplication(self):
+        """Page 1 returns [A]; page 2 DOM returns [A, B]; result must be [A, B], not [A, A_1, B]."""
+        source = _make_source()
+        collector = FacebookCommentCollector()
+        limits = FacebookCommentsConfig(max_comments_per_post=10, max_pages_per_refresh=3)
+
+        # Mock comment A
+        node_a = MagicMock()
+        node_a.inner_text = AsyncMock(return_value="Комментарий А")
+        node_a.query_selector_all = AsyncMock(return_value=[])
+        node_a.evaluate = AsyncMock(
+            side_effect=[
+                0,  # nesting depth
+                "Комментарий А",  # _extract_clean_comment_text
+                [],  # extract_facebook_node_timestamp candidates
+            ]
+            * 5
+        )
+
+        # Mock comment B
+        node_b = MagicMock()
+        node_b.inner_text = AsyncMock(return_value="Комментарий Б")
+        node_b.query_selector_all = AsyncMock(return_value=[])
+        node_b.evaluate = AsyncMock(
+            side_effect=[
+                0,  # nesting depth
+                "Комментарий Б",  # _extract_clean_comment_text
+                [],  # extract_facebook_node_timestamp candidates
+            ]
+            * 5
+        )
+
+        more_btn = MagicMock()
+        more_btn.click = AsyncMock()
+
+        # Page query_selector_all sequence:
+        # Page 1:
+        #   query_selector_all("[role='article']") -> [node_a]
+        #   query_selector_all("...View more...") -> [more_btn]
+        # Page 2:
+        #   query_selector_all("[role='article']") -> [node_a, node_b] (re-queried DOM)
+        #   query_selector_all("...View more...") -> [] (no more buttons)
+        page = MagicMock()
+        page.query_selector_all = AsyncMock(
+            side_effect=[
+                [node_a],  # Page 1 comments
+                [more_btn],  # Page 1 pagination button
+                [node_a, node_b],  # Page 2 comments (DOM contains both)
+                [],  # Page 2 pagination button (exhausted)
+            ]
+        )
+        page.wait_for_timeout = AsyncMock()
+
+        batch = await collector.scan_post_with_page(
+            source=source,
+            post_item_id=10,
+            post_external_id="post:1001",
+            page=page,
+            limits=limits,
+        )
+
+        assert len(batch.items) == 2
+        external_ids = [item.external_id for item in batch.items]
+        texts = [item.text for item in batch.items]
+
+        # Verify items are A and B, not A and A_1 and B
+        assert texts == ["Комментарий А", "Комментарий Б"]
+        assert len(set(external_ids)) == 2
+        for eid in external_ids:
+            assert "_1" not in eid
+            assert "_2" not in eid
+
+    @pytest.mark.asyncio
     async def test_scanner_extracts_author_name_and_ignores_numeric_profile_link_for_comment_id(
         self,
     ):
