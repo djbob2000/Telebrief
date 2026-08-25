@@ -806,16 +806,21 @@ def _parse_collection_config(yaml_config: dict) -> CollectionConfig:
     return CollectionConfig(telegram_interval_minutes=interval)
 
 
-EMBEDDING_PROVIDERS = frozenset({"google"})
+EMBEDDING_PROVIDERS = frozenset({"google", "openrouter", "openai"})
 MIN_EMBEDDING_DIMENSIONS = 128
-MAX_EMBEDDING_DIMENSIONS = 3072
+MAX_EMBEDDING_DIMENSIONS = 8192
 
 
-def _parse_embedding_config(yaml_config: dict, *, api_key: str = "") -> EmbeddingConfig:
+def _parse_embedding_config(
+    yaml_config: dict,
+    *,
+    env_vars: dict | None = None,
+    api_key: str = "",
+) -> EmbeddingConfig:
     """Parse and validate the optional top-level embedding: block.
 
     Absent block yields EmbeddingConfig() (Google gemini-embedding-2 at
-    1536 dimensions). ``api_key`` comes from the shared Gemini key resolved
+    1536 dimensions). ``api_key`` comes from the provider-specific key resolved
     in _load_and_validate_env_vars; it is never echoed by repr().
 
     Raises:
@@ -823,7 +828,8 @@ def _parse_embedding_config(yaml_config: dict, *, api_key: str = "") -> Embeddin
     """
     raw = yaml_config.get("embedding")
     if raw is None:
-        return EmbeddingConfig(api_key=api_key)
+        default_key = api_key or (env_vars.get("google_api_key", "") if env_vars else "")
+        return EmbeddingConfig(api_key=default_key)
     if not isinstance(raw, dict):
         raise ValueError(f"'embedding' must be a mapping, got {type(raw).__name__}")
 
@@ -834,7 +840,7 @@ def _parse_embedding_config(yaml_config: dict, *, api_key: str = "") -> Embeddin
             f"got {provider!r}"
         )
 
-    model = raw.get("model", "gemini-embedding-2")
+    model = raw.get("model", "gemini-embedding-2" if provider == "google" else "")
     if not isinstance(model, str) or not model.strip():
         raise ValueError("embedding.model must be a non-empty string")
 
@@ -851,12 +857,21 @@ def _parse_embedding_config(yaml_config: dict, *, api_key: str = "") -> Embeddin
     if isinstance(timeout, bool) or not isinstance(timeout, int) or timeout <= 0:
         raise ValueError(f"embedding.timeout must be a positive integer, got {timeout!r}")
 
+    resolved_api_key = api_key
+    if not resolved_api_key and env_vars:
+        if provider == "google":
+            resolved_api_key = env_vars.get("google_api_key", "")
+        elif provider == "openrouter":
+            resolved_api_key = env_vars.get("openrouter_api_key", "")
+        elif provider == "openai":
+            resolved_api_key = env_vars.get("openai_api_key", "")
+
     return EmbeddingConfig(
         provider=provider,
         model=model.strip(),
         dimensions=int(dimensions),
         timeout=int(timeout),
-        api_key=api_key,
+        api_key=resolved_api_key,
     )
 
 
@@ -1232,7 +1247,11 @@ def _parse_channels(yaml_config: dict) -> List[ChannelConfig]:
     return channels
 
 
-def _load_and_validate_env_vars(ai_provider: str) -> dict:
+def _load_and_validate_env_vars(
+    ai_provider: str,
+    *,
+    embedding_provider: str | None = None,
+) -> dict:
     """Load and validate required environment variables.
 
     Returns:
@@ -1284,6 +1303,19 @@ def _load_and_validate_env_vars(ai_provider: str) -> dict:
         missing_vars.append("GEMINI_API_KEY")
     elif ai_provider == "openrouter" and not openrouter_api_key:
         missing_vars.append("OPENROUTER_API_KEY")
+
+    if (
+        embedding_provider == "openrouter"
+        and not openrouter_api_key
+        and "OPENROUTER_API_KEY" not in missing_vars
+    ):
+        missing_vars.append("OPENROUTER_API_KEY")
+    elif (
+        embedding_provider == "openai"
+        and not openai_api_key
+        and "OPENAI_API_KEY" not in missing_vars
+    ):
+        missing_vars.append("OPENAI_API_KEY")
 
     if missing_vars:
         raise ValueError(
@@ -1457,7 +1489,13 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
     # Cross-validate channel group references against known digest_groups
     _validate_channel_groups(channels, digest_groups, output_language)
 
-    env_vars = _load_and_validate_env_vars(ai_provider)
+    raw_embedding = yaml_config.get("embedding")
+    embedding_provider = raw_embedding.get("provider") if isinstance(raw_embedding, dict) else None
+
+    env_vars = _load_and_validate_env_vars(
+        ai_provider,
+        embedding_provider=embedding_provider,
+    )
 
     return Config(
         channels=channels,
@@ -1468,7 +1506,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         database=database_config,
         collection=collection_config,
         telegram=telegram_config,
-        embedding=_parse_embedding_config(yaml_config, api_key=env_vars["google_api_key"]),
+        embedding=_parse_embedding_config(yaml_config, env_vars=env_vars),
         facebook=facebook_config,
         **env_vars,
     )

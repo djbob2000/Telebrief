@@ -146,5 +146,11 @@ settings:
 database:
   enabled: true
 
+embedding:
+  provider: "openrouter"
+  model: "qwen/qwen3-embedding-8b"
+  dimensions: 1536
+  timeout: 45
+
 facebook:
   enabled: false

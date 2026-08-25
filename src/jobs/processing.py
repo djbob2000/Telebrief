@@ -24,7 +24,7 @@ import logging
 import procrastinate
 
 from src.ai_providers import AIProvider, create_provider
-from src.embedding_providers import GoogleGeminiEmbeddingProvider
+from src.embedding_providers import create_embedding_provider
 from src.ingestion.repository import IngestionRepository
 from src.jobs.app import procrastinate_app
 from src.processing.claims import ClaimExtractionService
@@ -225,12 +225,7 @@ def build_embedding_service() -> EmbeddingService:
     from src.config_loader import load_config
 
     config = load_config()
-    embedding_config = config.embedding
-    provider = GoogleGeminiEmbeddingProvider(
-        api_key=embedding_config.api_key or config.gemini_api_key,
-        logger=logger,
-        timeout=embedding_config.timeout,
-    )
+    provider = create_embedding_provider(config, logger=logger)
     return EmbeddingService(uow=get_runtime().uow, provider=provider, matching_handoff=True)
 
 

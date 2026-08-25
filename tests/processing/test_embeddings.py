@@ -28,6 +28,9 @@ from src.embedding_providers import (
     EmbeddingDimensionMismatch,
     EmbeddingProviderError,
     GoogleGeminiEmbeddingProvider,
+    OpenAIEmbeddingProvider,
+    OpenRouterEmbeddingProvider,
+    create_embedding_provider,
 )
 from src.processing.embeddings import (
     EmbeddingInputBuilder,
@@ -597,6 +600,83 @@ class TestGoogleGeminiEmbeddingProvider:
             await provider.embed(
                 AKZ_NORMALIZED, purpose=PURPOSE_CLAIM_QUERY, model=MODEL_A, dimensions=1536
             )
+
+
+@pytest.mark.unit
+class TestOpenRouterEmbeddingProvider:
+    async def test_embed_sends_model_input_dimensions_to_openrouter(self):
+        provider = OpenRouterEmbeddingProvider(api_key="openrouter-key", logger=logger, timeout=45)
+        api = _StubCompatEmbeddingsApi([0.1] * 1536)
+        provider.client = SimpleNamespace(embeddings=api)
+
+        vector = await provider.embed(
+            AKZ_NORMALIZED,
+            purpose=PURPOSE_CLAIM_QUERY,
+            model="qwen/qwen3-embedding-8b",
+            dimensions=1536,
+        )
+
+        assert vector == [0.1] * 1536
+        assert api.calls == [
+            {"model": "qwen/qwen3-embedding-8b", "input": AKZ_NORMALIZED, "dimensions": 1536}
+        ]
+
+    async def test_openrouter_rejects_missing_api_key(self):
+        with pytest.raises(
+            ValueError, match="OpenRouterEmbeddingProvider requires an OpenRouter API key"
+        ):
+            OpenRouterEmbeddingProvider(api_key="", logger=logger)
+
+
+@pytest.mark.unit
+class TestOpenAIEmbeddingProvider:
+    async def test_embed_sends_request_to_openai(self):
+        provider = OpenAIEmbeddingProvider(api_key="openai-key", logger=logger, timeout=45)
+        api = _StubCompatEmbeddingsApi([0.2] * 1536)
+        provider.client = SimpleNamespace(embeddings=api)
+
+        vector = await provider.embed(
+            AKZ_NORMALIZED,
+            purpose=PURPOSE_CLAIM_QUERY,
+            model="text-embedding-3-small",
+            dimensions=1536,
+        )
+
+        assert vector == [0.2] * 1536
+        assert api.calls == [
+            {"model": "text-embedding-3-small", "input": AKZ_NORMALIZED, "dimensions": 1536}
+        ]
+
+
+@pytest.mark.unit
+class TestCreateEmbeddingProvider:
+    def test_creates_google_gemini_provider(self):
+        from src.config_loader import EmbeddingConfig
+
+        cfg = EmbeddingConfig(provider="google", api_key="gem-key")
+        provider = create_embedding_provider(cfg, logger=logger)
+        assert isinstance(provider, GoogleGeminiEmbeddingProvider)
+
+    def test_creates_openrouter_provider(self):
+        from src.config_loader import EmbeddingConfig
+
+        cfg = EmbeddingConfig(provider="openrouter", api_key="or-key")
+        provider = create_embedding_provider(cfg, logger=logger)
+        assert isinstance(provider, OpenRouterEmbeddingProvider)
+
+    def test_creates_openai_provider(self):
+        from src.config_loader import EmbeddingConfig
+
+        cfg = EmbeddingConfig(provider="openai", api_key="oa-key")
+        provider = create_embedding_provider(cfg, logger=logger)
+        assert isinstance(provider, OpenAIEmbeddingProvider)
+
+    def test_rejects_unsupported_provider(self):
+        from src.config_loader import EmbeddingConfig
+
+        cfg = EmbeddingConfig(provider="azure_fake", api_key="key")
+        with pytest.raises(ValueError, match="Unsupported embedding provider"):
+            create_embedding_provider(cfg, logger=logger)
 
 
 class _StubEmptyResponseApi:

@@ -1923,7 +1923,7 @@ def test_embedding_config_custom_block(monkeypatch, tmp_path, mock_env_vars):
 @pytest.mark.unit
 def test_embedding_config_accepts_dimension_bounds(monkeypatch, tmp_path, mock_env_vars):
     """Both inclusive bounds of the supported dimensionality range parse."""
-    for dims in (128, 3072):
+    for dims in (128, 8192):
         path = _write_config(tmp_path, {"embedding": {"dimensions": dims}})
         with patch("src.config_loader.load_dotenv"):
             config = load_config(path=path)
@@ -1931,13 +1931,13 @@ def test_embedding_config_accepts_dimension_bounds(monkeypatch, tmp_path, mock_e
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("dims", [64, 127, 3073, 8192])
+@pytest.mark.parametrize("dims", [64, 127, 8193, 10000])
 def test_embedding_config_rejects_dimensions_out_of_bounds(
     monkeypatch, tmp_path, mock_env_vars, dims
 ):
     path = _write_config(tmp_path, {"embedding": {"dimensions": dims}})
     with patch("src.config_loader.load_dotenv"):
-        with pytest.raises(ValueError, match="dimensions must be an integer between 128 and 3072"):
+        with pytest.raises(ValueError, match="dimensions must be an integer between 128 and 8192"):
             load_config(path=path)
 
 
@@ -1954,10 +1954,56 @@ def test_embedding_config_rejects_non_integer_dimensions(
 
 @pytest.mark.unit
 def test_embedding_config_rejects_unknown_provider(monkeypatch, tmp_path, mock_env_vars):
-    path = _write_config(tmp_path, {"embedding": {"provider": "openai"}})
+    path = _write_config(tmp_path, {"embedding": {"provider": "unsupported_provider"}})
     with patch("src.config_loader.load_dotenv"):
         with pytest.raises(ValueError, match="embedding.provider"):
             load_config(path=path)
+
+
+@pytest.mark.unit
+def test_embedding_config_openrouter_provider(monkeypatch, tmp_path, mock_env_vars):
+    """OpenRouter provider correctly parses model and resolves OPENROUTER_API_KEY."""
+    secret = "openrouter-secret-key-xyz"
+    monkeypatch.setenv("OPENROUTER_API_KEY", secret)
+    path = _write_config(
+        tmp_path,
+        {
+            "embedding": {
+                "provider": "openrouter",
+                "model": "qwen/qwen3-embedding-8b",
+                "dimensions": 1536,
+            }
+        },
+    )
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=path)
+    assert config.embedding.provider == "openrouter"
+    assert config.embedding.model == "qwen/qwen3-embedding-8b"
+    assert config.embedding.dimensions == 1536
+    assert config.embedding.api_key == secret
+    assert secret not in repr(config.embedding)
+
+
+@pytest.mark.unit
+def test_embedding_config_openai_provider(monkeypatch, tmp_path, mock_env_vars):
+    """OpenAI provider correctly parses model and resolves OPENAI_API_KEY."""
+    secret = "openai-secret-key-123"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+    path = _write_config(
+        tmp_path,
+        {
+            "embedding": {
+                "provider": "openai",
+                "model": "text-embedding-3-small",
+                "dimensions": 1536,
+            }
+        },
+    )
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=path)
+    assert config.embedding.provider == "openai"
+    assert config.embedding.model == "text-embedding-3-small"
+    assert config.embedding.api_key == secret
 
 
 @pytest.mark.unit
