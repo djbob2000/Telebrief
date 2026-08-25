@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "aiohttp>=3.9.0",
+    "aiosqlite>=0.19.0",
     "mcp>=2.0.0",
     "openai>=1.0.0",
     "pgvector>=0.5.0",

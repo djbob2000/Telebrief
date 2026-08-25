@@ -40,7 +40,7 @@ async def test_to_project_message_preserves_context_metadata(sample_config, mock
 
 def _collector(config, logger):
     """Construct a collector without opening the real local Telegram session."""
-    with patch("src.collector.TelegramClient"):
+    with patch("src.collector.build_user_client"):
         collector = MessageCollector(config, logger)
     return collector
 
