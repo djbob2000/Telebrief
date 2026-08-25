@@ -244,6 +244,19 @@ class FailOpenSelectionModel:
                 raise InvalidSelectionResponse(
                     f"primary selector returned {len(proposals)} proposals for {len(candidates)} candidates"
                 )
+
+            # Publication-first invariant:
+            # editorial selection must not turn lack of corroboration,
+            # community provenance, or unverified status into an
+            # effective publication gate.
+            # If candidates were sealed (> 0) but the primary selector omitted all of them,
+            # treat as a degraded/over-conservative selection and fall back to permissive heuristic.
+            included_count = sum(1 for p in proposals if p.decision == "INCLUDE")
+            if candidates and included_count == 0:
+                raise InvalidSelectionResponse(
+                    f"primary selector returned zero INCLUDE decisions for {len(candidates)} sealed candidates; triggering fail-open fallback"
+                )
+
             return proposals
         except Exception as exc:
             logger.warning(

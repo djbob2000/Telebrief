@@ -444,3 +444,80 @@ class TestEditorialSelection:
         sel_service = EditorialSelectionService(uow=uow, model=model)
         inputs = await sel_service.select(run.id)
         assert len(inputs) == 0
+
+    async def test_valid_all_omit_does_not_suppress_single_source_low_risk_story(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Valid all-OMIT response from primary AI must trigger fail-open fallback for eligible candidate."""
+        import json
+        from unittest.mock import AsyncMock
+
+        from src.ai_providers import AIProvider
+        from src.publication.selection_ai import (
+            AIPublicationSelectionModel,
+            FailOpenSelectionModel,
+        )
+
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        # 1. Seed single-source low-risk community story (e.g. Facebook comment)
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'На АКЗ возле почты появилась вода', 'h-water', %s) RETURNING id
+            """,
+            (story_id, _NOW),
+        )
+        story_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (story_rev_id, story_id)
+        )
+
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW, platform="facebook")
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-valid-all-omit-fallback",
+        )
+        candidates = await snap_service.seal_candidates(run.id)
+        assert len(candidates) == 1
+        assert candidates[0].story_id == story_id
+
+        # 2. AI model returns completely valid JSON proposing OMIT because of single-source / lack of confirmation
+        valid_omit_payload = {
+            "proposals": [
+                {
+                    "story_id": story_id,
+                    "story_revision_id": story_rev_id,
+                    "decision": "OMIT",
+                    "presentation_intent": None,
+                    "rank": None,
+                    "confidence": 0.9,
+                    "reason": "not sufficiently confirmed / single community source",
+                }
+            ]
+        }
+        mock_provider = AsyncMock(spec=AIProvider)
+        mock_provider.chat_completion.return_value = json.dumps(valid_omit_payload)
+
+        # 3. Use production FailOpenSelectionModel with this AI provider
+        ai_model = AIPublicationSelectionModel(provider=mock_provider)
+        fail_open_selector = FailOpenSelectionModel(primary=ai_model)
+
+        service = EditorialSelectionService(uow=uow, model=fail_open_selector)
+        inputs = await service.select(run.id)
+
+        # 4. Publication-first invariant: fail-open fallback must include the eligible candidate
+        assert len(inputs) == 1
+        assert inputs[0].story_id == story_id
+        assert inputs[0].presentation_intent == "lead"
