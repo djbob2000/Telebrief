@@ -209,7 +209,13 @@ class ExtractedClaimDraft:
             entities=_string_list(entry.get("entities")),
         )
 
-    def to_new_claim(self) -> NewClaim:
+    def to_new_claim(self, *, processing_mode: str | None = None) -> NewClaim:
+        meta: dict[str, Any] = {
+            "place_mentions": list(self.place_mentions),
+            "entities": list(self.entities),
+        }
+        if processing_mode is not None:
+            meta["processing_mode"] = processing_mode
         return NewClaim(
             assertion_text=self.assertion_text,
             normalized_assertion=self.normalized_assertion,
@@ -219,10 +225,7 @@ class ExtractedClaimDraft:
             event_time_confidence=self.event_time_confidence,
             event_time_original_text=self.event_time_original_text,
             # T8 ruling: dedicated mention tables arrive later; migrate then.
-            metadata={
-                "place_mentions": list(self.place_mentions),
-                "entities": list(self.entities),
-            },
+            metadata=meta,
         )
 
 
@@ -627,6 +630,7 @@ class ClaimExtractionService:
             edition_id=edition_id,
             extraction_policy_id=extraction_policy_id,
             relevance_decision_id=relevance_decision_id,
+            metadata={"processing_mode": self._processing_mode},
         )
         return run
 
@@ -714,7 +718,12 @@ class ClaimExtractionService:
         unique index rejects us at write time) rolls the transaction back and
         converges on the winner's artifacts instead.
         """
-        new_claims = [draft.to_new_claim() for draft in drafts]
+        effective_mode = (
+            run.metadata.get("processing_mode", self._processing_mode)
+            if isinstance(run.metadata, dict) and run.metadata.get("processing_mode")
+            else self._processing_mode
+        )
+        new_claims = [draft.to_new_claim(processing_mode=effective_mode) for draft in drafts]
         completed_at = _now()
         try:
             async with self.uow.transaction() as conn:
@@ -723,19 +732,18 @@ class ClaimExtractionService:
                 if not won:
                     raise CanonicalSlotLost(f"canonical success held elsewhere for run {run.id}")
                 if self._place_handoff:
-                    await self._materialize_place_evidence(conn, inserted)
-                await self._defer_embed_claims(conn, inserted)
-                if (
-                    self._processing_mode == "knowledge_no_embeddings"
-                    or self._embedding_config is None
-                ):
+                    await self._materialize_place_evidence(
+                        conn, inserted, processing_mode=effective_mode
+                    )
+                await self._defer_embed_claims(conn, inserted, processing_mode=effective_mode)
+                if effective_mode == "knowledge_no_embeddings" or self._embedding_config is None:
                     from src.processing.story_matching import StoryMatchingPrerequisiteService
 
-                    prereq = StoryMatchingPrerequisiteService(processing_mode=self._processing_mode)
+                    prereq = StoryMatchingPrerequisiteService(processing_mode=effective_mode)
                     for claim in inserted:
                         if not staging_strings(claim.metadata, "place_mentions"):
                             await prereq.maybe_schedule(
-                                conn, claim_id=claim.id, processing_mode=self._processing_mode
+                                conn, claim_id=claim.id, processing_mode=effective_mode
                             )
                 final = await self._run_repo.get(conn, run.id)
         except psycopg.errors.UniqueViolation as exc:
@@ -760,6 +768,7 @@ class ClaimExtractionService:
         self,
         conn: psycopg.AsyncConnection,
         inserted: Sequence[Claim],
+        processing_mode: str | None = None,
     ) -> None:
         """Queue one embedding job per newly created claim INSIDE the success
         transaction: claims, canonical success, and their embed defers commit
@@ -767,7 +776,8 @@ class ClaimExtractionService:
         queued vector. Model/dimensions are copied from the config into the
         task arguments so retries keep the exact queued vector space.
         """
-        if self._processing_mode == "knowledge_no_embeddings":
+        mode = processing_mode or self._processing_mode
+        if mode == "knowledge_no_embeddings":
             return
 
         config = self._embedding_config
@@ -793,6 +803,7 @@ class ClaimExtractionService:
         self,
         conn: psycopg.AsyncConnection,
         inserted: Sequence[Claim],
+        processing_mode: str | None = None,
     ) -> None:
         """Materialize T8 evidence rows and defer place resolution ATOMICALLY.
 
@@ -819,6 +830,7 @@ class ClaimExtractionService:
         # Lazy on purpose: src.jobs.processing imports this module at top level.
         from src.jobs.processing import resolve_place_mention
 
+        mode = processing_mode or self._processing_mode
         deferred = 0
         for claim in claims_with_evidence:
             for raw in staging_strings(claim.metadata, "place_mentions"):
@@ -829,7 +841,7 @@ class ClaimExtractionService:
                     await resolve_place_mention.configure(connection=conn).defer_async(
                         mention_id=mention.id,
                         policy_id=policy.id,
-                        processing_mode=self._processing_mode,
+                        processing_mode=mode,
                     )
                     deferred += 1
             for raw in staging_strings(claim.metadata, "entities"):

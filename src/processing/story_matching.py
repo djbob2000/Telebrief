@@ -75,7 +75,7 @@ from src.repositories.places import (
     PlaceRepository,
     PlaceResolutionPolicyRepository,
 )
-from src.repositories.stories import StoryRepository
+from src.repositories.stories import ClaimAlreadyAttachedError, StoryRepository
 from src.repositories.story_candidates import (
     LockedMatchingRun,
     StoryCandidateRetriever,
@@ -558,8 +558,12 @@ class StoryMatchingService:
     ) -> StoryMatchingOutcome:
         """Execute the three-boundary flow for one claim/policy/embedding."""
         context = await self._create_run_and_candidates(claim_id, policy_id, claim_embedding_id)
-        if isinstance(context, StoryMatchingRun):  # canonical winner replay
-            return StoryMatchingOutcome(run=context, replayed=True)
+        if isinstance(context, StoryMatchingRun):  # canonical winner replay or terminal state
+            if context.status == "succeeded":
+                return StoryMatchingOutcome(run=context, replayed=True)
+            return StoryMatchingOutcome(
+                run=context, degraded=context.error_kind or "claim_already_attached"
+            )
 
         # The consultation AND its output validation share one handler:
         # _parse_json_object -> MatchProposal.from_dict failures are
@@ -590,6 +594,19 @@ class StoryMatchingService:
             return await self._converge_existing_success(claim_id, policy_id)
         except InvalidMatchResponse as exc:
             return await self._finalize_invalid_response(context.run, exc)
+        except ClaimAlreadyAttachedError as exc:
+            async with self.uow.transaction() as conn:
+                await self._runs.mark_failed(
+                    conn, context.run.id, error_kind="claim_already_attached", completed_at=_now()
+                )
+                final = await self._runs.get(conn, context.run.id)
+            logger.warning(
+                "claim %s already attached to another story; run %s marked failed (claim_already_attached): %s",
+                claim_id,
+                context.run.id,
+                exc,
+            )
+            return StoryMatchingOutcome(run=final, degraded="claim_already_attached")
         return outcome
 
     # ------------------------------------------------------------------
@@ -617,6 +634,30 @@ class StoryMatchingService:
             if not claims:
                 raise ValueError(f"claim {claim_id} does not exist")
             claim = claims[0]
+
+            if await self._stories.is_claim_attached(conn, claim_id=claim_id):
+                # Claim is already attached to a story (assignment is exclusive and one-time).
+                # Move any existing running run out of running so it is not stuck.
+                run = await self._runs.latest_running(conn, claim_id=claim_id, policy_id=policy_id)
+                if run is None:
+                    run = await self._runs.insert_running(
+                        conn,
+                        claim_id=claim_id,
+                        edition_id=claim.edition_id,
+                        policy_id=policy_id,
+                        claim_embedding_id=claim_embedding_id,
+                        retrieval_mode=(
+                            "knowledge_no_embeddings"
+                            if claim_embedding_id is None
+                            else "knowledge_full"
+                        ),
+                    )
+                await self._runs.mark_failed(
+                    conn, run.id, error_kind="claim_already_attached", completed_at=_now()
+                )
+                final = await self._runs.get(conn, run.id)
+                return final if final is not None else run
+
             policy = await self._load_policy(conn, policy_id, claim.edition_id)
             embedded = (
                 await self._load_embedding(conn, claim_id, claim_embedding_id, policy)
@@ -805,7 +846,7 @@ class StoryMatchingService:
             conn, story_id=target_story_id, claim_id=claim.id, attached_at=_now()
         )
         if not attached:
-            raise RuntimeError(
+            raise ClaimAlreadyAttachedError(
                 f"cannot attach claim {claim.id} to story {target_story_id}: "
                 f"claim is already attached to another story"
             )
@@ -1057,6 +1098,7 @@ class StoryMatchingPrerequisiteService:
         place_policies: PlaceResolutionPolicyRepository | None = None,
         place_policy_service: PlaceResolutionPolicyService | None = None,
         matching_policy_service: StoryMatchingPolicyService | None = None,
+        stories: StoryRepository | None = None,
         processing_mode: str = "knowledge_full",
     ) -> None:
         self._claims = claims or ClaimRepository()
@@ -1067,6 +1109,7 @@ class StoryMatchingPrerequisiteService:
             self._place_policies
         )
         self._matching_policy_service = matching_policy_service or StoryMatchingPolicyService()
+        self._stories = stories or StoryRepository()
         self._processing_mode = processing_mode
 
     async def maybe_schedule(
@@ -1081,7 +1124,20 @@ class StoryMatchingPrerequisiteService:
             raise ValueError(f"claim {claim_id} does not exist")
         claim = claims[0]
 
-        mode = processing_mode if processing_mode is not None else self._processing_mode
+        if await self._stories.is_claim_attached(conn, claim_id=claim.id):
+            logger.info(
+                "claim %s is already attached to a story; skipping matching schedule", claim.id
+            )
+            return False
+
+        persisted_mode = (
+            claim.metadata.get("processing_mode") if isinstance(claim.metadata, dict) else None
+        )
+        mode = (
+            processing_mode
+            if processing_mode is not None
+            else (persisted_mode or self._processing_mode)
+        )
         embedding = await self._embeddings.latest_claim_embedding_identity(conn, claim_id=claim.id)
         if embedding is None and mode != "knowledge_no_embeddings":
             return False
@@ -1115,13 +1171,15 @@ class StoryMatchingPrerequisiteService:
             claim_id=claim.id,
             policy_id=policy.id,
             claim_embedding_id=claim_embedding_id,
+            processing_mode=mode,
         )
         logger.info(
             "prerequisites satisfied; deferred match_claim claim=%s policy=%s embedding=%s "
-            "place_policy=%s",
+            "place_policy=%s mode=%s",
             claim.id,
             policy.id,
             claim_embedding_id,
             place_policy.id,
+            mode,
         )
         return True

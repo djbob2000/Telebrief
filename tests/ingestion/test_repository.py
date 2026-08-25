@@ -975,6 +975,7 @@ async def test_get_or_create_item_shell_upgrades_temporal_fidelity(conn, source)
     item1, _ = await repo.get_or_create_item_shell(conn, source.id, obs_rel)
     assert item1.published_at == rel_time
     assert item1.metadata.get("temporal_fidelity") == "relative"
+    assert item1.metadata.get("raw_timestamp") == "2 ч."
 
     # Later scan discovers precise data-utime timestamp
     precise_time = datetime(2026, 8, 24, 10, 0, 15, tzinfo=timezone.utc)
@@ -991,8 +992,9 @@ async def test_get_or_create_item_shell_upgrades_temporal_fidelity(conn, source)
     item2, _ = await repo.get_or_create_item_shell(conn, source.id, obs_precise)
     assert item2.published_at == precise_time
     assert item2.metadata.get("temporal_fidelity") == "precise_epoch"
+    assert item2.metadata.get("raw_timestamp") == "1724493615"
 
-    # Subsequent scan with relative fidelity does NOT downgrade precise timestamp
+    # Subsequent scan with relative fidelity does NOT downgrade precise timestamp or raw_timestamp
     obs_rel2 = ObservedItem(
         kind="facebook_post",
         external_id="post:999",
@@ -1006,3 +1008,4 @@ async def test_get_or_create_item_shell_upgrades_temporal_fidelity(conn, source)
     item3, _ = await repo.get_or_create_item_shell(conn, source.id, obs_rel2)
     assert item3.published_at == precise_time
     assert item3.metadata.get("temporal_fidelity") == "precise_epoch"
+    assert item3.metadata.get("raw_timestamp") == "1724493615"

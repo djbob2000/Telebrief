@@ -548,9 +548,36 @@ async def backfill_claims(
                 if assets:
                     continue
 
-            # Ensure platform scoping for knowledge_no_embeddings
             mode_to_use = processing_mode
-            if processing_mode == "knowledge_no_embeddings":
+            if mode_to_use is None:
+                r_cur = await conn.execute(
+                    """
+                    SELECT cer.metadata->>'processing_mode', s.platform
+                    FROM source_item_revisions sir
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources s ON s.id = si.source_id
+                    LEFT JOIN claim_extraction_runs cer ON cer.source_item_revision_id = sir.id AND cer.edition_id = %s
+                    WHERE sir.id = %s
+                    ORDER BY cer.id DESC LIMIT 1
+                    """,
+                    (decision.edition_id, decision.source_item_revision_id),
+                )
+                r_row = await r_cur.fetchone()
+                persisted = r_row[0] if r_row else None
+                platform = r_row[1] if r_row else None
+                if persisted:
+                    mode_to_use = persisted
+                elif platform == "telegram":
+                    try:
+                        from src.config_loader import load_config
+
+                        telegram_cfg = getattr(load_config(), "telegram", None)
+                        mode_to_use = getattr(telegram_cfg, "processing_mode", "knowledge_full")
+                    except Exception:
+                        mode_to_use = "knowledge_full"
+                else:
+                    mode_to_use = "knowledge_full"
+            elif mode_to_use == "knowledge_no_embeddings":
                 cur = await conn.execute(
                     """
                     SELECT s.platform
@@ -740,6 +767,20 @@ async def backfill_story_matching(
                 limit=batch_size,
             )
             for gap in gaps:
+                gap_mode = processing_mode
+                if gap_mode is None:
+                    c_cur = await conn.execute(
+                        """
+                        SELECT COALESCE(c.metadata->>'processing_mode', cer.metadata->>'processing_mode')
+                        FROM claims c
+                        LEFT JOIN claim_extraction_runs cer ON cer.id = c.claim_extraction_run_id
+                        WHERE c.id = %s
+                        """,
+                        (gap.claim_id,),
+                    )
+                    c_row = await c_cur.fetchone()
+                    gap_mode = (c_row[0] if c_row and c_row[0] else None) or "knowledge_full"
+
                 await match_claim.configure(
                     connection=conn,
                     lock=story_matching_execution_lock(edition_id),
@@ -747,7 +788,7 @@ async def backfill_story_matching(
                     claim_id=gap.claim_id,
                     policy_id=policy.id,
                     claim_embedding_id=gap.embedding_id,
-                    processing_mode=processing_mode or "knowledge_full",
+                    processing_mode=gap_mode,
                 )
             queued_count = len(gaps)
 
@@ -880,12 +921,13 @@ async def backfill_place_resolutions(
         for mention in gaps:
             mention_mode = processing_mode
             if mention_mode is None:
-                # If unspecified, check claim's source platform
+                # If unspecified, check persisted mode from claim metadata or run metadata
                 cur = await conn.execute(
                     """
-                    SELECT s.platform
+                    SELECT COALESCE(c.metadata->>'processing_mode', cer.metadata->>'processing_mode'), s.platform
                     FROM claim_place_mentions cpm
                     JOIN claims c ON c.id = cpm.claim_id
+                    LEFT JOIN claim_extraction_runs cer ON cer.id = c.claim_extraction_run_id
                     JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
                     JOIN source_items si ON si.id = sir.source_item_id
                     JOIN sources s ON s.id = si.source_id
@@ -894,9 +936,14 @@ async def backfill_place_resolutions(
                     (mention.id,),
                 )
                 row = await cur.fetchone()
-                mention_mode = (
-                    default_telegram_mode if (row and row[0] == "telegram") else "knowledge_full"
-                )
+                persisted = row[0] if row else None
+                platform = row[1] if row else None
+                if persisted:
+                    mention_mode = persisted
+                elif platform == "telegram":
+                    mention_mode = default_telegram_mode
+                else:
+                    mention_mode = "knowledge_full"
 
             await resolve_place_mention.configure(connection=conn).defer_async(
                 mention_id=mention.id,

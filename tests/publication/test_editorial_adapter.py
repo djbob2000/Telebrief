@@ -1119,3 +1119,111 @@ class TestKnowledgeEditorialAdapter:
         assert rec.message.timestamp == orig_pub_at
         assert rec.message.temporal_fidelity == "precise"
         assert rec.message.raw_timestamp == "12:00"
+
+    async def test_sealed_null_timestamp_in_snapshot_never_leaks_mutated_source_item(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """When a PublicationRun is sealed with published_at=NULL in its snapshot,
+        a later scan that sets source_items.published_at must NOT leak into the sealed adapter build."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
+        adapter = KnowledgeEditorialAdapter(uow=uow)
+
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name)
+            VALUES ('facebook', 'page', 'fb_page_null', 'https://facebook.com/page_null', 'FB Page Null')
+            RETURNING id
+            """
+        )
+        src_id = (await cur.fetchone())[0]
+
+        # Initially published_at is NULL
+        cur = await conn.execute(
+            """
+            INSERT INTO source_items (source_id, kind, external_id, published_at, first_collected_at, metadata)
+            VALUES (%s, 'facebook_post', 'post_null_1', NULL, %s, '{"temporal_fidelity": "unknown"}'::jsonb)
+            RETURNING id
+            """,
+            (src_id, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at)
+            VALUES (%s, 1, 'h-null-1', 'Пост без даты', %s)
+            RETURNING id
+            """,
+            (item_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'rh', 'rv') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev_id, edition.id, rel_pol_id),
+        )
+        rel_dec_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'ch', 'cv') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev_id, edition.id, extr_pol_id, rel_dec_id),
+        )
+        extr_run_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at) VALUES (%s, %s, %s, 'Факт', 'факт', %s) RETURNING id",
+            (extr_run_id, rev_id, edition.id, _NOW),
+        )
+        claim_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) VALUES (%s, 1, 'open', 'Сюжет', 'h-s-null', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        s_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s_rev_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, claim_id, _NOW),
+        )
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-null-published-at-key",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        # Later Facebook re-scan sets precise published_at on mutable table
+        precise_time = dt.datetime(2026, 8, 22, 19, 30, tzinfo=dt.timezone.utc)
+        await conn.execute(
+            'UPDATE source_items SET published_at = %s, metadata = \'{"temporal_fidelity": "precise"}\'::jsonb WHERE id = %s',
+            (precise_time, item_id),
+        )
+
+        # Sealed adapter build must still have timestamp = None
+        frozen = await adapter.build(run.id)
+        rec = frozen.writer_bundle.records[f"facebook:source:{src_id}:item:{item_id}:rev:{rev_id}"]
+        assert rec.message.timestamp is None
+        assert rec.message.temporal_fidelity == "unknown"

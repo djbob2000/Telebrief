@@ -2662,12 +2662,88 @@ class TestKnowledgeNoEmbeddingsMode:
             }
         )
 
-        with pytest.raises(RuntimeError, match="already attached"):
-            await _service(uow, matcher).run(claim1.id, policy.id, claim_embedding_id=None)
+        outcome = await _service(uow, matcher).run(claim1.id, policy.id, claim_embedding_id=None)
+        assert outcome.run is not None
+        assert outcome.run.status == "failed"
+        assert outcome.run.error_kind == "claim_already_attached"
+        assert outcome.degraded == "claim_already_attached"
 
         # Target story 2 must NOT have created a new revision
         s2_rev_after = await STORY_REPO.current_revision_id(conn, story2.story_id)
         assert s2_rev_after == s2_rev_before
+
+    async def test_concurrent_attach_conflict_during_apply_marks_run_failed(
+        self, conn, uow, edition, revision_factory
+    ):
+        """If a claim is attached concurrently after candidate retrieval, apply catches conflict and marks run failed."""
+        policy = await _insert_policy(conn, edition.id)
+        rev = await revision_factory()
+        claim = await _make_claim(conn, edition.id, rev.id, assertion="Claim Concurrent")
+
+        # Story 2 exists
+        claim2 = await _make_claim(conn, edition.id, rev.id, assertion="Claim 2")
+        story2 = await STORY_REPO.create_story_with_revision(
+            conn,
+            edition_id=edition.id,
+            claim_id=claim2.id,
+            revision=NewStoryRevision(
+                current_state="open",
+                semantic_text="Story 2 text",
+                content_hash="h2",
+                created_at=_T0,
+            ),
+        )
+
+        class _AttachingMatcher:
+            async def choose(self, c, views, edition_name):
+                # Concurrently attach claim to another story during choose step!
+                await STORY_REPO.create_story_with_revision(
+                    conn,
+                    edition_id=edition.id,
+                    claim_id=c.id,
+                    revision=NewStoryRevision(
+                        current_state="open",
+                        semantic_text="Story 1 text",
+                        content_hash="h1",
+                        created_at=_T0,
+                    ),
+                )
+                from src.processing.story_matching import MatchProposal
+
+                return MatchProposal(
+                    assignment="SAME_STORY",
+                    target_story_id=story2.story_id,
+                )
+
+        outcome = await _service(uow, _AttachingMatcher()).run(claim.id, policy.id, None)
+        assert outcome.run is not None
+        assert outcome.run.status == "failed"
+        assert outcome.run.error_kind == "claim_already_attached"
+        assert outcome.degraded == "claim_already_attached"
+
+    async def test_prerequisite_service_skips_already_attached_claim(
+        self, conn, edition, revision_factory
+    ):
+        """StoryMatchingPrerequisiteService returns False if claim is already attached."""
+        from src.processing.story_matching import StoryMatchingPrerequisiteService
+
+        rev = await revision_factory()
+        claim = await _make_claim(conn, edition.id, rev.id, assertion="Claim Attached Already")
+        await STORY_REPO.create_story_with_revision(
+            conn,
+            edition_id=edition.id,
+            claim_id=claim.id,
+            revision=NewStoryRevision(
+                current_state="open",
+                semantic_text="Story text",
+                content_hash="hs",
+                created_at=_T0,
+            ),
+        )
+
+        prereq = StoryMatchingPrerequisiteService(processing_mode="knowledge_no_embeddings")
+        scheduled = await prereq.maybe_schedule(conn, claim_id=claim.id)
+        assert scheduled is False
 
     async def test_gap_queries_exclude_already_attached_claims(
         self, conn, edition, revision_factory

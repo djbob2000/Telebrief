@@ -27,6 +27,10 @@ from src.domain.stories import (
 )
 
 
+class ClaimAlreadyAttachedError(RuntimeError):
+    """Raised when an operation attempts to attach a claim already owned by another story."""
+
+
 class StoryRepository:
     """Persistence for the story aggregate: stories, immutable revisions,
     lifecycle state events, and exclusive claim membership.
@@ -36,6 +40,19 @@ class StoryRepository:
     transition — an explicit `story_state_events` row — so history stays
     reconstructable and `reopened` stories remain retrieval-eligible.
     """
+
+    async def get_claim_story_id(self, conn: psycopg.AsyncConnection, claim_id: int) -> int | None:
+        """Get the story_id this claim is attached to, or None if not attached."""
+        cursor = await conn.execute(
+            "SELECT story_id FROM story_claims WHERE claim_id = %s",
+            (claim_id,),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else int(row[0])
+
+    async def is_claim_attached(self, conn: psycopg.AsyncConnection, claim_id: int) -> bool:
+        """Return True if claim is already attached to any story."""
+        return (await self.get_claim_story_id(conn, claim_id)) is not None
 
     async def create_story_with_revision(
         self,
@@ -58,7 +75,7 @@ class StoryRepository:
             conn, story_id=story_id, claim_id=claim_id, attached_at=revision.created_at
         )
         if not attached:
-            raise RuntimeError(
+            raise ClaimAlreadyAttachedError(
                 f"cannot create story: claim {claim_id} is already attached to another story"
             )
         return StoryWithRevision(story_id=story_id, revision=story_revision)

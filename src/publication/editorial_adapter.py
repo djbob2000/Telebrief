@@ -210,23 +210,52 @@ class KnowledgeEditorialAdapter:
                 c_cur = await conn.execute(
                     """
                     SELECT c.id, c.assertion_text, c.normalized_assertion,
-                           COALESCE(pic.source_snapshot->>'platform', s.platform) AS platform,
-                           COALESCE(pic.source_name, pic.source_snapshot->>'name', s.name) AS name,
+                           CASE
+                               WHEN pic.source_snapshot IS NOT NULL THEN pic.source_snapshot->>'platform'
+                               ELSE s.platform
+                           END AS platform,
+                           CASE
+                               WHEN pic.source_name IS NOT NULL THEN pic.source_name
+                               WHEN pic.source_snapshot IS NOT NULL THEN pic.source_snapshot->>'name'
+                               ELSE s.name
+                           END AS name,
                            si.external_id,
-                           COALESCE(
-                               (pic.source_snapshot->>'published_at')::timestamptz,
-                               si.published_at
-                           ) AS published_at,
+                           CASE
+                               WHEN pic.source_snapshot IS NOT NULL THEN (pic.source_snapshot->>'published_at')::timestamptz
+                               ELSE si.published_at
+                           END AS published_at,
                            sir.text_content,
-                           COALESCE(pic.source_snapshot->>'canonical_url', si.canonical_url) AS canonical_url,
-                           COALESCE(pic.source_snapshot->>'url', s.url) AS url,
-                           COALESCE(pic.source_snapshot->>'external_id', s.external_id) AS s_external_id,
-                           COALESCE(pic.source_role, pic.source_snapshot->>'role', s.role) AS effective_role,
+                           CASE
+                               WHEN pic.source_snapshot IS NOT NULL THEN pic.source_snapshot->>'canonical_url'
+                               ELSE si.canonical_url
+                           END AS canonical_url,
+                           CASE
+                               WHEN pic.source_snapshot IS NOT NULL THEN pic.source_snapshot->>'url'
+                               ELSE s.url
+                           END AS url,
+                           CASE
+                               WHEN pic.source_snapshot IS NOT NULL THEN pic.source_snapshot->>'external_id'
+                               ELSE s.external_id
+                           END AS s_external_id,
+                           CASE
+                               WHEN pic.source_role IS NOT NULL THEN pic.source_role
+                               WHEN pic.source_snapshot IS NOT NULL THEN pic.source_snapshot->>'role'
+                               ELSE s.role
+                           END AS effective_role,
                            s.id AS source_id, si.id AS source_item_id, sir.id AS source_item_revision_id,
                            si.kind,
-                           COALESCE(pic.source_snapshot->>'author_name', si.author_name) AS author_name,
-                           COALESCE(pic.source_snapshot->>'temporal_fidelity', si.metadata->>'temporal_fidelity') AS temporal_fidelity,
-                           COALESCE(pic.source_snapshot->>'raw_timestamp', si.metadata->>'raw_timestamp') AS raw_timestamp
+                           CASE
+                               WHEN pic.source_snapshot IS NOT NULL THEN pic.source_snapshot->>'author_name'
+                               ELSE si.author_name
+                           END AS author_name,
+                           CASE
+                               WHEN pic.source_snapshot IS NOT NULL THEN pic.source_snapshot->>'temporal_fidelity'
+                               ELSE si.metadata->>'temporal_fidelity'
+                           END AS temporal_fidelity,
+                           CASE
+                               WHEN pic.source_snapshot IS NOT NULL THEN pic.source_snapshot->>'raw_timestamp'
+                               ELSE si.metadata->>'raw_timestamp'
+                           END AS raw_timestamp
                     FROM claims c
                     JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
                     JOIN source_items si ON si.id = sir.source_item_id

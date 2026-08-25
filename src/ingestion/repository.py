@@ -111,10 +111,14 @@ class IngestionRepository:
                             WHEN 'relative' THEN 1
                             ELSE (CASE WHEN source_items.published_at IS NOT NULL THEN 1 ELSE 0 END)
                         END
-                    ) THEN jsonb_set(
-                        source_items.metadata,
-                        '{temporal_fidelity}',
-                        COALESCE(EXCLUDED.metadata->'temporal_fidelity', '"unknown"'::jsonb)
+                    ) OR source_items.published_at IS NULL THEN jsonb_set(
+                        jsonb_set(
+                            source_items.metadata,
+                            '{temporal_fidelity}',
+                            COALESCE(EXCLUDED.metadata->'temporal_fidelity', '"unknown"'::jsonb)
+                        ),
+                        '{raw_timestamp}',
+                        COALESCE(EXCLUDED.metadata->'raw_timestamp', 'null'::jsonb)
                     )
                     ELSE source_items.metadata
                 END

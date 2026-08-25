@@ -101,6 +101,7 @@ class ClaimExtractionRunRepository:
         edition_id: int,
         extraction_policy_id: int,
         relevance_decision_id: int,
+        metadata: dict | None = None,
     ) -> tuple[ClaimExtractionRun, bool]:
         """Return the canonical succeeded run when one exists, else open a new
         running run. At-least-once task executions therefore converge on the
@@ -118,9 +119,9 @@ class ClaimExtractionRunRepository:
             """
             INSERT INTO claim_extraction_runs (
                 source_item_revision_id, edition_id, extraction_policy_id,
-                relevance_decision_id, status
+                relevance_decision_id, status, metadata
             )
-            VALUES (%s, %s, %s, %s, 'running')
+            VALUES (%s, %s, %s, %s, 'running', %s)
             RETURNING id, source_item_revision_id, edition_id, extraction_policy_id,
                 relevance_decision_id, started_at, completed_at, status, error_kind,
                 metadata
@@ -130,6 +131,7 @@ class ClaimExtractionRunRepository:
                 edition_id,
                 extraction_policy_id,
                 relevance_decision_id,
+                Jsonb(metadata or {}),
             ),
         )
         return ClaimExtractionRun.from_row(await cursor.fetchone()), True
