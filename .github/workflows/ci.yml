@@ -20,7 +20,7 @@ jobs:
         python-version: '3.14'
 
     - name: Cache pre-commit hooks
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.cache/pre-commit
         key: ${{ runner.os }}-pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
@@ -69,10 +69,10 @@ jobs:
         python-version: ${{ matrix.python-version }}
 
     - name: Cache pip dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.cache/pip
-        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements-dev.txt') }}
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements*.txt', 'pyproject.toml') }}
         restore-keys: |
           ${{ runner.os }}-pip-
 
@@ -87,11 +87,11 @@ jobs:
         python -c "import asyncio, os; from src.jobs.admin import ensure_official_tables; asyncio.run(ensure_official_tables(os.environ['DATABASE_URL'], 'procrastinate'))"
 
     - name: Run pytest
-      run: pytest --cov=src --cov-report=xml --cov-report=term-missing
+      run: pytest -v --cov=src --cov-report=xml --cov-report=term-missing
 
     - name: Upload coverage to Codecov
       if: matrix.python-version == '3.14'
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         file: ./coverage.xml
         flags: unittests
@@ -112,7 +112,7 @@ jobs:
         python-version: '3.14'
 
     - name: Cache pre-commit hooks
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ~/.cache/pre-commit
         key: ${{ runner.os }}-pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}

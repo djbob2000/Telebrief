@@ -72,6 +72,7 @@ def _collector(config, logger):
     collector.client.get_entity = AsyncMock(
         return_value=SimpleNamespace(id=-1001234567890, username="test_channel")
     )
+    collector._connected = True
     return collector
 
 
@@ -575,6 +576,7 @@ async def test_rate_limited_batch_reports_retry_after(sample_config, mock_logger
 async def test_unauthorized_session_maps_to_auth_required(sample_config, mock_logger):
     """An existing-but-unauthorized session fails soft as AUTH_REQUIRED."""
     collector = _collector(sample_config, mock_logger)
+    collector._connected = False
     collector.client.connect = AsyncMock(return_value=True)
     collector.client.is_user_authorized = AsyncMock(return_value=False)
 
@@ -590,6 +592,7 @@ async def test_unauthorized_session_maps_to_auth_required(sample_config, mock_lo
 async def test_missing_session_file_maps_to_account_action_required(sample_config, mock_logger):
     """A missing session file means a human must authenticate once."""
     collector = _collector(sample_config, mock_logger)
+    collector._connected = False
 
     with patch("src.providers.telegram.os.path.exists", return_value=False):
         batch = await collector.scan(_source(), None, _context())
@@ -605,14 +608,15 @@ async def test_missing_session_file_maps_to_account_action_required(sample_confi
 @pytest.mark.asyncio
 async def test_repeated_scans_connect_and_resolve_entity_once(sample_config, mock_logger):
     """A long-lived collector must not pay connect+dialogs+resolve per scan."""
-    with patch("src.providers.telegram.os.path.exists", return_value=True):
-        collector = _collector(sample_config, mock_logger)
+    collector = _collector(sample_config, mock_logger)
+    collector._connected = False
     message = _telegram_message(5)
     collector.client.iter_messages = _iter_messages_result([message])
     checkpoint = CollectionCheckpoint(adapter_state={"high_watermark_message_id": 1})
 
-    await collector.scan(_source(), checkpoint, _context())
-    await collector.scan(_source(), checkpoint, _context())
+    with patch("src.providers.telegram.os.path.exists", return_value=True):
+        await collector.scan(_source(), checkpoint, _context())
+        await collector.scan(_source(), checkpoint, _context())
 
     assert collector.client.connect.await_count == 1
     assert collector.client.get_dialogs.await_count == 1

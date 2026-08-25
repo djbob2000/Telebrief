@@ -2,15 +2,27 @@ import os
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-if "DATABASE_URL" not in os.environ:
-    os.environ["DATABASE_URL"] = os.environ.get(
+DEFAULT_TEST_ENV = {
+    "DATABASE_URL": os.environ.get(
         "TELEBRIEF_TEST_DATABASE_URL",
         "postgresql://telebrief:telebrief@localhost:5432/telebrief_test",
-    )
+    ),
+    "TELEGRAM_API_ID": "12345678",
+    "TELEGRAM_API_HASH": "test_hash",
+    "TELEGRAM_BOT_TOKEN": "123456789:ABC-DEF",
+    "OPENAI_API_KEY": "sk-test-key",
+    "GEMINI_API_KEY": "test-gemini-key",
+    "ANTHROPIC_API_KEY": "test-anthropic-key",
+    "LOG_LEVEL": "INFO",
+}
 
-import pytest
+for _key, _val in DEFAULT_TEST_ENV.items():
+    if _key not in os.environ:
+        os.environ[_key] = _val
 
-from src.config_loader import ChannelConfig, Config, DatabaseConfig, Settings
+import pytest  # noqa: E402
+
+from src.config_loader import ChannelConfig, Config, DatabaseConfig, Settings  # noqa: E402
 
 
 @pytest.fixture
@@ -64,6 +76,9 @@ def mock_env_vars(monkeypatch):
     monkeypatch.setenv("TELEGRAM_API_HASH", "test_hash")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:ABC-DEF")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
     monkeypatch.setenv("LOG_LEVEL", "INFO")
 
 

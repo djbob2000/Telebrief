@@ -359,6 +359,7 @@ settings:
 def test_load_config_google_provider_requires_gemini_key(tmp_path, mock_env_vars, monkeypatch):
     """Google provider reports a missing Gemini API key clearly."""
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     config_file = tmp_path / "config.yaml"
     config_file.write_text(
         """
