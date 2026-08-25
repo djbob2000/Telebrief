@@ -304,6 +304,9 @@ CRITICAL STRUCTURAL RULES:
 2. When structuring into chapters/sections (usually 3–5 thematic chapters), place all substantive body paragraphs inside their respective section "paragraphs" arrays, and keep top-level "paragraphs" as [].
 3. If writing a short single-topic brief without chapters, place all body paragraphs in top-level "paragraphs" and leave "sections" as [].
 4. Usually write 8–12 substantive paragraphs across the entire article.
+5. Prioritization and Headline Promise: The headline and Chapter 1 MUST lead with the biggest citywide development affecting daily life (e.g. multi-week blackout, utilities, safety crisis). Secondary infrastructure works or localized road detours come in subsequent chapters.
+6. Actionable Resident Contacts: ALWAYS preserve practical contact and service details present in evidence: phone numbers (e.g. +7 (990)...), precise building addresses, operating hours, and required documents.
+7. Dual Street Naming: For renamed or historically dual-named streets in Berdyansk, use natural dual naming (e.g. «улица Тверская (бывшая Карла Маркса)»).
 
 Source attribution and collection mechanics:
 Do NOT reveal internal collection mechanics to the reader. Avoid phrases like 'в чате', 'участники чата',

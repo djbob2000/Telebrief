@@ -310,14 +310,19 @@ class ProviderCascade(AIProvider):
                 # for diagnostics while keeping the aggregate error safe to log.
                 exc_type = type(exc).__name__
                 kind = _classify_provider_failure(exc)
-                if kind == "quota":
-                    ProviderCascade._global_slot_cooldowns[label] = (
-                        time.monotonic() + self.cooldown_seconds
+                if kind in ("quota", "server", "auth", "timeout"):
+                    cooldown = (
+                        self.cooldown_seconds
+                        if kind == "quota"
+                        else min(self.cooldown_seconds, 300.0)
                     )
+                    ProviderCascade._global_slot_cooldowns[label] = time.monotonic() + cooldown
                     self.logger.warning(
-                        "AI provider slot %s quota exceeded (429); placed in global cooldown for %ds",
+                        "AI provider slot %s failed with %s (%s); placed in global cooldown for %ds",
                         label,
-                        int(self.cooldown_seconds),
+                        kind,
+                        exc_type,
+                        int(cooldown),
                     )
                 slot_failures.append(
                     ProviderSlotFailure(slot=label, kind=kind, exception_type=exc_type)
@@ -759,7 +764,7 @@ def create_provider(  # noqa: C901
         if not google_api_key:
             raise ValueError("GEMINI_API_KEY is required as the primary Google provider key")
 
-        google_timeout = min(api_timeout, 45)
+        google_timeout = min(api_timeout, 15) if openrouter_api_key else min(api_timeout, 45)
         slots: list[tuple[str, AIProvider, str]] = [
             (
                 f"google-{index}",

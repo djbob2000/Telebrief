@@ -78,16 +78,11 @@ settings:
   timezone: "Europe/Kyiv"
   lookback_hours: 24
 
-  # Google Gemini settings (active):
-  ai_provider: "google"
-  ai_model: "gemini-3.7-flash"
+  # OpenRouter provider settings:
+  ai_provider: "openrouter"
+  ai_model: "google/gemini-3.7-flash"
   reasoning_effort: "medium"
   max_tokens_per_summary: 65536
-
-  # DeepSeek settings (commented out):
-  # ai_provider: "openai"
-  # ai_model: "deepseek-v4-flash"
-  # openai_temperature: 0.7
 
   digest_mode: "digest"
   dedup_topics: true
