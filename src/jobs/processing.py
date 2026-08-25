@@ -547,12 +547,30 @@ async def backfill_claims(
                 )
                 if assets:
                     continue
+
+            # Ensure platform scoping for knowledge_no_embeddings
+            mode_to_use = processing_mode
+            if processing_mode == "knowledge_no_embeddings":
+                cur = await conn.execute(
+                    """
+                    SELECT s.platform
+                    FROM source_item_revisions sir
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources s ON s.id = si.source_id
+                    WHERE sir.id = %s
+                    """,
+                    (decision.source_item_revision_id,),
+                )
+                p_row = await cur.fetchone()
+                if p_row and p_row[0] != "telegram":
+                    mode_to_use = "knowledge_full"
+
             await extract_claims.configure(connection=conn).defer_async(
                 source_item_revision_id=decision.source_item_revision_id,
                 edition_id=decision.edition_id,
                 relevance_decision_id=decision.id,
                 policy_id=extraction_policy_id,
-                processing_mode=processing_mode,
+                processing_mode=mode_to_use,
             )
             deferred += 1
     logger.info(
@@ -698,6 +716,7 @@ async def backfill_story_matching(
                 policy_id=policy.id,
                 after_claim_id=after_claim_embedding_id,
                 limit=batch_size,
+                platform="telegram",
             )
             for cid in claim_ids:
                 await match_claim.configure(
@@ -828,6 +847,7 @@ async def backfill_place_resolutions(
     policy_id: int,
     *,
     batch_size: int = BACKFILL_BATCH_SIZE,
+    processing_mode: str | None = None,
 ) -> int:
     """Queue resolve_place_mention for mentions still owing this exact policy
     a completed result.
@@ -848,15 +868,47 @@ async def backfill_place_resolutions(
         gaps = await PlaceRepository().list_mentions_missing_result(
             conn, policy_id=policy.id, limit=batch_size
         )
+        default_telegram_mode = "knowledge_full"
+        try:
+            from src.config_loader import load_config
+
+            telegram_cfg = getattr(load_config(), "telegram", None)
+            default_telegram_mode = getattr(telegram_cfg, "processing_mode", "knowledge_full")
+        except Exception:
+            default_telegram_mode = "knowledge_full"
+
         for mention in gaps:
+            mention_mode = processing_mode
+            if mention_mode is None:
+                # If unspecified, check claim's source platform
+                cur = await conn.execute(
+                    """
+                    SELECT s.platform
+                    FROM claim_place_mentions cpm
+                    JOIN claims c ON c.id = cpm.claim_id
+                    JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources s ON s.id = si.source_id
+                    WHERE cpm.id = %s
+                    """,
+                    (mention.id,),
+                )
+                row = await cur.fetchone()
+                mention_mode = (
+                    default_telegram_mode if (row and row[0] == "telegram") else "knowledge_full"
+                )
+
             await resolve_place_mention.configure(connection=conn).defer_async(
-                mention_id=mention.id, policy_id=policy.id
+                mention_id=mention.id,
+                policy_id=policy.id,
+                processing_mode=mention_mode,
             )
     logger.info(
-        "backfill_place_resolutions queued %d mentions edition=%s policy=%s",
+        "backfill_place_resolutions queued %d mentions edition=%s policy=%s mode=%s",
         len(gaps),
         edition_id,
         policy.id,
+        processing_mode or "inferred",
     )
     return len(gaps)
 

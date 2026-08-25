@@ -1007,3 +1007,115 @@ class TestKnowledgeEditorialAdapter:
         frozen = await adapter.build(run.id)
         prompt_text = frozen.writer_bundle.prompt_text
         assert "~2 ч. (approx)" in prompt_text or "(approx)" in prompt_text
+
+    async def test_frozen_temporal_provenance_snapshot_survives_source_item_mutation(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Published_at, canonical_url, author_name, and fidelity mutations after sealing do not affect adapter output."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
+        adapter = KnowledgeEditorialAdapter(uow=uow)
+
+        orig_pub_at = dt.datetime(2026, 8, 22, 12, 0, tzinfo=dt.timezone.utc)
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name, role)
+            VALUES ('facebook', 'group', 'https://facebook.com/groups/temp_test', 'https://facebook.com/groups/temp_test', 'FB Group', 'community')
+            RETURNING id
+            """
+        )
+        src_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO source_items (source_id, kind, external_id, published_at, first_collected_at, canonical_url, author_name, metadata)
+            VALUES (%s, 'facebook_post', 'post:temp_1', %s, %s, 'https://facebook.com/orig_url', 'Автор Оригинал',
+                    '{"temporal_fidelity": "precise", "raw_timestamp": "12:00"}'::jsonb)
+            RETURNING id
+            """,
+            (src_id, orig_pub_at, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h-fb-temp', 'Текст новости', %s) RETURNING id",
+            (item_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'rh', 'rv') RETURNING id",
+            (edition.id,),
+        )
+        rel_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason) VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id",
+            (rev_id, edition.id, rel_pol_id),
+        )
+        rel_dec_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version) VALUES (%s, 1, 'ch', 'cv') RETURNING id",
+            (edition.id,),
+        )
+        extr_pol_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status) VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id",
+            (rev_id, edition.id, extr_pol_id, rel_dec_id),
+        )
+        extr_run_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at) VALUES (%s, %s, %s, 'Факт', 'факт', %s) RETURNING id",
+            (extr_run_id, rev_id, edition.id, _NOW),
+        )
+        claim_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) VALUES (%s, 1, 'open', 'Сюжет', 'h-s-temp', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        s_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s_rev_id, story_id)
+        )
+        await conn.execute(
+            "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+            (story_id, claim_id, _NOW),
+        )
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-temp-immutability-key",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        # Mutate source_item temporal and metadata fields AFTER sealing
+        mutated_pub_at = dt.datetime(2026, 8, 22, 18, 0, tzinfo=dt.timezone.utc)
+        await conn.execute(
+            """
+            UPDATE source_items
+            SET published_at = %s,
+                canonical_url = 'https://facebook.com/mutated_url',
+                author_name = 'Мутированный Автор',
+                metadata = '{"temporal_fidelity": "relative", "raw_timestamp": "5 мин назад"}'::jsonb
+            WHERE id = %s
+            """,
+            (mutated_pub_at, item_id),
+        )
+
+        # Adapter build must use the frozen source_snapshot values
+        frozen = await adapter.build(run.id)
+        rec = frozen.writer_bundle.records[f"facebook:source:{src_id}:item:{item_id}:rev:{rev_id}"]
+        assert rec.message.sender == "Автор Оригинал"
+        assert rec.message.link == "https://facebook.com/orig_url"
+        assert rec.message.timestamp == orig_pub_at
+        assert rec.message.temporal_fidelity == "precise"
+        assert rec.message.raw_timestamp == "12:00"

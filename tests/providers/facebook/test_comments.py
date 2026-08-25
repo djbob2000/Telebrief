@@ -195,9 +195,146 @@ class TestCommentParsingAndLinkage:
         assert len(batch.items) == 1
         item = batch.items[0]
         assert item.author_name == "Иван Петров"
+        assert (
+            item.metadata.get("author_id") == "https://facebook.com/profile.php?id=100088889999111"
+        )
         # Must NOT take the numeric user id from the profile link as native comment id!
         assert item.metadata.get("identity_quality") == "synthetic"
         assert "100088889999111" not in item.external_id
+
+    @pytest.mark.asyncio
+    async def test_two_different_profile_php_users_with_same_text_get_distinct_fingerprints(self):
+        source = _make_source()
+        collector = FacebookCommentCollector()
+        limits = FacebookCommentsConfig(max_comments_per_post=10, max_pages_per_refresh=1)
+
+        # Mock comment from User 1 (profile.php?id=111)
+        link1 = MagicMock()
+        link1.get_attribute = AsyncMock(return_value="https://www.facebook.com/profile.php?id=111")
+        link1.inner_text = AsyncMock(return_value="Иван")
+        node1 = MagicMock()
+        node1.inner_text = AsyncMock(return_value="Иван\nДа")
+        node1.query_selector_all = AsyncMock(return_value=[link1])
+        node1.evaluate = AsyncMock(
+            side_effect=[
+                0,  # depth
+                "Да",  # clean text
+                [],  # timestamp
+            ]
+            * 5
+        )
+
+        # Mock comment from User 2 (profile.php?id=222) with exact same text
+        link2 = MagicMock()
+        link2.get_attribute = AsyncMock(return_value="https://www.facebook.com/profile.php?id=222")
+        link2.inner_text = AsyncMock(return_value="Петр")
+        node2 = MagicMock()
+        node2.inner_text = AsyncMock(return_value="Петр\nДа")
+        node2.query_selector_all = AsyncMock(return_value=[link2])
+        node2.evaluate = AsyncMock(
+            side_effect=[
+                0,  # depth
+                "Да",  # clean text
+                [],  # timestamp
+            ]
+            * 5
+        )
+
+        page = MagicMock()
+        page.query_selector_all = AsyncMock(side_effect=[[node1, node2], []])
+
+        batch = await collector.scan_post_with_page(
+            source=source,
+            post_item_id=10,
+            post_external_id="post:1001",
+            page=page,
+            limits=limits,
+        )
+
+        assert len(batch.items) == 2
+        assert batch.items[0].metadata["author_id"] == "https://facebook.com/profile.php?id=111"
+        assert batch.items[1].metadata["author_id"] == "https://facebook.com/profile.php?id=222"
+        assert batch.items[0].external_id != batch.items[1].external_id
+
+    @pytest.mark.asyncio
+    async def test_pagination_nested_reply_binds_to_correct_seen_parent(self):
+        """Page 1: [A, B]. Page 2: [A, reply-to-A, B]. reply-to-A must have parent_comment_id == A, not B."""
+        source = _make_source()
+        collector = FacebookCommentCollector()
+        limits = FacebookCommentsConfig(max_comments_per_post=10, max_pages_per_refresh=3)
+
+        # Comment A (depth 0)
+        node_a = MagicMock()
+        node_a.inner_text = AsyncMock(return_value="Комментарий А")
+        node_a.query_selector_all = AsyncMock(return_value=[])
+        node_a.evaluate = AsyncMock(
+            side_effect=[
+                0,  # depth
+                "Комментарий А",
+                [],
+            ]
+            * 10
+        )
+
+        # Comment B (depth 0)
+        node_b = MagicMock()
+        node_b.inner_text = AsyncMock(return_value="Комментарий Б")
+        node_b.query_selector_all = AsyncMock(return_value=[])
+        node_b.evaluate = AsyncMock(
+            side_effect=[
+                0,  # depth
+                "Комментарий Б",
+                [],
+            ]
+            * 10
+        )
+
+        # Reply to A (depth 1)
+        node_reply_a = MagicMock()
+        node_reply_a.inner_text = AsyncMock(return_value="Ответ на А")
+        node_reply_a.query_selector_all = AsyncMock(return_value=[])
+        node_reply_a.evaluate = AsyncMock(
+            side_effect=[
+                1,  # depth = 1 (nested under A)
+                "Ответ на А",
+                [],
+            ]
+            * 10
+        )
+
+        more_btn = MagicMock()
+        more_btn.click = AsyncMock()
+
+        # Page 1 DOM: [A, B]
+        # Page 2 DOM: [A, reply-to-A, B]
+        page = MagicMock()
+        page.query_selector_all = AsyncMock(
+            side_effect=[
+                [node_a, node_b],  # Page 1 comments
+                [more_btn],  # Page 1 more button
+                [node_a, node_reply_a, node_b],  # Page 2 comments
+                [],  # Page 2 more button (exhausted)
+            ]
+        )
+        page.wait_for_timeout = AsyncMock()
+
+        batch = await collector.scan_post_with_page(
+            source=source,
+            post_item_id=10,
+            post_external_id="post:1001",
+            page=page,
+            limits=limits,
+        )
+
+        assert len(batch.items) == 3
+        item_a = next(i for i in batch.items if i.text == "Комментарий А")
+        assert any(i.text == "Комментарий Б" for i in batch.items)
+        item_reply = next(i for i in batch.items if i.text == "Ответ на А")
+
+        # Reply must point to Comment A, not Comment B!
+        cid_a = item_a.metadata["comment_id"]
+        assert item_reply.parent_external_id == f"comment:{cid_a}"
+        assert item_reply.metadata["parent_comment_id"] == cid_a
 
 
 class TestCommentCompletenessClassification:

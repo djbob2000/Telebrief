@@ -30,6 +30,8 @@ async def _seed_policies(conn: psycopg.AsyncConnection, edition_id: int) -> tupl
 async def _seed_story_with_revision(
     conn: psycopg.AsyncConnection, edition_id: int, created_at: dt.datetime = _NOW
 ) -> tuple[int, int]:
+    from tests.publication.conftest import seed_claim_for_story
+
     cur = await conn.execute(
         "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
         (edition_id, created_at),
@@ -47,6 +49,7 @@ async def _seed_story_with_revision(
     await conn.execute(
         "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
     )
+    await seed_claim_for_story(conn, edition_id, story_id, created_at)
     return story_id, rev_id
 
 

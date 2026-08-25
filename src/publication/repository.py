@@ -478,7 +478,7 @@ class PublicationRepository:
                 newest_source_published_at,
                 newest_source_temporal_fidelity
             FROM story_activity
-            WHERE (cardinality(%s::text[]) = 0 OR claim_count > 0)
+            WHERE claim_count > 0
               AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
             ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
             """,
@@ -535,8 +535,6 @@ class PublicationRepository:
                 snapshot_at,
                 # historical lifecycle_state
                 snapshot_at,
-                # outer WHERE (cardinality = 0 OR claim_count > 0)
-                excluded_platforms,
                 # outer WHERE story_created_at
                 window_start,
             ),
@@ -765,10 +763,13 @@ class PublicationRepository:
         input_row = PublicationInput.from_row(await cursor.fetchone())
 
         if claim_ids:
-            # Query current source attribution metadata to permanently freeze in the snapshot
+            # Query current source attribution and temporal provenance metadata to permanently freeze in the snapshot
             src_cur = await conn.execute(
                 """
-                SELECT c.id, s.id, s.platform, s.name, s.role, s.url, s.external_id
+                SELECT c.id, s.id, s.platform, s.name, s.role, s.url, s.external_id,
+                       si.published_at, si.canonical_url, si.author_name,
+                       si.metadata->>'temporal_fidelity' AS temporal_fidelity,
+                       si.metadata->>'raw_timestamp' AS raw_timestamp
                 FROM claims c
                 JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
                 JOIN source_items si ON si.id = sir.source_item_id
@@ -786,6 +787,15 @@ class PublicationRepository:
                     "role": r[4],
                     "url": r[5],
                     "external_id": r[6],
+                    "published_at": (
+                        r[7].isoformat()
+                        if isinstance(r[7], (dt.datetime, dt.date))
+                        else (str(r[7]) if r[7] is not None else None)
+                    ),
+                    "canonical_url": r[8],
+                    "author_name": r[9],
+                    "temporal_fidelity": r[10],
+                    "raw_timestamp": r[11],
                 }
                 for r in src_rows
             }

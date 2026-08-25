@@ -5,6 +5,7 @@ Gated on TELEBRIEF_TEST_DATABASE_URL.
 
 from __future__ import annotations
 
+import datetime as dt
 import os
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -159,3 +160,85 @@ async def production_jobs_app(
 
     async with procrastinate_app.open_async():
         yield procrastinate_app
+
+
+async def seed_claim_for_story(
+    conn: psycopg.AsyncConnection,
+    edition_id: int,
+    story_id: int,
+    created_at: dt.datetime | None = None,
+    platform: str = "telegram",
+) -> int:
+    now = created_at or dt.datetime.now(dt.timezone.utc)
+    cur = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name, role)
+        VALUES (%s, 'channel', %s, %s, 'Chan', 'official')
+        RETURNING id
+        """,
+        (platform, f"ext-{story_id}-{now.timestamp()}", f"https://t.me/c{story_id}"),
+    )
+    source_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        "INSERT INTO source_items (source_id, kind, external_id, first_collected_at, published_at) VALUES (%s, 'msg', %s, %s, %s) RETURNING id",
+        (source_id, f"item-{story_id}-{now.timestamp()}", now, now),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content, collected_at) VALUES (%s, 1, 'h', 'txt', %s) RETURNING id",
+        (item_id, now),
+    )
+    rev_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version)
+        VALUES (%s, 1, 'h-rel', 'v-rel')
+        ON CONFLICT (edition_id, version) DO UPDATE SET config_hash = EXCLUDED.config_hash
+        RETURNING id
+        """,
+        (edition_id,),
+    )
+    rel_pol_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason)
+        VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id
+        """,
+        (rev_id, edition_id, rel_pol_id),
+    )
+    rel_dec_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version)
+        VALUES (%s, 1, 'h', 'v')
+        ON CONFLICT (edition_id, version) DO UPDATE SET config_hash = EXCLUDED.config_hash
+        RETURNING id
+        """,
+        (edition_id,),
+    )
+    extr_pol_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status)
+        VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id
+        """,
+        (rev_id, edition_id, extr_pol_id, rel_dec_id),
+    )
+    extr_run_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at)
+        VALUES (%s, %s, %s, 'Утверждение новости', 'утверждение новости', %s)
+        RETURNING id
+        """,
+        (extr_run_id, rev_id, edition_id, now),
+    )
+    claim_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+        (story_id, claim_id, now),
+    )
+    return claim_id

@@ -58,6 +58,9 @@ class TestEditorialSelection:
         await conn.execute(
             "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
         )
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
 
         run = await snap_service.create_run(
             edition_id=edition.id,
@@ -110,6 +113,9 @@ class TestEditorialSelection:
         await conn.execute(
             "UPDATE stories SET current_revision_id = %s WHERE id = %s", (s1_rev, s1_id)
         )
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, s1_id, _NOW)
 
         run = await snap_service.create_run(
             edition_id=edition.id,
@@ -163,6 +169,9 @@ class TestEditorialSelection:
         await conn.execute(
             "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
         )
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
 
         # Run 1: OMIT story
         run1 = await snap_service.create_run(
@@ -359,6 +368,11 @@ class TestEditorialSelection:
         r2 = (await cur.fetchone())[0]
         await conn.execute("UPDATE stories SET current_revision_id = %s WHERE id = %s", (r2, s2))
 
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, s1, _NOW)
+        await seed_claim_for_story(conn, edition.id, s2, _NOW)
+
         run = await snap_service.create_run(
             edition_id=edition.id,
             publication_type="digest_grouped",
@@ -381,3 +395,52 @@ class TestEditorialSelection:
         assert len(inputs) == 2
         included_story_ids = {inp.story_id for inp in inputs}
         assert included_story_ids == {s1, s2}
+
+    async def test_orphan_story_without_claims_is_never_candidate_or_input(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """A story without attached claims must never become a candidate or selected input."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        # Seed story without claims
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        orphan_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Осиротевший сюжет', 'h-orphan', %s) RETURNING id
+            """,
+            (orphan_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, orphan_id)
+        )
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-orphan-exclusion",
+        )
+        candidates = await snap_service.seal_candidates(run.id)
+        assert len(candidates) == 0
+
+        # Even if artificially proposed by selector, select must skip stories with 0 claims
+        model = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=orphan_id,
+                    story_revision_id=rev_id,
+                    decision="INCLUDE",
+                    presentation_intent="lead",
+                )
+            ]
+        )
+        sel_service = EditorialSelectionService(uow=uow, model=model)
+        inputs = await sel_service.select(run.id)
+        assert len(inputs) == 0

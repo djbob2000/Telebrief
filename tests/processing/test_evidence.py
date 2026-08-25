@@ -157,8 +157,15 @@ async def _seed_story(
     return SimpleNamespace(story_id=story_id, revision_id=revision_id, semantic_text=semantic_text)
 
 
-async def _attach_claim(conn: psycopg.AsyncConnection, story_id: int, claim_id: int) -> None:
-    await STORY_REPO.attach_claim(conn, story_id=story_id, claim_id=claim_id, attached_at=_T1)
+async def _attach_claim(
+    conn: psycopg.AsyncConnection,
+    story_id: int,
+    claim_id: int,
+    attached_at: dt.datetime | None = None,
+) -> None:
+    await STORY_REPO.attach_claim(
+        conn, story_id=story_id, claim_id=claim_id, attached_at=attached_at or _T1
+    )
 
 
 class _DesignedCorrelator:
@@ -869,19 +876,25 @@ class TestOptionalVerificationAndPublicationIntegration:
     """Verifies that verification is truly optional and never blocks publication or candidate freezing."""
 
     async def test_unverified_story_revision_without_clusters_is_eligible_for_publication(
-        self, conn: psycopg.AsyncConnection, edition
+        self, conn: psycopg.AsyncConnection, edition, revision_factory
     ):
         from src.publication.repository import PublicationRepository
 
+        now = dt.datetime.now(dt.timezone.utc)
         story = await _seed_story(
-            conn, edition.id, semantic_text="Совершенно свежая непроверенная новость"
+            conn,
+            edition.id,
+            semantic_text="Совершенно свежая непроверенная новость",
+            created_at=now,
         )
+        claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
+        await _attach_claim(conn, story.story_id, claim.id, attached_at=now)
         repo = PublicationRepository()
 
         eligible = await repo.eligible_story_revisions(
             conn,
             edition_id=edition.id,
-            snapshot_at=_NOW,
+            snapshot_at=now + dt.timedelta(minutes=1),
         )
         assert any(e["story_id"] == story.story_id for e in eligible)
 
@@ -893,9 +906,15 @@ class TestOptionalVerificationAndPublicationIntegration:
         from src.publication.repository import PublicationRepository
         from src.repositories.evidence import EvidencePolicyService
 
-        story = await _seed_story(conn, edition.id, semantic_text="История с упавшей верификацией")
+        now = dt.datetime.now(dt.timezone.utc)
+        story = await _seed_story(
+            conn,
+            edition.id,
+            semantic_text="История с упавшей верификацией",
+            created_at=now,
+        )
         claim = await _make_claim(conn, edition.id, (await revision_factory()).id)
-        await _attach_claim(conn, story.story_id, claim.id)
+        await _attach_claim(conn, story.story_id, claim.id, attached_at=now)
 
         policy = await EvidencePolicyService().ensure_current(conn, edition_id=edition.id)
         evidence_service = EvidenceService(uow=uow)
@@ -917,7 +936,7 @@ class TestOptionalVerificationAndPublicationIntegration:
         eligible = await repo.eligible_story_revisions(
             conn,
             edition_id=edition.id,
-            snapshot_at=_NOW,
+            snapshot_at=now + dt.timedelta(minutes=1),
         )
         assert any(e["story_id"] == story.story_id for e in eligible)
 

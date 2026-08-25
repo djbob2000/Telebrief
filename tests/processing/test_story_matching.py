@@ -2557,3 +2557,181 @@ class TestKnowledgeNoEmbeddingsMode:
         outcome = await _service(uow, matcher).run(claim.id, policy_id, claim_embedding_id=None)
         assert outcome.story_id is not None
         assert await _runs_status(conn, outcome.run.id) == "succeeded"
+
+    async def test_attach_claim_exclusivity_and_conflict_handling(
+        self, conn, edition, revision_factory
+    ):
+        """attach_claim returns True for new attachment or idempotent replay on same story; False on conflict."""
+        rev = await revision_factory()
+        claim = await _make_claim(conn, edition.id, rev.id, assertion="Claim A")
+
+        # Create Story 1 and attach Claim
+        story1 = await STORY_REPO.create_story_with_revision(
+            conn,
+            edition_id=edition.id,
+            claim_id=claim.id,
+            revision=NewStoryRevision(
+                current_state="open",
+                semantic_text="Story 1 text",
+                content_hash="h1",
+                created_at=_T0,
+            ),
+        )
+
+        # Idempotent re-attach to Story 1 returns True
+        assert (
+            await STORY_REPO.attach_claim(
+                conn, story_id=story1.story_id, claim_id=claim.id, attached_at=_T1
+            )
+            is True
+        )
+
+        # Create Story 2 shell
+        story2_id = await STORY_REPO._insert_story_shell(conn, edition_id=edition.id)
+
+        # Attaching same Claim to Story 2 fails and returns False
+        assert (
+            await STORY_REPO.attach_claim(
+                conn, story_id=story2_id, claim_id=claim.id, attached_at=_T1
+            )
+            is False
+        )
+
+        # Attempting create_story_with_revision with already attached claim raises RuntimeError and rolls back
+        with pytest.raises(RuntimeError, match="already attached"):
+            await STORY_REPO.create_story_with_revision(
+                conn,
+                edition_id=edition.id,
+                claim_id=claim.id,
+                revision=NewStoryRevision(
+                    current_state="open",
+                    semantic_text="Story 3 text",
+                    content_hash="h3",
+                    created_at=_T1,
+                ),
+            )
+
+    async def test_story_matching_same_story_aborts_when_claim_attached_elsewhere(
+        self, uow, conn, edition, revision_factory
+    ):
+        """SAME_STORY matching verdict aborts and rolls back without updating target story when claim is owned elsewhere."""
+        policy = await _insert_policy(conn, edition.id)
+        rev = await revision_factory()
+        claim1 = await _make_claim(conn, edition.id, rev.id, assertion="Claim 1")
+        claim2 = await _make_claim(conn, edition.id, rev.id, assertion="Claim 2")
+
+        # Story 1 owns claim1
+        await STORY_REPO.create_story_with_revision(
+            conn,
+            edition_id=edition.id,
+            claim_id=claim1.id,
+            revision=NewStoryRevision(
+                current_state="open",
+                semantic_text="Story 1 text",
+                content_hash="h1",
+                created_at=_T0,
+            ),
+        )
+
+        # Story 2 owns claim2
+        story2 = await STORY_REPO.create_story_with_revision(
+            conn,
+            edition_id=edition.id,
+            claim_id=claim2.id,
+            revision=NewStoryRevision(
+                current_state="open",
+                semantic_text="Story 2 text",
+                content_hash="h2",
+                created_at=_T0,
+            ),
+        )
+        s2_rev_before = await STORY_REPO.current_revision_id(conn, story2.story_id)
+
+        # Now match claim1 with SAME_STORY targeting Story 2 (with semantic update proposal)
+        matcher = _FixedMatcher(
+            {
+                "assignment": "SAME_STORY",
+                "target_story_id": story2.story_id,
+                "story_update": {
+                    "semantic_changed": True,
+                    "title": "New Title",
+                    "summary": "New Summary",
+                    "current_state": "open",
+                    "semantic_text": "Updated semantic text",
+                },
+            }
+        )
+
+        with pytest.raises(RuntimeError, match="already attached"):
+            await _service(uow, matcher).run(claim1.id, policy.id, claim_embedding_id=None)
+
+        # Target story 2 must NOT have created a new revision
+        s2_rev_after = await STORY_REPO.current_revision_id(conn, story2.story_id)
+        assert s2_rev_after == s2_rev_before
+
+    async def test_gap_queries_exclude_already_attached_claims(
+        self, conn, edition, revision_factory
+    ):
+        """list_claim_matching_gaps and list_claim_embedding_gaps exclude claims already attached to a story."""
+        from src.repositories.story_candidates import StoryMatchingRunRepository
+
+        policy = await _insert_policy(conn, edition.id)
+        rev = await revision_factory()
+        claim1 = await _make_claim(conn, edition.id, rev.id, assertion="Claim Free")
+        claim2 = await _make_claim(conn, edition.id, rev.id, assertion="Claim Attached")
+
+        # Attach claim2 to a story
+        await STORY_REPO.create_story_with_revision(
+            conn,
+            edition_id=edition.id,
+            claim_id=claim2.id,
+            revision=NewStoryRevision(
+                current_state="open",
+                semantic_text="Story text",
+                content_hash="hs",
+                created_at=_T0,
+            ),
+        )
+
+        repo = StoryMatchingRunRepository()
+
+        # Check no-embedding matching gaps for telegram: only claim1 should be returned
+        matching_gaps = await repo.list_claim_matching_gaps(
+            conn, edition_id=edition.id, policy_id=policy.id, platform="telegram"
+        )
+        assert claim1.id in matching_gaps
+        assert claim2.id not in matching_gaps
+
+        # Check embedding gaps: create embedding for claim1 and claim2
+        from src.repositories.embeddings import EmbeddingRepository
+
+        emb_repo = EmbeddingRepository()
+        await emb_repo.insert_claim_embedding(
+            conn,
+            claim_id=claim1.id,
+            model="text-embedding-3-small",
+            dimensions=1536,
+            purpose="claim_query",
+            embedding=[0.1] * 1536,
+            content_hash="h-emb1",
+        )
+        await emb_repo.insert_claim_embedding(
+            conn,
+            claim_id=claim2.id,
+            model="text-embedding-3-small",
+            dimensions=1536,
+            purpose="claim_query",
+            embedding=[0.1] * 1536,
+            content_hash="h-emb2",
+        )
+
+        embedding_gaps = await repo.list_claim_embedding_gaps(
+            conn,
+            edition_id=edition.id,
+            policy_id=policy.id,
+            model="text-embedding-3-small",
+            dimensions=1536,
+        )
+        gap_claim_ids = [g.claim_id for g in embedding_gaps]
+        assert claim1.id in gap_claim_ids
+        assert claim2.id not in gap_claim_ids

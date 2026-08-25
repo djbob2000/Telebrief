@@ -189,6 +189,58 @@ class TestFacebookKnowledgePublicationIntegration:
                 (story_rev_id, story_id),
             )
 
+            # Create extraction policy & claim for the comment and attach to story
+            cur = await t_conn.execute(
+                """
+                INSERT INTO relevance_policy_versions (edition_id, version, config_hash, prompt_version)
+                VALUES (%s, 1, 'h-rel', 'v-rel')
+                ON CONFLICT (edition_id, version) DO UPDATE SET config_hash = EXCLUDED.config_hash
+                RETURNING id
+                """,
+                (edition.id,),
+            )
+            rel_pol_id = (await cur.fetchone())[0]
+            cur = await t_conn.execute(
+                """
+                INSERT INTO edition_relevance_decisions (source_item_revision_id, edition_id, relevance_policy_id, status, reason)
+                VALUES (%s, %s, %s, 'relevant', 'ok') RETURNING id
+                """,
+                (comment_rev_id, edition.id, rel_pol_id),
+            )
+            rel_dec_id = (await cur.fetchone())[0]
+
+            cur = await t_conn.execute(
+                """
+                INSERT INTO claim_extraction_policy_versions (edition_id, version, config_hash, prompt_version)
+                VALUES (%s, 1, 'h-ext', 'v-ext')
+                ON CONFLICT (edition_id, version) DO UPDATE SET config_hash = EXCLUDED.config_hash
+                RETURNING id
+                """,
+                (edition.id,),
+            )
+            extr_pol_id = (await cur.fetchone())[0]
+            cur = await t_conn.execute(
+                """
+                INSERT INTO claim_extraction_runs (source_item_revision_id, edition_id, extraction_policy_id, relevance_decision_id, status)
+                VALUES (%s, %s, %s, %s, 'succeeded') RETURNING id
+                """,
+                (comment_rev_id, edition.id, extr_pol_id, rel_dec_id),
+            )
+            extr_run_id = (await cur.fetchone())[0]
+            cur = await t_conn.execute(
+                """
+                INSERT INTO claims (claim_extraction_run_id, source_item_revision_id, edition_id, assertion_text, normalized_assertion, created_at)
+                VALUES (%s, %s, %s, 'Перекрыто движение у завода Кабельщиков', 'перекрыто движение у завода кабельщиков', %s)
+                RETURNING id
+                """,
+                (extr_run_id, comment_rev_id, edition.id, now),
+            )
+            claim_id = (await cur.fetchone())[0]
+            await t_conn.execute(
+                "INSERT INTO story_claims (story_id, claim_id, attached_at) VALUES (%s, %s, %s)",
+                (story_id, claim_id, now),
+            )
+
         # 4. Freeze Publication Snapshot & Run Candidate Selection
         snapshot_time = now + dt.timedelta(minutes=5)
         run = await snapshot_service.create_run(

@@ -202,8 +202,8 @@ class EditorialSelectionService:
                     claim_ids = [r[0] for r in c_rows]
                     claim_roles = {r[0]: r[1] for r in c_rows}
 
-                    # If platforms are excluded and no allowed claims remain, skip this story
-                    if excluded_platforms and not claim_ids:
+                    # Stories with 0 valid claims must never reach publication
+                    if not claim_ids:
                         continue
 
                     ec_cur = await conn.execute(

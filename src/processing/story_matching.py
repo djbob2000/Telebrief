@@ -801,9 +801,14 @@ class StoryMatchingService:
         if decision.target_story_id is None:  # unreachable for validated SAME_STORY
             raise InvalidMatchResponse("SAME_STORY requires a target story")
         target_story_id = decision.target_story_id
-        await self._stories.attach_claim(
+        attached = await self._stories.attach_claim(
             conn, story_id=target_story_id, claim_id=claim.id, attached_at=_now()
         )
+        if not attached:
+            raise RuntimeError(
+                f"cannot attach claim {claim.id} to story {target_story_id}: "
+                f"claim is already attached to another story"
+            )
         created_revision: StoryRevision | None = None
         if decision.story_update is not None and decision.story_update.semantic_changed:
             current_revision_id = await self._stories.current_revision_id(conn, target_story_id)

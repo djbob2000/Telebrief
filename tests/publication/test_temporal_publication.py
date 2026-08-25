@@ -103,6 +103,9 @@ class TestTemporalPublicationSnapshots:
         await conn.execute(
             "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev2_id, story_id)
         )
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, story_id, _T_19_40)
 
         # 4. Create publication run with cutoff snapshot_at = 19:58
         run = await service.create_run(
@@ -554,6 +557,9 @@ class TestTemporalPublicationSnapshots:
         await conn.execute(
             "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
         )
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, story_id, t_2h_ago)
 
         run = await service.create_run(
             edition_id=edition.id,

@@ -206,21 +206,27 @@ class KnowledgeEditorialAdapter:
                 if cand_row and isinstance(cand_row[0], dict):
                     projected_text = cand_row[0].get("semantic_text")
 
-                # Fetch claims and their sources (respecting frozen attribution snapshot from publication_input_claims)
+                # Fetch claims and their sources (respecting frozen attribution & temporal snapshot from publication_input_claims)
                 c_cur = await conn.execute(
                     """
                     SELECT c.id, c.assertion_text, c.normalized_assertion,
                            COALESCE(pic.source_snapshot->>'platform', s.platform) AS platform,
                            COALESCE(pic.source_name, pic.source_snapshot->>'name', s.name) AS name,
-                           si.external_id, si.published_at,
-                           sir.text_content, si.canonical_url,
+                           si.external_id,
+                           COALESCE(
+                               (pic.source_snapshot->>'published_at')::timestamptz,
+                               si.published_at
+                           ) AS published_at,
+                           sir.text_content,
+                           COALESCE(pic.source_snapshot->>'canonical_url', si.canonical_url) AS canonical_url,
                            COALESCE(pic.source_snapshot->>'url', s.url) AS url,
                            COALESCE(pic.source_snapshot->>'external_id', s.external_id) AS s_external_id,
                            COALESCE(pic.source_role, pic.source_snapshot->>'role', s.role) AS effective_role,
                            s.id AS source_id, si.id AS source_item_id, sir.id AS source_item_revision_id,
-                           si.kind, si.author_name,
-                           si.metadata->>'temporal_fidelity' AS temporal_fidelity,
-                           si.metadata->>'raw_timestamp' AS raw_timestamp
+                           si.kind,
+                           COALESCE(pic.source_snapshot->>'author_name', si.author_name) AS author_name,
+                           COALESCE(pic.source_snapshot->>'temporal_fidelity', si.metadata->>'temporal_fidelity') AS temporal_fidelity,
+                           COALESCE(pic.source_snapshot->>'raw_timestamp', si.metadata->>'raw_timestamp') AS raw_timestamp
                     FROM claims c
                     JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
                     JOIN source_items si ON si.id = sir.source_item_id

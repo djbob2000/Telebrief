@@ -370,12 +370,24 @@ class FacebookCommentCollector:
                         if not author_id and (
                             "/user/" in href or "/profile.php" in href or "facebook.com/" in href
                         ):
-                            clean_href = href.split("?")[0].rstrip("/")
-                            if not any(
-                                k in clean_href.lower()
-                                for k in ["/posts/", "/permalink/", "/groups/", "/photo", "/video"]
-                            ):
-                                author_id = clean_href
+                            parsed_url = urllib.parse.urlparse(href)
+                            if "profile.php" in parsed_url.path:
+                                qs = urllib.parse.parse_qs(parsed_url.query)
+                                if "id" in qs and qs["id"]:
+                                    author_id = f"https://facebook.com/profile.php?id={qs['id'][0]}"
+                            else:
+                                clean_href = href.split("?")[0].rstrip("/")
+                                if not any(
+                                    k in clean_href.lower()
+                                    for k in [
+                                        "/posts/",
+                                        "/permalink/",
+                                        "/groups/",
+                                        "/photo",
+                                        "/video",
+                                    ]
+                                ):
+                                    author_id = clean_href
 
                         # Author name extraction from user profile / author link in comment node
                         if not author_name:
@@ -433,7 +445,12 @@ class FacebookCommentCollector:
                         identity_quality = "synthetic"
 
                     if cid in seen_comment_ids:
-                        # Re-observation of the same synthetic or native comment during pagination
+                        # Re-observation of the same synthetic or native comment during pagination.
+                        # Crucial: update depth stack so subsequent replies on this page bind to the correct parent.
+                        if depth >= 0:
+                            depth_to_cid[depth] = cid
+                            for deeper in [d for d in list(depth_to_cid.keys()) if d > depth]:
+                                del depth_to_cid[deeper]
                         continue
 
                     seen_comment_ids.add(cid)
@@ -441,7 +458,7 @@ class FacebookCommentCollector:
 
                     if depth >= 0:
                         depth_to_cid[depth] = cid
-                        for deeper in [d for d in depth_to_cid if d > depth]:
+                        for deeper in [d for d in list(depth_to_cid.keys()) if d > depth]:
                             del depth_to_cid[deeper]
 
                     if parent_comment_id:

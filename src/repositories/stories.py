@@ -54,9 +54,13 @@ class StoryRepository:
             "UPDATE stories SET current_revision_id=%s, lifecycle_state='active' WHERE id=%s",
             (story_revision.id, story_id),
         )
-        await self.attach_claim(
+        attached = await self.attach_claim(
             conn, story_id=story_id, claim_id=claim_id, attached_at=revision.created_at
         )
+        if not attached:
+            raise RuntimeError(
+                f"cannot create story: claim {claim_id} is already attached to another story"
+            )
         return StoryWithRevision(story_id=story_id, revision=story_revision)
 
     async def attach_claim(
@@ -66,24 +70,36 @@ class StoryRepository:
         story_id: int,
         claim_id: int,
         attached_at: dt.datetime,
-    ) -> None:
+    ) -> bool:
         """Attach one claim to one story, idempotently.
 
         UNIQUE(claim_id) enforces spec §19 exclusivity (a claim belongs to at
         most ONE story forever); ON CONFLICT DO NOTHING makes replayed
         identical attachments no-ops and never lets a later story steal an
-        already-attached claim.
+        already-attached claim. Returns True if attached or already owned by
+        story_id; False if attached to another story or insert failed.
         """
-        await conn.execute(
+        cursor = await conn.execute(
             """
             INSERT INTO story_claims (story_id, claim_id, edition_id, attached_at)
             SELECT s.id, %s, s.edition_id, %s
             FROM stories s
             WHERE s.id = %s
             ON CONFLICT DO NOTHING
+            RETURNING story_id
             """,
             (claim_id, attached_at, story_id),
         )
+        row = await cursor.fetchone()
+        if row is not None:
+            return True
+        # Check if already attached to this same story (idempotent replay) vs another story (conflict)
+        owner_cur = await conn.execute(
+            "SELECT story_id FROM story_claims WHERE claim_id = %s",
+            (claim_id,),
+        )
+        owner_row = await owner_cur.fetchone()
+        return owner_row is not None and owner_row[0] == story_id
 
     async def list_attached_claim_ids(
         self, conn: psycopg.AsyncConnection, story_id: int

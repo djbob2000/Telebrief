@@ -894,7 +894,8 @@ class StoryMatchingRunRepository:
 
         Coverage statuses are 'succeeded' (done), 'running' (in flight) and
         'stale' (a fresh task was already re-deferred); failed runs never
-        cover — the debt stays visible until a run lands."""
+        cover — the debt stays visible until a run lands. Claims already attached
+        to a story are excluded."""
         cursor = await conn.execute(
             """
             SELECT e.id, e.claim_id
@@ -903,6 +904,10 @@ class StoryMatchingRunRepository:
             WHERE c.edition_id = %s
               AND e.id > COALESCE(%s, 0)
               AND e.model = %s AND e.dimensions = %s AND e.purpose = 'claim_query'
+              AND NOT EXISTS (
+                  SELECT 1 FROM story_claims sc
+                  WHERE sc.claim_id = e.claim_id
+              )
               AND NOT EXISTS (
                   SELECT 1 FROM story_matching_runs r
                   WHERE r.claim_id = e.claim_id AND r.policy_id = %s
@@ -923,26 +928,58 @@ class StoryMatchingRunRepository:
         policy_id: int,
         after_claim_id: int | None = None,
         limit: int = 500,
+        platform: str | None = "telegram",
     ) -> list[int]:
         """Claims in this edition still owing this exact policy a run without requiring embeddings.
 
         Coverage statuses are 'succeeded' (done), 'running' (in flight) and
         'stale'; failed runs never cover — the debt stays visible until a run lands.
+        Excludes claims already attached to a story and filters by platform (default telegram).
         """
-        cursor = await conn.execute(
-            """
-            SELECT c.id
-            FROM claims c
-            WHERE c.edition_id = %s
-              AND c.id > COALESCE(%s, 0)
-              AND NOT EXISTS (
-                  SELECT 1 FROM story_matching_runs r
-                  WHERE r.claim_id = c.id AND r.policy_id = %s
-                    AND r.status IN ('succeeded', 'running', 'stale')
-              )
-            ORDER BY c.id
-            LIMIT %s
-            """,
-            (edition_id, after_claim_id, policy_id, limit),
-        )
+        if platform:
+            cursor = await conn.execute(
+                """
+                SELECT c.id
+                FROM claims c
+                JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                JOIN source_items si ON si.id = sir.source_item_id
+                JOIN sources s ON s.id = si.source_id
+                WHERE c.edition_id = %s
+                  AND c.id > COALESCE(%s, 0)
+                  AND s.platform = %s
+                  AND NOT EXISTS (
+                      SELECT 1 FROM story_claims sc
+                      WHERE sc.claim_id = c.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM story_matching_runs r
+                      WHERE r.claim_id = c.id AND r.policy_id = %s
+                        AND r.status IN ('succeeded', 'running', 'stale')
+                  )
+                ORDER BY c.id
+                LIMIT %s
+                """,
+                (edition_id, after_claim_id, platform, policy_id, limit),
+            )
+        else:
+            cursor = await conn.execute(
+                """
+                SELECT c.id
+                FROM claims c
+                WHERE c.edition_id = %s
+                  AND c.id > COALESCE(%s, 0)
+                  AND NOT EXISTS (
+                      SELECT 1 FROM story_claims sc
+                      WHERE sc.claim_id = c.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM story_matching_runs r
+                      WHERE r.claim_id = c.id AND r.policy_id = %s
+                        AND r.status IN ('succeeded', 'running', 'stale')
+                  )
+                ORDER BY c.id
+                LIMIT %s
+                """,
+                (edition_id, after_claim_id, policy_id, limit),
+            )
         return [row[0] for row in await cursor.fetchall()]
