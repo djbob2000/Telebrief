@@ -764,7 +764,7 @@ def create_provider(  # noqa: C901
         if not google_api_key:
             raise ValueError("GEMINI_API_KEY is required as the primary Google provider key")
 
-        google_timeout = min(api_timeout, 15) if openrouter_api_key else min(api_timeout, 45)
+        google_timeout = api_timeout
         slots: list[tuple[str, AIProvider, str]] = [
             (
                 f"google-{index}",
