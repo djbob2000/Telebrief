@@ -19,6 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import psycopg  # noqa: E402
 from psycopg import sql  # noqa: E402
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from src.config_loader import load_database_config  # noqa: E402
 from src.db.migrations import migrate  # noqa: E402
 
