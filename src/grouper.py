@@ -1019,7 +1019,18 @@ class DigestGrouper:
         cleaned = re.sub(r"\n?```\s*$", "", cleaned)
 
         try:
-            data = json.loads(cleaned)
+            try:
+                data = json.loads(cleaned, strict=False)
+            except Exception:
+                # If trailing quote or syntax issue, attempt regex match on synthesized_items array
+                match = re.search(
+                    r"\{\s*\"synthesized_items\"\s*:\s*\[.*\]\s*\}", cleaned, re.DOTALL
+                )
+                if match:
+                    data = json.loads(match.group(0), strict=False)
+                else:
+                    raise
+
             items = data.get("synthesized_items") if isinstance(data, dict) else None
             if not isinstance(items, list):
                 raise ValueError("Expected 'synthesized_items' list in JSON")

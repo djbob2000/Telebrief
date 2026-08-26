@@ -35,6 +35,7 @@ onto :class:`~src.ingestion.models.CollectionOutcome` values with a short typed
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Callable
@@ -335,39 +336,67 @@ class TelegramCollector:
     ) -> CollectionBatch:
         """Fetch new messages for one source and convert them; never raises."""
         started_at = context.now
-        try:
-            await self._ensure_ready()
-            channel_config = resolve_channel_config(self.config.channels, source.external_id)
-            entity = await self._resolve_entity(source)
-            entries, gap_resolved, lowest_fetched_id = await self._fetch_incremental(
-                source, entity, checkpoint, context, channel_config
-            )
-            batch = await self._convert_entries(
-                source,
-                channel_config,
-                entity,
-                entries,
-                checkpoint=checkpoint,
-                started_at=started_at,
-                gap_resolved=gap_resolved,
-                lowest_fetched_id=lowest_fetched_id,
-            )
-        except Exception as error:
-            outcome, error_kind, extra_state = _map_error(error)
-            self.logger.warning(
-                f"✗ {source.name}: collection failed ({outcome.value}, {error_kind}): {error}"
-            )
-            return CollectionBatch(
-                outcome=outcome,
-                items=(),
-                assets=(),
-                state_events=(),
-                adapter_state=dict(extra_state),
-                started_at=started_at,
-                completed_at=datetime.now(timezone.utc),
-                error_kind=error_kind,
-            )
-        return batch
+        max_attempts = 3
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                await self._ensure_ready()
+                channel_config = resolve_channel_config(self.config.channels, source.external_id)
+                entity = await self._resolve_entity(source)
+                entries, gap_resolved, lowest_fetched_id = await self._fetch_incremental(
+                    source, entity, checkpoint, context, channel_config
+                )
+                return await self._convert_entries(
+                    source,
+                    channel_config,
+                    entity,
+                    entries,
+                    checkpoint=checkpoint,
+                    started_at=started_at,
+                    gap_resolved=gap_resolved,
+                    lowest_fetched_id=lowest_fetched_id,
+                )
+            except Exception as error:
+                last_error = error
+                outcome, error_kind, extra_state = _map_error(error)
+                if outcome == CollectionOutcome.TRANSIENT and attempt < max_attempts:
+                    self.logger.warning(
+                        "Transient collection error for %s (attempt %d/%d): %s; retrying in %.1fs...",
+                        source.name,
+                        attempt,
+                        max_attempts,
+                        error,
+                        attempt * 1.0,
+                    )
+                    await asyncio.sleep(attempt * 1.0)
+                    continue
+
+                self.logger.warning(
+                    f"✗ {source.name}: collection failed ({outcome.value}, {error_kind}): {error}"
+                )
+                return CollectionBatch(
+                    outcome=outcome,
+                    items=(),
+                    assets=(),
+                    state_events=(),
+                    adapter_state=dict(extra_state),
+                    started_at=started_at,
+                    completed_at=datetime.now(timezone.utc),
+                    error_kind=error_kind,
+                )
+        outcome, error_kind, extra_state = _map_error(
+            last_error or RuntimeError("collection failed")
+        )
+        return CollectionBatch(
+            outcome=outcome,
+            items=(),
+            assets=(),
+            state_events=(),
+            adapter_state=dict(extra_state),
+            started_at=started_at,
+            completed_at=datetime.now(timezone.utc),
+            error_kind=error_kind,
+        )
 
     async def _ensure_ready(self) -> None:
         """Connect (once per collector lifetime) and resolve nothing else."""
@@ -382,7 +411,13 @@ class TelegramCollector:
             raise ValueError(f"Source {source.id} has no external_id")
         entity = self._entities.get(source.external_id)
         if entity is None:
-            entity = await self.client.get_entity(source.external_id)
+            peer: Any = source.external_id
+            if isinstance(peer, str) and (peer.startswith("-") or peer.isdigit()):
+                try:
+                    peer = int(peer)
+                except ValueError:
+                    pass
+            entity = await self.client.get_entity(peer)
             self._entities[source.external_id] = entity
         return entity
 
