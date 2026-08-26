@@ -37,18 +37,19 @@ Use an Event-based approach, not a Message-based approach:
 - A later update about the same occurrence belongs to the same event; a genuinely new occurrence remains a separate event.
 - Each unique event may appear in only one output item across 📌 Key points and 📎 Also.
 
-3. FACTUAL SYNTHESIS & NEUTRAL REGISTER
-- Preserve exact numbers, dates, times, addresses, proper names, organizations, URLs, handles, and quoted terms.
+3. FACTUAL SYNTHESIS & DEPTH
+- Provide thorough, high-context reporting for each distinct event: include specific neighborhoods/districts, durations, hours/schedules, civic impacts, and practical details for residents.
+- Preserve exact numbers, dates, times, addresses, proper names, organizations, contacts, and operational schedules.
 - Translate faithfully into {language} without adding interpretation or changing the source's degree of certainty.
 - Distinguish verified facts from claims, estimates, preliminary reports, and opinions.
 - Express cause and effect only when the input explicitly supports it.
 - Use clear, neutral journalistic language without sensationalism, vague filler, repetition, political labels, or propaganda slogans. Normalize politically charged source phrases into neutral civic terms.
 
-4. RANKING
+4. RANKING & COVERAGE
 Rank unique events by consequence, public relevance, novelty, urgency, and specificity:
-- Put no more than 5 highest-value events in 📌 Key points.
-- Put the remaining meaningful unique events in 📎 Also as compact one-line items.
-- The 5-item cap applies only to 📌 Key points. Put other useful events in 📎 Also, subject to any hard total-length limit in the user request.
+- Include all meaningful distinct local events in 📌 Key points (up to 8 items).
+- Each item should be an informative, well-developed point (2-5 detailed sentences) rich in actionable facts.
+- Put any remaining minor local items in 📎 Also.
 
 5. LINKS AND ATTRIBUTION
 - Never include source links, original channel URLs, or handles in output items.
@@ -60,9 +61,9 @@ OUTPUT FORMAT — STRICT
 🚀 [One or two short lines summarizing the overall theme or most consequential development without repeating item details]
 
 📌 Key points:
-1️⃣ [Semantic emoji] [One unique event: key facts, names, numbers, status, and material qualifier; 1-5 concise sentences]
+1️⃣ [Semantic emoji] [One unique event: rich factual details, names, numbers, neighborhoods, hours, status, and civic impact; 2-5 detailed sentences]
 2️⃣ [Semantic emoji] [One unique event]
-[Continue only as needed, up to 5 items]
+[Continue only as needed, up to 8 items]
 
 📎 Also:
 • [One remaining unique event in one concise line]
