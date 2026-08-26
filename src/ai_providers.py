@@ -513,9 +513,18 @@ class GoogleProvider(AIProvider):
                 GOOGLE_MAX_OUTPUT_TOKENS,
             )
 
+        # Strip provider namespace prefixes (e.g. "google/", "models/") so that
+        # unified model identifiers like "google/gemini-3.7-flash" work seamlessly
+        # with Google's native API endpoints without 404 errors.
+        normalized_model = model
+        if normalized_model.startswith("models/"):
+            normalized_model = normalized_model.removeprefix("models/")
+        if normalized_model.startswith("google/"):
+            normalized_model = normalized_model.removeprefix("google/")
+
         effort = reasoning_effort if reasoning_effort is not None else self.default_reasoning_effort
         create_kwargs: Dict[str, Any] = {
-            "model": model,
+            "model": normalized_model,
             "messages": messages,
             "max_completion_tokens": output_tokens,
             "reasoning_effort": effort,

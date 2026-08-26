@@ -270,6 +270,7 @@ class EditorialWriter:
         analysis: EditorialAnalysis,
         bundle: PreparedBundle,
         revision_feedback: FactCheckResult | None = None,
+        historical_background: str = "",
     ) -> tuple[str, str]:
         system = f"""{self.skill_instructions}
 
@@ -340,16 +341,15 @@ inside the education chapter). Usually prefer one or two materially informative 
 only when the additional versions materially change the reader's understanding of the uncertainty. Never enumerate
 speculation merely for completeness. Make the verified baseline explicit before presenting unofficial estimates.
 
-Direct quotes:
-Use verbatim direct quotes sparingly and selectively (typically 2–4 sharp, authentic quotes across the entire article)
-to convey the human mood and living reality. Paraphrase the rest in clear journalistic language.
+Direct quotes and human voice:
+Actively use verbatim direct quotes (typically 2–4 sharp, authentic quotes across the article) from residents in ORIGINAL SOURCE EXCERPTS. Quotes are essential to convey the living human reality, genuine emotions, neighborly debates, and daily struggles (e.g. storing insulin, caring for elderly relatives, debates over generator noise and exhaust in residential courtyards, or anxiety about winter). Paraphrase the rest in clear journalistic language.
 
 Community mood, resident concerns, and everyday coping:
-When covering prolonged municipal crises (such as multi-week utility blackouts, water outages, connectivity issues, or price surges), integrate residents' genuine concerns, seasonal anxieties (such as winter coping, stove heating, preparing supplies, or rural alternatives), and everyday adaptations into the relevant thematic chapters as human context and community mood. Distinguish genuine community sentiment from statistical claims: describe the qualitative concern accurately without turning emotional hyperbole or conversational figures of speech (e.g. '80% сбегут') into pseudo-statistics or demographic facts.
+When covering municipal crises (such as multi-week blackouts, water shortages, connectivity outages, or price surges), fully integrate residents' genuine concerns, seasonal anxieties (such as winter coping, stove heating, preparing supplies, or rural alternatives), everyday adaptations, and neighborhood debates into the narrative chapters. Highlight tangible micro-details present in source records: working ATMs with backup power, emergency generator hours, water pressure contrasts between upper floors and lowlands, and practical adaptations. Distinguish genuine community sentiment from statistical claims: describe the qualitative concern accurately without turning emotional hyperbole or conversational figures of speech (e.g. '80% сбегут') into pseudo-statistics or demographic facts.
 
 Resident experience and technical advice:
 Present technical lifehacks, practical tips, and community explanations (such as powering routers from powerbanks,
-voltage specs, or optic fiber vs twisted pair) as resident experience, advice, or observations ('По опыту жителей...',
+voltage specs, 'flight mode' toggling for cell towers, or optic fiber vs twisted pair) as resident experience, advice, or observations ('По опыту жителей...',
 'Как отмечают горожане...'), not as universal technical laws.
 
 Deterministic local story context ([LOCAL STORY CONTEXT]) specifies the observed geography and scale evidence for each Story Card. A street observation means the report came from that street/area, not that the entire area was affected. Same-area reports count as 1 area. Use majority or citywide phrasing only when majority_supported is true; when geographic_spread is true, describe as multiple areas (e.g. 'в нескольких районах города', 'в Центре и на Лисках'), not the whole city.
@@ -393,6 +393,9 @@ Grammatical case, prepositions, and capitalization may change when Russian gramm
 the named-place identity and meaning must not change. If local context provides a canonical
 alias, use that known alias rather than inventing a new descriptive name.
 
+Historical background context (HISTORICAL BACKGROUND):
+When historical background from past years is provided in the prompt, use it strictly as historical background, context, or prehistory (e.g. 'Напомним, в 2023 году...', 'Проблемы с этой подстанцией фиксировались еще в прошлом году...'). Never confuse past archive events with today's breaking news or present them as today's events.
+
 Aim for about 900–1500 words on a busy day, allow up to about 1800 words when the
 material genuinely supports it, and accept 600–900 words on a thin day. These are editorial
 targets, not validation limits; never pad length.
@@ -403,6 +406,11 @@ targets, not validation limits; never pad length.
         story_ctx_str = render_story_contexts(getattr(bundle, "story_contexts", {}))
         if story_ctx_str:
             user_parts.append("LOCAL STORY CONTEXT:\n" + story_ctx_str)
+        if historical_background and historical_background.strip():
+            user_parts.append(
+                "HISTORICAL BACKGROUND (ARCHIVE / СПРАВКА И БЭКГРАУНД):\n"
+                + historical_background.strip()
+            )
         user_parts.append("ORIGINAL SOURCE EXCERPTS:\n" + bundle.prompt_text)
         if revision_feedback and revision_feedback.issues:
             fix_issues = [issue for issue in revision_feedback.issues if issue.severity == "fix"]
@@ -435,8 +443,14 @@ targets, not validation limits; never pad length.
         analysis: EditorialAnalysis,
         bundle: PreparedBundle,
         revision_feedback: FactCheckResult | None = None,
+        historical_background: str = "",
     ) -> ArticleDraft:
-        system, user = self.build_prompt(analysis, bundle, revision_feedback=revision_feedback)
+        system, user = self.build_prompt(
+            analysis,
+            bundle,
+            revision_feedback=revision_feedback,
+            historical_background=historical_background,
+        )
         response = await self.provider.chat_completion(
             messages=[
                 {"role": "system", "content": system},

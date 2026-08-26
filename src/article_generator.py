@@ -161,6 +161,29 @@ class ArticleGenerator:
         self.fallback_builder = DeterministicStoryCardBuilder()
         self.fallback_renderer = StoryCardRenderer(output_language=self.output_language)
 
+        self.historical_retriever: Any | None = None
+        try:
+            from src.runtime import get_runtime
+
+            runtime = get_runtime()
+            if runtime is not None and getattr(config, "embedding", None) is not None:
+                from src.embedding_providers import create_embedding_provider
+                from src.historical_context import HistoricalContextRetriever
+
+                emb_provider = create_embedding_provider(
+                    config=config,
+                    logger=logger,
+                )
+                self.historical_retriever = HistoricalContextRetriever(
+                    uow=runtime.uow,
+                    embedding_provider=emb_provider,
+                    model=config.embedding.model,
+                    dimensions=config.embedding.dimensions,
+                )
+        except Exception as exc:
+            self.logger.debug("Historical context retriever not initialized: %s", exc)
+            self.historical_retriever = None
+
     def _compose_system_prompt(self) -> str:
         """Compatibility helper exposing the single writer prompt owner."""
         return (
@@ -460,7 +483,11 @@ class ArticleGenerator:
         return current, result
 
     async def _repair_and_check(  # noqa: C901
-        self, draft: ArticleDraft, analysis: EditorialAnalysis, bundle: PreparedBundle
+        self,
+        draft: ArticleDraft,
+        analysis: EditorialAnalysis,
+        bundle: PreparedBundle,
+        historical_background: str = "",
     ) -> ArticleDraft:
         try:
             result = await self.fact_checker.check(draft, analysis, bundle)
@@ -517,7 +544,10 @@ class ArticleGenerator:
             blocking_before_regeneration = current_result.has_blocking_fixes
             try:
                 regenerated = await self.writer.write(
-                    analysis, bundle, revision_feedback=current_result
+                    analysis,
+                    bundle,
+                    revision_feedback=current_result,
+                    historical_background=historical_background,
                 )
                 deterministic_preflight(regenerated.to_markdown())
             except Exception as exc:
@@ -669,8 +699,24 @@ class ArticleGenerator:
                 model=self.model,
             )
 
+        historical_background_str = ""
+        if self.historical_retriever is not None:
+            try:
+                hist_backgrounds = await self.historical_retriever.retrieve_for_stories(
+                    analysis, edition_slug="berdyansk"
+                )
+                historical_background_str = self.historical_retriever.render_context(
+                    hist_backgrounds
+                )
+            except Exception as exc:
+                self.logger.warning("Historical background retrieval failed: %s", exc)
+
         try:
-            draft = await self.writer.write(analysis, writer_bundle)
+            draft = await self.writer.write(
+                analysis,
+                writer_bundle,
+                historical_background=historical_background_str,
+            )
             deterministic_preflight(draft.to_markdown())
             self._save_debug_artifact("writer_draft.json", draft.to_dict())
             if attempt_observer is not None and writer_attempt_id > 0:
@@ -686,7 +732,12 @@ class ArticleGenerator:
             )
 
         try:
-            draft = await self._repair_and_check(draft, analysis, writer_bundle)
+            draft = await self._repair_and_check(
+                draft,
+                analysis,
+                writer_bundle,
+                historical_background=historical_background_str,
+            )
         except UnsafeDraftError as exc:
             reason = str(exc)
             return await self._execute_fallback_chain(
