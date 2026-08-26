@@ -38,7 +38,8 @@ Use an Event-based approach, not a Message-based approach:
 - Each unique event may appear in only one output item across 📌 Key points and 📎 Also.
 
 3. FACTUAL SYNTHESIS & DEPTH
-- Provide thorough, high-context reporting for each distinct event: include specific neighborhoods/districts, durations, hours/schedules, civic impacts, and practical details for residents.
+- Provide thorough, high-context reporting for each distinct event: include specific neighborhoods/districts, specific streets, mobile network operators, durations, hours/schedules (e.g. 1-3 hours/day), upper-floor water pressure issues, and practical civic details.
+- Never replace specific district, street, or operator names with vague generalizations (such as "in some areas" or "in several districts"). Always preserve the exact named locations and details.
 - Preserve exact numbers, dates, times, addresses, proper names, organizations, contacts, and operational schedules.
 - Translate faithfully into {language} without adding interpretation or changing the source's degree of certainty.
 - Distinguish verified facts from claims, estimates, preliminary reports, and opinions.
