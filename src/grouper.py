@@ -255,7 +255,7 @@ def _extract_bullets_from_summary(
 
     for raw_line in lines:
         line = raw_line.strip()
-        if not line or line.startswith(("🚀", "📌", "📎")):
+        if not line or line.startswith(("🚀", "📌", "📎", "📭")):
             if current:
                 points.append(current.strip())
                 current = None
@@ -913,18 +913,23 @@ class DigestGrouper:
             "digest point for each event. This is deduplication, not classification or filtering: "
             "every input item must remain represented in the output.\n\n"
             "EVENT-IDENTITY RULES\n"
-            "- Merge items only when they clearly describe the same occurrence, incident, decision, "
-            "announcement, or update to that exact event. Check the defining anchors: subject or actors, "
-            "action, location, time window, and outcome.\n"
+            "- Merge items only when they clearly describe the exact same occurrence, incident, or announcement.\n"
             "- The same topic, entity, place, or general situation is not enough. Keep separate incidents, "
             "separate announcements, recurring schedules, and events on different dates separate.\n"
-            "- When uncertain whether two items are the same event, keep the items separate.\n"
+            "- DO NOT merge distinct aspects of broader community issues into a single item: keep separate:\n"
+            "  * Emergency water trucking schedules vs general water supply updates vs upper-floor pressure issues.\n"
+            "  * Citywide blackout / electrical grid repair status vs district-specific power schedules vs specific mobile operator stability reports.\n"
+            "  * Separate municipal announcements, separate aid/compensation programs, and events on different dates.\n"
+            "- When uncertain whether two items are the exact same event, keep the items separate.\n"
             "- If details contradict but the event identity is clear, do not choose a version or silently "
             "combine the claims. Preserve the contradiction and any existing attribution or uncertainty "
             "briefly. If the contradiction makes event identity uncertain, keep the items separate.\n\n"
             "EDITING RULES\n"
             "- For a merged event, combine all non-redundant material facts from its items, including names, "
             "numbers, dates, times, addresses, schedules, status, attribution, and uncertainty.\n"
+            "- PRESERVE all actionable and specific details: preserve exact hours (e.g. '1–3 часа в сутки'), "
+            "times (e.g. 'к 14:15'), exact addresses (e.g. 'ул. Пионерская, 51-а'), organizations (e.g. 'Єдина Міць Народу'), "
+            "mobile network names ('+7', 'МТС', 'Миранда'), contractor names, and complete lists of bus route numbers.\n"
             "- Remove only repetition and wording noise. Never invent facts, causality, certainty, quotations, "
             "sources, links, or URLs, and never omit a material unique detail merely to make the point shorter.\n"
             "- For a distinct single item, preserve its meaning and facts; edit only for clarity, concision, "

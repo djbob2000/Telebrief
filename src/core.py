@@ -169,7 +169,9 @@ def _filter_valid_summaries(channel_summaries: dict) -> dict:
     return {
         name: summary
         for name, summary in channel_summaries.items()
-        if summary and not summary.lower().startswith(ERROR_SUMMARY_PREFIX.lower())
+        if summary
+        and not summary.lower().startswith(ERROR_SUMMARY_PREFIX.lower())
+        and not summary.strip().startswith("📭")
     }
 
 
