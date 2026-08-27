@@ -74,7 +74,7 @@ class EditorialAnalyzer:
         self.last_raw_response = ""
 
     def build_prompt(self, bundle: PreparedBundle, *, compact: bool = False) -> tuple[str, str]:
-        card_target = "up to 6" if compact else "up to 8"
+        card_target = "up to 8" if compact else "up to 12"
         compact_rules = (
             "Return the smallest complete JSON: omit labels and excluded_refs unless essential. "
             "Keep only the strongest representative refs."
@@ -87,11 +87,13 @@ class EditorialAnalyzer:
             f"uncertainties[].text, timeframe, current_status, next_known_step, uncertainties[].basis, "
             f"and attribution) strictly and exclusively in {self.output_language}.\n"
             f"Schema requirement: Keep all JSON keys, IDs (e.g. SC001), source references (e.g. S000001), "
-            f"importance values ('high'|'medium'|'low'), status values ('established'|'attributed'|'disputed'), "
+            f"importance values ('high'|'medium'|'low'), category values ('utilities'|'security'|'transport'|'health'|'social'|'culture'|'other'), "
+            f"status values ('established'|'attributed'|'disputed'), "
             f"and editorial_angle type ('editorial_synthesis') in canonical English."
         )
         card_schema = f"""Each card must use this canonical shape: {{
   "id": "SC001", "topic": "topic in {self.output_language}", "importance": "high|medium|low",
+  "category": "utilities|security|transport|health|social|culture|other",
   "summary": "one-sentence summary in {self.output_language}", "story_kind": "optional",
   "timeframe": "optional in {self.output_language}", "current_status": "optional in {self.output_language}", "next_known_step": "optional in {self.output_language}",
   "editorial_angle": {{"text": "why this matters in {self.output_language}", "basis_refs": ["S000001"], "type": "editorial_synthesis"}},
@@ -104,10 +106,10 @@ class EditorialAnalyzer:
 """
         local_publishability_rules = f"""Local publishability gate:
 1. Locality Test: A Story Card exists only if it materially describes what happened in Berdyansk, directly affected life in Berdyansk during the reporting period, or is necessary to understand a concrete local consequence. Presence in a Berdyansk Telegram source is not local relevance. Exclude distant strikes, regional roundups, and external news unless there is a direct local impact on Berdyansk.
-2. Editorial-Value Test: A single remark, joke, technical guess, or classified ad does not become a Story Card. Choose only genuinely significant local stories for the 24-hour period. However, preserve genuine community sentiment, everyday lived reality, and resident anxieties (such as winter heating concerns or coping tactics during prolonged utility outages) inside community_observations or uncertainties of the relevant major Story Cards.
+2. Editorial-Value & Diversity Test: Capture the full, diverse spectrum of city life for the reporting period across all categories (utilities, security/emergencies, transport, healthcare/medicine, social assistance, culture/education, public contacts). In addition to major multi-source events (e.g. utility blackouts, street closures), actively extract genuine practical announcements and civic bulletins (such as official blood donor requests, school/art admissions, verified night explosion/drone observations, or emergency operating hours). Choose only verified local facts; do not create cards for casual chatter, jokes, or commercial ads.
 3. Evidence-Position & Corpus Boundary: Use hard_facts for sufficiently supported factual reporting from appropriate news/official evidence. Resident reports, anonymous technical claims, guesses and rumors remain attributed observations/uncertainties or are omitted. Do not treat source_type alone as proof. Absence from the supplied corpus does not establish absence in the outside world: do not encode corpus absence as an established hard fact, summary, current_status, or editorial_angle. Represent corpus-only absence as uncertainty, not as an established hard fact. Keep the human-readable field neutral (for example “точные сроки пока неизвестны” in Russian output) and retain source refs/basis for audit; do not mention supplied records, collected messages, corpus, or editorial tooling in human-readable Story Card text.
 4. Commercial & Scale Demarcation: Commercial/classified messages may supply a practical detail, but cannot by themselves establish a trend, public behavior, shortage, migration pattern, demand increase, or major story. Scale claims require evidence supporting the claimed denominator or sufficiently broad coverage: several independent observations establish geographic spread (e.g. across several districts), but do not automatically establish a majority without evidence supporting the denominator. Do not turn emotional figures of speech or conversational hyperbole (e.g. '80% сбегут') into statistical facts or demographic claims.
-5. Cardinality & Quota Independence: Return {card_target} significant local Story Cards. One or two strong local stories are fully valid when material exists. Return zero cards when no publishable local story remains. Never create weak, external, commercial, or redundant cards to reach a minimum quota.
+5. Cardinality & Quota Independence: Return {card_target} significant local Story Cards. Cover diverse categories when material exists. Return zero cards when no publishable local story remains. Never create weak, external, commercial, or redundant cards to reach a minimum quota.
 6. Informative Uncertainty: Do not discard information merely because it is unverified. Distinguish unsupported noise from newsworthy uncertainty. A rumor, estimate, or anonymous claim may be retained in uncertainties or community_observations when its subject materially affects Berdyansk residents and knowing that the claim is circulating adds useful context. Preserve who said it, what basis they claimed to have, whether there is independent corroboration, and what remains unverified. Omit low-value speculation with no identifiable basis, repetition, practical relevance, or explanatory value. Never promote an unverified version into hard_facts.
 7. Local Context Interpretation: LOCAL CONTEXT annotations are deterministic interpretation aids. They may establish that a source observation came from a broader known area or refers to a known provider/route. They do not establish that the reported phenomenon affected the whole broader area, and they never establish a current event without the attached source record.
 8. Concrete Disagreement: When several source records give materially different concrete values for the same practical metric (for example price, time, duration, quantity, or date), preserve the disagreement with the actual values and their source refs in separate useful_details/community_observations or one explicitly contrasted element. Keep one or two representative values when they materially explain the spread. Never average, interpolate, invent a midpoint, or manufacture a range endpoint. If only one concrete value is present, do not create a second example."""

@@ -219,6 +219,7 @@ class StoryCard:
     current_status: str = ""
     next_known_step: str = ""
     editorial_angle: dict[str, Any] | None = None
+    category: str = ""
     hard_facts: list[StoryElement] = field(default_factory=list)
     community_observations: list[StoryElement] = field(default_factory=list)
     useful_details: list[StoryElement] = field(default_factory=list)
@@ -265,6 +266,8 @@ class StoryCard:
         if importance not in IMPORTANCE_VALUES:
             importance = "medium"
 
+        category = str(data.get("category", "") or data.get("rubric", "") or "").strip()
+
         return cls(
             id=str(data.get("id", "")),
             topic=str(data.get("topic", "")),
@@ -276,6 +279,7 @@ class StoryCard:
             current_status=str(data.get("current_status", "")),
             next_known_step=str(data.get("next_known_step", "")),
             editorial_angle=data.get("editorial_angle"),
+            category=category,
             hard_facts=hard_facts,
             community_observations=community_observations,
             useful_details=useful_details,

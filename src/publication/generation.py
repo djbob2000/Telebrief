@@ -72,6 +72,7 @@ class PublicationGenerationService:
                     output_language=getattr(self.config.settings, "output_language", "Russian"),
                     use_emojis=getattr(self.config.settings, "use_emojis", True),
                     include_statistics=getattr(self.config.settings, "include_statistics", True),
+                    custom_rubrics=getattr(self.config.settings, "digest_groups", None),
                 )
                 att_id = await observer.attempt_started(
                     "story_renderer_fallback", metadata={"renderer": run.publication_type}

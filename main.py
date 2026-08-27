@@ -270,15 +270,44 @@ async def main():
         sys.exit(0 if success else 1)
 
     if args.digest:
-        from src.core import generate_and_send_digest
-
         hours = args.hours or config.settings.lookback_hours
-        logger.info(
-            f"Requesting on-demand digest publication ({hours}h)... "
-            "worker performs generation and delivery"
-        )
-        success = await generate_and_send_digest(config, logger, hours=hours)
-        sys.exit(0 if success else 1)
+        if args.dry_run:
+            logger.info(f"Building on-demand digest preview ({hours}h, dry_run=True)...")
+            from src.article_generator import ArticleGenerator
+            from src.core import _apply_configured_filters, _read_persistent_messages
+            from src.publication.editorial_adapter import FrozenEditorialInput
+            from src.publication.renderers import PublicationDigestRenderer
+
+            messages = await _read_persistent_messages(config, hours)
+            filtered = await _apply_configured_filters(messages, config, logger)
+            generator = ArticleGenerator(config, logger)
+            bundle = generator._build_bundle(filtered)
+            analysis = await generator._analyze(bundle)
+            frozen_input = FrozenEditorialInput(analysis=analysis, writer_bundle=bundle)
+            renderer = PublicationDigestRenderer(
+                output_language=config.settings.output_language,
+                use_emojis=config.settings.use_emojis,
+                include_statistics=config.settings.include_statistics,
+                custom_rubrics=config.settings.digest_groups,
+            )
+            title, lead, body = renderer.render_grouped_digest(
+                frozen_input, edition_name="Бердянск"
+            )
+            print("\n" + "=" * 70)
+            print("📰 ТЕСТОВОЕ ПРЕВЬЮ ДАЙДЖЕСТА (DRY-RUN)")
+            print("=" * 70)
+            print(body)
+            print("=" * 70 + "\n")
+            sys.exit(0)
+        else:
+            from src.core import generate_and_send_digest
+
+            logger.info(
+                f"Requesting on-demand digest publication ({hours}h)... "
+                "worker performs generation and delivery"
+            )
+            success = await generate_and_send_digest(config, logger, hours=hours)
+            sys.exit(0 if success else 1)
 
     # Set up signal handlers for graceful shutdown
     loop = asyncio.get_running_loop()
