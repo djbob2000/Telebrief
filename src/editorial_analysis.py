@@ -74,7 +74,7 @@ class EditorialAnalyzer:
         self.last_raw_response = ""
 
     def build_prompt(self, bundle: PreparedBundle, *, compact: bool = False) -> tuple[str, str]:
-        card_target = "up to 8" if compact else "up to 12"
+        card_target = "up to 6" if compact else "up to 8"
         compact_rules = (
             "Return the smallest complete JSON: omit labels and excluded_refs unless essential. "
             "Keep only the strongest representative refs."

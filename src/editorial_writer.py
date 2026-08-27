@@ -341,7 +341,7 @@ inside the education chapter). Usually prefer one or two materially informative 
 only when the additional versions materially change the reader's understanding of the uncertainty. Never enumerate
 speculation merely for completeness. Make the verified baseline explicit before presenting unofficial estimates.
 
-Direct quotes and human voice:
+Direct quotes:
 Actively use verbatim direct quotes (typically 2–4 sharp, authentic quotes across the article) from residents in ORIGINAL SOURCE EXCERPTS. Quotes are essential to convey the living human reality, genuine emotions, neighborly debates, and daily struggles (e.g. storing insulin, caring for elderly relatives, debates over generator noise and exhaust in residential courtyards, or anxiety about winter). Paraphrase the rest in clear journalistic language.
 
 Community mood, resident concerns, and everyday coping:

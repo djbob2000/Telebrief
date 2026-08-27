@@ -171,7 +171,7 @@ async def test_rich_day_reaches_writer_as_cohesive_article_without_ad_or_rumor_d
         assert all(card.all_source_refs() for card in cards)
         return EditorialAnalysis(cards=cards)
 
-    async def write(analysis, bundle):
+    async def write(analysis, bundle, *args, **kwargs):
         observed["writer_bundle_count"] = len(bundle.records)
         observed["writer_bundle_text"] = bundle.prompt_text
         assert "Курс доллара" not in bundle.prompt_text
