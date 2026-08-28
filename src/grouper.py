@@ -920,6 +920,8 @@ class DigestGrouper:
             "  * Emergency water trucking schedules vs general water supply updates vs upper-floor pressure issues.\n"
             "  * Citywide blackout / electrical grid repair status vs district-specific power schedules vs specific mobile operator stability reports.\n"
             "  * Separate municipal announcements, separate aid/compensation programs, and events on different dates.\n"
+            "  * Separate administrative procedures, property/Rosreestr registration rules, notary services, and judicial matters.\n"
+            "- NEVER combine distinct announcements into one point using semicolons (';') or transition phrases like 'также' / 'кроме того'. If they are different announcements, services, or procedures, they MUST remain separate standalone bullet points.\n"
             "- When uncertain whether two items are the exact same event, keep the items separate.\n"
             "- If details contradict but the event identity is clear, do not choose a version or silently "
             "combine the claims. Preserve the contradiction and any existing attribution or uncertainty "

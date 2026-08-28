@@ -304,15 +304,7 @@ class DigestFormatter:
                 line = f"• {point_text}"
                 bullet_lines.append(line)
 
-            parts.append(
-                "\n".join(
-                    [
-                        f"**{group_name}**",
-                        "",
-                        *bullet_lines,
-                    ]
-                )
-            )
+            parts.append(f"**{group_name}**\n\n" + "\n\n".join(bullet_lines))
 
         return "\n\n".join(parts)
 
