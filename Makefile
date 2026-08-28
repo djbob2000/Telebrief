@@ -59,6 +59,9 @@ clean:
 run:
 	python main.py
 
+backup:
+	./scripts/backup_to_mega.sh
+
 pre-commit:
 	pre-commit install
 	@echo "Pre-commit hooks installed!"

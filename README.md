@@ -608,7 +608,23 @@ make format
 
 ---
 
+## 💾 Database Backup & Disaster Recovery
+
+Telebrief includes an automated database backup tool to export compressed PostgreSQL dumps (`zstd:7`) directly to **Mega.nz** via `rclone`.
+
+```bash
+# Run backup manually
+make backup
+# or
+./scripts/backup_to_mega.sh
+```
+
+For full setup, environment variables, cron scheduling, and restore instructions, see the [Database Backup Guide](docs/database_backup.md).
+
+---
+
 ## ❓ FAQ
+
 
 **Q: Can I change the output language?**
 A: Yes! Set `output_language` in `config.yaml` to any language (e.g., "English", "Spanish", "Chinese").
