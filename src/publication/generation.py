@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from dataclasses import replace
 from typing import Any
 
 import psycopg
@@ -16,6 +17,7 @@ from src.publication.editorial_adapter import (
     DatabaseGenerationAttemptObserver,
     KnowledgeEditorialAdapter,
 )
+from src.publication.editorializer import DigestEditorializer
 from src.publication.models import Publication
 from src.publication.repository import PublicationRepository
 
@@ -33,6 +35,7 @@ class PublicationGenerationService:
         repo: PublicationRepository | None = None,
         adapter: KnowledgeEditorialAdapter | None = None,
         generator: ArticleGenerator | None = None,
+        editorializer: DigestEditorializer | None = None,
     ) -> None:
         from src.config_loader import load_config
 
@@ -41,6 +44,7 @@ class PublicationGenerationService:
         self.repo = repo or PublicationRepository()
         self.adapter = adapter or KnowledgeEditorialAdapter(uow=uow, repo=self.repo)
         self.generator = generator or ArticleGenerator(config=self.config, logger=logger)
+        self.editorializer = editorializer or DigestEditorializer(config=self.config)
 
     async def generate(
         self,
@@ -74,6 +78,24 @@ class PublicationGenerationService:
 
         try:
             if run.publication_type in DIGEST_PUBLICATION_TYPES:
+                if frozen.analysis.cards:
+                    try:
+                        editorialized_cards = await self.editorializer.editorialize(
+                            cards=frozen.analysis.cards,
+                            bundle=frozen.writer_bundle,
+                            attempt_observer=observer,
+                        )
+                        frozen = replace(
+                            frozen,
+                            analysis=replace(frozen.analysis, cards=editorialized_cards),
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "digest editorializer failed (%s: %s); falling back to canonical cards",
+                            type(exc).__name__,
+                            exc,
+                        )
+
                 from src.publication.renderers import PublicationDigestRenderer
 
                 renderer = PublicationDigestRenderer(

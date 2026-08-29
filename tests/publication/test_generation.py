@@ -5,10 +5,14 @@ import datetime as dt
 import psycopg
 import pytest
 
+from src.db.uow import DatabaseUnitOfWork
+from src.publication.generation import PublicationGenerationService
 from src.publication.repository import (
     PublicationPolicyRepository,
     PublicationRepository,
 )
+from src.publication.selection import EditorialSelectionService
+from src.publication.snapshot import PublicationSnapshotService
 
 _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
 
@@ -262,3 +266,181 @@ class TestPublicationGenerationService:
         # 6. Idempotent re-run returns same publication
         pub_again = await service.generate(run.id)
         assert pub_again.id == pub.id
+
+    async def test_digest_generation_runs_editorializer_and_renders_custom_topics(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow)
+        from tests.publication.conftest import seed_claim_for_story
+
+        # 1. Seed story with claim
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Сюжет о воде', 'h-s1', %s) RETURNING id
+            """,
+            (story_id, _NOW),
+        )
+        story_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s",
+            (story_rev_id, story_id),
+        )
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
+
+        # 2. Snapshot & Select
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            request_key="test-digest-editorializer",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        # 3. Mock DigestEditorializer
+        from dataclasses import replace
+
+        class MockEditorializer:
+            async def editorialize(self, *, cards, bundle, attempt_observer=None):
+                if attempt_observer is not None:
+                    att_id = await attempt_observer.attempt_started(
+                        "writer",
+                        provider="mock",
+                        model="mock-1",
+                        metadata={"subkind": "digest_editorializer"},
+                    )
+                    await attempt_observer.attempt_finished(att_id, "succeeded")
+                return [
+                    replace(
+                        c,
+                        topic="Ремонт водовода на Восточном",
+                        category="utilities",
+                        summary="Водоснабжение временно приостановлено.",
+                    )
+                    for c in cards
+                ]
+
+        from src.config_loader import Config, Settings
+
+        settings = Settings(
+            schedule_time="09:00",
+            timezone="UTC",
+            lookback_hours=24,
+            openai_model="gpt-4",
+            openai_temperature=0.7,
+            ai_provider="mock",
+        )
+        config = Config(
+            channels=[],
+            settings=settings,
+            telegram_api_id=1,
+            telegram_api_hash="hash",
+            telegram_bot_token="token",
+            openai_api_key="key",
+            log_level="INFO",
+        )
+
+        class MockGenerator:
+            async def generate_from_frozen_input(self, frozen, attempt_observer=None):
+                return ("Title", "Lead", "Body")
+
+        service = PublicationGenerationService(
+            uow=uow,
+            config=config,
+            generator=MockGenerator(),
+            editorializer=MockEditorializer(),
+        )
+
+        pub = await service.generate(run.id)
+        assert pub.publication_run_id == run.id
+        assert "Ремонт водовода на Восточном" in pub.body
+        assert "Водоснабжение временно приостановлено." in pub.body
+
+    async def test_digest_generation_falls_back_gracefully_when_editorializer_fails(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        sel_service = EditorialSelectionService(uow=uow)
+        from tests.publication.conftest import seed_claim_for_story
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Сюжет о воде', 'h-s2', %s) RETURNING id
+            """,
+            (story_id, _NOW),
+        )
+        story_rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s",
+            (story_rev_id, story_id),
+        )
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            request_key="test-digest-editorializer-fail",
+        )
+        await snap_service.seal_candidates(run.id)
+        await sel_service.select(run.id)
+
+        from src.publication.editorializer import EditorializationError
+
+        class FailingEditorializer:
+            async def editorialize(self, *, cards, bundle, attempt_observer=None):
+                raise EditorializationError("Simulated LLM outage")
+
+        from src.config_loader import Config, Settings
+
+        settings = Settings(
+            schedule_time="09:00",
+            timezone="UTC",
+            lookback_hours=24,
+            openai_model="gpt-4",
+            openai_temperature=0.7,
+            ai_provider="mock",
+        )
+        config = Config(
+            channels=[],
+            settings=settings,
+            telegram_api_id=1,
+            telegram_api_hash="hash",
+            telegram_bot_token="token",
+            openai_api_key="key",
+            log_level="INFO",
+        )
+
+        class MockGenerator:
+            async def generate_from_frozen_input(self, frozen, attempt_observer=None):
+                return ("Title", "Lead", "Body")
+
+        service = PublicationGenerationService(
+            uow=uow,
+            config=config,
+            generator=MockGenerator(),
+            editorializer=FailingEditorializer(),
+        )
+
+        # Must not raise: falls back to canonical cards and renders successfully
+        pub = await service.generate(run.id)
+        assert pub.publication_run_id == run.id
+        assert pub.body is not None
+        assert len(pub.body) > 0

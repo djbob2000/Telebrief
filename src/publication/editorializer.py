@@ -103,11 +103,12 @@ class DigestEditorializer:
         if attempt_observer is not None:
             provider_name = getattr(self.provider, "name", self.config.settings.ai_provider)
             att_id = await attempt_observer.attempt_started(
-                "digest_editorializer",
+                "writer",
                 provider=provider_name,
                 model=self.model_name,
                 prompt_hash=prompt_hash,
                 metadata={
+                    "subkind": "digest_editorializer",
                     "prompt_version": DIGEST_EDITORIALIZER_PROMPT_VERSION,
                     "card_count": len(cards),
                 },

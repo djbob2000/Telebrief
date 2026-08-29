@@ -281,5 +281,5 @@ async def test_editorializer_records_attempt_observer_lifecycle():
 
     assert len(result) == 1
     mock_observer.attempt_started.assert_awaited_once()
-    assert mock_observer.attempt_started.call_args[0][0] == "digest_editorializer"
+    assert mock_observer.attempt_started.call_args[0][0] == "writer"
     mock_observer.attempt_finished.assert_awaited_once_with(101, "succeeded")
