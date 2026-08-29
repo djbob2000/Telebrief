@@ -86,12 +86,21 @@ async def run_benchmark(
 
         async with uow.transaction() as conn:
             cur = await conn.execute(
-                "SELECT id, kind, status, provider, model FROM publication_generation_attempts WHERE publication_run_id = %s",
+                """
+                SELECT id, kind, status, error_kind, provider, model, metadata
+                FROM publication_generation_attempts
+                WHERE publication_run_id = %s
+                ORDER BY attempt_no ASC
+                """,
                 (digest_run.id,),
             )
             digest_attempts = await cur.fetchall()
 
-        digest_chat_calls = sum(1 for a in digest_attempts if a[1] in ("writer", "editorializer"))
+        digest_chat_calls = sum(
+            1
+            for a in digest_attempts
+            if a[1] in ("writer", "editorializer") and a[4] not in ("deterministic", None)
+        )
 
         # 2. Article Benchmark
         t0 = time.perf_counter()
@@ -111,37 +120,59 @@ async def run_benchmark(
 
         async with uow.transaction() as conn:
             cur = await conn.execute(
-                "SELECT id, kind, status, provider, model FROM publication_generation_attempts WHERE publication_run_id = %s",
+                """
+                SELECT id, kind, status, error_kind, provider, model, metadata
+                FROM publication_generation_attempts
+                WHERE publication_run_id = %s
+                ORDER BY attempt_no ASC
+                """,
                 (article_run.id,),
             )
             article_attempts = await cur.fetchall()
 
-        article_chat_calls = sum(1 for a in article_attempts if a[1] in ("writer", "editorializer"))
+            cur = await conn.execute(
+                "SELECT kind, metadata FROM publication_generation_attempts WHERE id = %s",
+                (article_pub.winning_generation_attempt_id,),
+            )
+            win_row = await cur.fetchone()
+            win_kind = win_row[0] if win_row else "unknown"
+            win_meta = win_row[1] if win_row else {}
+
+        article_chat_calls = sum(
+            1
+            for a in article_attempts
+            if a[1] in ("writer", "editorializer") and a[4] not in ("deterministic", None)
+        )
+        claim_trace_count = (
+            len(win_meta.get("claim_trace", [])) if isinstance(win_meta, dict) else 0
+        )
 
         # Print Benchmark Report
         print("\n" + "=" * 70)
         print("  PUBLICATION QUALITY & AI BUDGET BENCHMARK REPORT")
         print("=" * 70)
-        print(f"Edition:          {name} ({slug})")
-        print(f"Lookback Window:  {hours} hours")
-        print(f"Timestamp:        {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        print(f"Edition:             {name} ({slug})")
+        print(f"Lookback Window:     {hours} hours")
+        print(f"Timestamp:           {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
         print("-" * 70)
         print("DIGEST RESULTS:")
-        print(f"  Candidates:     {len(digest_candidates)}")
-        print(f"  Selected:       {len(digest_inputs)}")
-        print(f"  Publication ID: {digest_pub.id}")
-        print(f"  Length (chars): {len(digest_pub.body or '')}")
-        print(f"  Chat LLM Calls: {digest_chat_calls} (Target: <= 1)")
-        print(f"  Duration:       {t_digest:.2f}s")
+        print(f"  Candidates:        {len(digest_candidates)}")
+        print(f"  Selected:          {len(digest_inputs)}")
+        print(f"  Publication ID:    {digest_pub.id}")
+        print(f"  Length (chars):    {len(digest_pub.body or '')}")
+        print(f"  Chat LLM Calls:    {digest_chat_calls} (Target: <= 1)")
+        print(f"  Duration:          {t_digest:.2f}s")
         print("-" * 70)
         print("ARTICLE RESULTS:")
-        print(f"  Candidates:     {len(article_candidates)}")
-        print(f"  Selected:       {len(article_inputs)}")
-        print(f"  Publication ID: {article_pub.id}")
-        print(f"  Title:          {article_pub.title}")
-        print(f"  Word count:     {len((article_pub.body or '').split())} words")
-        print(f"  Chat LLM Calls: {article_chat_calls} (Target: <= 1)")
-        print(f"  Duration:       {t_article:.2f}s")
+        print(f"  Candidates:        {len(article_candidates)}")
+        print(f"  Selected:          {len(article_inputs)}")
+        print(f"  Publication ID:    {article_pub.id}")
+        print(f"  Title:             {article_pub.title}")
+        print(f"  Word count:        {len((article_pub.body or '').split())} words")
+        print(f"  Winning Attempt:   {win_kind}")
+        print(f"  Claim Trace Units: {claim_trace_count}")
+        print(f"  Chat LLM Calls:    {article_chat_calls} (Target: <= 1)")
+        print(f"  Duration:          {t_article:.2f}s")
         print("=" * 70 + "\n")
 
 
