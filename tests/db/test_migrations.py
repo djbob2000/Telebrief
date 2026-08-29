@@ -145,3 +145,158 @@ async def test_event_edition_scope_schema(pg_conn):
     assert "scope_class" in columns
     assert "scope_config_hash" in columns
     assert "latest_assignment_id" in columns
+
+
+@pytest.mark.postgres
+async def test_event_gate_enrichment_schema(pg_conn):
+    await migrate(pg_conn, MIGRATIONS_DIR)
+    cur = await pg_conn.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'story_event_triage_decisions'
+        ORDER BY ordinal_position
+        """
+    )
+    columns = [row[0] for row in await cur.fetchall()]
+    assert "scope_config_hash" in columns
+    assert "retention" in columns
+    assert "enrichment" in columns
+    assert "brief_payload" in columns
+
+    # Test constraints on story_event_triage_decisions
+    # We test invalid retention/enrichment combinations by attempting inserts
+    import uuid
+
+    uid = uuid.uuid4().hex[:8]
+    cur = await pg_conn.execute("SELECT id FROM editions LIMIT 1")
+    edition_row = await cur.fetchone()
+    if not edition_row:
+        cur = await pg_conn.execute(
+            f"INSERT INTO editions (slug, name) VALUES ('test_ed_{uid}', 'Test') RETURNING id"
+        )
+        edition_id = (await cur.fetchone())[0]
+    else:
+        edition_id = edition_row[0]
+
+    cur = await pg_conn.execute(
+        "INSERT INTO stories (edition_id, knowledge_source) VALUES (%s, 'event_first') RETURNING id",
+        (edition_id,),
+    )
+    story_id = (await cur.fetchone())[0]
+
+    cur = await pg_conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name)
+        VALUES ('telegram', 'channel', %s, 'https://t.me/mig', 'Mig')
+        RETURNING id
+        """,
+        (f"ext-mig-{uid}",),
+    )
+    source_id = (await cur.fetchone())[0]
+    cur = await pg_conn.execute(
+        "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', %s, now()) RETURNING id",
+        (source_id, f"item-{uid}"),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await pg_conn.execute(
+        "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, %s, 'txt') RETURNING id",
+        (item_id, f"h-mig-{uid}"),
+    )
+    rev_id = (await cur.fetchone())[0]
+    cur = await pg_conn.execute(
+        """
+        INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate)
+        VALUES (%s, 1, 'frag text', %s, 'v1', true)
+        RETURNING id
+        """,
+        (rev_id, f"h-frag-{uid}"),
+    )
+    frag_id = (await cur.fetchone())[0]
+    cur = await pg_conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions)
+        VALUES (%s, '[0.1, 0.2]'::vector, 'm', 2)
+        RETURNING id
+        """,
+        (f"h-frag-{uid}",),
+    )
+    vec_id = (await cur.fetchone())[0]
+    cur = await pg_conn.execute(
+        "INSERT INTO source_fragment_embeddings (fragment_id, vector_id) VALUES (%s, %s) RETURNING id",
+        (frag_id, vec_id),
+    )
+    emb_id = (await cur.fetchone())[0]
+    cur = await pg_conn.execute(
+        "INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind) VALUES (%s, %s, %s, 'new_story') RETURNING id",
+        (story_id, frag_id, emb_id),
+    )
+    assign_id = (await cur.fetchone())[0]
+
+    cur = await pg_conn.execute(
+        """
+        INSERT INTO story_event_triage_runs (triage_version, provider, model, prompt_hash, story_count, input_chars, status)
+        VALUES ('v2', 'openai', 'gpt', 'phash', 1, 100, 'succeeded')
+        RETURNING id
+        """
+    )
+    run_id = (await cur.fetchone())[0]
+
+    # Test valid combinations
+    # DROP + NONE: valid
+    await pg_conn.execute(
+        """
+        INSERT INTO story_event_triage_decisions (
+            run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
+            decision, retention, enrichment, confidence, reason
+        ) VALUES (%s, %s, %s, 'v2', 'hash1', 'IGNORE', 'DROP', 'NONE', 1.0, 'noise')
+        """,
+        (run_id, story_id, assign_id),
+    )
+
+    # DROP + BRIEF: invalid
+    with pytest.raises(psycopg.Error):
+        await pg_conn.execute(
+            """
+            INSERT INTO story_event_triage_decisions (
+                run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
+                decision, retention, enrichment, confidence, reason
+            ) VALUES (%s, %s, %s, 'v2', 'hash2', 'IGNORE', 'DROP', 'BRIEF', 1.0, 'invalid')
+            """,
+            (run_id, story_id, assign_id),
+        )
+
+    # KEEP + NONE: invalid
+    with pytest.raises(psycopg.Error):
+        await pg_conn.execute(
+            """
+            INSERT INTO story_event_triage_decisions (
+                run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
+                decision, retention, enrichment, confidence, reason
+            ) VALUES (%s, %s, %s, 'v2', 'hash3', 'ANALYZE', 'KEEP', 'NONE', 1.0, 'invalid')
+            """,
+            (run_id, story_id, assign_id),
+        )
+
+    # KEEP + BRIEF: valid
+    await pg_conn.execute(
+        """
+        INSERT INTO story_event_triage_decisions (
+            run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
+            decision, retention, enrichment, confidence, reason
+        ) VALUES (%s, %s, %s, 'v2', 'hash4', 'ANALYZE', 'KEEP', 'BRIEF', 1.0, 'valid')
+        """,
+        (run_id, story_id, assign_id),
+    )
+
+    # KEEP + ANALYZE: valid
+    await pg_conn.execute(
+        """
+        INSERT INTO story_event_triage_decisions (
+            run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
+            decision, retention, enrichment, confidence, reason
+        ) VALUES (%s, %s, %s, 'v2', 'hash5', 'ANALYZE', 'KEEP', 'ANALYZE', 1.0, 'valid')
+        """,
+        (run_id, story_id, assign_id),
+    )
