@@ -17,9 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import psycopg  # noqa: E402
-from psycopg import sql  # noqa: E402
-
 from dotenv import load_dotenv
+from psycopg import sql  # noqa: E402
 
 load_dotenv()
 

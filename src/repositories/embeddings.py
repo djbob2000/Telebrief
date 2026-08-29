@@ -372,3 +372,204 @@ class EmbeddingRepository:
             (after_story_revision_id, model, dimensions, PURPOSE_STORY_DOCUMENT, limit),
         )
         return [int(row[0]) for row in await cursor.fetchall()]
+
+
+def _vec_to_list(v: object) -> list[float]:
+    if v is None:
+        return []
+    if isinstance(v, str):
+        cleaned = v.strip("[]() ")
+        if not cleaned:
+            return []
+        return [float(x.strip()) for x in cleaned.split(",") if x.strip()]
+    if isinstance(v, list):
+        return [float(x) for x in v]
+    if hasattr(v, "to_list"):
+        return [float(x) for x in v.to_list()]
+    if hasattr(v, "tolist"):
+        return [float(x) for x in v.tolist()]
+    return [float(x) for x in list(v)]  # type: ignore[call-overload]
+
+
+class FragmentEmbeddingRepository:
+    """Persistence for fragment_embedding_vectors, source_fragment_embeddings, and batch audit."""
+
+    async def get_vectors_by_hashes(
+        self,
+        conn: psycopg.AsyncConnection,
+        hashes: Sequence[str],
+        *,
+        model: str,
+        dimensions: int,
+    ) -> dict[str, tuple[int, list[float]]]:
+        """Fetch existing deduplicated embedding vectors by normalized hash.
+
+        Returns {normalized_hash: (vector_id, vector_floats)}.
+        """
+        unique_hashes = sorted(set(hashes))
+        if not unique_hashes:
+            return {}
+
+        cursor = await conn.execute(
+            """
+            SELECT normalized_hash, id, embedding
+            FROM fragment_embedding_vectors
+            WHERE normalized_hash = ANY(%s)
+              AND model = %s
+              AND dimensions = %s
+            """,
+            (unique_hashes, model, dimensions),
+        )
+        res: dict[str, tuple[int, list[float]]] = {}
+        async for row in cursor:
+            h = str(row[0])
+            vid = int(row[1])
+            vec = _vec_to_list(row[2])
+            res[h] = (vid, vec)
+        return res
+
+    async def insert_vectors_batch(
+        self,
+        conn: psycopg.AsyncConnection,
+        items: Sequence[tuple[str, Sequence[float]]],
+        *,
+        model: str,
+        dimensions: int,
+    ) -> dict[str, int]:
+        """Insert new embedding vectors idempotently.
+
+        items: list of (normalized_hash, vector_floats).
+        Returns {normalized_hash: vector_id}.
+        """
+        if not items:
+            return {}
+
+        for h, vec in items:
+            await conn.execute(
+                """
+                INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (normalized_hash, model, dimensions)
+                DO UPDATE SET created_at = fragment_embedding_vectors.created_at
+                """,
+                (h, Vector(list(vec)), model, dimensions),
+            )
+
+        hashes = [h for h, _ in items]
+        cursor = await conn.execute(
+            """
+            SELECT normalized_hash, id
+            FROM fragment_embedding_vectors
+            WHERE normalized_hash = ANY(%s)
+              AND model = %s
+              AND dimensions = %s
+            """,
+            (hashes, model, dimensions),
+        )
+        return {str(row[0]): int(row[1]) async for row in cursor}
+
+    async def link_fragment_embeddings_batch(
+        self,
+        conn: psycopg.AsyncConnection,
+        links: Sequence[tuple[int, int]],
+    ) -> dict[int, int]:
+        """Link fragments to their vector_id in source_fragment_embeddings.
+
+        links: list of (fragment_id, vector_id).
+        Returns {fragment_id: source_fragment_embedding_id}.
+        """
+        if not links:
+            return {}
+
+        for frag_id, vec_id in links:
+            await conn.execute(
+                """
+                INSERT INTO source_fragment_embeddings (fragment_id, vector_id)
+                VALUES (%s, %s)
+                ON CONFLICT (fragment_id)
+                DO UPDATE SET vector_id = EXCLUDED.vector_id
+                """,
+                (frag_id, vec_id),
+            )
+
+        frag_ids = [fid for fid, _ in links]
+        cursor = await conn.execute(
+            """
+            SELECT fragment_id, id
+            FROM source_fragment_embeddings
+            WHERE fragment_id = ANY(%s)
+            """,
+            (frag_ids,),
+        )
+        return {int(row[0]): int(row[1]) async for row in cursor}
+
+    async def get_fragment_embeddings_map(
+        self,
+        conn: psycopg.AsyncConnection,
+        fragment_ids: Sequence[int],
+    ) -> dict[int, tuple[int, list[float]]]:
+        """Get source_fragment_embedding_id and vector for fragments.
+
+        Returns {fragment_id: (fragment_embedding_id, vector_floats)}.
+        """
+        unique_ids = sorted(set(fragment_ids))
+        if not unique_ids:
+            return {}
+
+        cursor = await conn.execute(
+            """
+            SELECT sfe.fragment_id, sfe.id, fev.embedding
+            FROM source_fragment_embeddings sfe
+            JOIN fragment_embedding_vectors fev ON fev.id = sfe.vector_id
+            WHERE sfe.fragment_id = ANY(%s)
+            """,
+            (unique_ids,),
+        )
+        res: dict[int, tuple[int, list[float]]] = {}
+        async for row in cursor:
+            fid = int(row[0])
+            sfe_id = int(row[1])
+            vec = _vec_to_list(row[2])
+            res[fid] = (sfe_id, vec)
+        return res
+
+    async def record_batch_start(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        provider: str,
+        model: str,
+        dimensions: int,
+        item_count: int,
+        input_chars: int,
+    ) -> int:
+        cursor = await conn.execute(
+            """
+            INSERT INTO event_embedding_batches (
+                provider, model, dimensions, item_count, input_chars, status
+            ) VALUES (%s, %s, %s, %s, %s, 'running')
+            RETURNING id
+            """,
+            (provider, model, dimensions, item_count, input_chars),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise RuntimeError("INSERT INTO event_embedding_batches produced no row")
+        return int(row[0])
+
+    async def record_batch_completion(
+        self,
+        conn: psycopg.AsyncConnection,
+        batch_id: int,
+        *,
+        status: str,
+        error_kind: str | None = None,
+    ) -> None:
+        await conn.execute(
+            """
+            UPDATE event_embedding_batches
+            SET status = %s, error_kind = %s, completed_at = now()
+            WHERE id = %s
+            """,
+            (status, error_kind, batch_id),
+        )

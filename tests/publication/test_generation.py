@@ -444,3 +444,147 @@ class TestPublicationGenerationService:
         assert pub.publication_run_id == run.id
         assert pub.body is not None
         assert len(pub.body) > 0
+
+    async def test_event_first_digest_generation(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        import json
+
+        from src.publication.models import PublicationSelectionDecision
+        from src.publication.repository import PublicationPolicyRepository, PublicationRepository
+
+        uow = DatabaseUnitOfWork(pool)
+        repo = PublicationRepository()
+        policy_repo = PublicationPolicyRepository()
+
+        elig = await policy_repo.get_or_create_eligibility_policy(
+            conn, edition_id=edition.id, config_hash="h-e", prompt_version="v1"
+        )
+        sel = await policy_repo.get_or_create_selection_policy(
+            conn, edition_id=edition.id, config_hash="h-s", prompt_version="v1"
+        )
+        wri = await policy_repo.get_or_create_writer_policy(
+            conn, edition_id=edition.id, config_hash="h-w", prompt_version="v1"
+        )
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at) VALUES (%s, 'active', 'event_first', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+
+        event_payload = {
+            "topic": "Городской транспорт",
+            "category": "transport",
+            "urgency": "medium",
+            "publishability": "news",
+            "headline": "Новые автобусы на маршрутах города",
+            "digest_summary": "На линии вышли 5 новых автобусов среднего класса.",
+            "key_facts": ["Маршрут №4 и №10 получили пополнение"],
+            "official_positions": [],
+            "community_observations": [],
+            "conflicts_or_uncertainties": [],
+            "affected_areas": ["Центр", "Колония"],
+            "timeline_summary": "",
+            "confidence_score": 0.98,
+            "representative_fragment_ids": [],
+        }
+
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (
+                story_id, revision_no, current_state, semantic_text, content_hash,
+                title, summary, event_payload, created_at
+            ) VALUES (%s, 1, 'open', %s, 'h-ev-t1', %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                story_id,
+                event_payload["digest_summary"],
+                event_payload["headline"],
+                event_payload["digest_summary"],
+                json.dumps(event_payload),
+                _NOW,
+            ),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+
+        run = await repo.get_or_create_run(
+            conn,
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            request_key="test-event-gen-grouped",
+            snapshot_at=_NOW,
+            policy_ids=(elig.id, sel.id, wri.id),
+        )
+
+        cand = await repo.insert_candidate(
+            conn,
+            run.id,
+            story_id=story_id,
+            story_revision_id=rev_id,
+            deterministic_rank=1,
+        )
+
+        dec = await repo.insert_selection_decision(
+            conn,
+            run.id,
+            PublicationSelectionDecision(
+                id=0,
+                publication_run_id=run.id,
+                candidate_id=cand.id,
+                decision="INCLUDE",
+                presentation_intent="lead",
+                confidence=0.98,
+                reason="Good news",
+                rank=1,
+                metadata={},
+                created_at=_NOW,
+            ),
+        )
+
+        await repo.freeze_selected_input(
+            conn,
+            run.id,
+            story_id=story_id,
+            story_revision_id=rev_id,
+            selection_decision_id=dec.id,
+            presentation_intent="lead",
+            rank=1,
+            fragment_ids=[],
+        )
+        await repo.transition_run(conn, run.id, "selected_inputs_sealed")
+
+        from src.config_loader import Config, Settings
+
+        settings = Settings(
+            schedule_time="09:00",
+            timezone="UTC",
+            lookback_hours=24,
+            openai_model="gpt-4",
+            openai_temperature=0.7,
+            ai_provider="mock",
+        )
+        config = Config(
+            channels=[],
+            settings=settings,
+            telegram_api_id=1,
+            telegram_api_hash="hash",
+            telegram_bot_token="token",
+            openai_api_key="key",
+            log_level="INFO",
+        )
+
+        class MockGenerator:
+            async def generate_from_frozen_input(self, frozen, attempt_observer=None):
+                return ("Title", "Lead", "Body")
+
+        service = PublicationGenerationService(
+            uow=uow, config=config, repo=repo, generator=MockGenerator()
+        )
+        pub = await service.generate(run.id, defer_delivery=False)
+        assert pub.publication_run_id == run.id
+        assert "Новые автобусы" in (pub.body or "") or "Новые автобусы" in (pub.title or "")

@@ -242,6 +242,7 @@ class PublicationInput:
     created_at: dt.datetime
     claim_ids: list[int] = field(default_factory=list)
     evidence_cluster_ids: list[int] = field(default_factory=list)
+    fragment_ids: list[int] = field(default_factory=list)
 
     @classmethod
     def from_row(cls, row: Any) -> PublicationInput:

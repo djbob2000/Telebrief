@@ -98,6 +98,29 @@ settings:
   # database.enabled: true (see the database: block below).
   # persistent_ingestion: false
 
+  # Event-First Pipeline Settings (cost-bounded event clustering and coalesced analysis)
+  # event_pipeline:
+  #   mode: "legacy_claims"  # "legacy_claims" | "event_first_shadow" | "event_first"
+  #   fragment_max_chars: 1200
+  #   active_window_hours: 72
+  #   join_similarity: 0.84
+  #   max_cluster_candidates: 20
+  #   embedding_batch_size: 128
+  #   direct_analysis_min_fragments: 3
+  #   direct_analysis_min_unique_sources: 2
+  #   triage_batch_size: 80
+  #   triage_excerpt_chars: 320
+  #   triage_min_ignore_confidence: 0.95
+  #   analysis_quiet_seconds: 120
+  #   analysis_min_interval_seconds: 600
+  #   analysis_min_new_fragments: 3
+  #   analysis_max_calls_per_story_per_hour: 4
+  #   provider_retry_backoff_seconds: 300
+  #   analysis_max_input_chars: 24000
+  #   representative_fragment_limit: 16
+  #   live_batch_size: 100
+  #   backfill_batch_size: 500
+
   # Output
   output_language: "Russian"  # Language for AI summaries (e.g., "English", "Russian", "Spanish")
   use_emojis: true

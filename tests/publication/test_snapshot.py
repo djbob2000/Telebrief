@@ -137,3 +137,149 @@ class TestPublicationSnapshotConstraints:
         assert len(eligible) == 1
         assert eligible[0]["story_id"] == story_id
         assert eligible[0]["story_revision_id"] == rev_id
+
+    async def test_event_first_story_eligibility_and_fragment_freezing(
+        self, conn: psycopg.AsyncConnection, edition
+    ):
+        from src.publication.models import PublicationSelectionDecision
+        from src.publication.repository import PublicationRepository
+
+        repo = PublicationRepository()
+        policy_ids = await _seed_policies(conn, edition.id)
+
+        # 1. Create event_first story with event_payload
+        cur = await conn.execute(
+            """
+            INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+            VALUES (%s, 'active', 'event_first', %s)
+            RETURNING id
+            """,
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+
+        import json
+
+        event_payload = {
+            "topic": "Ремонт дорог",
+            "headline": "Ремонт на Восточном проспекте",
+            "digest_summary": "Дорожники укладывают асфальт.",
+            "publishability": "news",
+            "confidence_score": 0.95,
+        }
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (
+                story_id, revision_no, current_state, semantic_text, content_hash,
+                event_payload, created_at
+            ) VALUES (%s, 1, 'open', 'Ремонт на Восточном проспекте', 'h-ev-1', %s, %s)
+            RETURNING id
+            """,
+            (story_id, json.dumps(event_payload), _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+
+        # 2. Check eligible_story_revisions finds this event_first story
+        eligible = await repo.eligible_story_revisions(
+            conn,
+            edition_id=edition.id,
+            snapshot_at=_NOW,
+        )
+        assert any(e["story_id"] == story_id for e in eligible)
+
+        # 3. Create run and candidate
+        run = await repo.get_or_create_run(
+            conn,
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            request_key="test-key-event-freeze",
+            snapshot_at=_NOW,
+            policy_ids=policy_ids,
+        )
+        cand = await repo.insert_candidate(
+            conn,
+            run.id,
+            story_id=story_id,
+            story_revision_id=rev_id,
+            deterministic_rank=1,
+        )
+
+        dec = await repo.insert_selection_decision(
+            conn,
+            run.id,
+            PublicationSelectionDecision(
+                id=0,
+                publication_run_id=run.id,
+                candidate_id=cand.id,
+                decision="INCLUDE",
+                presentation_intent="lead",
+                confidence=0.95,
+                reason="Important news",
+                rank=1,
+                metadata={},
+                created_at=_NOW,
+            ),
+        )
+
+        # 4. Insert dummy source fragment to test freezing
+        # Need a source item revision
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name)
+            VALUES ('telegram', 'channel', '-10099', 'https://t.me/test', 'Test')
+            RETURNING id
+            """
+        )
+        src_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+            (src_id, edition.id),
+        )
+        cur = await conn.execute(
+            """
+            INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+            VALUES (%s, 'message', 'msg-ev-1', %s)
+            RETURNING id
+            """,
+            (src_id, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+            VALUES (%s, 1, 'h-sir-1', 'Текст фрагмента')
+            RETURNING id
+            """,
+            (item_id,),
+        )
+        sir_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
+            VALUES (%s, 0, 'Текст фрагмента', 'h-frag-1', 'v1', TRUE, %s)
+            RETURNING id
+            """,
+            (sir_id, _NOW),
+        )
+        frag_id = (await cur.fetchone())[0]
+
+        # 5. Freeze selected input with fragment_ids
+        pub_input = await repo.freeze_selected_input(
+            conn,
+            run.id,
+            story_id=story_id,
+            story_revision_id=rev_id,
+            selection_decision_id=dec.id,
+            presentation_intent="lead",
+            rank=1,
+            fragment_ids=[frag_id],
+        )
+        assert pub_input.fragment_ids == [frag_id]
+
+        # 6. Load sealed inputs
+        sealed = await repo.load_sealed_inputs(conn, run.id)
+        assert len(sealed) == 1
+        assert sealed[0].fragment_ids == [frag_id]

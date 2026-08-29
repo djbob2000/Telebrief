@@ -24,6 +24,7 @@ The key is never logged: it lives only in the client configuration.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any, Literal, Protocol
 
 import httpx
@@ -64,7 +65,7 @@ class EmbeddingDimensionMismatch(EmbeddingProviderError):
 
 
 class EmbeddingProvider(Protocol):
-    """Turn one whole semantic text into exactly ``dimensions`` floats."""
+    """Turn semantic text into exactly ``dimensions`` floats."""
 
     async def embed(
         self,
@@ -74,6 +75,15 @@ class EmbeddingProvider(Protocol):
         model: str,
         dimensions: int,
     ) -> list[float]: ...
+
+    async def embed_many(
+        self,
+        texts: Sequence[str],
+        *,
+        purpose: EmbeddingPurpose,
+        model: str,
+        dimensions: int,
+    ) -> list[list[float]]: ...
 
 
 def validate_vector(vector: list[float], *, model: str, dimensions: int) -> list[float]:
@@ -109,9 +119,6 @@ class GoogleGeminiEmbeddingProvider:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=GOOGLE_BASE_URL,
-            # Same timeout shape as src.ai_providers.GoogleProvider; no
-            # library-level retries — Procrastinate redelivery plus backfill
-            # own retry policy.
             timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
             max_retries=0,
         )
@@ -132,8 +139,7 @@ class GoogleGeminiEmbeddingProvider:
                 input=text,
                 dimensions=dimensions,
             )
-        except Exception as exc:  # transport / HTTP / auth surface
-            # Never include request credentials in the raised message.
+        except Exception as exc:
             raise EmbeddingProviderError(
                 f"{self.provider_label} embedding request failed for model {model!r}: {type(exc).__name__}"
             ) from exc
@@ -144,6 +150,40 @@ class GoogleGeminiEmbeddingProvider:
             )
         vector = list(getattr(data[0], "embedding", ()) or ())
         return validate_vector(vector, model=model, dimensions=dimensions)
+
+    async def embed_many(
+        self,
+        texts: Sequence[str],
+        *,
+        purpose: EmbeddingPurpose,
+        model: str,
+        dimensions: int,
+    ) -> list[list[float]]:
+        if not texts:
+            return []
+        _require_purpose(purpose)
+        try:
+            response = await self.client.embeddings.create(
+                model=model,
+                input=list(texts),
+                dimensions=dimensions,
+            )
+        except Exception as exc:
+            raise EmbeddingProviderError(
+                f"{self.provider_label} batch embedding request failed for model {model!r}: {type(exc).__name__}"
+            ) from exc
+        data = getattr(response, "data", None)
+        if not data or len(data) != len(texts):
+            raise EmbeddingProviderError(
+                f"{self.provider_label} batch embedding response for model {model!r} returned {len(data) if data else 0} vectors, expected {len(texts)}"
+            )
+        sorted_data = sorted(data, key=lambda item: getattr(item, "index", 0))
+        return [
+            validate_vector(
+                list(getattr(item, "embedding", ()) or ()), model=model, dimensions=dimensions
+            )
+            for item in sorted_data
+        ]
 
 
 class OpenRouterEmbeddingProvider:
@@ -196,6 +236,40 @@ class OpenRouterEmbeddingProvider:
         vector = list(getattr(data[0], "embedding", ()) or ())
         return validate_vector(vector, model=model, dimensions=dimensions)
 
+    async def embed_many(
+        self,
+        texts: Sequence[str],
+        *,
+        purpose: EmbeddingPurpose,
+        model: str,
+        dimensions: int,
+    ) -> list[list[float]]:
+        if not texts:
+            return []
+        _require_purpose(purpose)
+        try:
+            response = await self.client.embeddings.create(
+                model=model,
+                input=list(texts),
+                dimensions=dimensions,
+            )
+        except Exception as exc:
+            raise EmbeddingProviderError(
+                f"{self.provider_label} batch embedding request failed for model {model!r}: {type(exc).__name__}"
+            ) from exc
+        data = getattr(response, "data", None)
+        if not data or len(data) != len(texts):
+            raise EmbeddingProviderError(
+                f"{self.provider_label} batch embedding response for model {model!r} returned {len(data) if data else 0} vectors, expected {len(texts)}"
+            )
+        sorted_data = sorted(data, key=lambda item: getattr(item, "index", 0))
+        return [
+            validate_vector(
+                list(getattr(item, "embedding", ()) or ()), model=model, dimensions=dimensions
+            )
+            for item in sorted_data
+        ]
+
 
 class OpenAIEmbeddingProvider:
     """OpenAI embeddings provider."""
@@ -246,6 +320,40 @@ class OpenAIEmbeddingProvider:
             )
         vector = list(getattr(data[0], "embedding", ()) or ())
         return validate_vector(vector, model=model, dimensions=dimensions)
+
+    async def embed_many(
+        self,
+        texts: Sequence[str],
+        *,
+        purpose: EmbeddingPurpose,
+        model: str,
+        dimensions: int,
+    ) -> list[list[float]]:
+        if not texts:
+            return []
+        _require_purpose(purpose)
+        try:
+            response = await self.client.embeddings.create(
+                model=model,
+                input=list(texts),
+                dimensions=dimensions,
+            )
+        except Exception as exc:
+            raise EmbeddingProviderError(
+                f"{self.provider_label} batch embedding request failed for model {model!r}: {type(exc).__name__}"
+            ) from exc
+        data = getattr(response, "data", None)
+        if not data or len(data) != len(texts):
+            raise EmbeddingProviderError(
+                f"{self.provider_label} batch embedding response for model {model!r} returned {len(data) if data else 0} vectors, expected {len(texts)}"
+            )
+        sorted_data = sorted(data, key=lambda item: getattr(item, "index", 0))
+        return [
+            validate_vector(
+                list(getattr(item, "embedding", ()) or ()), model=model, dimensions=dimensions
+            )
+            for item in sorted_data
+        ]
 
 
 def create_embedding_provider(

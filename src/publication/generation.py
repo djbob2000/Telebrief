@@ -71,7 +71,26 @@ class PublicationGenerationService:
             await self.repo.transition_run(conn, run_id, "generating")
 
         # Build deterministic frozen input from sealed knowledge
-        frozen = await self.adapter.build(run_id)
+        async with self.uow.transaction() as conn:
+            inputs = await self.repo.load_sealed_inputs(conn, run_id)
+            has_event_first = any(bool(inp.fragment_ids) for inp in inputs)
+            if not has_event_first:
+                s_ids = [inp.story_id for inp in inputs]
+                if s_ids:
+                    s_cur = await conn.execute(
+                        "SELECT COUNT(*) FROM stories WHERE id = ANY(%s) AND knowledge_source = 'event_first'",
+                        (s_ids,),
+                    )
+                    s_row = await s_cur.fetchone()
+                    has_event_first = bool(s_row and s_row[0] and int(s_row[0]) > 0)
+
+        if has_event_first:
+            from src.publication.event_editorial_adapter import EventEditorialAdapter
+
+            event_adapter = EventEditorialAdapter(uow=self.uow, repo=self.repo)
+            frozen = await event_adapter.adapt_inputs(run_id, inputs=inputs)
+        else:
+            frozen = await self.adapter.build(run_id)
 
         # Observer records each attempt into publication_generation_attempts
         observer = DatabaseGenerationAttemptObserver(uow=self.uow, run_id=run_id, repo=self.repo)

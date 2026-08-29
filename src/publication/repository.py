@@ -308,7 +308,8 @@ class PublicationRepository:
                     sr.revision_no,
                     sr.current_state,
                     sr.semantic_text,
-                    sr.created_at AS revision_created_at
+                    sr.created_at AS revision_created_at,
+                    sr.event_payload
                 FROM story_revisions sr
                 JOIN stories s ON s.id = sr.story_id
                 WHERE s.edition_id = %s
@@ -323,7 +324,9 @@ class PublicationRepository:
                     lr.current_state,
                     lr.semantic_text,
                     lr.revision_created_at,
+                    lr.event_payload,
                     s.created_at AS story_created_at,
+                    s.knowledge_source,
                     COALESCE(
                         (
                             SELECT count(DISTINCT sc.claim_id)
@@ -336,7 +339,13 @@ class PublicationRepository:
                               AND sc.attached_at <= %s
                               AND c.created_at <= %s
                               AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
-                        ), 0
+                        ),
+                        (
+                            SELECT scst.fragment_count
+                            FROM story_cluster_state scst
+                            WHERE scst.story_id = lr.story_id
+                        ),
+                        0
                     ) AS claim_count,
                     COALESCE(
                         (
@@ -351,7 +360,13 @@ class PublicationRepository:
                               AND sc.attached_at <= %s
                               AND c.created_at <= %s
                               AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
-                        ), 0
+                        ),
+                        (
+                            SELECT scst.fragment_count
+                            FROM story_cluster_state scst
+                            WHERE scst.story_id = lr.story_id
+                        ),
+                        0
                     ) AS new_claims_count,
                     COALESCE(
                         (
@@ -365,19 +380,32 @@ class PublicationRepository:
                               AND sc.attached_at <= %s
                               AND c.created_at <= %s
                               AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
-                        ), 0
+                        ),
+                        (
+                            SELECT scst.unique_source_count
+                            FROM story_cluster_state scst
+                            WHERE scst.story_id = lr.story_id
+                        ),
+                        0
                     ) AS source_count,
-                    (
-                        SELECT MAX(COALESCE(si.published_at, si.first_collected_at))
-                        FROM story_claims sc
-                        JOIN claims c ON c.id = sc.claim_id
-                        JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
-                        JOIN source_items si ON si.id = sir.source_item_id
-                        JOIN sources src ON src.id = si.source_id
-                        WHERE sc.story_id = lr.story_id
-                          AND sc.attached_at <= %s
-                          AND c.created_at <= %s
-                          AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
+                    COALESCE(
+                        (
+                            SELECT MAX(COALESCE(si.published_at, si.first_collected_at))
+                            FROM story_claims sc
+                            JOIN claims c ON c.id = sc.claim_id
+                            JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                            JOIN source_items si ON si.id = sir.source_item_id
+                            JOIN sources src ON src.id = si.source_id
+                            WHERE sc.story_id = lr.story_id
+                              AND sc.attached_at <= %s
+                              AND c.created_at <= %s
+                              AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
+                        ),
+                        (
+                            SELECT scst.last_seen_at
+                            FROM story_cluster_state scst
+                            WHERE scst.story_id = lr.story_id
+                        )
                     ) AS newest_source_published_at,
                     (
                         SELECT si.metadata->>'temporal_fidelity'
@@ -478,8 +506,13 @@ class PublicationRepository:
                 newest_source_published_at,
                 newest_source_temporal_fidelity
             FROM story_activity
-            WHERE claim_count > 0
-              AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
+            WHERE (claim_count > 0 OR knowledge_source = 'event_first')
+              AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s OR knowledge_source = 'event_first')
+              AND (
+                  event_payload IS NULL
+                  OR event_payload->>'publishability' IS NULL
+                  OR event_payload->>'publishability' IN ('news', 'brief')
+              )
             ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
             """,
             (
@@ -741,6 +774,7 @@ class PublicationRepository:
         claim_ids: list[int] | None = None,
         claim_roles: dict[int, str] | None = None,
         evidence_cluster_ids: list[int] | None = None,
+        fragment_ids: list[int] | None = None,
     ) -> PublicationInput:
         cursor = await conn.execute(
             """
@@ -824,14 +858,24 @@ class PublicationRepository:
                 insert_rows,
             )
 
-        if evidence_cluster_ids:
             cur = conn.cursor()
             await cur.executemany(
                 """
                 INSERT INTO publication_input_evidence_clusters (publication_input_id, evidence_cluster_id)
                 VALUES (%s, %s) ON CONFLICT DO NOTHING
                 """,
-                [(input_row.id, ecid) for ecid in evidence_cluster_ids],
+                [(input_row.id, ecid) for ecid in (evidence_cluster_ids or [])],
+            )
+
+        if fragment_ids:
+            cur = conn.cursor()
+            await cur.executemany(
+                """
+                INSERT INTO publication_input_fragments (publication_input_id, fragment_id, source_snapshot)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (publication_input_id, fragment_id) DO NOTHING
+                """,
+                [(input_row.id, fid, Jsonb({})) for fid in fragment_ids],
             )
 
         return PublicationInput(
@@ -845,6 +889,7 @@ class PublicationRepository:
             created_at=input_row.created_at,
             claim_ids=claim_ids or [],
             evidence_cluster_ids=evidence_cluster_ids or [],
+            fragment_ids=fragment_ids or [],
         )
 
     async def load_sealed_inputs(
@@ -875,6 +920,12 @@ class PublicationRepository:
                 (inp.id,),
             )
             ec_ids = [r[0] for r in await ec_cur.fetchall()]
+            # load fragments
+            f_cur = await conn.execute(
+                "SELECT fragment_id FROM publication_input_fragments WHERE publication_input_id = %s ORDER BY fragment_id ASC",
+                (inp.id,),
+            )
+            f_ids = [r[0] for r in await f_cur.fetchall()]
             inputs.append(
                 PublicationInput(
                     id=inp.id,
@@ -887,6 +938,7 @@ class PublicationRepository:
                     created_at=inp.created_at,
                     claim_ids=c_ids,
                     evidence_cluster_ids=ec_ids,
+                    fragment_ids=f_ids,
                 )
             )
         return inputs

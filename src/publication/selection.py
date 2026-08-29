@@ -285,29 +285,50 @@ class EditorialSelectionService:
                 claim_ids = [r[0] for r in c_rows]
                 claim_roles = {r[0]: r[1] for r in c_rows}
 
-                # Stories with 0 valid claims must never reach publication
+                fragment_ids: list[int] = []
                 if not claim_ids:
+                    f_cur = await conn.execute(
+                        """
+                        SELECT sf.fragment_id
+                        FROM story_fragments sf
+                        JOIN source_fragments f ON f.id = sf.fragment_id
+                        JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
+                        JOIN source_items si ON si.id = sir.source_item_id
+                        JOIN sources src ON src.id = si.source_id
+                        WHERE sf.story_id = %s
+                          AND sf.assigned_at <= %s
+                          AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
+                        ORDER BY sf.fragment_id ASC
+                        """,
+                        (cand.story_id, run.snapshot_at, excluded_platforms, excluded_platforms),
+                    )
+                    fragment_ids = [r[0] for r in await f_cur.fetchall()]
+
+                # Stories with 0 valid claims and 0 valid fragments must never reach publication
+                if not claim_ids and not fragment_ids:
                     continue
 
-                ec_cur = await conn.execute(
-                    """
-                    SELECT DISTINCT ec.id
-                    FROM evidence_clusters ec
-                    JOIN evidence_assessment_runs ear ON ear.id = ec.run_id
-                    WHERE ear.story_id = %s
-                      AND ear.completed_at <= %s
-                      AND ear.status = 'succeeded'
-                      AND NOT EXISTS (
-                          SELECT 1
-                          FROM evidence_cluster_members ecm
-                          WHERE ecm.cluster_id = ec.id
-                            AND ecm.claim_id <> ALL(%s::bigint[])
-                      )
-                    ORDER BY ec.id ASC
-                    """,
-                    (cand.story_id, run.snapshot_at, claim_ids),
-                )
-                evidence_cluster_ids = [r[0] for r in await ec_cur.fetchall()]
+                evidence_cluster_ids: list[int] = []
+                if claim_ids:
+                    ec_cur = await conn.execute(
+                        """
+                        SELECT DISTINCT ec.id
+                        FROM evidence_clusters ec
+                        JOIN evidence_assessment_runs ear ON ear.id = ec.run_id
+                        WHERE ear.story_id = %s
+                          AND ear.completed_at <= %s
+                          AND ear.status = 'succeeded'
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM evidence_cluster_members ecm
+                              WHERE ecm.cluster_id = ec.id
+                                AND ecm.claim_id <> ALL(%s::bigint[])
+                          )
+                        ORDER BY ec.id ASC
+                        """,
+                        (cand.story_id, run.snapshot_at, claim_ids),
+                    )
+                    evidence_cluster_ids = [r[0] for r in await ec_cur.fetchall()]
 
                 inp = await self.repo.freeze_selected_input(
                     conn,
@@ -317,9 +338,10 @@ class EditorialSelectionService:
                     selection_decision_id=inserted_decision.id,
                     presentation_intent=prop.presentation_intent,
                     rank=include_rank,
-                    claim_ids=claim_ids,
-                    claim_roles=claim_roles,
-                    evidence_cluster_ids=evidence_cluster_ids,
+                    claim_ids=claim_ids if claim_ids else None,
+                    claim_roles=claim_roles if claim_ids else None,
+                    evidence_cluster_ids=evidence_cluster_ids if evidence_cluster_ids else None,
+                    fragment_ids=fragment_ids if fragment_ids else None,
                 )
                 selected_inputs.append(inp)
                 include_rank += 1

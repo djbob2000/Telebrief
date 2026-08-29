@@ -322,10 +322,10 @@ pre-commit run --all-files
 
 ## 8. Database Migrations & Schema Architecture
 
-- **Migration files**: Located in `migrations/0001_*.sql` through `migrations/0020_*.sql`.
+- **Migration files**: Located in `migrations/0001_*.sql` through `migrations/0021_*.sql`.
 - **Ledger table**: `schema_migrations` tracks applied versions and timestamps.
 - **Schema version gating**:
-  - Defined in `src/bootstrap.py`: `SCHEMA_VERSION_MINIMUM = 7`, `SCHEMA_VERSION_MAXIMUM = 20`.
+  - Defined in `src/bootstrap.py`: `SCHEMA_VERSION_MINIMUM = 7`, `SCHEMA_VERSION_MAXIMUM = 21`.
   - Application startup automatically verifies schema compatibility and fails fast (`SchemaVersionError`) if migrations are missing.
 - **Running migrations**:
   ```bash
@@ -335,6 +335,37 @@ pre-commit run --all-files
   - Create `migrations/00XX_short_description.sql`.
   - Use idempotent DDL (`CREATE TABLE IF NOT EXISTS`, `ADD COLUMN IF NOT EXISTS`).
   - Update `SCHEMA_VERSION_MAXIMUM` in `src/bootstrap.py` if adding a new migration step.
+
+---
+
+## 8.1 Event-First Rich Analysis Pipeline
+
+The Event-First architecture optimizes knowledge-processing spend, throughput, and clustering accuracy:
+
+1. **Deterministic Fragmentation & Noise Filtering** (`src/processing/fragments.py`):
+   - Chunks incoming messages into discrete factual assertions and filters chatter/classifieds.
+2. **Deduplicated Vector Embeddings** (`src/processing/embeddings.py`):
+   - Computes normalized vector embeddings with sha256 hash caching (`fragment_embeddings`).
+3. **Streaming Centroid Story Clustering** (`src/processing/event_clustering.py`):
+   - Matches incoming fragments against open story cluster centroids with temporal decay and dynamic recalculation (`story_cluster_state`, `story_fragments`).
+4. **Representative Evidence Sampling** (`src/processing/evidence_sampling.py`):
+   - Uses Maximal Marginal Relevance (MMR, $\lambda=0.7$) with official source boosting and multi-source diversity.
+5. **Batch Triage & Rich Event Analysis** (`src/processing/event_triage.py`, `src/processing/event_analysis.py`):
+   - Batches low-support stories into single triage classifications.
+   - Extracts structured `event_payload` (headline, digest_summary, key_facts, official_positions, community_observations, affected_areas, confidence_score) on significant story clusters.
+6. **Publication Integration** (`src/publication/event_editorial_adapter.py`, `src/publication/generation.py`):
+   - Freezes selected fragment provenance (`publication_input_fragments`).
+   - Renders grouped digests and long-form editorial articles from rich `event_payload`.
+
+**Event Pipeline Scripts & Benchmarks**:
+- **Offline Quality & Cost Evaluator**:
+  ```bash
+  python scripts/evaluate_event_pipeline.py --fixture tests/fixtures/event_first_day.json
+  ```
+- **Historical Backfill CLI**:
+  ```bash
+  python scripts/backfill_events.py --hours 72 --batch-size 32
+  ```
 
 ---
 

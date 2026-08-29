@@ -8,7 +8,7 @@ import math
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, List, Literal
 
 import yaml
 from dotenv import load_dotenv
@@ -203,6 +203,32 @@ class ArticleConfig:
     temperature: float | None = None
 
 
+@dataclass(frozen=True)
+class EventPipelineConfig:
+    """Cost-bounded event-first processing pipeline configuration."""
+
+    mode: Literal["legacy_claims", "event_first_shadow", "event_first"] = "legacy_claims"
+    fragment_max_chars: int = 1200
+    active_window_hours: int = 72
+    join_similarity: float = 0.84
+    max_cluster_candidates: int = 20
+    embedding_batch_size: int = 128
+    direct_analysis_min_fragments: int = 3
+    direct_analysis_min_unique_sources: int = 2
+    triage_batch_size: int = 80
+    triage_excerpt_chars: int = 320
+    triage_min_ignore_confidence: float = 0.95
+    analysis_quiet_seconds: int = 120
+    analysis_min_interval_seconds: int = 600
+    analysis_min_new_fragments: int = 3
+    analysis_max_calls_per_story_per_hour: int = 4
+    provider_retry_backoff_seconds: int = 300
+    analysis_max_input_chars: int = 24000
+    representative_fragment_limit: int = 16
+    live_batch_size: int = 100
+    backfill_batch_size: int = 500
+
+
 @dataclass
 class Settings:
     """Application settings."""
@@ -244,6 +270,7 @@ class Settings:
     # dispatcher fans out PRE_PUBLISH source scans (Plan 4 Task 8).
     pre_publish_lead_minutes: int = 15
     article: ArticleConfig = field(default_factory=ArticleConfig)
+    event_pipeline: EventPipelineConfig = field(default_factory=EventPipelineConfig)
 
 
 @dataclass
@@ -1226,6 +1253,76 @@ def _validate_channel_groups(
         )
 
 
+EVENT_PIPELINE_MODES = ("legacy_claims", "event_first_shadow", "event_first")
+
+
+def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
+    """Parse and validate settings.event_pipeline configuration."""
+    raw = settings_dict.get("event_pipeline")
+    if raw is None:
+        return EventPipelineConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(f"'event_pipeline' must be a mapping, got {type(raw).__name__}")
+
+    raw_mode = raw.get("mode", "legacy_claims")
+    if not isinstance(raw_mode, str) or raw_mode not in EVENT_PIPELINE_MODES:
+        raise ValueError(
+            f"settings.event_pipeline.mode must be one of {', '.join(EVENT_PIPELINE_MODES)}, "
+            f"got {raw_mode!r}"
+        )
+
+    def _val_pos_int(key: str, default: int) -> int:
+        v = raw.get(key, default)
+        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            raise ValueError(f"settings.event_pipeline.{key} must be a positive integer, got {v!r}")
+        return int(v)
+
+    def _val_nonneg_int(key: str, default: int) -> int:
+        v = raw.get(key, default)
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ValueError(
+                f"settings.event_pipeline.{key} must be a non-negative integer, got {v!r}"
+            )
+        return int(v)
+
+    def _val_unit_float(key: str, default: float) -> float:
+        v = raw.get(key, default)
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not (0.0 < float(v) <= 1.0):
+            raise ValueError(
+                f"settings.event_pipeline.{key} must be between 0.0 and 1.0, got {v!r}"
+            )
+        return float(v)
+
+    from typing import cast
+
+    typed_mode = cast(Literal["legacy_claims", "event_first_shadow", "event_first"], raw_mode)
+
+    return EventPipelineConfig(
+        mode=typed_mode,
+        fragment_max_chars=_val_pos_int("fragment_max_chars", 1200),
+        active_window_hours=_val_pos_int("active_window_hours", 72),
+        join_similarity=_val_unit_float("join_similarity", 0.84),
+        max_cluster_candidates=_val_pos_int("max_cluster_candidates", 20),
+        embedding_batch_size=_val_pos_int("embedding_batch_size", 128),
+        direct_analysis_min_fragments=_val_pos_int("direct_analysis_min_fragments", 3),
+        direct_analysis_min_unique_sources=_val_pos_int("direct_analysis_min_unique_sources", 2),
+        triage_batch_size=_val_pos_int("triage_batch_size", 80),
+        triage_excerpt_chars=_val_pos_int("triage_excerpt_chars", 320),
+        triage_min_ignore_confidence=_val_unit_float("triage_min_ignore_confidence", 0.95),
+        analysis_quiet_seconds=_val_nonneg_int("analysis_quiet_seconds", 120),
+        analysis_min_interval_seconds=_val_nonneg_int("analysis_min_interval_seconds", 600),
+        analysis_min_new_fragments=_val_pos_int("analysis_min_new_fragments", 3),
+        analysis_max_calls_per_story_per_hour=_val_pos_int(
+            "analysis_max_calls_per_story_per_hour", 4
+        ),
+        provider_retry_backoff_seconds=_val_nonneg_int("provider_retry_backoff_seconds", 300),
+        analysis_max_input_chars=_val_pos_int("analysis_max_input_chars", 24000),
+        representative_fragment_limit=_val_pos_int("representative_fragment_limit", 16),
+        live_batch_size=_val_pos_int("live_batch_size", 100),
+        backfill_batch_size=_val_pos_int("backfill_batch_size", 500),
+    )
+
+
 def _parse_channels(yaml_config: dict) -> List[ChannelConfig]:
     """Parse and validate channel configs from YAML.
 
@@ -1484,6 +1581,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         vision_mode=vision_mode,
         pre_publish_lead_minutes=pre_publish_lead_minutes,
         article=_parse_article_config(settings_dict),
+        event_pipeline=_parse_event_pipeline_config(settings_dict),
     )
 
     if settings.target_user_id == 0:

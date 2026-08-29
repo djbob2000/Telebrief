@@ -14,7 +14,6 @@ import csv
 import datetime as dt
 import json
 import logging
-import os
 import re
 import sys
 from pathlib import Path
@@ -27,11 +26,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from src.config_loader import Config, load_config
-from src.db.pool import close_pool, open_pool
-from src.db.uow import DatabaseUnitOfWork
-from src.embedding_providers import create_embedding_provider
-from src.repositories.archive import ArchiveRepository, compute_content_hash
+from src.config_loader import load_config  # noqa: E402
+from src.db.pool import close_pool, open_pool  # noqa: E402
+from src.db.uow import DatabaseUnitOfWork  # noqa: E402
+from src.embedding_providers import create_embedding_provider  # noqa: E402
+from src.repositories.archive import ArchiveRepository, compute_content_hash  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("import_archive")
@@ -66,7 +65,7 @@ def parse_datetime(raw: Any) -> dt.datetime:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=dt.timezone.utc)
         return parsed.astimezone(dt.timezone.utc)
-    except Exception:
+    except (ValueError, TypeError):
         pass
 
     # Common formats
@@ -156,14 +155,19 @@ async def import_archive_file(
     try:
         for idx, item in enumerate(raw_records, start=1):
             title = clean_text(str(item.get("title") or item.get("headline") or ""))
-            content = clean_text(str(item.get("text") or item.get("content") or item.get("body") or ""))
+            content = clean_text(
+                str(item.get("text") or item.get("content") or item.get("body") or "")
+            )
             if not title and not content:
                 continue
             if not title:
                 title = content[:80]
 
             published_at = parse_datetime(
-                item.get("published_at") or item.get("date") or item.get("timestamp") or item.get("created_at")
+                item.get("published_at")
+                or item.get("date")
+                or item.get("timestamp")
+                or item.get("created_at")
             )
             source_url = item.get("url") or item.get("link") or item.get("source_url")
             external_id = str(item.get("id") or item.get("external_id") or "") or None
@@ -220,7 +224,9 @@ async def import_archive_file(
                         )
                     embedded_count += 1
                 except Exception as exc:
-                    logger.warning("Failed to embed article #%d (%s): %s", article_id, title[:40], exc)
+                    logger.warning(
+                        "Failed to embed article #%d (%s): %s", article_id, title[:40], exc
+                    )
 
             if idx % batch_size == 0 or idx == len(raw_records):
                 logger.info(
@@ -243,7 +249,9 @@ async def import_archive_file(
 
 def main():
     parser = argparse.ArgumentParser(description="Import historical news archive into Telebrief.")
-    parser.add_argument("--file", "-f", type=Path, required=True, help="Path to archive file (JSON/CSV)")
+    parser.add_argument(
+        "--file", "-f", type=Path, required=True, help="Path to archive file (JSON/CSV)"
+    )
     parser.add_argument("--source", "-s", type=str, default="Архив новостей", help="Source name")
     parser.add_argument("--edition", "-e", type=str, default="berdyansk", help="Edition slug")
     parser.add_argument("--format", type=str, default=None, help="Force format: json, jsonl, csv")

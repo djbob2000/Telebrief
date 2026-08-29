@@ -2148,3 +2148,126 @@ def test_facebook_config_rejects_invalid_editorial_enabled(tmp_path, mock_env_va
     with patch("src.config_loader.load_dotenv"):
         with pytest.raises(ValueError, match="facebook.editorial_enabled must be a bool"):
             load_config(path=path)
+
+
+@pytest.mark.unit
+def test_event_pipeline_config_defaults(tmp_path, mock_env_vars):
+    """settings.event_pipeline defaults to legacy_claims mode with sensible bounds."""
+    path = _write_config(tmp_path, {"settings": {"target_user_id": 123456789}})
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=path)
+
+    ep = config.settings.event_pipeline
+    assert ep.mode == "legacy_claims"
+    assert ep.fragment_max_chars == 1200
+    assert ep.active_window_hours == 72
+    assert ep.join_similarity == 0.84
+    assert ep.max_cluster_candidates == 20
+    assert ep.embedding_batch_size == 128
+    assert ep.direct_analysis_min_fragments == 3
+    assert ep.direct_analysis_min_unique_sources == 2
+    assert ep.triage_batch_size == 80
+    assert ep.triage_excerpt_chars == 320
+    assert ep.triage_min_ignore_confidence == 0.95
+    assert ep.analysis_quiet_seconds == 120
+    assert ep.analysis_min_interval_seconds == 600
+    assert ep.analysis_min_new_fragments == 3
+    assert ep.analysis_max_calls_per_story_per_hour == 4
+    assert ep.provider_retry_backoff_seconds == 300
+    assert ep.analysis_max_input_chars == 24000
+    assert ep.representative_fragment_limit == 16
+    assert ep.live_batch_size == 100
+    assert ep.backfill_batch_size == 500
+
+
+@pytest.mark.unit
+def test_event_pipeline_config_custom(tmp_path, mock_env_vars):
+    """Custom settings.event_pipeline values are loaded correctly."""
+    custom_ep = {
+        "mode": "event_first",
+        "fragment_max_chars": 1500,
+        "active_window_hours": 48,
+        "join_similarity": 0.88,
+        "max_cluster_candidates": 30,
+        "embedding_batch_size": 64,
+        "direct_analysis_min_fragments": 2,
+        "direct_analysis_min_unique_sources": 1,
+        "triage_batch_size": 50,
+        "triage_excerpt_chars": 200,
+        "triage_min_ignore_confidence": 0.90,
+        "analysis_quiet_seconds": 60,
+        "analysis_min_interval_seconds": 300,
+        "analysis_min_new_fragments": 2,
+        "analysis_max_calls_per_story_per_hour": 6,
+        "provider_retry_backoff_seconds": 120,
+        "analysis_max_input_chars": 16000,
+        "representative_fragment_limit": 12,
+        "live_batch_size": 50,
+        "backfill_batch_size": 200,
+    }
+    path = _write_config(
+        tmp_path, {"settings": {"target_user_id": 123456789, "event_pipeline": custom_ep}}
+    )
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(path=path)
+
+    ep = config.settings.event_pipeline
+    assert ep.mode == "event_first"
+    assert ep.join_similarity == 0.88
+    assert ep.fragment_max_chars == 1500
+    assert ep.embedding_batch_size == 64
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("bad_mode", ["invalid", "claim_first", "", None, 123])
+def test_event_pipeline_config_rejects_invalid_mode(tmp_path, mock_env_vars, bad_mode):
+    path = _write_config(
+        tmp_path,
+        {"settings": {"target_user_id": 123456789, "event_pipeline": {"mode": bad_mode}}},
+    )
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="event_pipeline.mode must be one of"):
+            load_config(path=path)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("field", "bad_value", "err_pattern"),
+    [
+        ("join_similarity", 0.0, "join_similarity must be between 0.0 and 1.0"),
+        ("join_similarity", 1.5, "join_similarity must be between 0.0 and 1.0"),
+        ("join_similarity", -0.1, "join_similarity must be between 0.0 and 1.0"),
+        (
+            "triage_min_ignore_confidence",
+            0.0,
+            "triage_min_ignore_confidence must be between 0.0 and 1.0",
+        ),
+        (
+            "triage_min_ignore_confidence",
+            1.1,
+            "triage_min_ignore_confidence must be between 0.0 and 1.0",
+        ),
+        ("fragment_max_chars", 0, "fragment_max_chars must be a positive integer"),
+        ("fragment_max_chars", -10, "fragment_max_chars must be a positive integer"),
+        ("fragment_max_chars", True, "fragment_max_chars must be a positive integer"),
+        ("active_window_hours", 0, "active_window_hours must be a positive integer"),
+        ("embedding_batch_size", 0, "embedding_batch_size must be a positive integer"),
+        ("analysis_quiet_seconds", -1, "analysis_quiet_seconds must be a non-negative integer"),
+        (
+            "analysis_min_interval_seconds",
+            -1,
+            "analysis_min_interval_seconds must be a non-negative integer",
+        ),
+        ("analysis_max_input_chars", 0, "analysis_max_input_chars must be a positive integer"),
+    ],
+)
+def test_event_pipeline_config_rejects_invalid_ranges(
+    tmp_path, mock_env_vars, field, bad_value, err_pattern
+):
+    path = _write_config(
+        tmp_path,
+        {"settings": {"target_user_id": 123456789, "event_pipeline": {field: bad_value}}},
+    )
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match=err_pattern):
+            load_config(path=path)

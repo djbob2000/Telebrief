@@ -1,57 +1,25 @@
-"""Semantic embedding service (Plan 3 Task 5): input ownership, immutable
-vector rows, and the claim-pipeline post-success handoff.
-
-Rulings implemented here:
-
-* :class:`EmbeddingInputBuilder` is THE single owner of embedding text.
-  A Claim embeds its complete ``normalized_assertion``; a StoryRevision
-  embeds its complete compact ``semantic_text``. Raw SourceItemRevision
-  text is never read here and there is no token/character/sentence
-  chunking anywhere in this module — if a future provider rejects an
-  oversized semantic object, that is an upstream representation problem,
-  never something to split at this layer.
-* One immutable embedding row per (semantic object, model, dimensions,
-  purpose, content_hash). Reuse short-circuits before any provider call;
-  a changed model/dimensions schedules new work instead of touching old
-  rows.
-* The provider call runs OUTSIDE any transaction so a slow embedding API
-  never holds a pooled connection; persistence happens in its own single
-  transaction with ON CONFLICT DO NOTHING + winner re-read for races.
-* With ``matching_handoff`` enabled (Plan 3 Task 7/8), the transaction that
-  makes a claim embedding visible — BOTH the insert path and the reuse
-  path — atomically hands the claim to
-  :class:`~src.processing.story_matching.StoryMatchingPrerequisiteService`.
-  The prerequisite service owns everything downstream: a compatible claim
-  embedding must exist (it just did) and every ClaimPlaceMention needs a
-  current-policy result (resolved or explicit unresolved) before it freezes
-  the matching policy and defers ``match_claim`` ONCE on the SAME
-  connection. Duplicate defers converge downstream on the canonical
-  succeeded run. The per-edition execution lock serializes matching without
-  ever dropping a queued claim.
-
-The atomic pipeline handoff lives in
-:class:`src.processing.claims.ClaimExtractionService._persist_success`:
-claims, canonical run success, and one ``embed_claim`` defer per newly
-created claim commit together on the same connection.
-"""
+"""Semantic embedding services for both legacy claim matching and event-first fragments."""
 
 from __future__ import annotations
 
 import hashlib
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
+from typing import Any
 
 import psycopg
 
 from src.db.uow import DatabaseUnitOfWork
 from src.domain.claims import Claim
-from src.embedding_providers import EmbeddingPurpose, validate_vector
+from src.domain.event_pipeline import SourceFragment
+from src.embedding_providers import EmbeddingProvider, EmbeddingPurpose, validate_vector
 from src.processing.story_matching import StoryMatchingPrerequisiteService
 from src.repositories.claims import ClaimRepository
 from src.repositories.embeddings import (
     PURPOSE_CLAIM_QUERY,
     PURPOSE_STORY_DOCUMENT,
     EmbeddingRepository,
+    FragmentEmbeddingRepository,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,16 +42,117 @@ class EmbeddingInputBuilder:
         return normalized
 
     @staticmethod
-    def for_story_revision(revision) -> str:
-        """The complete compact semantic text of ONE current story meaning.
-
-        Accepts any object exposing ``semantic_text`` (the full StoryRevision
-        domain model lands with the story task and satisfies this shape).
-        """
+    def for_story_revision(revision: Any) -> str:
+        """The complete compact semantic text of ONE current story meaning."""
         semantic_text = getattr(revision, "semantic_text", None)
         if not isinstance(semantic_text, str) or not semantic_text.strip():
             raise ValueError(f"story revision {getattr(revision, 'id', '?')} has no semantic_text")
         return semantic_text
+
+
+class FragmentEmbeddingService:
+    """Service to ensure all candidate fragments are embedded with batching and deduplication."""
+
+    def __init__(
+        self,
+        repository: FragmentEmbeddingRepository | None = None,
+        logger_instance: logging.Logger | None = None,
+    ) -> None:
+        self.repo = repository or FragmentEmbeddingRepository()
+        self.logger = logger_instance or logger
+
+    async def ensure_fragment_embeddings(
+        self,
+        conn: psycopg.AsyncConnection,
+        fragments: Sequence[SourceFragment],
+        *,
+        provider: EmbeddingProvider,
+        provider_name: str,
+        model: str,
+        dimensions: int,
+        batch_size: int = 128,
+    ) -> dict[int, tuple[int, list[float]]]:
+        """Ensure all given candidate fragments have embeddings, reusing deduplicated hashes.
+
+        Returns {fragment_id: (fragment_embedding_id, vector_floats)}.
+        """
+        candidates = [f for f in fragments if f.is_candidate]
+        if not candidates:
+            return {}
+
+        # 1. Check which fragments are already fully linked
+        existing_map = await self.repo.get_fragment_embeddings_map(conn, [f.id for f in candidates])
+        missing_frags = [f for f in candidates if f.id not in existing_map]
+        if not missing_frags:
+            return existing_map
+
+        # 2. Check existing vector cache by normalized_hash
+        unique_hashes = list({f.normalized_hash for f in missing_frags})
+        cached_vectors = await self.repo.get_vectors_by_hashes(
+            conn, unique_hashes, model=model, dimensions=dimensions
+        )
+
+        # 3. Find hashes that need provider embedding
+        hashes_to_embed = [h for h in unique_hashes if h not in cached_vectors]
+        hash_to_sample_text: dict[str, str] = {}
+        for f in missing_frags:
+            if (
+                f.normalized_hash in hashes_to_embed
+                and f.normalized_hash not in hash_to_sample_text
+            ):
+                hash_to_sample_text[f.normalized_hash] = f.text_content
+
+        # 4. Process missing hashes in batches
+        if hashes_to_embed:
+            for i in range(0, len(hashes_to_embed), batch_size):
+                batch_hashes = hashes_to_embed[i : i + batch_size]
+                batch_texts = [hash_to_sample_text[h] for h in batch_hashes]
+                total_chars = sum(len(t) for t in batch_texts)
+
+                batch_id = await self.repo.record_batch_start(
+                    conn,
+                    provider=provider_name,
+                    model=model,
+                    dimensions=dimensions,
+                    item_count=len(batch_texts),
+                    input_chars=total_chars,
+                )
+                try:
+                    vectors = await provider.embed_many(
+                        batch_texts,
+                        purpose="story_document",
+                        model=model,
+                        dimensions=dimensions,
+                    )
+                    await self.repo.record_batch_completion(conn, batch_id, status="succeeded")
+                except Exception as exc:
+                    await self.repo.record_batch_completion(
+                        conn, batch_id, status="failed", error_kind=type(exc).__name__
+                    )
+                    raise
+
+                # Persist new vectors
+                items_to_insert = list(zip(batch_hashes, vectors, strict=True))
+                inserted_map = await self.repo.insert_vectors_batch(
+                    conn,
+                    model=model,
+                    dimensions=dimensions,
+                    items=items_to_insert,
+                )
+                for h, v in zip(batch_hashes, vectors, strict=True):
+                    if h in inserted_map:
+                        cached_vectors[h] = (inserted_map[h], v)
+
+        # 5. Link all missing fragments to fragment_embeddings
+        links_to_insert = [
+            (f.id, cached_vectors[f.normalized_hash][0])
+            for f in missing_frags
+            if f.normalized_hash in cached_vectors
+        ]
+        if links_to_insert:
+            await self.repo.link_fragment_embeddings_batch(conn, links_to_insert)
+
+        return await self.repo.get_fragment_embeddings_map(conn, [f.id for f in candidates])
 
 
 class EmbeddingService:
@@ -92,22 +161,45 @@ class EmbeddingService:
     def __init__(
         self,
         *,
-        uow: DatabaseUnitOfWork,
-        provider,
+        uow: DatabaseUnitOfWork | None = None,
+        provider: Any = None,
         repo: EmbeddingRepository | None = None,
         claim_repo: ClaimRepository | None = None,
         matching_handoff: bool = False,
         matching_prerequisites: StoryMatchingPrerequisiteService | None = None,
+        fragment_repo: FragmentEmbeddingRepository | None = None,
+        logger_instance: logging.Logger | None = None,
     ) -> None:
         self.uow = uow
         self.provider = provider
         self._repo = repo or EmbeddingRepository()
         self._claim_repo = claim_repo or ClaimRepository()
-        # Story-matching handoff is opt-in at the wiring layer: when enabled,
-        # every visible claim embedding is handed to the prerequisite barrier
-        # (which queues match_claim only when its place-evidence side holds).
         self._matching_handoff = matching_handoff
         self._prerequisites = matching_prerequisites or StoryMatchingPrerequisiteService()
+        self._fragment_service = FragmentEmbeddingService(
+            repository=fragment_repo, logger_instance=logger_instance
+        )
+
+    async def ensure_fragment_embeddings(
+        self,
+        conn: psycopg.AsyncConnection,
+        fragments: Sequence[SourceFragment],
+        *,
+        provider: EmbeddingProvider,
+        provider_name: str,
+        model: str,
+        dimensions: int,
+        batch_size: int = 128,
+    ) -> dict[int, tuple[int, list[float]]]:
+        return await self._fragment_service.ensure_fragment_embeddings(
+            conn,
+            fragments,
+            provider=provider,
+            provider_name=provider_name,
+            model=model,
+            dimensions=dimensions,
+            batch_size=batch_size,
+        )
 
     async def _embed_object(
         self,
@@ -120,15 +212,8 @@ class EmbeddingService:
         reuse_lookup: Callable[..., Awaitable[int | None]],
         on_visible: Callable[..., Awaitable[None]] | None = None,
     ) -> int | None:
-        """Shared shape: reuse check -> provider outside txn -> one insert txn.
-
-        ``reuse_lookup`` / ``insert`` are repository callables bound to the
-        concrete object id; both receive an open connection. The UNIQUE
-        identity constraint makes concurrent duplicates converge on one
-        immutable row. ``on_visible`` fires INSIDE whichever transaction
-        makes the row visible (reuse or insert) so post-success handoffs —
-        e.g. the match_claim defer — commit or roll back with it.
-        """
+        if self.uow is None:
+            raise RuntimeError("DatabaseUnitOfWork must be configured on EmbeddingService")
         digest = content_hash(text)
         async with self.uow.transaction() as conn:
             existing = await reuse_lookup(
@@ -158,7 +243,6 @@ class EmbeddingService:
             if inserted is not None:
                 visible_id: int | None = inserted
             else:
-                # A concurrent writer stored the identical row first: converge.
                 visible_id = await reuse_lookup(
                     conn, purpose=purpose, content_hash=digest, model=model, dimensions=dimensions
                 )
@@ -167,21 +251,13 @@ class EmbeddingService:
             return visible_id
 
     async def embed_claim(self, claim_id: int, *, model: str, dimensions: int) -> int | None:
-        """Ensure the claim_query vector exists for this exact assertion.
-
-        Returns the immutable embedding row id (the existing row on reuse).
-        With ``matching_handoff`` enabled, whichever transaction makes the
-        row visible also hands the claim to the story-matching prerequisite
-        barrier on the same connection — matching queues only when every
-        place mention holds its current-policy resolution outcome.
-        """
+        if self.uow is None:
+            raise RuntimeError("DatabaseUnitOfWork must be configured on EmbeddingService")
         async with self.uow.transaction() as conn:
             claims = await self._claim_repo.get_many(conn, [claim_id])
         if not claims:
             raise ValueError(f"claim {claim_id} does not exist")
         claim = claims[0]
-        # Bound OUTSIDE the lambda: the conditional must pick the callback
-        # itself, not return None from inside it (await None would explode).
         on_visible = (
             (
                 lambda conn, *, embedding_id: self._handoff_to_matching(
@@ -212,14 +288,6 @@ class EmbeddingService:
         *,
         claim: Claim,
     ) -> None:
-        """Hand the claim to the story-matching prerequisite barrier.
-
-        Runs INSIDE the visibility transaction. The prerequisite service
-        checks the compatible-embedding + place-evidence barrier, freezes
-        the exact policy ids, and defers ``match_claim`` once on THIS
-        connection when everything holds; otherwise it returns False and
-        the (re)resolution flow queues matching later, on its own success.
-        """
         scheduled = await self._prerequisites.maybe_schedule(conn, claim_id=claim.id)
         if not scheduled:
             logger.info(
@@ -230,10 +298,8 @@ class EmbeddingService:
     async def embed_story_revision(
         self, story_revision_id: int, *, model: str, dimensions: int
     ) -> int | None:
-        """Ensure the story_document vector exists for this exact semantic text.
-
-        Returns the immutable embedding row id (the existing row on reuse).
-        """
+        if self.uow is None:
+            raise RuntimeError("DatabaseUnitOfWork must be configured on EmbeddingService")
         async with self.uow.transaction() as conn:
             revision = await self._repo.get_story_revision(conn, story_revision_id)
         if revision is None:

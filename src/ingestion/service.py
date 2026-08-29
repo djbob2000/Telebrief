@@ -185,20 +185,36 @@ class IngestionService:
         if not edition_ids:
             return
 
-        from src.jobs.processing import evaluate_relevance
+        try:
+            from src.config_loader import load_config
 
-        relevance_policy_service = wiring.policy_service
-        current_config_hash = wiring.config_hash
-        for revision_id in new_revision_ids:
-            for edition_id in edition_ids:
-                policy = await relevance_policy_service.ensure_current(
-                    conn,
-                    edition_id=edition_id,
-                    config_hash=current_config_hash,
-                    prompt_version=wiring.prompt_version,
-                )
-                await evaluate_relevance.configure(connection=conn).defer_async(
-                    source_item_revision_id=revision_id,
-                    edition_id=edition_id,
-                    policy_id=policy.id,
-                )
+            cfg = load_config()
+            mode = getattr(getattr(cfg.settings, "event_pipeline", None), "mode", "legacy_claims")
+        except Exception:
+            mode = "legacy_claims"
+
+        if mode in ("event_first", "event_first_shadow"):
+            from src.jobs.event_processing import process_event_revisions_task
+
+            await process_event_revisions_task.configure(connection=conn).defer_async(
+                revision_ids=list(new_revision_ids)
+            )
+
+        if mode in ("legacy_claims", "event_first_shadow"):
+            from src.jobs.processing import evaluate_relevance
+
+            relevance_policy_service = wiring.policy_service
+            current_config_hash = wiring.config_hash
+            for revision_id in new_revision_ids:
+                for edition_id in edition_ids:
+                    policy = await relevance_policy_service.ensure_current(
+                        conn,
+                        edition_id=edition_id,
+                        config_hash=current_config_hash,
+                        prompt_version=wiring.prompt_version,
+                    )
+                    await evaluate_relevance.configure(connection=conn).defer_async(
+                        source_item_revision_id=revision_id,
+                        edition_id=edition_id,
+                        policy_id=policy.id,
+                    )

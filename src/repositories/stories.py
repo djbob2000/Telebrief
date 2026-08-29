@@ -181,7 +181,7 @@ class StoryRepository:
     async def get(self, conn: psycopg.AsyncConnection, story_id: int) -> Story | None:
         cursor = await conn.execute(
             """
-            SELECT id, edition_id, current_revision_id, lifecycle_state, created_at
+            SELECT id, edition_id, current_revision_id, lifecycle_state, created_at, knowledge_source
             FROM stories WHERE id = %s
             """,
             (story_id,),
@@ -204,7 +204,7 @@ class StoryRepository:
         cursor = await conn.execute(
             """
             SELECT id, story_id, revision_no, title, summary, current_state,
-                semantic_text, content_hash, reason, created_at
+                semantic_text, content_hash, reason, created_at, event_payload
             FROM story_revisions WHERE id = %s
             """,
             (revision_id,),
@@ -222,7 +222,7 @@ class StoryRepository:
         cursor = await conn.execute(
             """
             SELECT id, story_id, revision_no, title, summary, current_state,
-                semantic_text, content_hash, reason, created_at
+                semantic_text, content_hash, reason, created_at, event_payload
             FROM story_revisions WHERE id = ANY(%s)
             ORDER BY id
             """,
@@ -230,17 +230,35 @@ class StoryRepository:
         )
         return [StoryRevision.from_row(row) async for row in cursor]
 
-    async def _insert_story_shell(self, conn: psycopg.AsyncConnection, *, edition_id: int) -> int:
+    async def _insert_story_shell(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        knowledge_source: str = "legacy_claims",
+    ) -> int:
         """Insert a candidate story with a NULL pointer; the composite FK is
         satisfied because MATCH SIMPLE ignores NULL current_revision_id."""
         cursor = await conn.execute(
-            "INSERT INTO stories (edition_id) VALUES (%s) RETURNING id",
-            (edition_id,),
+            "INSERT INTO stories (edition_id, knowledge_source) VALUES (%s, %s) RETURNING id",
+            (edition_id, knowledge_source),
         )
         row = await cursor.fetchone()
         if row is None:  # pragma: no cover - RETURNING always yields one row
             raise RuntimeError("INSERT INTO stories RETURNING produced no row")
         return int(row[0])
+
+    async def create_story_shell(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        knowledge_source: str = "event_first",
+    ) -> int:
+        """Public helper to insert an unrevised Story shell."""
+        return await self._insert_story_shell(
+            conn, edition_id=edition_id, knowledge_source=knowledge_source
+        )
 
     async def _insert_revision(
         self,
@@ -256,13 +274,13 @@ class StoryRepository:
             """
             INSERT INTO story_revisions (
                 story_id, revision_no, title, summary, current_state,
-                semantic_text, content_hash, reason, created_at
+                semantic_text, content_hash, reason, event_payload, created_at
             )
-            SELECT %s, COALESCE(MAX(revision_no), 0) + 1, %s, %s, %s, %s, %s, %s, %s
+            SELECT %s, COALESCE(MAX(revision_no), 0) + 1, %s, %s, %s, %s, %s, %s, %s, %s
             FROM story_revisions
             WHERE story_id = %s
             RETURNING id, story_id, revision_no, title, summary, current_state,
-                semantic_text, content_hash, reason, created_at
+                semantic_text, content_hash, reason, created_at, event_payload
             """,
             (
                 story_id,
@@ -272,6 +290,7 @@ class StoryRepository:
                 revision.semantic_text,
                 revision.content_hash,
                 revision.reason,
+                Jsonb(revision.event_payload or {}),
                 revision.created_at,
                 story_id,
             ),

@@ -9,8 +9,8 @@ column lists used by ``src/repositories/stories.py``.
 from __future__ import annotations
 
 import datetime as dt
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ class Story:
     current_revision_id: int | None
     lifecycle_state: str
     created_at: dt.datetime
+    knowledge_source: Literal["legacy_claims", "event_first"] = "legacy_claims"
 
     @classmethod
     def from_row(cls, row: Any) -> Story:
@@ -32,6 +33,7 @@ class Story:
             current_revision_id=row[2],
             lifecycle_state=row[3],
             created_at=row[4],
+            knowledge_source=row[5] if len(row) > 5 else "legacy_claims",
         )
 
 
@@ -48,6 +50,7 @@ class NewStoryRevision:
     title: str | None = None
     summary: str | None = None
     reason: str | None = None
+    event_payload: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +67,7 @@ class StoryRevision:
     content_hash: str
     reason: str | None
     created_at: dt.datetime
+    event_payload: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_row(cls, row: Any) -> StoryRevision:
@@ -78,6 +82,7 @@ class StoryRevision:
             content_hash=row[7],
             reason=row[8],
             created_at=row[9],
+            event_payload=row[10] if len(row) > 10 and row[10] is not None else {},
         )
 
 

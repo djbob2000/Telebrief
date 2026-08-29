@@ -30,7 +30,12 @@ logger = logging.getLogger(__name__)
 
 def resolve_configured_profile(profile_arg: str, config: Config | None) -> tuple[str, str]:
     """Return (name, storage_ref) resolved from config or defaulting to profile_arg."""
-    if config and hasattr(config, "facebook") and config.facebook and hasattr(config.facebook, "auth_profiles"):
+    if (
+        config
+        and hasattr(config, "facebook")
+        and config.facebook
+        and hasattr(config.facebook, "auth_profiles")
+    ):
         for p in config.facebook.auth_profiles:
             if p.name == profile_arg or p.storage_ref == profile_arg:
                 return p.name, p.storage_ref
