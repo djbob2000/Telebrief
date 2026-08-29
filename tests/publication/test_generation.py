@@ -272,7 +272,10 @@ class TestPublicationGenerationService:
     ):
         uow = DatabaseUnitOfWork(pool)
         snap_service = PublicationSnapshotService(uow=uow)
-        sel_service = EditorialSelectionService(uow=uow)
+        from src.publication.selection import HeuristicSelectionModel
+
+        sel_service = EditorialSelectionService(uow=uow, model=HeuristicSelectionModel())
+
         from tests.publication.conftest import seed_claim_for_story
 
         # 1. Seed story with claim
