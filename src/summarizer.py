@@ -157,16 +157,23 @@ class Summarizer:
         Returns:
             Dictionary mapping channel names to summaries
         """
-        summaries = {}
+        summaries: dict[str, str] = {}
+        semaphore = asyncio.Semaphore(5)
 
-        for channel_name, messages in messages_by_channel.items():
-            try:
-                summary = await self._summarize_channel(channel_name, messages)
-                summaries[channel_name] = summary
-                self.logger.info(f"Summarized {channel_name}")
-            except Exception as e:
-                self.logger.error(f"Failed to summarize {channel_name}: {e}")
-                summaries[channel_name] = f"{ERROR_SUMMARY_PREFIX}: {str(e)}"
+        async def _process_channel(name: str, msgs: list[Message]) -> tuple[str, str]:
+            async with semaphore:
+                try:
+                    summary = await self._summarize_channel(name, msgs)
+                    self.logger.info(f"Summarized {name}")
+                    return name, summary
+                except Exception as e:
+                    self.logger.error(f"Failed to summarize {name}: {e}")
+                    return name, f"{ERROR_SUMMARY_PREFIX}: {str(e)}"
+
+        tasks = [_process_channel(name, msgs) for name, msgs in messages_by_channel.items()]
+        results = await asyncio.gather(*tasks)
+        for name, summary in results:
+            summaries[name] = summary
 
         return summaries
 

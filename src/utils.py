@@ -26,31 +26,37 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
     # Create logs directory if it doesn't exist
     os.makedirs("logs", exist_ok=True)
 
+    level = getattr(logging, log_level.upper())
     # Configure logging format
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
-
-    # Create logger
-    logger = logging.getLogger("telebrief")
-    logger.setLevel(getattr(logging, log_level.upper()))
-
-    # Remove existing handlers
-    logger.handlers.clear()
+    formatter = logging.Formatter(log_format, date_format)
 
     # Console handler
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(getattr(logging, log_level.upper()))
-    console_formatter = logging.Formatter(log_format, date_format)
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
+    console_handler.setLevel(level)
+    console_handler.setFormatter(formatter)
 
     # File handler
     log_file = "logs/telebrief.log"
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
-    file_handler.setLevel(getattr(logging, log_level.upper()))
-    file_formatter = logging.Formatter(log_format, date_format)
-    file_handler.setFormatter(file_formatter)
+    file_handler.setLevel(level)
+    file_handler.setFormatter(formatter)
+
+    # Configure root logger so all modules (src.*, procrastinate, etc.) log to file and console
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+    root_logger.handlers.clear()
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
+
+    # Create telebrief logger
+    logger = logging.getLogger("telebrief")
+    logger.setLevel(level)
+    logger.handlers.clear()
+    logger.addHandler(console_handler)
     logger.addHandler(file_handler)
+    logger.propagate = False
 
     return logger
 
