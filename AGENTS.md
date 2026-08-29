@@ -356,13 +356,21 @@ The Event-First architecture optimizes knowledge-processing spend, throughput, a
    - Preserves cached triage decisions across cycles with fingerprint and config-hash validation.
 6. **Rich Event Analysis & Operational Intelligence** (`src/processing/event_analysis.py`, `src/domain/event_payload.py`, `src/domain/operational_state.py`):
    - Extracts structured `event_payload` and discrete `OperationalObservationPayload`s with exact fragment provenance IDs.
-   - Resolves recurring operational states through pure chronological temporal aggregation (`resolve_operational_states()`).
+   - Resolves recurring operational states with temporal resolution v2 (`resolve_operational_states()`), supporting conflict window detection (`conflict_window_minutes: 90`), effective intervals (`effective_from`/`effective_until`), and scheduled events.
 7. **Publication Candidate Eligibility & Digest Rollup** (`src/publication/repository.py`, `src/publication/city_situation.py`, `src/publication/renderers.py`, `src/publication/event_editorial_adapter.py`):
    - Enforces strict Gate V2 `KEEP` retention and local scope eligibility on snapshot candidates.
-   - Assembles digest-only `CitySituationRollup` displaying point-in-time operational statuses (🟢/🔴/🟡).
-   - Renders truthful 4-level publication statistics (sources, messages, facts, events) in formatted Telegram HTML digests.
+   - Assembles digest-only `CitySituationRollup` displaying point-in-time operational statuses (🟢/🔴/🟡/⚪) and suppresses pure operational cards from numbered digest sections to eliminate duplication.
+   - Renders truthful 4-level publication statistics (`источников: X, сообщений: Y, фактов: Z, событий: W`) in formatted Telegram HTML digests.
+8. **Evidence-Bound Article Generation & Single-Call Budget** (`src/publication/article_context.py`, `src/publication/article_models.py`, `src/publication/article_validator.py`, `src/article_generator.py`):
+   - Packages deterministic `ArticleEditorialContext` preserving atomic evidence IDs without destroying provenance.
+   - Synthesizes long-form articles in a single LLM call into `StructuredArticleDraft`, verified deterministically by `validate_article_draft` against length and evidence constraints.
+   - Enforces strict $\le 1$ generative chat call budget per publication product, with direct deterministic fallbacks if LLM calls fail.
 
 **Event Pipeline Scripts & Benchmarks**:
+- **Publication Quality & Budget Benchmark**:
+  ```bash
+  python scripts/benchmark_publication_quality.py --hours 24 --edition berdyansk
+  ```
 - **Offline Quality & Cost Evaluator**:
   ```bash
   python scripts/evaluate_event_pipeline.py --fixture tests/fixtures/event_first_day.json
@@ -377,7 +385,7 @@ The Event-First architecture optimizes knowledge-processing spend, throughput, a
   ```
 - **Golden Regression Oracle**:
   ```bash
-  pytest tests/integration/test_city_situation_golden.py -v --no-cov
+  pytest tests/integration/test_publication_quality_golden.py -v --no-cov
   ```
 
 ---
