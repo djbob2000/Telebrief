@@ -182,6 +182,102 @@ class TestPublicationSnapshotConstraints:
             "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
         )
 
+        # Setup source item, fragment, embedding, assignment, and cluster state
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, url, name)
+            VALUES ('telegram', 'channel', '-10099', 'https://t.me/test', 'Test')
+            RETURNING id
+            """
+        )
+        src_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+            (src_id, edition.id),
+        )
+        cur = await conn.execute(
+            """
+            INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+            VALUES (%s, 'message', 'msg-ev-1', %s)
+            RETURNING id
+            """,
+            (src_id, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+            VALUES (%s, 1, 'h-sir-1', 'Текст фрагмента')
+            RETURNING id
+            """,
+            (item_id,),
+        )
+        sir_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
+            VALUES (%s, 0, 'Текст фрагмента', 'h-frag-1', 'v1', TRUE, %s)
+            RETURNING id
+            """,
+            (sir_id, _NOW),
+        )
+        frag_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions)
+            VALUES ('h-frag-1', '[1, 0]'::vector, 'm', 2)
+            ON CONFLICT (normalized_hash, model, dimensions) DO UPDATE SET embedding = EXCLUDED.embedding
+            RETURNING id
+
+            """
+        )
+        vec_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO source_fragment_embeddings (fragment_id, vector_id)
+            VALUES (%s, %s)
+            RETURNING id
+            """,
+            (frag_id, vec_id),
+        )
+        sfe_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind)
+            VALUES (%s, %s, %s, 'new_story')
+            RETURNING id
+            """,
+            (story_id, frag_id, sfe_id),
+        )
+        aid = (await cur.fetchone())[0]
+
+        await conn.execute(
+            """
+            INSERT INTO story_cluster_state (story_id, centroid, model, dimensions, fragment_count, unique_source_count, first_seen_at, last_seen_at, latest_assignment_id, analysis_dirty)
+            VALUES (%s, '[1, 0]'::vector, 'm', 2, 1, 1, %s, %s, %s, FALSE)
+            """,
+            (story_id, _NOW, _NOW, aid),
+        )
+
+        cur = await conn.execute(
+            """
+            INSERT INTO story_event_triage_runs (triage_version, provider, model, prompt_hash, story_count, input_chars, status)
+            VALUES ('v1', 'p', 'm', 'h', 1, 100, 'succeeded')
+            RETURNING id
+            """
+        )
+        trun_id = (await cur.fetchone())[0]
+
+        await conn.execute(
+            """
+            INSERT INTO story_edition_scope_decisions (triage_run_id, story_id, edition_id, latest_assignment_id, scope_version, scope_config_hash, scope_class, confidence, reason, created_at)
+            VALUES (%s, %s, %s, %s, 'v1', 'hash-1', 'LOCAL', 0.99, 'in city', %s)
+            """,
+            (trun_id, story_id, edition.id, aid, _NOW),
+        )
+
         # 2. Check eligible_story_revisions finds this event_first story
         eligible = await repo.eligible_story_revisions(
             conn,
@@ -224,49 +320,7 @@ class TestPublicationSnapshotConstraints:
             ),
         )
 
-        # 4. Insert dummy source fragment to test freezing
-        # Need a source item revision
-        cur = await conn.execute(
-            """
-            INSERT INTO sources (platform, kind, external_id, url, name)
-            VALUES ('telegram', 'channel', '-10099', 'https://t.me/test', 'Test')
-            RETURNING id
-            """
-        )
-        src_id = (await cur.fetchone())[0]
-        await conn.execute(
-            "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
-            (src_id, edition.id),
-        )
-        cur = await conn.execute(
-            """
-            INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
-            VALUES (%s, 'message', 'msg-ev-1', %s)
-            RETURNING id
-            """,
-            (src_id, _NOW),
-        )
-        item_id = (await cur.fetchone())[0]
-        cur = await conn.execute(
-            """
-            INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
-            VALUES (%s, 1, 'h-sir-1', 'Текст фрагмента')
-            RETURNING id
-            """,
-            (item_id,),
-        )
-        sir_id = (await cur.fetchone())[0]
-        cur = await conn.execute(
-            """
-            INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
-            VALUES (%s, 0, 'Текст фрагмента', 'h-frag-1', 'v1', TRUE, %s)
-            RETURNING id
-            """,
-            (sir_id, _NOW),
-        )
-        frag_id = (await cur.fetchone())[0]
-
-        # 5. Freeze selected input with fragment_ids
+        # 4. Freeze selected input with fragment_ids
         pub_input = await repo.freeze_selected_input(
             conn,
             run.id,
@@ -279,7 +333,227 @@ class TestPublicationSnapshotConstraints:
         )
         assert pub_input.fragment_ids == [frag_id]
 
-        # 6. Load sealed inputs
+        # 5. Load sealed inputs
         sealed = await repo.load_sealed_inputs(conn, run.id)
         assert len(sealed) == 1
         assert sealed[0].fragment_ids == [frag_id]
+
+    async def test_event_first_scope_gate_eligibility(self, conn: psycopg.AsyncConnection, edition):
+        repo = PublicationRepository()
+        from psycopg.types.json import Jsonb
+
+        # 1. Create 4 event-first stories
+        cur = await conn.execute(
+            """
+            INSERT INTO stories (edition_id, lifecycle_state, created_at, knowledge_source)
+            VALUES (%s, 'active', %s, 'event_first')
+            RETURNING id
+            """,
+            (edition.id, _NOW),
+        )
+        local_sid = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO stories (edition_id, lifecycle_state, created_at, knowledge_source)
+            VALUES (%s, 'active', %s, 'event_first')
+            RETURNING id
+            """,
+            (edition.id, _NOW),
+        )
+        impact_sid = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO stories (edition_id, lifecycle_state, created_at, knowledge_source)
+            VALUES (%s, 'active', %s, 'event_first')
+            RETURNING id
+            """,
+            (edition.id, _NOW),
+        )
+        oos_sid = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            """
+            INSERT INTO stories (edition_id, lifecycle_state, created_at, knowledge_source)
+            VALUES (%s, 'active', %s, 'event_first')
+            RETURNING id
+            """,
+            (edition.id, _NOW),
+        )
+        nodup_sid = (await cur.fetchone())[0]
+
+        # Add rich revisions for all 4
+        payload = Jsonb({"publishability": "news", "headline": "Test", "confidence_score": 0.95})
+        for sid in (local_sid, impact_sid, oos_sid, nodup_sid):
+            cur = await conn.execute(
+                """
+                INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at, event_payload)
+                VALUES (%s, 1, 'active', 'Text', 'h-1', %s, %s)
+                RETURNING id
+                """,
+                (sid, _NOW, payload),
+            )
+            rid = (await cur.fetchone())[0]
+            await conn.execute(
+                "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rid, sid)
+            )
+
+        # Setup source, item, revision, and source_fragments for assignments
+        cur = await conn.execute(
+            "INSERT INTO sources (platform, kind, external_id, url, name) VALUES ('telegram', 'channel', '-10099', 'https://t.me/e', 'E') RETURNING id"
+        )
+        src_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', 'm-1', %s) RETURNING id",
+            (src_id, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, 'h-1', 'T') RETURNING id",
+            (item_id,),
+        )
+        sir_id = (await cur.fetchone())[0]
+
+        # Insert 4 fragments
+        cur = await conn.execute(
+            """
+            INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
+            VALUES
+            (%s, 0, 'F1', 'h-f1', 'v1', TRUE, %s),
+            (%s, 1, 'F2', 'h-f2', 'v1', TRUE, %s),
+            (%s, 2, 'F3', 'h-f3', 'v1', TRUE, %s),
+            (%s, 3, 'F4', 'h-f4', 'v1', TRUE, %s)
+            RETURNING id
+            """,
+            (sir_id, _NOW, sir_id, _NOW, sir_id, _NOW, sir_id, _NOW),
+        )
+        frag_ids = [r[0] for r in await cur.fetchall()]
+
+        # Insert fragment embeddings
+        sfe_ids = []
+        for idx, fid in enumerate(frag_ids):
+            cur = await conn.execute(
+                """
+                INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions)
+                VALUES (%s, '[1, 0]'::vector, 'm', 2)
+                ON CONFLICT (normalized_hash, model, dimensions) DO UPDATE SET embedding = EXCLUDED.embedding
+                RETURNING id
+
+                """,
+                (f"h-f{idx + 1}",),
+            )
+            vid = (await cur.fetchone())[0]
+            cur = await conn.execute(
+                """
+                INSERT INTO source_fragment_embeddings (fragment_id, vector_id)
+                VALUES (%s, %s)
+                RETURNING id
+                """,
+                (fid, vid),
+            )
+            sfe_ids.append((await cur.fetchone())[0])
+
+        # Assign fragments to stories
+        aids = []
+        for sfe_id, (sid, fid) in zip(
+            sfe_ids,
+            zip((local_sid, impact_sid, oos_sid, nodup_sid), frag_ids, strict=False),
+            strict=False,
+        ):
+            cur = await conn.execute(
+                """
+                INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind)
+                VALUES (%s, %s, %s, 'new_story')
+                RETURNING id
+                """,
+                (sid, fid, sfe_id),
+            )
+            aids.append((await cur.fetchone())[0])
+
+        # Setup story_cluster_state for each
+        for sid, aid in zip((local_sid, impact_sid, oos_sid, nodup_sid), aids, strict=False):
+            await conn.execute(
+                """
+                INSERT INTO story_cluster_state (story_id, centroid, model, dimensions, fragment_count, unique_source_count, first_seen_at, last_seen_at, latest_assignment_id, analysis_dirty)
+                VALUES (%s, '[1,0]'::vector, 'm', 2, 1, 1, %s, %s, %s, FALSE)
+                """,
+                (sid, _NOW, _NOW, aid),
+            )
+
+        # Create triage run
+        cur = await conn.execute(
+            """
+            INSERT INTO story_event_triage_runs (triage_version, provider, model, prompt_hash, story_count, input_chars, status)
+            VALUES ('v1', 'p', 'm', 'h', 4, 100, 'succeeded')
+            RETURNING id
+            """
+        )
+        trun_id = (await cur.fetchone())[0]
+
+        # Insert scope decisions:
+        # local_sid -> LOCAL (hash "hash-abc")
+        # impact_sid -> DIRECT_IMPACT (hash "hash-abc")
+        # oos_sid -> OUT_OF_SCOPE (hash "hash-abc")
+        # nodup_sid -> has NO scope decision
+        await conn.execute(
+            """
+            INSERT INTO story_edition_scope_decisions (triage_run_id, story_id, edition_id, latest_assignment_id, scope_version, scope_config_hash, scope_class, confidence, reason, created_at)
+            VALUES
+            (%s, %s, %s, %s, 'v1', 'hash-abc', 'LOCAL', 0.99, 'in city', %s),
+            (%s, %s, %s, %s, 'v1', 'hash-abc', 'DIRECT_IMPACT', 0.95, 'impact', %s),
+            (%s, %s, %s, %s, 'v1', 'hash-abc', 'OUT_OF_SCOPE', 0.99, 'external', %s)
+            """,
+            (
+                trun_id,
+                local_sid,
+                edition.id,
+                aids[0],
+                _NOW,
+                trun_id,
+                impact_sid,
+                edition.id,
+                aids[1],
+                _NOW,
+                trun_id,
+                oos_sid,
+                edition.id,
+                aids[2],
+                _NOW,
+            ),
+        )
+
+        # 1. Query eligible with scope_config_hash = "hash-abc"
+        eligible = await repo.eligible_story_revisions(
+            conn,
+            edition_id=edition.id,
+            snapshot_at=_NOW,
+            scope_config_hash="hash-abc",
+        )
+        eligible_sids = {r["story_id"] for r in eligible}
+        assert local_sid in eligible_sids
+        assert impact_sid in eligible_sids
+        assert oos_sid not in eligible_sids
+        assert nodup_sid not in eligible_sids
+
+        # 2. Query eligible with different scope_config_hash -> neither is eligible
+        eligible_other = await repo.eligible_story_revisions(
+            conn,
+            edition_id=edition.id,
+            snapshot_at=_NOW,
+            scope_config_hash="hash-different",
+        )
+        assert len(eligible_other) == 0
+
+        # 3. Query without hash -> matches any valid v1 decision (local & impact)
+        eligible_any = await repo.eligible_story_revisions(
+            conn,
+            edition_id=edition.id,
+            snapshot_at=_NOW,
+            scope_config_hash=None,
+        )
+        eligible_any_sids = {r["story_id"] for r in eligible_any}
+        assert local_sid in eligible_any_sids
+        assert impact_sid in eligible_any_sids
+        assert oos_sid not in eligible_any_sids
+        assert nodup_sid not in eligible_any_sids

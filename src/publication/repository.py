@@ -276,6 +276,7 @@ class PublicationRepository:
         edition_id: int,
         snapshot_at: dt.datetime,
         eligibility_policy_id: int | None = None,
+        scope_config_hash: str | None = None,
     ) -> list[dict[str, Any]]:
         """Query stories and their latest revision visible at snapshot_at with recent activity."""
         lookback_hours = 24
@@ -515,6 +516,22 @@ class PublicationRepository:
                   OR event_payload->>'publishability' IS NULL
                   OR event_payload->>'publishability' IN ('news', 'brief')
               )
+              AND (
+                  knowledge_source <> 'event_first'
+                  OR EXISTS (
+                      SELECT 1
+                      FROM story_cluster_state sc
+                      JOIN story_edition_scope_decisions sesd
+                        ON sesd.story_id = sc.story_id
+                       AND sesd.latest_assignment_id = sc.latest_assignment_id
+                      WHERE sc.story_id = story_activity.story_id
+                        AND sesd.edition_id = %s
+                        AND sesd.scope_version = 'v1'
+                        AND (%s::text IS NULL OR sesd.scope_config_hash = %s)
+                        AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
+                        AND sesd.created_at <= %s
+                  )
+              )
             ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
             """,
             (
@@ -572,6 +589,11 @@ class PublicationRepository:
                 snapshot_at,
                 # outer WHERE story_created_at
                 window_start,
+                # scope gate
+                edition_id,
+                scope_config_hash,
+                scope_config_hash,
+                snapshot_at,
             ),
         )
         rows = await cursor.fetchall()
@@ -583,6 +605,7 @@ class PublicationRepository:
             and r[17].get("publishability") in ("news", "brief")
             for r in rows
         )
+
         if has_rich_event_first:
             rows = [
                 r
