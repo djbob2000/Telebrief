@@ -158,7 +158,7 @@ class Summarizer:
             Dictionary mapping channel names to summaries
         """
         summaries: dict[str, str] = {}
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(1)
 
         async def _process_channel(name: str, msgs: list[Message]) -> tuple[str, str]:
             async with semaphore:
