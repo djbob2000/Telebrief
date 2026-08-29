@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import hashlib
 import json
 import logging
@@ -11,39 +10,68 @@ from typing import Any
 
 import psycopg
 
+from src.config_loader import EditionScopeConfig
 from src.domain.event_clusters import StoryClusterState
+from src.processing.edition_scope import (
+    SCOPE_VERSION,
+    EditionScopeClass,
+    build_scope_contract,
+)
 from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
 TRIAGE_VERSION = "v1"
 
-_TRIAGE_SYSTEM_PROMPT = """You are a fast triage classifier for a regional newsroom digest.
-Review the following candidate stories (each with 1-2 source excerpts).
-Classify each story as either:
-- "ANALYZE": Likely genuine local news, municipal incident, announcement, utility outage, or community event.
+_TRIAGE_SYSTEM_PROMPT = """You are a fast geographic and triage classifier for a regional newsroom digest.
+You are evaluating candidate event Stories for ONE configured edition.
+For every Story make TWO judgments in the same result:
+1. geographic edition scope (scope, scope_confidence, scope_reason);
+2. the triage/enrichment action (decision, exclusion_reason, confidence, reason).
+
+Scope must be exactly LOCAL, DIRECT_IMPACT, OUT_OF_SCOPE, or UNCERTAIN.
+Source membership alone does not make an event local.
+An event in another city/region is OUT_OF_SCOPE unless the excerpts explicitly state a concrete consequence inside the configured focus area.
+Same-region, national importance, front-line direction names, and broad strategic relevance are not DIRECT_IMPACT by themselves.
+
+Decision must be:
+- "ANALYZE": Genuine news/incident/event.
 - "IGNORE": Commercial classified ad, services spam, greeting/chatter, or obvious noise.
 
-Respond ONLY with a valid JSON array of objects:
-[
-  {
-    "story_id": 123,
-    "decision": "ANALYZE | IGNORE",
-    "exclusion_reason": "commercial_classified | obvious_noise | null",
-    "confidence": 0.98,
-    "reason": "Brief explanation"
-  }
-]
+Respond ONLY with a valid JSON object containing a "results" array:
+{
+  "results": [
+    {
+      "story_id": 123,
+      "scope": "LOCAL | DIRECT_IMPACT | OUT_OF_SCOPE | UNCERTAIN",
+      "scope_confidence": 0.98,
+      "scope_reason": "Brief geographic explanation",
+      "decision": "ANALYZE | IGNORE",
+      "exclusion_reason": "commercial_classified | obvious_noise | null",
+      "confidence": 0.98,
+      "reason": "Brief explanation"
+    }
+  ]
+}
 """
 
 
 @dataclass(frozen=True)
 class StoryTriageResult:
     story_id: int
+    scope: EditionScopeClass
+    scope_confidence: float
+    scope_reason: str
     decision: str  # "ANALYZE" | "IGNORE"
     exclusion_reason: str | None
     confidence: float
     reason: str
+
+
+@dataclass(frozen=True)
+class StoryTriageBatchResult:
+    results: tuple[StoryTriageResult, ...]
+    deferred_story_ids: tuple[int, ...]
 
 
 class StoryTriageService:
@@ -66,15 +94,18 @@ class StoryTriageService:
         conn: psycopg.AsyncConnection,
         stories: list[StoryClusterState],
         *,
+        edition_id: int,
+        scope_config: EditionScopeConfig,
+        scope_hash: str,
         excerpt_chars: int = 320,
         min_ignore_confidence: float = 0.95,
-    ) -> list[int]:
-        """Run batch triage on low-support stories.
+    ) -> StoryTriageBatchResult:
+        """Run batch triage and scope classification on story clusters.
 
-        Returns list of story_ids that require full rich event analysis.
+        Returns StoryTriageBatchResult with valid decisions and deferred story IDs.
         """
         if not stories:
-            return []
+            return StoryTriageBatchResult(results=(), deferred_story_ids=())
 
         # 1. Fetch excerpts for each story
         story_ids = [s.story_id for s in stories]
@@ -100,7 +131,8 @@ class StoryTriageService:
             story_excerpts[sid].append(f"[{src}]: {text}")
 
         # Build prompt
-        prompt_lines = ["Stories for triage:"]
+        contract_text = build_scope_contract(scope_config)
+        prompt_lines = [contract_text, "", "Stories for triage:"]
         for s in stories:
             excerpts = story_excerpts.get(s.story_id, [])
             excerpts_str = " | ".join(excerpts) if excerpts else "(No text)"
@@ -141,7 +173,6 @@ class StoryTriageService:
         run_id = int(run_row[0])
 
         # 3. Call LLM
-        to_analyze: list[int] = []
         try:
             if hasattr(self.ai, "generate_text"):
                 raw_response = await self.ai.generate_text(
@@ -173,26 +204,79 @@ class StoryTriageService:
                     lines = lines[:-1]
                 cleaned_json = "\n".join(lines).strip()
 
-            items = json.loads(cleaned_json)
-            if not isinstance(items, list):
-                items = [items]
+            payload = json.loads(cleaned_json)
+            if not isinstance(payload, dict):
+                raise ValueError("gate response must be a JSON object")
+            raw_items = payload.get("results")
+            if not isinstance(raw_items, list):
+                raise ValueError("gate response missing results list")
 
-            decisions_by_id: dict[int, StoryTriageResult] = {}
-            for item in items:
-                sid = int(item.get("story_id", 0))
+            items_by_id: dict[int, dict[str, Any]] = {}
+            for item in raw_items:
+                if isinstance(item, dict) and isinstance(item.get("story_id"), int):
+                    items_by_id[item["story_id"]] = item
+
+            valid_results: list[StoryTriageResult] = []
+            deferred_ids: list[int] = []
+
+            for s in stories:
+                item = items_by_id.get(s.story_id)
+                if item is None or not isinstance(item, dict):
+                    deferred_ids.append(s.story_id)
+                    continue
+
+                scope = str(item.get("scope", ""))
+                if scope not in {"LOCAL", "DIRECT_IMPACT", "OUT_OF_SCOPE", "UNCERTAIN"}:
+                    deferred_ids.append(s.story_id)
+                    continue
+
+                scope_conf = item.get("scope_confidence")
+                if (
+                    isinstance(scope_conf, bool)
+                    or not isinstance(scope_conf, (int, float))
+                    or not (0.0 <= float(scope_conf) <= 1.0)
+                ):
+                    deferred_ids.append(s.story_id)
+                    continue
+                scope_confidence = float(scope_conf)
+
+                scope_reason = item.get("scope_reason")
+                if not isinstance(scope_reason, str) or not scope_reason.strip():
+                    deferred_ids.append(s.story_id)
+                    continue
+
                 dec = str(item.get("decision", "ANALYZE")).upper()
+                if dec not in {"ANALYZE", "IGNORE"}:
+                    deferred_ids.append(s.story_id)
+                    continue
+
                 ex_reason = item.get("exclusion_reason")
                 if ex_reason not in ("commercial_classified", "obvious_noise"):
                     ex_reason = None
-                conf = float(item.get("confidence", 0.5))
+
+                conf = item.get("confidence")
+                if (
+                    isinstance(conf, bool)
+                    or not isinstance(conf, (int, float))
+                    or not (0.0 <= float(conf) <= 1.0)
+                ):
+                    deferred_ids.append(s.story_id)
+                    continue
+                confidence = float(conf)
+
                 reason = str(item.get("reason", ""))
-                decisions_by_id[sid] = StoryTriageResult(
-                    story_id=sid,
+
+                triage_res = StoryTriageResult(
+                    story_id=s.story_id,
+                    scope=scope,  # type: ignore[arg-type]
+                    scope_confidence=scope_confidence,
+                    scope_reason=scope_reason.strip(),
                     decision=dec,
                     exclusion_reason=ex_reason,
-                    confidence=conf,
+                    confidence=confidence,
                     reason=reason,
                 )
+                valid_results.append(triage_res)
 
             await conn.execute(
                 """
@@ -211,17 +295,51 @@ class StoryTriageService:
                 """,
                 (type(exc).__name__, run_id),
             )
-            self.logger.warning("Story triage batch failed: %s; falling back to analyze all", exc)
-            return [s.story_id for s in stories]
+            self.logger.warning("Story triage batch failed: %s; deferring stories", exc)
+            return StoryTriageBatchResult(
+                results=(),
+                deferred_story_ids=tuple(s.story_id for s in stories),
+            )
 
-        # 4. Process decisions & update cluster states
-        now = dt.datetime.now(dt.timezone.utc)
-        for s in stories:
-            res = decisions_by_id.get(s.story_id)
-            if res is None:
-                to_analyze.append(s.story_id)
-                continue
+        # 4. Process valid decisions & persist scope and triage records
+        s_map = {s.story_id: s for s in stories}
+        for res in valid_results:
+            st = s_map[res.story_id]
+            # Persist scope decision
+            await conn.execute(
+                """
+                INSERT INTO story_edition_scope_decisions (
+                    triage_run_id,
+                    story_id,
+                    edition_id,
+                    latest_assignment_id,
+                    scope_version,
+                    scope_config_hash,
+                    scope_class,
+                    confidence,
+                    reason
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (
+                    story_id,
+                    latest_assignment_id,
+                    scope_version,
+                    scope_config_hash
+                ) DO NOTHING
+                """,
+                (
+                    run_id,
+                    res.story_id,
+                    edition_id,
+                    st.latest_assignment_id,
+                    SCOPE_VERSION,
+                    scope_hash,
+                    res.scope,
+                    res.scope_confidence,
+                    res.scope_reason,
+                ),
+            )
 
+            # Persist triage decision
             await conn.execute(
                 """
                 INSERT INTO story_event_triage_decisions (
@@ -237,8 +355,8 @@ class StoryTriageService:
                 """,
                 (
                     run_id,
-                    s.story_id,
-                    s.latest_assignment_id,
+                    res.story_id,
+                    st.latest_assignment_id,
                     TRIAGE_VERSION,
                     res.decision,
                     res.exclusion_reason,
@@ -247,20 +365,7 @@ class StoryTriageService:
                 ),
             )
 
-            is_safe_ignore = (
-                res.decision == "IGNORE"
-                and res.confidence >= min_ignore_confidence
-                and res.exclusion_reason in ("commercial_classified", "obvious_noise")
-            )
-            if is_safe_ignore:
-                # Mark cluster state settled without rich analysis
-                await self.cluster_repo.update_cluster_analysis_analyzed(
-                    conn,
-                    story_id=s.story_id,
-                    assignment_id=s.latest_assignment_id,
-                    analyzed_at=now,
-                )
-            else:
-                to_analyze.append(s.story_id)
-
-        return to_analyze
+        return StoryTriageBatchResult(
+            results=tuple(valid_results),
+            deferred_story_ids=tuple(deferred_ids),
+        )
