@@ -1119,3 +1119,51 @@ class TestSelectionPublishabilityAndFailOpen:
         assert len(proposals) == 1
         assert proposals[0].decision == "INCLUDE"
         assert proposals[0].reason == "Fallback heuristic included"
+
+    async def test_selection_prompt_includes_scope_contract(self):
+        from src.publication.selection_ai import AIPublicationSelectionModel
+
+        class CapturingProvider:
+            def __init__(self):
+                self.messages = None
+
+            async def chat_completion(self, messages, model, **kwargs):
+                self.messages = messages
+                return '{"proposals": [{"story_id": 1, "story_revision_id": 1, "decision": "INCLUDE", "presentation_intent": "normal", "confidence": 0.9, "reason": "Local news"}]}'
+
+        provider = CapturingProvider()
+        contract_text = "GEOGRAPHIC SCOPE CONTRACT for Berdyansk Edition"
+        ai_model = AIPublicationSelectionModel(
+            provider=provider,
+            model_name="dummy",
+            scope_contract=contract_text,
+        )
+
+        run = PublicationRun(
+            id=1,
+            edition_id=1,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            eligibility_policy_id=1,
+            selection_policy_id=1,
+            writer_policy_id=1,
+            status="candidates_sealed",
+            error_kind=None,
+            metadata={},
+            request_key="test-k-scope",
+            created_at=_NOW,
+        )
+        cand = PublicationCandidate(
+            id=1,
+            publication_run_id=1,
+            story_id=1,
+            story_revision_id=1,
+            deterministic_rank=1,
+            snapshot_features={},
+            created_at=_NOW,
+        )
+
+        await ai_model.select_stories(run=run, candidates=[cand])
+        assert provider.messages is not None
+        user_msg = next(m["content"] for m in provider.messages if m["role"] == "user")
+        assert "GEOGRAPHIC SCOPE CONTRACT for Berdyansk Edition" in user_msg

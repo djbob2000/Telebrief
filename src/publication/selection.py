@@ -94,6 +94,7 @@ class EditorialSelectionService:
     ) -> None:
         self.uow = uow
         self.repo = repo or PublicationRepository()
+        self.config = config
         if model is not None:
             self.model = model
         else:
@@ -126,6 +127,24 @@ class EditorialSelectionService:
                 return []
 
             allowed_keys = {(c.story_id, c.story_revision_id): c for c in candidates}
+
+            # Resolve scope contract for model if supported
+            try:
+                from src.config_loader import load_config
+                from src.processing.edition_scope import (
+                    build_scope_contract,
+                    resolve_edition_scope,
+                )
+
+                cfg = self.config or load_config()
+                _slug, scope_cfg = await resolve_edition_scope(conn, cfg, run.edition_id)
+                scope_contract = build_scope_contract(scope_cfg)
+                if hasattr(self.model, "scope_contract"):
+                    self.model.scope_contract = scope_contract
+                if hasattr(self.model, "primary") and hasattr(self.model.primary, "scope_contract"):
+                    self.model.primary.scope_contract = scope_contract
+            except Exception as exc:
+                logger.debug("Failed to resolve scope contract for selection: %s", exc)
 
         # Model call outside transaction
         raw_proposals = await self.model.select_stories(run=run, candidates=candidates)

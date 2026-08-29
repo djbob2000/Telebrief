@@ -73,11 +73,14 @@ class AIPublicationSelectionModel:
         provider: AIProvider | None = None,
         config: Config | None = None,
         model_name: str | None = None,
+        scope_contract: str | None = None,
     ) -> None:
         self.config = config or load_config()
+        self.scope_contract = scope_contract
         self.model_name = (
             model_name or self.config.settings.ai_model or self.config.settings.openai_model
         )
+
         if provider is not None:
             self.provider = provider
         else:
@@ -213,7 +216,10 @@ class AIPublicationSelectionModel:
                 }
             )
 
-        return (
+        prompt_parts = []
+        if self.scope_contract:
+            prompt_parts.append(f"{self.scope_contract}\n")
+        prompt_parts.append(
             f"Publication Type: {run.publication_type}\n"
             f"Snapshot At: {run.snapshot_at.isoformat()}\n"
             f"Candidate Stories ({len(candidates)} items):\n"
@@ -234,6 +240,7 @@ class AIPublicationSelectionModel:
             "  ]\n"
             "}\n"
         )
+        return "\n".join(prompt_parts)
 
     def _parse_and_validate(
         self, raw_output: str, candidates: list[PublicationCandidate]
@@ -341,8 +348,11 @@ class FailOpenSelectionModel:
         fallback: SelectionModel | None = None,
         *,
         config: Config | None = None,
+        scope_contract: str | None = None,
     ) -> None:
-        self.primary = primary or AIPublicationSelectionModel(config=config)
+        self.primary = primary or AIPublicationSelectionModel(
+            config=config, scope_contract=scope_contract
+        )
         self.fallback = fallback or HeuristicSelectionModel()
 
     async def select_stories(
