@@ -1,4 +1,4 @@
-"""Tests for StoryTriageService (batch triage and scope classification)."""
+"""Tests for StoryTriageService (Gate V2 batch scope, retention, enrichment, and brief synthesis)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,9 @@ import pytest
 
 from src.config_loader import EditionScopeConfig
 from src.processing.edition_scope import scope_config_hash
-from src.processing.event_triage import StoryTriageService
+from src.processing.event_triage import (
+    StoryTriageService,
+)
 from src.repositories.event_clusters import EventClusterRepository
 from src.repositories.stories import StoryRepository
 
@@ -138,7 +140,7 @@ async def test_story_triage_service_batch_flow(conn, edition, revision):
     )
     scope_hash = scope_config_hash(scope_config)
 
-    # Mock LLM response with LOCAL, OUT_OF_SCOPE, DIRECT_IMPACT
+    # Mock LLM response with LOCAL (KEEP+BRIEF), OUT_OF_SCOPE (DROP+NONE), DIRECT_IMPACT (KEEP+ANALYZE)
     mock_ai = AsyncMock()
     mock_ai.primary_provider_name = "mock_provider"
     mock_ai.model_name = "mock-model"
@@ -149,30 +151,76 @@ async def test_story_triage_service_batch_flow(conn, edition, revision):
                 "scope": "LOCAL",
                 "scope_confidence": 0.99,
                 "scope_reason": "The event text explicitly names the target city.",
-                "decision": "ANALYZE",
+                "retention": "KEEP",
+                "enrichment": "BRIEF",
                 "exclusion_reason": None,
                 "confidence": 0.98,
                 "reason": "Legitimate local event.",
+                "brief_payload": {
+                    "enrichment_level": "brief",
+                    "topic": "Ремонт на улице Ленина",
+                    "tags": ["ремонт", "коммуналка"],
+                    "urgency": "normal",
+                    "publishability": "brief",
+                    "headline": "Ремонтные работы в Бердянске",
+                    "digest_summary": "На улице Ленина проводятся коммунальные работы.",
+                    "operational_observations": [
+                        {
+                            "subject_key": "municipal_repair",
+                            "subject_label": "Ремонтные работы",
+                            "dimension": "status",
+                            "location": "Ленина",
+                            "entity": "дорога",
+                            "state": "RESTRICTED",
+                            "detail": "Ремонтные работы",
+                            "source_fragment_ids": [9001],
+                        }
+                    ],
+                },
             },
             {
                 "story_id": external_sid,
                 "scope": "OUT_OF_SCOPE",
                 "scope_confidence": 0.99,
                 "scope_reason": "The event is explicitly in another city and no target impact is stated.",
-                "decision": "ANALYZE",
+                "retention": "DROP",
+                "enrichment": "NONE",
                 "exclusion_reason": None,
                 "confidence": 0.99,
                 "reason": "Important event, but outside edition scope.",
+                "brief_payload": None,
             },
             {
                 "story_id": impact_sid,
                 "scope": "DIRECT_IMPACT",
                 "scope_confidence": 0.96,
                 "scope_reason": "The external grid failure explicitly caused an outage in the target city.",
-                "decision": "ANALYZE",
+                "retention": "KEEP",
+                "enrichment": "ANALYZE",
                 "exclusion_reason": None,
                 "confidence": 0.96,
                 "reason": "Direct local infrastructure consequence.",
+                "brief_payload": {
+                    "enrichment_level": "brief",
+                    "topic": "Отключение электроэнергии",
+                    "tags": ["электричество", "авария"],
+                    "urgency": "high",
+                    "publishability": "news",
+                    "headline": "Блэкаут из-за аварии на внешней линии",
+                    "digest_summary": "Авария на внешней линии привела к отключению света в Бердянске.",
+                    "operational_observations": [
+                        {
+                            "subject_key": "power_supply",
+                            "subject_label": "Электроснабжение",
+                            "dimension": "availability",
+                            "location": "Бердянск",
+                            "entity": "ЛЭП",
+                            "state": "UNAVAILABLE",
+                            "detail": "Авария на магистральной линии",
+                            "source_fragment_ids": [9003],
+                        }
+                    ],
+                },
             },
         ]
     }
@@ -205,12 +253,133 @@ async def test_story_triage_service_batch_flow(conn, edition, revision):
     assert scope_rows[2][0] == impact_sid and scope_rows[2][1] == "DIRECT_IMPACT"
     assert all(r[3] == scope_hash for r in scope_rows)
 
-    # Check triage run and decision records in database
-    cursor = await conn.execute("SELECT status, story_count FROM story_event_triage_runs")
-    row = await cursor.fetchone()
-    assert row is not None
-    assert row[0] == "succeeded"
-    assert row[1] == 3
+    # Check Gate V2 triage records in DB
+    cursor = await conn.execute(
+        """
+        SELECT story_id, retention, enrichment, brief_payload IS NOT NULL
+        FROM story_event_triage_decisions
+        ORDER BY story_id
+        """
+    )
+    triage_rows = await cursor.fetchall()
+    assert len(triage_rows) == 3
+    assert triage_rows[0] == (local_sid, "KEEP", "BRIEF", True)
+    assert triage_rows[1] == (external_sid, "DROP", "NONE", False)
+    assert triage_rows[2] == (impact_sid, "KEEP", "ANALYZE", True)
+
+
+@pytest.mark.postgres
+async def test_story_triage_service_cache_lookup_avoids_llm_call(conn, edition, revision):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES (8050, 'h50', '[1, 0]'::vector, 'm', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES (9050, %s, 0, 'Cached post', 'h50', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES (10050, 9050, 8050)
+        """
+    )
+    aid = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9050,
+        fragment_embedding_id=10050,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid,
+        centroid=[1.0, 0.0],
+        model="m",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid,
+        analysis_dirty=True,
+    )
+    st = await cluster_repo.get_cluster_state(conn, sid)
+    assert st is not None
+
+    scope_config = EditionScopeConfig(name="City", focus_places=("City",))
+    scope_hash = scope_config_hash(scope_config)
+
+    # 1. First run with AI
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "story_id": sid,
+                    "scope": "LOCAL",
+                    "scope_confidence": 0.99,
+                    "scope_reason": "In city",
+                    "retention": "KEEP",
+                    "enrichment": "BRIEF",
+                    "exclusion_reason": None,
+                    "confidence": 0.98,
+                    "reason": "OK",
+                    "brief_payload": {
+                        "topic": "Cached Topic",
+                        "headline": "Cached Headline",
+                        "digest_summary": "Cached Summary",
+                        "operational_observations": [
+                            {
+                                "subject_key": "cached_service",
+                                "subject_label": "Service",
+                                "dimension": "availability",
+                                "location": "City",
+                                "entity": "serv",
+                                "state": "AVAILABLE",
+                                "detail": "Active",
+                                "source_fragment_ids": [9050],
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    res1 = await service.triage_stories_batch(
+        conn, [st], edition_id=edition.id, scope_config=scope_config, scope_hash=scope_hash
+    )
+    assert len(res1.results) == 1
+    assert mock_ai.generate_text.call_count == 1
+
+    # 2. Second run: cached! AI should NOT be called at all
+    mock_ai_second = AsyncMock()
+    service_second = StoryTriageService(ai_cascade=mock_ai_second, cluster_repo=cluster_repo)
+    res2 = await service_second.triage_stories_batch(
+        conn, [st], edition_id=edition.id, scope_config=scope_config, scope_hash=scope_hash
+    )
+    assert len(res2.results) == 1
+    assert res2.results[0].story_id == sid
+    assert res2.results[0].brief_payload is not None
+    assert res2.results[0].brief_payload.headline == "Cached Headline"
+    assert mock_ai_second.generate_text.call_count == 0
 
 
 @pytest.mark.postgres
@@ -325,7 +494,7 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
     cluster_repo = EventClusterRepository()
 
     sids = []
-    for _ in range(4):
+    for _ in range(5):
         sids.append(
             await story_repo.create_story_shell(
                 conn, edition_id=edition.id, knowledge_source="event_first"
@@ -339,7 +508,8 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
         (8021, 'h1', '[1, 0]'::vector, 'm', 2),
         (8022, 'h2', '[0, 1]'::vector, 'm', 2),
         (8023, 'h3', '[1, 1]'::vector, 'm', 2),
-        (8024, 'h4', '[0, 0]'::vector, 'm', 2)
+        (8024, 'h4', '[0, 0]'::vector, 'm', 2),
+        (8025, 'h5', '[0.5, 0.5]'::vector, 'm', 2)
         """
     )
     await conn.execute(
@@ -351,9 +521,10 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
         (9021, %s, 0, 'Text 1', 'h1', 'v1', TRUE, NULL, %s),
         (9022, %s, 1, 'Text 2', 'h2', 'v1', TRUE, NULL, %s),
         (9023, %s, 2, 'Text 3', 'h3', 'v1', TRUE, NULL, %s),
-        (9024, %s, 3, 'Text 4', 'h4', 'v1', TRUE, NULL, %s)
+        (9024, %s, 3, 'Text 4', 'h4', 'v1', TRUE, NULL, %s),
+        (9025, %s, 4, 'Text 5', 'h5', 'v1', TRUE, NULL, %s)
         """,
-        (revision.id, now, revision.id, now, revision.id, now, revision.id, now),
+        (revision.id, now, revision.id, now, revision.id, now, revision.id, now, revision.id, now),
     )
     await conn.execute(
         """
@@ -362,7 +533,8 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
         (10021, 9021, 8021),
         (10022, 9022, 8022),
         (10023, 9023, 8023),
-        (10024, 9024, 8024)
+        (10024, 9024, 8024),
+        (10025, 9025, 8025)
         """
     )
 
@@ -395,10 +567,11 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
     scope_config = EditionScopeConfig(name="City", focus_places=("City",))
     scope_hash = scope_config_hash(scope_config)
 
-    # sids[0]: valid
-    # sids[1]: missing from response
-    # sids[2]: invalid scope ("REGIONAL")
-    # sids[3]: invalid scope_confidence (1.5)
+    # sids[0]: valid KEEP+BRIEF
+    # sids[1]: missing from response -> deferred
+    # sids[2]: invalid scope ("REGIONAL") -> deferred
+    # sids[3]: invalid scope_confidence (1.5) -> deferred
+    # sids[4]: invalid fragment ref in brief_payload (ref 99999) -> deferred
     mock_ai = AsyncMock()
     triage_response = {
         "results": [
@@ -407,17 +580,36 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
                 "scope": "LOCAL",
                 "scope_confidence": 0.95,
                 "scope_reason": "In city",
-                "decision": "ANALYZE",
+                "retention": "KEEP",
+                "enrichment": "BRIEF",
                 "exclusion_reason": None,
                 "confidence": 0.9,
                 "reason": "OK",
+                "brief_payload": {
+                    "topic": "Valid brief",
+                    "headline": "Valid",
+                    "digest_summary": "Valid summary",
+                    "operational_observations": [
+                        {
+                            "subject_key": "serv",
+                            "subject_label": "Serv",
+                            "dimension": "av",
+                            "location": "City",
+                            "entity": "e",
+                            "state": "AVAILABLE",
+                            "detail": "d",
+                            "source_fragment_ids": [9021],
+                        }
+                    ],
+                },
             },
             {
                 "story_id": sids[2],
                 "scope": "REGIONAL",
                 "scope_confidence": 0.95,
                 "scope_reason": "In region",
-                "decision": "ANALYZE",
+                "retention": "KEEP",
+                "enrichment": "BRIEF",
                 "exclusion_reason": None,
                 "confidence": 0.9,
                 "reason": "OK",
@@ -427,10 +619,39 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
                 "scope": "LOCAL",
                 "scope_confidence": 1.5,
                 "scope_reason": "In city",
-                "decision": "ANALYZE",
+                "retention": "KEEP",
+                "enrichment": "BRIEF",
                 "exclusion_reason": None,
                 "confidence": 0.9,
                 "reason": "OK",
+            },
+            {
+                "story_id": sids[4],
+                "scope": "LOCAL",
+                "scope_confidence": 0.95,
+                "scope_reason": "In city",
+                "retention": "KEEP",
+                "enrichment": "BRIEF",
+                "exclusion_reason": None,
+                "confidence": 0.9,
+                "reason": "OK",
+                "brief_payload": {
+                    "topic": "Invalid fragment ref",
+                    "headline": "Invalid",
+                    "digest_summary": "Invalid",
+                    "operational_observations": [
+                        {
+                            "subject_key": "serv",
+                            "subject_label": "Serv",
+                            "dimension": "av",
+                            "location": "City",
+                            "entity": "e",
+                            "state": "AVAILABLE",
+                            "detail": "d",
+                            "source_fragment_ids": [99999],  # invalid!
+                        }
+                    ],
+                },
             },
         ]
     }
@@ -447,4 +668,183 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
 
     assert len(result.results) == 1
     assert result.results[0].story_id == sids[0]
-    assert set(result.deferred_story_ids) == {sids[1], sids[2], sids[3]}
+    assert set(result.deferred_story_ids) == {sids[1], sids[2], sids[3], sids[4]}
+
+
+@pytest.mark.postgres
+async def test_story_triage_service_drop_normalization_rules(conn, edition, revision):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid_valid_drop = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+    sid_low_conf_with_brief = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+    sid_low_conf_without_brief = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8031, 'h31', '[1, 0]'::vector, 'm', 2),
+        (8032, 'h32', '[0, 1]'::vector, 'm', 2),
+        (8033, 'h33', '[1, 1]'::vector, 'm', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9031, %s, 0, 'Commercial haircut sale', 'h31', 'v1', TRUE, NULL, %s),
+        (9032, %s, 1, 'Question about ATM cash', 'h32', 'v1', TRUE, NULL, %s),
+        (9033, %s, 2, 'Unclear drop without brief', 'h33', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now, revision.id, now, revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10031, 9031, 8031),
+        (10032, 9032, 8032),
+        (10033, 9033, 8033)
+        """
+    )
+
+    aid1 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid_valid_drop,
+        fragment_id=9031,
+        fragment_embedding_id=10031,
+        assignment_kind="new_story",
+    )
+    aid2 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid_low_conf_with_brief,
+        fragment_id=9032,
+        fragment_embedding_id=10032,
+        assignment_kind="new_story",
+    )
+    aid3 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid_low_conf_without_brief,
+        fragment_id=9033,
+        fragment_embedding_id=10033,
+        assignment_kind="new_story",
+    )
+
+    for sid, aid in [
+        (sid_valid_drop, aid1),
+        (sid_low_conf_with_brief, aid2),
+        (sid_low_conf_without_brief, aid3),
+    ]:
+        await cluster_repo.upsert_cluster_state(
+            conn,
+            story_id=sid,
+            centroid=[1.0, 0.0],
+            model="m",
+            dimensions=2,
+            fragment_count=1,
+            unique_source_count=1,
+            first_seen_at=now,
+            last_seen_at=now,
+            latest_assignment_id=aid,
+            analysis_dirty=True,
+        )
+
+    s1 = await cluster_repo.get_cluster_state(conn, sid_valid_drop)
+    s2 = await cluster_repo.get_cluster_state(conn, sid_low_conf_with_brief)
+    s3 = await cluster_repo.get_cluster_state(conn, sid_low_conf_without_brief)
+
+    scope_config = EditionScopeConfig(name="City", focus_places=("City",))
+    scope_hash = scope_config_hash(scope_config)
+
+    mock_ai = AsyncMock()
+    triage_response = {
+        "results": [
+            {
+                "story_id": sid_valid_drop,
+                "scope": "LOCAL",
+                "scope_confidence": 0.99,
+                "scope_reason": "In city",
+                "retention": "DROP",
+                "enrichment": "NONE",
+                "exclusion_reason": "commercial_classified",
+                "confidence": 0.99,
+                "reason": "Clear ad",
+            },
+            {
+                # Low confidence drop but has valid brief -> normalized to KEEP + BRIEF
+                "story_id": sid_low_conf_with_brief,
+                "scope": "LOCAL",
+                "scope_confidence": 0.99,
+                "scope_reason": "In city",
+                "retention": "DROP",
+                "enrichment": "NONE",
+                "exclusion_reason": "commercial_classified",
+                "confidence": 0.70,  # lower than min_ignore_confidence (0.95)
+                "reason": "Unsure if ad",
+                "brief_payload": {
+                    "topic": "ATM cash info",
+                    "headline": "ATM is dispensing cash",
+                    "digest_summary": "Residents report cash available at ATM",
+                    "operational_observations": [
+                        {
+                            "subject_key": "banking_cash",
+                            "subject_label": "Банкоматы",
+                            "dimension": "availability",
+                            "location": "AKZ",
+                            "entity": "ATM",
+                            "state": "AVAILABLE",
+                            "detail": "ATM working",
+                            "source_fragment_ids": [9032],
+                        }
+                    ],
+                },
+            },
+            {
+                # Low confidence drop without brief -> deferred
+                "story_id": sid_low_conf_without_brief,
+                "scope": "LOCAL",
+                "scope_confidence": 0.99,
+                "scope_reason": "In city",
+                "retention": "DROP",
+                "enrichment": "NONE",
+                "exclusion_reason": "commercial_classified",
+                "confidence": 0.70,  # low confidence
+                "reason": "Unsure",
+                "brief_payload": None,
+            },
+        ]
+    }
+    mock_ai.generate_text.return_value = json.dumps(triage_response)
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    result = await service.triage_stories_batch(
+        conn,
+        [s1, s2, s3],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+        min_ignore_confidence=0.95,
+    )
+
+    assert len(result.results) == 2
+    res_map = {r.story_id: r for r in result.results}
+    assert res_map[sid_valid_drop].retention == "DROP"
+    assert res_map[sid_valid_drop].enrichment == "NONE"
+
+    # The low-confidence drop was normalized to KEEP+BRIEF
+    assert res_map[sid_low_conf_with_brief].retention == "KEEP"
+    assert res_map[sid_low_conf_with_brief].enrichment == "BRIEF"
+    assert res_map[sid_low_conf_with_brief].brief_payload is not None
+
+    # The low-confidence drop without brief was deferred
+    assert result.deferred_story_ids == (sid_low_conf_without_brief,)
