@@ -8,6 +8,8 @@ from typing import Any
 
 import psycopg
 
+from src.publication.digest_contracts import DIGEST_PUBLICATION_TYPES
+from src.publication.editorializer import DIGEST_EDITORIALIZER_PROMPT_VERSION
 from src.publication.models import (
     PublicationPolicySet,
 )
@@ -112,7 +114,27 @@ class PublicationPolicyService:
         if selection_config_hash == DEFAULT_SELECTION_CONFIG_HASH:
             selection_config_hash = compute_config_hash(selection_config)
 
+        is_digest = publication_type in DIGEST_PUBLICATION_TYPES
         writer_config: dict[str, Any] = {}
+        if is_digest:
+            ai_prov = ""
+            ai_mod = ""
+            if config is not None:
+                settings_obj = getattr(config, "settings", None)
+                if settings_obj is not None:
+                    ai_prov = str(getattr(settings_obj, "ai_provider", ""))
+                    ai_mod = str(
+                        getattr(settings_obj, "ai_model", "")
+                        or getattr(settings_obj, "openai_model", "")
+                    )
+            writer_config = {
+                "editorializer_prompt_version": DIGEST_EDITORIALIZER_PROMPT_VERSION,
+                "ai_provider": ai_prov,
+                "ai_model": ai_mod,
+            }
+            if writer_prompt_version == DEFAULT_WRITER_PROMPT_VERSION:
+                writer_prompt_version = DIGEST_EDITORIALIZER_PROMPT_VERSION
+
         if writer_config_hash == DEFAULT_WRITER_CONFIG_HASH:
             writer_config_hash = compute_config_hash(writer_config)
 
