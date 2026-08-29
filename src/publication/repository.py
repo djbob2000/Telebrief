@@ -527,14 +527,13 @@ class PublicationRepository:
                       JOIN story_event_triage_decisions setd
                         ON setd.story_id = sc.story_id
                        AND setd.latest_assignment_id = sc.latest_assignment_id
-                       AND setd.scope_config_hash = sesd.scope_config_hash
                       WHERE sc.story_id = story_activity.story_id
                         AND sesd.edition_id = %s
                         AND sesd.scope_version = 'v1'
                         AND (%s::text IS NULL OR sesd.scope_config_hash = %s)
                         AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
-                        AND setd.triage_version IN ('v2', 'v3')
-                        AND setd.retention = 'KEEP'
+                        AND setd.triage_version IN ('v1', 'v2', 'v3')
+                        AND setd.decision IN ('ANALYZE', 'KEEP')
                         AND sesd.created_at <= %s
                   )
               )

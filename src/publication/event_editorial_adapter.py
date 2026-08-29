@@ -192,6 +192,43 @@ class EventEditorialAdapter:
                                 source_role=meta["source_role"],
                                 observed_at=meta["observed_at"],
                             )
+            elif frag_rows:
+                facts = payload.key_facts if (payload and payload.key_facts) else []
+                if facts:
+                    for f_idx, fact in enumerate(facts):
+                        for fid, meta in frag_meta_map.items():
+                            evi_id = f"story:{inp.story_id}:evidence:{f_idx}:frag:{fid}"
+                            all_evidence[evi_id] = PublicationEvidence(
+                                evidence_id=evi_id,
+                                story_id=inp.story_id,
+                                text=fact,
+                                source_text=str(meta["source_text"]),
+                                kind="established_fact",
+                                publication_use="PUBLISH",
+                                fragment_id=fid,
+                                source_ref=meta["source_ref"],
+                                source_id=meta["source_id"],
+                                source_item_id=meta["source_item_id"],
+                                source_role=meta["source_role"],
+                                observed_at=meta["observed_at"],
+                            )
+                else:
+                    for fid, meta in frag_meta_map.items():
+                        evi_id = f"story:{inp.story_id}:evidence:0:frag:{fid}"
+                        all_evidence[evi_id] = PublicationEvidence(
+                            evidence_id=evi_id,
+                            story_id=inp.story_id,
+                            text=str(meta["source_text"]),
+                            source_text=str(meta["source_text"]),
+                            kind="established_fact",
+                            publication_use="PUBLISH",
+                            fragment_id=fid,
+                            source_ref=meta["source_ref"],
+                            source_id=meta["source_id"],
+                            source_item_id=meta["source_item_id"],
+                            source_role=meta["source_role"],
+                            observed_at=meta["observed_at"],
+                        )
 
             # 3. Build StoryCard
             headline = (
