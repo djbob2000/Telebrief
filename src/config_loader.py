@@ -92,6 +92,14 @@ class DigestRubricsConfig:
         return matches[0]
 
 
+@dataclass(frozen=True)
+class EditionScopeConfig:
+    name: str
+    focus_places: tuple[str, ...]
+    direct_impact_only: bool = True
+    notes: tuple[str, ...] = ()
+
+
 @dataclass
 class CollectionConfig:
     """Generic ingestion collection scheduling.
@@ -310,6 +318,7 @@ class Settings:
     article: ArticleConfig = field(default_factory=ArticleConfig)
     event_pipeline: EventPipelineConfig = field(default_factory=EventPipelineConfig)
     digest_rubrics: DigestRubricsConfig = field(default_factory=DigestRubricsConfig)
+    edition_scopes: dict[str, EditionScopeConfig] = field(default_factory=dict)
 
 
 @dataclass
@@ -652,6 +661,54 @@ def _parse_digest_rubrics(settings_dict: dict) -> DigestRubricsConfig:
             ),
         ),
     )
+
+
+def _parse_edition_scopes(settings_dict: dict) -> dict[str, EditionScopeConfig]:
+    raw = settings_dict.get("edition_scopes") or {}
+    if not isinstance(raw, dict):
+        raise ValueError("settings.edition_scopes must be a mapping")
+
+    parsed: dict[str, EditionScopeConfig] = {}
+    for raw_slug, item in raw.items():
+        if not isinstance(raw_slug, str) or not raw_slug.strip():
+            raise ValueError("edition scope slug must be a non-empty string")
+        slug = raw_slug.strip()
+        if not isinstance(item, dict):
+            raise ValueError(f"edition_scopes.{slug} must be a mapping")
+
+        name = item.get("name")
+        places = item.get("focus_places")
+        direct_impact_only = item.get("direct_impact_only", True)
+        notes = item.get("notes", [])
+
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"edition_scopes.{slug}.name must be a non-empty string")
+        if not isinstance(places, list) or not places:
+            raise ValueError(f"edition_scopes.{slug}.focus_places must be a non-empty list")
+        if not isinstance(direct_impact_only, bool):
+            raise ValueError(f"edition_scopes.{slug}.direct_impact_only must be a bool")
+        if not isinstance(notes, list) or not all(isinstance(x, str) and x.strip() for x in notes):
+            raise ValueError(f"edition_scopes.{slug}.notes must be a list of non-empty strings")
+
+        normalized_places: list[str] = []
+        seen: set[str] = set()
+        for place in places:
+            if not isinstance(place, str) or not place.strip():
+                raise ValueError(f"edition_scopes.{slug}.focus_places must contain strings")
+            clean = place.strip()
+            key = clean.casefold()
+            if key in seen:
+                raise ValueError(f"duplicate focus place in edition_scopes.{slug}: {clean!r}")
+            seen.add(key)
+            normalized_places.append(clean)
+
+        parsed[slug] = EditionScopeConfig(
+            name=name.strip(),
+            focus_places=tuple(normalized_places),
+            direct_impact_only=direct_impact_only,
+            notes=tuple(x.strip() for x in notes),
+        )
+    return parsed
 
 
 def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
@@ -1752,6 +1809,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         article=_parse_article_config(settings_dict),
         event_pipeline=_parse_event_pipeline_config(settings_dict),
         digest_rubrics=_parse_digest_rubrics(settings_dict),
+        edition_scopes=_parse_edition_scopes(settings_dict),
     )
 
     if settings.target_user_id == 0:

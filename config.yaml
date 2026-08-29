@@ -92,8 +92,27 @@ settings:
   timezone: "Europe/Kyiv"
   lookback_hours: 24
 
+  edition_scopes:
+    berdyansk:
+      name: "Бердянск"
+      focus_places:
+        - "Бердянск"
+        - "Бердянский район"
+        - "Осипенко"
+        - "Нововасилевка"
+        - "Азовское"
+        - "Дмитровка"
+        - "Трояны"
+        - "Андровка"
+        - "Берестовое"
+      direct_impact_only: true
+      notes:
+        - "Фразы о Бердянском или Запорожском направлении фронта не означают событие в городе или районе."
+        - "Событие вне фокусной зоны допускается только при явно описанном практическом последствии для жителей, услуг, инфраструктуры, маршрутов или доступа в фокусной зоне."
+
   # OpenRouter provider settings:
   ai_provider: "openrouter"
+
   ai_model: "minimax/minimax-m3:free"
   max_tokens_per_summary: 65536
 
