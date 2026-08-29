@@ -54,6 +54,62 @@ def test_city_situation_rollup_serialization():
     assert restored.items[0].source_refs == ("ref-1", "ref-2")
 
 
+def test_build_city_situation_rollup_orders_by_severity():
+    from src.domain.operational_state import SubjectOperationalState
+    from src.publication.city_situation import build_city_situation_rollup
+
+    t0 = dt.datetime(2026, 8, 29, 10, 0, tzinfo=dt.timezone.utc)
+    t1 = dt.datetime(2026, 8, 29, 12, 0, tzinfo=dt.timezone.utc)
+
+    st_avail = SubjectOperationalState(
+        subject_key="power",
+        subject_label="Электросеть",
+        dimension="availability",
+        location="",
+        entity="",
+        current_state="AVAILABLE",
+        detail="Свет есть",
+        first_observed_at=t0,
+        last_observed_at=t0,
+        observation_count=1,
+        source_refs=("ref-1",),
+        history=(),
+    )
+    st_unavail = SubjectOperationalState(
+        subject_key="water",
+        subject_label="Водоснабжение",
+        dimension="availability",
+        location="",
+        entity="",
+        current_state="UNAVAILABLE",
+        detail="Воды нет",
+        first_observed_at=t0,
+        last_observed_at=t1,
+        observation_count=1,
+        source_refs=("ref-2",),
+        history=(),
+    )
+    st_restr = SubjectOperationalState(
+        subject_key="gas",
+        subject_label="Газоснабжение",
+        dimension="availability",
+        location="",
+        entity="",
+        current_state="RESTRICTED",
+        detail="Давление снижено",
+        first_observed_at=t0,
+        last_observed_at=t0,
+        observation_count=1,
+        source_refs=("ref-3",),
+        history=(),
+    )
+
+    rollup = build_city_situation_rollup([st_avail, st_unavail, st_restr])
+    # Expected order: UNAVAILABLE (water) -> RESTRICTED (gas) -> AVAILABLE (power)
+    assert [item.subject_key for item in rollup.items] == ["water", "gas", "power"]
+    assert [item.state for item in rollup.items] == ["UNAVAILABLE", "RESTRICTED", "AVAILABLE"]
+
+
 def test_render_city_situation_section():
     t0 = dt.datetime(2026, 8, 29, 10, 0, tzinfo=dt.timezone.utc)
     item_avail = CitySituationItem(

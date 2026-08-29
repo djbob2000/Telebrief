@@ -84,10 +84,31 @@ class CitySituationRollup:
         return cls(items=tuple(items))
 
 
+_SEVERITY_ORDER: dict[str, int] = {
+    "UNAVAILABLE": 1,
+    "DISRUPTED": 1,
+    "RESTRICTED": 2,
+    "DEGRADED": 2,
+    "CONFLICTING": 2,
+    "SCHEDULED": 3,
+    "UNKNOWN": 3,
+    "AVAILABLE": 4,
+    "RESOLVED": 4,
+}
+
+
 def build_city_situation_rollup(
     resolved_states: Sequence[SubjectOperationalState],
 ) -> CitySituationRollup:
-    """Package resolved subject operational states into a CitySituationRollup."""
+    """Package resolved subject operational states into a CitySituationRollup sorted by severity."""
+    sorted_states = sorted(
+        resolved_states,
+        key=lambda st: (
+            _SEVERITY_ORDER.get(st.current_state.upper(), 5),
+            -st.last_observed_at.timestamp(),
+            st.subject_label or st.subject_key,
+        ),
+    )
     items = tuple(
         CitySituationItem(
             subject_key=st.subject_key,
@@ -102,7 +123,7 @@ def build_city_situation_rollup(
             last_observed_at=st.last_observed_at,
             observation_count=st.observation_count,
         )
-        for st in resolved_states
+        for st in sorted_states
     )
     return CitySituationRollup(items=items)
 
