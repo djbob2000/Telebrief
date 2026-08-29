@@ -37,22 +37,21 @@ settings:
 
   # AI Provider: "openai", "ollama", "anthropic", "google", or "openrouter"
   # Required env vars per provider:
-  #   openai    -> OPENAI_API_KEY in .env
-  #   anthropic -> ANTHROPIC_API_KEY in .env
-  #   google    -> GEMINI_API_KEY (+ optional _2/_3 backups) in .env
-  #   openrouter -> OPENROUTER_API_KEY in .env
-  #   ollama    -> no API key needed
-  ai_provider: "openai"
+  # AI Provider:
+  #   openrouter -> OPENROUTER_API_KEY in .env (Primary recommended)
+  #   openai     -> OPENAI_API_KEY in .env
+  #   anthropic  -> ANTHROPIC_API_KEY in .env
+  #   google     -> GEMINI_API_KEY (+ optional _2/_3 backups) in .env
+  #   ollama     -> no API key needed
+  ai_provider: "openrouter"
 
-  # AI Model (provider-specific)
+  # AI Model (provider-specific, can be overridden by OPENROUTER_MODEL or AI_MODEL in .env)
+  # OpenRouter: "minimax/minimax-m3:free", "deepseek/deepseek-chat", etc.
   # OpenAI: "gpt-5-nano", "gpt-4o-mini", etc.
   # Ollama: "llama3", "mistral", "gemma2", etc.
   # Anthropic: "claude-sonnet-4-5-20250929", etc.
   # Google: "gemini-3.6-flash"
-  # OpenRouter: "openrouter/free" (used as the final Google fallback)
-  ai_model: "gpt-5-nano"
-  # For DeepSeek via the OpenAI-compatible API use:
-  # ai_model: "deepseek-v4-flash"
+  ai_model: "minimax/minimax-m3:free"
 
   # Legacy OpenAI settings (used as fallback if ai_model not set)
   openai_model: "gpt-5-nano"

@@ -365,7 +365,7 @@ _PROVIDER_DEFAULT_MODELS = {
 
 
 def _resolve_ai_settings(settings_dict: dict) -> tuple:
-    """Resolve ai_provider and ai_model from settings dict.
+    """Resolve ai_provider and ai_model from settings dict and environment variables.
 
     Returns:
         Tuple of (ai_provider, ai_model)
@@ -373,7 +373,7 @@ def _resolve_ai_settings(settings_dict: dict) -> tuple:
     Raises:
         ValueError: If ai_provider is unsupported
     """
-    raw_provider = settings_dict.get("ai_provider", "openai")
+    raw_provider = os.getenv("AI_PROVIDER") or settings_dict.get("ai_provider", "openai")
     if not isinstance(raw_provider, str):
         raise ValueError(f"ai_provider must be a string, got {type(raw_provider).__name__}")
     ai_provider = raw_provider.lower()
@@ -386,11 +386,22 @@ def _resolve_ai_settings(settings_dict: dict) -> tuple:
 
     default_model = _PROVIDER_DEFAULT_MODELS[ai_provider]
 
-    # ai_model takes priority; openai_model is only a fallback for the openai provider
-    ai_model = settings_dict.get("ai_model") or (
-        settings_dict.get("openai_model", default_model)
-        if ai_provider == "openai"
-        else default_model
+    # Environment override takes priority (AI_MODEL, or provider-specific OPENROUTER_MODEL / OPENAI_MODEL)
+    env_model = os.getenv("AI_MODEL")
+    if not env_model:
+        if ai_provider == "openrouter":
+            env_model = os.getenv("OPENROUTER_MODEL")
+        elif ai_provider == "openai":
+            env_model = os.getenv("OPENAI_MODEL")
+
+    ai_model = (
+        env_model
+        or settings_dict.get("ai_model")
+        or (
+            settings_dict.get("openai_model", default_model)
+            if ai_provider == "openai"
+            else default_model
+        )
     )
 
     return ai_provider, ai_model
@@ -1251,6 +1262,7 @@ def _load_and_validate_env_vars(
     ai_provider: str,
     *,
     embedding_provider: str | None = None,
+    ai_model: str = "",
 ) -> dict:
     """Load and validate required environment variables.
 
@@ -1281,7 +1293,9 @@ def _load_and_validate_env_vars(
 
     openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
     openrouter_base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-    openrouter_model = os.getenv("OPENROUTER_MODEL") or "openrouter/free"
+    openrouter_model = os.getenv("OPENROUTER_MODEL") or (
+        ai_model if ai_provider == "openrouter" and ai_model else "openrouter/free"
+    )
     openrouter_image_model = (
         os.getenv("OPENROUTER_IMAGE_MODEL") or "google/gemini-3.1-flash-lite-image"
     )
@@ -1495,6 +1509,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
     env_vars = _load_and_validate_env_vars(
         ai_provider,
         embedding_provider=embedding_provider,
+        ai_model=ai_model,
     )
 
     return Config(

@@ -94,8 +94,7 @@ settings:
 
   # OpenRouter provider settings:
   ai_provider: "openrouter"
-  ai_model: "google/gemini-3.7-flash"
-  reasoning_effort: "medium"
+  ai_model: "minimax/minimax-m3:free"
   max_tokens_per_summary: 65536
 
   digest_mode: "digest"

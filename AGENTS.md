@@ -338,15 +338,23 @@ pre-commit run --all-files
 
 ---
 
-## 9. AI Providers & Failover Cascade
+## 9. AI Providers & Configuration Precedence
 
-The AI subsystem (`src/ai_providers.py`) implements a resilient multi-provider cascade:
+The AI subsystem (`src/ai_providers.py`, `src/config_loader.py`) implements a resilient multi-provider setup with automatic configuration sync:
 
-1. **Cascade Order**: Configurable via `config.yaml` (`settings.ai_provider`, `settings.ai_provider_cascade`).
-2. **Supported Providers**: OpenAI, Anthropic Claude, Google Gemini, DeepSeek, Mistral, Ollama (local), OpenRouter.
+1. **Configuration Precedence (12-Factor App)**:
+   - **Provider Resolution**: `AI_PROVIDER` env var > `config.yaml` (`settings.ai_provider`) > default (`openai`).
+   - **Model Resolution**:
+     - Generic override: `AI_MODEL` env var.
+     - Provider-specific env vars: `OPENROUTER_MODEL` (when `ai_provider: openrouter`), `OPENAI_MODEL` (when `ai_provider: openai`).
+     - Configuration file: `config.yaml` (`settings.ai_model`).
+     - Fallback: Built-in provider default (e.g. `openrouter/free`, `gpt-5-nano`, `gemini-3.6-flash`).
+   - Setting `OPENROUTER_MODEL` in `.env` automatically syncs across all synthesis stages (digests, long-form articles, claim extraction, selection, editorial audit).
+
+2. **Supported Providers**: OpenRouter, OpenAI, Anthropic Claude, Google Gemini, DeepSeek, Mistral, Ollama (local).
 3. **Failover & Cooldowns**:
    - When a provider hits a rate limit (`429`), quota exhaustion, or server error (`5xx`), it is put on a temporary cooldown.
-   - The cascade automatically fails over to the next configured provider.
+   - The cascade automatically fails over to the next configured provider slot.
    - Fallback text generation (`src/editorial_fallback.py`) activates if all AI providers in the cascade fail.
 
 ---

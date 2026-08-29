@@ -578,6 +578,94 @@ settings:
 
 
 @pytest.mark.unit
+def test_load_config_openrouter_model_env_override(tmp_path, monkeypatch):
+    """OPENROUTER_MODEL env var overrides settings.ai_model and syncs config.openrouter_model."""
+    monkeypatch.setenv("TELEGRAM_API_ID", "12345678")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "test_hash")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:ABC-DEF")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "minimax/minimax-m3:free")
+
+    config_content = """
+channels:
+  - id: "@test"
+    name: "Test"
+
+settings:
+  target_user_id: 123456789
+  ai_provider: "openrouter"
+  ai_model: "google/gemini-3.7-flash"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(str(config_file))
+
+    assert config.settings.ai_provider == "openrouter"
+    assert config.settings.ai_model == "minimax/minimax-m3:free"
+    assert config.openrouter_model == "minimax/minimax-m3:free"
+
+
+@pytest.mark.unit
+def test_load_config_ai_model_env_override(tmp_path, monkeypatch):
+    """AI_MODEL env var overrides settings.ai_model across providers."""
+    monkeypatch.setenv("TELEGRAM_API_ID", "12345678")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "test_hash")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:ABC-DEF")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-key")
+    monkeypatch.setenv("AI_MODEL", "custom-model-from-env")
+
+    config_content = """
+channels:
+  - id: "@test"
+    name: "Test"
+
+settings:
+  target_user_id: 123456789
+  ai_provider: "openai"
+  ai_model: "gpt-5-nano"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(str(config_file))
+
+    assert config.settings.ai_model == "custom-model-from-env"
+
+
+@pytest.mark.unit
+def test_load_config_openrouter_defaults_from_config_yaml(tmp_path, monkeypatch):
+    """When OPENROUTER_MODEL is unset, config.yaml ai_model populates openrouter_model."""
+    monkeypatch.setenv("TELEGRAM_API_ID", "12345678")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "test_hash")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:ABC-DEF")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-test-key")
+    monkeypatch.delenv("OPENROUTER_MODEL", raising=False)
+    monkeypatch.delenv("AI_MODEL", raising=False)
+
+    config_content = """
+channels:
+  - id: "@test"
+    name: "Test"
+
+settings:
+  target_user_id: 123456789
+  ai_provider: "openrouter"
+  ai_model: "minimax/minimax-m3:free"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    with patch("src.config_loader.load_dotenv"):
+        config = load_config(str(config_file))
+
+    assert config.settings.ai_model == "minimax/minimax-m3:free"
+    assert config.openrouter_model == "minimax/minimax-m3:free"
+
+
+@pytest.mark.unit
 def test_load_config_temperature_fallback(tmp_path, mock_env_vars):
     """Test that temperature falls back to openai_temperature when not set."""
     config_content = """
