@@ -13,7 +13,6 @@ from src.ai_providers import AIProvider, create_provider
 from src.config_loader import Config, load_config
 from src.editorial_input import PreparedBundle
 from src.editorial_models import StoryCard, is_expected_language
-from src.publication.digest_contracts import DIGEST_CATEGORY_IDS
 from src.publication.editorial_adapter import DatabaseGenerationAttemptObserver
 
 logger = logging.getLogger(__name__)
@@ -27,7 +26,6 @@ class PresentationOverlay:
 
     id: str
     topic: str
-    category: str
     summary: str
 
 
@@ -121,14 +119,13 @@ class DigestEditorializer:
             "1. You are a presentation editor, NOT a story selector.\n"
             "2. For each input story ID, output exactly one overlay improving ONLY:\n"
             "   - 'topic': specific, concise, journalistic headline (do NOT use generic 'Городские события').\n"
-            "   - 'category': exactly one of the canonical categories: "
-            f"{sorted(DIGEST_CATEGORY_IDS)}.\n"
             "   - 'summary': clear, cohesive editorial synthesis in Russian.\n"
-            "3. NEVER add, remove, merge, split, or reorder stories.\n"
-            "4. NEVER invent facts or include claims not present in the supplied evidence for that story ID.\n"
-            "5. When a story has only community observations, do NOT state them as established official facts.\n"
-            "6. Keep practical details (schedules, addresses, prices, contacts) in summary or separate details.\n"
-            "7. Respond strictly with a JSON object containing an 'overlays' array."
+            "3. Improve only topic and summary. Do not classify the story into a digest section; section assignment is performed separately.\n"
+            "4. NEVER add, remove, merge, split, or reorder stories.\n"
+            "5. NEVER invent facts or include claims not present in the supplied evidence for that story ID.\n"
+            "6. When a story has only community observations, do NOT state them as established official facts.\n"
+            "7. Keep practical details (schedules, addresses, prices, contacts) in summary or separate details.\n"
+            "8. Respond strictly with a JSON object containing an 'overlays' array."
         )
 
         messages = [
@@ -187,6 +184,7 @@ class DigestEditorializer:
                     "current_topic": card.topic,
                     "current_category": card.category,
                     "current_summary": card.summary,
+                    "tags": list(card.tags),
                     "hard_facts": [
                         {
                             "text": item.text,
@@ -270,7 +268,6 @@ class DigestEditorializer:
             seen_ids.add(raw_id)
 
             topic = str(item.get("topic", "")).strip()
-            category = str(item.get("category", "")).strip().lower()
             summary = str(item.get("summary", "")).strip()
 
             # Card-level validation: if individual fields are invalid, fallback that card
@@ -278,14 +275,6 @@ class DigestEditorializer:
                 logger.warning(
                     "overlay for story %s has empty topic or summary; falling back to canonical card",
                     raw_id,
-                )
-                continue
-
-            if category not in DIGEST_CATEGORY_IDS:
-                logger.warning(
-                    "overlay for story %s has invalid category %r; falling back to canonical card",
-                    raw_id,
-                    category,
                 )
                 continue
 
@@ -301,7 +290,6 @@ class DigestEditorializer:
             overlays_by_id[raw_id] = PresentationOverlay(
                 id=raw_id,
                 topic=topic,
-                category=category,
                 summary=summary,
             )
 
@@ -317,7 +305,6 @@ class DigestEditorializer:
                 merged_card = replace(
                     card,
                     topic=overlay.topic,
-                    category=overlay.category,
                     summary=overlay.summary,
                 )
                 result.append(merged_card)

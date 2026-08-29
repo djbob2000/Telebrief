@@ -127,29 +127,29 @@ async def test_editorializer_success_preserves_cardinality_and_order_and_evidenc
     card1 = _make_sample_card("story-1")
     card2 = _make_sample_card("story-2")
     card3 = _make_sample_card("story-3")
+    card1.tags = ["жкх", "вода"]
+    card1.rubric_id = "infrastructure"
     cards = [card1, card2, card3]
     bundle = _make_sample_bundle()
 
-    # Model returns overlays in reversed order
+    # Model returns overlays in reversed order (and may include unknown extra fields like category)
     response = """
     {
       "overlays": [
         {
           "id": "story-3",
           "topic": "Новое расписание маршруток",
-          "category": "transport",
           "summary": "Маршрут №4 продлен до микрорайона АКЗ."
         },
         {
           "id": "story-1",
           "topic": "Ремонт водовода на Восточном",
-          "category": "utilities",
+          "category": "arbitrary_extra_category",
           "summary": "Водоснабжение восстановят к 20:00."
         },
         {
           "id": "story-2",
           "topic": "Проверка систем связи",
-          "category": "telecom",
           "summary": "Операторы проводят плановые работы."
         }
       ]
@@ -166,14 +166,12 @@ async def test_editorializer_success_preserves_cardinality_and_order_and_evidenc
 
     # Check that presentation overlay fields changed
     assert result[0].topic == "Ремонт водовода на Восточном"
-    assert result[0].category == "utilities"
     assert result[0].summary == "Водоснабжение восстановят к 20:00."
+    assert result[0].tags == ["жкх", "вода"]
+    assert result[0].rubric_id == "infrastructure"
 
     assert result[1].topic == "Проверка систем связи"
-    assert result[1].category == "telecom"
-
     assert result[2].topic == "Новое расписание маршруток"
-    assert result[2].category == "transport"
 
     # Check IMMUTABILITY of evidence and other fields
     for before, after in zip(cards, result, strict=True):
@@ -194,20 +192,18 @@ async def test_editorializer_partial_fallback_on_invalid_or_missing_fields():
     cards = [card1, card2, card3]
     bundle = _make_sample_bundle()
 
-    # story-1 is valid, story-2 has invalid category, story-3 is missing in response
+    # story-1 is valid, story-2 has empty topic, story-3 is missing in response
     response = """
     {
       "overlays": [
         {
           "id": "story-1",
           "topic": "Свет на Азмоле",
-          "category": "utilities",
           "summary": "Энергетики завершили ремонт подстанции."
         },
         {
           "id": "story-2",
-          "topic": "Невалидная категория",
-          "category": "totally_invalid_cat",
+          "topic": "",
           "summary": "Текст."
         }
       ]
@@ -220,7 +216,6 @@ async def test_editorializer_partial_fallback_on_invalid_or_missing_fields():
 
     assert len(result) == 3
     assert result[0].topic == "Свет на Азмоле"
-    assert result[0].category == "utilities"
 
     # story-2 and story-3 fell back to original canonical cards
     assert result[1].topic == "Старая тема 2"
