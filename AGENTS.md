@@ -361,10 +361,12 @@ The Event-First architecture optimizes knowledge-processing spend, throughput, a
    - Enforces strict Gate V2 `KEEP` retention and local scope eligibility on snapshot candidates.
    - Assembles digest-only `CitySituationRollup` displaying point-in-time operational statuses (🟢/🔴/🟡/⚪) and suppresses pure operational cards from numbered digest sections to eliminate duplication.
    - Renders truthful 4-level publication statistics (`источников: X, сообщений: Y, фактов: Z, событий: W`) in formatted Telegram HTML digests.
-8. **Evidence-Bound Article Generation & Single-Call Budget** (`src/publication/article_context.py`, `src/publication/article_models.py`, `src/publication/article_validator.py`, `src/article_generator.py`):
-   - Packages deterministic `ArticleEditorialContext` preserving atomic evidence IDs without destroying provenance.
-   - Synthesizes long-form articles in a single LLM call into `StructuredArticleDraft`, verified deterministically by `validate_article_draft` against length and evidence constraints.
-   - Enforces strict $\le 1$ generative chat call budget per publication product, with direct deterministic fallbacks if LLM calls fail.
+8. **Evidence-Bound Article Generation & Single-Call Budget** (`src/publication/article_context.py`, `src/publication/article_models.py`, `src/publication/article_validator.py`, `src/publication/article_trace.py`, `src/article_generator.py`):
+   - Packages deterministic `ArticleEditorialContext` preserving atomic `ArticleSupport` citable units and exact fragment texts without destroying provenance.
+   - Enforces strict unit-level support citations (`TITLE`, `LEAD`, `H001`, `P001`, ...) across the writer schema.
+   - Validates draft units deterministically via `ArticleValidator` against length limits, handle leakage, unsupported concrete numbers/durations/intervals/dates, and causal claims.
+   - Synthesizes long-form articles in a single LLM call into `StructuredArticleDraft` and persists an internal `ArticleClaimTrace` mapping units to exact source items and fragments.
+   - Enforces strict $\le 1$ generative chat call budget per publication product: on validation or provider failure, immediately records and finishes a first-class deterministic `story_renderer_fallback` attempt.
 
 **Event Pipeline Scripts & Benchmarks**:
 - **Publication Quality & Budget Benchmark**:
@@ -383,9 +385,11 @@ The Event-First architecture optimizes knowledge-processing spend, throughput, a
   ```bash
   python scripts/rescreen_stories.py --hours 72 --edition berdyansk --batch-size 80
   ```
-- **Golden Regression Oracle**:
+- **Golden Regression Oracles**:
   ```bash
   pytest tests/integration/test_publication_quality_golden.py -v --no-cov
+  pytest tests/publication/test_article_evidence_boundary_golden.py -v --no-cov
+  pytest tests/integration/test_article_evidence_bound_generation.py -v --no-cov
   ```
 
 ---
