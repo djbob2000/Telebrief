@@ -533,7 +533,7 @@ class PublicationRepository:
                         AND sesd.scope_version = 'v1'
                         AND (%s::text IS NULL OR sesd.scope_config_hash = %s)
                         AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
-                        AND setd.triage_version = 'v2'
+                        AND setd.triage_version IN ('v2', 'v3')
                         AND setd.retention = 'KEEP'
                         AND sesd.created_at <= %s
                   )

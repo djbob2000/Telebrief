@@ -260,6 +260,7 @@ async def test_berdyansk_city_situation_golden_oracle_pipeline(
                 "key_facts": [case.get("topic", "Fact")],
                 "operational_observations": obs_payloads,
                 "confidence_score": 0.95,
+                "publishability": "brief",
             }
 
         triage_results_payload.append(
@@ -340,9 +341,22 @@ async def test_berdyansk_city_situation_golden_oracle_pipeline(
         assert rev is not None
         revisions_by_story_id[s_id] = rev.id
 
+    await conn.execute(
+        "UPDATE story_revisions SET created_at = %s WHERE id = ANY(%s)",
+        (_NOW, list(revisions_by_story_id.values())),
+    )
+    await conn.execute(
+        "UPDATE story_edition_scope_decisions SET created_at = %s",
+        (_NOW,),
+    )
+    await conn.execute(
+        "UPDATE story_event_triage_decisions SET created_at = %s",
+        (_NOW,),
+    )
+
     # 4. Publication Run & Eligibility Check
     elig = await policy_repo.get_or_create_eligibility_policy(
-        conn, edition_id=edition.id, config_hash="h-e-oracle", prompt_version="v1"
+        conn, edition_id=edition.id, config_hash=sc_hash, prompt_version="v1"
     )
     sel = await policy_repo.get_or_create_selection_policy(
         conn, edition_id=edition.id, config_hash="h-s-oracle", prompt_version="v1"
@@ -360,7 +374,6 @@ async def test_berdyansk_city_situation_golden_oracle_pipeline(
         policy_ids=(elig.id, sel.id, wri.id),
     )
 
-    # Eligible revisions query (verifies Task 7 query filter excludes dropped cases)
     eligible_revs = await pub_repo.eligible_story_revisions(
         conn,
         edition_id=edition.id,
