@@ -134,3 +134,148 @@ def test_resolve_operational_states_multiple_entities_sorted_deterministically()
     # banking_cash comes before power_supply alphabetically
     assert resolved[0].subject_key == "banking_cash"
     assert resolved[1].subject_key == "power_supply"
+
+
+def test_resolve_operational_states_off_on_off_timeline():
+    """OFF 09:00 -> ON 14:00 -> OFF 18:10 at 20:00 => UNAVAILABLE, history preserved."""
+    t0 = dt.datetime(2026, 8, 29, 9, 0, tzinfo=dt.timezone.utc)
+    t1 = dt.datetime(2026, 8, 29, 14, 0, tzinfo=dt.timezone.utc)
+    t2 = dt.datetime(2026, 8, 29, 18, 10, tzinfo=dt.timezone.utc)
+    snap = dt.datetime(2026, 8, 29, 20, 0, tzinfo=dt.timezone.utc)
+
+    obs0 = OperationalObservationPayload(
+        subject_key="water_supply",
+        subject_label="Водоснабжение",
+        dimension="availability",
+        location="АКЗ",
+        entity="водовод",
+        state="UNAVAILABLE",
+        detail="Утренний порыв",
+        source_fragment_ids=(101,),
+    )
+    obs1 = OperationalObservationPayload(
+        subject_key="water_supply",
+        subject_label="Водоснабжение",
+        dimension="availability",
+        location="АКЗ",
+        entity="водовод",
+        state="AVAILABLE",
+        detail="Вода подана",
+        source_fragment_ids=(102,),
+    )
+    obs2 = OperationalObservationPayload(
+        subject_key="water_supply",
+        subject_label="Водоснабжение",
+        dimension="availability",
+        location="АКЗ",
+        entity="водовод",
+        state="UNAVAILABLE",
+        detail="Повторный порыв вечером",
+        source_fragment_ids=(103,),
+    )
+
+    resolved = resolve_operational_states(
+        [(obs0, t0, ["r0"]), (obs1, t1, ["r1"]), (obs2, t2, ["r2"])],
+        snapshot_at=snap,
+        conflict_window_minutes=90,
+    )
+    assert len(resolved) == 1
+    st = resolved[0]
+    assert st.current_state == "UNAVAILABLE"
+    assert st.status == "UNAVAILABLE"
+    assert st.detail == "Повторный порыв вечером"
+    assert len(st.history) == 3
+    assert len(st.resolved_history) == 3
+
+
+def test_resolve_operational_states_conflicting_window():
+    """ON 18:10 and OFF 18:12 with comparable evidence => CONFLICTING."""
+    t0 = dt.datetime(2026, 8, 29, 18, 10, tzinfo=dt.timezone.utc)
+    t1 = dt.datetime(2026, 8, 29, 18, 12, tzinfo=dt.timezone.utc)
+    snap = dt.datetime(2026, 8, 29, 19, 0, tzinfo=dt.timezone.utc)
+
+    obs0 = OperationalObservationPayload(
+        subject_key="water_supply",
+        subject_label="Водоснабжение",
+        dimension="availability",
+        location="Центр",
+        entity="сеть",
+        state="AVAILABLE",
+        detail="Вода есть на 3 этаже",
+        source_fragment_ids=(201,),
+    )
+    obs1 = OperationalObservationPayload(
+        subject_key="water_supply",
+        subject_label="Водоснабжение",
+        dimension="availability",
+        location="Центр",
+        entity="сеть",
+        state="UNAVAILABLE",
+        detail="Краны сухие",
+        source_fragment_ids=(202,),
+    )
+
+    resolved = resolve_operational_states(
+        [(obs0, t0, ["r0"]), (obs1, t1, ["r1"])],
+        snapshot_at=snap,
+        conflict_window_minutes=90,
+    )
+    assert len(resolved) == 1
+    st = resolved[0]
+    assert st.current_state == "CONFLICTING"
+    assert st.status == "CONFLICTING"
+    assert len(st.current_observations) == 2
+
+
+def test_resolve_operational_states_scheduled_future():
+    """An outage announced on Aug 29 but effective Aug 30 08:00–17:00 at Aug 29 20:00 => SCHEDULED, not UNAVAILABLE."""
+    announced_at = dt.datetime(2026, 8, 29, 15, 0, tzinfo=dt.timezone.utc)
+    snap = dt.datetime(2026, 8, 29, 20, 0, tzinfo=dt.timezone.utc)
+
+    obs = OperationalObservationPayload(
+        subject_key="gas_supply",
+        subject_label="Газоснабжение",
+        dimension="availability",
+        location="Коса",
+        entity="ГРС",
+        state="SCHEDULED",
+        detail="Плановые работы на ГРС 30 августа",
+        source_fragment_ids=(301,),
+        effective_from="2026-08-30T08:00:00Z",
+        effective_until="2026-08-30T17:00:00Z",
+    )
+
+    resolved = resolve_operational_states([(obs, announced_at, ["r-gas"])], snapshot_at=snap)
+    assert len(resolved) == 1
+    st = resolved[0]
+    assert st.current_state == "SCHEDULED"
+    assert st.status == "SCHEDULED"
+    assert st.next_scheduled_change is not None
+    assert st.next_scheduled_change.effective_from == dt.datetime(
+        2026, 8, 30, 8, 0, tzinfo=dt.timezone.utc
+    )
+
+
+def test_resolve_operational_states_scheduled_active_during_window():
+    """At Aug 30 09:00 the same scheduled record => UNAVAILABLE if no newer contradictory evidence exists."""
+    announced_at = dt.datetime(2026, 8, 29, 15, 0, tzinfo=dt.timezone.utc)
+    snap = dt.datetime(2026, 8, 30, 9, 0, tzinfo=dt.timezone.utc)
+
+    obs = OperationalObservationPayload(
+        subject_key="gas_supply",
+        subject_label="Газоснабжение",
+        dimension="availability",
+        location="Коса",
+        entity="ГРС",
+        state="SCHEDULED",
+        detail="Плановые работы на ГРС 30 августа",
+        source_fragment_ids=(301,),
+        effective_from="2026-08-30T08:00:00Z",
+        effective_until="2026-08-30T17:00:00Z",
+    )
+
+    resolved = resolve_operational_states([(obs, announced_at, ["r-gas"])], snapshot_at=snap)
+    assert len(resolved) == 1
+    st = resolved[0]
+    assert st.current_state == "UNAVAILABLE"
+    assert st.status == "UNAVAILABLE"

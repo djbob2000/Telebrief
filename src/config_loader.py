@@ -276,6 +276,32 @@ class EventPipelineConfig:
     backfill_batch_size: int = 500
 
 
+@dataclass(frozen=True)
+class PublicationEditorialConfig:
+    """Editorial parameters for publication digests and articles."""
+
+    conflict_window_minutes: int = 90
+    article_min_words: int = 800
+    article_max_words: int = 1400
+    article_min_sections: int = 3
+    article_max_sections: int = 6
+    article_max_direct_quotes: int = 4
+
+    def __post_init__(self) -> None:
+        if self.conflict_window_minutes <= 0:
+            raise ValueError("conflict_window_minutes must be positive")
+        if self.article_min_words <= 0 or self.article_max_words <= 0:
+            raise ValueError("article word limits must be positive")
+        if self.article_min_words > self.article_max_words:
+            raise ValueError("article_min_words cannot be greater than article_max_words")
+        if self.article_min_sections <= 0 or self.article_max_sections <= 0:
+            raise ValueError("article section limits must be positive")
+        if self.article_min_sections > self.article_max_sections:
+            raise ValueError("article_min_sections cannot be greater than article_max_sections")
+        if self.article_max_direct_quotes < 0:
+            raise ValueError("article_max_direct_quotes cannot be negative")
+
+
 @dataclass
 class Settings:
     """Application settings."""
@@ -320,6 +346,9 @@ class Settings:
     event_pipeline: EventPipelineConfig = field(default_factory=EventPipelineConfig)
     digest_rubrics: DigestRubricsConfig = field(default_factory=DigestRubricsConfig)
     edition_scopes: dict[str, EditionScopeConfig] = field(default_factory=dict)
+    publication_editorial: PublicationEditorialConfig = field(
+        default_factory=PublicationEditorialConfig
+    )
 
 
 @dataclass
@@ -1551,6 +1580,40 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
     )
 
 
+def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEditorialConfig:
+    """Parse and validate settings.publication_editorial configuration."""
+    raw = settings_dict.get("publication_editorial")
+    if raw is None:
+        return PublicationEditorialConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(f"'publication_editorial' must be a mapping, got {type(raw).__name__}")
+
+    def _val_pos_int(key: str, default: int) -> int:
+        v = raw.get(key, default)
+        if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+            raise ValueError(
+                f"settings.publication_editorial.{key} must be a positive integer, got {v!r}"
+            )
+        return int(v)
+
+    def _val_nonneg_int(key: str, default: int) -> int:
+        v = raw.get(key, default)
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise ValueError(
+                f"settings.publication_editorial.{key} must be a non-negative integer, got {v!r}"
+            )
+        return int(v)
+
+    return PublicationEditorialConfig(
+        conflict_window_minutes=_val_pos_int("conflict_window_minutes", 90),
+        article_min_words=_val_pos_int("article_min_words", 800),
+        article_max_words=_val_pos_int("article_max_words", 1400),
+        article_min_sections=_val_pos_int("article_min_sections", 3),
+        article_max_sections=_val_pos_int("article_max_sections", 6),
+        article_max_direct_quotes=_val_nonneg_int("article_max_direct_quotes", 4),
+    )
+
+
 def _parse_channels(yaml_config: dict) -> List[ChannelConfig]:
     """Parse and validate channel configs from YAML.
 
@@ -1812,6 +1875,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         event_pipeline=_parse_event_pipeline_config(settings_dict),
         digest_rubrics=_parse_digest_rubrics(settings_dict),
         edition_scopes=_parse_edition_scopes(settings_dict),
+        publication_editorial=_parse_publication_editorial_config(settings_dict),
     )
 
     if settings.target_user_id == 0:

@@ -2353,3 +2353,51 @@ def test_digest_rubrics_validate_contract(tmp_path, mock_env_vars, digest_rubric
 
     with pytest.raises(ValueError, match=error):
         load_config(str(config_file))
+
+
+@pytest.mark.unit
+def test_publication_editorial_config_defaults(temp_config_file, mock_env_vars):
+    """Publication editorial settings default to expected limits."""
+    config = load_config(temp_config_file)
+    pub_edit = config.settings.publication_editorial
+    assert pub_edit.conflict_window_minutes == 90
+    assert pub_edit.article_min_words == 800
+    assert pub_edit.article_max_words == 1400
+    assert pub_edit.article_min_sections == 3
+    assert pub_edit.article_max_sections == 6
+    assert pub_edit.article_max_direct_quotes == 4
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "pub_editorial,error",
+    [
+        ({"conflict_window_minutes": -10}, "must be a positive integer"),
+        (
+            {"article_min_words": 1500, "article_max_words": 1000},
+            "article_min_words cannot be greater",
+        ),
+        (
+            {"article_min_sections": 5, "article_max_sections": 3},
+            "article_min_sections cannot be greater",
+        ),
+        ({"article_max_direct_quotes": -1}, "must be a non-negative integer"),
+    ],
+)
+def test_publication_editorial_config_validation(tmp_path, mock_env_vars, pub_editorial, error):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "channels": [{"id": "@test", "name": "Test Channel"}],
+                "settings": {
+                    "target_user_id": 123456789,
+                    "publication_editorial": pub_editorial,
+                },
+            },
+            allow_unicode=True,
+        )
+    )
+
+    with pytest.raises(ValueError, match=error):
+        load_config(str(config_file))
