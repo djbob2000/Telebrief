@@ -231,6 +231,24 @@ class EventClusterRepository:
             (assignment_id, analyzed_at, assignment_id, story_id),
         )
 
+    async def mark_cluster_processed_without_analysis(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        story_id: int,
+        assignment_id: int,
+    ) -> None:
+        """Clear analysis_dirty if assignment is current without changing last_analyzed_*."""
+        await conn.execute(
+            """
+            UPDATE story_cluster_state
+            SET analysis_dirty = CASE WHEN latest_assignment_id = %s THEN FALSE ELSE TRUE END,
+                updated_at = now()
+            WHERE story_id = %s
+            """,
+            (assignment_id, story_id),
+        )
+
     async def get_unique_sources_for_story(
         self, conn: psycopg.AsyncConnection, story_id: int
     ) -> int:
