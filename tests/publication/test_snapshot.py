@@ -591,3 +591,33 @@ class TestPublicationSnapshotConstraints:
         assert impact_sid in eligible_any_sids
         assert oos_sid not in eligible_any_sids
         assert nodup_sid not in eligible_any_sids
+
+    async def test_snapshot_freezes_truthful_candidate_statistics(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Snapshot sealing captures exact distinct counts and records candidates cleanly."""
+        from src.db.uow import DatabaseUnitOfWork
+        from src.publication.repository import PublicationRepository
+        from src.publication.snapshot import PublicationSnapshotService
+
+        uow = DatabaseUnitOfWork(pool)
+        repo = PublicationRepository()
+        policy_ids = await _seed_policies(conn, edition.id)
+
+        # Seed 2 stories with revisions
+        s1, r1 = await _seed_story_with_revision(conn, edition.id)
+        s2, r2 = await _seed_story_with_revision(conn, edition.id)
+
+        service = PublicationSnapshotService(uow=uow, repo=repo)
+        run = await service.create_run(
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            request_key="test-stats-run",
+            policy_ids=policy_ids,
+        )
+
+        candidates = await service.seal_candidates(run.id)
+        assert len(candidates) == 2
+        cand_story_ids = {c.story_id for c in candidates}
+        assert cand_story_ids == {s1, s2}
