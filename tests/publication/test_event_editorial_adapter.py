@@ -46,6 +46,7 @@ async def test_event_editorial_adapter_end_to_end(conn, pool, edition):
 
     event_payload = {
         "topic": "Авария на водоводе",
+        "tags": ["водовод", "авария", "АКЗ"],
         "category": "utilities",
         "urgency": "high",
         "publishability": "news",
@@ -181,6 +182,8 @@ async def test_event_editorial_adapter_end_to_end(conn, pool, edition):
     assert (
         card.summary == "Специалисты водоканала завершают сварочные работы на Мелитопольском шоссе."
     )
+    assert card.tags == ["водовод", "авария", "АКЗ"]
+    assert card.rubric_id == ""
     assert len(card.hard_facts) == 2
     assert card.hard_facts[0].text == "Порыв на трубопроводе d=500мм"
     assert len(card.community_observations) == 1
