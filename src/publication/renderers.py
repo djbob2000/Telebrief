@@ -366,7 +366,7 @@ class PublicationDigestRenderer:
 
             sit_text = render_city_situation_section(frozen_input.analysis.city_situation)
             if sit_text:
-                sections.append(f"\n{sit_text}")
+                sections.append(sit_text)
 
         for rubric in self.rubrics:
             rubric_id = str(rubric["id"])
@@ -375,8 +375,7 @@ class PublicationDigestRenderer:
 
             rubric_cards = grouped_cards[rubric_id]
             emoji = f"{rubric['emoji']} " if (self.use_emojis and rubric.get("emoji")) else ""
-            header = f"\n*{emoji}{rubric['title']}*"
-            sections.append(header)
+            header = f"*{emoji}{rubric['title']}*"
 
             rubric_bullets: list[str] = []
             for card in rubric_cards:
@@ -453,7 +452,7 @@ class PublicationDigestRenderer:
                 rubric_bullets.append("\n".join(bullet_lines))
 
             if rubric_bullets:
-                sections.append("\n".join(rubric_bullets))
+                sections.append(f"{header}\n" + "\n".join(rubric_bullets))
 
         if self.include_statistics:
             stat_emoji = "📊 " if self.use_emojis else ""
@@ -482,9 +481,9 @@ class PublicationDigestRenderer:
                     f"{len(cards)} тем"
                 )
 
-            sections.append(f"\n_{stat_emoji}Статистика: {stat_text}._")
+            sections.append(f"_{stat_emoji}Статистика: {stat_text}._")
 
-        body = "\n".join(sections).strip()
+        body = "\n\n".join(s.strip() for s in sections if s.strip())
         lead = cards[0].summary if cards else ""
         return title, lead, body
 
