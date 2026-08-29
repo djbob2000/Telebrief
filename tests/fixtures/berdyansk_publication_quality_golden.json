@@ -1,0 +1,462 @@
+{
+  "cases": [
+    {
+      "id": "power_blackout",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "power_supply",
+      "expected_subject_label": "Электроснабжение",
+      "topic": "Аварийное отключение электроэнергии в центральной и нагорной частях Бердянска",
+      "fragments": [
+        {
+          "fragment_id": 1001,
+          "source_id": 10,
+          "source_item_id": 101,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "published_at": "2026-08-29T10:00:00+00:00",
+          "text": "В центре и на Нагорной части Бердянска аварийное отключение света. Светофоры не работают."
+        },
+        {
+          "fragment_id": 1002,
+          "source_id": 11,
+          "source_item_id": 102,
+          "source_role": "official",
+          "source_name": "Таврия Энерго",
+          "published_at": "2026-08-29T10:15:00+00:00",
+          "text": "Авария на подстанции: временно обесточена центральная и нагорная часть Бердянска. Бригада РЭС уже ведет восстановительные работы."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "power_supply",
+          "subject_label": "Электроснабжение",
+          "dimension": "availability",
+          "location": "Центр / Нагорная",
+          "entity": "электросеть",
+          "state": "UNAVAILABLE",
+          "detail": "Аварийное отключение электроэнергии в центральной и нагорной частях города",
+          "source_fragment_ids": [1001, 1002]
+        }
+      ],
+      "expected_evidence_items": [
+        {
+          "text": "Центральная и Нагорная части Бердянска временно обесточены из-за аварии на подстанции",
+          "kind": "established_fact",
+          "publication_use": "PUBLISH",
+          "source_fragment_ids": [1001, 1002]
+        }
+      ]
+    },
+    {
+      "id": "water_koloniya_off_on_off",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "water_supply",
+      "expected_subject_label": "Водоснабжение",
+      "expected_current_state": "UNAVAILABLE",
+      "topic": "Перебои с водоснабжением в микрорайоне Колония",
+      "fragments": [
+        {
+          "fragment_id": 2001,
+          "source_id": 10,
+          "source_item_id": 201,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "published_at": "2026-08-29T09:00:00+00:00",
+          "text": "На Колонии с утра полностью пропала вода из-за порыва на магистральной трубе."
+        },
+        {
+          "fragment_id": 2002,
+          "source_id": 14,
+          "source_item_id": 202,
+          "source_role": "official",
+          "source_name": "Бердянскводоканал",
+          "published_at": "2026-08-29T14:00:00+00:00",
+          "text": "Аварийная ситуация на магистрали устранена, водоснабжение микрорайона Колония возобновлено в штатном режиме."
+        },
+        {
+          "fragment_id": 2003,
+          "source_id": 10,
+          "source_item_id": 203,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "published_at": "2026-08-29T18:10:00+00:00",
+          "text": "На Колонии снова нет воды, опять порыв на том же участке трубы."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "water_supply",
+          "subject_label": "Водоснабжение",
+          "dimension": "availability",
+          "location": "Колония",
+          "entity": "водопровод",
+          "state": "UNAVAILABLE",
+          "detail": "Утреннее отключение воды из-за аварии на водоводе",
+          "source_fragment_ids": [2001]
+        },
+        {
+          "subject_key": "water_supply",
+          "subject_label": "Водоснабжение",
+          "dimension": "availability",
+          "location": "Колония",
+          "entity": "водопровод",
+          "state": "AVAILABLE",
+          "detail": "Дневное восстановление водоснабжения после устранения порыва",
+          "source_fragment_ids": [2002]
+        },
+        {
+          "subject_key": "water_supply",
+          "subject_label": "Водоснабжение",
+          "dimension": "availability",
+          "location": "Колония",
+          "entity": "водопровод",
+          "state": "UNAVAILABLE",
+          "detail": "Повторный порыв и прекращение подачи воды к вечеру",
+          "source_fragment_ids": [2003]
+        }
+      ],
+      "expected_evidence_items": [
+        {
+          "text": "В микрорайоне Колония к вечеру вновь прекратилась подача воды после повторного порыва трубы",
+          "kind": "community_report",
+          "publication_use": "PUBLISH",
+          "source_fragment_ids": [2003]
+        }
+      ]
+    },
+    {
+      "id": "water_azmol_partial",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "water_supply",
+      "expected_subject_label": "Водоснабжение",
+      "topic": "Пониженное давление воды на АЗМОЛе",
+      "fragments": [
+        {
+          "fragment_id": 3001,
+          "source_id": 10,
+          "source_item_id": 301,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "published_at": "2026-08-29T11:30:00+00:00",
+          "text": "На АЗМОЛе вода течет тонкой струйкой, на верхних этажах напора нет совсем."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "water_supply",
+          "subject_label": "Водоснабжение",
+          "dimension": "pressure",
+          "location": "АЗМОЛ",
+          "entity": "водопровод",
+          "state": "DEGRADED",
+          "detail": "Слабый напор воды на верхних этажах",
+          "source_fragment_ids": [3001]
+        }
+      ],
+      "expected_evidence_items": [
+        {
+          "text": "В районе АЗМОЛ фиксируется пониженное давление воды в жилых домах",
+          "kind": "community_report",
+          "publication_use": "PUBLISH",
+          "source_fragment_ids": [3001]
+        }
+      ]
+    },
+    {
+      "id": "atm_cash",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "financial_services",
+      "expected_subject_label": "Банковские услуги",
+      "topic": "Выдача наличных в банкоматах ПСБ",
+      "fragments": [
+        {
+          "fragment_id": 4001,
+          "source_id": 10,
+          "source_item_id": 401,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "published_at": "2026-08-29T13:00:00+00:00",
+          "text": "В банкомате ПСБ на пр. Ленина (Азовский) загрузили рубли, выдает наличные без очередей."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "financial_services",
+          "subject_label": "Банковские услуги",
+          "dimension": "cash_availability",
+          "location": "пр. Ленина (Азовский)",
+          "entity": "банкомат ПСБ",
+          "state": "AVAILABLE",
+          "detail": "Банкомат загружен наличными средствами и работает",
+          "source_fragment_ids": [4001]
+        }
+      ],
+      "expected_evidence_items": [
+        {
+          "text": "Банкомат ПСБ на проспекте Ленина загружен наличными рублями",
+          "kind": "service_access",
+          "publication_use": "PUBLISH",
+          "source_fragment_ids": [4001]
+        }
+      ]
+    },
+    {
+      "id": "connectivity_backup_power",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "telecom_internet",
+      "expected_subject_label": "Связь и интернет",
+      "topic": "Работа интернета ONET на резервном питании",
+      "fragments": [
+        {
+          "fragment_id": 5001,
+          "source_id": 15,
+          "source_item_id": 501,
+          "source_role": "official",
+          "source_name": "Провайдер ONET",
+          "published_at": "2026-08-29T14:30:00+00:00",
+          "text": "Узлы связи ONET в центральном районе переведены на генераторы и аккумуляторы. Оптический интернет GPON работает стабильно при наличии питания у абонента."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "telecom_internet",
+          "subject_label": "Связь и интернет",
+          "dimension": "network_availability",
+          "location": "Центр",
+          "entity": "сеть ONET",
+          "state": "AVAILABLE",
+          "detail": "Оптическая сеть работает от генераторов при отключении света",
+          "source_fragment_ids": [5001]
+        }
+      ],
+      "expected_evidence_items": [
+        {
+          "text": "Провайдер ONET поддерживает работу сети GPON в Центре от резервных генераторов",
+          "kind": "service_access",
+          "publication_use": "PUBLISH",
+          "source_fragment_ids": [5001]
+        }
+      ]
+    },
+    {
+      "id": "passport_fee",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "administrative_services",
+      "expected_subject_label": "Административные услуги",
+      "topic": "Оплата госпошлины за загранпаспорт в МФЦ Бердянска",
+      "fragments": [
+        {
+          "fragment_id": 6001,
+          "source_id": 16,
+          "source_item_id": 601,
+          "source_role": "official",
+          "source_name": "МФЦ Запорожской области",
+          "published_at": "2026-08-29T15:00:00+00:00",
+          "text": "В отделении МФЦ на ул. Дзержинского заработал терминал оплаты госпошлины за оформление загранпаспорта без комиссии."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "administrative_services",
+          "subject_label": "Административные услуги",
+          "dimension": "service_availability",
+          "location": "ул. Дзержинского",
+          "entity": "МФЦ",
+          "state": "AVAILABLE",
+          "detail": "Терминал оплаты госпошлины работает без комиссии",
+          "source_fragment_ids": [6001]
+        }
+      ],
+      "expected_evidence_items": [
+        {
+          "text": "В МФЦ на улице Дзержинского установлен терминал безналичной оплаты госпошлины",
+          "kind": "service_access",
+          "publication_use": "PUBLISH",
+          "source_fragment_ids": [6001]
+        }
+      ]
+    },
+    {
+      "id": "local_uav_pvo",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "air_defense_security",
+      "expected_subject_label": "Безопасность и ПВО",
+      "topic": "Работа ПВО по БПЛА в районе Бердянской косы",
+      "fragments": [
+        {
+          "fragment_id": 7001,
+          "source_id": 10,
+          "source_item_id": 701,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "published_at": "2026-08-29T12:00:00+00:00",
+          "text": "В районе косы были слышны звуки работы ПВО по беспилотнику. Повреждений нет."
+        },
+        {
+          "fragment_id": 7002,
+          "source_id": 13,
+          "source_item_id": 702,
+          "source_role": "official",
+          "source_name": "Администрация Бердянска",
+          "published_at": "2026-08-29T12:20:00+00:00",
+          "text": "Система ПВО перехватила БПЛА над акваторией Бердянского залива. Жертв и разрушений инфраструктуры нет."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "air_defense_security",
+          "subject_label": "Безопасность и ПВО",
+          "dimension": "threat_status",
+          "location": "Бердянская коса / залив",
+          "entity": "ПВО",
+          "state": "AVAILABLE",
+          "detail": "БПЛА сбит расчетом ПВО над заливом, разрушений нет",
+          "source_fragment_ids": [7001, 7002]
+        }
+      ],
+      "expected_evidence_items": [
+        {
+          "text": "Система ПВО перехватила БПЛА над Бердянским заливом без повреждений городской инфраструктуры",
+          "kind": "official_statement",
+          "publication_use": "PUBLISH",
+          "source_fragment_ids": [7001, 7002]
+        }
+      ]
+    },
+    {
+      "id": "future_gas_outage",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "gas_supply",
+      "expected_subject_label": "Газоснабжение",
+      "expected_state_at_snapshot": "SCHEDULED",
+      "topic": "Плановое отключение газа в селе Николаевка на 30 августа",
+      "fragments": [
+        {
+          "fragment_id": 8001,
+          "source_id": 12,
+          "source_item_id": 801,
+          "source_role": "official",
+          "source_name": "Бердянскмежрайгаз",
+          "published_at": "2026-08-29T11:00:00+00:00",
+          "text": "В связи с плановым техническим обслуживанием ГРП в селе Николаевка Бердянского района 30 августа с 08:00 до 17:00 будет временно прекращена подача газа."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "gas_supply",
+          "subject_label": "Газоснабжение",
+          "dimension": "availability",
+          "location": "Николаевка",
+          "entity": "ГРП",
+          "state": "SCHEDULED",
+          "detail": "Плановое отключение газа 30 августа с 08:00 до 17:00 в связи с обслуживанием ГРП",
+          "effective_from": "2026-08-30T08:00:00+00:00",
+          "effective_until": "2026-08-30T17:00:00+00:00",
+          "source_fragment_ids": [8001]
+        }
+      ],
+      "expected_evidence_items": [
+        {
+          "text": "30 августа с 08:00 до 17:00 в селе Николаевка запланировано отключение газа для ремонта ГРП",
+          "kind": "official_statement",
+          "publication_use": "PUBLISH",
+          "source_fragment_ids": [8001]
+        }
+      ]
+    }
+  ],
+  "negative_cases": [
+    {
+      "id": "bucha_fire",
+      "expected_scope": "OUT_OF_SCOPE",
+      "expected_retention": "DROP",
+      "expected_enrichment": "NONE",
+      "topic": "Пожар на складе в Буче Киевской области",
+      "fragments": [
+        {
+          "fragment_id": 9001,
+          "source_id": 18,
+          "source_item_id": 901,
+          "source_role": "external",
+          "source_name": "Новости Украины",
+          "published_at": "2026-08-29T08:30:00+00:00",
+          "text": "В городе Буча Киевской области произошел крупный пожар на промышленном складе. На месте работают подразделения ГСЧС."
+        }
+      ],
+      "expected_observations": [],
+      "expected_evidence_items": []
+    },
+    {
+      "id": "haircut_discount",
+      "expected_scope": "LOCAL",
+      "expected_retention": "DROP",
+      "expected_enrichment": "NONE",
+      "exclusion_reason": "commercial_classified",
+      "topic": "Реклама парикмахерской со скидкой 20%",
+      "fragments": [
+        {
+          "fragment_id": 9002,
+          "source_id": 10,
+          "source_item_id": 902,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "published_at": "2026-08-29T16:00:00+00:00",
+          "text": "Скидка 20% на мужские и женские стрижки только до конца недели! Салон 'Локон' на Восточном, тел. +79901234567, запись онлайн."
+        }
+      ],
+      "expected_observations": [],
+      "expected_evidence_items": [
+        {
+          "text": "Скидка 20% на стрижки в салоне Локон",
+          "kind": "commercial_offer",
+          "publication_use": "EXCLUDE",
+          "source_fragment_ids": [9002]
+        }
+      ]
+    },
+    {
+      "id": "generator_product_ad",
+      "expected_scope": "LOCAL",
+      "expected_retention": "DROP",
+      "expected_enrichment": "NONE",
+      "exclusion_reason": "commercial_classified",
+      "topic": "Продажа бензиновых генераторов",
+      "fragments": [
+        {
+          "fragment_id": 9003,
+          "source_id": 10,
+          "source_item_id": 903,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "published_at": "2026-08-29T16:30:00+00:00",
+          "text": "Продам бензогенератор 3.5 кВт, новый в коробке, цена 28000 рублей, доставка по Бердянску. Звонить +79909876543."
+        }
+      ],
+      "expected_observations": [],
+      "expected_evidence_items": [
+        {
+          "text": "Продажа бензогенератора 3.5 кВт за 28000 руб с доставкой",
+          "kind": "commercial_offer",
+          "publication_use": "EXCLUDE",
+          "source_fragment_ids": [9003]
+        }
+      ]
+    }
+  ]
+}
