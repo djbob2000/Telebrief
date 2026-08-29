@@ -127,3 +127,21 @@ async def test_non_transactional_migration_header(isolated_pg_conn, tmp_path):
     )
     rows = await cursor.fetchall()
     assert [row[0] for row in rows] == [PROBE_NT_TABLE, PROBE_NT_REBUILD]
+
+
+@pytest.mark.postgres
+async def test_event_edition_scope_schema(pg_conn):
+    await migrate(pg_conn, MIGRATIONS_DIR)
+    cur = await pg_conn.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'story_edition_scope_decisions'
+        ORDER BY ordinal_position
+        """
+    )
+    columns = [row[0] for row in await cur.fetchall()]
+    assert "scope_class" in columns
+    assert "scope_config_hash" in columns
+    assert "latest_assignment_id" in columns
