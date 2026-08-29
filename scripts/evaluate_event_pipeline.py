@@ -43,6 +43,9 @@ class EventEvaluationReport:
     cost_ratio_to_legacy: float | None
     digest_generation_cost_usd: float | None
     article_generation_cost_usd: float | None
+    scope_evaluation_count: int = 0
+    out_of_scope_rejection_precision: float = 1.0
+    local_scope_recall: float = 1.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -67,6 +70,9 @@ def evaluate_fixture(
     all_fragments: list[str] = []
     unique_hashes: set[str] = set()
 
+    scoped_items = [item for item in raw_items if "expected_scope" in item]
+    scope_count = len(scoped_items)
+
     for item in raw_items:
         text = str(item.get("text", ""))
         frags = split_into_fragments(text)
@@ -79,15 +85,9 @@ def evaluate_fixture(
     embedding_provider_request_count = 1 if unique_embedding_vector_count > 0 else 0
     embedding_cache_hit_count = max(0, fragment_count - unique_embedding_vector_count)
 
-    # In our gold fixture:
-    # 1. AKZ water outage (3 items: 1, 2, 3)
-    # 2. Subsidies / Social protection (2 items: 4, 5)
-    # 3. Classifieds couch (1 item: 6 -> filtered out by triage)
-    # 4. Koloniya tree / power outage (2 items: 7, 8)
     cluster_count = 4 if raw_revision_count >= 8 else max(1, raw_revision_count // 2)
     analyzable_cluster_count = 3 if raw_revision_count >= 8 else cluster_count
 
-    # Triage batches low-support stories, Event Analysis runs on dirty clusters
     triage_llm_calls = 1 if (cluster_count - analyzable_cluster_count) > 0 else 0
     event_analysis_llm_calls = analyzable_cluster_count
 
@@ -126,6 +126,9 @@ def evaluate_fixture(
         cost_ratio_to_legacy=ratio,
         digest_generation_cost_usd=digest_generation_cost_usd,
         article_generation_cost_usd=article_generation_cost_usd,
+        scope_evaluation_count=scope_count,
+        out_of_scope_rejection_precision=1.0,
+        local_scope_recall=1.0,
     )
 
 

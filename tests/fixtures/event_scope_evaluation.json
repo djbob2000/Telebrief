@@ -1,0 +1,82 @@
+[
+  {
+    "id": "scope-item-1",
+    "channel": "berdyansk_chat",
+    "channel_name": "Бердянск Чат",
+    "source_type": "community",
+    "message_id": 101,
+    "timestamp": "2026-08-29T08:00:00+00:00",
+    "text": "На АКЗ снова нет воды с самого утра. Кто-то знает, когда включат?",
+    "expected_scope": "LOCAL"
+  },
+  {
+    "id": "scope-item-2",
+    "channel": "vodokanal_official",
+    "channel_name": "Бердянскводоканал",
+    "source_type": "official",
+    "message_id": 102,
+    "timestamp": "2026-08-29T08:15:00+00:00",
+    "text": "Аварийно-ремонтные работы на Мелитопольском шоссе в Бердянске: временно ограничено водоснабжение микрорайонов АКЗ и РТС до 17:00.",
+    "expected_scope": "LOCAL"
+  },
+  {
+    "id": "scope-item-3",
+    "channel": "oblenergo_regional",
+    "channel_name": "Таврия Энерго Регион",
+    "source_type": "official",
+    "message_id": 103,
+    "timestamp": "2026-08-29T09:00:00+00:00",
+    "text": "Внимание абонентов: в связи с ремонтом магистральной ЛЭП 330 кВ в Запорожской области 30 августа возможны кратковременные перебои в энергоснабжении потребителей Бердянского района и города Бердянска.",
+    "expected_scope": "DIRECT_IMPACT"
+  },
+  {
+    "id": "scope-item-4",
+    "channel": "bucha_life",
+    "channel_name": "Буча Сьогодні",
+    "source_type": "news",
+    "message_id": 104,
+    "timestamp": "2026-08-29T10:00:00+00:00",
+    "text": "У Бучі відбудеться відкриття нового меморіального скверу та дитячого майданчика на вулиці Вокзальній. Запрошуються жителі міста.",
+    "expected_scope": "OUT_OF_SCOPE"
+  },
+  {
+    "id": "scope-item-5",
+    "channel": "kyiv_metro_official",
+    "channel_name": "Київський Метрополітен",
+    "source_type": "official",
+    "message_id": 105,
+    "timestamp": "2026-08-29T10:30:00+00:00",
+    "text": "На станції метро «Театральна» розпочався плановий ремонт ескалатора №2. Рух поїздів здійснюється у звичайному режимі за графіком вихідного дня.",
+    "expected_scope": "OUT_OF_SCOPE"
+  },
+  {
+    "id": "scope-item-6",
+    "channel": "lviv_news",
+    "channel_name": "Львівські Вісті",
+    "source_type": "news",
+    "message_id": 106,
+    "timestamp": "2026-08-29T11:00:00+00:00",
+    "text": "На площі Ринок у Львові стартував традиційний міський ярмарок кави та випічки. Захід триватиме до вечора неділі.",
+    "expected_scope": "OUT_OF_SCOPE"
+  },
+  {
+    "id": "scope-item-7",
+    "channel": "poltava_agro",
+    "channel_name": "Полтавщина Агро",
+    "source_type": "news",
+    "message_id": 107,
+    "timestamp": "2026-08-29T11:30:00+00:00",
+    "text": "Аграрії Полтавської області намолотили перший мільйон тонн ранніх зернових культур. Середня врожайність склала 48 ц/га.",
+    "expected_scope": "OUT_OF_SCOPE"
+  },
+  {
+    "id": "scope-item-8",
+    "channel": "koloniya_chat",
+    "channel_name": "Колония Новости",
+    "source_type": "community",
+    "message_id": 108,
+    "timestamp": "2026-08-29T12:00:00+00:00",
+    "text": "На улице Руденко в микрорайоне Колония упала ветка тополя на провода, света в частном секторе нет. На месте работает аварийная служба.",
+    "expected_scope": "LOCAL"
+  }
+]

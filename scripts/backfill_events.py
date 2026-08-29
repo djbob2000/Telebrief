@@ -26,6 +26,8 @@ async def run_backfill(
     limit: int = 500,
     batch_size: int = 32,
     edition_slug: str | None = None,
+    rescope_only: bool = False,
+    force_scope_recalc: bool = False,
     dry_run: bool = False,
 ) -> None:
     db_config = load_database_config(require_enabled=True)
@@ -36,49 +38,72 @@ async def run_backfill(
 
     try:
         since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
-        async with infrastructure.uow.transaction() as conn:
-            # Query unfragmented revisions to backfill (gap-driven)
-            query = """
-                SELECT sir.id
-                FROM source_item_revisions sir
-                JOIN source_items si ON si.id = sir.source_item_id
-                JOIN sources s ON s.id = si.source_id
-                LEFT JOIN source_editions se ON se.source_id = s.id
-                LEFT JOIN editions e ON e.id = se.edition_id
-                LEFT JOIN source_fragments sf
-                  ON sf.source_item_revision_id = sir.id
-                 AND sf.fragmenter_version = 'v1'
-                WHERE COALESCE(si.published_at, si.first_collected_at, now()) >= %s
-                  AND sf.id IS NULL
-            """
-            params: list = [since]
-            if edition_slug:
-                query += " AND e.slug = %s"
-                params.append(edition_slug)
-            query += " ORDER BY COALESCE(si.published_at, si.first_collected_at) ASC, sir.id ASC LIMIT %s"
-            params.append(limit)
 
-            cursor = await conn.execute(query, params)
-            rows = await cursor.fetchall()
-            rev_ids = [int(r[0]) for r in rows]
+        if force_scope_recalc:
+            async with infrastructure.uow.transaction() as conn:
+                logger.info("Forcing scope recalculation: marking settled clusters dirty...")
+                await conn.execute(
+                    """
+                    UPDATE story_cluster_state
+                    SET analysis_dirty = TRUE
+                    WHERE last_seen_at >= %s
+                    """,
+                    (since,),
+                )
 
-        logger.info("Found %d unfragmented revisions to process (since %s)", len(rev_ids), since)
-        if not rev_ids or dry_run:
+        if not rescope_only:
+            async with infrastructure.uow.transaction() as conn:
+                # Query unfragmented revisions to backfill (gap-driven)
+                query = """
+                    SELECT sir.id
+                    FROM source_item_revisions sir
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources s ON s.id = si.source_id
+                    LEFT JOIN source_editions se ON se.source_id = s.id
+                    LEFT JOIN editions e ON e.id = se.edition_id
+                    LEFT JOIN source_fragments sf
+                      ON sf.source_item_revision_id = sir.id
+                     AND sf.fragmenter_version = 'v1'
+                    WHERE COALESCE(si.published_at, si.first_collected_at, now()) >= %s
+                      AND sf.id IS NULL
+                """
+                params: list = [since]
+                if edition_slug:
+                    query += " AND e.slug = %s"
+                    params.append(edition_slug)
+                query += (
+                    " ORDER BY COALESCE(si.published_at, si.first_collected_at) ASC, sir.id ASC"
+                    " LIMIT %s"
+                )
+                params.append(limit)
+
+                cursor = await conn.execute(query, params)
+                rows = await cursor.fetchall()
+                rev_ids = [int(r[0]) for r in rows]
+
+            logger.info(
+                "Found %d unfragmented revisions to process (since %s)", len(rev_ids), since
+            )
             if dry_run:
-                logger.info("Dry run complete (no modifications made)")
-            return
+                logger.info(
+                    "Dry run complete: would process %d revisions (no modifications made)",
+                    len(rev_ids),
+                )
+                return
 
-        total_stats = {"revisions": 0, "fragments": 0, "candidates": 0, "assignments": 0}
-        # Process in batches
-        for i in range(0, len(rev_ids), batch_size):
-            chunk = rev_ids[i : i + batch_size]
-            stats = await process_event_revisions_task.func(chunk)
-            for k, v in stats.items():
-                total_stats[k] = total_stats.get(k, 0) + v
-            logger.info("Batch %d-%d processed: %s", i, i + len(chunk), stats)
+            total_stats = {"revisions": 0, "fragments": 0, "candidates": 0, "assignments": 0}
+            for i in range(0, len(rev_ids), batch_size):
+                chunk = rev_ids[i : i + batch_size]
+                stats = await process_event_revisions_task.func(chunk)
+                for k, v in stats.items():
+                    total_stats[k] = total_stats.get(k, 0) + v
+                logger.info("Batch %d-%d processed: %s", i, i + len(chunk), stats)
+            logger.info("Revision backfill summary: %s", total_stats)
 
-        # Coalesce dirty stories in a drain loop
-        logger.info("Coalescing and triaging dirty story clusters until backlog is drained...")
+        # Coalesce dirty stories in a drain loop (with scope gating)
+        logger.info(
+            "Coalescing, scoping, and triaging dirty story clusters until backlog is drained..."
+        )
         coalesce_round = 0
         total_coalesce = {"scanned": 0, "settled": 0, "triaged": 0, "analyzed": 0}
         while True:
@@ -93,8 +118,22 @@ async def run_backfill(
                 logger.warning("Reached max coalesce iterations (50)")
                 break
 
+        # Log scope breakdown
+        async with infrastructure.uow.transaction() as conn:
+            cur = await conn.execute(
+                """
+                SELECT sesd.scope_class, count(*)
+                FROM story_edition_scope_decisions sesd
+                WHERE sesd.created_at >= %s
+                GROUP BY sesd.scope_class
+                ORDER BY count(*) DESC
+                """,
+                (since,),
+            )
+            scope_counts = dict(await cur.fetchall())
+            logger.info("Scope decision summary for window: %s", scope_counts)
+
         logger.info("Coalesce complete: %s", total_coalesce)
-        logger.info("Total backfill summary: %s", total_stats)
 
     finally:
         clear_runtime(infrastructure)
@@ -116,6 +155,16 @@ def main() -> None:
     )
     parser.add_argument("--edition", type=str, default=None, help="Optional edition slug filter")
     parser.add_argument(
+        "--rescope-only",
+        action="store_true",
+        help="Only re-evaluate scope and triage for existing clusters",
+    )
+    parser.add_argument(
+        "--force-scope-recalc",
+        action="store_true",
+        help="Force re-evaluation of scope even for existing decisions",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Preview revisions without processing"
     )
     args = parser.parse_args()
@@ -126,6 +175,8 @@ def main() -> None:
             limit=args.limit,
             batch_size=args.batch_size,
             edition_slug=args.edition,
+            rescope_only=args.rescope_only,
+            force_scope_recalc=args.force_scope_recalc,
             dry_run=args.dry_run,
         )
     )
