@@ -6,7 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import psycopg
@@ -30,10 +30,12 @@ _EVENT_ANALYSIS_SYSTEM_PROMPT = """You are an expert investigative regional news
 Analyze the following chronological source fragments from multiple channels regarding a single local event.
 Extract objective facts, distinguish official statements from community observations, highlight contradictions or uncertainties, and summarize the event.
 
+Tags are descriptive metadata, not digest sections. Use whatever concise terms best describe the event (3-8 short topic tags in Russian; open vocabulary; do not choose from a predefined taxonomy). Never force an event into a predefined city category.
+
 Respond ONLY with a valid JSON object with the exact keys:
 {
   "topic": "Concise topic label (e.g. Авария на водоводе в микрорайоне АКЗ)",
-  "category": "utilities | transportation | incident | social | municipal | weather | other",
+  "tags": ["3-8 short topic tags in Russian; open vocabulary; do not choose from a predefined taxonomy"],
   "urgency": "critical | high | normal | low",
   "publishability": "news | brief | internal_only | noise",
   "headline": "Professional informative headline in Russian",
@@ -49,13 +51,30 @@ Respond ONLY with a valid JSON object with the exact keys:
 """
 
 
+def _normalize_open_tags(value: Any, legacy_category: Any = None) -> list[str]:
+    raw = value if isinstance(value, list) else []
+    if not raw and isinstance(legacy_category, str) and legacy_category.strip():
+        raw = [legacy_category]
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        tag = str(item).strip()
+        key = tag.casefold()
+        if tag and key not in seen:
+            seen.add(key)
+            result.append(tag[:80])
+        if len(result) == 12:
+            break
+    return result
+
+
 @dataclass(frozen=True)
 class EventAnalysisPayload:
     """Structured rich analysis output stored on story_revisions."""
 
     analysis_version: str
     topic: str
-    category: str
     urgency: str
     publishability: str
     headline: str
@@ -68,16 +87,21 @@ class EventAnalysisPayload:
     timeline_summary: str
     confidence_score: float
     representative_fragment_ids: list[int]
+    tags: list[str] = field(default_factory=list)
+    category: str = ""  # deprecated compatibility field
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EventAnalysisPayload:
+        legacy_cat = str(data.get("category", "")).strip()
+        tags = _normalize_open_tags(data.get("tags"), legacy_category=legacy_cat)
         return cls(
             analysis_version=str(data.get("analysis_version", ANALYSIS_VERSION)),
             topic=str(data.get("topic", "")),
-            category=str(data.get("category", "other")),
+            category=legacy_cat,
+            tags=tags,
             urgency=str(data.get("urgency", "normal")),
             publishability=str(data.get("publishability", "news")),
             headline=str(data.get("headline", "")),
