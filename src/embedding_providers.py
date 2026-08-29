@@ -222,7 +222,6 @@ class OpenRouterEmbeddingProvider:
             response = await self.client.embeddings.create(
                 model=model,
                 input=text,
-                dimensions=dimensions,
             )
         except Exception as exc:
             raise EmbeddingProviderError(
@@ -251,7 +250,6 @@ class OpenRouterEmbeddingProvider:
             response = await self.client.embeddings.create(
                 model=model,
                 input=list(texts),
-                dimensions=dimensions,
             )
         except Exception as exc:
             raise EmbeddingProviderError(
