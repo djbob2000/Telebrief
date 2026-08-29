@@ -297,6 +297,7 @@ class StoryCard:
             "current_status": self.current_status,
             "next_known_step": self.next_known_step,
             "editorial_angle": self.editorial_angle,
+            "category": self.category,
             "representative_source_refs": list(self.representative_source_refs),
             "hard_facts": [item.to_dict() for item in self.hard_facts],
             "community_observations": [item.to_dict() for item in self.community_observations],

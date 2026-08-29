@@ -215,3 +215,17 @@ def test_editorial_analysis_sanitized_against_refs():
     assert sanitized.cards[0].id == "SC001"
     assert "S000001" in sanitized.labels
     assert "S999999" not in sanitized.labels
+
+
+def test_story_card_category_serialization_roundtrip():
+    card = StoryCard(
+        id="story-1",
+        topic="Перебои с водой",
+        importance="high",
+        summary="В районе наблюдаются перебои с водой.",
+        category="utilities",
+    )
+
+    restored = StoryCard.from_dict(card.to_dict())
+
+    assert restored.category == "utilities"
