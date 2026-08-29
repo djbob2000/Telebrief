@@ -141,6 +141,17 @@ def build_server(config: Config, logger: logging.Logger) -> MCPServer:
         )
 
     @mcp.tool()
+    async def get_digest_rubrics() -> str:
+        """Return the active configured digest rubrics (presentation sections)."""
+        rubrics = config.settings.digest_rubrics
+        lines = [f"Configured rubrics (min_similarity={rubrics.min_similarity}):"]
+        for r in rubrics.items:
+            fb = " [FALLBACK]" if r.fallback else ""
+            emoji = f"{r.emoji} " if r.emoji else ""
+            lines.append(f"- {emoji}{r.id}: {r.name}{fb} - {r.description}")
+        return "\n".join(lines)
+
+    @mcp.tool()
     async def get_channel_messages(channel: str, hours: int = 24, limit: int = 200) -> str:
         """Return the individual messages of one configured channel, unsummarized.
 
@@ -160,6 +171,6 @@ def build_server(config: Config, logger: logging.Logger) -> MCPServer:
 
     logger.info(
         f"MCP tools registered: get_digest (max {MAX_DIGEST_HOURS}h), get_last_digest, "
-        f"get_channel_messages (max {MAX_CHANNEL_MESSAGES} msgs)"
+        f"get_digest_rubrics, get_channel_messages (max {MAX_CHANNEL_MESSAGES} msgs)"
     )
     return mcp

@@ -25,7 +25,12 @@ async def test_registers_all_tools(server):
     tools = await server.list_tools()
 
     names = {tool.name for tool in tools}
-    assert names == {"get_digest", "get_last_digest", "get_channel_messages"}
+    assert names == {
+        "get_digest",
+        "get_last_digest",
+        "get_digest_rubrics",
+        "get_channel_messages",
+    }
     assert all(tool.description for tool in tools)
 
 
