@@ -94,6 +94,16 @@ class DatabaseGenerationAttemptObserver:
         self.attempts: list[PublicationGenerationAttempt] = []
         self.last_successful_content_attempt: PublicationGenerationAttempt | None = None
 
+    @property
+    def chat_attempt_count(self) -> int:
+        """Count attempts that consumed generative AI chat completion calls."""
+        return sum(
+            1
+            for a in self.attempts
+            if a.kind in ("writer", "editorializer")
+            and (not a.metadata or a.metadata.get("subkind") != "rubric_classifier")
+        )
+
     async def attempt_started(
         self,
         kind: str,

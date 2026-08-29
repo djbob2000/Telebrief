@@ -755,3 +755,167 @@ class TestPublicationGenerationService:
         # Assert zero extra chat calls were spent on editorializer or generator
         assert mock_editorializer.editorialize.call_count == 0
         assert mock_generator.generate_from_frozen_input.call_count == 0
+
+    async def test_generation_service_article_enforces_bounded_ai_budget(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Article generation consumes exactly 1 writer call and records winning attempt."""
+        uow = DatabaseUnitOfWork(pool)
+        repo = PublicationRepository()
+        policy_ids = await _seed_policies(conn, edition.id)
+
+        # Create story & fragment
+        cur = await conn.execute(
+            """
+            INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+            VALUES (%s, 'active', 'event_first', %s)
+            RETURNING id
+            """,
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+
+        cur = await conn.execute(
+            "INSERT INTO sources (platform, kind, external_id, url, name) VALUES ('telegram', 'channel', '-10099', 'https://t.me/art', 'Art') RETURNING id"
+        )
+        src_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+            (src_id, edition.id),
+        )
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', 'm-art', %s) RETURNING id",
+            (src_id, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, 'h-art', 'Текст') RETURNING id",
+            (item_id,),
+        )
+        sir_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, 'Текст', 'h-fart', 'v1', TRUE, %s) RETURNING id",
+            (sir_id, _NOW),
+        )
+        frag_id = (await cur.fetchone())[0]
+
+        event_payload = {
+            "topic": "Капитальный ремонт",
+            "headline": "Капитальный ремонт проспекта",
+            "digest_summary": "Дорожники ведут укладку асфальта.",
+            "category": "infrastructure",
+            "evidence_items": [
+                {
+                    "text": "Уложено 2 километра нового полотна",
+                    "kind": "established_fact",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [frag_id],
+                }
+            ],
+            "tags": ["дороги", "ремонт"],
+        }
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (
+                story_id, revision_no, current_state, semantic_text, content_hash,
+                title, summary, event_payload, created_at
+            ) VALUES (%s, 1, 'open', %s, 'h-ev-art', %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                story_id,
+                event_payload["digest_summary"],
+                event_payload["headline"],
+                event_payload["digest_summary"],
+                json.dumps(event_payload),
+                _NOW,
+            ),
+        )
+        rev_id = (await cur.fetchone())[0]
+
+        run = await repo.get_or_create_run(
+            conn,
+            edition_id=edition.id,
+            publication_type="article",
+            request_key="test-event-art-budget",
+            snapshot_at=_NOW,
+            policy_ids=policy_ids,
+        )
+        cand = await repo.insert_candidate(
+            conn,
+            run.id,
+            story_id=story_id,
+            story_revision_id=rev_id,
+            deterministic_rank=1,
+        )
+        dec = await repo.insert_selection_decision(
+            conn,
+            run.id,
+            PublicationSelectionDecision(
+                id=0,
+                publication_run_id=run.id,
+                candidate_id=cand.id,
+                decision="INCLUDE",
+                presentation_intent="lead",
+                confidence=0.98,
+                reason="Good news",
+                rank=1,
+                metadata={},
+                created_at=_NOW,
+            ),
+        )
+        await repo.freeze_selected_input(
+            conn,
+            run.id,
+            story_id=story_id,
+            story_revision_id=rev_id,
+            selection_decision_id=dec.id,
+            presentation_intent="lead",
+            rank=1,
+            fragment_ids=[frag_id],
+        )
+        await repo.transition_run(conn, run.id, "selected_inputs_sealed")
+
+        from src.config_loader import Config, Settings
+
+        settings = Settings(
+            schedule_time="09:00",
+            timezone="UTC",
+            lookback_hours=24,
+            openai_model="gpt-4",
+            openai_temperature=0.7,
+            ai_provider="mock",
+        )
+        config = Config(
+            channels=[],
+            settings=settings,
+            telegram_api_id=1,
+            telegram_api_hash="hash",
+            telegram_bot_token="token",
+            openai_api_key="key",
+            log_level="INFO",
+        )
+
+        class MockArticleGenerator:
+            def __init__(self):
+                self.calls = 0
+
+            async def generate_from_frozen_input(self, frozen, attempt_observer=None):
+                self.calls += 1
+                if attempt_observer:
+                    att_id = await attempt_observer.attempt_started("writer", provider="mock")
+                    await attempt_observer.attempt_finished(att_id, "succeeded")
+                return ("Заголовок статьи", "Лид статьи", "## Раздел\n\nТекст статьи.")
+
+        mock_gen = MockArticleGenerator()
+        service = PublicationGenerationService(
+            uow=uow,
+            config=config,
+            repo=repo,
+            generator=mock_gen,
+        )
+
+        pub = await service.generate(run.id, defer_delivery=False)
+        assert pub.publication_run_id == run.id
+        assert mock_gen.calls == 1
+        assert pub.title == "Заголовок статьи"
