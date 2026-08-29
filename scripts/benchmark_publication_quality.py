@@ -81,7 +81,9 @@ async def run_benchmark(
         )
         digest_candidates = await snapshot_service.seal_candidates(digest_run.id)
         digest_inputs = await selection_service.select(digest_run.id, defer_generation=False)
-        digest_pub = await generation_service.generate(digest_run.id, defer_delivery=False)
+        digest_pub = None
+        if digest_inputs:
+            digest_pub = await generation_service.generate(digest_run.id, defer_delivery=False)
         t_digest = time.perf_counter() - t0
 
         async with uow.transaction() as conn:
@@ -115,7 +117,12 @@ async def run_benchmark(
         )
         article_candidates = await snapshot_service.seal_candidates(article_run.id)
         article_inputs = await selection_service.select(article_run.id, defer_generation=False)
-        article_pub = await generation_service.generate(article_run.id, defer_delivery=False)
+        article_pub = None
+        win_kind = "none"
+        win_meta = {}
+        if article_inputs:
+            article_pub = await generation_service.generate(article_run.id, defer_delivery=False)
+
         t_article = time.perf_counter() - t0
 
         async with uow.transaction() as conn:
@@ -130,13 +137,14 @@ async def run_benchmark(
             )
             article_attempts = await cur.fetchall()
 
-            cur = await conn.execute(
-                "SELECT kind, metadata FROM publication_generation_attempts WHERE id = %s",
-                (article_pub.winning_generation_attempt_id,),
-            )
-            win_row = await cur.fetchone()
-            win_kind = win_row[0] if win_row else "unknown"
-            win_meta = win_row[1] if win_row else {}
+            if article_pub is not None:
+                cur = await conn.execute(
+                    "SELECT kind, metadata FROM publication_generation_attempts WHERE id = %s",
+                    (article_pub.winning_generation_attempt_id,),
+                )
+                win_row = await cur.fetchone()
+                win_kind = win_row[0] if win_row else "unknown"
+                win_meta = win_row[1] if win_row else {}
 
         article_chat_calls = sum(
             1
@@ -158,17 +166,19 @@ async def run_benchmark(
         print("DIGEST RESULTS:")
         print(f"  Candidates:        {len(digest_candidates)}")
         print(f"  Selected:          {len(digest_inputs)}")
-        print(f"  Publication ID:    {digest_pub.id}")
-        print(f"  Length (chars):    {len(digest_pub.body or '')}")
+        print(f"  Publication ID:    {digest_pub.id if digest_pub else 'N/A (no inputs)'}")
+        print(f"  Length (chars):    {len(digest_pub.body or '') if digest_pub else 0}")
         print(f"  Chat LLM Calls:    {digest_chat_calls} (Target: <= 1)")
         print(f"  Duration:          {t_digest:.2f}s")
         print("-" * 70)
         print("ARTICLE RESULTS:")
         print(f"  Candidates:        {len(article_candidates)}")
         print(f"  Selected:          {len(article_inputs)}")
-        print(f"  Publication ID:    {article_pub.id}")
-        print(f"  Title:             {article_pub.title}")
-        print(f"  Word count:        {len((article_pub.body or '').split())} words")
+        print(f"  Publication ID:    {article_pub.id if article_pub else 'N/A (no inputs)'}")
+        print(f"  Title:             {article_pub.title if article_pub else 'N/A'}")
+        print(
+            f"  Word count:        {len((article_pub.body or '').split()) if article_pub else 0} words"
+        )
         print(f"  Winning Attempt:   {win_kind}")
         print(f"  Claim Trace Units: {claim_trace_count}")
         print(f"  Chat LLM Calls:    {article_chat_calls} (Target: <= 1)")
