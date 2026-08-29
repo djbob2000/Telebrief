@@ -6,12 +6,13 @@ import datetime as dt
 import logging
 from typing import Any, Sequence
 
-from src.config_loader import DigestGroupConfig
+from src.config_loader import DigestGroupConfig, DigestRubricsConfig
 from src.editorial_models import StoryCard
 from src.publication.digest_contracts import GENERIC_FALLBACK_TOPICS
 from src.publication.editorial_adapter import FrozenEditorialInput
 
 logger = logging.getLogger(__name__)
+
 
 # Standard category definitions with emojis and keywords
 STANDARD_RUBRICS: list[dict[str, Any]] = [
@@ -310,12 +311,25 @@ class PublicationDigestRenderer:
         output_language: str = "Russian",
         use_emojis: bool = True,
         include_statistics: bool = False,
+        rubrics_config: DigestRubricsConfig | None = None,
         custom_rubrics: Sequence[DigestGroupConfig] | None = None,
     ) -> None:
         self.output_language = output_language
         self.use_emojis = use_emojis
         self.include_statistics = include_statistics
-        self.rubrics = _build_rubrics_from_config(custom_rubrics)
+        self.rubrics_config = rubrics_config
+        if rubrics_config is not None:
+            self.rubrics = [
+                {
+                    "id": r.id,
+                    "title": r.name,
+                    "emoji": r.emoji,
+                    "fallback": r.fallback,
+                }
+                for r in rubrics_config.items
+            ]
+        else:
+            self.rubrics = _build_rubrics_from_config(custom_rubrics)
 
     def render_grouped_digest(
         self,
@@ -337,18 +351,23 @@ class PublicationDigestRenderer:
         # Group cards by classified rubric
         grouped_cards: dict[str, list[StoryCard]] = {}
         for card in cards:
-            rubric_id = classify_card_rubric(card, self.rubrics)
+            if card.rubric_id and any(r["id"] == card.rubric_id for r in self.rubrics):
+                rubric_id = card.rubric_id
+            elif self.rubrics_config is not None:
+                rubric_id = self.rubrics_config.fallback.id
+            else:
+                rubric_id = classify_card_rubric(card, self.rubrics)
             grouped_cards.setdefault(rubric_id, []).append(card)
 
         sections: list[str] = [f"*{title}*"]
 
         for rubric in self.rubrics:
-            rubric_id = rubric["id"]
+            rubric_id = str(rubric["id"])
             if rubric_id not in grouped_cards:
                 continue
 
             rubric_cards = grouped_cards[rubric_id]
-            emoji = f"{rubric['emoji']} " if self.use_emojis else ""
+            emoji = f"{rubric['emoji']} " if (self.use_emojis and rubric.get("emoji")) else ""
             header = f"\n*{emoji}{rubric['title']}*\n"
             sections.append(header)
 
@@ -358,10 +377,12 @@ class PublicationDigestRenderer:
 
                 # Extract clean additional hard facts not already in summary
                 extra_facts: list[str] = []
-                for fact in card.hard_facts:
-                    f_text = fact.text.strip().rstrip(".")
-                    if f_text and f_text.lower() not in summary.lower() and len(f_text) > 10:
-                        extra_facts.append(f_text)
+                # If summary is already a substantive paragraph (>= 80 chars), we don't need to append raw facts
+                if len(summary) < 80:
+                    for fact in card.hard_facts:
+                        f_text = fact.text.strip().rstrip(".")
+                        if f_text and f_text.lower() not in summary.lower() and len(f_text) > 10:
+                            extra_facts.append(f_text)
 
                 # Extract useful details (working hours, contacts, exact addresses)
                 extra_details: list[str] = []

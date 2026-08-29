@@ -155,3 +155,66 @@ class TestPublicationDigestRenderer:
 
         # Observation 'Воды нет с утра' is substring of summary, so redundant sub-point is suppressed
         assert "По сообщениям жителей:" not in body
+
+    def test_render_grouped_digest_uses_rubrics_config_order_and_emojis(self):
+        from src.config_loader import DigestRubricConfig, DigestRubricsConfig
+
+        rubrics = DigestRubricsConfig(
+            min_similarity=0.38,
+            items=(
+                DigestRubricConfig(
+                    id="safety",
+                    name="Безопасность",
+                    description="",
+                    emoji="💥",
+                    fallback=False,
+                ),
+                DigestRubricConfig(
+                    id="infrastructure",
+                    name="Инфраструктура",
+                    description="",
+                    emoji="⚡️",
+                    fallback=False,
+                ),
+                DigestRubricConfig(
+                    id="other",
+                    name="Другое",
+                    description="",
+                    emoji="📌",
+                    fallback=True,
+                ),
+            ),
+        )
+        renderer = PublicationDigestRenderer(rubrics_config=rubrics, use_emojis=True)
+        cards = [
+            StoryCard(
+                id="story-1",
+                topic="Водовод",
+                importance="medium",
+                summary="Ремонт трубы",
+                rubric_id="infrastructure",
+                representative_source_refs=["ref-1"],
+            ),
+            StoryCard(
+                id="story-2",
+                topic="ПВО",
+                importance="high",
+                summary="Сбита цель",
+                rubric_id="safety",
+                representative_source_refs=["ref-2"],
+            ),
+        ]
+        frozen = FrozenEditorialInput(
+            analysis=EditorialAnalysis(cards=cards),
+            writer_bundle=PreparedBundle(
+                records={}, prompt_text="", total_messages=2, candidate_count=2
+            ),
+        )
+        _, _, body = renderer.render_grouped_digest(frozen)
+
+        # Safety should appear before Infrastructure because of config order
+        pos_safety = body.find("💥 Безопасность")
+        pos_infra = body.find("⚡️ Инфраструктура")
+        assert pos_safety != -1
+        assert pos_infra != -1
+        assert pos_safety < pos_infra
