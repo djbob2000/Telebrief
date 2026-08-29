@@ -130,6 +130,31 @@ async def test_topic_root_becomes_root_external_id(sample_config, mock_logger):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_chat_reply_without_forum_topic_flag_does_not_set_topic_id(
+    sample_config, mock_logger
+):
+    """In-chat replies (forum_topic=False) must not become virtual forum topics."""
+    sample_config.channels[0].topics = []
+    collector = _collector(sample_config, mock_logger)
+    message = _telegram_message(55)
+    message.reply_to = SimpleNamespace(
+        reply_to_msg_id=42,
+        reply_to_top_id=100,
+        forum_topic=False,
+    )
+    collector.client.iter_messages = _iter_messages_result([message])
+
+    batch = await collector.scan(_source(), None, _context())
+
+    observed = batch.items[0]
+    assert observed.metadata["topic_id"] is None
+    assert observed.metadata["reply_to_id"] == 42
+    assert observed.parent_external_id == "42"
+    assert observed.root_external_id == "100"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_service_post_without_text_or_media_is_skipped(sample_config, mock_logger):
     """Empty service posts never become ObservedItems (legacy conversion parity)."""
     collector = _collector(sample_config, mock_logger)

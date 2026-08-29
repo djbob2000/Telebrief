@@ -718,10 +718,13 @@ class TelegramCollector:
         reply_to = getattr(message, "reply_to", None)
         reply_to_msg_id = getattr(reply_to, "reply_to_msg_id", None) if reply_to else None
         reply_to_top_id = getattr(reply_to, "reply_to_top_id", None) if reply_to else None
+        is_forum_topic = getattr(reply_to, "forum_topic", False) if reply_to else False
         fwd_name, fwd_username = forward_origin(message)
         fwd = getattr(message, "forward", None) or getattr(message, "fwd_from", None)
         fwd_date = getattr(fwd, "date", None) if fwd else None
-        effective_topic_id = topic_id if topic_id is not None else reply_to_top_id
+        effective_topic_id = (
+            topic_id if topic_id is not None else (reply_to_top_id if is_forum_topic else None)
+        )
 
         metadata: dict[str, JSONValue] = {
             "topic_id": effective_topic_id,
