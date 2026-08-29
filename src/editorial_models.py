@@ -410,6 +410,7 @@ class EditorialAnalysis:
     excluded_refs: list[str] = field(default_factory=list)
     city_situation: Any = None  # CitySituationRollup | None
     evidence: dict[str, Any] = field(default_factory=dict)
+    article_context: Any = None  # ArticleEditorialContext | None
 
     def human_readable_text(self) -> str:
         return " ".join(card.human_readable_text() for card in self.cards)

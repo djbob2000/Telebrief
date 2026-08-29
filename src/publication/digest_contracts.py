@@ -6,4 +6,6 @@ DIGEST_PUBLICATION_TYPES: frozenset[str] = frozenset({"digest", "digest_grouped"
 
 HARD_EXCLUSION_REASONS: frozenset[str] = frozenset({"commercial_classified"})
 
-GENERIC_FALLBACK_TOPICS: frozenset[str] = frozenset({"Городские события", "Новости города"})
+GENERIC_FALLBACK_TOPICS: frozenset[str] = frozenset(
+    {"Городские события", "Новости города", "Новости дня", "События дня", "Главные события"}
+)

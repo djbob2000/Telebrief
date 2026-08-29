@@ -365,10 +365,36 @@ class EventEditorialAdapter:
                     )
                 ]
 
+        # Build ArticleEditorialContext for article runs
+        article_ctx = None
+        if run is not None and run.publication_type == "article":
+            from src.domain.operational_state import ResolvedObservation, _parse_iso_ts
+            from src.publication.article_context import build_article_editorial_context
+
+            resolved_obs_list: list[ResolvedObservation] = []
+            for obs, obs_ts, o_refs in all_observations_with_time:
+                eff_from = _parse_iso_ts(obs.effective_from)
+                eff_until = _parse_iso_ts(obs.effective_until)
+                resolved_obs_list.append(
+                    ResolvedObservation(
+                        observation=obs,
+                        observed_at=obs_ts,
+                        source_refs=tuple(o_refs),
+                        effective_from=eff_from,
+                        effective_until=eff_until,
+                    )
+                )
+            article_ctx = build_article_editorial_context(
+                cards=story_cards,
+                evidence_items=list(all_evidence.values()),
+                operational_observations=resolved_obs_list,
+            )
+
         analysis = EditorialAnalysis(
             cards=story_cards,
             city_situation=city_rollup,
             evidence=all_evidence,
+            article_context=article_ctx,
         )
         bundle = PreparedBundle(
             records=records,
