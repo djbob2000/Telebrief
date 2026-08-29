@@ -11,6 +11,9 @@ import psycopg
 
 from src.config_loader import Config
 from src.db.uow import DatabaseUnitOfWork
+from src.publication.digest_contracts import (
+    DIGEST_PUBLICATION_TYPES,
+)
 from src.publication.models import (
     PublicationCandidate,
     PublicationInput,
@@ -74,15 +77,6 @@ class HeuristicSelectionModel:
                 )
             )
         return proposals
-
-
-DIGEST_PUBLICATION_TYPES: frozenset[str] = frozenset(
-    {
-        "digest",
-        "digest_grouped",
-        "digest_channel",
-    }
-)
 
 
 class EditorialSelectionService:

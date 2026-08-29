@@ -11,6 +11,7 @@ import psycopg
 from src.article_generator import ArticleGenerator
 from src.config_loader import Config
 from src.db.uow import DatabaseUnitOfWork
+from src.publication.digest_contracts import DIGEST_PUBLICATION_TYPES
 from src.publication.editorial_adapter import (
     DatabaseGenerationAttemptObserver,
     KnowledgeEditorialAdapter,
@@ -72,7 +73,7 @@ class PublicationGenerationService:
         observer = DatabaseGenerationAttemptObserver(uow=self.uow, run_id=run_id, repo=self.repo)
 
         try:
-            if run.publication_type in ("digest_grouped", "digest_channel", "digest"):
+            if run.publication_type in DIGEST_PUBLICATION_TYPES:
                 from src.publication.renderers import PublicationDigestRenderer
 
                 renderer = PublicationDigestRenderer(
