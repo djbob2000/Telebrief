@@ -277,6 +277,15 @@ class TestPublicationSnapshotConstraints:
             """,
             (trun_id, story_id, edition.id, aid, _NOW),
         )
+        await conn.execute(
+            """
+            INSERT INTO story_event_triage_decisions (
+                run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
+                decision, retention, enrichment, confidence, reason, created_at
+            ) VALUES (%s, %s, %s, 'v2', 'hash-1', 'ANALYZE', 'KEEP', 'ANALYZE', 0.99, 'in city', %s)
+            """,
+            (trun_id, story_id, aid, _NOW),
+        )
 
         # 2. Check eligible_story_revisions finds this event_first story
         eligible = await repo.eligible_story_revisions(
@@ -518,6 +527,31 @@ class TestPublicationSnapshotConstraints:
                 trun_id,
                 oos_sid,
                 edition.id,
+                aids[2],
+                _NOW,
+            ),
+        )
+        await conn.execute(
+            """
+            INSERT INTO story_event_triage_decisions (
+                run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
+                decision, retention, enrichment, confidence, reason, created_at
+            ) VALUES
+            (%s, %s, %s, 'v2', 'hash-abc', 'ANALYZE', 'KEEP', 'ANALYZE', 0.99, 'in city', %s),
+            (%s, %s, %s, 'v2', 'hash-abc', 'ANALYZE', 'KEEP', 'ANALYZE', 0.95, 'impact', %s),
+            (%s, %s, %s, 'v2', 'hash-abc', 'IGNORE', 'DROP', 'NONE', 0.99, 'external', %s)
+            """,
+            (
+                trun_id,
+                local_sid,
+                aids[0],
+                _NOW,
+                trun_id,
+                impact_sid,
+                aids[1],
+                _NOW,
+                trun_id,
+                oos_sid,
                 aids[2],
                 _NOW,
             ),

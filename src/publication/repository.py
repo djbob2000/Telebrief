@@ -524,15 +524,22 @@ class PublicationRepository:
                       JOIN story_edition_scope_decisions sesd
                         ON sesd.story_id = sc.story_id
                        AND sesd.latest_assignment_id = sc.latest_assignment_id
+                      JOIN story_event_triage_decisions setd
+                        ON setd.story_id = sc.story_id
+                       AND setd.latest_assignment_id = sc.latest_assignment_id
+                       AND setd.scope_config_hash = sesd.scope_config_hash
                       WHERE sc.story_id = story_activity.story_id
                         AND sesd.edition_id = %s
                         AND sesd.scope_version = 'v1'
                         AND (%s::text IS NULL OR sesd.scope_config_hash = %s)
                         AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
+                        AND setd.triage_version = 'v2'
+                        AND setd.retention = 'KEEP'
                         AND sesd.created_at <= %s
                   )
               )
             ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
+
             """,
             (
                 edition_id,
