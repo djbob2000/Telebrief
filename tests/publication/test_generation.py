@@ -919,3 +919,440 @@ class TestPublicationGenerationService:
         assert pub.publication_run_id == run.id
         assert mock_gen.calls == 1
         assert pub.title == "Заголовок статьи"
+
+
+@pytest.mark.postgres
+async def test_event_first_article_validation_failure_fallback_attempt(conn, pool, edition):
+    """When the 1 AI writer attempt returns unsupported claims, it records failed writer attempt
+
+    and successful story_renderer_fallback attempt without making a 2nd AI call.
+    """
+    from unittest.mock import AsyncMock
+
+    from src.article_generator import ArticleGenerator
+    from src.config_loader import Config, PublicationEditorialConfig, Settings
+
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_ids = await _seed_policies(conn, edition.id)
+
+    cur = await conn.execute(
+        """
+        INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+        VALUES (%s, 'active', 'event_first', %s)
+        RETURNING id
+        """,
+        (edition.id, _NOW),
+    )
+    story_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name, role)
+        VALUES ('telegram', 'channel', '-10042', 'https://t.me/res', 'РЭС', 'official')
+        RETURNING id
+        """
+    )
+    src_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_id, edition.id),
+    )
+    cur = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'msg', 'm1', %s) RETURNING id
+        """,
+        (src_id, _NOW),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'h1', 'Авария на подстанции. Бригады ведут восстановительные работы.')
+        RETURNING id
+        """,
+        (item_id,),
+    )
+    sir_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
+        VALUES (%s, 0, 'Авария на подстанции. Бригады ведут восстановительные работы.', 'hf1', 'v1', TRUE, %s)
+        RETURNING id
+        """,
+        (sir_id, _NOW),
+    )
+    frag_id = (await cur.fetchone())[0]
+
+    event_payload = {
+        "topic": "Авария на подстанции",
+        "headline": "Отключение света",
+        "digest_summary": "Авария на подстанции в центре.",
+        "evidence_items": [
+            {
+                "text": "Авария на подстанции в центре",
+                "kind": "established_fact",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [frag_id],
+            }
+        ],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-rev-val', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            story_id,
+            event_payload["digest_summary"],
+            event_payload["headline"],
+            event_payload["digest_summary"],
+            json.dumps(event_payload),
+            _NOW,
+        ),
+    )
+    rev_id = (await cur.fetchone())[0]
+
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="article",
+        request_key="test-val-fail-run",
+        snapshot_at=_NOW,
+        policy_ids=policy_ids,
+    )
+    cand = await repo.insert_candidate(
+        conn, run.id, story_id=story_id, story_revision_id=rev_id, deterministic_rank=1
+    )
+    dec = await repo.insert_selection_decision(
+        conn,
+        run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=run.id,
+            candidate_id=cand.id,
+            decision="INCLUDE",
+            presentation_intent="lead",
+            confidence=0.98,
+            reason="Good",
+            rank=1,
+            metadata={},
+            created_at=_NOW,
+        ),
+    )
+    await repo.freeze_selected_input(
+        conn,
+        run.id,
+        story_id=story_id,
+        story_revision_id=rev_id,
+        selection_decision_id=dec.id,
+        presentation_intent="lead",
+        rank=1,
+        fragment_ids=[frag_id],
+    )
+    await repo.transition_run(conn, run.id, "selected_inputs_sealed")
+
+    settings = Settings(
+        schedule_time="09:00",
+        timezone="UTC",
+        lookback_hours=24,
+        openai_model="gpt-4",
+        openai_temperature=0.7,
+        ai_provider="openai",
+        publication_editorial=PublicationEditorialConfig(
+            article_min_words=5,
+            article_min_sections=1,
+        ),
+    )
+    config = Config(
+        channels=[],
+        settings=settings,
+        telegram_api_id=1,
+        telegram_api_hash="hash",
+        telegram_bot_token="token",
+        openai_api_key="key",
+        log_level="INFO",
+    )
+
+    import logging
+
+    generator = ArticleGenerator(config=config, logger=logging.getLogger("test"))
+    mock_provider = AsyncMock()
+    # Return draft with invented duration "полтора часа"
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "title": "Отключение света в центре",
+            "title_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
+            "lead": "В центре города ликвидируют аварию на подстанции.",
+            "lead_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
+            "sections": [
+                {
+                    "heading": "Энергоснабжение",
+                    "heading_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
+                    "paragraphs": [
+                        {
+                            "text": "Бригады восстановили питание в течение полутора часов.",
+                            "cited_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    generator.provider = mock_provider
+
+    service = PublicationGenerationService(
+        uow=uow,
+        config=config,
+        repo=repo,
+        generator=generator,
+    )
+
+    pub = await service.generate(run.id, defer_delivery=False)
+    assert pub.publication_run_id == run.id
+    # Assert provider was called exactly ONCE
+    assert mock_provider.chat_completion.call_count == 1
+
+    # Check generation attempts in DB
+    cur = await conn.execute(
+        """
+        SELECT kind, status, error_kind, metadata
+        FROM publication_generation_attempts
+        WHERE publication_run_id = %s
+        ORDER BY attempt_no ASC
+        """,
+        (run.id,),
+    )
+    attempts = await cur.fetchall()
+    assert len(attempts) == 2
+    # 1. writer failed with ValidationFailed
+    assert attempts[0][0] == "writer"
+    assert attempts[0][1] == "failed"
+    assert attempts[0][2] == "ValidationFailed"
+    # 2. story_renderer_fallback succeeded
+    assert attempts[1][0] == "story_renderer_fallback"
+    assert attempts[1][1] == "succeeded"
+
+    # Winning attempt is story_renderer_fallback
+    cur = await conn.execute(
+        "SELECT kind FROM publication_generation_attempts WHERE id = %s",
+        (pub.winning_generation_attempt_id,),
+    )
+    assert (await cur.fetchone())[0] == "story_renderer_fallback"
+    # Ensure unsupported hallucinated phrase is NOT in publication
+    assert "полутора часов" not in pub.body
+
+
+@pytest.mark.postgres
+async def test_event_first_article_successful_writer_records_claim_trace(conn, pool, edition):
+    """When the AI writer attempt succeeds, it stores claim_trace in attempt metadata."""
+    from unittest.mock import AsyncMock
+
+    from src.article_generator import ArticleGenerator
+    from src.config_loader import Config, PublicationEditorialConfig, Settings
+
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_ids = await _seed_policies(conn, edition.id)
+
+    cur = await conn.execute(
+        """
+        INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+        VALUES (%s, 'active', 'event_first', %s)
+        RETURNING id
+        """,
+        (edition.id, _NOW),
+    )
+    story_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name, role)
+        VALUES ('telegram', 'channel', '-10043', 'https://t.me/res', 'РЭС', 'official')
+        RETURNING id
+        """
+    )
+    src_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_id, edition.id),
+    )
+    cur = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'msg', 'm2', %s) RETURNING id
+        """,
+        (src_id, _NOW),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'h2', 'Авария на подстанции: временно обесточен центр города.')
+        RETURNING id
+        """,
+        (item_id,),
+    )
+    sir_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
+        VALUES (%s, 0, 'Авария на подстанции: временно обесточен центр города.', 'hf2', 'v1', TRUE, %s)
+        RETURNING id
+        """,
+        (sir_id, _NOW),
+    )
+    frag_id = (await cur.fetchone())[0]
+
+    event_payload = {
+        "topic": "Авария на подстанции",
+        "headline": "Отключение света в центре",
+        "digest_summary": "Авария на подстанции в центре.",
+        "evidence_items": [
+            {
+                "text": "Авария на подстанции в центре",
+                "kind": "established_fact",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [frag_id],
+            }
+        ],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-rev-trace', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            story_id,
+            event_payload["digest_summary"],
+            event_payload["headline"],
+            event_payload["digest_summary"],
+            json.dumps(event_payload),
+            _NOW,
+        ),
+    )
+    rev_id = (await cur.fetchone())[0]
+
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="article",
+        request_key="test-trace-run",
+        snapshot_at=_NOW,
+        policy_ids=policy_ids,
+    )
+    cand = await repo.insert_candidate(
+        conn, run.id, story_id=story_id, story_revision_id=rev_id, deterministic_rank=1
+    )
+    dec = await repo.insert_selection_decision(
+        conn,
+        run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=run.id,
+            candidate_id=cand.id,
+            decision="INCLUDE",
+            presentation_intent="lead",
+            confidence=0.98,
+            reason="Good",
+            rank=1,
+            metadata={},
+            created_at=_NOW,
+        ),
+    )
+    await repo.freeze_selected_input(
+        conn,
+        run.id,
+        story_id=story_id,
+        story_revision_id=rev_id,
+        selection_decision_id=dec.id,
+        presentation_intent="lead",
+        rank=1,
+        fragment_ids=[frag_id],
+    )
+    await repo.transition_run(conn, run.id, "selected_inputs_sealed")
+
+    settings = Settings(
+        schedule_time="09:00",
+        timezone="UTC",
+        lookback_hours=24,
+        openai_model="gpt-4",
+        openai_temperature=0.7,
+        ai_provider="openai",
+        publication_editorial=PublicationEditorialConfig(
+            article_min_words=5,
+            article_min_sections=1,
+        ),
+    )
+    config = Config(
+        channels=[],
+        settings=settings,
+        telegram_api_id=1,
+        telegram_api_hash="hash",
+        telegram_bot_token="token",
+        openai_api_key="key",
+        log_level="INFO",
+    )
+
+    import logging
+
+    generator = ArticleGenerator(config=config, logger=logging.getLogger("test"))
+    mock_provider = AsyncMock()
+    sup_id = f"story:{story_id}:evidence:0:frag:{frag_id}"
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "title": "Отключение света в центре",
+            "title_support_ids": [sup_id],
+            "lead": "В центре города ликвидируют аварию на подстанции.",
+            "lead_support_ids": [sup_id],
+            "sections": [
+                {
+                    "heading": "Энергоснабжение",
+                    "heading_support_ids": [sup_id],
+                    "paragraphs": [
+                        {
+                            "text": "В центре временно обесточены жилые кварталы из-за аварии на подстанции.",
+                            "cited_support_ids": [sup_id],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    generator.provider = mock_provider
+
+    service = PublicationGenerationService(
+        uow=uow,
+        config=config,
+        repo=repo,
+        generator=generator,
+    )
+
+    pub = await service.generate(run.id, defer_delivery=False)
+    assert pub.publication_run_id == run.id
+    assert mock_provider.chat_completion.call_count == 1
+
+    cur = await conn.execute(
+        """
+        SELECT kind, status, metadata
+        FROM publication_generation_attempts
+        WHERE publication_run_id = %s
+        """,
+        (run.id,),
+    )
+    row = await cur.fetchone()
+    assert row[0] == "writer"
+    assert row[1] == "succeeded"
+    meta = row[2]
+    assert "claim_trace" in meta
+    assert len(meta["claim_trace"]) >= 3
+    assert meta["validation"]["is_valid"] is True

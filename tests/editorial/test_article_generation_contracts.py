@@ -12,7 +12,9 @@ import pytest
 from src.article_generator import ArticleGenerator
 from src.config_loader import Config, PublicationEditorialConfig, Settings
 from src.editorial_models import EditorialAnalysis, PreparedBundle
-from src.publication.article_context import ArticleEditorialContext
+from src.publication.article_context import (
+    build_article_editorial_context,
+)
 from src.publication.editorial_adapter import FrozenEditorialInput
 from src.publication.evidence import PublicationEvidence
 
@@ -80,14 +82,10 @@ async def test_event_first_article_generation_single_call_and_clean_markdown() -
         observed_at=_NOW,
     )
 
-    art_ctx = ArticleEditorialContext(
-        headline_candidates=("Ремонт сетей и выставка картин",),
-        operational_timeline=(),
-        evidence_index=(evi1, evi2),
-        evidence_by_id={evi1.evidence_id: evi1, evi2.evidence_id: evi2},
-        recurring_topics=("utilities", "culture"),
-        general_facts=(evi1, evi2),
-        resident_observations=(),
+    art_ctx = build_article_editorial_context(
+        cards=[],
+        evidence_items=[evi1, evi2],
+        operational_observations=[],
     )
 
     analysis = EditorialAnalysis(
@@ -105,25 +103,35 @@ async def test_event_first_article_generation_single_call_and_clean_markdown() -
     # Mock provider response with valid JSON draft
     llm_draft_response = {
         "title": "Городская хроника: коммунальные службы и культурная жизнь",
+        "title_support_ids": ["story:1:evidence:0:frag:101"],
         "lead": "В городе завершились масштабные работы на водоводе и открылась новая выставка.",
+        "lead_support_ids": ["story:1:evidence:0:frag:101"],
         "sections": [
             {
                 "heading": "Водоснабжение",
+                "heading_support_ids": ["story:1:evidence:0:frag:101"],
                 "paragraphs": [
-                    "Специалисты водоканала завершили замену полукилометра труб.",
-                    "Подача воды в жилые кварталы возобновлена в полном объеме.",
+                    {
+                        "text": "Специалисты водоканала завершили замену 500 метров труб.",
+                        "cited_support_ids": ["story:1:evidence:0:frag:101"],
+                    },
+                    {
+                        "text": "Подача воды в жилые кварталы возобновлена в полном объеме.",
+                        "cited_support_ids": ["story:1:evidence:0:frag:101"],
+                    },
                 ],
-                "cited_evidence_ids": ["story:1:evidence:0:frag:101"],
             },
             {
                 "heading": "Культурные события",
+                "heading_support_ids": ["story:2:evidence:0:frag:201"],
                 "paragraphs": [
-                    "В городском художественном музее состоялось открытие новой экспозиции.",
+                    {
+                        "text": "В городском художественном музее открылась выставка картин.",
+                        "cited_support_ids": ["story:2:evidence:0:frag:201"],
+                    },
                 ],
-                "cited_evidence_ids": ["story:2:evidence:0:frag:201"],
             },
         ],
-        "cited_evidence_ids": ["story:1:evidence:0:frag:101", "story:2:evidence:0:frag:201"],
     }
 
     mock_provider = AsyncMock()
@@ -168,14 +176,18 @@ async def test_event_first_article_generation_falls_back_on_invalid_draft_withou
         observed_at=_NOW,
     )
 
-    art_ctx = ArticleEditorialContext(
-        headline_candidates=("Заголовок кандидата",),
-        operational_timeline=(),
-        evidence_index=(evi1,),
-        evidence_by_id={evi1.evidence_id: evi1},
-        recurring_topics=("utilities",),
-        general_facts=(evi1,),
-        resident_observations=(),
+    from src.editorial_models import StoryCard
+
+    card = StoryCard(
+        id="1",
+        topic="Заголовок кандидата",
+        importance="medium",
+        summary="Краткая сводка о водопроводе",
+    )
+    art_ctx = build_article_editorial_context(
+        cards=[card],
+        evidence_items=[evi1],
+        operational_observations=[],
     )
     analysis = EditorialAnalysis(cards=[], article_context=art_ctx)
     frozen_input = FrozenEditorialInput(

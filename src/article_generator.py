@@ -683,27 +683,40 @@ class ArticleGenerator:
 Ваша задача — написать связную, объективную и информативную журналистскую обзорную статью на русском языке на основе проверенных фактов, оперативной хроники и сообщений.
 
 Правила:
-1. Опирайтесь ТОЛЬКО на предоставленные факты и оперативную хронику. Категорически запрещено выдумывать неподтвержденные детали, цифры, адреса и события.
-2. Язык статьи: {self.output_language}. Стиль — новостная журналистика: сдержанный, фактологический, грамотный, без патетики и клише.
-3. Структура:
+1. Опирайтесь ТОЛЬКО на предоставленные единицы поддержки [SUPPORT id]. Категорически запрещено выдумывать неподтвержденные детали, цифры, адреса, организации, длительности, причины, механизмы и события.
+2. Every title, lead, heading and paragraph must cite support IDs.
+3. Never invent a duration, number, date, time, price, route interval, address, organization, cause, mechanism, completion state, or future deadline.
+4. If a detail is not explicit in cited support, omit it.
+5. Do not infer that repairs were completed merely because work had started.
+6. Do not infer a cause/mechanism from chronology alone.
+7. Язык статьи: {self.output_language}. Стиль — новостная журналистика: сдержанный, фактологический, грамотный, без патетики и клише.
+8. Структура:
    - title: Информативный заголовок, отражающий ключевые события дня.
+   - title_support_ids: Массив ID поддержки для заголовка (например, ["story:1:evidence:0:frag:101"]).
    - lead: Вводный лид (2-3 предложения), суммирующий обстановку.
-   - sections: Тематические разделы (3-6 разделов). Каждый раздел содержит heading и связные параграфы (paragraphs).
-   - cited_evidence_ids: Для каждого раздела укажите точные ID использованных фактов (например, ["story:1:evidence:0:frag:101"]).
-4. Внутренние ID вида [story:...] НЕ должны появляться внутри текста параграфов — указывайте их только в массиве cited_evidence_ids.
+   - lead_support_ids: Массив ID поддержки для лида.
+   - sections: Тематические разделы (3-6 разделов). Каждый раздел содержит:
+     - heading: Название раздела.
+     - heading_support_ids: Массив ID поддержки для заголовка раздела.
+     - paragraphs: Массив объектов параграфов: [{{"text": "Текст параграфа...", "cited_support_ids": ["story:1:evidence:0:frag:101"]}}].
+9. Внутренние ID вида [story:...] или [SUPPORT...] НЕ должны появляться внутри текста заголовка, лида или параграфов — указывайте их только в массивах support_ids.
 
 Формат ответа — строго валидный JSON:
 {{
   "title": "Заголовок статьи",
+  "title_support_ids": ["story:1:evidence:0:frag:101"],
   "lead": "Текст лида...",
+  "lead_support_ids": ["story:1:evidence:0:frag:101"],
   "sections": [
     {{
       "heading": "Название раздела",
+      "heading_support_ids": ["story:1:evidence:0:frag:101"],
       "paragraphs": [
-        "Текст первого абзаца...",
-        "Текст второго абзаца..."
-      ],
-      "cited_evidence_ids": ["story:1:evidence:0:frag:101"]
+        {{
+          "text": "Текст параграфа...",
+          "cited_support_ids": ["story:1:evidence:0:frag:101"]
+        }}
+      ]
     }}
   ]
 }}
@@ -754,13 +767,47 @@ class ArticleGenerator:
                         writer_attempt_id,
                         "failed",
                         error_kind="ValidationFailed",
-                        metadata={"violations": list(val_res.violations)},
+                        metadata={
+                            "violations": list(val_res.violations),
+                            "unsupported_claims": [
+                                {"kind": c.kind, "raw": c.raw, "excerpt": c.excerpt}
+                                for c in val_res.unsupported_claims
+                            ],
+                        },
                     )
-                return render_event_article_fallback(article_ctx)
+                return await self._render_event_article_fallback_with_attempt(
+                    article_ctx,
+                    attempt_observer=attempt_observer,
+                    reason="article_evidence_validation_failed",
+                    metadata={"violations": list(val_res.violations)},
+                )
 
             body = draft.render_markdown()
+            from src.publication.article_trace import build_article_claim_trace
+
+            trace = build_article_claim_trace(draft, article_ctx)
+            trace_meta = [
+                {
+                    "unit_id": u.unit_id,
+                    "support_ids": list(u.support_ids),
+                    "source_refs": list(u.source_refs),
+                    "fragment_ids": list(u.fragment_ids),
+                    "source_item_ids": list(u.source_item_ids),
+                }
+                for u in trace
+            ]
+            success_meta = {
+                "validation": {
+                    "is_valid": True,
+                    "unsupported_claim_count": 0,
+                    "unit_count": len(trace),
+                },
+                "claim_trace": trace_meta,
+            }
             if attempt_observer is not None and writer_attempt_id > 0:
-                await attempt_observer.attempt_finished(writer_attempt_id, "succeeded")
+                await attempt_observer.attempt_finished(
+                    writer_attempt_id, "succeeded", metadata=success_meta
+                )
 
             return (draft.title, draft.lead, body)
 
@@ -774,7 +821,37 @@ class ArticleGenerator:
                 await attempt_observer.attempt_finished(
                     writer_attempt_id, "failed", error_kind=type(exc).__name__
                 )
-            return render_event_article_fallback(article_ctx)
+            return await self._render_event_article_fallback_with_attempt(
+                article_ctx,
+                attempt_observer=attempt_observer,
+                reason=f"writer_error:{type(exc).__name__}",
+            )
+
+    async def _render_event_article_fallback_with_attempt(
+        self,
+        article_ctx: ArticleEditorialContext,
+        *,
+        attempt_observer: Any | None,
+        reason: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> tuple[str, str, str]:
+        fb_meta = {"reason": reason}
+        if metadata:
+            fb_meta.update(metadata)
+        fb_attempt_id = 0
+        if attempt_observer is not None:
+            fb_attempt_id = await attempt_observer.attempt_started(
+                "story_renderer_fallback",
+                metadata=fb_meta,
+            )
+        title, lead, body = render_event_article_fallback(article_ctx)
+        if attempt_observer is not None and fb_attempt_id > 0:
+            await attempt_observer.attempt_finished(
+                fb_attempt_id,
+                "succeeded",
+                metadata=fb_meta,
+            )
+        return (title, lead, body)
 
     async def generate_from_analysis_and_bundle(  # noqa: C901
         self,
