@@ -504,7 +504,9 @@ class PublicationRepository:
                 has_recent_claim,
                 has_recent_event,
                 newest_source_published_at,
-                newest_source_temporal_fidelity
+                newest_source_temporal_fidelity,
+                knowledge_source,
+                event_payload
             FROM story_activity
             WHERE (claim_count > 0 OR knowledge_source = 'event_first')
               AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
@@ -573,6 +575,22 @@ class PublicationRepository:
             ),
         )
         rows = await cursor.fetchall()
+
+        # Single knowledge source isolation: if event_first stories with rich analysis exist, prioritize them
+        has_rich_event_first = any(
+            r[16] == "event_first"
+            and isinstance(r[17], dict)
+            and r[17].get("publishability") in ("news", "brief")
+            for r in rows
+        )
+        if has_rich_event_first:
+            rows = [
+                r
+                for r in rows
+                if r[16] == "event_first"
+                and isinstance(r[17], dict)
+                and r[17].get("publishability") in ("news", "brief")
+            ]
 
         # If platforms are excluded, derive filtered editorial text for snapshot features
         filtered_story_texts: dict[int, str] = {}

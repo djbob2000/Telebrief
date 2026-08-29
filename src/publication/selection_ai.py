@@ -159,6 +159,26 @@ class AIPublicationSelectionModel:
                 "4. Respond strictly with a JSON object containing a 'proposals' array."
             )
 
+        if len(candidates) > 40:
+            batch_size = 40
+            all_proposals: list[SelectionProposal] = []
+            for i in range(0, len(candidates), batch_size):
+                batch = candidates[i : i + batch_size]
+                batch_prompt = self._build_prompt(run=run, candidates=batch)
+                batch_messages = [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": batch_prompt},
+                ]
+                raw_output = await self.provider.chat_completion(
+                    messages=batch_messages,
+                    model=self.model_name,
+                    temperature=0.2,
+                    max_tokens=4096,
+                )
+                batch_proposals = self._parse_and_validate(raw_output, batch)
+                all_proposals.extend(batch_proposals)
+            return all_proposals
+
         messages = [
             {
                 "role": "system",
@@ -263,6 +283,12 @@ class AIPublicationSelectionModel:
                     f"invalid decision {decision!r}, expected one of {VALID_DECISIONS}"
                 )
 
+            intent = item.get("presentation_intent")
+            if intent is not None and intent not in VALID_PRESENTATION_INTENTS:
+                raise InvalidSelectionResponse(
+                    f"invalid presentation_intent {intent!r}, expected one of {VALID_PRESENTATION_INTENTS}"
+                )
+
             ex_reason = item.get("exclusion_reason")
             if ex_reason is not None:
                 if not isinstance(ex_reason, str) or ex_reason not in HARD_EXCLUSION_REASONS:
@@ -275,21 +301,15 @@ class AIPublicationSelectionModel:
                     )
             exclusion_reason = str(ex_reason) if ex_reason is not None else None
 
-            intent = item.get("presentation_intent")
-            if intent is not None and intent not in VALID_PRESENTATION_INTENTS:
-                raise InvalidSelectionResponse(
-                    f"invalid presentation_intent {intent!r}, expected one of {VALID_PRESENTATION_INTENTS}"
-                )
-
             rank = item.get("rank")
-            if rank is not None and not isinstance(rank, int):
-                try:
-                    rank = int(rank)
-                except (ValueError, TypeError):
-                    rank = None
+            if rank is not None and (not isinstance(rank, int) or rank < 1):
+                raise InvalidSelectionResponse("rank must be a positive integer or None")
 
-            conf = item.get("confidence")
-            confidence = float(conf) if conf is not None else None
+            try:
+                confidence = float(item.get("confidence", 1.0))
+            except (ValueError, TypeError):
+                confidence = 1.0
+
             reason = str(item.get("reason", "")) or None
 
             proposals.append(
