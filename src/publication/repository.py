@@ -507,7 +507,7 @@ class PublicationRepository:
                 newest_source_temporal_fidelity
             FROM story_activity
             WHERE (claim_count > 0 OR knowledge_source = 'event_first')
-              AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s OR knowledge_source = 'event_first')
+              AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
               AND (
                   event_payload IS NULL
                   OR event_payload->>'publishability' IS NULL

@@ -247,7 +247,12 @@ class StoryTriageService:
                 ),
             )
 
-            if res.decision == "IGNORE" and res.confidence >= min_ignore_confidence:
+            is_safe_ignore = (
+                res.decision == "IGNORE"
+                and res.confidence >= min_ignore_confidence
+                and res.exclusion_reason in ("commercial_classified", "obvious_noise")
+            )
+            if is_safe_ignore:
                 # Mark cluster state settled without rich analysis
                 await self.cluster_repo.update_cluster_analysis_analyzed(
                     conn,

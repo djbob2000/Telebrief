@@ -37,7 +37,7 @@ async def run_backfill(
     try:
         since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
         async with infrastructure.uow.transaction() as conn:
-            # Query revisions to backfill
+            # Query unfragmented revisions to backfill (gap-driven)
             query = """
                 SELECT sir.id
                 FROM source_item_revisions sir
@@ -45,20 +45,24 @@ async def run_backfill(
                 JOIN sources s ON s.id = si.source_id
                 LEFT JOIN source_editions se ON se.source_id = s.id
                 LEFT JOIN editions e ON e.id = se.edition_id
-                WHERE COALESCE(si.first_collected_at, now()) >= %s
+                LEFT JOIN source_fragments sf
+                  ON sf.source_item_revision_id = sir.id
+                 AND sf.fragmenter_version = 'v1'
+                WHERE COALESCE(si.published_at, si.first_collected_at, now()) >= %s
+                  AND sf.id IS NULL
             """
             params: list = [since]
             if edition_slug:
                 query += " AND e.slug = %s"
                 params.append(edition_slug)
-            query += " ORDER BY sir.id ASC LIMIT %s"
+            query += " ORDER BY COALESCE(si.published_at, si.first_collected_at) ASC, sir.id ASC LIMIT %s"
             params.append(limit)
 
             cursor = await conn.execute(query, params)
             rows = await cursor.fetchall()
             rev_ids = [int(r[0]) for r in rows]
 
-        logger.info("Found %d revisions to process (since %s)", len(rev_ids), since)
+        logger.info("Found %d unfragmented revisions to process (since %s)", len(rev_ids), since)
         if not rev_ids or dry_run:
             if dry_run:
                 logger.info("Dry run complete (no modifications made)")
@@ -73,10 +77,23 @@ async def run_backfill(
                 total_stats[k] = total_stats.get(k, 0) + v
             logger.info("Batch %d-%d processed: %s", i, i + len(chunk), stats)
 
-        # Coalesce dirty stories
-        logger.info("Coalescing and triaging dirty story clusters...")
-        coalesce_stats = await coalesce_dirty_stories_task.func(edition_id=None)
-        logger.info("Coalesce complete: %s", coalesce_stats)
+        # Coalesce dirty stories in a drain loop
+        logger.info("Coalescing and triaging dirty story clusters until backlog is drained...")
+        coalesce_round = 0
+        total_coalesce = {"scanned": 0, "settled": 0, "triaged": 0, "analyzed": 0}
+        while True:
+            coalesce_round += 1
+            coalesce_stats = await coalesce_dirty_stories_task.func(edition_id=None)
+            for k, v in coalesce_stats.items():
+                total_coalesce[k] = total_coalesce.get(k, 0) + v
+            logger.info("Coalesce round %d: %s", coalesce_round, coalesce_stats)
+            if coalesce_stats.get("scanned", 0) == 0 or coalesce_stats.get("settled", 0) == 0:
+                break
+            if coalesce_round >= 50:
+                logger.warning("Reached max coalesce iterations (50)")
+                break
+
+        logger.info("Coalesce complete: %s", total_coalesce)
         logger.info("Total backfill summary: %s", total_stats)
 
     finally:
