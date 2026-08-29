@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Tuple
 from src.ai_providers import AIProvider, create_provider, ensure_provider_cascade
 from src.city_context import CityContextResolver, CityProfileError, StoryContextEnricher
 from src.collector import Message
-from src.config_loader import Config, SourceRoleResolver
+from src.config_loader import Config, PublicationEditorialConfig, SourceRoleResolver
 from src.editorial_analysis import (
     ContextSizeRejectedError,
     EditorialAnalysisError,
@@ -32,6 +32,9 @@ from src.editorial_fallback import (
 from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, EditorialWriter
+from src.publication.article_context import ArticleEditorialContext
+from src.publication.article_models import StructuredArticleDraft
+from src.publication.article_validator import validate_article_draft
 
 
 class UnsafeDraftError(RuntimeError):
@@ -645,11 +648,133 @@ class ArticleGenerator:
         attempt_observer: Any | None = None,
     ) -> Tuple[str, str, str]:
         """Generate article directly from a sealed FrozenEditorialInput."""
+        if (
+            hasattr(frozen_input, "analysis")
+            and frozen_input.analysis is not None
+            and getattr(frozen_input.analysis, "article_context", None) is not None
+        ):
+            return await self.generate_from_event_article_context(
+                analysis=frozen_input.analysis,
+                attempt_observer=attempt_observer,
+            )
+
         return await self.generate_from_analysis_and_bundle(
             analysis=frozen_input.analysis,
             writer_bundle=frozen_input.writer_bundle,
             attempt_observer=attempt_observer,
         )
+
+    async def generate_from_event_article_context(
+        self,
+        analysis: EditorialAnalysis,
+        attempt_observer: Any | None = None,
+    ) -> Tuple[str, str, str]:
+        """Generate long-form article using deterministic ArticleEditorialContext and single AI call."""
+        article_ctx: ArticleEditorialContext | None = getattr(analysis, "article_context", None)
+        if article_ctx is None:
+            raise NoSubstantiveEditorialError("no article editorial context present")
+
+        if not article_ctx.evidence_index and not article_ctx.operational_timeline:
+            raise NoSubstantiveEditorialError("no evidence or timeline present in article context")
+
+        context_str = article_ctx.to_prompt_context()
+
+        system_prompt = f"""Вы — опытный выпускающий редактор и автор регионального издания.
+Ваша задача — написать связную, объективную и информативную журналистскую обзорную статью на русском языке на основе проверенных фактов, оперативной хроники и сообщений.
+
+Правила:
+1. Опирайтесь ТОЛЬКО на предоставленные факты и оперативную хронику. Категорически запрещено выдумывать неподтвержденные детали, цифры, адреса и события.
+2. Язык статьи: {self.output_language}. Стиль — новостная журналистика: сдержанный, фактологический, грамотный, без патетики и клише.
+3. Структура:
+   - title: Информативный заголовок, отражающий ключевые события дня.
+   - lead: Вводный лид (2-3 предложения), суммирующий обстановку.
+   - sections: Тематические разделы (3-6 разделов). Каждый раздел содержит heading и связные параграфы (paragraphs).
+   - cited_evidence_ids: Для каждого раздела укажите точные ID использованных фактов (например, ["story:1:evidence:0:frag:101"]).
+4. Внутренние ID вида [story:...] НЕ должны появляться внутри текста параграфов — указывайте их только в массиве cited_evidence_ids.
+
+Формат ответа — строго валидный JSON:
+{{
+  "title": "Заголовок статьи",
+  "lead": "Текст лида...",
+  "sections": [
+    {{
+      "heading": "Название раздела",
+      "paragraphs": [
+        "Текст первого абзаца...",
+        "Текст второго абзаца..."
+      ],
+      "cited_evidence_ids": ["story:1:evidence:0:frag:101"]
+    }}
+  ]
+}}
+"""
+        user_prompt = f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\n{context_str}"
+
+        writer_attempt_id = 0
+        if attempt_observer is not None:
+            writer_attempt_id = await attempt_observer.attempt_started(
+                "writer",
+                provider=self.config.settings.ai_provider,
+                model=self.model,
+            )
+
+        try:
+            article_temp = getattr(
+                getattr(self.config.settings, "article", None), "temperature", 0.3
+            )
+            response = await self.provider.chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model=self.model,
+                temperature=article_temp,
+                max_tokens=self.config.settings.article.editorial_writer_max_output_tokens,
+                reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
+                response_format={"type": "json_object"},
+            )
+
+            parsed = json.loads(response)
+            if not isinstance(parsed, dict):
+                raise ValueError("article writer response is not a JSON object")
+
+            draft = StructuredArticleDraft.from_dict(parsed)
+            editorial_config = getattr(
+                self.config.settings, "publication_editorial", PublicationEditorialConfig()
+            )
+            val_res = validate_article_draft(draft, article_ctx, editorial_config)
+
+            if not val_res.is_valid:
+                self.logger.warning(
+                    "Event article draft failed deterministic validation: %s",
+                    val_res.violations,
+                )
+                if attempt_observer is not None and writer_attempt_id > 0:
+                    await attempt_observer.attempt_finished(
+                        writer_attempt_id,
+                        "failed",
+                        error_kind="ValidationFailed",
+                        metadata={"violations": list(val_res.violations)},
+                    )
+                return render_event_article_fallback(article_ctx)
+
+            body = draft.render_markdown()
+            if attempt_observer is not None and writer_attempt_id > 0:
+                await attempt_observer.attempt_finished(writer_attempt_id, "succeeded")
+
+            return (draft.title, draft.lead, body)
+
+        except Exception as exc:
+            self.logger.warning(
+                "Event article generation failed (%s: %s); falling back to deterministic render",
+                type(exc).__name__,
+                exc,
+            )
+            if attempt_observer is not None and writer_attempt_id > 0:
+                await attempt_observer.attempt_finished(
+                    writer_attempt_id, "failed", error_kind=type(exc).__name__
+                )
+            return render_event_article_fallback(article_ctx)
 
     async def generate_from_analysis_and_bundle(  # noqa: C901
         self,
@@ -854,3 +979,36 @@ class ArticleGenerator:
             writer_bundle=writer_bundle,
             bundle_for_fallback=bundle,
         )
+
+
+def render_event_article_fallback(ctx: ArticleEditorialContext) -> Tuple[str, str, str]:
+    """Deterministic article renderer when AI writer fails or violates bounds."""
+    title = (
+        ctx.headline_candidates[0] if ctx.headline_candidates else "Обзор главных городских событий"
+    )
+    lead = "Сводка ключевых городских событий и оперативной информации за прошедшие сутки."
+
+    sections: list[str] = []
+    if ctx.operational_timeline:
+        sections.append("## Городская оперативная обстановка")
+        for obs in ctx.operational_timeline:
+            loc = f" ({obs.observation.location})" if obs.observation.location else ""
+            sections.append(
+                f"- **{obs.observed_at.strftime('%H:%M')}**{loc}: {obs.observation.detail}"
+            )
+        sections.append("")
+
+    if ctx.general_facts:
+        sections.append("## События и факты")
+        for evi in ctx.general_facts:
+            sections.append(f"- {evi.text}")
+        sections.append("")
+
+    if ctx.resident_observations:
+        sections.append("## Сообщения жителей")
+        for evi in ctx.resident_observations:
+            sections.append(f"- {evi.text}")
+        sections.append("")
+
+    body = "\n".join(sections).strip()
+    return title, lead, body
