@@ -63,6 +63,7 @@ class EventEditorialAdapter:
         story_cards: list[StoryCard] = []
         records: dict[str, SourceRecord] = {}
         all_evidence: dict[str, Any] = {}
+        pure_op_story_ids: set[int] = set()
         all_observations_with_time: list[
             tuple[OperationalObservationPayload, dt.datetime, Sequence[str]]
         ] = []
@@ -283,6 +284,44 @@ class EventEditorialAdapter:
             ] + op_obs_elements
 
             importance = "high" if payload and payload.urgency in ("critical", "high") else "medium"
+            # Check if this story is a pure operational update
+            if payload and payload.operational_observations:
+                has_non_op_evidence = any(
+                    evi.kind not in ("service_access", "utility_status")
+                    and evi.publication_use == "PUBLISH"
+                    for evi in payload.evidence_items
+                )
+                cat = (payload.category or "").lower()
+                tags = {t.lower() for t in payload.tags}
+                is_utility_domain = (
+                    cat
+                    in (
+                        "utilities",
+                        "municipal_service",
+                        "municipal_infrastructure",
+                        "transport",
+                        "banking",
+                        "telecom",
+                    )
+                    or bool(
+                        tags.intersection(
+                            {
+                                "utilities",
+                                "жкх",
+                                "коммуналка",
+                                "водоснабжение",
+                                "электроснабжение",
+                                "газоснабжение",
+                                "транспорт",
+                                "связь",
+                            }
+                        )
+                    )
+                    or cat == ""
+                )
+                if is_utility_domain and not has_non_op_evidence:
+                    pure_op_story_ids.add(inp.story_id)
+
             card = StoryCard(
                 id=f"story:{inp.story_id}",
                 topic=headline,
@@ -313,6 +352,18 @@ class EventEditorialAdapter:
                 city_rollup = (
                     build_city_situation_rollup(resolved_states) if resolved_states else None
                 )
+
+            # When rollup is active, suppress pure operational cards so they are not duplicated
+            if city_rollup and city_rollup.items:
+                story_cards = [
+                    c
+                    for c in story_cards
+                    if not (
+                        c.id.startswith("story:")
+                        and c.id.split(":")[1].isdigit()
+                        and int(c.id.split(":")[1]) in pure_op_story_ids
+                    )
+                ]
 
         analysis = EditorialAnalysis(
             cards=story_cards,

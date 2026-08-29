@@ -315,7 +315,7 @@ async def test_event_editorial_adapter_exact_observation_provenance(conn, pool, 
     run = await repo.get_or_create_run(
         conn,
         edition_id=edition.id,
-        publication_type="digest_grouped",
+        publication_type="article",
         request_key="test-event-prov-key",
         snapshot_at=_NOW,
         policy_ids=(elig.id, sel.id, wri.id),

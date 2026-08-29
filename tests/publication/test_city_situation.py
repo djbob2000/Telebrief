@@ -255,6 +255,8 @@ async def test_digest_vs_article_city_situation_separation(conn, pool, edition):
     assert digest_editorial.analysis.city_situation is not None
     assert len(digest_editorial.analysis.city_situation.items) == 1
     assert digest_editorial.analysis.city_situation.items[0].subject_key == "power_supply"
+    # Pure operational story is consumed into city_situation, so cards is empty
+    assert len(digest_editorial.analysis.cards) == 0
 
     # 2. Article publication run
     article_run = await repo.get_or_create_run(
@@ -296,5 +298,152 @@ async def test_digest_vs_article_city_situation_separation(conn, pool, edition):
     )
 
     article_editorial = await adapter.adapt_inputs_on(conn, article_run.id, inputs=[article_input])
-    # For articles, city_situation must be None!
+    # For articles, city_situation must be None and cards retained!
     assert article_editorial.analysis.city_situation is None
+    assert len(article_editorial.analysis.cards) == 1
+
+
+@pytest.mark.postgres
+async def test_hybrid_story_with_general_news_not_suppressed_from_cards(conn, pool, edition):
+    """A story with general news beyond the operational state remains as a standalone StoryCard."""
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_repo = PublicationPolicyRepository()
+
+    elig = await policy_repo.get_or_create_eligibility_policy(
+        conn, edition_id=edition.id, config_hash="h-e-hyb", prompt_version="v1"
+    )
+    sel = await policy_repo.get_or_create_selection_policy(
+        conn, edition_id=edition.id, config_hash="h-s-hyb", prompt_version="v1"
+    )
+    wri = await policy_repo.get_or_create_writer_policy(
+        conn, edition_id=edition.id, config_hash="h-w-hyb", prompt_version="v1"
+    )
+
+    cur = await conn.execute(
+        """
+        INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+        VALUES (%s, 'active', 'event_first', %s)
+        RETURNING id
+        """,
+        (edition.id, _NOW),
+    )
+    story_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        "INSERT INTO sources (platform, kind, external_id, url, name) VALUES ('telegram', 'channel', '-10099', 'https://t.me/e', 'E') RETURNING id"
+    )
+    src_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_id, edition.id),
+    )
+    cur = await conn.execute(
+        "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', 'm-hyb', %s) RETURNING id",
+        (src_id, _NOW),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, 'h-hyb', 'Текст') RETURNING id",
+        (item_id,),
+    )
+    sir_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, 'Текст', 'h-fhyb', 'v1', TRUE, %s) RETURNING id",
+        (sir_id, _NOW),
+    )
+    frag_id = (await cur.fetchone())[0]
+
+    event_payload = {
+        "topic": "Реконструкция проспекта",
+        "category": "infrastructure_and_development",
+        "headline": "Капитальный ремонт проспекта Труда",
+        "digest_summary": "Начался капитальный ремонт с заменой дорожного покрытия и временным перекрытием движения.",
+        "evidence_items": [
+            {
+                "text": "Выделено 50 млн рублей на ремонт",
+                "kind": "established_fact",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [frag_id],
+            }
+        ],
+        "operational_observations": [
+            {
+                "subject_key": "traffic_flow",
+                "subject_label": "Движение транспорта",
+                "dimension": "availability",
+                "location": "проспект Труда",
+                "entity": "дорога",
+                "state": "RESTRICTED",
+                "detail": "Движение перекрыто",
+                "source_fragment_ids": [frag_id],
+            }
+        ],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-hyb-rev', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            story_id,
+            event_payload["digest_summary"],
+            event_payload["headline"],
+            event_payload["digest_summary"],
+            json.dumps(event_payload),
+            _NOW,
+        ),
+    )
+    rev_id = (await cur.fetchone())[0]
+
+    digest_run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        request_key="test-hybrid-rollup",
+        snapshot_at=_NOW,
+        policy_ids=(elig.id, sel.id, wri.id),
+    )
+    digest_cand = await repo.insert_candidate(
+        conn, digest_run.id, story_id=story_id, story_revision_id=rev_id, deterministic_rank=1
+    )
+    digest_dec = await repo.insert_selection_decision(
+        conn,
+        digest_run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=digest_run.id,
+            candidate_id=digest_cand.id,
+            decision="INCLUDE",
+            presentation_intent="lead",
+            confidence=0.95,
+            reason="OK",
+            rank=1,
+            metadata={},
+            created_at=_NOW,
+        ),
+    )
+    digest_input = await repo.freeze_selected_input(
+        conn,
+        digest_run.id,
+        story_id=story_id,
+        story_revision_id=rev_id,
+        selection_decision_id=digest_dec.id,
+        presentation_intent="lead",
+        rank=1,
+        fragment_ids=[frag_id],
+    )
+
+    adapter = EventEditorialAdapter(uow=uow, repo=repo)
+    digest_editorial = await adapter.adapt_inputs_on(conn, digest_run.id, inputs=[digest_input])
+
+    # Rollup has the traffic restriction
+    assert digest_editorial.analysis.city_situation is not None
+    assert len(digest_editorial.analysis.city_situation.items) == 1
+    # AND the general news card remains!
+    assert len(digest_editorial.analysis.cards) == 1
+    assert digest_editorial.analysis.cards[0].topic == "Капитальный ремонт проспекта Труда"

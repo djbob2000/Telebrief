@@ -113,11 +113,17 @@ def render_city_situation_section(rollup: CitySituationRollup | None) -> str:
         return ""
     lines = ["<b>Городская обстановка:</b>"]
     for item in rollup.items:
-        state_icon = (
-            "🟢"
-            if item.state == "AVAILABLE"
-            else ("🔴" if item.state in ("UNAVAILABLE", "DISRUPTED") else "🟡")
-        )
+        st_upper = item.state.upper()
+        if st_upper in ("AVAILABLE", "RESOLVED"):
+            state_icon = "🟢"
+        elif st_upper in ("UNAVAILABLE", "DISRUPTED"):
+            state_icon = "🔴"
+        elif st_upper in ("RESTRICTED", "DEGRADED", "CONFLICTING"):
+            state_icon = "🟡"
+        elif st_upper in ("SCHEDULED", "UNKNOWN"):
+            state_icon = "⚪"
+        else:
+            state_icon = "🟡"
         loc_str = f" ({item.location})" if item.location else ""
         label = item.subject_label or item.subject_key
         lines.append(f"{state_icon} <b>{label}{loc_str}</b>: {item.detail}")
