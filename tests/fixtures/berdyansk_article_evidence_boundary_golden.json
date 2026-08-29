@@ -1,0 +1,57 @@
+{
+  "cases": [
+    {
+      "id": "power_supported_baseline",
+      "support": [
+        "Авария на подстанции: временно обесточена центральная и нагорная часть Бердянска. Бригада РЭС ведет восстановительные работы."
+      ],
+      "draft": "В центре и на Нагорной части произошло аварийное отключение из-за аварии на подстанции.",
+      "expected_valid": true
+    },
+    {
+      "id": "invented_repair_duration",
+      "support": [
+        "Авария на подстанции: временно обесточена центральная и нагорная часть Бердянска. Бригада РЭС ведет восстановительные работы."
+      ],
+      "draft": "Бригады восстановили питание в течение полутора часов.",
+      "expected_valid": false,
+      "expected_code": "UNSUPPORTED_CONCRETE_CLAIM"
+    },
+    {
+      "id": "invented_reserve_scheme",
+      "support": [
+        "Авария на подстанции: временно обесточена центральная и нагорная часть Бердянска. Бригада РЭС ведет восстановительные работы."
+      ],
+      "draft": "Энергоснабжение восстановили по резервной схеме.",
+      "expected_valid": false,
+      "expected_code": "UNSUPPORTED_MECHANISM"
+    },
+    {
+      "id": "invented_hydraulic_cause",
+      "support": [
+        "Вечером снова нет воды из-за повторного порыва на магистральном водоводе."
+      ],
+      "draft": "Давление снова упало из-за гидроудара.",
+      "expected_valid": false,
+      "expected_code": "UNSUPPORTED_CAUSAL_RELATION"
+    },
+    {
+      "id": "invented_bus_interval",
+      "support": [
+        "10 новых автобусов большой вместимости вышли на маршруты №4, 17 и 21."
+      ],
+      "draft": "Интервалы движения сократились до 10–12 минут.",
+      "expected_valid": false,
+      "expected_code": "UNSUPPORTED_CONCRETE_CLAIM"
+    },
+    {
+      "id": "invented_exhibition_end_date",
+      "support": [
+        "В художественном музее им. Бродского открылась выставка картин местных авторов."
+      ],
+      "draft": "Экспозиция будет работать до конца сентября.",
+      "expected_valid": false,
+      "expected_code": "UNSUPPORTED_CONCRETE_CLAIM"
+    }
+  ]
+}
