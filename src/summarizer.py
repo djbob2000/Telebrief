@@ -344,6 +344,22 @@ Input line format: `N. [HH:MM] Sender: Text | URL`
         Returns:
             Formatted string with the most recent messages that fit within max_chars
         """
+        # Build lookup table for parent message context
+        msg_lookup: dict[int, tuple[str, str]] = {}
+        for msg in messages:
+            if msg.message_id is not None:
+                clean_text = (
+                    (msg.text[:60] if len(msg.text) > 60 else msg.text)
+                    .replace("\r", " ")
+                    .replace("\n", " ")
+                    .replace(" | ", " - ")
+                    .strip()
+                )
+                clean_sender = (
+                    msg.sender.replace("\r", " ").replace("\n", " ").replace(" | ", " - ").strip()
+                )
+                msg_lookup[msg.message_id] = (clean_sender, clean_text)
+
         formatted = []
         for i, msg in enumerate(messages, 1):
             timestamp = msg.timestamp.strftime("%H:%M") if msg.timestamp else "unknown"
@@ -354,7 +370,16 @@ Input line format: `N. [HH:MM] Sender: Text | URL`
                 .replace(" | ", " - ")
             )
             sender = msg.sender.replace("\r", " ").replace("\n", " ").replace(" | ", " - ")
-            formatted.append(f"{i}. [{timestamp}] {sender}: {text}")
+
+            reply_context = ""
+            if msg.reply_to_id is not None and msg.reply_to_id in msg_lookup:
+                parent_sender, parent_snippet = msg_lookup[msg.reply_to_id]
+                if parent_snippet and parent_sender:
+                    reply_context = f" (в ответ {parent_sender}: «{parent_snippet}»)"
+                elif parent_sender:
+                    reply_context = f" (в ответ {parent_sender})"
+
+            formatted.append(f"{i}. [{timestamp}] {sender}{reply_context}: {text}")
 
         # Select most recent messages that fit within the character budget.
         # Always include at least one message (the most recent).

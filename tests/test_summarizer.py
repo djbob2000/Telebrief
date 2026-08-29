@@ -110,6 +110,39 @@ def test_format_messages_for_prompt(sample_config, mock_logger, sample_messages)
 
 
 @pytest.mark.unit
+def test_format_messages_includes_inline_reply_context(sample_config, mock_logger):
+    """Test that replies to earlier messages include inline parent quotes."""
+    from src.collector import Message
+
+    with patch("src.ai_providers.AsyncOpenAI"):
+        summarizer = Summarizer(sample_config, mock_logger)
+
+        msg1 = Message(
+            message_id=101,
+            text="На АКЗ есть свет и вода?",
+            sender="Иван",
+            timestamp=datetime(2026, 8, 29, 14, 15, 0),
+            link="https://t.me/test/101",
+        )
+        msg2 = Message(
+            message_id=102,
+            reply_to_id=101,
+            text="Нет, уже 4 часа без света.",
+            sender="Елена",
+            timestamp=datetime(2026, 8, 29, 14, 18, 0),
+            link="https://t.me/test/102",
+        )
+
+        formatted = summarizer._format_messages_for_prompt([msg1, msg2])
+
+        assert "1. [14:15] Иван: На АКЗ есть свет и вода?" in formatted
+        assert (
+            "2. [14:18] Елена (в ответ Иван: «На АКЗ есть свет и вода?»): Нет, уже 4 часа без света."
+            in formatted
+        )
+
+
+@pytest.mark.unit
 def test_format_messages_truncate_long(sample_config, mock_logger):
     """Test message truncation in formatting."""
     from src.collector import Message
