@@ -352,10 +352,11 @@ The Event-First architecture optimizes knowledge-processing spend, throughput, a
    - Uses Maximal Marginal Relevance (MMR, $\lambda=0.7$) with official source boosting and multi-source diversity.
 5. **Batch Triage & Rich Event Analysis** (`src/processing/event_triage.py`, `src/processing/event_analysis.py`):
    - Batches low-support stories into single triage classifications.
-   - Extracts structured `event_payload` (headline, digest_summary, key_facts, official_positions, community_observations, affected_areas, confidence_score) on significant story clusters.
-6. **Publication Integration** (`src/publication/event_editorial_adapter.py`, `src/publication/generation.py`):
+   - Extracts open taxonomy topic `tags` and structured `event_payload` (headline, digest_summary, key_facts, official_positions, community_observations, affected_areas, confidence_score) on significant story clusters.
+6. **Publication Integration & Semantic Rubrics** (`src/publication/rubrics.py`, `src/publication/event_editorial_adapter.py`, `src/publication/renderers.py`, `src/publication/generation.py`):
    - Freezes selected fragment provenance (`publication_input_fragments`).
-   - Renders grouped digests and long-form editorial articles from rich `event_payload`.
+   - Dynamically classifies StoryCards into configured regional `digest_rubrics` via embedding cosine similarity (zero generative LLM calls).
+   - Renders grouped digests and long-form editorial articles from rich `event_payload` and semantic rubrics.
 
 **Event Pipeline Scripts & Benchmarks**:
 - **Offline Quality & Cost Evaluator**:
@@ -368,6 +369,7 @@ The Event-First architecture optimizes knowledge-processing spend, throughput, a
   ```
 
 ---
+
 
 ## 9. AI Providers & Configuration Precedence
 
