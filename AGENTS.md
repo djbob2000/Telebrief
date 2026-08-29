@@ -322,10 +322,10 @@ pre-commit run --all-files
 
 ## 8. Database Migrations & Schema Architecture
 
-- **Migration files**: Located in `migrations/0001_*.sql` through `migrations/0021_*.sql`.
+- **Migration files**: Located in `migrations/0001_*.sql` through `migrations/0023_*.sql`.
 - **Ledger table**: `schema_migrations` tracks applied versions and timestamps.
 - **Schema version gating**:
-  - Defined in `src/bootstrap.py`: `SCHEMA_VERSION_MINIMUM = 7`, `SCHEMA_VERSION_MAXIMUM = 21`.
+  - Defined in `src/bootstrap.py`: `SCHEMA_VERSION_MINIMUM = 7`, `SCHEMA_VERSION_MAXIMUM = 23`.
   - Application startup automatically verifies schema compatibility and fails fast (`SchemaVersionError`) if migrations are missing.
 - **Running migrations**:
   ```bash
@@ -350,13 +350,17 @@ The Event-First architecture optimizes knowledge-processing spend, throughput, a
    - Matches incoming fragments against open story cluster centroids with temporal decay and dynamic recalculation (`story_cluster_state`, `story_fragments`).
 4. **Representative Evidence Sampling** (`src/processing/evidence_sampling.py`):
    - Uses Maximal Marginal Relevance (MMR, $\lambda=0.7$) with official source boosting and multi-source diversity.
-5. **Batch Triage & Rich Event Analysis** (`src/processing/event_triage.py`, `src/processing/event_analysis.py`):
-   - Batches low-support stories into single triage classifications.
-   - Extracts open taxonomy topic `tags` and structured `event_payload` (headline, digest_summary, key_facts, official_positions, community_observations, affected_areas, confidence_score) on significant story clusters.
-6. **Publication Integration & Semantic Rubrics** (`src/publication/rubrics.py`, `src/publication/event_editorial_adapter.py`, `src/publication/renderers.py`, `src/publication/generation.py`):
-   - Freezes selected fragment provenance (`publication_input_fragments`).
-   - Dynamically classifies StoryCards into configured regional `digest_rubrics` via embedding cosine similarity (zero generative LLM calls).
-   - Renders grouped digests and long-form editorial articles from rich `event_payload` and semantic rubrics.
+5. **Gate V2 Batch Triage & Brief Synthesis** (`src/processing/event_triage.py`, `src/processing/event_brief.py`):
+   - Batches candidate stories into unified Gate V2 triage evaluating geographic scope (`LOCAL`, `DIRECT_IMPACT`, `OUT_OF_SCOPE`, `UNCERTAIN`), retention (`KEEP`, `DROP`), and enrichment (`NONE`, `BRIEF`, `ANALYZE`).
+   - Immediately synthesizes and persists `BRIEF` `EventPayload` revisions (`story_revisions`) without secondary LLM invocations.
+   - Preserves cached triage decisions across cycles with fingerprint and config-hash validation.
+6. **Rich Event Analysis & Operational Intelligence** (`src/processing/event_analysis.py`, `src/domain/event_payload.py`, `src/domain/operational_state.py`):
+   - Extracts structured `event_payload` and discrete `OperationalObservationPayload`s with exact fragment provenance IDs.
+   - Resolves recurring operational states through pure chronological temporal aggregation (`resolve_operational_states()`).
+7. **Publication Candidate Eligibility & Digest Rollup** (`src/publication/repository.py`, `src/publication/city_situation.py`, `src/publication/renderers.py`, `src/publication/event_editorial_adapter.py`):
+   - Enforces strict Gate V2 `KEEP` retention and local scope eligibility on snapshot candidates.
+   - Assembles digest-only `CitySituationRollup` displaying point-in-time operational statuses (🟢/🔴/🟡).
+   - Renders truthful 4-level publication statistics (sources, messages, facts, events) in formatted Telegram HTML digests.
 
 **Event Pipeline Scripts & Benchmarks**:
 - **Offline Quality & Cost Evaluator**:
@@ -367,8 +371,17 @@ The Event-First architecture optimizes knowledge-processing spend, throughput, a
   ```bash
   python scripts/backfill_events.py --hours 72 --batch-size 32
   ```
+- **Bounded Story Rescreen CLI**:
+  ```bash
+  python scripts/rescreen_stories.py --hours 72 --edition berdyansk --batch-size 80
+  ```
+- **Golden Regression Oracle**:
+  ```bash
+  pytest tests/integration/test_city_situation_golden.py -v --no-cov
+  ```
 
 ---
+
 
 
 ## 9. AI Providers & Configuration Precedence
