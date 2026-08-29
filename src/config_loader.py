@@ -68,12 +68,21 @@ class DigestRubricConfig:
     fallback: bool = False
 
 
+DEFAULT_DIGEST_RUBRIC = DigestRubricConfig(
+    id="other",
+    name="Другое",
+    description="Важные локальные события",
+    emoji="📌",
+    fallback=True,
+)
+
+
 @dataclass(frozen=True)
 class DigestRubricsConfig:
     """Edition-level configuration for digest display rubrics."""
 
     min_similarity: float = 0.38
-    items: tuple[DigestRubricConfig, ...] = ()
+    items: tuple[DigestRubricConfig, ...] = (DEFAULT_DIGEST_RUBRIC,)
 
     @property
     def fallback(self) -> DigestRubricConfig:

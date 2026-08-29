@@ -12,6 +12,7 @@ import psycopg
 from src.article_generator import ArticleGenerator
 from src.config_loader import Config
 from src.db.uow import DatabaseUnitOfWork
+from src.embedding_providers import create_embedding_provider
 from src.publication.digest_contracts import DIGEST_PUBLICATION_TYPES
 from src.publication.editorial_adapter import (
     DatabaseGenerationAttemptObserver,
@@ -20,6 +21,10 @@ from src.publication.editorial_adapter import (
 from src.publication.editorializer import DigestEditorializer
 from src.publication.models import Publication
 from src.publication.repository import PublicationRepository
+from src.publication.rubrics import (
+    RUBRIC_CLASSIFIER_VERSION,
+    DigestRubricClassifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,7 @@ class PublicationGenerationService:
         adapter: KnowledgeEditorialAdapter | None = None,
         generator: ArticleGenerator | None = None,
         editorializer: DigestEditorializer | None = None,
+        rubric_classifier: DigestRubricClassifier | None = None,
     ) -> None:
         from src.config_loader import load_config
 
@@ -45,6 +51,27 @@ class PublicationGenerationService:
         self.adapter = adapter or KnowledgeEditorialAdapter(uow=uow, repo=self.repo)
         self.generator = generator or ArticleGenerator(config=self.config, logger=logger)
         self.editorializer = editorializer or DigestEditorializer(config=self.config)
+
+        self.rubric_classifier = rubric_classifier
+        if self.rubric_classifier is None:
+            try:
+                emb_prov = create_embedding_provider(self.config, logger)
+                prov_name = getattr(
+                    emb_prov,
+                    "provider_name",
+                    getattr(self.config.embedding, "provider", ""),
+                )
+                model = getattr(emb_prov, "model", getattr(self.config.embedding, "model", ""))
+                dim = getattr(self.config.embedding, "dimensions", 1536)
+                self.rubric_classifier = DigestRubricClassifier(
+                    provider=emb_prov,
+                    provider_name=prov_name,
+                    model=model,
+                    dimensions=dim,
+                )
+            except Exception as exc:
+                logger.warning("Could not initialize rubric embedding provider: %s", exc)
+                self.rubric_classifier = DigestRubricClassifier()
 
     async def generate(
         self,
@@ -97,7 +124,7 @@ class PublicationGenerationService:
 
         try:
             if run.publication_type in DIGEST_PUBLICATION_TYPES:
-                if frozen.analysis.cards:
+                if frozen.analysis.cards and not has_event_first:
                     try:
                         editorialized_cards = await self.editorializer.editorialize(
                             cards=frozen.analysis.cards,
@@ -115,12 +142,59 @@ class PublicationGenerationService:
                             exc,
                         )
 
+                # Rubric classification (semantic embedding assignment)
+                if (
+                    frozen.analysis.cards
+                    and self.config.settings.digest_rubrics is not None
+                    and self.rubric_classifier is not None
+                ):
+                    try:
+                        att_id = await observer.attempt_started(
+                            "writer",
+                            metadata={
+                                "subkind": "rubric_classifier",
+                                "classifier_version": RUBRIC_CLASSIFIER_VERSION,
+                                "card_count": len(frozen.analysis.cards),
+                            },
+                        )
+
+                        classified_cards, assignments = await self.rubric_classifier.classify(
+                            frozen.analysis.cards,
+                            rubrics=self.config.settings.digest_rubrics,
+                        )
+                        frozen = replace(
+                            frozen,
+                            analysis=replace(frozen.analysis, cards=classified_cards),
+                        )
+                        await observer.attempt_finished(
+                            att_id,
+                            "succeeded",
+                            metadata={
+                                "assignments": [
+                                    {
+                                        "story_id": a.story_id,
+                                        "rubric_id": a.rubric_id,
+                                        "score": a.score,
+                                        "method": a.method,
+                                    }
+                                    for a in assignments
+                                ]
+                            },
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "digest rubric classifier failed (%s: %s); falling back",
+                            type(exc).__name__,
+                            exc,
+                        )
+
                 from src.publication.renderers import PublicationDigestRenderer
 
                 renderer = PublicationDigestRenderer(
                     output_language=getattr(self.config.settings, "output_language", "Russian"),
                     use_emojis=getattr(self.config.settings, "use_emojis", True),
                     include_statistics=getattr(self.config.settings, "include_statistics", True),
+                    rubrics_config=self.config.settings.digest_rubrics,
                     custom_rubrics=getattr(self.config.settings, "digest_groups", None),
                 )
                 att_id = await observer.attempt_started(
@@ -135,6 +209,7 @@ class PublicationGenerationService:
                         frozen, snapshot_at=run.snapshot_at
                     )
                 await observer.attempt_finished(att_id, "succeeded")
+
             else:
                 title, lead, body = await self.generator.generate_from_frozen_input(
                     frozen, attempt_observer=observer
