@@ -741,3 +741,127 @@ class TestEditorialSelection:
         assert inputs[0].rank == 1
         assert inputs[1].story_id == story1_id
         assert inputs[1].rank == 2
+
+
+class TestSelectionAIParserContracts:
+    """Unit tests for AIPublicationSelectionModel JSON parser contracts."""
+
+    def test_selector_parses_valid_commercial_classified_omit(self):
+        from src.publication.selection_ai import AIPublicationSelectionModel
+
+        model = AIPublicationSelectionModel(provider=None, config=None)
+        candidates = [
+            PublicationCandidate(
+                id=1,
+                publication_run_id=1,
+                story_id=41,
+                story_revision_id=87,
+                deterministic_rank=1,
+                snapshot_features={},
+                created_at=_NOW,
+            ),
+            PublicationCandidate(
+                id=2,
+                publication_run_id=1,
+                story_id=42,
+                story_revision_id=88,
+                deterministic_rank=2,
+                snapshot_features={},
+                created_at=_NOW,
+            ),
+        ]
+        raw = """
+        {
+          "proposals": [
+            {
+              "story_id": 41,
+              "story_revision_id": 87,
+              "decision": "INCLUDE",
+              "exclusion_reason": null,
+              "presentation_intent": "lead",
+              "rank": 1,
+              "reason": "Major event"
+            },
+            {
+              "story_id": 42,
+              "story_revision_id": 88,
+              "decision": "OMIT",
+              "exclusion_reason": "commercial_classified",
+              "reason": "Commercial ad"
+            }
+          ]
+        }
+        """
+        proposals = model._parse_and_validate(raw, candidates)
+        assert len(proposals) == 2
+        assert proposals[0].decision == "INCLUDE"
+        assert proposals[0].exclusion_reason is None
+        assert proposals[1].decision == "OMIT"
+        assert proposals[1].exclusion_reason == "commercial_classified"
+
+    def test_selector_rejects_include_with_exclusion_reason(self):
+        from src.publication.selection_ai import (
+            AIPublicationSelectionModel,
+            InvalidSelectionResponse,
+        )
+
+        model = AIPublicationSelectionModel(provider=None, config=None)
+        candidates = [
+            PublicationCandidate(
+                id=1,
+                publication_run_id=1,
+                story_id=41,
+                story_revision_id=87,
+                deterministic_rank=1,
+                snapshot_features={},
+                created_at=_NOW,
+            )
+        ]
+        raw = """
+        {
+          "proposals": [
+            {
+              "story_id": 41,
+              "story_revision_id": 87,
+              "decision": "INCLUDE",
+              "exclusion_reason": "commercial_classified",
+              "rank": 1
+            }
+          ]
+        }
+        """
+        with pytest.raises(InvalidSelectionResponse, match="exclusion_reason must be null"):
+            model._parse_and_validate(raw, candidates)
+
+    def test_selector_rejects_unknown_exclusion_reason(self):
+        from src.publication.selection_ai import (
+            AIPublicationSelectionModel,
+            InvalidSelectionResponse,
+        )
+
+        model = AIPublicationSelectionModel(provider=None, config=None)
+        candidates = [
+            PublicationCandidate(
+                id=1,
+                publication_run_id=1,
+                story_id=41,
+                story_revision_id=87,
+                deterministic_rank=1,
+                snapshot_features={},
+                created_at=_NOW,
+            )
+        ]
+        raw = """
+        {
+          "proposals": [
+            {
+              "story_id": 41,
+              "story_revision_id": 87,
+              "decision": "OMIT",
+              "exclusion_reason": "random_noise_reason"
+            }
+          ]
+        }
+        """
+        with pytest.raises(InvalidSelectionResponse, match="invalid exclusion_reason"):
+            model._parse_and_validate(raw, candidates)

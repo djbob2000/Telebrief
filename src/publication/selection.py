@@ -38,6 +38,7 @@ class SelectionProposal:
     confidence: float | None = None
     reason: str | None = None
     rank: int | None = None
+    exclusion_reason: str | None = None
     metadata: dict[str, Any] | None = None
 
 

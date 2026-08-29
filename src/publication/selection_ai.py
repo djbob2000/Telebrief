@@ -10,6 +10,10 @@ from typing import Any
 from src.ai_providers import AIProvider, create_provider
 from src.config_loader import Config, load_config
 from src.processing.relevance import ProviderUnavailableError
+from src.publication.digest_contracts import (
+    DIGEST_PUBLICATION_TYPES,
+    HARD_EXCLUSION_REASONS,
+)
 from src.publication.models import PublicationCandidate, PublicationRun
 from src.publication.selection import (
     HeuristicSelectionModel,
@@ -116,23 +120,26 @@ class AIPublicationSelectionModel:
             return []
 
         prompt = self._build_prompt(run=run, candidates=candidates)
-        is_digest = run.publication_type in {
-            "digest",
-            "digest_grouped",
-            "digest_channel",
-        }
+        is_digest = run.publication_type in DIGEST_PUBLICATION_TYPES
         if is_digest:
             system_content = (
                 "You are an editorial selection AI for regional publication digests. "
-                "Every supplied candidate has already passed deterministic publication eligibility. "
-                "Coverage is paramount for digests: return INCLUDE for every candidate. "
-                "Your editorial responsibility is ordering (rank) and presentation intent "
-                "('lead', 'normal', 'brief', 'unverified_operational', 'follow_up'), not candidate suppression.\n\n"
+                "Every supplied candidate has already passed structural/temporal publication eligibility.\n\n"
+                "For digest publications, preserve broad coverage of legitimate local civic news. "
+                "Do not omit a legitimate story because it is lower priority, single-source, "
+                "brief, operational, repetitive in theme, or less dramatic than the lead.\n\n"
+                "The ONLY hard exclusion available in this selector is: commercial_classified.\n"
+                "Use decision='OMIT', exclusion_reason='commercial_classified' only when the candidate is "
+                "a standalone commercial offer, private sale, classified listing, or service advertisement "
+                "that does not itself constitute a broader civic/news event.\n\n"
+                "Commercial material may remain INCLUDE when it is evidence inside a wider public-interest story "
+                "such as infrastructure availability, documented shortage, material price change, or municipal operating conditions.\n\n"
                 "CRITICAL RULES:\n"
                 "1. Return exactly one proposal for each candidate story in the candidate set.\n"
-                "2. Decision must be 'INCLUDE' for every candidate.\n"
-                "3. Rank included stories starting at rank 1 for the most important lead item.\n"
-                "4. Respond strictly with a JSON object containing a 'proposals' array."
+                "2. For INCLUDE, exclusion_reason must be null.\n"
+                "3. For subjective prioritization, keep decision='INCLUDE' and use rank / presentation_intent instead of OMIT.\n"
+                "4. Rank included stories starting at rank 1 for the most important lead item.\n"
+                "5. Respond strictly with a JSON object containing a 'proposals' array."
             )
         else:
             system_content = (
@@ -193,6 +200,7 @@ class AIPublicationSelectionModel:
             '      "story_id": <int>,\n'
             '      "story_revision_id": <int>,\n'
             '      "decision": "INCLUDE" | "OMIT",\n'
+            '      "exclusion_reason": "commercial_classified" | null,\n'
             '      "presentation_intent": "lead" | "normal" | "brief" | "unverified_operational" | "follow_up" | null,\n'
             '      "rank": <int> | null,\n'
             '      "confidence": <float between 0.0 and 1.0>,\n'
@@ -250,6 +258,18 @@ class AIPublicationSelectionModel:
                     f"invalid decision {decision!r}, expected one of {VALID_DECISIONS}"
                 )
 
+            ex_reason = item.get("exclusion_reason")
+            if ex_reason is not None:
+                if not isinstance(ex_reason, str) or ex_reason not in HARD_EXCLUSION_REASONS:
+                    raise InvalidSelectionResponse(
+                        f"invalid exclusion_reason {ex_reason!r}, expected null or one of {HARD_EXCLUSION_REASONS}"
+                    )
+                if decision == "INCLUDE":
+                    raise InvalidSelectionResponse(
+                        "exclusion_reason must be null when decision is INCLUDE"
+                    )
+            exclusion_reason = str(ex_reason) if ex_reason is not None else None
+
             intent = item.get("presentation_intent")
             if intent is not None and intent not in VALID_PRESENTATION_INTENTS:
                 raise InvalidSelectionResponse(
@@ -276,6 +296,7 @@ class AIPublicationSelectionModel:
                     confidence=confidence,
                     reason=reason,
                     rank=rank,
+                    exclusion_reason=exclusion_reason,
                 )
             )
 
