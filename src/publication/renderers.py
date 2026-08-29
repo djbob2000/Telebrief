@@ -8,6 +8,7 @@ from typing import Any, Sequence
 
 from src.config_loader import DigestGroupConfig
 from src.editorial_models import StoryCard
+from src.publication.digest_contracts import GENERIC_FALLBACK_TOPICS
 from src.publication.editorial_adapter import FrozenEditorialInput
 
 logger = logging.getLogger(__name__)
@@ -370,17 +371,34 @@ class PublicationDigestRenderer:
                         extra_details.append(d_text)
 
                 combined_details = " ".join(extra_facts[:2] + extra_details[:2]).strip()
-                if combined_details:
-                    bullet_text = f"• **{card.topic}**: {summary}. {combined_details}."
+                has_generic_topic = not card.topic or card.topic.strip().lower() in {
+                    t.lower() for t in GENERIC_FALLBACK_TOPICS
+                }
+
+                if has_generic_topic:
+                    if combined_details:
+                        bullet_text = f"• {summary}. {combined_details}."
+                    else:
+                        bullet_text = f"• {summary}."
                 else:
-                    bullet_text = f"• **{card.topic}**: {summary}."
+                    if combined_details:
+                        bullet_text = f"• **{card.topic}**: {summary}. {combined_details}."
+                    else:
+                        bullet_text = f"• **{card.topic}**: {summary}."
 
                 bullet_lines.append(bullet_text)
 
                 # If there are resident observations / quotes, add as a subtle sub-point
                 if card.community_observations and len(card.community_observations) <= 2:
-                    obs_text = "; ".join(o.text.strip() for o in card.community_observations)
-                    if obs_text and obs_text.lower() not in bullet_text.lower():
+                    obs_items = [
+                        o.text.strip()
+                        for o in card.community_observations
+                        if o.text.strip()
+                        and o.text.strip().lower() not in summary.lower()
+                        and o.text.strip().lower() not in combined_details.lower()
+                    ]
+                    if obs_items:
+                        obs_text = "; ".join(obs_items)
                         bullet_lines.append(f"  _По сообщениям жителей: {obs_text}_")
 
                 sections.append("\n".join(bullet_lines))

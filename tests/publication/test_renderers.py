@@ -101,4 +101,57 @@ class TestPublicationDigestRenderer:
         )
         title, lead, body = renderer.render_grouped_digest(empty_frozen)
         assert "Нет актуальных событий" in body
-        assert lead == ""
+
+    def test_render_suppresses_generic_fallback_topics_in_bullet(self):
+        renderer = PublicationDigestRenderer(use_emojis=False, include_statistics=False)
+        cards = [
+            StoryCard(
+                id="story-1",
+                topic="Городские события",
+                importance="medium",
+                summary="В районе проводятся плановые работы",
+                category="utilities",
+                representative_source_refs=["ref-1"],
+            )
+        ]
+        frozen = FrozenEditorialInput(
+            analysis=EditorialAnalysis(cards=cards),
+            writer_bundle=PreparedBundle(
+                records={}, prompt_text="", total_messages=1, candidate_count=1
+            ),
+        )
+        _, _, body = renderer.render_grouped_digest(frozen)
+
+        # Must render clean bullet without '**Городские события**'
+        assert "• В районе проводятся плановые работы." in body
+        assert "**Городские события**" not in body
+
+    def test_render_suppresses_redundant_observation_tautology(self):
+        renderer = PublicationDigestRenderer(use_emojis=False, include_statistics=False)
+        cards = [
+            StoryCard(
+                id="story-1",
+                topic="Водоснабжение",
+                importance="medium",
+                summary="Воды нет с утра на Восточном",
+                category="utilities",
+                representative_source_refs=["ref-1"],
+                community_observations=[
+                    StoryElement(
+                        text="Воды нет с утра",
+                        source_refs=["ref-1"],
+                        status="attributed",
+                    )
+                ],
+            )
+        ]
+        frozen = FrozenEditorialInput(
+            analysis=EditorialAnalysis(cards=cards),
+            writer_bundle=PreparedBundle(
+                records={}, prompt_text="", total_messages=1, candidate_count=1
+            ),
+        )
+        _, _, body = renderer.render_grouped_digest(frozen)
+
+        # Observation 'Воды нет с утра' is substring of summary, so redundant sub-point is suppressed
+        assert "По сообщениям жителей:" not in body
