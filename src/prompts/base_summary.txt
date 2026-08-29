@@ -48,6 +48,7 @@ Use an Event-based approach, not a Message-based approach:
 
 4. RANKING & COVERAGE
 Rank unique events by consequence, public relevance, novelty, urgency, and specificity:
+- Ensure multi-category thematic diversity: do not allow a single dominant crisis (such as power outages) to crowd out other essential civic domains. You MUST allocate distinct items for public transport/routes, municipal utility repairs, administrative/notary/registry services, healthcare, social aid, and telecom/market adaptations whenever present in the input.
 - Include all meaningful distinct local events in 📌 Key points (up to 8 items).
 - Each item should be an informative, well-developed point (2-5 detailed sentences) rich in actionable facts.
 - Put any remaining minor local items in 📎 Also.
