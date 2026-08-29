@@ -6,11 +6,11 @@ import datetime as dt
 import hashlib
 import json
 import logging
-from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import psycopg
 
+from src.domain.event_payload import EventPayload
 from src.domain.event_pipeline import SourceFragment
 from src.domain.stories import NewStoryRevision, StoryRevision
 from src.processing.evidence_sampling import (
@@ -50,73 +50,7 @@ Respond ONLY with a valid JSON object with the exact keys:
 }
 """
 
-
-def _normalize_open_tags(value: Any, legacy_category: Any = None) -> list[str]:
-    raw = value if isinstance(value, list) else []
-    if not raw and isinstance(legacy_category, str) and legacy_category.strip():
-        raw = [legacy_category]
-
-    result: list[str] = []
-    seen: set[str] = set()
-    for item in raw:
-        tag = str(item).strip()
-        key = tag.casefold()
-        if tag and key not in seen:
-            seen.add(key)
-            result.append(tag[:80])
-        if len(result) == 12:
-            break
-    return result
-
-
-@dataclass(frozen=True)
-class EventAnalysisPayload:
-    """Structured rich analysis output stored on story_revisions."""
-
-    analysis_version: str
-    topic: str
-    urgency: str
-    publishability: str
-    headline: str
-    digest_summary: str
-    key_facts: list[str]
-    official_positions: list[dict[str, str]]
-    community_observations: list[str]
-    conflicts_or_uncertainties: list[str]
-    affected_areas: list[str]
-    timeline_summary: str
-    confidence_score: float
-    representative_fragment_ids: list[int]
-    tags: list[str] = field(default_factory=list)
-    category: str = ""  # deprecated compatibility field
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> EventAnalysisPayload:
-        legacy_cat = str(data.get("category", "")).strip()
-        tags = _normalize_open_tags(data.get("tags"), legacy_category=legacy_cat)
-        return cls(
-            analysis_version=str(data.get("analysis_version", ANALYSIS_VERSION)),
-            topic=str(data.get("topic", "")),
-            category=legacy_cat,
-            tags=tags,
-            urgency=str(data.get("urgency", "normal")),
-            publishability=str(data.get("publishability", "news")),
-            headline=str(data.get("headline", "")),
-            digest_summary=str(data.get("digest_summary", "")),
-            key_facts=list(data.get("key_facts", [])),
-            official_positions=list(data.get("official_positions", [])),
-            community_observations=list(data.get("community_observations", [])),
-            conflicts_or_uncertainties=list(data.get("conflicts_or_uncertainties", [])),
-            affected_areas=list(data.get("affected_areas", [])),
-            timeline_summary=str(data.get("timeline_summary", "")),
-            confidence_score=float(data.get("confidence_score", 0.9)),
-            representative_fragment_ids=[
-                int(x) for x in data.get("representative_fragment_ids", [])
-            ],
-        )
+EventAnalysisPayload = EventPayload
 
 
 class EventAnalysisService:

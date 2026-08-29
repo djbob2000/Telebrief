@@ -1,0 +1,214 @@
+"""Canonical event payloads and operational observation domain models."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import asdict, dataclass
+from typing import Any, Literal
+
+OPERATIONAL_STATES: frozenset[str] = frozenset(
+    {"AVAILABLE", "UNAVAILABLE", "DEGRADED", "RESTRICTED", "UNKNOWN"}
+)
+
+
+def _normalize_open_tags(value: Any, legacy_category: Any = None) -> tuple[str, ...]:
+    raw = value if isinstance(value, (list, tuple)) else []
+    if not raw and isinstance(legacy_category, str) and legacy_category.strip():
+        raw = [legacy_category]
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        tag = str(item).strip()
+        key = tag.casefold()
+        if tag and key not in seen:
+            seen.add(key)
+            result.append(tag[:80])
+        if len(result) == 12:
+            break
+    return tuple(result)
+
+
+@dataclass(frozen=True)
+class OperationalObservationPayload:
+    """A single structured factual observation about utility or service operations."""
+
+    subject_key: str
+    subject_label: str
+    dimension: str
+    location: str
+    entity: str
+    state: str
+    detail: str
+    source_fragment_ids: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        state_upper = self.state.strip().upper()
+        if state_upper not in OPERATIONAL_STATES:
+            msg = f"Invalid operational observation state '{self.state}'; expected one of {sorted(OPERATIONAL_STATES)}"
+            raise ValueError(msg)
+        if not self.source_fragment_ids:
+            msg = "source_fragment_ids must contain at least one cited fragment ID"
+            raise ValueError(msg)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "subject_key": self.subject_key,
+            "subject_label": self.subject_label,
+            "dimension": self.dimension,
+            "location": self.location,
+            "entity": self.entity,
+            "state": self.state,
+            "detail": self.detail,
+            "source_fragment_ids": list(self.source_fragment_ids),
+        }
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Mapping[str, Any],
+        allowed_fragment_ids: set[int] | None = None,
+    ) -> OperationalObservationPayload:
+        raw_state = str(data.get("state", "")).strip().upper()
+        if raw_state not in OPERATIONAL_STATES:
+            msg = f"Invalid operational observation state '{data.get('state')}'; expected one of {sorted(OPERATIONAL_STATES)}"
+            raise ValueError(msg)
+
+        raw_ids = data.get("source_fragment_ids", [])
+        if isinstance(raw_ids, (list, tuple)):
+            clean_ids = tuple(
+                int(x) for x in raw_ids if isinstance(x, (int, str)) and str(x).isdigit()
+            )
+        else:
+            clean_ids = ()
+
+        if not clean_ids:
+            msg = "source_fragment_ids cannot be empty"
+            raise ValueError(msg)
+
+        if allowed_fragment_ids is not None:
+            invalid_ids = set(clean_ids) - allowed_fragment_ids
+            if invalid_ids:
+                msg = f"Observation references fragment IDs {invalid_ids} not in allowed_fragment_ids {allowed_fragment_ids}"
+                raise ValueError(msg)
+
+        return cls(
+            subject_key=str(data.get("subject_key", "")).strip(),
+            subject_label=str(data.get("subject_label", "")).strip(),
+            dimension=str(data.get("dimension", "")).strip(),
+            location=str(data.get("location", "")).strip(),
+            entity=str(data.get("entity", "")).strip(),
+            state=raw_state,
+            detail=str(data.get("detail", "")).strip(),
+            source_fragment_ids=clean_ids,
+        )
+
+
+@dataclass(frozen=True)
+class EventPayload:
+    """Canonical event payload stored on story_revisions for brief and rich events."""
+
+    topic: str = ""
+    tags: tuple[str, ...] = ()
+    urgency: str = "normal"
+    publishability: str = "news"
+    headline: str = ""
+    digest_summary: str = ""
+    operational_observations: tuple[OperationalObservationPayload, ...] = ()
+    enrichment_level: Literal["brief", "analysis"] = "analysis"
+    key_facts: tuple[str, ...] = ()
+    official_positions: tuple[dict[str, str], ...] = ()
+    community_observations: tuple[str, ...] = ()
+    conflicts_or_uncertainties: tuple[str, ...] = ()
+    affected_areas: tuple[str, ...] = ()
+    timeline_summary: str = ""
+    confidence_score: float = 0.0
+    representative_fragment_ids: tuple[int, ...] = ()
+    analysis_version: str = ""
+    category: str = ""  # deprecated compatibility field
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["tags"] = list(self.tags)
+        d["key_facts"] = list(self.key_facts)
+        d["official_positions"] = [dict(p) for p in self.official_positions]
+        d["community_observations"] = list(self.community_observations)
+        d["conflicts_or_uncertainties"] = list(self.conflicts_or_uncertainties)
+        d["affected_areas"] = list(self.affected_areas)
+        d["representative_fragment_ids"] = list(self.representative_fragment_ids)
+        d["operational_observations"] = [obs.to_dict() for obs in self.operational_observations]
+        return d
+
+    @classmethod
+    def from_dict(
+        cls,
+        data: Mapping[str, Any],
+        allowed_fragment_ids: set[int] | None = None,
+    ) -> EventPayload:
+        legacy_cat = str(data.get("category", "")).strip()
+        tags = _normalize_open_tags(data.get("tags"), legacy_category=legacy_cat)
+
+        raw_level = str(data.get("enrichment_level", "")).strip().lower()
+        enrichment_level: Literal["brief", "analysis"] = (
+            "brief" if raw_level == "brief" else "analysis"
+        )
+
+        obs_list: list[OperationalObservationPayload] = []
+        for raw_obs in data.get("operational_observations") or []:
+            if isinstance(raw_obs, dict):
+                obs_list.append(
+                    OperationalObservationPayload.from_dict(
+                        raw_obs, allowed_fragment_ids=allowed_fragment_ids
+                    )
+                )
+
+        def _to_str_tuple(val: Any) -> tuple[str, ...]:
+            if isinstance(val, (list, tuple)):
+                return tuple(str(x).strip() for x in val if str(x).strip())
+            return ()
+
+        def _to_int_tuple(val: Any) -> tuple[int, ...]:
+            if isinstance(val, (list, tuple)):
+                return tuple(int(x) for x in val if isinstance(x, (int, str)) and str(x).isdigit())
+            return ()
+
+        raw_positions = data.get("official_positions", [])
+        clean_positions: list[dict[str, str]] = []
+        if isinstance(raw_positions, (list, tuple)):
+            for p in raw_positions:
+                if isinstance(p, dict):
+                    clean_positions.append(
+                        {
+                            "source": str(p.get("source", "")).strip(),
+                            "statement": str(p.get("statement", "")).strip(),
+                        }
+                    )
+
+        return cls(
+            topic=str(data.get("topic", "")).strip(),
+            tags=tags,
+            urgency=str(data.get("urgency", "normal")).strip(),
+            publishability=str(data.get("publishability", "news")).strip(),
+            headline=str(data.get("headline", "")).strip(),
+            digest_summary=str(data.get("digest_summary", "")).strip(),
+            operational_observations=tuple(obs_list),
+            enrichment_level=enrichment_level,
+            key_facts=_to_str_tuple(data.get("key_facts")),
+            official_positions=tuple(clean_positions),
+            community_observations=_to_str_tuple(data.get("community_observations")),
+            conflicts_or_uncertainties=_to_str_tuple(data.get("conflicts_or_uncertainties")),
+            affected_areas=_to_str_tuple(data.get("affected_areas")),
+            timeline_summary=str(data.get("timeline_summary", "")).strip(),
+            confidence_score=float(data.get("confidence_score") or 0.0),
+            representative_fragment_ids=_to_int_tuple(data.get("representative_fragment_ids")),
+            analysis_version=str(data.get("analysis_version", "")).strip(),
+            category=legacy_cat,
+        )
+
+
+def parse_event_payload(
+    data: Mapping[str, Any],
+    allowed_fragment_ids: set[int] | None = None,
+) -> EventPayload:
+    """Parse a mapping into a canonical EventPayload."""
+    return EventPayload.from_dict(data, allowed_fragment_ids=allowed_fragment_ids)

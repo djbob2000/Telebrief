@@ -37,7 +37,7 @@ def test_event_analysis_payload_serialization():
     restored = EventAnalysisPayload.from_dict(data)
     assert restored.topic == payload.topic
     assert restored.headline == payload.headline
-    assert restored.representative_fragment_ids == [101, 102]
+    assert restored.representative_fragment_ids == (101, 102)
 
 
 @pytest.mark.unit
@@ -50,7 +50,7 @@ def test_event_payload_accepts_open_tags():
             "digest_summary": "...",
         }
     )
-    assert payload.tags == ["море", "медузы", "пляж", "ограничение доступа"]
+    assert payload.tags == ("море", "медузы", "пляж", "ограничение доступа")
 
 
 @pytest.mark.unit
@@ -62,7 +62,7 @@ def test_event_payload_reads_legacy_category_as_tag():
             "digest_summary": "...",
         }
     )
-    assert payload.tags == ["utilities"]
+    assert payload.tags == ("utilities",)
 
 
 @pytest.mark.postgres
