@@ -6,6 +6,7 @@ import datetime as dt
 import json
 import logging
 from collections.abc import Sequence
+from typing import Any
 
 import psycopg
 
@@ -61,6 +62,7 @@ class EventEditorialAdapter:
 
         story_cards: list[StoryCard] = []
         records: dict[str, SourceRecord] = {}
+        all_evidence: dict[str, Any] = {}
         all_observations_with_time: list[
             tuple[OperationalObservationPayload, dt.datetime, Sequence[str]]
         ] = []
@@ -99,7 +101,7 @@ class EventEditorialAdapter:
                 """
                 SELECT f.id, f.text_content, s.id, s.platform, s.name, s.role, s.url,
                        s.external_id, si.id, sir.id, si.canonical_url, si.author_name,
-                       COALESCE(si.first_collected_at, f.created_at)
+                       COALESCE(si.published_at, si.first_collected_at, f.created_at)
                 FROM source_fragments f
                 JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
                 JOIN source_items si ON si.id = sir.source_item_id
@@ -114,6 +116,7 @@ class EventEditorialAdapter:
             card_source_refs: list[str] = []
             frag_id_to_ref: dict[int, str] = {}
             frag_ts_map: dict[int, dt.datetime] = {}
+            frag_meta_map: dict[int, dict[str, Any]] = {}
             for f_row in frag_rows:
                 (
                     fid,
@@ -134,18 +137,26 @@ class EventEditorialAdapter:
                 ref_key = f"{platform}:source:{src_id}:item:{item_id}:rev:{rev_id}:frag:{fid}"
                 card_source_refs.append(ref_key)
                 frag_id_to_ref[fid] = ref_key
-                frag_ts_map[fid] = (
+                obs_time = (
                     collected_at
                     if isinstance(collected_at, dt.datetime)
                     else (row[6] or row[5] or dt.datetime.now(dt.timezone.utc))
                 )
+                frag_ts_map[fid] = obs_time
+                frag_meta_map[fid] = {
+                    "source_id": src_id,
+                    "source_item_id": item_id,
+                    "source_role": src_role or "unknown",
+                    "observed_at": obs_time,
+                    "source_ref": ref_key,
+                }
 
                 if ref_key not in records:
                     link = canon_url or src_url or f"https://t.me/{str(src_ext_id).lstrip('@')}"
                     msg = Message(
                         text=ftext,
                         sender=author_name or src_name or "unknown",
-                        timestamp=collected_at if isinstance(collected_at, dt.datetime) else None,
+                        timestamp=obs_time,
                         link=link,
                         channel_id=str(src_ext_id or src_id),
                         channel_name=src_name or platform,
@@ -155,6 +166,29 @@ class EventEditorialAdapter:
                         message=msg,
                         source_type=src_role or "unknown",
                     )
+
+            # Build PublicationEvidence items
+            from src.publication.evidence import PublicationEvidence
+
+            if payload and payload.evidence_items:
+                for item_idx, evi in enumerate(payload.evidence_items):
+                    for fid in evi.source_fragment_ids:
+                        if fid in frag_meta_map:
+                            meta = frag_meta_map[fid]
+                            evi_id = f"story:{inp.story_id}:evidence:{item_idx}:frag:{fid}"
+                            all_evidence[evi_id] = PublicationEvidence(
+                                evidence_id=evi_id,
+                                story_id=inp.story_id,
+                                text=evi.text,
+                                kind=evi.kind,
+                                publication_use=evi.publication_use,
+                                fragment_id=fid,
+                                source_ref=meta["source_ref"],
+                                source_id=meta["source_id"],
+                                source_item_id=meta["source_item_id"],
+                                source_role=meta["source_role"],
+                                observed_at=meta["observed_at"],
+                            )
 
             # 3. Build StoryCard
             headline = (
@@ -170,14 +204,30 @@ class EventEditorialAdapter:
 
             fallback_refs = card_source_refs or [f"story:{inp.story_id}"]
 
-            hard_facts = [
-                StoryElement(
-                    text=fact,
-                    source_refs=fallback_refs,
-                    status="established",
-                )
-                for fact in (payload.key_facts if payload else [])
-            ]
+            if payload and payload.evidence_items:
+                hard_facts = [
+                    StoryElement(
+                        text=evi.text,
+                        source_refs=[
+                            frag_id_to_ref[fid]
+                            for fid in evi.source_fragment_ids
+                            if fid in frag_id_to_ref
+                        ]
+                        or fallback_refs,
+                        status="established",
+                    )
+                    for evi in payload.evidence_items
+                    if evi.publication_use != "EXCLUDE"
+                ]
+            else:
+                hard_facts = [
+                    StoryElement(
+                        text=fact,
+                        source_refs=fallback_refs,
+                        status="established",
+                    )
+                    for fact in (payload.key_facts if payload else [])
+                ]
 
             op_obs_elements: list[StoryElement] = []
             if payload and payload.operational_observations:
@@ -210,19 +260,18 @@ class EventEditorialAdapter:
                             )
                         )
 
-                    obs_ts_cands = [
-                        frag_ts_map[fid] for fid in obs.source_fragment_ids if fid in frag_ts_map
-                    ]
-                    obs_ts = (
-                        max(obs_ts_cands)
-                        if obs_ts_cands
-                        else (
+                    # Expand multi-fragment observation into separately timestamped entries
+                    for fid in obs.source_fragment_ids:
+                        if fid in frag_ts_map:
+                            f_ref = [frag_id_to_ref[fid]] if fid in frag_id_to_ref else obs_refs
+                            all_observations_with_time.append((obs, frag_ts_map[fid], f_ref))
+                    if not obs.source_fragment_ids:
+                        obs_ts = (
                             row[6]
                             if isinstance(row[6], dt.datetime)
                             else dt.datetime.now(dt.timezone.utc)
                         )
-                    )
-                    all_observations_with_time.append((obs, obs_ts, obs_refs))
+                        all_observations_with_time.append((obs, obs_ts, obs_refs))
 
             comm_obs = [
                 StoryElement(
@@ -268,6 +317,7 @@ class EventEditorialAdapter:
         analysis = EditorialAnalysis(
             cards=story_cards,
             city_situation=city_rollup,
+            evidence=all_evidence,
         )
         bundle = PreparedBundle(
             records=records,
