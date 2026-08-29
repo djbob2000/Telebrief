@@ -377,6 +377,15 @@ class TestStoryDomainModels:
         assert relation.relation_type == "RELATED_TO"
         assert relation.created_at == _T0
 
+    def test_matcher_system_prompt_carries_event_identity_invariant(self):
+        from src.processing.story_matching import StoryMatcher
+
+        prompt_text = StoryMatcher._system_prompt(None, "Бердянск")
+        assert "SAME_STORY identity invariant" in prompt_text
+        assert "updates the same concrete real-world event" in prompt_text
+        assert "A shared city, place, organization" in prompt_text
+        assert "choose NEW_STORY" in prompt_text
+
 
 # ---------------------------------------------------------------------------
 # Plan 3 Task 7A: story matching policy identity + candidate retrieval

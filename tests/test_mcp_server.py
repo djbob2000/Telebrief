@@ -33,34 +33,82 @@ async def test_registers_all_tools(server):
 @pytest.mark.asyncio
 async def test_get_digest_returns_built_digest(server, sample_config, mock_logger):
     """get_digest passes the lookback window through and returns the digest text."""
-    with patch("src.mcp_server.build_digest", new_callable=AsyncMock) as mock_build:
-        mock_build.return_value = "Header\n\nGroup msg"
+    from src.publication.facade import PublicationPreviewResult
 
+    preview_res = PublicationPreviewResult(
+        run_id=1,
+        publication_id=1,
+        title="Заголовок",
+        lead="Лид",
+        body="Header\n\nGroup msg",
+        publication_type="digest_grouped",
+        snapshot_at=None,  # type: ignore[arg-type]
+    )
+    with patch(
+        "src.publication.facade.build_publication_preview",
+        new_callable=AsyncMock,
+        return_value=preview_res,
+    ) as mock_preview:
         result = await server.call_tool("get_digest", {"hours": 12})
 
-        assert _text(result) == "Header\n\nGroup msg"
-        mock_build.assert_called_once_with(sample_config, mock_logger, 12)
+        assert "Header\n\nGroup msg" in _text(result)
+        assert "Заголовок" in _text(result)
+        mock_preview.assert_called_once_with(
+            publication_type="digest_grouped",
+            lookback_hours=12,
+            config=sample_config,
+        )
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_get_digest_defaults_to_24_hours(server, sample_config, mock_logger):
     """Calling get_digest without arguments uses a 24 hour window."""
-    with patch("src.mcp_server.build_digest", new_callable=AsyncMock) as mock_build:
-        mock_build.return_value = "digest"
+    from src.publication.facade import PublicationPreviewResult
 
+    preview_res = PublicationPreviewResult(
+        run_id=1,
+        publication_id=1,
+        title="Заголовок",
+        lead="Лид",
+        body="digest",
+        publication_type="digest_grouped",
+        snapshot_at=None,  # type: ignore[arg-type]
+    )
+    with patch(
+        "src.publication.facade.build_publication_preview",
+        new_callable=AsyncMock,
+        return_value=preview_res,
+    ) as mock_preview:
         await server.call_tool("get_digest", {})
 
-        mock_build.assert_called_once_with(sample_config, mock_logger, 24)
+        mock_preview.assert_called_once_with(
+            publication_type="digest_grouped",
+            lookback_hours=24,
+            config=sample_config,
+        )
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_get_digest_reports_empty_result(server):
+async def test_get_digest_reports_empty_result(server, sample_config):
     """An empty build reads as an explicit 'nothing found', not a blank response."""
-    with patch("src.mcp_server.build_digest", new_callable=AsyncMock) as mock_build:
-        mock_build.return_value = ""
+    from src.publication.facade import PublicationPreviewResult
 
+    preview_res = PublicationPreviewResult(
+        run_id=1,
+        publication_id=1,
+        title="",
+        lead="",
+        body="",
+        publication_type="digest_grouped",
+        snapshot_at=None,  # type: ignore[arg-type]
+    )
+    with patch(
+        "src.publication.facade.build_publication_preview",
+        new_callable=AsyncMock,
+        return_value=preview_res,
+    ):
         result = await server.call_tool("get_digest", {"hours": 6})
 
         assert "No messages found" in _text(result)

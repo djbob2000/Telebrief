@@ -9,6 +9,7 @@ from typing import Any, Protocol
 
 import psycopg
 
+from src.config_loader import Config
 from src.db.uow import DatabaseUnitOfWork
 from src.publication.models import (
     PublicationCandidate,
@@ -75,6 +76,15 @@ class HeuristicSelectionModel:
         return proposals
 
 
+DIGEST_PUBLICATION_TYPES: frozenset[str] = frozenset(
+    {
+        "digest",
+        "digest_grouped",
+        "digest_channel",
+    }
+)
+
+
 class EditorialSelectionService:
     """Service to run editorial selection over sealed candidates and freeze publication inputs."""
 
@@ -84,6 +94,7 @@ class EditorialSelectionService:
         uow: DatabaseUnitOfWork,
         repo: PublicationRepository | None = None,
         model: SelectionModel | None = None,
+        config: Config | None = None,
     ) -> None:
         self.uow = uow
         self.repo = repo or PublicationRepository()
@@ -92,9 +103,14 @@ class EditorialSelectionService:
         else:
             from src.publication.selection_ai import FailOpenSelectionModel
 
-            self.model = FailOpenSelectionModel()
+            self.model = FailOpenSelectionModel(config=config)
 
-    async def select(self, run_id: int) -> list[PublicationInput]:
+    async def select(
+        self,
+        run_id: int,
+        *,
+        defer_generation: bool = True,
+    ) -> list[PublicationInput]:
         async with self.uow.transaction() as conn:
             run = await self.repo.lock_run(conn, run_id)
             if run is None:
@@ -132,16 +148,80 @@ class EditorialSelectionService:
                 continue
             validated_proposals.append((cand, prop))
 
+        is_digest = run.publication_type in DIGEST_PUBLICATION_TYPES
+        normalized_proposals: list[tuple[PublicationCandidate, SelectionProposal]] = []
+        for cand, prop in validated_proposals:
+            if is_digest and prop.decision != "INCLUDE":
+                meta = dict(prop.metadata or {})
+                meta["model_decision"] = prop.decision
+                meta["coverage_override"] = True
+                intent = prop.presentation_intent or "normal"
+                effective_prop = SelectionProposal(
+                    story_id=prop.story_id,
+                    story_revision_id=prop.story_revision_id,
+                    decision="INCLUDE",
+                    presentation_intent=intent,
+                    confidence=prop.confidence,
+                    reason=prop.reason or "Coverage override for digest publication",
+                    rank=prop.rank,
+                    metadata=meta,
+                )
+            else:
+                effective_prop = prop
+            normalized_proposals.append((cand, effective_prop))
+
+        def _sort_key(
+            item: tuple[PublicationCandidate, SelectionProposal],
+        ) -> tuple[int, int, int]:
+            cand, prop = item
+            has_valid_rank = isinstance(prop.rank, int) and prop.rank > 0
+            rank_val: int = (
+                prop.rank if (has_valid_rank and prop.rank is not None) else cand.deterministic_rank
+            )
+            return (0 if has_valid_rank else 1, rank_val, cand.deterministic_rank)
+
+        included_items = sorted(
+            [item for item in normalized_proposals if item[1].decision == "INCLUDE"],
+            key=_sort_key,
+        )
+        omitted_items = [item for item in normalized_proposals if item[1].decision != "INCLUDE"]
+
         async with self.uow.transaction() as conn:
             # Re-lock run
             locked_run = await self.repo.lock_run(conn, run_id)
             if locked_run is None or locked_run.status != "candidates_sealed":
                 return await self.repo.load_sealed_inputs(conn, run_id)
 
+            # Record omitted decisions first
+            for cand, prop in omitted_items:
+                decision_rec = PublicationSelectionDecision(
+                    id=0,
+                    publication_run_id=run_id,
+                    candidate_id=cand.id,
+                    decision=prop.decision,
+                    presentation_intent=prop.presentation_intent,
+                    confidence=prop.confidence,
+                    reason=prop.reason,
+                    rank=prop.rank,
+                    metadata=prop.metadata or {},
+                    created_at=dt.datetime.now(dt.timezone.utc),
+                )
+                await self.repo.insert_selection_decision(conn, run_id, decision_rec)
+
             selected_inputs: list[PublicationInput] = []
             include_rank = 1
 
-            for cand, prop in validated_proposals:
+            # Load eligibility policy config to check excluded_platforms
+            cur = await conn.execute(
+                "SELECT config->'excluded_platforms' FROM eligibility_policy_versions WHERE id = %s",
+                (run.eligibility_policy_id,),
+            )
+            pol_row = await cur.fetchone()
+            excluded_platforms: list[str] = []
+            if pol_row is not None and pol_row[0] is not None and isinstance(pol_row[0], list):
+                excluded_platforms = [str(p).strip().lower() for p in pol_row[0] if str(p).strip()]
+
+            for cand, prop in included_items:
                 decision_rec = PublicationSelectionDecision(
                     id=0,
                     publication_run_id=run_id,
@@ -158,91 +238,75 @@ class EditorialSelectionService:
                     conn, run_id, decision_rec
                 )
 
-                if prop.decision == "INCLUDE":
-                    # Load eligibility policy config to check excluded_platforms
-                    cur = await conn.execute(
-                        "SELECT config->'excluded_platforms' FROM eligibility_policy_versions WHERE id = %s",
-                        (run.eligibility_policy_id,),
-                    )
-                    pol_row = await cur.fetchone()
-                    excluded_platforms: list[str] = []
-                    if (
-                        pol_row is not None
-                        and pol_row[0] is not None
-                        and isinstance(pol_row[0], list)
-                    ):
-                        excluded_platforms = [
-                            str(p).strip().lower() for p in pol_row[0] if str(p).strip()
-                        ]
+                # Query claims attached <= snapshot_at excluding excluded platforms
+                c_cur = await conn.execute(
+                    """
+                    SELECT sc.claim_id, src.role
+                    FROM story_claims sc
+                    JOIN claims c ON c.id = sc.claim_id
+                    JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources src ON src.id = si.source_id
+                    WHERE sc.story_id = %s
+                      AND sc.attached_at <= %s
+                      AND c.created_at <= %s
+                      AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
+                    ORDER BY sc.claim_id ASC
+                    """,
+                    (
+                        cand.story_id,
+                        run.snapshot_at,
+                        run.snapshot_at,
+                        excluded_platforms,
+                        excluded_platforms,
+                    ),
+                )
+                c_rows = await c_cur.fetchall()
+                claim_ids = [r[0] for r in c_rows]
+                claim_roles = {r[0]: r[1] for r in c_rows}
 
-                    # Query claims attached <= snapshot_at excluding excluded platforms
-                    c_cur = await conn.execute(
-                        """
-                        SELECT sc.claim_id, src.role
-                        FROM story_claims sc
-                        JOIN claims c ON c.id = sc.claim_id
-                        JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
-                        JOIN source_items si ON si.id = sir.source_item_id
-                        JOIN sources src ON src.id = si.source_id
-                        WHERE sc.story_id = %s
-                          AND sc.attached_at <= %s
-                          AND c.created_at <= %s
-                          AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
-                        ORDER BY sc.claim_id ASC
-                        """,
-                        (
-                            cand.story_id,
-                            run.snapshot_at,
-                            run.snapshot_at,
-                            excluded_platforms,
-                            excluded_platforms,
-                        ),
-                    )
-                    c_rows = await c_cur.fetchall()
-                    claim_ids = [r[0] for r in c_rows]
-                    claim_roles = {r[0]: r[1] for r in c_rows}
+                # Stories with 0 valid claims must never reach publication
+                if not claim_ids:
+                    continue
 
-                    # Stories with 0 valid claims must never reach publication
-                    if not claim_ids:
-                        continue
+                ec_cur = await conn.execute(
+                    """
+                    SELECT DISTINCT ec.id
+                    FROM evidence_clusters ec
+                    JOIN evidence_assessment_runs ear ON ear.id = ec.run_id
+                    WHERE ear.story_id = %s
+                      AND ear.completed_at <= %s
+                      AND ear.status = 'succeeded'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM evidence_cluster_members ecm
+                          WHERE ecm.cluster_id = ec.id
+                            AND ecm.claim_id <> ALL(%s::bigint[])
+                      )
+                    ORDER BY ec.id ASC
+                    """,
+                    (cand.story_id, run.snapshot_at, claim_ids),
+                )
+                evidence_cluster_ids = [r[0] for r in await ec_cur.fetchall()]
 
-                    ec_cur = await conn.execute(
-                        """
-                        SELECT DISTINCT ec.id
-                        FROM evidence_clusters ec
-                        JOIN evidence_assessment_runs ear ON ear.id = ec.run_id
-                        WHERE ear.story_id = %s
-                          AND ear.completed_at <= %s
-                          AND ear.status = 'succeeded'
-                          AND NOT EXISTS (
-                              SELECT 1
-                              FROM evidence_cluster_members ecm
-                              WHERE ecm.cluster_id = ec.id
-                                AND ecm.claim_id <> ALL(%s::bigint[])
-                          )
-                        ORDER BY ec.id ASC
-                        """,
-                        (cand.story_id, run.snapshot_at, claim_ids),
-                    )
-                    evidence_cluster_ids = [r[0] for r in await ec_cur.fetchall()]
-
-                    inp = await self.repo.freeze_selected_input(
-                        conn,
-                        run_id,
-                        story_id=cand.story_id,
-                        story_revision_id=cand.story_revision_id,
-                        selection_decision_id=inserted_decision.id,
-                        presentation_intent=prop.presentation_intent,
-                        rank=include_rank,
-                        claim_ids=claim_ids,
-                        claim_roles=claim_roles,
-                        evidence_cluster_ids=evidence_cluster_ids,
-                    )
-                    selected_inputs.append(inp)
-                    include_rank += 1
+                inp = await self.repo.freeze_selected_input(
+                    conn,
+                    run_id,
+                    story_id=cand.story_id,
+                    story_revision_id=cand.story_revision_id,
+                    selection_decision_id=inserted_decision.id,
+                    presentation_intent=prop.presentation_intent,
+                    rank=include_rank,
+                    claim_ids=claim_ids,
+                    claim_roles=claim_roles,
+                    evidence_cluster_ids=evidence_cluster_ids,
+                )
+                selected_inputs.append(inp)
+                include_rank += 1
 
             await self.repo.transition_run(conn, run_id, "selected_inputs_sealed")
-            await self._defer_generation(conn, run_id)
+            if defer_generation:
+                await self._defer_generation(conn, run_id)
             return selected_inputs
 
     async def _defer_generation(self, conn: psycopg.AsyncConnection, run_id: int) -> None:

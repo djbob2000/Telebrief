@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+from typing import Any
 
 import psycopg
 
@@ -40,7 +41,13 @@ class PublicationGenerationService:
         self.adapter = adapter or KnowledgeEditorialAdapter(uow=uow, repo=self.repo)
         self.generator = generator or ArticleGenerator(config=self.config, logger=logger)
 
-    async def generate(self, run_id: int) -> Publication:
+    async def generate(
+        self,
+        run_id: int,
+        *,
+        defer_delivery: bool = True,
+        publication_metadata: dict[str, Any] | None = None,
+    ) -> Publication:
         async with self.uow.transaction() as conn:
             run = await self.repo.lock_run(conn, run_id)
             if run is None:
@@ -121,6 +128,10 @@ class PublicationGenerationService:
         if winning_attempt is None:
             raise RuntimeError(f"no successful generation attempt recorded for run {run_id}")
 
+        meta: dict[str, Any] = {"winning_kind": winning_attempt.kind}
+        if publication_metadata:
+            meta.update(publication_metadata)
+
         async with self.uow.transaction() as conn:
             pub = await self.repo.create_publication(
                 conn,
@@ -130,12 +141,13 @@ class PublicationGenerationService:
                 title=title,
                 lead=lead,
                 body=body,
-                metadata={"winning_kind": winning_attempt.kind},
+                metadata=meta,
             )
             await self.repo.transition_run(
                 conn, run_id, "succeeded", completed_at=dt.datetime.now(dt.timezone.utc)
             )
-            await self._defer_delivery_payloads(conn, pub.id)
+            if defer_delivery:
+                await self._defer_delivery_payloads(conn, pub.id)
             return pub
 
     async def _defer_delivery_payloads(

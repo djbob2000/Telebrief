@@ -173,21 +173,7 @@ class ArchiveRepository:
         limit: int = 3,
     ) -> list[ArchiveMatchCandidate]:
         """Search historical archive articles by cosine similarity with temporal filtering."""
-        params: list[Any] = [
-            Vector(query_vector),
-            model,
-            dimensions,
-            edition_slug,
-        ]
-
-        temporal_clause = ""
-        if before_date is not None:
-            temporal_clause = "AND a.published_at < %s"
-            params.append(before_date)
-
-        params.extend([max_distance, limit])
-
-        query = f"""
+        query = """
             SELECT
                 a.id,
                 a.title,
@@ -201,22 +187,22 @@ class ArchiveRepository:
             WHERE e.model = %s
               AND e.dimensions = %s
               AND a.edition_slug = %s
-              {temporal_clause}
+              AND (%s::timestamptz IS NULL OR a.published_at < %s)
               AND (e.embedding <=> %s) <= %s
             ORDER BY distance ASC
             LIMIT %s;
         """
-        # Note: first %s is query_vector, second %s in ORDER/filter is the same query_vector
-        # Build exact arguments:
         args = [
             Vector(query_vector),
             model,
             dimensions,
             edition_slug,
+            before_date,
+            before_date,
+            Vector(query_vector),
+            max_distance,
+            limit,
         ]
-        if before_date is not None:
-            args.append(before_date)
-        args.extend([Vector(query_vector), max_distance, limit])
 
         cursor = await conn.execute(query, args)
         rows = await cursor.fetchall()

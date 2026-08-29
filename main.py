@@ -273,30 +273,22 @@ async def main():
         hours = args.hours or config.settings.lookback_hours
         if args.dry_run:
             logger.info(f"Building on-demand digest preview ({hours}h, dry_run=True)...")
-            from src.article_generator import ArticleGenerator
-            from src.core import _apply_configured_filters, _read_persistent_messages
-            from src.publication.editorial_adapter import FrozenEditorialInput
-            from src.publication.renderers import PublicationDigestRenderer
+            from src.core import DIGEST_PUBLICATION_TYPE
+            from src.publication.facade import build_publication_preview
 
-            messages = await _read_persistent_messages(config, hours)
-            filtered = await _apply_configured_filters(messages, config, logger)
-            generator = ArticleGenerator(config, logger)
-            bundle = generator._build_bundle(filtered)
-            analysis = await generator._analyze(bundle)
-            frozen_input = FrozenEditorialInput(analysis=analysis, writer_bundle=bundle)
-            renderer = PublicationDigestRenderer(
-                output_language=config.settings.output_language,
-                use_emojis=config.settings.use_emojis,
-                include_statistics=config.settings.include_statistics,
-                custom_rubrics=config.settings.digest_groups,
-            )
-            title, lead, body = renderer.render_grouped_digest(
-                frozen_input, edition_name="Бердянск"
+            preview = await build_publication_preview(
+                publication_type=DIGEST_PUBLICATION_TYPE,
+                lookback_hours=hours,
+                config=config,
             )
             print("\n" + "=" * 70)
-            print("📰 ТЕСТОВОЕ ПРЕВЬЮ ДАЙДЖЕСТА (DRY-RUN)")
+            print(f"📰 ТЕСТОВОЕ ПРЕВЬЮ ДАЙДЖЕСТА (DRY-RUN, run_id={preview.run_id})")
             print("=" * 70)
-            print(body)
+            if preview.title:
+                print(f"TITLE: {preview.title}\n")
+            if preview.lead:
+                print(f"LEAD: {preview.lead}\n")
+            print(preview.body)
             print("=" * 70 + "\n")
             sys.exit(0)
         else:

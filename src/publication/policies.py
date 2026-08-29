@@ -44,6 +44,7 @@ class PublicationPolicyService:
         edition_id: int,
         publication_type: str,
         config: Any | None = None,
+        lookback_hours_override: int | None = None,
         eligibility_config_hash: str = DEFAULT_ELIGIBILITY_CONFIG_HASH,
         eligibility_prompt_version: str = DEFAULT_ELIGIBILITY_PROMPT_VERSION,
         selection_config_hash: str = DEFAULT_SELECTION_CONFIG_HASH,
@@ -53,7 +54,9 @@ class PublicationPolicyService:
     ) -> PublicationPolicySet:
         lookback_hours = 24
         excluded_platforms: list[str] = []
-        if config is not None:
+        if lookback_hours_override is not None:
+            lookback_hours = int(lookback_hours_override)
+        elif config is not None:
             is_article = publication_type in ("daily_article", "article")
             if (
                 is_article
@@ -88,6 +91,7 @@ class PublicationPolicyService:
                         )
                     )
 
+        if config is not None:
             fb_cfg = getattr(config, "facebook", None)
             if fb_cfg is not None:
                 if not getattr(fb_cfg, "editorial_enabled", True):

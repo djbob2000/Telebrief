@@ -173,6 +173,13 @@ class KnowledgeEditorialAdapter:
 
             inputs = await self.repo.load_sealed_inputs(conn, run_id)
             if not inputs:
+                if run.publication_type in ("digest_grouped", "digest_channel", "digest"):
+                    return FrozenEditorialInput(
+                        analysis=EditorialAnalysis(cards=[]),
+                        writer_bundle=PreparedBundle(
+                            records={}, total_messages=0, candidate_count=0, prompt_text=""
+                        ),
+                    )
                 raise ValueError(f"publication run {run_id} has no sealed inputs")
 
             cards: list[StoryCard] = []

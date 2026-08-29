@@ -41,9 +41,7 @@ def test_load_records_json(tmp_path: Path):
 def test_load_records_csv(tmp_path: Path):
     sample_file = tmp_path / "sample.csv"
     sample_file.write_text(
-        "title,text,date\n"
-        "Статья 1,Содержимое 1,2023-05-01\n"
-        "Статья 2,Содержимое 2,2023-06-01\n",
+        "title,text,date\nСтатья 1,Содержимое 1,2023-05-01\nСтатья 2,Содержимое 2,2023-06-01\n",
         encoding="utf-8",
     )
 

@@ -433,6 +433,14 @@ class StoryMatcher:
             '- "assignment" MUST be exactly "SAME_STORY" or "NEW_STORY" — '
             "there is no other verdict.\n"
             "- With no candidates listed, answer NEW_STORY.\n"
+            "- SAME_STORY identity invariant: Choose SAME_STORY only when the new claim "
+            "updates the same concrete real-world event, decision, continuing incident, "
+            "administrative episode, or service episode represented by the candidate story. "
+            "A shared city, place, organization, person, date, utility type, category, or "
+            "broad subject is NOT sufficient for SAME_STORY. If the new claim could independently "
+            "be reported as a distinct news event because it has its own action, decision, "
+            "occurrence, timeframe, or consequence, choose NEW_STORY. Topically related but "
+            "distinct stories may be connected through relation_proposals instead of being merged.\n"
             '- For SAME_STORY set "target_story_id" to the chosen candidate\'s '
             "story_id.\n"
             '- Use "story_update" when the claim materially changes the '

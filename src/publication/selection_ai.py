@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import logging
 import re
+from typing import Any
 
 from src.ai_providers import AIProvider, create_provider
 from src.config_loader import Config, load_config
+from src.processing.relevance import ProviderUnavailableError
 from src.publication.models import PublicationCandidate, PublicationRun
 from src.publication.selection import (
     HeuristicSelectionModel,
@@ -31,6 +33,34 @@ class InvalidSelectionResponse(ValueError):
     """Raised when AI selector response violates schema or invariant requirements."""
 
 
+class _NullAIProvider(AIProvider):
+    """Fallback provider that always raises ProviderUnavailableError."""
+
+    async def chat_completion(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int = 1500,
+        reasoning_effort: str | None = None,
+        thinking: bool | None = None,
+        response_format: dict[str, Any] | None = None,
+    ) -> str:
+        raise ProviderUnavailableError("No valid AI provider configured")
+
+    async def chat_completion_stream(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int = 1500,
+        reasoning_effort: str | None = None,
+        thinking: bool | None = None,
+    ):
+        raise ProviderUnavailableError("No valid AI provider configured")
+        yield ""
+
+
 class AIPublicationSelectionModel:
     """LLM-backed editorial selector evaluating frozen candidate stories."""
 
@@ -47,16 +77,34 @@ class AIPublicationSelectionModel:
         if provider is not None:
             self.provider = provider
         else:
-            self.provider = create_provider(
-                self.config.settings.ai_provider,
-                logger=logger,
-                openai_api_key=self.config.openai_api_key,
-                anthropic_api_key=self.config.anthropic_api_key,
-                google_api_key=getattr(self.config, "gemini_api_key", "")
-                or getattr(self.config, "google_api_key", ""),
-                ollama_base_url=self.config.settings.ollama_base_url,
-                api_timeout=self.config.settings.api_timeout,
-            )
+            try:
+                self.provider = create_provider(
+                    self.config.settings.ai_provider,
+                    logger=logger,
+                    openai_api_key=self.config.openai_api_key,
+                    openai_base_url=getattr(self.config.settings, "openai_base_url", ""),
+                    anthropic_api_key=self.config.anthropic_api_key,
+                    google_api_key=getattr(self.config, "gemini_api_key", "")
+                    or getattr(self.config, "google_api_key", ""),
+                    google_api_keys=getattr(self.config, "google_api_keys", None),
+                    openrouter_api_key=getattr(self.config, "openrouter_api_key", ""),
+                    openrouter_base_url=getattr(
+                        self.config.settings, "openrouter_base_url", "https://openrouter.ai/api/v1"
+                    ),
+                    openrouter_model=getattr(
+                        self.config.settings, "openrouter_model", "openrouter/free"
+                    ),
+                    ollama_base_url=self.config.settings.ollama_base_url,
+                    api_timeout=self.config.settings.api_timeout,
+                    reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not initialize AI provider %s: %s",
+                    self.config.settings.ai_provider,
+                    exc,
+                )
+                self.provider = _NullAIProvider()
 
     async def select_stories(
         self,
@@ -68,20 +116,41 @@ class AIPublicationSelectionModel:
             return []
 
         prompt = self._build_prompt(run=run, candidates=candidates)
+        is_digest = run.publication_type in {
+            "digest",
+            "digest_grouped",
+            "digest_channel",
+        }
+        if is_digest:
+            system_content = (
+                "You are an editorial selection AI for regional publication digests. "
+                "Every supplied candidate has already passed deterministic publication eligibility. "
+                "Coverage is paramount for digests: return INCLUDE for every candidate. "
+                "Your editorial responsibility is ordering (rank) and presentation intent "
+                "('lead', 'normal', 'brief', 'unverified_operational', 'follow_up'), not candidate suppression.\n\n"
+                "CRITICAL RULES:\n"
+                "1. Return exactly one proposal for each candidate story in the candidate set.\n"
+                "2. Decision must be 'INCLUDE' for every candidate.\n"
+                "3. Rank included stories starting at rank 1 for the most important lead item.\n"
+                "4. Respond strictly with a JSON object containing a 'proposals' array."
+            )
+        else:
+            system_content = (
+                "You are an editorial selection AI for regional publication articles. "
+                "Evaluate candidate stories and decide whether to INCLUDE or OMIT them.\n\n"
+                "CRITICAL RULES:\n"
+                "1. Return exactly one decision for each candidate story in the candidate set.\n"
+                "2. Single-source, community, or unverified status is NEVER by itself a valid reason to OMIT. "
+                "Low-risk useful reports from single channels or community groups should be INCLUDED with "
+                "presentation_intent='unverified_operational', 'normal', or 'brief'.\n"
+                "3. Rank included stories starting at rank 1 for the most important lead item.\n"
+                "4. Respond strictly with a JSON object containing a 'proposals' array."
+            )
+
         messages = [
             {
                 "role": "system",
-                "content": (
-                    "You are an editorial selection AI for regional publication digests. "
-                    "Evaluate candidate stories and decide whether to INCLUDE or OMIT them.\n\n"
-                    "CRITICAL RULES:\n"
-                    "1. Return exactly one decision for each candidate story in the candidate set.\n"
-                    "2. Single-source, community, or unverified status is NEVER by itself a valid reason to OMIT. "
-                    "Low-risk useful reports from single channels or community groups should be INCLUDED with "
-                    "presentation_intent='unverified_operational', 'normal', or 'brief'.\n"
-                    "3. Rank included stories starting at rank 1 for the most important lead item.\n"
-                    "4. Respond strictly with a JSON object containing a 'proposals' array."
-                ),
+                "content": system_content,
             },
             {"role": "user", "content": prompt},
         ]
@@ -224,8 +293,10 @@ class FailOpenSelectionModel:
         self,
         primary: SelectionModel | None = None,
         fallback: SelectionModel | None = None,
+        *,
+        config: Config | None = None,
     ) -> None:
-        self.primary = primary or AIPublicationSelectionModel()
+        self.primary = primary or AIPublicationSelectionModel(config=config)
         self.fallback = fallback or HeuristicSelectionModel()
 
     async def select_stories(

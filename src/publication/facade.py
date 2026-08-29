@@ -38,6 +38,19 @@ class PublicationRequestResult:
     snapshot_at: dt.datetime
 
 
+@dataclass(frozen=True)
+class PublicationPreviewResult:
+    """Outcome of a publication preview generated without delivery side effects."""
+
+    run_id: int
+    publication_id: int
+    title: str
+    lead: str
+    body: str
+    publication_type: str
+    snapshot_at: dt.datetime
+
+
 def validate_publication_config(config: Config) -> None:
     """Fail fast unless the normalized database path is fully enabled.
 
@@ -63,6 +76,7 @@ async def request_publication(
     edition_slug: str = DEFAULT_EDITION_SLUG,
     *,
     snapshot_at: dt.datetime | None = None,
+    lookback_hours: int | None = None,
     request_key: str | None = None,
     dry_run: bool = False,
     config: Config | None = None,
@@ -75,6 +89,7 @@ async def request_publication(
         snapshot_at: knowledge cutoff; defaults to now (UTC). Scheduled
             orchestration always passes the scheduled slot so repeated
             dispatcher executions dedupe on the derived request key.
+        lookback_hours: lookback hours override for publication eligibility.
         request_key: deterministic key; on-demand callers get a fresh UUID.
         dry_run: accepted for call-site compatibility; the durable pipeline
             always persists its outputs, so dry-run previews are handled by
@@ -117,6 +132,7 @@ async def request_publication(
         snapshot_at=snap,
         request_key=key,
         config=config,
+        lookback_hours_override=lookback_hours,
     )
     # Seal and defer share one transaction: a failed defer rolls the sealing
     # back instead of stranding the run in candidates_sealed forever.
@@ -141,5 +157,82 @@ async def request_publication(
         request_key=key,
         edition_slug=edition_slug,
         publication_type=publication_type,
+        snapshot_at=snap,
+    )
+
+
+async def build_publication_preview(
+    publication_type: str,
+    edition_slug: str = DEFAULT_EDITION_SLUG,
+    *,
+    snapshot_at: dt.datetime | None = None,
+    lookback_hours: int | None = None,
+    config: Config | None = None,
+) -> PublicationPreviewResult:
+    """Generate a full publication preview in-process without delivery side effects.
+
+    Executes the canonical production publication pipeline:
+    create_run -> seal_candidates -> select -> generate -> Publication,
+    with explicit flags to suppress queueing selection, generation, and delivery jobs.
+    """
+    if config is None:
+        from src.config_loader import load_config
+
+        config = load_config()
+    validate_publication_config(config)
+
+    from src.publication.generation import PublicationGenerationService
+    from src.publication.selection import EditorialSelectionService
+    from src.publication.snapshot import PublicationSnapshotService
+    from src.repositories.editions import EditionRepository
+    from src.runtime import get_runtime
+
+    runtime = get_runtime()
+    snap = snapshot_at or dt.datetime.now(dt.timezone.utc)
+    key = f"preview:{edition_slug}:{publication_type}:{uuid.uuid4().hex}"
+
+    async with runtime.uow.transaction() as conn:
+        edition = await EditionRepository().get_by_slug(conn, edition_slug)
+        if edition is None:
+            raise ValueError(f"edition slug {edition_slug!r} not found")
+
+    service = PublicationSnapshotService(uow=runtime.uow)
+    run = await service.create_run(
+        edition_id=edition.id,
+        publication_type=publication_type,
+        snapshot_at=snap,
+        request_key=key,
+        config=config,
+        lookback_hours_override=lookback_hours,
+        metadata={"preview": True},
+    )
+
+    async with runtime.uow.transaction() as conn:
+        await service.seal_candidates(run.id, conn=conn)
+
+    selector = EditorialSelectionService(uow=runtime.uow, config=config)
+    await selector.select(run.id, defer_generation=False)
+
+    generator = PublicationGenerationService(uow=runtime.uow, config=config)
+    pub = await generator.generate(
+        run.id,
+        defer_delivery=False,
+        publication_metadata={"preview": True},
+    )
+
+    logger.info(
+        "generated preview %s publication %s (run=%s, edition=%s)",
+        publication_type,
+        pub.id,
+        run.id,
+        edition_slug,
+    )
+    return PublicationPreviewResult(
+        run_id=run.id,
+        publication_id=pub.id,
+        title=pub.title,
+        lead=pub.lead or "",
+        body=pub.body,
+        publication_type=pub.publication_type,
         snapshot_at=snap,
     )

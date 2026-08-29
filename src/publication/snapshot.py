@@ -42,6 +42,7 @@ class PublicationSnapshotService:
         request_key: str | None = None,
         policy_ids: PublicationPolicySet | tuple[int, int, int] | None = None,
         config: Any | None = None,
+        lookback_hours_override: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> PublicationRun:
         key = request_key or f"manual:{edition_id}:{publication_type}:{uuid.uuid4().hex}"
@@ -54,6 +55,7 @@ class PublicationSnapshotService:
                     edition_id=edition_id,
                     publication_type=publication_type,
                     config=config,
+                    lookback_hours_override=lookback_hours_override,
                 )
             else:
                 policy_set = policy_ids

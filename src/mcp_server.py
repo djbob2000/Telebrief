@@ -64,18 +64,38 @@ def build_server(config: Config, logger: logging.Logger) -> MCPServer:
 
     @mcp.tool()
     async def get_digest(hours: int = 24) -> str:
-        """Generate a fresh digest of the configured Telegram channels.
-
-        Collects messages, summarizes them with AI and formats the result exactly
-        as the digest delivered to Telegram. Takes roughly 20-90 seconds and costs
-        AI provider tokens, so prefer get_last_digest when recent data is enough.
+        """Generate a fresh digest of the configured channels using the unified publication pipeline.
 
         Args:
             hours: How many hours back to look, 1 to 168 (default 24)
         """
         validate_hours(hours)
-        digest = await build_digest(config, logger, hours)
-        return digest or f"No messages found in the last {hours} hours."
+        from src.core import DIGEST_PUBLICATION_TYPE
+        from src.publication.facade import build_publication_preview
+
+        try:
+            preview = await build_publication_preview(
+                publication_type=DIGEST_PUBLICATION_TYPE,
+                lookback_hours=hours,
+                config=config,
+            )
+            parts = []
+            if preview.title:
+                parts.append(f"📰 {preview.title}")
+            if preview.lead:
+                parts.append(preview.lead)
+            parts.append(preview.body)
+            return (
+                "\n\n".join(parts)
+                if preview.body
+                else f"No messages found in the last {hours} hours."
+            )
+        except Exception as exc:
+            logger.warning(
+                "Unified publication preview failed in MCP: %s; falling back to build_digest", exc
+            )
+            digest = await build_digest(config, logger, hours)
+            return digest or f"No messages found in the last {hours} hours."
 
     @mcp.tool()
     async def get_last_digest() -> str:
@@ -84,6 +104,34 @@ def build_server(config: Config, logger: logging.Logger) -> MCPServer:
         Instant and free. The digest may be stale — its generation time is included
         in the response, so check whether it is recent enough before relying on it.
         """
+        try:
+            from src.runtime import get_runtime
+
+            runtime = get_runtime()
+            async with runtime.uow.transaction() as conn:
+                cur = await conn.execute(
+                    """
+                    SELECT p.id, p.title, p.lead, p.body, p.created_at
+                    FROM publications p
+                    WHERE p.publication_type IN ('digest', 'digest_grouped', 'digest_channel')
+                      AND (p.metadata->>'preview' IS NULL OR p.metadata->>'preview' != 'true')
+                    ORDER BY p.id DESC LIMIT 1
+                    """
+                )
+                row = await cur.fetchone()
+                if row is not None:
+                    title, lead, body, created_at = row[1], row[2], row[3], row[4]
+                    header = f"Digest generated at {created_at.isoformat() if created_at else 'unknown'}:"
+                    content = []
+                    if title:
+                        content.append(f"📰 {title}")
+                    if lead:
+                        content.append(lead)
+                    content.append(body)
+                    return f"{header}\n\n" + "\n\n".join(content)
+        except Exception as exc:
+            logger.debug("Database read for get_last_digest failed: %s, checking disk cache", exc)
+
         cached = await read_last_digest_async()
         if cached is None:
             return "No digest has been generated yet. Use get_digest to build one."

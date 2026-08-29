@@ -192,7 +192,7 @@ async def _extract_clean_comment_text(node: Any, author_name: str | None = None)
         return "\n".join(filtered).strip()
     except Exception:
         try:
-            return (await node.inner_text()).strip()
+            return str(await node.inner_text()).strip()
         except Exception:
             return ""
 

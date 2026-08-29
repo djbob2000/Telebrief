@@ -231,7 +231,7 @@ def classify_card_rubric(card: StoryCard, rubrics: list[dict[str, Any]] | None =
     if cat:
         for rubric in active_rubrics:
             if cat == rubric["id"] or cat in rubric["title"].lower():
-                return rubric["id"]
+                return str(rubric["id"])
             if cat in ("utilities", "жкх", "коммуналка") and rubric["id"] == "utilities":
                 return "utilities"
             if cat in ("security", "безопасность", "чс") and rubric["id"] == "security":
@@ -258,9 +258,9 @@ def classify_card_rubric(card: StoryCard, rubrics: list[dict[str, Any]] | None =
             continue
         for kw in rubric.get("keywords", []):
             if kw in text:
-                return rubric["id"]
+                return str(rubric["id"])
 
-    return active_rubrics[-1]["id"]
+    return str(active_rubrics[-1]["id"])
 
 
 def split_into_telegram_chunks(text: str, max_chars: int = 3900) -> list[str]:
@@ -324,11 +324,13 @@ class PublicationDigestRenderer:
         snapshot_at: dt.datetime | None = None,
     ) -> tuple[str, str, str]:
         date_str = (snapshot_at or dt.datetime.now(dt.timezone.utc)).strftime("%d.%m.%Y")
-        title = f"Дайджест · {date_str}"
+        title = (
+            f"Дайджест: {edition_name} · {date_str}" if edition_name else f"Дайджест · {date_str}"
+        )
 
         cards = frozen_input.analysis.cards
         if not cards:
-            body = f"*{title}*\n\n📭 Нет актуальных городских событий за отчетный период."
+            body = f"*{title}*\n\n📭 Нет актуальных событий за отчетный период."
             return title, "", body
 
         # Group cards by classified rubric

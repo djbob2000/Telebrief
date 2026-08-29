@@ -45,6 +45,11 @@ class NoSubstantiveEditorialError(NoSubstantiveMaterialError):
 def _load_skill_instructions(path: str) -> str:
     """Load the configured skill once, stripping optional YAML frontmatter."""
     skill_path = Path(path)
+    if not skill_path.is_absolute() and not skill_path.exists():
+        repo_root = Path(__file__).resolve().parent.parent
+        candidate = repo_root / path
+        if candidate.exists():
+            skill_path = candidate
     if not skill_path.exists():
         raise FileNotFoundError(f"Article skill/prompt template not found: {path}")
     content = skill_path.read_text(encoding="utf-8").strip()

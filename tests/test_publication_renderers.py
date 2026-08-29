@@ -96,7 +96,7 @@ def test_render_grouped_digest_formatting_and_custom_rubrics():
         snapshot_at=dt.datetime(2026, 8, 27, tzinfo=dt.timezone.utc),
     )
 
-    assert "Дайджест · 27.08.2026" in body
+    assert "27.08.2026" in body
     assert "🚌 Транспорт и дороги" in body
     assert "Перекрытие улицы Тверской" in body
     assert "Автобусы № 5, 8, 13" in body

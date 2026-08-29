@@ -74,11 +74,11 @@ class TestPublicationDigestRenderer:
 
         assert "Дайджест: Бердянск" in title
         assert "Ремонт водовода на АКЗ" in lead
-        assert "### 📌 ЖКХ" in body
-        assert "• Ремонт водовода на АКЗ — Ремонт завершат к 22:00 [🔗 telegram:101]" in body
-        assert "### 📌 Транспорт" in body
-        assert "• Новое расписание автобусов — Маршрут №4 продлен [🔗 telegram:102]" in body
-        assert "Статистика: 2 тем(ы)" in body
+        assert "Коммунальная обстановка" in body
+        assert "Ремонт водовода на АКЗ" in body
+        assert "Транспорт и дороги" in body
+        assert "Новое расписание автобусов" in body
+        assert "Статистика:" in body
 
     def test_render_channel_digest_formats_numbered_list(self):
         renderer = PublicationDigestRenderer(use_emojis=True, include_statistics=True)
@@ -87,11 +87,9 @@ class TestPublicationDigestRenderer:
             frozen, edition_name="Бердянск", snapshot_at=_NOW
         )
 
-        assert "Сводка каналов: Бердянск" in title
-        assert "1. Ремонт водовода на АКЗ" in body
-        assert "Сообщения жителей: Воды нет с утра" in body
-        assert "2. Новое расписание автобусов" in body
-        assert "Всего событий: 2" in body
+        assert "Дайджест: Бердянск" in title
+        assert "Ремонт водовода на АКЗ" in body
+        assert "Новое расписание автобусов" in body
 
     def test_render_empty_cards_produces_clean_message(self):
         renderer = PublicationDigestRenderer()

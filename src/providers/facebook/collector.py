@@ -135,7 +135,7 @@ async def _extract_clean_post_text(node: Any) -> str:
         return "\n".join(filtered).strip()
     except Exception:
         try:
-            return (await node.inner_text()).strip()
+            return str(await node.inner_text()).strip()
         except Exception:
             return ""
 

@@ -521,3 +521,223 @@ class TestEditorialSelection:
         assert len(inputs) == 1
         assert inputs[0].story_id == story_id
         assert inputs[0].presentation_intent == "lead"
+
+    async def test_digest_with_omit_overrides_to_include_with_metadata(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """For digest types, AI proposing OMIT is overridden to effective INCLUDE with metadata."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at)
+            VALUES (%s, 1, 'open', 'Сюжет про транспорт', 'h-trans', %s) RETURNING id
+            """,
+            (story_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            request_key="test-digest-omit-override",
+        )
+        candidates = await snap_service.seal_candidates(run.id)
+        assert len(candidates) == 1
+
+        model = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=story_id,
+                    story_revision_id=rev_id,
+                    decision="OMIT",
+                    presentation_intent=None,
+                    confidence=0.8,
+                    reason="Low priority in AI view",
+                    rank=None,
+                )
+            ]
+        )
+        sel_service = EditorialSelectionService(uow=uow, model=model)
+        inputs = await sel_service.select(run.id, defer_generation=False)
+
+        assert len(inputs) == 1
+        assert inputs[0].story_id == story_id
+        assert inputs[0].rank == 1
+
+        # Verify decision metadata stored in DB
+        cur = await conn.execute(
+            "SELECT decision, metadata FROM publication_selection_decisions WHERE publication_run_id = %s",
+            (run.id,),
+        )
+        row = await cur.fetchone()
+        assert row[0] == "INCLUDE"
+        assert row[1].get("coverage_override") is True
+        assert row[1].get("model_decision") == "OMIT"
+
+    async def test_article_omit_is_honored_when_not_all_omitted(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """For article types, OMIT decision is honored when at least one story is INCLUDED."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        from tests.publication.conftest import seed_claim_for_story
+
+        # Seed 2 stories
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story1_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Сюжет 1', 'h-1', %s) RETURNING id",
+            (story1_id, _NOW),
+        )
+        rev1_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev1_id, story1_id)
+        )
+        await seed_claim_for_story(conn, edition.id, story1_id, _NOW)
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story2_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Сюжет 2', 'h-2', %s) RETURNING id",
+            (story2_id, _NOW),
+        )
+        rev2_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev2_id, story2_id)
+        )
+        await seed_claim_for_story(conn, edition.id, story2_id, _NOW)
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="daily_article",
+            snapshot_at=_NOW,
+            request_key="test-article-partial-omit",
+        )
+        candidates = await snap_service.seal_candidates(run.id)
+        assert len(candidates) == 2
+
+        model = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=story1_id,
+                    story_revision_id=rev1_id,
+                    decision="INCLUDE",
+                    presentation_intent="lead",
+                    confidence=0.95,
+                    rank=1,
+                ),
+                SelectionProposal(
+                    story_id=story2_id,
+                    story_revision_id=rev2_id,
+                    decision="OMIT",
+                    presentation_intent=None,
+                    confidence=0.8,
+                    reason="Not relevant for long-form article",
+                ),
+            ]
+        )
+        sel_service = EditorialSelectionService(uow=uow, model=model)
+        inputs = await sel_service.select(run.id, defer_generation=False)
+
+        assert len(inputs) == 1
+        assert inputs[0].story_id == story1_id
+
+    async def test_selection_ranks_order_inputs_correctly(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """AI rank determines the final sequential order of frozen publication inputs."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+        from tests.publication.conftest import seed_claim_for_story
+
+        # Seed 2 stories
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story1_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Сюжет 1', 'h-1', %s) RETURNING id",
+            (story1_id, _NOW),
+        )
+        rev1_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev1_id, story1_id)
+        )
+        await seed_claim_for_story(conn, edition.id, story1_id, _NOW)
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story2_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Сюжет 2', 'h-2', %s) RETURNING id",
+            (story2_id, _NOW),
+        )
+        rev2_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev2_id, story2_id)
+        )
+        await seed_claim_for_story(conn, edition.id, story2_id, _NOW)
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            request_key="test-ranking-order",
+        )
+        candidates = await snap_service.seal_candidates(run.id)
+        assert len(candidates) == 2
+
+        # AI assigns reversed ranks: story2 is rank 1, story1 is rank 2
+        model = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=story1_id,
+                    story_revision_id=rev1_id,
+                    decision="INCLUDE",
+                    presentation_intent="normal",
+                    rank=2,
+                ),
+                SelectionProposal(
+                    story_id=story2_id,
+                    story_revision_id=rev2_id,
+                    decision="INCLUDE",
+                    presentation_intent="lead",
+                    rank=1,
+                ),
+            ]
+        )
+        sel_service = EditorialSelectionService(uow=uow, model=model)
+        inputs = await sel_service.select(run.id, defer_generation=False)
+
+        assert len(inputs) == 2
+        assert inputs[0].story_id == story2_id
+        assert inputs[0].rank == 1
+        assert inputs[1].story_id == story1_id
+        assert inputs[1].rank == 2

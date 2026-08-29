@@ -475,9 +475,16 @@ async def _read_persistent_channel_messages(
 async def build_digest(config: Config, logger: logging.Logger, hours: int = 24) -> str:
     """Build the digest as a single Markdown document without sending it.
 
+    .. deprecated::
+        Use ``src.publication.facade.build_publication_preview`` for canonical
+        coverage-first publication preview.
+
     Returns:
         The digest text, or an empty string when there was nothing to report
     """
+    logger.warning(
+        "build_digest() is deprecated; prefer src.publication.facade.build_publication_preview()"
+    )
     built = await _build_digest_parts(config, logger, hours)
     return "" if built is None else _join_parts(built[0], built[1])
 
@@ -519,6 +526,7 @@ async def generate_and_send_digest(
         result = await request_publication(
             DIGEST_PUBLICATION_TYPE,
             config=config,
+            lookback_hours=hours,
         )
         logger.info("digest publication requested: run %s (%s)", result.run_id, result.request_key)
         return True
