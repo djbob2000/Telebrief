@@ -107,6 +107,7 @@ class EventEditorialAdapter:
             frag_rows = await f_cur.fetchall()
 
             card_source_refs: list[str] = []
+            frag_id_to_ref: dict[int, str] = {}
             for f_row in frag_rows:
                 (
                     fid,
@@ -126,6 +127,7 @@ class EventEditorialAdapter:
 
                 ref_key = f"{platform}:source:{src_id}:item:{item_id}:rev:{rev_id}:frag:{fid}"
                 card_source_refs.append(ref_key)
+                frag_id_to_ref[fid] = ref_key
 
                 if ref_key not in records:
                     link = canon_url or src_url or f"https://t.me/{str(src_ext_id).lstrip('@')}"
@@ -166,6 +168,37 @@ class EventEditorialAdapter:
                 for fact in (payload.key_facts if payload else [])
             ]
 
+            op_obs_elements: list[StoryElement] = []
+            if payload and payload.operational_observations:
+                for obs in payload.operational_observations:
+                    obs_refs = [
+                        frag_id_to_ref[fid]
+                        for fid in obs.source_fragment_ids
+                        if fid in frag_id_to_ref
+                    ]
+                    if not obs_refs:
+                        obs_refs = fallback_refs
+
+                    obs_parts = []
+                    if obs.subject_label:
+                        obs_parts.append(f"[{obs.subject_label}]")
+                    loc_ent = ": ".join([p for p in (obs.location, obs.entity) if p])
+                    if loc_ent:
+                        obs_parts.append(loc_ent)
+                    state_det = " — ".join([p for p in (obs.state, obs.detail) if p])
+                    if state_det:
+                        obs_parts.append(state_det)
+                    obs_text = " ".join(obs_parts) if obs_parts else obs.detail
+                    if obs_text and obs_text.strip():
+                        op_obs_elements.append(
+                            StoryElement(
+                                text=obs_text.strip(),
+                                source_refs=obs_refs,
+                                status="attributed",
+                                areas=[obs.location] if obs.location else [],
+                            )
+                        )
+
             comm_obs = [
                 StoryElement(
                     text=obs,
@@ -173,7 +206,7 @@ class EventEditorialAdapter:
                     status="attributed",
                 )
                 for obs in (payload.community_observations if payload else [])
-            ]
+            ] + op_obs_elements
 
             importance = "high" if payload and payload.urgency in ("critical", "high") else "medium"
             card = StoryCard(
