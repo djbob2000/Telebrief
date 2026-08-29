@@ -218,3 +218,79 @@ class TestPublicationDigestRenderer:
         assert pos_safety != -1
         assert pos_infra != -1
         assert pos_safety < pos_infra
+
+    def test_render_grouped_digest_includes_city_situation_and_4level_stats(self):
+        from src.collector import Message
+        from src.editorial_models import SourceRecord
+        from src.publication.city_situation import CitySituationItem, CitySituationRollup
+
+        now = dt.datetime(2026, 8, 29, 12, 0, tzinfo=dt.timezone.utc)
+        item = CitySituationItem(
+            subject_key="water_supply",
+            subject_label="Водоснабжение",
+            dimension="availability",
+            location="Колония",
+            entity="водовод",
+            state="UNAVAILABLE",
+            detail="Аварийное отключение до 18:00",
+            source_refs=("ref-1",),
+            first_observed_at=now,
+            last_observed_at=now,
+            observation_count=1,
+        )
+        rollup = CitySituationRollup(items=(item,))
+
+        card = StoryCard(
+            id="story-1",
+            topic="Порыв на водоводе",
+            importance="high",
+            summary="Авария в Колонии",
+            rubric_id="utilities",
+            representative_source_refs=["ref-1"],
+        )
+
+        msg1 = Message(
+            text="Порыв трубы в Колонии",
+            sender="Водоканал",
+            timestamp=now,
+            link="https://t.me/c/1",
+            channel_id="c1",
+            channel_name="Бердянскводоканал",
+        )
+        msg2 = Message(
+            text="Сварочные работы продолжаются",
+            sender="Водоканал",
+            timestamp=now,
+            link="https://t.me/c/2",
+            channel_id="c1",
+            channel_name="Бердянскводоканал",
+        )
+        records = {
+            "telegram:source:1:item:1:rev:1:frag:101": SourceRecord(
+                ref="telegram:source:1:item:1:rev:1:frag:101",
+                message=msg1,
+                source_type="official",
+            ),
+            "telegram:source:1:item:2:rev:1:frag:102": SourceRecord(
+                ref="telegram:source:1:item:2:rev:1:frag:102",
+                message=msg2,
+                source_type="official",
+            ),
+        }
+
+        frozen = FrozenEditorialInput(
+            analysis=EditorialAnalysis(cards=[card], city_situation=rollup),
+            writer_bundle=PreparedBundle(
+                records=records, prompt_text="", total_messages=2, candidate_count=1
+            ),
+        )
+
+        renderer = PublicationDigestRenderer(use_emojis=True, include_statistics=True)
+        _, _, body = renderer.render_grouped_digest(frozen)
+
+        # 1. City situation section rendered
+        assert "Городская обстановка:" in body
+        assert "🔴 <b>Водоснабжение (Колония)</b>: Аварийное отключение до 18:00" in body
+
+        # 2. 4-level statistics rendered
+        assert "Статистика: источников: 1, сообщений: 2, фактов: 2, событий: 1." in body

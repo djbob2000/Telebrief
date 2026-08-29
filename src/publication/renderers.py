@@ -361,6 +361,13 @@ class PublicationDigestRenderer:
 
         sections: list[str] = [f"*{title}*"]
 
+        if frozen_input.analysis.city_situation:
+            from src.publication.city_situation import render_city_situation_section
+
+            sit_text = render_city_situation_section(frozen_input.analysis.city_situation)
+            if sit_text:
+                sections.append(f"\n{sit_text}")
+
         for rubric in self.rubrics:
             rubric_id = str(rubric["id"])
             if rubric_id not in grouped_cards:
@@ -426,9 +433,32 @@ class PublicationDigestRenderer:
 
         if self.include_statistics:
             stat_emoji = "📊 " if self.use_emojis else ""
-            sections.append(
-                f"\n_{stat_emoji}Статистика: обработано {len(frozen_input.writer_bundle.records)} источников, {len(cards)} тем._"
+            records = list(frozen_input.writer_bundle.records.values())
+            unique_sources = (
+                len({r.message.channel_id or r.message.channel_name for r in records})
+                if records
+                else 0
             )
+            total_messages = (
+                len({r.message.link or r.ref.split(":frag:")[0] for r in records}) if records else 0
+            )
+            total_frags = len(records)
+            total_events = len(cards)
+
+            if total_frags > 0 and (
+                total_frags != total_messages or total_messages != unique_sources
+            ):
+                stat_text = (
+                    f"источников: {unique_sources}, сообщений: {total_messages}, "
+                    f"фактов: {total_frags}, событий: {total_events}"
+                )
+            else:
+                stat_text = (
+                    f"обработано {len(frozen_input.writer_bundle.records)} источников, "
+                    f"{len(cards)} тем"
+                )
+
+            sections.append(f"\n_{stat_emoji}Статистика: {stat_text}._")
 
         body = "\n".join(sections).strip()
         lead = cards[0].summary if cards else ""
