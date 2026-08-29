@@ -150,6 +150,7 @@ class EventEditorialAdapter:
                     "source_role": src_role or "unknown",
                     "observed_at": obs_time,
                     "source_ref": ref_key,
+                    "source_text": ftext,
                 }
 
                 if ref_key not in records:
@@ -181,6 +182,7 @@ class EventEditorialAdapter:
                                 evidence_id=evi_id,
                                 story_id=inp.story_id,
                                 text=evi.text,
+                                source_text=str(meta["source_text"]),
                                 kind=evi.kind,
                                 publication_use=evi.publication_use,
                                 fragment_id=fid,

@@ -22,6 +22,7 @@ def test_publication_evidence_dataclass() -> None:
         evidence_id="story:1:evidence:0:frag:101",
         story_id=1,
         text="Substation outage",
+        source_text="Substation outage on main street",
         kind="established_fact",
         publication_use="PUBLISH",
         fragment_id=101,
@@ -32,6 +33,7 @@ def test_publication_evidence_dataclass() -> None:
         observed_at=_T1,
     )
     assert pe.evidence_id == "story:1:evidence:0:frag:101"
+    assert pe.source_text == "Substation outage on main street"
     assert pe.story_id == 1
     assert pe.publication_use == "PUBLISH"
     assert pe.observed_at == _T1

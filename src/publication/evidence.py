@@ -14,6 +14,7 @@ class PublicationEvidence:
     evidence_id: str
     story_id: int
     text: str
+    source_text: str
     kind: str
     publication_use: Literal["PUBLISH", "CONTEXT", "EXCLUDE"]
     fragment_id: int
