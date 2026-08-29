@@ -345,6 +345,13 @@ class FailOpenSelectionModel:
             # treat as a degraded/over-conservative selection and fall back to permissive heuristic.
             included_count = sum(1 for p in proposals if p.decision == "INCLUDE")
             if candidates and included_count == 0:
+                is_digest = run.publication_type in DIGEST_PUBLICATION_TYPES
+                if is_digest and all(
+                    p.decision == "OMIT" and p.exclusion_reason in HARD_EXCLUSION_REASONS
+                    for p in proposals
+                ):
+                    # Valid all-commercial exclusion in digest: do not trigger heuristic fallback
+                    return proposals
                 raise InvalidSelectionResponse(
                     f"primary selector returned zero INCLUDE decisions for {len(candidates)} sealed candidates; triggering fail-open fallback"
                 )

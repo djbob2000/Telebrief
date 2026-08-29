@@ -12,6 +12,7 @@ from src.publication.selection import (
     SelectionProposal,
 )
 from src.publication.snapshot import PublicationSnapshotService
+from tests.publication.conftest import seed_claim_for_story
 
 _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
 
@@ -865,3 +866,256 @@ class TestSelectionAIParserContracts:
         """
         with pytest.raises(InvalidSelectionResponse, match="invalid exclusion_reason"):
             model._parse_and_validate(raw, candidates)
+
+
+@pytest.mark.postgres
+class TestSelectionPublishabilityAndFailOpen:
+    """Integration tests for narrow publishability exclusion and fail-open normalization."""
+
+    async def test_digest_commercial_classified_omit_survives(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Вода 3 рубля', 'h-ad', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            request_key="test-comm-omit",
+        )
+        candidates = await snap_service.seal_candidates(run.id)
+        assert len(candidates) == 1
+
+        model = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=story_id,
+                    story_revision_id=rev_id,
+                    decision="OMIT",
+                    exclusion_reason="commercial_classified",
+                    reason="Pure commercial classified ad",
+                )
+            ]
+        )
+        sel_service = EditorialSelectionService(uow=uow, model=model)
+        inputs = await sel_service.select(run.id, defer_generation=False)
+        assert len(inputs) == 0
+
+    async def test_digest_subjective_omit_is_overridden_to_include(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Свет на АКЗ', 'h-civic', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            request_key="test-subj-override",
+        )
+        candidates = await snap_service.seal_candidates(run.id)
+        assert len(candidates) == 1
+
+        model = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=story_id,
+                    story_revision_id=rev_id,
+                    decision="OMIT",
+                    exclusion_reason=None,
+                    reason="Low priority brief",
+                )
+            ]
+        )
+        sel_service = EditorialSelectionService(uow=uow, model=model)
+        inputs = await sel_service.select(run.id, defer_generation=False)
+        assert len(inputs) == 1
+        assert inputs[0].story_id == story_id
+
+    async def test_article_omit_remains_omit(self, conn: psycopg.AsyncConnection, pool, edition):
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Новость для статьи', 'h-art', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="daily_article",
+            snapshot_at=_NOW,
+            request_key="test-art-omit",
+        )
+        await snap_service.seal_candidates(run.id)
+
+        model = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=story_id,
+                    story_revision_id=rev_id,
+                    decision="OMIT",
+                    reason="Not suitable for long article",
+                )
+            ]
+        )
+        sel_service = EditorialSelectionService(uow=uow, model=model)
+        inputs = await sel_service.select(run.id, defer_generation=False)
+        assert len(inputs) == 0
+
+    async def test_fail_open_digest_all_commercial_omits_are_valid(self):
+        from src.publication.selection_ai import FailOpenSelectionModel
+
+        candidates = [
+            PublicationCandidate(
+                id=1,
+                publication_run_id=1,
+                story_id=41,
+                story_revision_id=87,
+                deterministic_rank=1,
+                snapshot_features={},
+                created_at=_NOW,
+            )
+        ]
+        run = PublicationRun(
+            id=1,
+            edition_id=1,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            eligibility_policy_id=1,
+            selection_policy_id=1,
+            writer_policy_id=1,
+            status="candidates_sealed",
+            error_kind=None,
+            metadata={},
+            request_key="test-k",
+            created_at=_NOW,
+        )
+        primary = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=41,
+                    story_revision_id=87,
+                    decision="OMIT",
+                    exclusion_reason="commercial_classified",
+                    reason="Commercial offer",
+                )
+            ]
+        )
+        fallback = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=41,
+                    story_revision_id=87,
+                    decision="INCLUDE",
+                    reason="Fallback included",
+                )
+            ]
+        )
+        model = FailOpenSelectionModel(primary=primary, fallback=fallback)
+        proposals = await model.select_stories(run=run, candidates=candidates)
+
+        assert len(proposals) == 1
+        assert proposals[0].decision == "OMIT"
+        assert proposals[0].exclusion_reason == "commercial_classified"
+
+    async def test_fail_open_digest_zero_includes_without_hard_reasons_uses_heuristic(self):
+        from src.publication.selection_ai import FailOpenSelectionModel
+
+        candidates = [
+            PublicationCandidate(
+                id=1,
+                publication_run_id=1,
+                story_id=41,
+                story_revision_id=87,
+                deterministic_rank=1,
+                snapshot_features={},
+                created_at=_NOW,
+            )
+        ]
+        run = PublicationRun(
+            id=1,
+            edition_id=1,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            eligibility_policy_id=1,
+            selection_policy_id=1,
+            writer_policy_id=1,
+            status="candidates_sealed",
+            error_kind=None,
+            metadata={},
+            request_key="test-k2",
+            created_at=_NOW,
+        )
+        # Primary returns subjective OMIT without hard exclusion reason
+        primary = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=41,
+                    story_revision_id=87,
+                    decision="OMIT",
+                    exclusion_reason=None,
+                    reason="Subjectively omitted",
+                )
+            ]
+        )
+        fallback = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=41,
+                    story_revision_id=87,
+                    decision="INCLUDE",
+                    reason="Fallback heuristic included",
+                )
+            ]
+        )
+        model = FailOpenSelectionModel(primary=primary, fallback=fallback)
+        proposals = await model.select_stories(run=run, candidates=candidates)
+
+        assert len(proposals) == 1
+        assert proposals[0].decision == "INCLUDE"
+        assert proposals[0].reason == "Fallback heuristic included"
