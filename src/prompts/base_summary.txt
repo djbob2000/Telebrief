@@ -46,11 +46,19 @@ Use an Event-based approach, not a Message-based approach:
 - Express cause and effect only when the input explicitly supports it.
 - Use clear, neutral journalistic language without sensationalism, vague filler, repetition, political labels, or propaganda slogans. Normalize politically charged source phrases into neutral civic terms.
 
-4. RANKING & COVERAGE
+4. RANKING & COMPREHENSIVE COVERAGE
 Rank unique events by consequence, public relevance, novelty, urgency, and specificity:
-- Ensure multi-category thematic diversity: do not allow a single dominant crisis (such as power outages) to crowd out other essential civic domains. You MUST allocate distinct items for public transport/routes, municipal utility repairs, administrative/notary/registry services, healthcare, social aid, and telecom/market adaptations whenever present in the input.
-- Include all meaningful distinct local events in 📌 Key points (up to 8 items).
-- Each item should be an informative, well-developed point (2-5 detailed sentences) rich in actionable facts.
+- MANDATORY THEMATIC EXTRACTION & DIVERSITY (DO NOT STOP AT 2-3 ITEMS): For large or multi-topic channels, you MUST systematically extract and generate separate, distinct numbered points for EVERY civic domain present in the input (aim for 6 to 10 comprehensive key points):
+  * ⚡ Energy & Power: blackouts, outages, generator usage, power bank router cables, fuel prices.
+  * 💧 Water & Utilities: pipe repairs, lack of water on upper floors, water delivery, municipal dispatcher phone numbers.
+  * 📱 Telecom & Internet: mobile operators («+7», МТС, Миранда), night-time coverage windows, connection issues by district.
+  * 🚌 Public Transport & Roads: specific bus route numbers (e.g. № 4, № 9), waiting times (e.g. up to 1 hour), detours, roadworks.
+  * 🏛 Civic Services & Documentation: operating notary offices (with exact street intersections), registry offices (Rosreestr), passport desks, delivery points («+7 Доставка», Ozon status).
+  * 🏥 Healthcare & Social Welfare: clinics, pharmacies, medicine availability, social aid, pensions.
+  * 🕯 Commemoration & Citizen Registries: memorial events, assistance for families of servicemen, missing persons / prisoner registries (cabinet.koordshtab.gov.ua).
+- Never collapse or discard transport, notary, or delivery updates into a generic blackout mention. Even if mentioned in only 1-2 messages, give them their own numbered point.
+- Include all distinct local events in 📌 Key points (typically 6 to 10 items for active channels).
+- Each item should be an informative, well-developed point (2-4 detailed sentences) rich in actionable facts.
 - Put any remaining minor local items in 📎 Also.
 
 5. LINKS AND ATTRIBUTION
@@ -63,9 +71,13 @@ OUTPUT FORMAT — STRICT
 🚀 [One or two short lines summarizing the overall theme or most consequential development without repeating item details]
 
 📌 Key points:
-1️⃣ [Semantic emoji] [One unique event: rich factual details, names, numbers, neighborhoods, hours, status, and civic impact; 2-5 detailed sentences]
-2️⃣ [Semantic emoji] [One unique event]
-[Continue only as needed, up to 8 items]
+1️⃣ [Semantic emoji] [Unique event in energy/power with specific districts, prices, details; 2-4 sentences]
+2️⃣ [Semantic emoji] [Unique event in water/utilities with dispatcher contacts and neighborhoods; 2-4 sentences]
+3️⃣ [Semantic emoji] [Unique event in telecom/mobile coverage with operators and night hours; 2-4 sentences]
+4️⃣ [Semantic emoji] [Unique event in transport/bus routes with route numbers and wait times; 2-4 sentences]
+5️⃣ [Semantic emoji] [Unique event in notary/services/delivery with exact locations/intersections; 2-4 sentences]
+6️⃣ [Semantic emoji] [Unique event in commemoration/registries/aid; 2-4 sentences]
+[Continue for all other verified distinct civic topics, typically up to 8–10 items]
 
 📎 Also:
 • [One remaining unique event in one concise line]
