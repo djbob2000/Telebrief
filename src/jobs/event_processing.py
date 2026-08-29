@@ -12,6 +12,7 @@ from src.jobs.app import procrastinate_app
 from src.processing.edition_scope import resolve_edition_scope, scope_config_hash
 from src.processing.embeddings import EmbeddingService
 from src.processing.event_analysis import EventAnalysisService
+from src.processing.event_brief import EventBriefService
 from src.processing.event_clustering import EventClusteringService
 from src.processing.event_triage import StoryTriageService
 from src.processing.fragments import split_into_fragments
@@ -121,7 +122,7 @@ async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int
 
 @procrastinate_app.task(queue="processing", name="coalesce_dirty_stories")
 async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str, int]:
-    """Coalesce dirty story clusters, triage/scope them in batches, and run rich analysis."""
+    """Coalesce dirty story clusters, triage/scope them in batches, and route to brief or rich analysis."""
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
     cfg = config.settings.event_pipeline
@@ -152,6 +153,10 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
         fragment_repo=fragment_repo,
         model=config.settings.ai_model,
     )
+    brief_service = EventBriefService(
+        story_repo=story_repo,
+        cluster_repo=cluster_repo,
+    )
 
     now = dt.datetime.now(dt.timezone.utc)
     stats = {
@@ -166,6 +171,8 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
         "triaged": 0,
         "analyzed": 0,
     }
+
+    rich_calls_count = 0
 
     async with runtime.uow.transaction() as conn:
         if edition_id is not None:
@@ -186,20 +193,7 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
 
             # Filter settled stories: quiet window has passed since last fragment arrived
             quiet_delta = dt.timedelta(seconds=cfg.analysis_quiet_seconds)
-            min_interval_delta = dt.timedelta(seconds=cfg.analysis_min_interval_seconds)
-
-            settled: list = []
-            for s in dirty_stories:
-                # Check quiet window
-                if (now - s.last_seen_at) < quiet_delta:
-                    continue
-                # Check min interval between analysis runs
-                if (
-                    s.last_analyzed_at is not None
-                    and (now - s.last_analyzed_at) < min_interval_delta
-                ):
-                    continue
-                settled.append(s)
+            settled = [s for s in dirty_stories if (now - s.last_seen_at) >= quiet_delta]
 
             stats["settled"] += len(settled)
             if not settled:
@@ -238,21 +232,19 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
 
                     if result.scope == "OUT_OF_SCOPE":
                         stats["scope_out_of_scope"] += 1
-                        await cluster_repo.update_cluster_analysis_analyzed(
+                        await cluster_repo.mark_cluster_processed_without_analysis(
                             conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
-                            analyzed_at=now,
                         )
                         continue
 
                     if result.scope == "UNCERTAIN":
                         stats["scope_uncertain"] += 1
-                        await cluster_repo.update_cluster_analysis_analyzed(
+                        await cluster_repo.mark_cluster_processed_without_analysis(
                             conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
-                            analyzed_at=now,
                         )
                         continue
 
@@ -263,41 +255,51 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
                     else:
                         raise AssertionError(f"validated unexpected scope {result.scope!r}")
 
-                    # Prevent rich re-analysis during scope-only re-screen if already enriched
-                    current_revision_id = await story_repo.current_revision_id(conn, state.story_id)
-                    already_enriched_current_assignment = (
-                        state.last_analyzed_assignment_id == state.latest_assignment_id
-                        and current_revision_id is not None
-                    )
-                    if already_enriched_current_assignment:
-                        await cluster_repo.update_cluster_analysis_analyzed(
+                    if result.retention == "DROP":
+                        await cluster_repo.mark_cluster_processed_without_analysis(
                             conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
-                            analyzed_at=now,
                         )
                         continue
 
-                    # Check safe ignore
-                    is_safe_ignore = (
-                        result.decision == "IGNORE"
-                        and result.confidence >= cfg.triage_min_ignore_confidence
-                        and result.exclusion_reason in ("commercial_classified", "obvious_noise")
-                        and not (
-                            state.fragment_count >= cfg.direct_analysis_min_fragments
-                            or state.unique_source_count >= cfg.direct_analysis_min_unique_sources
-                        )
+                    # In-scope KEEP: persist brief revision first
+                    await brief_service.persist_brief(
+                        conn,
+                        story_id=state.story_id,
+                        assignment_id=state.latest_assignment_id,
+                        payload=result.brief_payload,
                     )
-                    if is_safe_ignore:
-                        await cluster_repo.update_cluster_analysis_analyzed(
+
+                    effective_enrichment = result.enrichment
+                    if (
+                        state.fragment_count >= cfg.direct_analysis_min_fragments
+                        and state.unique_source_count >= cfg.direct_analysis_min_unique_sources
+                    ):
+                        effective_enrichment = "ANALYZE"
+
+                    if effective_enrichment == "BRIEF":
+                        await cluster_repo.mark_cluster_processed_without_analysis(
                             conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
-                            analyzed_at=now,
                         )
                         continue
 
-                    # Approved for rich event analysis
+                    # effective_enrichment == "ANALYZE"
+                    if rich_calls_count >= cfg.rich_analysis_max_calls_per_cycle:
+                        # Budget exhausted for this cycle; leave dirty for next cycle
+                        continue
+
+                    min_interval_delta = dt.timedelta(seconds=cfg.analysis_min_interval_seconds)
+                    if (
+                        state.last_analyzed_at is not None
+                        and (now - state.last_analyzed_at) < min_interval_delta
+                    ):
+                        # Throttled by min interval; leave dirty for next cycle
+                        continue
+
+                    rich_calls_count += 1
                     rev = await analysis_service.analyze_story(
                         conn,
                         state.story_id,

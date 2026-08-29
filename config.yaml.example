@@ -118,8 +118,10 @@ settings:
   #   provider_retry_backoff_seconds: 300
   #   analysis_max_input_chars: 24000
   #   representative_fragment_limit: 16
+  #   rich_analysis_max_calls_per_cycle: 40
   #   live_batch_size: 100
   #   backfill_batch_size: 500
+
 
   # Output
   output_language: "Russian"  # Language for AI summaries (e.g., "English", "Russian", "Spanish")

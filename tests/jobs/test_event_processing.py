@@ -218,10 +218,28 @@ async def test_coalesce_dirty_stories_task_end_to_end(conn, pool, uow, sample_co
                 "scope": "LOCAL",
                 "scope_confidence": 0.98,
                 "scope_reason": "In AKZ",
-                "decision": "ANALYZE",
+                "retention": "KEEP",
+                "enrichment": "ANALYZE",
                 "exclusion_reason": None,
                 "confidence": 0.95,
                 "reason": "OK",
+                "brief_payload": {
+                    "topic": "Авария на водоводе в АКЗ",
+                    "headline": "Порыв водопровода",
+                    "digest_summary": "Водоканал ликвидирует аварию.",
+                    "operational_observations": [
+                        {
+                            "subject_key": "water_supply",
+                            "subject_label": "Водоснабжение",
+                            "dimension": "availability",
+                            "location": "АКЗ",
+                            "entity": "водовод",
+                            "state": "UNAVAILABLE",
+                            "detail": "Аварийное отключение",
+                            "source_fragment_ids": [9902],
+                        }
+                    ],
+                },
             }
         ]
     }
@@ -265,6 +283,7 @@ async def test_coalesce_dirty_stories_task_end_to_end(conn, pool, uow, sample_co
     state = await cluster_repo.get_cluster_state(conn, sid)
     assert state is not None
     assert state.analysis_dirty is False
+    assert state.last_analyzed_assignment_id == aid
 
 
 @pytest.mark.postgres
@@ -379,7 +398,8 @@ async def test_coalesce_dirty_stories_out_of_scope_marks_analyzed(conn, pool, uo
                 "scope": "OUT_OF_SCOPE",
                 "scope_confidence": 0.99,
                 "scope_reason": "Kyiv metro is outside Berdyansk",
-                "decision": "ANALYZE",
+                "retention": "DROP",
+                "enrichment": "NONE",
                 "exclusion_reason": None,
                 "confidence": 0.95,
                 "reason": "OK",
@@ -403,11 +423,11 @@ async def test_coalesce_dirty_stories_out_of_scope_marks_analyzed(conn, pool, uo
     assert stats["scope_out_of_scope"] == 1
     assert stats["analyzed"] == 0
 
-    # Cluster state settled without rich analysis
+    # Cluster state settled without rich analysis; last_analyzed_* remains None
     state = await cluster_repo.get_cluster_state(conn, sid)
     assert state is not None
     assert state.analysis_dirty is False
-    assert state.last_analyzed_assignment_id == aid
+    assert state.last_analyzed_assignment_id is None
 
 
 @pytest.mark.postgres
@@ -522,7 +542,8 @@ async def test_coalesce_dirty_stories_uncertain_marks_analyzed(conn, pool, uow, 
                 "scope": "UNCERTAIN",
                 "scope_confidence": 0.85,
                 "scope_reason": "No geographic anchor",
-                "decision": "ANALYZE",
+                "retention": "DROP",
+                "enrichment": "NONE",
                 "exclusion_reason": None,
                 "confidence": 0.95,
                 "reason": "OK",
@@ -549,35 +570,35 @@ async def test_coalesce_dirty_stories_uncertain_marks_analyzed(conn, pool, uow, 
     state = await cluster_repo.get_cluster_state(conn, sid)
     assert state is not None
     assert state.analysis_dirty is False
-    assert state.last_analyzed_assignment_id == aid
+    assert state.last_analyzed_assignment_id is None
 
 
 @pytest.mark.postgres
-async def test_coalesce_dirty_stories_scope_rescreen_preserves_enrichment(
-    conn, pool, uow, sample_config
-):
+async def test_coalesce_retry_cache_cost(conn, pool, uow, sample_config):
+    """Prove that when rich analysis fails, the next coalescer cycle reuses the cached Gate result without calling gate AI."""
     now = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=5)
     sample_config.settings.event_pipeline = sample_config.settings.event_pipeline.__class__(
         mode="event_first",
         analysis_quiet_seconds=60,
-        analysis_min_interval_seconds=300,
+        analysis_min_interval_seconds=0,
+        direct_analysis_min_fragments=2,
     )
     sample_config.settings.edition_scopes = {
-        "berdyansk-rescreen": EditionScopeConfig(
+        "berdyansk-cache": EditionScopeConfig(
             name="Бердянск",
             focus_places=("Бердянск",),
         )
     }
 
     cursor = await conn.execute(
-        "INSERT INTO editions (slug, name) VALUES ('berdyansk-rescreen', 'Berdyansk Rescreen') RETURNING id"
+        "INSERT INTO editions (slug, name) VALUES ('berdyansk-cache', 'Berdyansk Cache') RETURNING id"
     )
     edition_id = (await cursor.fetchone())[0]
 
     cursor = await conn.execute(
         """
         INSERT INTO sources (platform, kind, external_id, url, name)
-        VALUES ('telegram', 'channel', '-1004246', 'https://t.me/example5', 'Example 5')
+        VALUES ('telegram', 'channel', '-1004247', 'https://t.me/example7', 'Example 7')
         RETURNING id
         """
     )
@@ -588,21 +609,12 @@ async def test_coalesce_dirty_stories_scope_rescreen_preserves_enrichment(
     )
 
     cursor = await conn.execute(
-        """
-        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
-        VALUES (%s, 'message', 'msg-rs', now())
-        RETURNING id
-        """,
+        "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', 'msg-c', now()) RETURNING id",
         (source_id,),
     )
     item_id = (await cursor.fetchone())[0]
-
     cursor = await conn.execute(
-        """
-        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
-        VALUES (%s, 1, 'hash_rev_rs', 'Ремонт в Бердянске')
-        RETURNING id
-        """,
+        "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, 'h-c', 'Текст') RETURNING id",
         (item_id,),
     )
     rev_id = (await cursor.fetchone())[0]
@@ -616,47 +628,30 @@ async def test_coalesce_dirty_stories_scope_rescreen_preserves_enrichment(
     await conn.execute(
         """
         INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
-        OVERRIDING SYSTEM VALUE VALUES (9931, 'hash_crs', '[1, 0, 0, 0]'::vector, 'model', 4)
+        OVERRIDING SYSTEM VALUE VALUES (9941, 'hash_cc', '[1, 0, 0, 0]'::vector, 'model', 4)
         """
     )
     await conn.execute(
         """
         INSERT INTO source_fragments (id, source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, drop_reason, created_at)
-        OVERRIDING SYSTEM VALUE VALUES (9932, %s, 0, 'Text RS', 'hash_crs', 'v1', TRUE, NULL, %s)
+        OVERRIDING SYSTEM VALUE VALUES (9942, %s, 0, 'Text C', 'hash_cc', 'v1', TRUE, NULL, %s)
         """,
         (rev_id, now),
     )
     await conn.execute(
         """
         INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
-        OVERRIDING SYSTEM VALUE VALUES (9933, 9932, 9931)
+        OVERRIDING SYSTEM VALUE VALUES (9943, 9942, 9941)
         """
     )
 
     aid = await cluster_repo.assign_fragment_to_story(
         conn,
         story_id=sid,
-        fragment_id=9932,
-        fragment_embedding_id=9933,
+        fragment_id=9942,
+        fragment_embedding_id=9943,
         assignment_kind="new_story",
     )
-
-    # Pre-create an enriched revision
-    cur = await conn.execute(
-        """
-        INSERT INTO story_revisions (story_id, revision_no, title, summary, current_state, semantic_text, content_hash)
-        VALUES (%s, 1, 'Existing Headline', 'Existing Summary', 'active', 'Semantic text', 'hash_rs1')
-        RETURNING id
-        """,
-        (sid,),
-    )
-    rev_row = await cur.fetchone()
-    assert rev_row is not None
-    await conn.execute(
-        "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_row[0], sid)
-    )
-
-    # Cluster state has last_analyzed_assignment_id == aid, but analysis_dirty == True (e.g. forced re-screen)
     await cluster_repo.upsert_cluster_state(
         conn,
         story_id=sid,
@@ -670,36 +665,48 @@ async def test_coalesce_dirty_stories_scope_rescreen_preserves_enrichment(
         latest_assignment_id=aid,
         analysis_dirty=True,
     )
-    await cluster_repo.update_cluster_analysis_analyzed(
-        conn,
-        story_id=sid,
-        assignment_id=aid,
-        analyzed_at=now,
-    )
-    await conn.execute(
-        "UPDATE story_cluster_state SET analysis_dirty = TRUE WHERE story_id = %s", (sid,)
-    )
 
-    mock_ai = AsyncMock()
-    mock_ai.primary_provider_name = "mock_provider"
-    mock_ai.model_name = "mock-model"
-
-    triage_output = {
+    gate_output = {
         "results": [
             {
                 "story_id": sid,
                 "scope": "LOCAL",
                 "scope_confidence": 0.99,
                 "scope_reason": "In Berdyansk",
-                "decision": "ANALYZE",
+                "retention": "KEEP",
+                "enrichment": "ANALYZE",
                 "exclusion_reason": None,
                 "confidence": 0.95,
                 "reason": "OK",
+                "brief_payload": {
+                    "topic": "Topic",
+                    "headline": "Headline",
+                    "digest_summary": "Summary",
+                    "operational_observations": [
+                        {
+                            "subject_key": "power_supply",
+                            "subject_label": "Электросеть",
+                            "dimension": "availability",
+                            "location": "Бердянск",
+                            "entity": "сеть",
+                            "state": "AVAILABLE",
+                            "detail": "active",
+                            "source_fragment_ids": [9942],
+                        }
+                    ],
+                },
             }
         ]
     }
-    # generate_text only called for triage, NOT for rich analysis!
-    mock_ai.generate_text.return_value = json.dumps(triage_output)
+
+    # Cycle 1: Gate succeeds, Rich analysis fails
+    mock_ai = AsyncMock()
+    mock_ai.primary_provider_name = "mock_provider"
+    mock_ai.model_name = "mock-model"
+    mock_ai.generate_text.side_effect = [
+        json.dumps(gate_output),  # Gate call
+        RuntimeError("Rich analysis provider error"),  # Rich call fails
+    ]
 
     runtime = SimpleNamespace(
         config=sample_config,
@@ -710,12 +717,39 @@ async def test_coalesce_dirty_stories_scope_rescreen_preserves_enrichment(
     )
     install_runtime(runtime)
 
-    stats = await coalesce_dirty_stories_task.func(edition_id=edition_id)
-    assert stats["scanned"] >= 1
-    assert stats["gated"] >= 1
-    assert stats["scope_local"] == 1
-    assert stats["analyzed"] == 0  # Skipped re-analysis!
+    stats1 = await coalesce_dirty_stories_task.func(edition_id=edition_id)
+    assert stats1["analyzed"] == 0
 
-    state = await cluster_repo.get_cluster_state(conn, sid)
-    assert state is not None
-    assert state.analysis_dirty is False
+    # Story remains dirty because rich analysis failed
+    state1 = await cluster_repo.get_cluster_state(conn, sid)
+    assert state1 is not None
+    assert state1.analysis_dirty is True
+
+    # Cycle 2: Next coalescer run reuses cached gate result, calls only rich analysis!
+    rich_output = {
+        "topic": "Topic",
+        "tags": ["power"],
+        "urgency": "normal",
+        "publishability": "news",
+        "headline": "Headline",
+        "digest_summary": "Summary",
+        "key_facts": ["Fact 1"],
+        "confidence_score": 0.95,
+    }
+    mock_ai_2 = AsyncMock()
+    mock_ai_2.primary_provider_name = "mock_provider"
+    mock_ai_2.model_name = "mock-model"
+    mock_ai_2.generate_text.return_value = json.dumps(rich_output)
+
+    runtime.provider_cascade = mock_ai_2
+
+    stats2 = await coalesce_dirty_stories_task.func(edition_id=edition_id)
+    assert stats2["analyzed"] == 1
+
+    # In Cycle 2, mock_ai_2.generate_text was called ONLY ONCE (for rich analysis, not for gate)!
+    assert mock_ai_2.generate_text.call_count == 1
+
+    state2 = await cluster_repo.get_cluster_state(conn, sid)
+    assert state2 is not None
+    assert state2.analysis_dirty is False
+    assert state2.last_analyzed_assignment_id == aid

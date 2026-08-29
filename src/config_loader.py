@@ -271,6 +271,7 @@ class EventPipelineConfig:
     provider_retry_backoff_seconds: int = 300
     analysis_max_input_chars: int = 24000
     representative_fragment_limit: int = 16
+    rich_analysis_max_calls_per_cycle: int = 40
     live_batch_size: int = 100
     backfill_batch_size: int = 500
 
@@ -1544,6 +1545,7 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
         provider_retry_backoff_seconds=_val_nonneg_int("provider_retry_backoff_seconds", 300),
         analysis_max_input_chars=_val_pos_int("analysis_max_input_chars", 24000),
         representative_fragment_limit=_val_pos_int("representative_fragment_limit", 16),
+        rich_analysis_max_calls_per_cycle=_val_pos_int("rich_analysis_max_calls_per_cycle", 40),
         live_batch_size=_val_pos_int("live_batch_size", 100),
         backfill_batch_size=_val_pos_int("backfill_batch_size", 500),
     )
