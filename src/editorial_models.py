@@ -408,6 +408,7 @@ class EditorialAnalysis:
     cards: list[StoryCard]
     labels: dict[str, dict[str, Any]] = field(default_factory=dict)
     excluded_refs: list[str] = field(default_factory=list)
+    city_situation: Any = None  # CitySituationRollup | None
 
     def human_readable_text(self) -> str:
         return " ".join(card.human_readable_text() for card in self.cards)
@@ -452,18 +453,37 @@ class EditorialAnalysis:
                 )
             return cls(cards=cards)
         cards = [StoryCard.from_dict(item) for item in data.get("cards", [])]
+        city_sit_raw = data.get("city_situation")
+        city_sit = None
+        if isinstance(city_sit_raw, dict):
+            try:
+                from src.publication.city_situation import CitySituationRollup
+
+                city_sit = CitySituationRollup.from_dict(city_sit_raw)
+            except Exception:
+                city_sit = None
+        elif city_sit_raw is not None:
+            city_sit = city_sit_raw
+
         return cls(
             cards=cards,
             labels=dict(data.get("labels", {})),
             excluded_refs=list(data.get("excluded_refs", [])),
+            city_situation=city_sit,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "cards": [card.to_dict() for card in self.cards],
             "labels": self.labels,
             "excluded_refs": self.excluded_refs,
         }
+        if self.city_situation is not None:
+            if hasattr(self.city_situation, "to_dict"):
+                d["city_situation"] = self.city_situation.to_dict()
+            elif isinstance(self.city_situation, dict):
+                d["city_situation"] = self.city_situation
+        return d
 
     def all_source_refs(self) -> set[str]:
         refs: set[str] = set()

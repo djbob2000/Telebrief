@@ -5,11 +5,13 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+from collections.abc import Sequence
 
 import psycopg
 
 from src.collector import Message
 from src.db.uow import DatabaseUnitOfWork
+from src.domain.event_payload import OperationalObservationPayload
 from src.editorial_models import (
     EditorialAnalysis,
     PreparedBundle,
@@ -59,6 +61,9 @@ class EventEditorialAdapter:
 
         story_cards: list[StoryCard] = []
         records: dict[str, SourceRecord] = {}
+        all_observations_with_time: list[
+            tuple[OperationalObservationPayload, dt.datetime, Sequence[str]]
+        ] = []
 
         for _rank, inp in enumerate(inputs, start=1):
             # 1. Fetch story revision event_payload
@@ -108,6 +113,7 @@ class EventEditorialAdapter:
 
             card_source_refs: list[str] = []
             frag_id_to_ref: dict[int, str] = {}
+            frag_ts_map: dict[int, dt.datetime] = {}
             for f_row in frag_rows:
                 (
                     fid,
@@ -128,6 +134,11 @@ class EventEditorialAdapter:
                 ref_key = f"{platform}:source:{src_id}:item:{item_id}:rev:{rev_id}:frag:{fid}"
                 card_source_refs.append(ref_key)
                 frag_id_to_ref[fid] = ref_key
+                frag_ts_map[fid] = (
+                    collected_at
+                    if isinstance(collected_at, dt.datetime)
+                    else (row[6] or row[5] or dt.datetime.now(dt.timezone.utc))
+                )
 
                 if ref_key not in records:
                     link = canon_url or src_url or f"https://t.me/{str(src_ext_id).lstrip('@')}"
@@ -199,6 +210,20 @@ class EventEditorialAdapter:
                             )
                         )
 
+                    obs_ts_cands = [
+                        frag_ts_map[fid] for fid in obs.source_fragment_ids if fid in frag_ts_map
+                    ]
+                    obs_ts = (
+                        max(obs_ts_cands)
+                        if obs_ts_cands
+                        else (
+                            row[6]
+                            if isinstance(row[6], dt.datetime)
+                            else dt.datetime.now(dt.timezone.utc)
+                        )
+                    )
+                    all_observations_with_time.append((obs, obs_ts, obs_refs))
+
             comm_obs = [
                 StoryElement(
                     text=obs,
@@ -223,8 +248,26 @@ class EventEditorialAdapter:
             )
             story_cards.append(card)
 
+        # Build CitySituationRollup for digest publication runs
+        run = await self.repo.get_run_by_id(conn, run_id)
+        city_rollup = None
+        if run is not None and run.publication_type in (
+            "digest_grouped",
+            "digest_channel",
+            "digest",
+        ):
+            if all_observations_with_time:
+                from src.domain.operational_state import resolve_operational_states
+                from src.publication.city_situation import build_city_situation_rollup
+
+                resolved_states = resolve_operational_states(all_observations_with_time)
+                city_rollup = (
+                    build_city_situation_rollup(resolved_states) if resolved_states else None
+                )
+
         analysis = EditorialAnalysis(
             cards=story_cards,
+            city_situation=city_rollup,
         )
         bundle = PreparedBundle(
             records=records,
