@@ -9,6 +9,7 @@ from src.ai_providers import create_provider
 from src.config_loader import load_config
 from src.embedding_providers import create_embedding_provider
 from src.jobs.app import procrastinate_app
+from src.processing.edition_scope import resolve_edition_scope, scope_config_hash
 from src.processing.embeddings import EmbeddingService
 from src.processing.event_analysis import EventAnalysisService
 from src.processing.event_clustering import EventClusteringService
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int]:
     """Ingest and cluster a batch of source item revisions."""
     runtime = get_runtime()
-    config = load_config()
+    config = getattr(runtime, "config", None) or load_config()
     cfg = config.settings.event_pipeline
     emb_cfg = config.embedding
 
@@ -65,7 +66,11 @@ async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int
             collected_at = row[2]
             edition_id = int(row[3])
 
-            new_frags = split_into_fragments(raw_text, max_chars=cfg.fragment_max_chars)
+            new_frags = split_into_fragments(
+                raw_text,
+                max_chars=cfg.fragment_max_chars,
+            )
+
             persisted = await frag_repo.create_fragments(conn, rev_id, new_frags)
             stats["fragments"] += len(persisted)
 
@@ -116,9 +121,9 @@ async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int
 
 @procrastinate_app.task(queue="processing", name="coalesce_dirty_stories")
 async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str, int]:
-    """Coalesce dirty story clusters, triage low-support ones, and run rich analysis."""
+    """Coalesce dirty story clusters, triage/scope them in batches, and run rich analysis."""
     runtime = get_runtime()
-    config = load_config()
+    config = getattr(runtime, "config", None) or load_config()
     cfg = config.settings.event_pipeline
 
     cluster_repo = EventClusterRepository()
@@ -149,69 +154,157 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
     )
 
     now = dt.datetime.now(dt.timezone.utc)
-    stats = {"scanned": 0, "settled": 0, "triaged": 0, "analyzed": 0}
+    stats = {
+        "scanned": 0,
+        "settled": 0,
+        "gated": 0,
+        "scope_local": 0,
+        "scope_direct_impact": 0,
+        "scope_out_of_scope": 0,
+        "scope_uncertain": 0,
+        "deferred": 0,
+        "triaged": 0,
+        "analyzed": 0,
+    }
 
     async with runtime.uow.transaction() as conn:
-        dirty_stories = await cluster_repo.list_dirty_cluster_states(
-            conn, edition_id, limit=cfg.live_batch_size
-        )
-        stats["scanned"] = len(dirty_stories)
-        if not dirty_stories:
+        if edition_id is not None:
+            editions_to_process = [edition_id]
+        else:
+            editions_to_process = await cluster_repo.list_dirty_edition_ids(conn)
+
+        if not editions_to_process:
             return stats
 
-        # Filter settled stories: quiet window has passed since last fragment arrived
-        quiet_delta = dt.timedelta(seconds=cfg.analysis_quiet_seconds)
-        min_interval_delta = dt.timedelta(seconds=cfg.analysis_min_interval_seconds)
-
-        settled: list = []
-        for s in dirty_stories:
-            # Check quiet window
-            if (now - s.last_seen_at) < quiet_delta:
-                continue
-            # Check min interval between analysis runs
-            if s.last_analyzed_at is not None and (now - s.last_analyzed_at) < min_interval_delta:
-                continue
-            settled.append(s)
-
-        stats["settled"] = len(settled)
-        if not settled:
-            return stats
-
-        # Partition into direct high-support and low-support triage candidates
-        direct_stories: list = []
-        low_support_stories: list = []
-
-        for s in settled:
-            if (
-                s.fragment_count >= cfg.direct_analysis_min_fragments
-                or s.unique_source_count >= cfg.direct_analysis_min_unique_sources
-            ):
-                direct_stories.append(s)
-            else:
-                low_support_stories.append(s)
-
-        stories_to_analyze_ids: list[int] = [s.story_id for s in direct_stories]
-
-        # Triage low support stories in batch
-        if low_support_stories:
-            approved_ids = await triage_service.triage_stories_batch(
-                conn,
-                low_support_stories,
-                excerpt_chars=cfg.triage_excerpt_chars,
-                min_ignore_confidence=cfg.triage_min_ignore_confidence,
+        for current_edition_id in editions_to_process:
+            dirty_stories = await cluster_repo.list_dirty_cluster_states(
+                conn, current_edition_id, limit=cfg.live_batch_size
             )
-            stats["triaged"] = len(low_support_stories)
-            stories_to_analyze_ids.extend(approved_ids)
+            stats["scanned"] += len(dirty_stories)
+            if not dirty_stories:
+                continue
 
-        # Run rich event analysis for all approved stories
-        for sid in set(stories_to_analyze_ids):
-            rev = await analysis_service.analyze_story(
-                conn,
-                sid,
-                max_representative_fragments=cfg.representative_fragment_limit,
-                max_input_chars=cfg.analysis_max_input_chars,
-            )
-            if rev is not None:
-                stats["analyzed"] += 1
+            # Filter settled stories: quiet window has passed since last fragment arrived
+            quiet_delta = dt.timedelta(seconds=cfg.analysis_quiet_seconds)
+            min_interval_delta = dt.timedelta(seconds=cfg.analysis_min_interval_seconds)
+
+            settled: list = []
+            for s in dirty_stories:
+                # Check quiet window
+                if (now - s.last_seen_at) < quiet_delta:
+                    continue
+                # Check min interval between analysis runs
+                if (
+                    s.last_analyzed_at is not None
+                    and (now - s.last_analyzed_at) < min_interval_delta
+                ):
+                    continue
+                settled.append(s)
+
+            stats["settled"] += len(settled)
+            if not settled:
+                continue
+
+            # Resolve edition scope
+            _slug, scope_config = await resolve_edition_scope(conn, config, current_edition_id)
+            scope_hash = scope_config_hash(scope_config)
+
+            # Chunk into triage_batch_size
+            for start in range(0, len(settled), cfg.triage_batch_size):
+                gate_batch = settled[start : start + cfg.triage_batch_size]
+                batch_result = await triage_service.triage_stories_batch(
+                    conn,
+                    gate_batch,
+                    edition_id=current_edition_id,
+                    scope_config=scope_config,
+                    scope_hash=scope_hash,
+                    excerpt_chars=cfg.triage_excerpt_chars,
+                    min_ignore_confidence=cfg.triage_min_ignore_confidence,
+                )
+                stats["gated"] += len(gate_batch)
+                stats["triaged"] += len(batch_result.results)
+
+                results_by_id = {item.story_id: item for item in batch_result.results}
+
+                for state in gate_batch:
+                    if state.story_id in batch_result.deferred_story_ids:
+                        stats["deferred"] += 1
+                        continue
+
+                    result = results_by_id.get(state.story_id)
+                    if result is None:
+                        stats["deferred"] += 1
+                        continue
+
+                    if result.scope == "OUT_OF_SCOPE":
+                        stats["scope_out_of_scope"] += 1
+                        await cluster_repo.update_cluster_analysis_analyzed(
+                            conn,
+                            story_id=state.story_id,
+                            assignment_id=state.latest_assignment_id,
+                            analyzed_at=now,
+                        )
+                        continue
+
+                    if result.scope == "UNCERTAIN":
+                        stats["scope_uncertain"] += 1
+                        await cluster_repo.update_cluster_analysis_analyzed(
+                            conn,
+                            story_id=state.story_id,
+                            assignment_id=state.latest_assignment_id,
+                            analyzed_at=now,
+                        )
+                        continue
+
+                    if result.scope == "LOCAL":
+                        stats["scope_local"] += 1
+                    elif result.scope == "DIRECT_IMPACT":
+                        stats["scope_direct_impact"] += 1
+                    else:
+                        raise AssertionError(f"validated unexpected scope {result.scope!r}")
+
+                    # Prevent rich re-analysis during scope-only re-screen if already enriched
+                    current_revision_id = await story_repo.current_revision_id(conn, state.story_id)
+                    already_enriched_current_assignment = (
+                        state.last_analyzed_assignment_id == state.latest_assignment_id
+                        and current_revision_id is not None
+                    )
+                    if already_enriched_current_assignment:
+                        await cluster_repo.update_cluster_analysis_analyzed(
+                            conn,
+                            story_id=state.story_id,
+                            assignment_id=state.latest_assignment_id,
+                            analyzed_at=now,
+                        )
+                        continue
+
+                    # Check safe ignore
+                    is_safe_ignore = (
+                        result.decision == "IGNORE"
+                        and result.confidence >= cfg.triage_min_ignore_confidence
+                        and result.exclusion_reason in ("commercial_classified", "obvious_noise")
+                        and not (
+                            state.fragment_count >= cfg.direct_analysis_min_fragments
+                            or state.unique_source_count >= cfg.direct_analysis_min_unique_sources
+                        )
+                    )
+                    if is_safe_ignore:
+                        await cluster_repo.update_cluster_analysis_analyzed(
+                            conn,
+                            story_id=state.story_id,
+                            assignment_id=state.latest_assignment_id,
+                            analyzed_at=now,
+                        )
+                        continue
+
+                    # Approved for rich event analysis
+                    rev = await analysis_service.analyze_story(
+                        conn,
+                        state.story_id,
+                        max_representative_fragments=cfg.representative_fragment_limit,
+                        max_input_chars=cfg.analysis_max_input_chars,
+                    )
+                    if rev is not None:
+                        stats["analyzed"] += 1
 
     return stats

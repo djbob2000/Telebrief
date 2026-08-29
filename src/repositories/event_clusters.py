@@ -120,6 +120,19 @@ class EventClusterRepository:
             res.append(StoryClusterState.from_row(row, vec))
         return res
 
+    async def list_dirty_edition_ids(self, conn: psycopg.AsyncConnection) -> list[int]:
+        cur = await conn.execute(
+            """
+            SELECT DISTINCT s.edition_id
+            FROM story_cluster_state sc
+            JOIN stories s ON s.id = sc.story_id
+            WHERE sc.analysis_dirty = TRUE
+              AND s.knowledge_source = 'event_first'
+            ORDER BY s.edition_id
+            """
+        )
+        return [int(row[0]) for row in await cur.fetchall()]
+
     async def assign_fragment_to_story(
         self,
         conn: psycopg.AsyncConnection,
