@@ -1,0 +1,333 @@
+{
+  "cases": [
+    {
+      "id": "electricity_citywide",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "power_supply",
+      "expected_subject_label": "Электроснабжение",
+      "topic": "Отключения света в Бердянске",
+      "fragments": [
+        {
+          "fragment_id": 1001,
+          "source_id": 10,
+          "source_item_id": 101,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "observed_at": "2026-08-29T10:00:00+00:00",
+          "text": "В центре и на Нагорной части Бердянска аварийное отключение света. Светофоры не работают."
+        },
+        {
+          "fragment_id": 1002,
+          "source_id": 11,
+          "source_item_id": 102,
+          "source_role": "official",
+          "source_name": "Таврия Энерго",
+          "observed_at": "2026-08-29T10:15:00+00:00",
+          "text": "Авария на подстанции: временно обесточена центральная и нагорная часть Бердянска. Бригада РЭС уже ведет восстановительные работы."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "power_supply",
+          "subject_label": "Электроснабжение",
+          "dimension": "availability",
+          "location": "Центр / Нагорная",
+          "entity": "электросеть",
+          "state": "UNAVAILABLE",
+          "detail": "Аварийное отключение электроэнергии в центральной и нагорной частях города",
+          "source_fragment_ids": [1001, 1002]
+        }
+      ]
+    },
+    {
+      "id": "nikolaevka_grp",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "gas_supply",
+      "expected_subject_label": "Газоснабжение",
+      "topic": "Ремонт ГРП в Николаевке",
+      "fragments": [
+        {
+          "fragment_id": 2001,
+          "source_id": 12,
+          "source_item_id": 201,
+          "source_role": "official",
+          "source_name": "Бердянскмежрайгаз",
+          "observed_at": "2026-08-29T11:00:00+00:00",
+          "text": "В связи с плановым техническим обслуживанием ГРП в селе Николаевка Бердянского района 30 августа с 08:00 до 17:00 будет временно прекращена подача газа."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "gas_supply",
+          "subject_label": "Газоснабжение",
+          "dimension": "availability",
+          "location": "Николаевка",
+          "entity": "ГРП",
+          "state": "RESTRICTED",
+          "detail": "Плановое отключение газа в связи с обслуживанием ГРП",
+          "source_fragment_ids": [2001]
+        }
+      ]
+    },
+    {
+      "id": "local_uav_pvo",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "air_defense_security",
+      "expected_subject_label": "Безопасность и ПВО",
+      "topic": "Работа ПВО в Бердянске",
+      "fragments": [
+        {
+          "fragment_id": 3001,
+          "source_id": 10,
+          "source_item_id": 301,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "observed_at": "2026-08-29T12:00:00+00:00",
+          "text": "В районе порта и косы были слышны звуки работы ПВО по беспилотнику. Повреждений нет."
+        },
+        {
+          "fragment_id": 3002,
+          "source_id": 13,
+          "source_item_id": 302,
+          "source_role": "official",
+          "source_name": "Администрация Бердянска",
+          "observed_at": "2026-08-29T12:20:00+00:00",
+          "text": "Дежурными средствами ПВО над акваторией Бердянского залива сбит БПЛА самолетного типа. Разрушений и пострадавших нет."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "air_defense_security",
+          "subject_label": "Безопасность и ПВО",
+          "dimension": "status",
+          "location": "Бердянский залив / Порт",
+          "entity": "ПВО",
+          "state": "AVAILABLE",
+          "detail": "Сбит БПЛА над заливом, разрушений нет",
+          "source_fragment_ids": [3001, 3002]
+        }
+      ]
+    },
+    {
+      "id": "connectivity_workarounds",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "internet_connectivity",
+      "expected_subject_label": "Интернет и связь",
+      "topic": "Работа интернета при отключении света",
+      "fragments": [
+        {
+          "fragment_id": 4001,
+          "source_id": 10,
+          "source_item_id": 401,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "observed_at": "2026-08-29T13:00:00+00:00",
+          "text": "У кого пропал свет: оптика ONET продолжает работать, роутер можно запитать от повербанка через кабель 12В."
+        },
+        {
+          "fragment_id": 4002,
+          "source_id": 14,
+          "source_item_id": 402,
+          "source_role": "community",
+          "source_name": "АКЗ Соседи",
+          "observed_at": "2026-08-29T13:15:00+00:00",
+          "text": "Узел Юпитер на АКЗ перевели на генератор, интернет есть."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "internet_connectivity",
+          "subject_label": "Интернет и связь",
+          "dimension": "availability",
+          "location": "Бердянск",
+          "entity": "ONET / Юпитер",
+          "state": "AVAILABLE",
+          "detail": "Оптика ONET и Юпитер работают при обесточивании на резервном питании",
+          "source_fragment_ids": [4001, 4002]
+        }
+      ]
+    },
+    {
+      "id": "atm_cash",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "banking_cash",
+      "expected_subject_label": "Банкоматы и наличные",
+      "topic": "Снятие наличных в банкоматах",
+      "fragments": [
+        {
+          "fragment_id": 5001,
+          "source_id": 10,
+          "source_item_id": 501,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "observed_at": "2026-08-29T14:00:00+00:00",
+          "text": "Где сейчас можно снять наличные на АКЗ? В магазине Дель Мар банкомат ПСБ заправлен и выдает рубли без очереди."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "banking_cash",
+          "subject_label": "Банкоматы и наличные",
+          "dimension": "availability",
+          "location": "АКЗ",
+          "entity": "Банкомат ПСБ Дель Мар",
+          "state": "AVAILABLE",
+          "detail": "Банкомат ПСБ в магазине Дель Мар выдает наличные рубли",
+          "source_fragment_ids": [5001]
+        }
+      ]
+    },
+    {
+      "id": "passport_fee",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "public_services",
+      "expected_subject_label": "Госуслуги и документы",
+      "topic": "Оплата госпошлины за паспорт",
+      "fragments": [
+        {
+          "fragment_id": 6001,
+          "source_id": 10,
+          "source_item_id": 601,
+          "source_role": "community",
+          "source_name": "Бердянск Чат",
+          "observed_at": "2026-08-29T15:00:00+00:00",
+          "text": "Подскажите, можно ли оплатить госпошлину за паспорт с чужой карты? В отделении ПСБ на Пролетарском принимают квитанцию без карты заявителя."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "public_services",
+          "subject_label": "Госуслуги и документы",
+          "dimension": "procedure",
+          "location": "Пролетарский",
+          "entity": "Отделение ПСБ",
+          "state": "AVAILABLE",
+          "detail": "Оплата госпошлины принимается по квитанции без карты заявителя",
+          "source_fragment_ids": [6001]
+        }
+      ]
+    },
+    {
+      "id": "water_koloniya_timeline",
+      "expected_scope": "LOCAL",
+      "expected_retention": "KEEP",
+      "expected_enrichment": "BRIEF",
+      "expected_subject_key": "water_supply",
+      "expected_subject_label": "Водоснабжение",
+      "topic": "Водоснабжение микрорайона Колония",
+      "expected_current_state": "UNAVAILABLE",
+      "fragments": [
+        {
+          "fragment_id": 7001,
+          "source_id": 15,
+          "source_item_id": 701,
+          "source_role": "community",
+          "source_name": "Колония Новости",
+          "observed_at": "2026-08-29T10:00:00+00:00",
+          "text": "На Колонии с утра отключили воду из-за порыва на линии."
+        },
+        {
+          "fragment_id": 7002,
+          "source_id": 16,
+          "source_item_id": 702,
+          "source_role": "official",
+          "source_name": "Бердянскводоканал",
+          "observed_at": "2026-08-29T14:00:00+00:00",
+          "text": "Аварийные работы на водоводе в микрорайоне Колония завершены, водоснабжение восстановлено в штатном режиме."
+        },
+        {
+          "fragment_id": 7003,
+          "source_id": 15,
+          "source_item_id": 703,
+          "source_role": "community",
+          "source_name": "Колония Новости",
+          "observed_at": "2026-08-29T18:10:00+00:00",
+          "text": "Жители Колонии сообщают о новом порыве на соседней улице, вода снова пропала к вечеру."
+        }
+      ],
+      "expected_observations": [
+        {
+          "subject_key": "water_supply",
+          "subject_label": "Водоснабжение",
+          "dimension": "availability",
+          "location": "Колония",
+          "entity": "водопровод",
+          "state": "UNAVAILABLE",
+          "detail": "Утреннее отключение воды из-за порыва",
+          "source_fragment_ids": [7001]
+        },
+        {
+          "subject_key": "water_supply",
+          "subject_label": "Водоснабжение",
+          "dimension": "availability",
+          "location": "Колония",
+          "entity": "водопровод",
+          "state": "AVAILABLE",
+          "detail": "Дневное восстановление водоснабжения после ремонта",
+          "source_fragment_ids": [7002]
+        },
+        {
+          "subject_key": "water_supply",
+          "subject_label": "Водоснабжение",
+          "dimension": "availability",
+          "location": "Колония",
+          "entity": "водопровод",
+          "state": "UNAVAILABLE",
+          "detail": "Повторное вечернее отключение воды из-за нового порыва",
+          "source_fragment_ids": [7003]
+        }
+      ]
+    }
+  ],
+  "negative_cases": [
+    {
+      "id": "bucha_fire",
+      "expected_scope": "OUT_OF_SCOPE",
+      "expected_retention": "DROP",
+      "expected_enrichment": "NONE",
+      "topic": "Пожар в Буче",
+      "fragments": [
+        {
+          "fragment_id": 8001,
+          "source_id": 17,
+          "source_item_id": 801,
+          "source_role": "news",
+          "source_name": "Буча Сегодня",
+          "observed_at": "2026-08-29T16:00:00+00:00",
+          "text": "В Буче Киевской области спасатели ликвидировали возгорание на складских помещениях по улице Вокзальной."
+        }
+      ]
+    },
+    {
+      "id": "commercial_haircut",
+      "expected_scope": "LOCAL",
+      "expected_retention": "DROP",
+      "expected_enrichment": "NONE",
+      "exclusion_reason": "commercial_classified",
+      "topic": "Реклама парикмахерской",
+      "fragments": [
+        {
+          "fragment_id": 9001,
+          "source_id": 18,
+          "source_item_id": 901,
+          "source_role": "classifieds",
+          "source_name": "Объявления Бердянск",
+          "observed_at": "2026-08-29T17:00:00+00:00",
+          "text": "Скидка на мужские и женские стрижки 20%! Салон красоты 'Локон', ул. Лютеранская 15. Запись по телефону +79901112233."
+        }
+      ]
+    }
+  ]
+}
