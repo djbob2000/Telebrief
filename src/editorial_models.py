@@ -219,7 +219,9 @@ class StoryCard:
     current_status: str = ""
     next_known_step: str = ""
     editorial_angle: dict[str, Any] | None = None
-    category: str = ""
+    tags: list[str] = field(default_factory=list)
+    rubric_id: str = ""
+    category: str = ""  # deprecated compatibility input only
     hard_facts: list[StoryElement] = field(default_factory=list)
     community_observations: list[StoryElement] = field(default_factory=list)
     useful_details: list[StoryElement] = field(default_factory=list)
@@ -266,6 +268,8 @@ class StoryCard:
         if importance not in IMPORTANCE_VALUES:
             importance = "medium"
 
+        tags = [str(x).strip() for x in data.get("tags", []) if str(x).strip()]
+        rubric_id = str(data.get("rubric_id", "")).strip()
         category = str(data.get("category", "") or data.get("rubric", "") or "").strip()
 
         return cls(
@@ -279,6 +283,8 @@ class StoryCard:
             current_status=str(data.get("current_status", "")),
             next_known_step=str(data.get("next_known_step", "")),
             editorial_angle=data.get("editorial_angle"),
+            tags=tags,
+            rubric_id=rubric_id,
             category=category,
             hard_facts=hard_facts,
             community_observations=community_observations,
@@ -297,6 +303,8 @@ class StoryCard:
             "current_status": self.current_status,
             "next_known_step": self.next_known_step,
             "editorial_angle": self.editorial_angle,
+            "tags": list(self.tags),
+            "rubric_id": self.rubric_id,
             "category": self.category,
             "representative_source_refs": list(self.representative_source_refs),
             "hard_facts": [item.to_dict() for item in self.hard_facts],
@@ -358,6 +366,9 @@ class StoryCard:
             topic=self.topic,
             importance=self.importance,
             summary=self.summary,
+            tags=list(self.tags),
+            rubric_id=self.rubric_id,
+            category=self.category,
             story_kind=self.story_kind,
             timeframe=self.timeframe,
             current_status=self.current_status,

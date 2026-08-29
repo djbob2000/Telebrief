@@ -1227,3 +1227,38 @@ class TestKnowledgeEditorialAdapter:
         rec = frozen.writer_bundle.records[f"facebook:source:{src_id}:item:{item_id}:rev:{rev_id}"]
         assert rec.message.timestamp is None
         assert rec.message.temporal_fidelity == "unknown"
+
+
+@pytest.mark.unit
+def test_story_card_roundtrip_preserves_tags_and_rubric_id():
+    from src.editorial_models import StoryCard
+
+    card = StoryCard(
+        id="story:1",
+        topic="Работа банкоматов",
+        importance="medium",
+        summary="Жители сообщают о перебоях",
+        tags=["банки", "наличные"],
+        rubric_id="economy",
+    )
+    loaded = StoryCard.from_dict(card.to_dict())
+    assert loaded.tags == ["банки", "наличные"]
+    assert loaded.rubric_id == "economy"
+
+
+@pytest.mark.unit
+def test_sanitized_story_card_preserves_taxonomy_and_rubric():
+    from src.editorial_models import StoryCard
+
+    card = StoryCard(
+        id="story:1",
+        topic="Работа банкоматов",
+        importance="medium",
+        summary="Жители сообщают о перебоях",
+        tags=["банки", "наличные"],
+        rubric_id="economy",
+    )
+    clean = card.sanitized_against_refs(set())
+    assert clean is not None
+    assert clean.tags == card.tags
+    assert clean.rubric_id == card.rubric_id
