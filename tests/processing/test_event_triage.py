@@ -848,3 +848,302 @@ async def test_story_triage_service_drop_normalization_rules(conn, edition, revi
 
     # The low-confidence drop without brief was deferred
     assert result.deferred_story_ids == (sid_low_conf_without_brief,)
+
+
+@pytest.mark.postgres
+async def test_story_triage_utility_vs_commercial_prompt_contract(conn, edition, revision):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    # 5 test cases: ATM, ONET, passport, haircut, generator
+    cases_data = [
+        (
+            "atm",
+            "ATM cash dispensing in Center",
+            "service_access",
+            "KEEP",
+            "BRIEF",
+            "PUBLISH",
+            None,
+        ),
+        ("onet", "ONET backup power running", "service_access", "KEEP", "BRIEF", "PUBLISH", None),
+        (
+            "passport",
+            "Passport fee terminal in MFC",
+            "service_access",
+            "KEEP",
+            "BRIEF",
+            "PUBLISH",
+            None,
+        ),
+        (
+            "haircut",
+            "Haircut 20% discount sale",
+            "commercial_offer",
+            "DROP",
+            "NONE",
+            "EXCLUDE",
+            "commercial_classified",
+        ),
+        (
+            "generator",
+            "Generator for sale 28000 rub",
+            "commercial_offer",
+            "DROP",
+            "NONE",
+            "EXCLUDE",
+            "commercial_classified",
+        ),
+    ]
+
+    states = []
+    triage_results = []
+    for idx, (name, text, kind, exp_ret, exp_enr, pub_use, ex_reason) in enumerate(
+        cases_data, start=1
+    ):
+        sid = await story_repo.create_story_shell(
+            conn, edition_id=edition.id, knowledge_source="event_first"
+        )
+        fid = 9100 + idx
+        vid = 8100 + idx
+        await conn.execute(
+            """
+            INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+            OVERRIDING SYSTEM VALUE VALUES (%s, %s, '[1, 0]'::vector, 'm', 2)
+            """,
+            (vid, f"hash_{name}"),
+        )
+        await conn.execute(
+            """
+            INSERT INTO source_fragments (
+                id, source_item_revision_id, ordinal, text_content, normalized_hash,
+                fragmenter_version, is_candidate, drop_reason, created_at
+            ) OVERRIDING SYSTEM VALUE VALUES (%s, %s, %s, %s, %s, 'v1', TRUE, NULL, %s)
+            """,
+            (fid, revision.id, idx, text, f"hash_{name}", now),
+        )
+        await conn.execute(
+            """
+            INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+            OVERRIDING SYSTEM VALUE VALUES (%s, %s, %s)
+            """,
+            (10100 + idx, fid, vid),
+        )
+        aid = await cluster_repo.assign_fragment_to_story(
+            conn,
+            story_id=sid,
+            fragment_id=fid,
+            fragment_embedding_id=10100 + idx,
+            assignment_kind="new_story",
+        )
+        await cluster_repo.upsert_cluster_state(
+            conn,
+            story_id=sid,
+            centroid=[1.0, 0.0],
+            model="m",
+            dimensions=2,
+            fragment_count=1,
+            unique_source_count=1,
+            first_seen_at=now,
+            last_seen_at=now,
+            latest_assignment_id=aid,
+            analysis_dirty=True,
+        )
+        st = await cluster_repo.get_cluster_state(conn, sid)
+        assert st is not None
+        states.append(st)
+
+        brief = None
+        if exp_ret == "KEEP":
+            brief = {
+                "topic": f"Topic for {name}",
+                "headline": f"Headline for {name}",
+                "digest_summary": f"Summary for {name}",
+                "evidence_items": [
+                    {
+                        "text": text,
+                        "kind": kind,
+                        "publication_use": pub_use,
+                        "source_fragment_ids": [fid],
+                    }
+                ],
+                "operational_observations": [
+                    {
+                        "subject_key": f"subj_{name}",
+                        "subject_label": f"Label {name}",
+                        "dimension": "status",
+                        "location": "Center",
+                        "entity": "service",
+                        "state": "AVAILABLE",
+                        "detail": text,
+                        "source_fragment_ids": [fid],
+                    }
+                ],
+            }
+
+        triage_results.append(
+            {
+                "story_id": sid,
+                "scope": "LOCAL",
+                "scope_confidence": 0.99,
+                "scope_reason": "In target city",
+                "retention": exp_ret,
+                "enrichment": exp_enr,
+                "exclusion_reason": ex_reason,
+                "confidence": 0.98,
+                "reason": f"Evaluated {name}",
+                "brief_payload": brief,
+            }
+        )
+
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps({"results": triage_results})
+
+    scope_config = EditionScopeConfig(name="City", focus_places=("City",))
+    scope_hash = scope_config_hash(scope_config)
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    batch_result = await service.triage_stories_batch(
+        conn,
+        states,
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert len(batch_result.results) == 5
+    assert batch_result.deferred_story_ids == ()
+
+    by_id = {r.story_id: r for r in batch_result.results}
+    for idx, (_name, _text, _kind, exp_ret, exp_enr, _pub_use, _ex_reason) in enumerate(cases_data):
+        sid = states[idx].story_id
+        r = by_id[sid]
+        assert r.retention == exp_ret
+        assert r.enrichment == exp_enr
+        if exp_ret == "KEEP":
+            assert r.brief_payload is not None
+            assert len(r.brief_payload.evidence_items) == 1
+            assert r.brief_payload.evidence_items[0].publication_use == "PUBLISH"
+
+
+@pytest.mark.postgres
+async def test_story_triage_80_singletons_one_call_no_rich_analysis(conn, edition, revision):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    states = []
+    triage_results = []
+    for idx in range(1, 81):
+        sid = await story_repo.create_story_shell(
+            conn, edition_id=edition.id, knowledge_source="event_first"
+        )
+        fid = 19000 + idx
+        vid = 18000 + idx
+        await conn.execute(
+            """
+            INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+            OVERRIDING SYSTEM VALUE VALUES (%s, %s, '[1, 0]'::vector, 'm', 2)
+            """,
+            (vid, f"hash_80_{idx}"),
+        )
+        await conn.execute(
+            """
+            INSERT INTO source_fragments (
+                id, source_item_revision_id, ordinal, text_content, normalized_hash,
+                fragmenter_version, is_candidate, drop_reason, created_at
+            ) OVERRIDING SYSTEM VALUE VALUES (%s, %s, %s, %s, %s, 'v1', TRUE, NULL, %s)
+            """,
+            (fid, revision.id, idx, f"Utility singleton event #{idx}", f"hash_80_{idx}", now),
+        )
+        await conn.execute(
+            """
+            INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+            OVERRIDING SYSTEM VALUE VALUES (%s, %s, %s)
+            """,
+            (20000 + idx, fid, vid),
+        )
+        aid = await cluster_repo.assign_fragment_to_story(
+            conn,
+            story_id=sid,
+            fragment_id=fid,
+            fragment_embedding_id=20000 + idx,
+            assignment_kind="new_story",
+        )
+        await cluster_repo.upsert_cluster_state(
+            conn,
+            story_id=sid,
+            centroid=[1.0, 0.0],
+            model="m",
+            dimensions=2,
+            fragment_count=1,
+            unique_source_count=1,
+            first_seen_at=now,
+            last_seen_at=now,
+            latest_assignment_id=aid,
+            analysis_dirty=True,
+        )
+        st = await cluster_repo.get_cluster_state(conn, sid)
+        assert st is not None
+        states.append(st)
+
+        triage_results.append(
+            {
+                "story_id": sid,
+                "scope": "LOCAL",
+                "scope_confidence": 0.99,
+                "scope_reason": "In target city",
+                "retention": "KEEP",
+                "enrichment": "BRIEF",
+                "exclusion_reason": None,
+                "confidence": 0.98,
+                "reason": f"Utility #{idx}",
+                "brief_payload": {
+                    "topic": f"Utility #{idx}",
+                    "headline": f"Utility headline #{idx}",
+                    "digest_summary": f"Utility summary #{idx}",
+                    "evidence_items": [
+                        {
+                            "text": f"Utility singleton event #{idx}",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
+                            "source_fragment_ids": [fid],
+                        }
+                    ],
+                    "operational_observations": [
+                        {
+                            "subject_key": f"util_{idx}",
+                            "subject_label": f"Utility {idx}",
+                            "dimension": "status",
+                            "location": "City",
+                            "entity": "grid",
+                            "state": "AVAILABLE",
+                            "detail": f"Service active #{idx}",
+                            "source_fragment_ids": [fid],
+                        }
+                    ],
+                },
+            }
+        )
+
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps({"results": triage_results})
+
+    scope_config = EditionScopeConfig(name="City", focus_places=("City",))
+    scope_hash = scope_config_hash(scope_config)
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    result = await service.triage_stories_batch(
+        conn,
+        states,
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert len(result.results) == 80
+    assert result.deferred_story_ids == ()
+    assert mock_ai.generate_text.call_count == 1
+    assert all(r.retention == "KEEP" for r in result.results)
+    assert all(r.enrichment == "BRIEF" for r in result.results)

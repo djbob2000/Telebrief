@@ -22,7 +22,7 @@ from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v2"
+TRIAGE_VERSION = "v3"
 
 _GATE_V2_SYSTEM_PROMPT = """You are a fast geographic, editorial retention, and operational triage classifier for a regional newsroom digest.
 You are evaluating candidate event Stories for ONE configured edition.
@@ -39,9 +39,14 @@ OUT_OF_SCOPE or UNCERTAIN is normalized to DROP+NONE without requiring a brief.
 For LOCAL or DIRECT_IMPACT content:
 - DROP is only for high-confidence hard noise/commercial-only content and must use enrichment=NONE with exclusion_reason in ('commercial_classified', 'obvious_noise').
 - In-scope KEEP uses BRIEF for simple useful local information, and ANALYZE only when rich synthesis is justified.
+- Publication use is semantic, not topic-based.
+- A service-access fact may be PUBLISH even when a business or bank is named (e.g. ATM cash availability, backup power for telecom, state fee / document procedures).
+- A sales offer, discount, product listing, seller phone number, or promotional price is EXCLUDE.
+- Do not convert EXCLUDE commercial details into useful_details merely to preserve them.
 - Resident questions, resident answers, service availability, outage reports, and operational workarounds are not noise merely because they are conversational. Preserve current local actionable information about everyday civilian access to services.
-- For KEEP, provide a brief_payload with topic, tags, urgency, publishability, headline, digest_summary, and operational_observations.
-- Every operational observation MUST cite one or more exact source_fragment_ids from the excerpts for that Story. Valid states: AVAILABLE, UNAVAILABLE, DEGRADED, RESTRICTED, UNKNOWN. Limit to at most 4 operational observations.
+- For KEEP, provide a brief_payload with topic, tags, urgency, publishability, headline, digest_summary, operational_observations, and evidence_items.
+- Every operational observation MUST cite one or more exact source_fragment_ids from the excerpts for that Story. Valid states: AVAILABLE, UNAVAILABLE, DEGRADED, RESTRICTED, UNKNOWN, SCHEDULED. Limit to at most 4 operational observations. Include effective_from / effective_until in ISO-8601 when the source reports a future or scheduled window.
+- Every evidence item MUST have text, kind (established_fact, community_report, service_access, official_statement, commercial_offer), publication_use (PUBLISH, CONTEXT, EXCLUDE), and exact source_fragment_ids.
 
 Respond ONLY with a valid JSON object containing a "results" array:
 {
@@ -73,6 +78,16 @@ Respond ONLY with a valid JSON object containing a "results" array:
             "entity": "электросеть",
             "state": "UNAVAILABLE",
             "detail": "Аварийное отключение",
+            "source_fragment_ids": [101],
+            "effective_from": "2026-08-30T08:00:00+00:00",
+            "effective_until": "2026-08-30T17:00:00+00:00"
+          }
+        ],
+        "evidence_items": [
+          {
+            "text": "Fact or service access detail",
+            "kind": "established_fact | community_report | service_access | official_statement | commercial_offer",
+            "publication_use": "PUBLISH | CONTEXT | EXCLUDE",
             "source_fragment_ids": [101]
           }
         ]

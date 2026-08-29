@@ -24,13 +24,18 @@ from src.repositories.stories import StoryRepository
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_VERSION = "v1"
+ANALYSIS_VERSION = "v2"
 
 _EVENT_ANALYSIS_SYSTEM_PROMPT = """You are an expert investigative regional news editor.
 Analyze the following chronological source fragments from multiple channels regarding a single local event.
 Extract objective facts, distinguish official statements from community observations, highlight contradictions or uncertainties, and summarize the event.
 
 Tags are descriptive metadata, not digest sections. Use whatever concise terms best describe the event (3-8 short topic tags in Russian; open vocabulary; do not choose from a predefined taxonomy). Never force an event into a predefined city category.
+
+Publication use is semantic, not topic-based.
+- A service-access fact may be PUBLISH even when a business or bank is named (e.g. ATM cash availability, backup power for telecom, state fee / document procedures).
+- A sales offer, discount, product listing, seller phone number, or promotional price is EXCLUDE.
+- Do not convert EXCLUDE commercial details into useful_details merely to preserve them.
 
 Respond ONLY with a valid JSON object with the exact keys:
 {
@@ -41,6 +46,28 @@ Respond ONLY with a valid JSON object with the exact keys:
   "headline": "Professional informative headline in Russian",
   "digest_summary": "1-3 concise sentences summarizing what happened, who is affected, and current status",
   "key_facts": ["List of confirmed facts"],
+  "evidence_items": [
+    {
+      "text": "Fact or service access detail",
+      "kind": "established_fact | community_report | service_access | official_statement | commercial_offer",
+      "publication_use": "PUBLISH | CONTEXT | EXCLUDE",
+      "source_fragment_ids": [101]
+    }
+  ],
+  "operational_observations": [
+    {
+      "subject_key": "power_supply",
+      "subject_label": "Электроснабжение",
+      "dimension": "availability",
+      "location": "Центр",
+      "entity": "электросеть",
+      "state": "UNAVAILABLE | AVAILABLE | DEGRADED | RESTRICTED | UNKNOWN | SCHEDULED",
+      "detail": "Аварийное отключение",
+      "source_fragment_ids": [101],
+      "effective_from": "2026-08-30T08:00:00+00:00",
+      "effective_until": "2026-08-30T17:00:00+00:00"
+    }
+  ],
   "official_positions": [{"source": "Source name", "statement": "Summary of official position"}],
   "community_observations": ["Key citizen reports/observations"],
   "conflicts_or_uncertainties": ["Unclear, disputed, or contradictory details"],
