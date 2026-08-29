@@ -390,6 +390,7 @@ class EventEditorialAdapter:
                 cards=story_cards,
                 evidence_items=list(all_evidence.values()),
                 operational_observations=resolved_obs_list,
+                source_records=records,
             )
 
         analysis = EditorialAnalysis(

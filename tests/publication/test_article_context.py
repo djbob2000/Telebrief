@@ -112,10 +112,59 @@ def test_build_article_editorial_context_preserves_evidence_and_timeline():
         source_refs=("telegram:source:1:item:1:rev:1:frag:101",),
     )
 
+    evi_excl = PublicationEvidence(
+        evidence_id="story:1:evidence:2:frag:103",
+        story_id=1,
+        text="Реклама сантехники",
+        source_text="Реклама сантехники",
+        kind="commercial_offer",
+        publication_use="EXCLUDE",
+        fragment_id=103,
+        source_ref="telegram:source:1:item:4:rev:1:frag:103",
+        source_id=1,
+        source_item_id=4,
+        source_role="community",
+        observed_at=_T0,
+    )
+
+    gas_obs_payload = OperationalObservationPayload(
+        subject_key="gas_supply",
+        subject_label="Газоснабжение",
+        dimension="availability",
+        location="Центр",
+        entity="газопровод",
+        state="SCHEDULED",
+        detail="30 августа с 08:00 до 17:00 будет временно прекращена подача газа.",
+        source_fragment_ids=(2003,),
+    )
+    gas_obs_res = ResolvedObservation(
+        observation=gas_obs_payload,
+        observed_at=_T0,
+        source_refs=("telegram:source:1:item:5:rev:1:frag:2003",),
+        effective_from=dt.datetime(2026, 8, 30, 8, 0, tzinfo=dt.timezone.utc),
+        effective_until=dt.datetime(2026, 8, 30, 17, 0, tzinfo=dt.timezone.utc),
+    )
+
+    from src.collector import Message
+    from src.editorial_models import SourceRecord
+
+    source_records = {
+        "telegram:source:1:item:5:rev:1:frag:2003": SourceRecord(
+            ref="telegram:source:1:item:5:rev:1:frag:2003",
+            message=Message(
+                text="30 августа с 08:00 до 17:00 будет временно прекращена подача газа.",
+                sender="ГорГаз",
+                timestamp=_T0,
+            ),
+            source_type="official",
+        )
+    }
+
     ctx = build_article_editorial_context(
         cards=cards,
-        evidence_items=[evi1, evi2, evi_obs],
-        operational_observations=[obs_res],
+        evidence_items=[evi1, evi2, evi_obs, evi_excl],
+        operational_observations=[obs_res, gas_obs_res],
+        source_records=source_records,
     )
 
     # 1. Headline candidates exclude generic fallback 'Новости дня'
@@ -123,22 +172,23 @@ def test_build_article_editorial_context_preserves_evidence_and_timeline():
     assert "Выставка картин" in ctx.headline_candidates
     assert "Новости дня" not in ctx.headline_candidates
 
-    # 2. Operational timeline is preserved
-    assert len(ctx.operational_timeline) == 1
-    assert ctx.operational_timeline[0].observation.location == "АКЗ"
+    # 2. Unified ArticleSupport tests
+    assert "story:1:evidence:0:frag:101" in ctx.support_by_id
+    assert all(s.publication_use != "EXCLUDE" for s in ctx.support_index)
+    assert "story:1:evidence:2:frag:103" not in ctx.support_by_id
+    assert any(s.support_kind == "operational" for s in ctx.support_index)
 
-    # 3. Evidence is indexed by ID and separated into general facts vs observations
-    assert len(ctx.evidence_index) == 3
-    assert "story:1:evidence:0:frag:101" in ctx.evidence_by_id
-    assert len(ctx.general_facts) == 2
-    assert len(ctx.resident_observations) == 1
-    assert ctx.resident_observations[0].evidence_id == "story:1:evidence:1:frag:102"
+    op = next(
+        s for s in ctx.support_index if s.support_kind == "operational" and "gas" in s.support_id
+    )
+    assert op.source_text == "30 августа с 08:00 до 17:00 будет временно прекращена подача газа."
+    assert op.effective_from == dt.datetime(2026, 8, 30, 8, 0, tzinfo=dt.timezone.utc)
+    assert op.effective_until == dt.datetime(2026, 8, 30, 17, 0, tzinfo=dt.timezone.utc)
 
-    # 4. Prompt context generation
+    # 3. Prompt context generation has [SUPPORT ...] headers
     prompt_str = ctx.to_prompt_context()
-    assert "## Городская оперативная хроника" in prompt_str
-    assert "## Установленные факты и события" in prompt_str
-    assert "## Наблюдения и сообщения жителей" in prompt_str
+    assert "[SUPPORT story:1:evidence:0:frag:101]" in prompt_str
+    assert "[SUPPORT op:gas_supply:availability:frag:2003]" in prompt_str
     assert "Порыв трубы d=500мм на АКЗ" in prompt_str
 
 
