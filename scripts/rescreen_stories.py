@@ -55,14 +55,18 @@ async def run_rescreen(
     }
 
     try:
-        ai_provider = custom_ai_provider or getattr(infrastructure, "ai_invoker", None) or create_provider(
-            full_config.settings.ai_provider,
-            logger,
-            openai_api_key=full_config.openai_api_key,
-            anthropic_api_key=full_config.anthropic_api_key,
-            google_api_key=full_config.gemini_api_key,
-            openrouter_api_key=full_config.openrouter_api_key,
-            openrouter_model=full_config.openrouter_model,
+        ai_provider = (
+            custom_ai_provider
+            or getattr(infrastructure, "ai_invoker", None)
+            or create_provider(
+                full_config.settings.ai_provider,
+                logger,
+                openai_api_key=full_config.openai_api_key,
+                anthropic_api_key=full_config.anthropic_api_key,
+                google_api_key=full_config.gemini_api_key,
+                openrouter_api_key=full_config.openrouter_api_key,
+                openrouter_model=full_config.openrouter_model,
+            )
         )
 
         cluster_repo = EventClusterRepository()
@@ -181,7 +185,6 @@ async def run_rescreen(
                                     story_id=res.story_id,
                                     assignment_id=assignment_id,
                                 )
-
 
                 # Update stats
                 stats["deferred"] += len(batch_result.deferred_story_ids)
