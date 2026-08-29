@@ -2271,3 +2271,85 @@ def test_event_pipeline_config_rejects_invalid_ranges(
     with patch("src.config_loader.load_dotenv"):
         with pytest.raises(ValueError, match=err_pattern):
             load_config(path=path)
+
+
+@pytest.mark.unit
+def test_digest_rubrics_accept_arbitrary_ids_and_names(tmp_path, mock_env_vars):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@test"
+    name: "Test Channel"
+settings:
+  target_user_id: 123456789
+  digest_rubrics:
+    min_similarity: 0.41
+    items:
+      - id: sea_and_resort
+        name: "Море и курорт"
+        description: "Пляжи, море, курортная инфраструктура"
+        emoji: "🌊"
+      - id: catch_all
+        name: "Остальное"
+        description: "Другие важные события"
+        fallback: true
+"""
+    )
+
+    cfg = load_config(str(config_file))
+
+    assert cfg.settings.digest_rubrics.min_similarity == 0.41
+    assert [r.id for r in cfg.settings.digest_rubrics.items] == ["sea_and_resort", "catch_all"]
+    assert cfg.settings.digest_rubrics.fallback.id == "catch_all"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "digest_rubrics,error",
+    [
+        ({"items": []}, "at least one rubric"),
+        (
+            {
+                "items": [
+                    {"id": "a", "name": "A", "description": "A", "fallback": False},
+                ]
+            },
+            "exactly one fallback",
+        ),
+        (
+            {
+                "items": [
+                    {"id": "a", "name": "A", "description": "A", "fallback": True},
+                    {"id": "b", "name": "B", "description": "B", "fallback": True},
+                ]
+            },
+            "exactly one fallback",
+        ),
+        (
+            {
+                "items": [
+                    {"id": "Bad ID", "name": "Bad", "description": "Bad", "fallback": True},
+                ]
+            },
+            "invalid digest rubric id",
+        ),
+    ],
+)
+def test_digest_rubrics_validate_contract(tmp_path, mock_env_vars, digest_rubrics, error):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "channels": [{"id": "@test", "name": "Test Channel"}],
+                "settings": {
+                    "target_user_id": 123456789,
+                    "digest_rubrics": digest_rubrics,
+                },
+            },
+            allow_unicode=True,
+        )
+    )
+
+    with pytest.raises(ValueError, match=error):
+        load_config(str(config_file))

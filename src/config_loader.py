@@ -54,6 +54,35 @@ class DigestGroupConfig:
     prompt_extra: str = ""  # appended to system prompt for channels in this group
 
 
+_DIGEST_RUBRIC_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+
+@dataclass(frozen=True)
+class DigestRubricConfig:
+    """Configuration for a single digest presentation rubric."""
+
+    id: str
+    name: str
+    description: str
+    emoji: str = ""
+    fallback: bool = False
+
+
+@dataclass(frozen=True)
+class DigestRubricsConfig:
+    """Edition-level configuration for digest display rubrics."""
+
+    min_similarity: float = 0.38
+    items: tuple[DigestRubricConfig, ...] = ()
+
+    @property
+    def fallback(self) -> DigestRubricConfig:
+        matches = [item for item in self.items if item.fallback]
+        if len(matches) != 1:
+            raise ValueError("digest_rubrics must contain exactly one fallback rubric")
+        return matches[0]
+
+
 @dataclass
 class CollectionConfig:
     """Generic ingestion collection scheduling.
@@ -271,6 +300,7 @@ class Settings:
     pre_publish_lead_minutes: int = 15
     article: ArticleConfig = field(default_factory=ArticleConfig)
     event_pipeline: EventPipelineConfig = field(default_factory=EventPipelineConfig)
+    digest_rubrics: DigestRubricsConfig = field(default_factory=DigestRubricsConfig)
 
 
 @dataclass
@@ -483,6 +513,136 @@ def _parse_digest_settings(
         )
 
     return digest_mode, digest_groups, output_language
+
+
+def _parse_digest_rubrics(settings_dict: dict) -> DigestRubricsConfig:
+    """Parse and validate digest presentation rubrics from settings dict."""
+    raw = settings_dict.get("digest_rubrics")
+    if raw is not None:
+        if not isinstance(raw, dict):
+            raise ValueError("settings.digest_rubrics must be a dict")
+        min_similarity = raw.get("min_similarity", 0.38)
+        if (
+            isinstance(min_similarity, bool)
+            or not isinstance(min_similarity, (int, float))
+            or not (0.0 <= float(min_similarity) <= 1.0)
+        ):
+            raise ValueError("min_similarity must be between 0.0 and 1.0")
+        min_similarity = float(min_similarity)
+
+        raw_items = raw.get("items")
+        if not isinstance(raw_items, list) or not raw_items:
+            raise ValueError("digest_rubrics must contain at least one rubric")
+
+        parsed_items: list[DigestRubricConfig] = []
+        seen_ids: set[str] = set()
+
+        for idx, item in enumerate(raw_items):
+            if not isinstance(item, dict):
+                raise ValueError(f"digest_rubrics.items[{idx}] must be a dict")
+            rubric_id = item.get("id")
+            if not isinstance(rubric_id, str) or not _DIGEST_RUBRIC_ID_RE.match(rubric_id):
+                raise ValueError(f"invalid digest rubric id: {rubric_id!r}")
+            if rubric_id in seen_ids:
+                raise ValueError(f"duplicate digest rubric id: {rubric_id!r}")
+            seen_ids.add(rubric_id)
+
+            name = item.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"digest_rubrics.items[{idx}].name must be a non-empty string")
+
+            description = item.get("description")
+            if not isinstance(description, str) or not description.strip():
+                raise ValueError(
+                    f"digest_rubrics.items[{idx}].description must be a non-empty string"
+                )
+
+            emoji = item.get("emoji", "")
+            if not isinstance(emoji, str):
+                raise ValueError(f"digest_rubrics.items[{idx}].emoji must be a string")
+
+            fallback = item.get("fallback", False)
+            if not isinstance(fallback, bool):
+                raise ValueError(f"digest_rubrics.items[{idx}].fallback must be a boolean")
+
+            parsed_items.append(
+                DigestRubricConfig(
+                    id=rubric_id,
+                    name=name.strip(),
+                    description=description.strip(),
+                    emoji=emoji.strip(),
+                    fallback=fallback,
+                )
+            )
+
+        fallback_matches = [r for r in parsed_items if r.fallback]
+        if len(fallback_matches) != 1:
+            raise ValueError("digest_rubrics must contain exactly one fallback rubric")
+
+        return DigestRubricsConfig(
+            min_similarity=min_similarity,
+            items=tuple(parsed_items),
+        )
+
+    # Fallback to compatibility from digest_groups if present
+    raw_groups = settings_dict.get("digest_groups")
+    if isinstance(raw_groups, list) and raw_groups:
+        compat_items: list[DigestRubricConfig] = []
+        seen_ids = set()
+        fallback_idx = None
+
+        for idx, g in enumerate(raw_groups):
+            if isinstance(g, dict):
+                g_name = str(g.get("name", "")).strip()
+                if g_name in ("Other", "Другое", "Прочее"):
+                    fallback_idx = idx
+
+        if fallback_idx is None:
+            fallback_idx = len(raw_groups) - 1
+
+        for idx, g in enumerate(raw_groups):
+            if not isinstance(g, dict):
+                continue
+            g_name = str(g.get("name", f"group_{idx}")).strip()
+            g_desc = str(g.get("description", g_name)).strip()
+            raw_id = re.sub(r"[^a-z0-9_-]+", "_", g_name.lower()).strip("_")
+            if not raw_id or not _DIGEST_RUBRIC_ID_RE.match(raw_id):
+                raw_id = f"group_{idx}"
+            orig_id = raw_id
+            counter = 1
+            while raw_id in seen_ids:
+                raw_id = f"{orig_id}_{counter}"
+                counter += 1
+            seen_ids.add(raw_id)
+
+            compat_items.append(
+                DigestRubricConfig(
+                    id=raw_id,
+                    name=g_name,
+                    description=g_desc,
+                    fallback=(idx == fallback_idx),
+                )
+            )
+
+        if compat_items:
+            return DigestRubricsConfig(
+                min_similarity=0.38,
+                items=tuple(compat_items),
+            )
+
+    # Default fallback rubric if nothing is configured
+    return DigestRubricsConfig(
+        min_similarity=0.38,
+        items=(
+            DigestRubricConfig(
+                id="other",
+                name="Другое",
+                description="Важные локальные события",
+                emoji="📌",
+                fallback=True,
+            ),
+        ),
+    )
 
 
 def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
@@ -1582,6 +1742,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         pre_publish_lead_minutes=pre_publish_lead_minutes,
         article=_parse_article_config(settings_dict),
         event_pipeline=_parse_event_pipeline_config(settings_dict),
+        digest_rubrics=_parse_digest_rubrics(settings_dict),
     )
 
     if settings.target_user_id == 0:
