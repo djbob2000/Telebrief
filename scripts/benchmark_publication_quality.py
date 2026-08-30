@@ -223,6 +223,33 @@ async def run_benchmark(
         print(f"  Claim Trace Units: {claim_trace_count}")
         print(f"  Chat LLM Calls:    {article_chat_calls} (Target: <= 1)")
         print(f"  Duration:          {t_article:.2f}s")
+        if article_pub and article_pub.body:
+            from src.publication.article_models import ArticleParagraph, ArticleSection, StructuredArticleDraft
+            from src.publication.narrative_quality import evaluate_article_narrative
+
+            # Parse markdown body paragraphs for diagnostic narrative evaluation
+            raw_paras = [p.strip() for p in article_pub.body.split("\n\n") if p.strip() and not p.startswith("#")]
+            draft_for_diag = StructuredArticleDraft(
+                title=article_pub.title or "",
+                title_support_ids=(),
+                lead=article_pub.lead or "",
+                lead_support_ids=(),
+                sections=(
+                    ArticleSection(
+                        heading="",
+                        paragraphs=tuple(ArticleParagraph(text=p) for p in raw_paras),
+                    ),
+                ),
+            )
+            diag_rep = evaluate_article_narrative(draft_for_diag)
+            print("-" * 70)
+            print("NARRATIVE DIAGNOSTICS (OBSERVABILITY):")
+            print(f"  Paragraphs:        {diag_rep.paragraph_count}")
+            print(f"  Synthesis Ratio:   {diag_rep.synthesis_ratio:.2f}")
+            print(f"  Attribution Starts:{diag_rep.repeated_attribution_starts}")
+            print(f"  DB Label Patterns: {diag_rep.database_label_patterns}")
+            print(f"  Direct Quotes:     {diag_rep.direct_quote_count}")
+            print(f"  Avg Sent / Para:   {diag_rep.avg_sentences_per_paragraph:.2f}")
         print("=" * 70 + "\n")
 
 
