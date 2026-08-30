@@ -174,6 +174,10 @@ async def build_publication_preview(
     Executes the canonical production publication pipeline:
     create_run -> seal_candidates -> select -> generate -> Publication,
     with explicit flags to suppress queueing selection, generation, and delivery jobs.
+
+    Raises:
+        ArticlePublicationRejected: the one-call Event-First article writer did not
+            produce a publication-safe draft; no preview publication exists.
     """
     if config is None:
         from src.config_loader import load_config

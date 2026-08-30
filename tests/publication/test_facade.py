@@ -149,3 +149,28 @@ class TestPublicationFacade:
         jobs = await cur.fetchall()
         assert len(jobs) == 1
         assert jobs[0][1] == "select_stories_for_publication"
+
+    async def test_article_preview_propagates_terminal_rejection(
+        self, conn: psycopg.AsyncConnection, pool, edition, pub_config: Config, monkeypatch
+    ):
+        """Preview generation propagates ArticlePublicationRejected when article generation fails."""
+        from src.publication.errors import ArticlePublicationRejected
+
+        async def reject(*args, **kwargs):
+            raise ArticlePublicationRejected(
+                reason="validation_failed",
+                message="preview article rejected",
+            )
+
+        monkeypatch.setattr(
+            "src.publication.generation.PublicationGenerationService.generate",
+            reject,
+        )
+
+        with pytest.raises(ArticlePublicationRejected) as caught:
+            await build_publication_preview(
+                "article",
+                edition_slug="berdyansk",
+                config=pub_config,
+            )
+        assert caught.value.reason == "validation_failed"
