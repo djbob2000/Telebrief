@@ -14,10 +14,10 @@ from psycopg.rows import dict_row
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.config_loader import load_config
+from src.publication.article_claim_support import assess_claim_against_supports
 from src.publication.article_context import build_article_editorial_context
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_validator import (
-    assess_claim_against_supports,
     find_unsupported_claims,
     validate_article_draft,
 )
@@ -136,13 +136,13 @@ async def main():
             print(f"    Message: {iss.message}")
             if iss.support_ids:
                 print(f"    Cited Support IDs: {iss.support_ids}")
+                c_sups = [ctx.support_by_id[sid] for sid in iss.support_ids if sid in ctx.support_by_id]
+                for supp in c_sups:
+                    print(f"      Support [{supp.support_id}]: text='{supp.text}'")
+                    print(f"                                   source='{supp.source_text}'")
+                    print(f"                                   kind='{supp.evidence_kind}', use='{supp.publication_use}'")
                 for sid in iss.support_ids:
-                    supp = ctx.support_by_id.get(sid)
-                    if supp:
-                        print(f"      Support [{sid}]: text='{supp.text}'")
-                        print(f"                        source='{supp.source_text}'")
-                        print(f"                        kind='{supp.evidence_kind}', use='{supp.publication_use}'")
-                    else:
+                    if sid not in ctx.support_by_id:
                         print(f"      Support [{sid}]: UNKNOWN ID")
 
             if iss.unsupported_claims:
