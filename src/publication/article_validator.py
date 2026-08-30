@@ -399,11 +399,17 @@ def validate_article_draft(
                             )
                         )
 
+                allowed_context_terms: tuple[str, ...] = ()
+                if unit_type in ("title", "lead"):
+                    allowed_context_terms = context.edition_anchor_terms
+
                 assessment = assess_claim_against_supports(
                     claim.text,
                     c_supports,
                     min_content_coverage=config.article_claim_min_content_coverage,
+                    allowed_context_terms=allowed_context_terms,
                 )
+
                 if not assessment.supported:
                     if assessment.blocking_proper_names:
                         issues.append(

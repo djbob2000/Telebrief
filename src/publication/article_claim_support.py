@@ -52,6 +52,7 @@ def assess_claim_against_supports(
     supports: Sequence[ArticleSupport],
     *,
     min_content_coverage: float = 0.70,
+    allowed_context_terms: Sequence[str] = (),
 ) -> ClaimSupportAssessment:
     """Conservatively assess whether claim_text is substantiated by cited supports."""
     support_texts: list[str] = []
@@ -70,7 +71,12 @@ def assess_claim_against_supports(
     )
 
     # 2. Risk-based semantic novelty and proper name matching
-    semantic = assess_semantic_support(claim_text, support_texts)
+    semantic = assess_semantic_support(
+        claim_text,
+        support_texts,
+        allowed_context_terms=allowed_context_terms,
+    )
+
     blocking = (
         bool(unsupported_concrete)
         or bool(semantic.blocking_terms)

@@ -348,7 +348,10 @@ class SemanticSupportSignals:
 
 
 def assess_semantic_support(
-    claim_text: str, support_texts: Sequence[str]
+    claim_text: str,
+    support_texts: Sequence[str],
+    *,
+    allowed_context_terms: Sequence[str] = (),
 ) -> SemanticSupportSignals:
     """Assess semantic overlap and risk-based factual novelty between claim and supports."""
     if not claim_text.strip():
@@ -375,6 +378,17 @@ def assess_semantic_support(
                 support_tokens_lower.add(tok)
                 support_stems.add(stem_word(tok))
 
+    context_tokens_lower: set[str] = set()
+    context_stems: set[str] = set()
+    for act in allowed_context_terms:
+        if not act:
+            continue
+        cleaned_act = act.lower().replace("ё", "е")
+        for tok in _TOKEN_RE.findall(cleaned_act):
+            if len(tok) >= 2 and tok not in _STOPWORDS:
+                context_tokens_lower.add(tok)
+                context_stems.add(stem_word(tok))
+
     claim_concepts = canonical_semantic_concepts(claim_text)
     diff_concepts = claim_concepts - support_concepts
     blocking_critical_terms = tuple(
@@ -392,16 +406,14 @@ def assess_semantic_support(
             or any(_stems_match(pn_stem, s_stem) for s_stem in support_stems)
             or any(pn in st.lower().replace("ё", "е") for st in support_texts)
             or (pn_concept.startswith("concept:") and pn_concept in support_concepts)
+            or pn in context_tokens_lower
+            or any(_stems_match(pn_stem, c_stem) for c_stem in context_stems)
         )
         if not matched:
             unmatched_proper_names_set.add(pn)
 
     unmatched_proper_names = tuple(sorted(unmatched_proper_names_set))
-    is_route_claim = bool(_ROUTE_RE.search(claim_text))
-
-    if is_route_claim and len(unmatched_proper_names) >= 1:
-        blocking_proper_names = unmatched_proper_names
-    elif len(unmatched_proper_names) >= 2:
+    if len(unmatched_proper_names) >= 1:
         blocking_proper_names = unmatched_proper_names
     else:
         blocking_proper_names = ()
@@ -457,6 +469,8 @@ def assess_semantic_support(
             or any(_stems_match(stem, s_stem) for s_stem in support_stems)
             or (tok_concept.startswith("concept:") and tok_concept in support_concepts)
             or (has_quantity_100 and tok in quantity_100_tokens)
+            or tok in context_tokens_lower
+            or any(_stems_match(stem, c_stem) for c_stem in context_stems)
         )
         if matched:
             matched_count += 1

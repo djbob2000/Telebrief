@@ -1412,3 +1412,146 @@ def test_article_validator_blocks_question_context_overclaim() -> None:
 
     res_inquiry = validate_article_draft(inquiry_draft, ctx, config)
     assert not any("QUESTION_CONTEXT_OVERCLAIM" in v for v in res_inquiry.violations)
+
+
+@pytest.mark.unit
+def test_edition_anchor_in_title_does_not_block_when_edition_set() -> None:
+    sup = ArticleSupport(
+        support_id="story:1:frag:1",
+        text="месяц без света сидим",
+        source_text="месяц без света сидим",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Света нет",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        recurring_topics=("utilities",),
+        edition_name="Бердянск",
+        edition_anchor_terms=("Бердянск",),
+    )
+    config = PublicationEditorialConfig(
+        article_min_words=5,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+    draft = StructuredArticleDraft(
+        title="Жители Бердянска сообщают, что света нет около месяца",
+        title_support_ids=(sup.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Жители Бердянска сообщают, что света нет около месяца",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        lead="Света нет около месяца.",
+        lead_support_ids=(sup.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="Света нет около месяца",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Отключения",
+                heading_support_ids=(sup.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Месяц сидим без света.",
+                        cited_support_ids=(sup.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Месяц сидим без света",
+                                cited_support_ids=(sup.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=25,
+    )
+    res = validate_article_draft(draft, ctx, config)
+    blocking_codes = [i.code for i in res.issues if i.blocking]
+    assert "UNSUPPORTED_CLAIM_ATOM" not in blocking_codes
+    assert "UNSUPPORTED_PROPER_NAME" not in blocking_codes
+
+
+@pytest.mark.unit
+def test_unsupported_location_in_lead_remains_blocking() -> None:
+    sup = ArticleSupport(
+        support_id="story:1:frag:1",
+        text="оборудование Юпитера запитали от генератора, сигнал пошел на роутеры всего дома",
+        source_text="оборудование Юпитера запитали от генератора, сигнал пошел на роутеры всего дома",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Юпитер",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        recurring_topics=("utilities",),
+        edition_name="Бердянск",
+        edition_anchor_terms=("Бердянск",),
+    )
+    config = PublicationEditorialConfig(
+        article_min_words=5,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+    draft = StructuredArticleDraft(
+        title="Оборудование Юпитера запитали от генератора",
+        title_support_ids=(sup.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Оборудование Юпитера запитали от генератора",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        lead="В одном из домов на Азмоле оборудование Юпитера запитали от генератора.",
+        lead_support_ids=(sup.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В одном из домов на Азмоле оборудование Юпитера запитали от генератора",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Связь",
+                heading_support_ids=(sup.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Оборудование Юпитера запитали от генератора.",
+                        cited_support_ids=(sup.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Оборудование Юпитера запитали от генератора",
+                                cited_support_ids=(sup.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=30,
+    )
+    res = validate_article_draft(draft, ctx, config)
+    assert res.is_valid is False
+    assert any(i.code == "UNSUPPORTED_PROPER_NAME" and "Азмол" in i.message for i in res.issues)

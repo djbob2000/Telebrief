@@ -263,3 +263,57 @@ def test_wifi_to_internet_is_not_critical_novelty() -> None:
         [support],
     )
     assert assessment.supported is True
+
+
+@pytest.mark.unit
+def test_edition_anchor_can_be_nonblocking_context() -> None:
+    support = make_support("месяц без света сидим")
+    assessment = assess_claim_against_supports(
+        "Жители Бердянска сообщают, что света нет около месяца",
+        [support],
+        allowed_context_terms=("Бердянск",),
+    )
+    assert assessment.supported is True
+
+
+@pytest.mark.unit
+def test_unrelated_location_is_not_authorized_by_edition_context() -> None:
+    support = make_support("оборудование Юпитера запитали от генератора")
+    assessment = assess_claim_against_supports(
+        "На Азмоле оборудование Юпитера запитали от генератора",
+        [support],
+        allowed_context_terms=("Бердянск",),
+    )
+    assert assessment.supported is False
+
+
+@pytest.mark.unit
+def test_attempt74_expected_pass_cases() -> None:
+    cases = _load_attempt74_cases()["expected_pass"]
+    for case in cases:
+        supports = [
+            make_support(str(text), support_id=f"SUP-{idx}")
+            for idx, text in enumerate(case["supports"], start=1)
+        ]
+        assessment = assess_claim_against_supports(
+            str(case["claim"]),
+            supports,
+            allowed_context_terms=tuple(str(x) for x in case.get("edition_terms", [])),
+        )
+        assert assessment.supported is True, case["id"]
+
+
+@pytest.mark.unit
+def test_attempt74_real_additions_still_block() -> None:
+    cases = _load_attempt74_cases()["expected_block"]
+    for case in cases:
+        supports = [
+            make_support(str(text), support_id=f"SUP-{idx}")
+            for idx, text in enumerate(case["supports"], start=1)
+        ]
+        assessment = assess_claim_against_supports(
+            str(case["claim"]),
+            supports,
+            allowed_context_terms=tuple(str(x) for x in case.get("edition_terms", [])),
+        )
+        assert assessment.supported is False, case["id"]
