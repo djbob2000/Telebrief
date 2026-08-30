@@ -10,8 +10,29 @@ _CONCEPT_PREFIXES: dict[str, tuple[str, ...]] = {
     "report": ("сообщ", "повідом"),
     "apply_use": ("примен", "застос", "поступ", "надійш"),
     "power": ("свет", "электр", "електр"),
-    "water": ("вод", "водопостач"),
+    "water": ("вод", "водопостач", "водоснабж"),
+    "gas": ("газ", "газопостач", "газоснабж"),
+    "heating": ("отоплен", "тепло", "опален"),
+    "transport": ("транспорт", "автобус", "маршрутк"),
+    "fuel": ("топлив", "бензин", "дизел", "палив"),
 }
+
+_CRITICAL_CONCEPTS = frozenset(
+    {
+        "concept:power",
+        "concept:water",
+        "concept:gas",
+        "concept:heating",
+        "concept:internet",
+        "concept:transport",
+        "concept:fuel",
+        "concept:uav",
+    }
+)
+
+
+def is_critical_semantic_concept(value: str) -> bool:
+    return value in _CRITICAL_CONCEPTS
 
 
 def _norm(token: str) -> str:

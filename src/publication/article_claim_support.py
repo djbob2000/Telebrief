@@ -41,6 +41,7 @@ class ClaimSupportAssessment:
     unsupported_content_stems: tuple[str, ...]
     unsupported_concrete_claims: tuple[ConcreteClaim, ...]
     blocking_semantic_terms: tuple[str, ...] = ()
+    blocking_critical_terms: tuple[str, ...] = ()
     unmatched_proper_names: tuple[str, ...] = ()
     blocking_proper_names: tuple[str, ...] = ()
     lexical_only_warning: bool = False
@@ -61,13 +62,19 @@ def assess_claim_against_supports(
             support_texts.append(s.source_text)
 
     # 1. High-risk concrete claims (numbers, dates, times, money, phone, cause, etc.)
-    unsupported_concrete = find_unsupported_claims(claim_text, support_texts)
+    primary_source_texts = [s.source_text for s in supports if s.source_text]
+    unsupported_concrete = find_unsupported_claims(
+        claim_text,
+        support_texts,
+        direct_quote_source_texts=primary_source_texts,
+    )
 
     # 2. Risk-based semantic novelty and proper name matching
     semantic = assess_semantic_support(claim_text, support_texts)
     blocking = (
         bool(unsupported_concrete)
         or bool(semantic.blocking_terms)
+        or bool(semantic.blocking_critical_terms)
         or bool(semantic.blocking_proper_names)
     )
 
@@ -84,6 +91,7 @@ def assess_claim_against_supports(
         unsupported_content_stems=semantic.unmatched_terms,
         unsupported_concrete_claims=unsupported_concrete,
         blocking_semantic_terms=semantic.blocking_terms,
+        blocking_critical_terms=semantic.blocking_critical_terms,
         unmatched_proper_names=semantic.unmatched_proper_names,
         blocking_proper_names=semantic.blocking_proper_names,
         lexical_only_warning=lexical_only_warning,

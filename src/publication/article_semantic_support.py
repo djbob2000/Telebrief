@@ -10,6 +10,7 @@ from src.publication.article_claims import stem_word
 from src.publication.article_semantic_lexicon import (
     canonical_semantic_concepts,
     canonicalize_semantic_token,
+    is_critical_semantic_concept,
 )
 
 _TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]+")
@@ -19,6 +20,7 @@ _ROUTE_RE = re.compile(
     r"\b(?:рейс[а-я]*|маршрут[а-я]*|направлен[а-я]*|следует\s+в|едет\s+в|курсиру[а-я]*)\b",
     re.IGNORECASE,
 )
+
 
 _STOPWORDS = frozenset(
     {
@@ -340,6 +342,7 @@ class SemanticSupportSignals:
     lexical_coverage: float
     unmatched_terms: tuple[str, ...]
     blocking_terms: tuple[str, ...]
+    blocking_critical_terms: tuple[str, ...]
     unmatched_proper_names: tuple[str, ...]
     blocking_proper_names: tuple[str, ...]
 
@@ -353,6 +356,7 @@ def assess_semantic_support(
             lexical_coverage=1.0,
             unmatched_terms=(),
             blocking_terms=(),
+            blocking_critical_terms=(),
             unmatched_proper_names=(),
             blocking_proper_names=(),
         )
@@ -372,6 +376,10 @@ def assess_semantic_support(
                 support_stems.add(stem_word(tok))
 
     claim_concepts = canonical_semantic_concepts(claim_text)
+    diff_concepts = claim_concepts - support_concepts
+    blocking_critical_terms = tuple(
+        sorted(c for c in diff_concepts if is_critical_semantic_concept(c))
+    )
 
     # 2. Extract and check claim proper names
     claim_proper_names = _extract_proper_name_candidates(claim_text)
@@ -415,6 +423,7 @@ def assess_semantic_support(
             lexical_coverage=1.0,
             unmatched_terms=(),
             blocking_terms=(),
+            blocking_critical_terms=blocking_critical_terms,
             unmatched_proper_names=unmatched_proper_names,
             blocking_proper_names=blocking_proper_names,
         )
@@ -474,6 +483,7 @@ def assess_semantic_support(
         lexical_coverage=lexical_coverage,
         unmatched_terms=unmatched_terms,
         blocking_terms=blocking_terms,
+        blocking_critical_terms=blocking_critical_terms,
         unmatched_proper_names=unmatched_proper_names,
         blocking_proper_names=blocking_proper_names,
     )

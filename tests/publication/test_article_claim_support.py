@@ -240,3 +240,26 @@ def test_ru_ua_over_hundred_reports_is_semantically_supported() -> None:
     support = make_support("надійшло понад сотню повідомлень")
     assessment = assess_claim_against_supports("Поступило более ста сообщений", [support])
     assert assessment.supported is True
+
+
+@pytest.mark.unit
+def test_single_new_water_domain_is_blocking() -> None:
+    support = make_support("Власти молчат, света нет 3 недели и более")
+    assessment = assess_claim_against_supports(
+        "Нет информации о сроках восстановления света и воды",
+        [support],
+    )
+    assert assessment.supported is False
+    assert any("water" in x or "вод" in x for x in assessment.blocking_critical_terms)
+
+
+@pytest.mark.unit
+def test_wifi_to_internet_is_not_critical_novelty() -> None:
+    support = make_support(
+        "оборудование Юпитера запитали от генератора, сигнал пошёл на роутеры всего дома, гоууу вай фай"
+    )
+    assessment = assess_claim_against_supports(
+        "Оборудование Юпитера запитали от генератора и интернет заработал для дома",
+        [support],
+    )
+    assert assessment.supported is True
