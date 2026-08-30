@@ -828,11 +828,28 @@ class ArticleGenerator:
                     "reason": "validation_failed",
                     "violations": list(val_res.violations),
                     "length_profile": length_profile.richness,
+                    "raw_draft": parsed,
+                    "validation_issues": [
+                        {
+                            "code": iss.code,
+                            "unit_id": iss.unit_id,
+                            "message": iss.message,
+                            "support_ids": list(iss.support_ids),
+                            "severity": iss.severity,
+                            "blocking": iss.blocking,
+                            "unsupported_claims": [
+                                {"kind": c.kind, "raw": c.raw, "excerpt": c.excerpt}
+                                for c in iss.unsupported_claims
+                            ],
+                        }
+                        for iss in val_res.issues
+                    ],
                     "unsupported_claims": [
                         {"kind": c.kind, "raw": c.raw, "excerpt": c.excerpt}
                         for c in val_res.unsupported_claims
                     ],
                 }
+
                 if attempt_observer is not None and writer_attempt_id > 0:
                     await attempt_observer.attempt_finished(
                         writer_attempt_id,
