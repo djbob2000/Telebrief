@@ -63,6 +63,76 @@ def test_structured_article_draft_unit_level_support_ids() -> None:
 
 
 @pytest.mark.unit
+def test_structured_article_draft_with_claim_atoms() -> None:
+    from src.publication.article_models import ArticleClaimAtom
+
+    raw = {
+        "title": "Бердянск остается без стабильного электроснабжения",
+        "title_support_ids": ["SUP-POWER"],
+        "title_claims": [
+            {
+                "text": "В Бердянске сохраняются перебои с электроснабжением",
+                "cited_support_ids": ["SUP-POWER"],
+            }
+        ],
+        "lead": "За последние сутки жители продолжали сообщать о перебоях со светом.",
+        "lead_support_ids": ["SUP-POWER"],
+        "lead_claims": [
+            {
+                "text": "За последние сутки жители сообщали о перебоях со светом",
+                "cited_support_ids": ["SUP-POWER"],
+            }
+        ],
+        "sections": [
+            {
+                "heading": "Электроснабжение",
+                "heading_support_ids": ["SUP-POWER"],
+                "heading_claims": [
+                    {
+                        "text": "Раздел описывает состояние электроснабжения",
+                        "cited_support_ids": ["SUP-POWER"],
+                    }
+                ],
+                "paragraphs": [
+                    {
+                        "text": "В центре города жители сообщают об отсутствии света.",
+                        "cited_support_ids": ["SUP-POWER"],
+                        "claims": [
+                            {
+                                "text": "В центре города жители сообщают об отсутствии света",
+                                "cited_support_ids": ["SUP-POWER"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    draft = StructuredArticleDraft.from_dict(raw)
+    assert len(draft.title_claims) == 1
+    assert isinstance(draft.title_claims[0], ArticleClaimAtom)
+    assert draft.title_claims[0].text == "В Бердянске сохраняются перебои с электроснабжением"
+    assert draft.title_claims[0].cited_support_ids == ("SUP-POWER",)
+
+    assert len(draft.lead_claims) == 1
+    assert draft.lead_claims[0].text == "За последние сутки жители сообщали о перебоях со светом"
+
+    sec = draft.sections[0]
+    assert len(sec.heading_claims) == 1
+    assert sec.heading_claims[0].text == "Раздел описывает состояние электроснабжения"
+
+    p = sec.paragraphs[0]
+    assert len(p.claims) == 1
+    assert p.claims[0].text == "В центре города жители сообщают об отсутствии света"
+    assert p.claims[0].cited_support_ids == ("SUP-POWER",)
+
+    # Internal support IDs must remain absent from rendered Markdown
+    rendered = draft.render_markdown()
+    assert "SUP-POWER" not in rendered
+
+
+@pytest.mark.unit
 def test_structured_article_draft_legacy_string_paragraphs_fail_closed_empty_support() -> None:
     payload = {
         "title": "Заголовок",
