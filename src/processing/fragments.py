@@ -9,6 +9,13 @@ from src.domain.event_pipeline import NewSourceFragment
 
 FRAGMENTER_VERSION = "v1"
 
+MIN_CANDIDATE_ALNUM_CHARS = 6
+
+_SHORT_REACTION_PATTERN = re.compile(
+    r"^(?:ок|окей|да|нет|ага|угу|понял(?:а)?|понятно|ясно|хорошо|ладно|норм|супер|класс|лол|привет)[!.?]*$",
+    re.IGNORECASE,
+)
+
 # Regexes for URL stripping, whitespace normalization, and noise detection
 _URL_PATTERN = re.compile(r"https?://\S+|t\.me/\S+", re.IGNORECASE)
 _WHITESPACE_PATTERN = re.compile(r"\s+")
@@ -64,14 +71,17 @@ def is_noise_or_classified(text: str) -> tuple[bool, str | None]:
     if not trimmed:
         return True, "empty"
 
+    if _SHORT_REACTION_PATTERN.search(trimmed):
+        return True, "obvious_noise"
+
     # Check greetings / chatter
     for p in _NOISE_PATTERNS:
         if p.search(trimmed):
             return True, "obvious_noise"
 
     # Count alphanumeric characters
-    alnum_chars = len([c for c in trimmed if c.isalnum()])
-    if alnum_chars < 15:
+    alnum_chars = sum(1 for c in trimmed if c.isalnum())
+    if alnum_chars < MIN_CANDIDATE_ALNUM_CHARS:
         return True, "too_short"
 
     # Check classified ad indicators (require at least 2 distinct cues for confidence)
@@ -133,8 +143,8 @@ def split_into_fragments(
         norm = normalize_fragment_text(chunk_clean)
         h = hash_normalized_text(norm)
 
-        is_candidate = not is_noise and len(norm) >= 20
-        drop_reason = reason if is_noise else ("too_short" if len(norm) < 20 else None)
+        is_candidate = not is_noise
+        drop_reason = reason if is_noise else None
 
         fragments.append(
             NewSourceFragment(

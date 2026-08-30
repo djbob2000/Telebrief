@@ -50,7 +50,51 @@ def test_is_noise_or_classified_detects_short_chatter():
     too_short = "Ок."
     is_noise, reason = is_noise_or_classified(too_short)
     assert is_noise is True
-    assert reason == "too_short"
+    assert reason in {"obvious_noise", "too_short"}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Нет воды",
+        "На Горе света нет",
+        "Когда свет?",
+        "Автобус 4 не ходит",
+        "ПВО слышно",
+    ],
+)
+def test_short_civic_reports_remain_fragment_candidates(text: str):
+    fragments = split_into_fragments(text)
+
+    assert len(fragments) == 1
+    assert fragments[0].is_candidate is True
+    assert fragments[0].drop_reason is None
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Ок",
+        "Окей",
+        "Да",
+        "Нет",
+        "Ага",
+        "Угу",
+        "Понял",
+        "Понятно",
+        "Спасибо",
+        "Привет",
+        "Доброе утро!",
+    ],
+)
+def test_short_reaction_chatter_is_not_candidate(text: str):
+    fragments = split_into_fragments(text)
+
+    assert len(fragments) == 1
+    assert fragments[0].is_candidate is False
+    assert fragments[0].drop_reason in {"obvious_noise", "too_short"}
 
 
 @pytest.mark.unit
