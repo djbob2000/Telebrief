@@ -339,6 +339,7 @@ class DigestNarrativeWriter:
         situation_rollup: Any | None = None,
         language: str = "Russian",
         max_output_tokens: int = 4096,
+        model: str | None = None,
     ) -> DigestNarrativeDraft:
         """Synthesize structured narrative draft in exactly one LLM call."""
         import json
@@ -369,10 +370,13 @@ class DigestNarrativeWriter:
                 }
             )
 
-        contract = build_digest_narrative_contract(output_language=language)
+        narrative_contract = build_digest_narrative_contract(output_language=language)
         system_prompt = (
-            f"{contract}\n\n"
-            "Return a strictly valid JSON object with the following schema:\n"
+            "You are a professional regional newsroom editor and journalist.\n"
+            "Your task is to write a cohesive, engaging, and strictly factual daily news digest.\n\n"
+            f"{narrative_contract}\n\n"
+            "OUTPUT FORMAT REQUIREMENTS:\n"
+            "Return ONLY valid JSON strictly matching this schema:\n"
             "{\n"
             '  "blocks": [\n'
             "    {\n"
@@ -391,18 +395,39 @@ class DigestNarrativeWriter:
         )
         user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
 
-        raw_response = await self._provider.chat_completion(
-            messages=[
+        chat_kwargs: dict[str, Any] = {
+            "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            response_format={"type": "json_object"},
-        )
+            "response_format": {"type": "json_object"},
+        }
+        if model:
+            chat_kwargs["model"] = model
+
+        raw_response = await self._provider.chat_completion(**chat_kwargs)
+
+        cleaned = (raw_response or "").strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+
+        if "{" in cleaned and "}" in cleaned:
+            first_brace = cleaned.find("{")
+            last_brace = cleaned.rfind("}")
+            if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                cleaned = cleaned[first_brace : last_brace + 1]
 
         try:
-            parsed = json.loads(raw_response)
+            parsed = json.loads(cleaned)
         except Exception as err:
-            raise ValueError(f"Failed to decode LLM response as JSON: {err}") from err
+            raise ValueError(
+                f"Failed to decode LLM response as JSON: {err}. Raw was: {raw_response[:200]!r}"
+            ) from err
 
         return DigestNarrativeDraft.from_dict(parsed)
 

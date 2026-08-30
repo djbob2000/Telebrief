@@ -246,6 +246,8 @@ class PublicationGenerationService:
                             situation_rollup=frozen.analysis.city_situation,
                             language=getattr(self.config.settings, "output_language", "Russian"),
                             max_output_tokens=max_tokens,
+                            model=getattr(self.config.settings, "openai_model", None)
+                            or getattr(self.config.settings, "ai_model", None),
                         )
                         support_text_index = build_digest_support_text_index(
                             evidence=evidence_dict,
