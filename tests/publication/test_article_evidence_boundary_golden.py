@@ -11,6 +11,7 @@ import pytest
 from src.config_loader import PublicationEditorialConfig
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 from src.publication.article_models import (
+    ArticleClaimAtom,
     ArticleParagraph,
     ArticleSection,
     StructuredArticleDraft,
@@ -69,19 +70,26 @@ def test_article_evidence_boundary_golden_suite() -> None:
             recurring_topics=("utilities",),
         )
 
+        claim_atom = ArticleClaimAtom(text=draft_text, cited_support_ids=support_ids)
+        sup_claim = ArticleClaimAtom(text=support_texts[0], cited_support_ids=support_ids)
+
         draft = StructuredArticleDraft(
-            title="Заголовок статьи о событиях",
+            title=support_texts[0],
             title_support_ids=support_ids,
-            lead="Вводный лид статьи с кратким описанием событий дня.",
+            title_claims=(sup_claim,),
+            lead=support_texts[0],
             lead_support_ids=support_ids,
+            lead_claims=(sup_claim,),
             sections=(
                 ArticleSection(
-                    heading="Основной раздел",
+                    heading=support_texts[0],
                     heading_support_ids=support_ids,
+                    heading_claims=(sup_claim,),
                     paragraphs=(
                         ArticleParagraph(
                             text=draft_text,
                             cited_support_ids=support_ids,
+                            claims=(claim_atom,),
                         ),
                     ),
                 ),

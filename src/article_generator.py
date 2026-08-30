@@ -684,37 +684,61 @@ class ArticleGenerator:
 
 Правила:
 1. Опирайтесь ТОЛЬКО на предоставленные единицы поддержки [SUPPORT id]. Категорически запрещено выдумывать неподтвержденные детали, цифры, адреса, организации, длительности, причины, механизмы и события.
-2. Every title, lead, heading and paragraph must cite support IDs.
-3. Never invent a duration, number, date, time, price, route interval, address, organization, cause, mechanism, completion state, or future deadline.
-4. If a detail is not explicit in cited support, omit it.
-5. Do not infer that repairs were completed merely because work had started.
-6. Do not infer a cause/mechanism from chronology alone.
-7. Язык статьи: {self.output_language}. Стиль — новостная журналистика: сдержанный, фактологический, грамотный, без патетики и клише.
-8. Структура:
-   - title: Информативный заголовок, отражающий ключевые события дня.
-   - title_support_ids: Массив ID поддержки для заголовка (например, ["story:1:evidence:0:frag:101"]).
-   - lead: Вводный лид (2-3 предложения), суммирующий обстановку.
-   - lead_support_ids: Массив ID поддержки для лида.
-   - sections: Тематические разделы (3-6 разделов). Каждый раздел содержит:
-     - heading: Название раздела.
-     - heading_support_ids: Массив ID поддержки для заголовка раздела.
-     - paragraphs: Массив объектов параграфов: [{{"text": "Текст параграфа...", "cited_support_ids": ["story:1:evidence:0:frag:101"]}}].
-9. Внутренние ID вида [story:...] или [SUPPORT...] НЕ должны появляться внутри текста заголовка, лида или параграфов — указывайте их только в массивах support_ids.
+2. Every title, lead, heading and paragraph must cite support IDs, and MUST decompose its factual assertions into discrete claim atoms (`claims` / `title_claims` / `lead_claims` / `heading_claims`).
+3. The set of `cited_support_ids` in each unit MUST exactly equal the union of support IDs cited in that unit's claim atoms.
+4. Temporal roles and framing:
+   - CURRENT_WINDOW: События и оперативная обстановка текущего отчетного окна. Заголовок и лид ОБЯЗАНЫ опираться на факты текущего окна.
+   - HISTORICAL_CONTEXT: Фоновая информация прошлых дней. Если упоминается в статье, ОБЯЗАТЕЛЬНО используйте маркеры предыстории или продолжения (ранее, с начала, до этого, сохраняется, продолжается) и никогда не подавайте как новые события дня.
+   - FUTURE_SCHEDULED: Анонсы плановых работ на будущие даты. ОБЯЗАТЕЛЬНО используйте явные маркеры будущего времени (запланировано, предстоит, будет, дата) и НИКОГДА не описывайте как действующую аварию/отключение.
+5. Границы отчетного периода: НЕ расширяйте временные рамки в заголовке и лиде (запрещены формулировки «хроника недели», «итоги недели», «события месяца» для суточного обзора).
+6. Never invent a duration, number, date, time, price, route interval, address, organization, cause, mechanism, completion state, or future deadline.
+7. If a detail is not explicit in cited support, omit it.
+8. Do not infer that repairs were completed merely because work had started.
+9. Do not infer a cause/mechanism from chronology alone.
+10. Язык статьи: {self.output_language}. Стиль — новостная журналистика: сдержанный, фактологический, грамотный, без патетики и клише.
+11. Структура и формат:
+    - title: Информативный заголовок, отражающий ключевые события дня.
+    - title_support_ids: Массив ID поддержки для заголовка.
+    - title_claims: Массив атомарных утверждений заголовка: [{{"text": "краткое утверждение", "cited_support_ids": ["SUPPORT_ID"]}}].
+    - lead: Вводный лид (2-3 предложения), суммирующий обстановку.
+    - lead_support_ids: Массив ID поддержки для лида.
+    - lead_claims: Массив атомарных утверждений лида.
+    - sections: Тематические разделы (3-6 разделов). Каждый раздел содержит:
+      - heading: Название раздела.
+      - heading_support_ids: Массив ID поддержки для заголовка раздела.
+      - heading_claims: Массив атомарных утверждений заголовка раздела.
+      - paragraphs: Массив объектов параграфов:
+        - text: Текст параграфа.
+        - cited_support_ids: Массив ID поддержки.
+        - claims: Массив атомарных утверждений параграфа: [{{"text": "краткое утверждение", "cited_support_ids": ["SUPPORT_ID"]}}].
+12. Внутренние ID вида [story:...] или [SUPPORT...] НЕ должны появляться внутри текста заголовка, лида или параграфов — указывайте их только в массивах support_ids / cited_support_ids.
 
 Формат ответа — строго валидный JSON:
 {{
   "title": "Заголовок статьи",
   "title_support_ids": ["story:1:evidence:0:frag:101"],
+  "title_claims": [
+    {{"text": "Заголовок статьи", "cited_support_ids": ["story:1:evidence:0:frag:101"]}}
+  ],
   "lead": "Текст лида...",
   "lead_support_ids": ["story:1:evidence:0:frag:101"],
+  "lead_claims": [
+    {{"text": "Утверждение лида", "cited_support_ids": ["story:1:evidence:0:frag:101"]}}
+  ],
   "sections": [
     {{
       "heading": "Название раздела",
       "heading_support_ids": ["story:1:evidence:0:frag:101"],
+      "heading_claims": [
+        {{"text": "Название раздела", "cited_support_ids": ["story:1:evidence:0:frag:101"]}}
+      ],
       "paragraphs": [
         {{
           "text": "Текст параграфа...",
-          "cited_support_ids": ["story:1:evidence:0:frag:101"]
+          "cited_support_ids": ["story:1:evidence:0:frag:101"],
+          "claims": [
+            {{"text": "Утверждение параграфа", "cited_support_ids": ["story:1:evidence:0:frag:101"]}}
+          ]
         }}
       ]
     }}
