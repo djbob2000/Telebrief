@@ -21,11 +21,47 @@ def test_extract_concrete_claims_kinds() -> None:
     assert kinds("до конца сентября") == {"date"}
     assert kinds("за 27 000 руб.") >= {"number", "money"}
     assert kinds("+7 (990) 024-06-35") == {"phone"}
-    assert kinds("выставка «Морские горизонты»") == {"quoted_name"}
+    assert kinds("провайдер «Юпитер»") == {"quoted_term"}
+    assert kinds("выставка «Морские горизонты»") == {"direct_quote"}
     assert kinds("сеть ONET работает") == {"acronym"}
     assert "causal_relation" in kinds("отключение вызвано аварией на подстанции")
     assert "causal_relation" in kinds("подача прекратилась из-за гидроудара")
     assert "mechanism_relation" in kinds("питание восстановили по резервной схеме")
+
+
+@pytest.mark.unit
+def test_extracts_short_quoted_term_separately_from_direct_quote() -> None:
+    claims = extract_concrete_claims(
+        "Провайдер «Юпитер» работает; житель сказал: «осенью нам всем понадобится подобные буржуйки»."
+    )
+    assert any(c.kind == "quoted_term" and "Юпитер" in c.raw for c in claims)
+    assert any(c.kind == "direct_quote" and "буржуйки" in c.raw for c in claims)
+
+
+@pytest.mark.unit
+def test_direct_quote_requires_exact_primary_wording() -> None:
+    exact = find_unsupported_claims(
+        "«осенью нам всем понадобится подобные буржуйки»",
+        ["редакторская сводка: осенью могут понадобиться буржуйки"],
+        direct_quote_source_texts=["осенью нам всем понадобится подобные буржуйки"],
+    )
+    corrected = find_unsupported_claims(
+        "«осенью нам всем понадобятся подобные буржуйки»",
+        ["редакторская сводка: осенью могут понадобиться буржуйки"],
+        direct_quote_source_texts=["осенью нам всем понадобится подобные буржуйки"],
+    )
+    assert not any(c.kind == "direct_quote" for c in exact)
+    assert any(c.kind == "direct_quote" for c in corrected)
+
+
+@pytest.mark.unit
+def test_translated_direct_quote_is_not_exact_quote() -> None:
+    unsupported = find_unsupported_claims(
+        "«применила 626 беспилотников»",
+        ["применено 626 БПЛА"],
+        direct_quote_source_texts=["застосувала 626 безпілотників"],
+    )
+    assert any(c.kind == "direct_quote" for c in unsupported)
 
 
 @pytest.mark.unit

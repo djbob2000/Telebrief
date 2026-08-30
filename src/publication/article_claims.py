@@ -14,11 +14,13 @@ ClaimKind = Literal[
     "money",
     "percent",
     "phone",
-    "quoted_name",
+    "quoted_term",
+    "direct_quote",
     "acronym",
     "causal_relation",
     "mechanism_relation",
 ]
+
 
 _MONTHS_MAP = {
     "января": "01",
@@ -62,6 +64,17 @@ _MONTHS_MAP = {
 _DASH_RE = re.compile(r"[\u2010\u2012\u2013\u2014\u2212]")
 _SPACES_RE = re.compile(r"\s+")
 _QUOTES_RE = re.compile(r"[«»“”\"]")
+
+
+def normalize_direct_quote(text: str) -> str:
+    t = _DASH_RE.sub("-", text)
+    t = _SPACES_RE.sub(" ", t).strip()
+    return t
+
+
+def _classify_quoted_span(inner: str) -> ClaimKind:
+    tokens = re.findall(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]+", inner)
+    return "direct_quote" if len(tokens) >= 2 else "quoted_term"
 
 
 def _stem(word: str) -> str:
@@ -316,16 +329,22 @@ def extract_concrete_claims(text: str) -> tuple[ConcreteClaim, ...]:
         norm = normalize_support_text(raw)
         claims.append(ConcreteClaim(kind="percent", raw=raw, normalized=norm, excerpt=raw))
 
-    # 4. Quoted names
+    # 4. Quoted terms and direct quotes
     for m in _QUOTED_NAME_RE.finditer(text):
         raw = m.group(0)
         inner = m.group(1).strip()
         if inner:
+            kind = _classify_quoted_span(inner)
+            norm = (
+                normalize_direct_quote(inner)
+                if kind == "direct_quote"
+                else normalize_support_text(inner)
+            )
             claims.append(
                 ConcreteClaim(
-                    kind="quoted_name",
+                    kind=kind,
                     raw=raw,
-                    normalized=normalize_support_text(inner),
+                    normalized=norm,
                     excerpt=raw,
                 )
             )
@@ -380,9 +399,16 @@ def extract_concrete_claims(text: str) -> tuple[ConcreteClaim, ...]:
     return tuple(claims)
 
 
+def _stemmed_text(text: str) -> str:
+    words = re.findall(r"[a-zа-яёієїґ0-9]+", text.lower())
+    return " ".join(_stem(w) for w in words)
+
+
 def find_unsupported_claims(
     text: str,
     support_texts: Sequence[str],
+    *,
+    direct_quote_source_texts: Sequence[str] | None = None,
 ) -> tuple[ConcreteClaim, ...]:
     """Identify concrete claims in text that are not substantiated by cited support texts."""
     if not text:
@@ -400,9 +426,24 @@ def find_unsupported_claims(
     for claim in claims:
         norm = claim.normalized
 
-        if claim.kind in ("phone", "money", "percent", "quoted_name", "acronym"):
+        if claim.kind in ("phone", "money", "percent", "acronym"):
             # Direct normalized substring search
             if not any(norm in sup for sup in norm_supports):
+                unsupported.append(claim)
+
+        elif claim.kind == "direct_quote":
+            quote_sources = (
+                direct_quote_source_texts
+                if direct_quote_source_texts is not None
+                else support_texts
+            )
+            normalized_sources = [normalize_direct_quote(st) for st in quote_sources if st]
+            if not any(claim.normalized in source for source in normalized_sources):
+                unsupported.append(claim)
+
+        elif claim.kind == "quoted_term":
+            term_stem = _stem(claim.normalized)
+            if not any(term_stem in _stemmed_text(sup) for sup in norm_supports):
                 unsupported.append(claim)
 
         elif claim.kind == "number":
