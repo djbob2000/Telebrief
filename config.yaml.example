@@ -177,6 +177,19 @@ settings:
     # generation_retry_delay: 1.0  # (Deprecated) Retained for schema backwards-compatibility.
     # telegraph_access_token: ""  # Optional: generated automatically if omitted
 
+  # Publication Editorial parameters (Event-First presentation and narrative synthesis)
+  # publication_editorial:
+  #   conflict_window_minutes: 90
+  #   article_min_words: 800
+  #   article_max_words: 1400
+  #   article_min_sections: 3
+  #   article_max_sections: 6
+  #   article_max_direct_quotes: 4
+  #   article_claim_min_content_coverage: 0.70
+  #   digest_narrative_mode: "deterministic"   # "deterministic" (0 AI calls) or "single_call" (<=1 AI call)
+  #   digest_narrative_max_cards_per_block: 6  # Deterministic card grouping bound per block
+  #   digest_narrative_max_output_tokens: 4096
+
 
 # Prompt customization — top-level block (sibling of settings:, not nested inside it)
 # base_template: path to the system prompt template file ({language} is substituted at runtime)

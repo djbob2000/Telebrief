@@ -287,6 +287,9 @@ class PublicationEditorialConfig:
     article_max_sections: int = 6
     article_max_direct_quotes: int = 4
     article_claim_min_content_coverage: float = 0.70
+    digest_narrative_mode: str = "deterministic"
+    digest_narrative_max_cards_per_block: int = 6
+    digest_narrative_max_output_tokens: int = 4096
 
     def __post_init__(self) -> None:
         if self.conflict_window_minutes <= 0:
@@ -303,6 +306,14 @@ class PublicationEditorialConfig:
             raise ValueError("article_max_direct_quotes cannot be negative")
         if not (0.5 <= self.article_claim_min_content_coverage <= 1.0):
             raise ValueError("article_claim_min_content_coverage must be between 0.5 and 1.0")
+        if self.digest_narrative_mode not in ("deterministic", "single_call"):
+            raise ValueError(
+                f"digest_narrative_mode must be 'deterministic' or 'single_call', got {self.digest_narrative_mode!r}"
+            )
+        if self.digest_narrative_max_cards_per_block <= 0:
+            raise ValueError("digest_narrative_max_cards_per_block must be a positive integer")
+        if self.digest_narrative_max_output_tokens <= 0:
+            raise ValueError("digest_narrative_max_output_tokens must be a positive integer")
 
 
 @dataclass
@@ -1607,6 +1618,12 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
             )
         return int(v)
 
+    mode_val = raw.get("digest_narrative_mode", "deterministic")
+    if not isinstance(mode_val, str) or mode_val not in ("deterministic", "single_call"):
+        raise ValueError(
+            f"settings.publication_editorial.digest_narrative_mode must be 'deterministic' or 'single_call', got {mode_val!r}"
+        )
+
     return PublicationEditorialConfig(
         conflict_window_minutes=_val_pos_int("conflict_window_minutes", 90),
         article_min_words=_val_pos_int("article_min_words", 800),
@@ -1614,6 +1631,11 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
         article_min_sections=_val_pos_int("article_min_sections", 3),
         article_max_sections=_val_pos_int("article_max_sections", 6),
         article_max_direct_quotes=_val_nonneg_int("article_max_direct_quotes", 4),
+        digest_narrative_mode=mode_val,
+        digest_narrative_max_cards_per_block=_val_pos_int(
+            "digest_narrative_max_cards_per_block", 6
+        ),
+        digest_narrative_max_output_tokens=_val_pos_int("digest_narrative_max_output_tokens", 4096),
     )
 
 

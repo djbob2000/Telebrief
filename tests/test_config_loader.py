@@ -2366,6 +2366,36 @@ def test_publication_editorial_config_defaults(temp_config_file, mock_env_vars):
     assert pub_edit.article_min_sections == 3
     assert pub_edit.article_max_sections == 6
     assert pub_edit.article_max_direct_quotes == 4
+    assert pub_edit.digest_narrative_mode == "deterministic"
+    assert pub_edit.digest_narrative_max_cards_per_block == 6
+    assert pub_edit.digest_narrative_max_output_tokens == 4096
+
+
+@pytest.mark.unit
+def test_publication_editorial_config_single_call_mode(tmp_path, mock_env_vars):
+    """Explicit single_call mode is accepted from YAML."""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "channels": [{"id": "@test", "name": "Test Channel"}],
+                "settings": {
+                    "target_user_id": 123456789,
+                    "publication_editorial": {
+                        "digest_narrative_mode": "single_call",
+                        "digest_narrative_max_cards_per_block": 8,
+                        "digest_narrative_max_output_tokens": 2048,
+                    },
+                },
+            },
+            allow_unicode=True,
+        )
+    )
+    config = load_config(str(config_file))
+    pub_edit = config.settings.publication_editorial
+    assert pub_edit.digest_narrative_mode == "single_call"
+    assert pub_edit.digest_narrative_max_cards_per_block == 8
+    assert pub_edit.digest_narrative_max_output_tokens == 2048
 
 
 @pytest.mark.unit
@@ -2382,6 +2412,12 @@ def test_publication_editorial_config_defaults(temp_config_file, mock_env_vars):
             "article_min_sections cannot be greater",
         ),
         ({"article_max_direct_quotes": -1}, "must be a non-negative integer"),
+        (
+            {"digest_narrative_mode": "invalid_mode"},
+            "digest_narrative_mode must be 'deterministic' or 'single_call'",
+        ),
+        ({"digest_narrative_max_cards_per_block": 0}, "must be a positive integer"),
+        ({"digest_narrative_max_output_tokens": -100}, "must be a positive integer"),
     ],
 )
 def test_publication_editorial_config_validation(tmp_path, mock_env_vars, pub_editorial, error):
