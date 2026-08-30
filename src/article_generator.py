@@ -39,6 +39,7 @@ from src.publication.article_length import (
 )
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_validator import validate_article_draft
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.narrative_contract import build_article_narrative_contract
 
 
@@ -819,30 +820,27 @@ class ArticleGenerator:
                     "Event article draft failed deterministic validation: %s",
                     val_res.violations,
                 )
+                rejection_meta = {
+                    "status": "rejected",
+                    "reason": "validation_failed",
+                    "violations": list(val_res.violations),
+                    "length_profile": length_profile.richness,
+                    "unsupported_claims": [
+                        {"kind": c.kind, "raw": c.raw, "excerpt": c.excerpt}
+                        for c in val_res.unsupported_claims
+                    ],
+                }
                 if attempt_observer is not None and writer_attempt_id > 0:
                     await attempt_observer.attempt_finished(
                         writer_attempt_id,
                         "failed",
-                        error_kind="ValidationFailed",
-                        metadata={
-                            "status": "validation_fallback",
-                            "violations": list(val_res.violations),
-                            "length_profile": length_profile.richness,
-                            "unsupported_claims": [
-                                {"kind": c.kind, "raw": c.raw, "excerpt": c.excerpt}
-                                for c in val_res.unsupported_claims
-                            ],
-                        },
+                        error_kind="article_validation_rejected",
+                        metadata=rejection_meta,
                     )
-                return await self._render_event_article_fallback_with_attempt(
-                    article_ctx,
-                    attempt_observer=attempt_observer,
-                    reason="article_evidence_validation_failed",
-                    metadata={
-                        "status": "validation_fallback",
-                        "violations": list(val_res.violations),
-                        "length_profile": length_profile.richness,
-                    },
+                raise ArticlePublicationRejected(
+                    reason="validation_failed",
+                    message="Event-First article draft failed deterministic validation",
+                    metadata=rejection_meta,
                 )
 
             body = draft.render_markdown()
@@ -894,51 +892,31 @@ class ArticleGenerator:
 
             return (draft.title, draft.lead, body)
 
+        except ArticlePublicationRejected:
+            raise
         except Exception as exc:
             self.logger.warning(
-                "Event article generation failed (%s: %s); falling back to deterministic render",
+                "Event article generation failed (%s: %s)",
                 type(exc).__name__,
                 exc,
             )
+            rejection_meta = {
+                "status": "rejected",
+                "reason": "writer_failed",
+                "exception_type": type(exc).__name__,
+            }
             if attempt_observer is not None and writer_attempt_id > 0:
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
                     "failed",
-                    error_kind=type(exc).__name__,
-                    metadata={"status": "writer_error_fallback"},
+                    error_kind="article_writer_rejected",
+                    metadata=rejection_meta,
                 )
-            return await self._render_event_article_fallback_with_attempt(
-                article_ctx,
-                attempt_observer=attempt_observer,
-                reason=f"writer_error:{type(exc).__name__}",
-                metadata={"status": "writer_error_fallback"},
-            )
-
-    async def _render_event_article_fallback_with_attempt(
-        self,
-        article_ctx: ArticleEditorialContext,
-        *,
-        attempt_observer: Any | None,
-        reason: str,
-        metadata: dict[str, Any] | None = None,
-    ) -> tuple[str, str, str]:
-        fb_meta = {"reason": reason}
-        if metadata:
-            fb_meta.update(metadata)
-        fb_attempt_id = 0
-        if attempt_observer is not None:
-            fb_attempt_id = await attempt_observer.attempt_started(
-                "story_renderer_fallback",
-                metadata=fb_meta,
-            )
-        title, lead, body = render_event_article_fallback(article_ctx)
-        if attempt_observer is not None and fb_attempt_id > 0:
-            await attempt_observer.attempt_finished(
-                fb_attempt_id,
-                "succeeded",
-                metadata=fb_meta,
-            )
-        return (title, lead, body)
+            raise ArticlePublicationRejected(
+                reason="writer_failed",
+                message=f"Event-First article writer failed: {type(exc).__name__}",
+                metadata=rejection_meta,
+            ) from exc
 
     async def generate_from_analysis_and_bundle(  # noqa: C901
         self,
@@ -1143,36 +1121,3 @@ class ArticleGenerator:
             writer_bundle=writer_bundle,
             bundle_for_fallback=bundle,
         )
-
-
-def render_event_article_fallback(ctx: ArticleEditorialContext) -> Tuple[str, str, str]:
-    """Deterministic article renderer when AI writer fails or violates bounds."""
-    title = (
-        ctx.headline_candidates[0] if ctx.headline_candidates else "Обзор главных городских событий"
-    )
-    lead = "Сводка ключевых городских событий и оперативной информации за прошедшие сутки."
-
-    sections: list[str] = []
-    if ctx.operational_timeline:
-        sections.append("## Городская оперативная обстановка")
-        for obs in ctx.operational_timeline:
-            loc = f" ({obs.observation.location})" if obs.observation.location else ""
-            sections.append(
-                f"- **{obs.observed_at.strftime('%H:%M')}**{loc}: {obs.observation.detail}"
-            )
-        sections.append("")
-
-    if ctx.general_facts:
-        sections.append("## События и факты")
-        for evi in ctx.general_facts:
-            sections.append(f"- {evi.text}")
-        sections.append("")
-
-    if ctx.resident_observations:
-        sections.append("## Сообщения жителей")
-        for evi in ctx.resident_observations:
-            sections.append(f"- {evi.text}")
-        sections.append("")
-
-    body = "\n".join(sections).strip()
-    return title, lead, body
