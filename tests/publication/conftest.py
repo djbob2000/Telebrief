@@ -126,12 +126,12 @@ def uow(pool) -> DatabaseUnitOfWork:
 
 @pytest.fixture
 async def edition(conn: psycopg.AsyncConnection) -> SimpleNamespace:
-    """One registered edition; exposes ``id`` for test inserts."""
+    """One registered edition; exposes ``id`` and ``name`` for test inserts."""
     cursor = await conn.execute(
-        "INSERT INTO editions (slug, name) VALUES ('berdyansk', 'Berdyansk') RETURNING id"
+        "INSERT INTO editions (slug, name) VALUES ('berdyansk', 'Berdyansk') RETURNING id, name"
     )
     row = await cursor.fetchone()
-    return SimpleNamespace(id=row[0])
+    return SimpleNamespace(id=row[0], name=row[1])
 
 
 @pytest.fixture(scope="session")

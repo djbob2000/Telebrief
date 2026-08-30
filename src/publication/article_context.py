@@ -118,6 +118,8 @@ class ArticleEditorialContext:
     general_facts: tuple[PublicationEvidence, ...] = ()
     resident_observations: tuple[PublicationEvidence, ...] = ()
     publication_window: PublicationWindow | None = None
+    edition_name: str = ""
+    edition_anchor_terms: tuple[str, ...] = ()
 
     @property
     def supports(self) -> tuple[ArticleSupport, ...]:
@@ -126,6 +128,8 @@ class ArticleEditorialContext:
     def to_prompt_context(self) -> str:
         """Render deterministic, structured support context for the single article writing LLM call."""
         blocks: list[str] = []
+        if self.edition_name:
+            blocks.append(f"EDITION CONTEXT: {self.edition_name}")
         if self.publication_window is not None:
             blocks.append(
                 f"REPORT WINDOW: {self.publication_window.lookback_start.isoformat()} .. {self.publication_window.snapshot_at.isoformat()}"
@@ -153,6 +157,11 @@ class ArticleEditorialContext:
         return "\n\n".join(blocks).strip()
 
 
+def _edition_anchor_terms(edition_name: str) -> tuple[str, ...]:
+    clean = edition_name.strip()
+    return (clean,) if clean else ()
+
+
 def build_article_editorial_context(
     cards: Sequence[StoryCard],
     evidence_items: Sequence[PublicationEvidence],
@@ -162,6 +171,7 @@ def build_article_editorial_context(
     snapshot_at: dt.datetime | None = None,
     lookback_hours: int | None = None,
     publication_window: PublicationWindow | None = None,
+    edition_name: str = "",
 ) -> ArticleEditorialContext:
     """Build structured ArticleEditorialContext with unified ArticleSupport packets."""
     records = source_records or {}
@@ -337,4 +347,6 @@ def build_article_editorial_context(
         general_facts=tuple(general_facts),
         resident_observations=tuple(resident_obs),
         publication_window=pub_win,
+        edition_name=edition_name,
+        edition_anchor_terms=_edition_anchor_terms(edition_name),
     )

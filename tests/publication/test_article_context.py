@@ -453,3 +453,15 @@ def test_build_article_editorial_context_resident_question_framing():
     prompt_str = ctx.to_prompt_context()
     assert "framing=question_context" in prompt_str
     assert "publication_use=CONTEXT" in prompt_str
+
+
+@pytest.mark.unit
+def test_article_context_carries_generic_edition_anchor() -> None:
+    ctx = build_article_editorial_context(
+        cards=[],
+        evidence_items=[],
+        edition_name="Бердянск",
+    )
+    assert ctx.edition_name == "Бердянск"
+    assert "Бердянск" in ctx.edition_anchor_terms
+    assert "EDITION CONTEXT: Бердянск" in ctx.to_prompt_context()

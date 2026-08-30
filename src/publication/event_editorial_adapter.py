@@ -507,6 +507,20 @@ class EventEditorialAdapter:
                         effective_until=eff_until,
                     )
                 )
+            edition_name = ""
+            cur = await conn.execute(
+                """
+                SELECT e.name
+                FROM publication_runs pr
+                JOIN editions e ON e.id = pr.edition_id
+                WHERE pr.id = %s
+                """,
+                (run.id,),
+            )
+            ed_row = await cur.fetchone()
+            if ed_row and ed_row[0]:
+                edition_name = str(ed_row[0])
+
             article_ctx = build_article_editorial_context(
                 cards=story_cards,
                 evidence_items=list(all_evidence.values()),
@@ -514,6 +528,7 @@ class EventEditorialAdapter:
                 source_records=records,
                 snapshot_at=run.snapshot_at,
                 lookback_hours=lookback_hours,
+                edition_name=edition_name,
             )
 
         analysis = EditorialAnalysis(

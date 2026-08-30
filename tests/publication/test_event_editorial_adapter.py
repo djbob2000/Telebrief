@@ -376,6 +376,7 @@ async def test_event_editorial_adapter_exact_observation_provenance(conn, pool, 
 
     assert f"frag:{f2_id}" in obs2.source_refs[0]
     assert f"frag:{f1_id}" not in obs2.source_refs[0]
+    assert editorial_input.analysis.article_context.edition_name == edition.name
 
 
 @pytest.mark.postgres
