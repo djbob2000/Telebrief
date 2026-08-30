@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +14,13 @@ from src.publication.article_claim_support import (
 from src.publication.article_context import ArticleSupport
 
 _T0 = dt.datetime(2026, 8, 29, 10, 0, tzinfo=dt.timezone.utc)
+_REGRESSION_FIXTURE = (
+    Path(__file__).parents[1] / "fixtures" / "article_semantic_support_regressions.json"
+)
+
+
+def _load_semantic_cases() -> dict[str, list[dict[str, object]]]:
+    return json.loads(_REGRESSION_FIXTURE.read_text(encoding="utf-8"))
 
 
 def make_support(
@@ -120,3 +129,27 @@ def test_assess_claim_unsupported_concrete_claims_fail_fast() -> None:
     )
     assert res_num.supported is False
     assert len(res_num.unsupported_concrete_claims) >= 1
+
+
+@pytest.mark.unit
+def test_run48_faithful_paraphrases_are_not_hard_rejected() -> None:
+    cases = _load_semantic_cases()["faithful_paraphrases"]
+    for case in cases:
+        supports = [
+            make_support(str(text), support_id=f"SUP-{idx}")
+            for idx, text in enumerate(case["supports"], start=1)  # type: ignore[arg-type]
+        ]
+        assessment = assess_claim_against_supports(str(case["claim"]), supports)
+        assert assessment.supported is True, case["id"]
+
+
+@pytest.mark.unit
+def test_real_semantic_additions_remain_hard_rejected() -> None:
+    cases = _load_semantic_cases()["real_semantic_additions"]
+    for case in cases:
+        supports = [
+            make_support(str(text), support_id=f"SUP-{idx}")
+            for idx, text in enumerate(case["supports"], start=1)  # type: ignore[arg-type]
+        ]
+        assessment = assess_claim_against_supports(str(case["claim"]), supports)
+        assert assessment.supported is False, case["id"]
