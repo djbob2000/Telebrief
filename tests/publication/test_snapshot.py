@@ -621,3 +621,171 @@ class TestPublicationSnapshotConstraints:
         assert len(candidates) == 2
         cand_story_ids = {c.story_id for c in candidates}
         assert cand_story_ids == {s1, s2}
+
+    async def test_snapshot_seals_single_source_community_event_candidates(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Single-source community kept stories with event_first payload are preserved in candidate snapshots."""
+        import json
+
+        from src.db.uow import DatabaseUnitOfWork
+        from src.publication.repository import PublicationRepository
+        from src.publication.snapshot import PublicationSnapshotService
+
+        uow = DatabaseUnitOfWork(pool)
+        repo = PublicationRepository()
+        policy_ids = await _seed_policies(conn, edition.id)
+
+        # Create single community source fragment
+        cur = await conn.execute(
+            "INSERT INTO sources (platform, kind, external_id, url, name, role) VALUES ('telegram', 'channel', '-100222', 'https://t.me/c', 'Чат', 'community') RETURNING id"
+        )
+        src_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+            (src_id, edition.id),
+        )
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', 'm-snap-comm', %s) RETURNING id",
+            (src_id, _NOW),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, 'h-snap-1', 'Сообщение') RETURNING id",
+            (item_id,),
+        )
+        sir_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, 'На Горе света нет', 'h-f-snap', 'v1', TRUE, %s) RETURNING id",
+            (sir_id, _NOW),
+        )
+        frag_id = (await cur.fetchone())[0]
+
+        # Story with event_payload
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at) VALUES (%s, 'active', 'event_first', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+
+        event_payload = {
+            "topic": "Отключение света",
+            "category": "utilities",
+            "urgency": "medium",
+            "publishability": "brief",
+            "headline": "Отключение света на Горе",
+            "digest_summary": "Жители сообщают об отключении света.",
+            "evidence_items": [
+                {
+                    "text": "На Горе света нет",
+                    "kind": "community_report",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [frag_id],
+                }
+            ],
+        }
+
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (
+                story_id, revision_no, current_state, semantic_text, content_hash,
+                title, summary, event_payload, created_at
+            ) VALUES (%s, 1, 'open', %s, 'h-rev-snap-comm', %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                story_id,
+                event_payload["digest_summary"],
+                event_payload["headline"],
+                event_payload["digest_summary"],
+                json.dumps(event_payload),
+                _NOW,
+            ),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+
+        # Insert fragment embeddings
+        cur = await conn.execute(
+            """
+            INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions)
+            VALUES ('h-f-snap', '[1, 0]'::vector, 'm', 2)
+            ON CONFLICT (normalized_hash, model, dimensions) DO UPDATE SET embedding = EXCLUDED.embedding
+            RETURNING id
+            """
+        )
+        vid = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO source_fragment_embeddings (fragment_id, vector_id)
+            VALUES (%s, %s)
+            RETURNING id
+            """,
+            (frag_id, vid),
+        )
+        sfe_id = (await cur.fetchone())[0]
+
+        # Assign fragment to story
+        cur = await conn.execute(
+            """
+            INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind)
+            VALUES (%s, %s, %s, 'new_story')
+            RETURNING id
+            """,
+            (story_id, frag_id, sfe_id),
+        )
+        aid = (await cur.fetchone())[0]
+
+        # Story cluster state
+        await conn.execute(
+            """
+            INSERT INTO story_cluster_state (story_id, centroid, model, dimensions, fragment_count, unique_source_count, first_seen_at, last_seen_at, latest_assignment_id, analysis_dirty)
+            VALUES (%s, '[1,0]'::vector, 'm', 2, 1, 1, %s, %s, %s, FALSE)
+            """,
+            (story_id, _NOW, _NOW, aid),
+        )
+
+        # Create triage run
+        cur = await conn.execute(
+            """
+            INSERT INTO story_event_triage_runs (triage_version, provider, model, prompt_hash, story_count, input_chars, status)
+            VALUES ('v1', 'p', 'm', 'h', 1, 100, 'succeeded')
+            RETURNING id
+            """
+        )
+        trun_id = (await cur.fetchone())[0]
+
+        # Scope and Triage decisions
+        await conn.execute(
+            """
+            INSERT INTO story_edition_scope_decisions (triage_run_id, story_id, edition_id, latest_assignment_id, scope_version, scope_config_hash, scope_class, confidence, reason, created_at)
+            VALUES (%s, %s, %s, %s, 'v1', 'elig-hash-1', 'LOCAL', 0.99, 'in city', %s)
+            """,
+            (trun_id, story_id, edition.id, aid, _NOW),
+        )
+        await conn.execute(
+            """
+            INSERT INTO story_event_triage_decisions (
+                run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
+                decision, retention, enrichment, confidence, reason, created_at
+            ) VALUES
+            (%s, %s, %s, 'v2', 'elig-hash-1', 'ANALYZE', 'KEEP', 'BRIEF', 0.99, 'in city', %s)
+            """,
+            (trun_id, story_id, aid, _NOW),
+        )
+
+        service = PublicationSnapshotService(uow=uow, repo=repo)
+        run = await service.create_run(
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            request_key="test-single-comm-snap",
+            policy_ids=policy_ids,
+        )
+
+        candidates = await service.seal_candidates(run.id)
+        assert len(candidates) == 1
+        assert candidates[0].story_id == story_id
+        assert candidates[0].story_revision_id == rev_id
