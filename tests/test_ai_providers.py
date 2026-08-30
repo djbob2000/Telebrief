@@ -577,14 +577,15 @@ async def test_openai_provider_omits_reasoning_effort_when_none(mock_logger):
 
 
 @pytest.mark.unit
+@pytest.mark.unit
 @pytest.mark.asyncio
-async def test_deepseek_provider_uses_thinking_and_native_max_tokens(mock_logger):
-    """DeepSeek receives explicit thinking controls and its native token field."""
+async def test_openrouter_provider_uses_thinking_and_native_max_tokens(mock_logger):
+    """OpenRouter receives explicit thinking controls and native max_tokens field."""
     with patch("src.ai_providers.AsyncOpenAI"):
         provider = OpenAIProvider(
             api_key="sk-test",
             logger=mock_logger,
-            base_url="https://api.deepseek.com",
+            base_url="https://openrouter.ai/api/v1",
         )
         mock_choice = MagicMock()
         mock_choice.message.content = '{"items": []}'
@@ -599,7 +600,7 @@ async def test_deepseek_provider_uses_thinking_and_native_max_tokens(mock_logger
 
         await provider.chat_completion(
             messages=[{"role": "user", "content": "Extract"}],
-            model="deepseek-v4-flash",
+            model="openrouter-test-model",
             temperature=0.1,
             max_tokens=500,
             reasoning_effort=None,

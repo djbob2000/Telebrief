@@ -162,26 +162,6 @@ class AIPublicationSelectionModel:
                 "4. Respond strictly with a JSON object containing a 'proposals' array."
             )
 
-        if len(candidates) > 40:
-            batch_size = 40
-            all_proposals: list[SelectionProposal] = []
-            for i in range(0, len(candidates), batch_size):
-                batch = candidates[i : i + batch_size]
-                batch_prompt = self._build_prompt(run=run, candidates=batch)
-                batch_messages = [
-                    {"role": "system", "content": system_content},
-                    {"role": "user", "content": batch_prompt},
-                ]
-                raw_output = await self.provider.chat_completion(
-                    messages=batch_messages,
-                    model=self.model_name,
-                    temperature=0.2,
-                    max_tokens=4096,
-                )
-                batch_proposals = self._parse_and_validate(raw_output, batch)
-                all_proposals.extend(batch_proposals)
-            return all_proposals
-
         messages = [
             {
                 "role": "system",
@@ -194,7 +174,7 @@ class AIPublicationSelectionModel:
             messages=messages,
             model=self.model_name,
             temperature=0.2,
-            max_tokens=4096,
+            max_tokens=65536,
         )
 
         return self._parse_and_validate(raw_output, candidates)
@@ -224,7 +204,7 @@ class AIPublicationSelectionModel:
             f"Snapshot At: {run.snapshot_at.isoformat()}\n"
             f"Candidate Stories ({len(candidates)} items):\n"
             f"{json.dumps(candidates_data, ensure_ascii=False, indent=2)}\n\n"
-            "Respond strictly with a JSON object with this schema:\n"
+            "Respond strictly with a compact JSON object with this schema:\n"
             "{\n"
             '  "proposals": [\n'
             "    {\n"
@@ -232,10 +212,8 @@ class AIPublicationSelectionModel:
             '      "story_revision_id": <int>,\n'
             '      "decision": "INCLUDE" | "OMIT",\n'
             '      "exclusion_reason": "commercial_classified" | null,\n'
-            '      "presentation_intent": "lead" | "normal" | "brief" | "unverified_operational" | "follow_up" | null,\n'
-            '      "rank": <int> | null,\n'
-            '      "confidence": <float between 0.0 and 1.0>,\n'
-            '      "reason": <string>\n'
+            '      "presentation_intent": "lead" | "normal" | "brief" | "unverified_operational" | null,\n'
+            '      "rank": <int> | null\n'
             "    }\n"
             "  ]\n"
             "}\n"

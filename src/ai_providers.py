@@ -182,9 +182,8 @@ class AIProvider(ABC):
             model: Model name
             temperature: Optional sampling temperature (None uses model/provider defaults)
             max_tokens: Maximum tokens in response
-            reasoning_effort: Optional reasoning effort hint passed to the API when not None.
-                Supported by some providers (e.g. OpenAI). Ignored by others.
-            thinking: Optional DeepSeek thinking-mode toggle.
+            thinking: Optional thinking-mode toggle for supported models.
+
             response_format: Optional structured-output format for compatible providers.
 
         Returns:
@@ -422,17 +421,18 @@ class OpenAIProvider(AIProvider):
         thinking: bool | None = None,
         response_format: Dict[str, Any] | None = None,
     ) -> str:
-        is_deepseek = "deepseek" in self.base_url or model.startswith("deepseek-")
+        is_openrouter = "openrouter" in self.base_url
         create_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            ("max_tokens" if is_deepseek else "max_completion_tokens"): max_tokens,
+            ("max_tokens" if is_openrouter else "max_completion_tokens"): max_tokens,
         }
+
         if temperature is not None:
             create_kwargs["temperature"] = temperature
         if reasoning_effort is not None:
             create_kwargs["reasoning_effort"] = reasoning_effort
-        if is_deepseek and thinking is not None:
+        if thinking is not None:
             create_kwargs["extra_body"] = {
                 "thinking": {"type": "enabled" if thinking else "disabled"}
             }
@@ -453,7 +453,13 @@ class OpenAIProvider(AIProvider):
         reasoning_effort: str | None,
     ):
         """Handle a BadRequestError by retrying with stripped parameters."""
-        if reasoning_effort is not None:
+        self.logger.warning(
+            "OpenAI/OpenRouter BadRequestError: %s (model=%s, params=%s)",
+            original_exc,
+            create_kwargs.get("model"),
+            [k for k in create_kwargs if k != "messages"],
+        )
+        if reasoning_effort is not None and "reasoning_effort" in create_kwargs:
             self.logger.debug(
                 "reasoning_effort=%r rejected by model, retrying without it: %s",
                 reasoning_effort,
@@ -462,16 +468,23 @@ class OpenAIProvider(AIProvider):
             create_kwargs.pop("reasoning_effort")
             try:
                 return await self.client.chat.completions.create(**create_kwargs)
-            except OpenAIBadRequestError as exc2:
-                self.logger.debug("retry without reasoning_effort also rejected: %s", exc2)
-                # fall through to max_tokens fallback
+            except OpenAIBadRequestError as exc:
+                self.logger.warning("retry without reasoning_effort failed: %s", exc)
+
+        if "response_format" in create_kwargs:
+            create_kwargs.pop("response_format")
+            try:
+                return await self.client.chat.completions.create(**create_kwargs)
+            except OpenAIBadRequestError as exc:
+                self.logger.warning("retry without response_format failed: %s", exc)
+
         if "max_completion_tokens" in create_kwargs:
-            self.logger.debug(
-                "max_completion_tokens rejected by model, retrying with max_tokens: %s",
-                original_exc,
-            )
             create_kwargs["max_tokens"] = create_kwargs.pop("max_completion_tokens")
-            return await self.client.chat.completions.create(**create_kwargs)
+            try:
+                return await self.client.chat.completions.create(**create_kwargs)
+            except OpenAIBadRequestError as exc:
+                self.logger.warning("retry with max_tokens failed: %s", exc)
+
         raise original_exc
 
 
