@@ -12,204 +12,9 @@ from src.publication.article_claims import (
     stem_word,
 )
 from src.publication.article_context import ArticleSupport
-
-# Strict stopword list: grammatical / connective words only.
-# Domain nouns (e.g. генератор, вода, связь, заявка, дефицит, подвоз, свет) MUST NOT be included.
-_STOPWORDS = frozenset(
-    {
-        "и",
-        "в",
-        "во",
-        "не",
-        "на",
-        "с",
-        "со",
-        "по",
-        "к",
-        "ко",
-        "у",
-        "о",
-        "об",
-        "обо",
-        "от",
-        "ото",
-        "до",
-        "из",
-        "изо",
-        "за",
-        "над",
-        "надо",
-        "под",
-        "подо",
-        "при",
-        "про",
-        "через",
-        "для",
-        "без",
-        "безо",
-        "а",
-        "но",
-        "да",
-        "или",
-        "либо",
-        "то",
-        "что",
-        "чтобы",
-        "как",
-        "так",
-        "если",
-        "хотя",
-        "когда",
-        "где",
-        "куда",
-        "откуда",
-        "почему",
-        "зачем",
-        "же",
-        "ли",
-        "бы",
-        "только",
-        "уже",
-        "еще",
-        "ещё",
-        "все",
-        "всё",
-        "это",
-        "эта",
-        "этот",
-        "эти",
-        "этом",
-        "этой",
-        "этих",
-        "тот",
-        "та",
-        "те",
-        "том",
-        "той",
-        "тех",
-        "он",
-        "она",
-        "оно",
-        "они",
-        "его",
-        "ее",
-        "её",
-        "их",
-        "ему",
-        "ей",
-        "им",
-        "нем",
-        "нём",
-        "ней",
-        "них",
-        "мы",
-        "вы",
-        "я",
-        "ты",
-        "нас",
-        "вас",
-        "меня",
-        "тебя",
-        "нам",
-        "вам",
-        "мне",
-        "тебе",
-        "собой",
-        "собою",
-        "свой",
-        "своя",
-        "свое",
-        "своё",
-        "свои",
-        "своих",
-        "своим",
-        "был",
-        "была",
-        "было",
-        "были",
-        "быть",
-        "будет",
-        "будут",
-        "есть",
-        "является",
-        "являются",
-        "также",
-        "тоже",
-        "очень",
-        "даже",
-        "вдруг",
-        "между",
-        "после",
-        "перед",
-        "около",
-        "вокруг",
-        "такой",
-        "такая",
-        "такое",
-        "такие",
-        "который",
-        "которая",
-        "которое",
-        "которые",
-        # Reporting and temporal discourse markers
-        "сохраняется",
-        "сохраняются",
-        "продолжается",
-        "продолжаются",
-        "сообщается",
-        "сообщают",
-        "сообщили",
-        "сообщил",
-        "отмечается",
-        "отмечают",
-        "отметили",
-        "наблюдается",
-        "наблюдаются",
-        "зафиксировано",
-        "ранее",
-        "по-прежнему",
-        "прежде",
-        "снова",
-        "вновь",
-        "опять",
-        "сейчас",
-        "ныне",
-        "сегодня",
-        "накануне",
-        # Ukrainian basic grammatical words
-        "чи",
-        "що",
-        "як",
-        "проте",
-        "але",
-        "від",
-        "зі",
-        "із",
-        "щодо",
-        "він",
-        "вона",
-        "вони",
-        "його",
-        "її",
-        "їх",
-        "йому",
-        "їй",
-        "їм",
-        "нами",
-        "вами",
-        "ними",
-        "був",
-        "була",
-        "було",
-        "були",
-        "буде",
-        "будуть",
-        "є",
-        "це",
-        "цей",
-        "ця",
-        "ці",
-    }
+from src.publication.article_semantic_support import (
+    _STOPWORDS,
+    assess_semantic_support,
 )
 
 
@@ -235,6 +40,10 @@ class ClaimSupportAssessment:
     content_coverage: float
     unsupported_content_stems: tuple[str, ...]
     unsupported_concrete_claims: tuple[ConcreteClaim, ...]
+    blocking_semantic_terms: tuple[str, ...] = ()
+    unmatched_proper_names: tuple[str, ...] = ()
+    blocking_proper_names: tuple[str, ...] = ()
+    lexical_only_warning: bool = False
 
 
 def assess_claim_against_supports(
@@ -254,32 +63,28 @@ def assess_claim_against_supports(
     # 1. High-risk concrete claims (numbers, dates, times, money, phone, cause, etc.)
     unsupported_concrete = find_unsupported_claims(claim_text, support_texts)
 
-    # 2. Extract content stems
-    claim_stems = extract_content_stems(claim_text)
-    support_stems: set[str] = set()
-    for st in support_texts:
-        support_stems.update(extract_content_stems(st))
+    # 2. Risk-based semantic novelty and proper name matching
+    semantic = assess_semantic_support(claim_text, support_texts)
+    blocking = (
+        bool(unsupported_concrete)
+        or bool(semantic.blocking_terms)
+        or bool(semantic.blocking_proper_names)
+    )
 
-    if not claim_stems:
-        coverage = 1.0
-        missing_stems: tuple[str, ...] = ()
-        is_coverage_ok = True
-    else:
-        matched_stems = claim_stems.intersection(support_stems)
-        missing_set = claim_stems - support_stems
-        missing_stems = tuple(sorted(missing_set))
-        coverage = len(matched_stems) / len(claim_stems)
-
-        if len(claim_stems) in (1, 2):
-            is_coverage_ok = len(missing_set) == 0
-        else:
-            is_coverage_ok = coverage >= min_content_coverage
-
-    supported = (len(unsupported_concrete) == 0) and is_coverage_ok
+    supported = not blocking
+    lexical_only_warning = (
+        not blocking
+        and bool(semantic.unmatched_terms)
+        and semantic.lexical_coverage < min_content_coverage
+    )
 
     return ClaimSupportAssessment(
         supported=supported,
-        content_coverage=coverage,
-        unsupported_content_stems=missing_stems,
+        content_coverage=semantic.lexical_coverage,
+        unsupported_content_stems=semantic.unmatched_terms,
         unsupported_concrete_claims=unsupported_concrete,
+        blocking_semantic_terms=semantic.blocking_terms,
+        unmatched_proper_names=semantic.unmatched_proper_names,
+        blocking_proper_names=semantic.blocking_proper_names,
+        lexical_only_warning=lexical_only_warning,
     )

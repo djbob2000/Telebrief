@@ -167,7 +167,7 @@ def _stem(word: str) -> str:
         "ю",
         "ь",
     ):
-        if len(w) > len(suffix) + 3 and w.endswith(suffix):
+        if len(w) >= len(suffix) + 3 and w.endswith(suffix):
             w = w[: -len(suffix)]
             break
 
@@ -183,7 +183,7 @@ def _stem(word: str) -> str:
         "ев",
         "н",
     ):
-        if len(w) > len(suffix) + 3 and w.endswith(suffix):
+        if len(w) >= len(suffix) + 3 and w.endswith(suffix):
             w = w[: -len(suffix)]
             break
 

@@ -182,3 +182,26 @@ def test_semantic_support_blocks_new_proper_name_destination() -> None:
     )
     assert set(signals.unmatched_proper_names) >= {"москву", "воронеж"}
     assert set(signals.blocking_proper_names) >= {"москву", "воронеж"}
+
+
+@pytest.mark.unit
+def test_low_lexical_coverage_alone_is_diagnostic() -> None:
+    support = make_support("Есть магазины, кафе, где можно зарядить телефон")
+    assessment = assess_claim_against_supports(
+        "Часть магазинов и кафе предоставляет возможность зарядить телефон",
+        [support],
+    )
+    assert assessment.supported is True
+    assert assessment.unsupported_concrete_claims == ()
+    assert assessment.blocking_semantic_terms == ()
+
+
+@pytest.mark.unit
+def test_new_semantic_content_still_blocks_without_concrete_regex_claim() -> None:
+    support = make_support("В центре города нет электричества")
+    assessment = assess_claim_against_supports(
+        "Отключения вынуждают жителей переходить на автономные генераторы",
+        [support],
+    )
+    assert assessment.supported is False
+    assert assessment.blocking_semantic_terms
