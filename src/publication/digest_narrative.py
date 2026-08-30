@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from src.config_loader import DigestRubricConfig
 from src.editorial_models import StoryCard
@@ -27,6 +27,103 @@ class DigestNarrativePlan:
     """Deterministic plan of immutable narrative digest blocks."""
 
     blocks: tuple[DigestNarrativeBlock, ...]
+
+
+@dataclass(frozen=True)
+class DigestNarrativeParagraph:
+    """A single editorial paragraph within a narrative digest block."""
+
+    text: str
+    cited_support_ids: tuple[str, ...] = ()
+    covered_story_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DigestNarrativeBlockDraft:
+    """A single rendered block in a narrative digest draft."""
+
+    block_id: str
+    heading: str
+    paragraphs: tuple[DigestNarrativeParagraph, ...]
+
+
+@dataclass(frozen=True)
+class DigestNarrativeDraft:
+    """Complete output draft from the single-call narrative digest writer."""
+
+    blocks: tuple[DigestNarrativeBlockDraft, ...]
+
+    @classmethod
+    def from_dict(cls, data: Any) -> DigestNarrativeDraft:
+        """Parse structured narrative digest draft with strict structural validation."""
+        if not isinstance(data, Mapping):
+            raise ValueError("root must be a mapping")
+
+        raw_blocks = data.get("blocks")
+        if raw_blocks is None:
+            raise ValueError("missing 'blocks' list")
+        if not isinstance(raw_blocks, list):
+            raise ValueError("'blocks' must be a list")
+
+        seen_block_ids: set[str] = set()
+        block_drafts: list[DigestNarrativeBlockDraft] = []
+
+        for b in raw_blocks:
+            if not isinstance(b, Mapping):
+                raise ValueError("block item must be a mapping")
+
+            block_id = str(b.get("block_id") or "").strip()
+            if not block_id:
+                raise ValueError("missing or empty 'block_id'")
+            if block_id in seen_block_ids:
+                raise ValueError(f"duplicate block_id: {block_id}")
+            seen_block_ids.add(block_id)
+
+            heading = str(b.get("heading") or "").strip()
+            raw_paras = b.get("paragraphs")
+            if raw_paras is None or not isinstance(raw_paras, list) or len(raw_paras) == 0:
+                raise ValueError(f"block {block_id} must contain at least one paragraph")
+
+            para_drafts: list[DigestNarrativeParagraph] = []
+            for p in raw_paras:
+                if not isinstance(p, Mapping):
+                    raise ValueError("paragraph must be a mapping")
+
+                text = str(p.get("text") or "").strip()
+                if not text:
+                    raise ValueError(f"paragraph text cannot be empty in block {block_id}")
+
+                raw_supports = p.get("cited_support_ids", [])
+                if isinstance(raw_supports, str):
+                    raw_supports = [raw_supports]
+                if not isinstance(raw_supports, list):
+                    raise ValueError(f"cited_support_ids must be a list in block {block_id}")
+                cited_supports = tuple(str(s).strip() for s in raw_supports if str(s).strip())
+
+                raw_stories = p.get("covered_story_ids", [])
+                if isinstance(raw_stories, str):
+                    raw_stories = [raw_stories]
+                if not isinstance(raw_stories, list):
+                    raise ValueError(f"covered_story_ids must be a list in block {block_id}")
+                covered_stories = tuple(str(s).strip() for s in raw_stories if str(s).strip())
+
+                para_drafts.append(
+                    DigestNarrativeParagraph(
+                        text=text,
+                        cited_support_ids=cited_supports,
+                        covered_story_ids=covered_stories,
+                    )
+                )
+
+            block_drafts.append(
+                DigestNarrativeBlockDraft(
+                    block_id=block_id,
+                    heading=heading,
+                    paragraphs=tuple(para_drafts),
+                )
+            )
+
+        return cls(blocks=tuple(block_drafts))
 
 
 def plan_digest_narrative_blocks(

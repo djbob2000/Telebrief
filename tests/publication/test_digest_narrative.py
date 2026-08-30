@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from src.config_loader import DigestRubricConfig
 from src.editorial_models import StoryCard, StoryElement
 from src.publication.digest_narrative import (
@@ -153,3 +155,70 @@ def test_plan_digest_narrative_blocks_empty():
         max_cards_per_block=6,
     )
     assert len(plan.blocks) == 0
+
+
+def test_digest_narrative_draft_parser_valid():
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativeParagraph,
+    )
+
+    data = {
+        "blocks": [
+            {
+                "block_id": "block:utilities:0",
+                "heading": "Городское хозяйство",
+                "paragraphs": [
+                    {
+                        "text": "В центральной части города устранили аварию на водоводе.",
+                        "cited_support_ids": ["sup:1", "sup:2"],
+                        "covered_story_ids": ["story:1", "story:2"],
+                    }
+                ],
+            }
+        ]
+    }
+    draft = DigestNarrativeDraft.from_dict(data)
+    assert isinstance(draft, DigestNarrativeDraft)
+    assert len(draft.blocks) == 1
+    b = draft.blocks[0]
+    assert isinstance(b, DigestNarrativeBlockDraft)
+    assert b.block_id == "block:utilities:0"
+    assert b.heading == "Городское хозяйство"
+    assert len(b.paragraphs) == 1
+    p = b.paragraphs[0]
+    assert isinstance(p, DigestNarrativeParagraph)
+    assert p.text == "В центральной части города устранили аварию на водоводе."
+    assert p.cited_support_ids == ("sup:1", "sup:2")
+    assert p.covered_story_ids == ("story:1", "story:2")
+
+
+@pytest.mark.parametrize(
+    "invalid_data,error",
+    [
+        ("not_a_dict", "root must be a mapping"),
+        ({}, "missing 'blocks' list"),
+        ({"blocks": "not_a_list"}, "'blocks' must be a list"),
+        ({"blocks": [{"heading": "no id"}]}, "missing or empty 'block_id'"),
+        (
+            {
+                "blocks": [
+                    {"block_id": "b1", "paragraphs": [{"text": "t", "cited_support_ids": ["s1"]}]},
+                    {"block_id": "b1", "paragraphs": [{"text": "t2", "cited_support_ids": ["s1"]}]},
+                ]
+            },
+            "duplicate block_id",
+        ),
+        ({"blocks": [{"block_id": "b1", "paragraphs": []}]}, "must contain at least one paragraph"),
+        (
+            {"blocks": [{"block_id": "b1", "paragraphs": [{"text": ""}]}]},
+            "paragraph text cannot be empty",
+        ),
+    ],
+)
+def test_digest_narrative_draft_parser_rejections(invalid_data, error):
+    from src.publication.digest_narrative import DigestNarrativeDraft
+
+    with pytest.raises(ValueError, match=error):
+        DigestNarrativeDraft.from_dict(invalid_data)
