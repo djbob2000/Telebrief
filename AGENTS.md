@@ -372,6 +372,14 @@ The Event-First architecture optimizes knowledge-processing spend, throughput, a
 9. **Generic Edition Geography & Gate V2 Integration** (`src/domain/edition_geography.py`, `src/processing/edition_scope.py`, `src/processing/event_triage.py`):
    - Resolves structured `EditionGeographyContext` (target focus places, district locations, regional bounds, out-of-scope external places) generically per edition without hardcoded city dictionaries.
    - Injects geographic reference anchors directly into Gate V2 batch triage and rich event analysis system/user prompts for high-precision local scope classification (`LOCAL`, `DIRECT_IMPACT`, `OUT_OF_SCOPE`, `UNCERTAIN`).
+10. **Publication-First Epistemic Fidelity & Community Evidence** (`src/processing/fragments.py`, `src/domain/event_payload.py`, `src/publication/event_editorial_adapter.py`, `src/publication/article_context.py`, `src/publication/narrative_contract.py`, `src/publication/article_validator.py`):
+   - Preserves short civic reports (`MIN_CANDIDATE_ALNUM_CHARS = 6`) while filtering chatter.
+   - Kept local/direct-impact stories are guaranteed publishable (`"news" | "brief"`), prohibiting internal-only suppression of valid community reports.
+   - Partitions event evidence by epistemic status (`established_fact` -> hard facts; `community_report` -> attributed community observations; `service_access` -> useful details).
+   - Carries `evidence_kind`, `source_roles`, and `framing` (`attributed_report`, `official_attribution`, `service_access_report`, `factual_support`) through `ArticleSupport` and `ArticleClaimTrace`.
+   - Enforces narrative newsroom standards: attribute single-source/community reports naturally without inventing official confirmation, and never require 2+ sources to publish valid local reports.
+   - Separates fatal validation blockers from non-blocking bookkeeping warnings (`CLAIM_SUPPORT_MISMATCH` with known valid supports).
+
 
 **Event Pipeline Scripts & Benchmarks**:
 - **Publication Quality & Budget Benchmark**:
