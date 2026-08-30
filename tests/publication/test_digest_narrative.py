@@ -222,3 +222,103 @@ def test_digest_narrative_draft_parser_rejections(invalid_data, error):
 
     with pytest.raises(ValueError, match=error):
         DigestNarrativeDraft.from_dict(invalid_data)
+
+
+def test_validate_digest_narrative_valid():
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativeParagraph,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ и город",
+                story_ids=("story:1", "story:2"),
+                support_ids=("sup:1", "sup:2"),
+                canonical_notes=("Водоканал: ремонт трубы", "Свет: подстанция"),
+            ),
+        )
+    )
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                heading="Городское хозяйство",
+                paragraphs=(
+                    DigestNarrativeParagraph(
+                        text="В центральной части города устранили аварию на водоводе, тогда как на подстанции продолжается ремонт.",
+                        cited_support_ids=("sup:1", "sup:2"),
+                        covered_story_ids=("story:1", "story:2"),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    support_texts = {
+        "sup:1": "В центральной части города устранили аварию на водоводе.",
+        "sup:2": "На подстанции продолжается ремонт сетей.",
+    }
+
+    res = validate_digest_narrative(draft, plan, support_text_by_id=support_texts)
+    assert res.is_valid is True
+    assert len(res.violations) == 0
+    assert len(res.unsupported_claims) == 0
+
+
+def test_validate_digest_narrative_detects_block_mismatch_and_unsupported_claims():
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativeParagraph,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ и город",
+                story_ids=("story:1", "story:2"),
+                support_ids=("sup:1",),
+                canonical_notes=(),
+            ),
+        )
+    )
+
+    # 1. Uncovered story:2 + unknown support sup:99 + unsupported concrete number 500
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                heading="Городское хозяйство",
+                paragraphs=(
+                    DigestNarrativeParagraph(
+                        text="Устранили аварию, 500 домов без воды [story:1].",
+                        cited_support_ids=("sup:99",),
+                        covered_story_ids=("story:1",),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    support_texts = {"sup:1": "Устранили аварию на водоводе."}
+
+    res = validate_digest_narrative(draft, plan, support_text_by_id=support_texts)
+    assert res.is_valid is False
+    assert any("UNCOVERED_STORY" in v for v in res.violations)
+    assert any("DISALLOWED_SUPPORT_ID" in v for v in res.violations)
+    assert any("INTERNAL_LEAKAGE" in v for v in res.violations)
+    assert len(res.unsupported_claims) >= 1
