@@ -102,32 +102,72 @@ async def test_event_first_article_generation_single_call_and_clean_markdown() -
 
     # Mock provider response with valid JSON draft
     llm_draft_response = {
-        "title": "Городская хроника: коммунальные службы и культурная жизнь",
-        "title_support_ids": ["story:1:evidence:0:frag:101"],
-        "lead": "В городе завершились масштабные работы на водоводе и открылась новая выставка.",
-        "lead_support_ids": ["story:1:evidence:0:frag:101"],
+        "title": "Замена водопроводных труб и выставка картин",
+        "title_support_ids": ["story:1:evidence:0:frag:101", "story:2:evidence:0:frag:201"],
+        "title_claims": [
+            {
+                "text": "Завершена замена 500 метров водопроводных труб",
+                "cited_support_ids": ["story:1:evidence:0:frag:101"],
+            },
+            {
+                "text": "В художественном музее открылась выставка картин",
+                "cited_support_ids": ["story:2:evidence:0:frag:201"],
+            },
+        ],
+        "lead": "В городе завершена замена 500 метров водопроводных труб и открылась выставка картин в музее.",
+        "lead_support_ids": ["story:1:evidence:0:frag:101", "story:2:evidence:0:frag:201"],
+        "lead_claims": [
+            {
+                "text": "Завершена замена 500 метров водопроводных труб",
+                "cited_support_ids": ["story:1:evidence:0:frag:101"],
+            },
+            {
+                "text": "В художественном музее открылась выставка картин",
+                "cited_support_ids": ["story:2:evidence:0:frag:201"],
+            },
+        ],
         "sections": [
             {
                 "heading": "Водоснабжение",
                 "heading_support_ids": ["story:1:evidence:0:frag:101"],
+                "heading_claims": [
+                    {
+                        "text": "Замена водопроводных труб",
+                        "cited_support_ids": ["story:1:evidence:0:frag:101"],
+                    }
+                ],
                 "paragraphs": [
                     {
-                        "text": "Специалисты водоканала завершили замену 500 метров труб.",
+                        "text": "Завершена замена 500 метров водопроводных труб на городских сетях.",
                         "cited_support_ids": ["story:1:evidence:0:frag:101"],
-                    },
-                    {
-                        "text": "Подача воды в жилые кварталы возобновлена в полном объеме.",
-                        "cited_support_ids": ["story:1:evidence:0:frag:101"],
+                        "claims": [
+                            {
+                                "text": "Завершена замена 500 метров водопроводных труб",
+                                "cited_support_ids": ["story:1:evidence:0:frag:101"],
+                            }
+                        ],
                     },
                 ],
             },
             {
                 "heading": "Культурные события",
                 "heading_support_ids": ["story:2:evidence:0:frag:201"],
+                "heading_claims": [
+                    {
+                        "text": "В художественном музее открылась выставка картин",
+                        "cited_support_ids": ["story:2:evidence:0:frag:201"],
+                    }
+                ],
                 "paragraphs": [
                     {
-                        "text": "В городском художественном музее открылась выставка картин.",
+                        "text": "В художественном музее открылась новая выставка картин.",
                         "cited_support_ids": ["story:2:evidence:0:frag:201"],
+                        "claims": [
+                            {
+                                "text": "В художественном музее открылась выставка картин",
+                                "cited_support_ids": ["story:2:evidence:0:frag:201"],
+                            }
+                        ],
                     },
                 ],
             },
@@ -144,8 +184,8 @@ async def test_event_first_article_generation_single_call_and_clean_markdown() -
     assert mock_provider.chat_completion.call_count == 1
 
     # 2. Result is properly parsed and formatted
-    assert title == "Городская хроника: коммунальные службы и культурная жизнь"
-    assert "В городе завершились масштабные работы" in lead
+    assert title == "Замена водопроводных труб и выставка картин"
+    assert "В городе завершена замена 500 метров водопроводных труб" in lead
     assert "## Водоснабжение" in body
     assert "## Культурные события" in body
 

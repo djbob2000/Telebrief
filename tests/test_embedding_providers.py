@@ -83,7 +83,9 @@ class TestOpenRouterEmbeddingProvider:
             dimensions=1536,
         )
         assert vector == [0.1] * 1536
-        assert api.calls == [{"model": "qwen/qwen3-embedding-8b", "input": "тестовый текст"}]
+        assert api.calls == [
+            {"model": "qwen/qwen3-embedding-8b", "input": "тестовый текст", "dimensions": 1536}
+        ]
 
     async def test_rejects_missing_key(self):
         with pytest.raises(
