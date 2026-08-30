@@ -1,0 +1,162 @@
+{
+  "cases": [
+    {
+      "id": "prolonged_power_outage_with_generator_adaptations",
+      "topic": "Энергоснабжение",
+      "supports": [
+        {
+          "support_id": "sup:power:1",
+          "text": "В центральной части города и на Нагорной части аварийное отключение электроэнергии с 09:00 из-за повреждения кабеля.",
+          "temporal_role": "CURRENT_WINDOW"
+        },
+        {
+          "support_id": "sup:power:2",
+          "text": "Супермаркеты и аптеки в центре перешли на работу от генераторов.",
+          "temporal_role": "CURRENT_WINDOW"
+        },
+        {
+          "support_id": "sup:power:3",
+          "text": "В микрорайоне Колония свет подается в штатном режиме.",
+          "temporal_role": "CURRENT_WINDOW"
+        }
+      ],
+      "expected_narrative_elements": [
+        "chronology",
+        "resident_adaptation",
+        "contrast"
+      ],
+      "sample_valid_paragraph": {
+        "text": "С девяти утра в центре и на Нагорной отсутствует электричество из-за аварии на кабельной линии; магазины и аптеки перешли на резервные генераторы, в то время как в Колонии энергоснабжение не нарушалось.",
+        "cited_support_ids": ["sup:power:1", "sup:power:2", "sup:power:3"]
+      }
+    },
+    {
+      "id": "water_chronology_multiple_areas",
+      "topic": "Водоснабжение",
+      "supports": [
+        {
+          "support_id": "sup:water:1",
+          "text": "Утром снизилось давление воды в микрорайоне Азмол и на Лисках из-за порыва на насосной станции.",
+          "temporal_role": "CURRENT_WINDOW"
+        },
+        {
+          "support_id": "sup:water:2",
+          "text": "К 15:00 аварийная бригада водоканала завершила сварочные работы на насосной станции.",
+          "temporal_role": "CURRENT_WINDOW"
+        },
+        {
+          "support_id": "sup:water:3",
+          "text": "К вечеру подача воды на Лисках нормализована, на Азмоле продолжается заполнение системы.",
+          "temporal_role": "CURRENT_WINDOW"
+        }
+      ],
+      "expected_narrative_elements": [
+        "chronology",
+        "changing_status"
+      ],
+      "sample_valid_paragraph": {
+        "text": "Утреннее падение давления воды на Азмоле и Лисках сменилось ремонтом насосной к 15:00: к вечеру на Лисках подача возобновилась в полном объеме, а на Азмоле идет постепенное наполнение сетей.",
+        "cited_support_ids": ["sup:water:1", "sup:water:2", "sup:water:3"]
+      }
+    },
+    {
+      "id": "atm_cash_card_contrast",
+      "topic": "Банковские услуги",
+      "supports": [
+        {
+          "support_id": "sup:bank:1",
+          "text": "В отделениях на улице Морской временно не работают банкоматы для снятия наличных.",
+          "temporal_role": "CURRENT_WINDOW"
+        },
+        {
+          "support_id": "sup:bank:2",
+          "text": "Оплата банковскими картами в торговых точках города проходит без сбоев.",
+          "temporal_role": "CURRENT_WINDOW"
+        }
+      ],
+      "expected_narrative_elements": [
+        "practical_contrast"
+      ],
+      "sample_valid_paragraph": {
+        "text": "Банкоматы на Морской временно не выдают наличные, однако безналичная оплата картами в городских магазинах работает штатно.",
+        "cited_support_ids": ["sup:bank:1", "sup:bank:2"]
+      }
+    },
+    {
+      "id": "connectivity_workaround",
+      "topic": "Связь",
+      "supports": [
+        {
+          "support_id": "sup:net:1",
+          "text": "В районе АКЗ отмечаются перебои мобильного интернета оператора +7Телеком.",
+          "temporal_role": "CURRENT_WINDOW"
+        },
+        {
+          "support_id": "sup:net:2",
+          "text": "Жители подключаются к открытым Wi-Fi точкам у местных кафе и отделений почты.",
+          "temporal_role": "CURRENT_WINDOW"
+        }
+      ],
+      "expected_narrative_elements": [
+        "resident_behavior",
+        "adaptation"
+      ],
+      "sample_valid_paragraph": {
+        "text": "Из-за перебоев с мобильным интернетом на АКЗ жители используют открытые точки Wi-Fi возле кафе и почтовых отделений.",
+        "cited_support_ids": ["sup:net:1", "sup:net:2"]
+      }
+    },
+    {
+      "id": "uncertain_restoration_dates",
+      "topic": "Газоснабжение",
+      "supports": [
+        {
+          "support_id": "sup:gas:1",
+          "text": "После аварии на газопроводе отключены 12 домов по улице Тищенко; сроки восстановления специалисты службы газа пока не называют.",
+          "temporal_role": "CURRENT_WINDOW"
+        }
+      ],
+      "expected_narrative_elements": [
+        "preserved_uncertainty"
+      ],
+      "sample_valid_paragraph": {
+        "text": "После повреждения газопровода 12 домов на улице Тищенко остаются без газа; точные сроки завершения ремонта аварийная служба пока не сообщает.",
+        "cited_support_ids": ["sup:gas:1"]
+      }
+    },
+    {
+      "id": "short_thin_day_not_padded",
+      "topic": "Городская хроника",
+      "supports": [
+        {
+          "support_id": "sup:thin:1",
+          "text": "В парке Шмидта коммунальщики провели плановую обрезку сухих веток.",
+          "temporal_role": "CURRENT_WINDOW"
+        }
+      ],
+      "expected_narrative_elements": [
+        "concise_not_padded"
+      ],
+      "sample_valid_paragraph": {
+        "text": "В парке Шмидта коммунальные службы выполнили плановую санитарную обрезку сухих деревьев.",
+        "cited_support_ids": ["sup:thin:1"]
+      }
+    },
+    {
+      "id": "unsupported_causal_interpretation_fails",
+      "topic": "Транспорт",
+      "supports": [
+        {
+          "support_id": "sup:trans:1",
+          "text": "На линию маршрута №15 вышли 4 новых микроавтобуса.",
+          "temporal_role": "CURRENT_WINDOW"
+        }
+      ],
+      "invalid_draft_with_unsupported_cause": {
+        "text": "Благодаря жалобам жителей в администрацию на линию маршрута №15 вышли 4 новых микроавтобуса, что полностью решило транспортную проблему района.",
+        "cited_support_ids": ["sup:trans:1"],
+        "expected_violations": ["UNSUPPORTED_CAUSAL_RELATION", "UNSUPPORTED_QUALITATIVE_CLAIM"]
+      }
+    }
+  ]
+}
