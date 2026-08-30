@@ -25,7 +25,11 @@ _NOW = dt.datetime(2026, 8, 29, 20, 0, tzinfo=dt.timezone.utc)
 async def _seed_policies(conn: psycopg.AsyncConnection, edition_id: int) -> tuple[int, int, int]:
     policy_repo = PublicationPolicyRepository()
     elig = await policy_repo.get_or_create_eligibility_policy(
-        conn, edition_id=edition_id, config_hash="elig-hash-e2e", prompt_version="elig-v1"
+        conn,
+        edition_id=edition_id,
+        config_hash="elig-hash-e2e",
+        prompt_version="elig-v1",
+        config={"lookback_hours": 24},
     )
     sel = await policy_repo.get_or_create_selection_policy(
         conn, edition_id=edition_id, config_hash="sel-hash-e2e", prompt_version="sel-v1"
@@ -191,20 +195,34 @@ async def test_end_to_end_article_generation_valid_draft_with_claim_trace(conn, 
     generator = ArticleGenerator(config=config, logger=logging.getLogger("test"))
     mock_provider = AsyncMock()
     sup_id = f"story:{story_id}:evidence:0:frag:{frag_id}"
+    # Valid draft strictly matching support vocabulary
     mock_provider.chat_completion.return_value = json.dumps(
         {
-            "title": "Ремонт водопроводных сетей",
+            "title": "Замена водопроводных труб на проспекте Труда",
             "title_support_ids": [sup_id],
-            "lead": "В городе завершены работы по ремонту магистрального водовода.",
+            "title_claims": [{"text": "Замена водопроводных труб", "cited_support_ids": [sup_id]}],
+            "lead": "В городе завершена замена водопроводных труб.",
             "lead_support_ids": [sup_id],
+            "lead_claims": [
+                {"text": "Завершена замена водопроводных труб", "cited_support_ids": [sup_id]}
+            ],
             "sections": [
                 {
-                    "heading": "Водоснабжение",
+                    "heading": "Водопроводные трубы",
                     "heading_support_ids": [sup_id],
+                    "heading_claims": [
+                        {"text": "Водопроводные трубы", "cited_support_ids": [sup_id]}
+                    ],
                     "paragraphs": [
                         {
-                            "text": "Коммунальные службы завершили замену 500 метров труб на проспекте Труда.",
+                            "text": "Специалисты водоканала завершили замену 500 метров труб на проспекте Труда.",
                             "cited_support_ids": [sup_id],
+                            "claims": [
+                                {
+                                    "text": "Завершена замена 500 метров водопроводных труб на проспекте Труда",
+                                    "cited_support_ids": [sup_id],
+                                }
+                            ],
                         }
                     ],
                 }
@@ -629,33 +647,39 @@ async def test_end_to_end_article_generation_multi_claim_narrative_paragraph_pas
     # Single paragraph combining 3 supported claims and citing 3 support IDs
     mock_provider.chat_completion.return_value = json.dumps(
         {
-            "title": "Ситуация с электроснабжением в районах города",
+            "title": "Авария на электросетях в центре города",
             "title_support_ids": [sup0],
-            "lead": "В центре города возникли временные перебои со светом.",
+            "title_claims": [
+                {"text": "Авария на электросетях в центре города", "cited_support_ids": [sup0]}
+            ],
+            "lead": "В центре города произошла авария на электросетях.",
             "lead_support_ids": [sup0],
+            "lead_claims": [
+                {"text": "Авария на электросетях в центре города", "cited_support_ids": [sup0]}
+            ],
             "sections": [
                 {
-                    "heading": "Городские службы",
+                    "heading": "Электросети в центре города",
                     "heading_support_ids": [sup0],
+                    "heading_claims": [
+                        {"text": "Электросети в центре города", "cited_support_ids": [sup0]}
+                    ],
                     "paragraphs": [
                         {
-                            "text": "Из-за аварии на электросетях в центре города местные аптеки и магазины перешли на генераторы, тогда как в Колонии энергоснабжение сохраняется штатно.",
+                            "text": "В центре города произошла авария на электросетях; местные аптеки и магазины перешли на генераторы, тогда как в микрорайоне Колония свет есть без перебоев.",
                             "cited_support_ids": [sup0, sup1, sup2],
                             "claims": [
                                 {
-                                    "claim_text": "Авария на электросетях в центре города",
+                                    "text": "Авария на электросетях в центре города",
                                     "cited_support_ids": [sup0],
-                                    "temporal_role": "CURRENT_WINDOW",
                                 },
                                 {
-                                    "claim_text": "Местные аптеки и магазины перешли на генераторы",
+                                    "text": "Аптеки и магазины перешли на генераторы",
                                     "cited_support_ids": [sup1],
-                                    "temporal_role": "CURRENT_WINDOW",
                                 },
                                 {
-                                    "claim_text": "В Колонии энергоснабжение сохраняется штатно",
+                                    "text": "В микрорайоне Колония свет есть без перебоев",
                                     "cited_support_ids": [sup2],
-                                    "temporal_role": "CURRENT_WINDOW",
                                 },
                             ],
                         }
@@ -690,4 +714,9 @@ async def test_end_to_end_article_generation_multi_claim_narrative_paragraph_pas
     assert row[1] == "succeeded"
     meta = row[2]
     assert meta["validation"]["is_valid"] is True
-    assert len(meta["claim_trace"]) >= 5
+    assert len(meta["claim_trace"]) >= 4
+    total_claim_atoms = sum(len(u["claim_atoms"]) for u in meta["claim_trace"])
+    assert total_claim_atoms >= 6
+    p001_trace = next(u for u in meta["claim_trace"] if u["unit_id"] == "P001")
+    assert len(p001_trace["claim_atoms"]) == 3
+    assert len(p001_trace["support_ids"]) == 3

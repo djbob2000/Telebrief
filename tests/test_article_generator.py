@@ -2483,3 +2483,18 @@ async def test_generator_structural_preflight_remains_hard_gate(sample_config, m
     generator.fallback_renderer.render.assert_called_once()
     assert title == "Что происходило в городе за сутки"
     assert "[S000001]" not in body
+
+
+def test_event_article_system_prompt_composition(sample_config, mock_logger):
+    generator = ArticleGenerator(config=sample_config, logger=mock_logger)
+    prompt = generator._build_event_article_system_prompt()
+    prompt_lower = prompt.lower()
+
+    assert "not sentence templates" in prompt_lower
+    assert "chronology" in prompt_lower
+    assert "contrast" in prompt_lower
+    assert "claim" in prompt_lower
+    assert "только" in prompt_lower or "only" in prompt_lower
+    assert "current_window" in prompt_lower
+    assert "historical_context" in prompt_lower
+    assert "future_scheduled" in prompt_lower

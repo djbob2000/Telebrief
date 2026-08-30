@@ -35,6 +35,7 @@ from src.editorial_writer import ArticleDraft, EditorialWriter
 from src.publication.article_context import ArticleEditorialContext
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_validator import validate_article_draft
+from src.publication.narrative_contract import build_article_narrative_contract
 
 
 class UnsafeDraftError(RuntimeError):
@@ -654,7 +655,7 @@ class ArticleGenerator:
             and getattr(frozen_input.analysis, "article_context", None) is not None
         ):
             return await self.generate_from_event_article_context(
-                analysis=frozen_input.analysis,
+                frozen_input.analysis.article_context,
                 attempt_observer=attempt_observer,
             )
 
@@ -664,29 +665,19 @@ class ArticleGenerator:
             attempt_observer=attempt_observer,
         )
 
-    async def generate_from_event_article_context(
-        self,
-        analysis: EditorialAnalysis,
-        attempt_observer: Any | None = None,
-    ) -> Tuple[str, str, str]:
-        """Generate long-form article using deterministic ArticleEditorialContext and single AI call."""
-        article_ctx: ArticleEditorialContext | None = getattr(analysis, "article_context", None)
-        if article_ctx is None:
-            raise NoSubstantiveEditorialError("no article editorial context present")
-
-        if not article_ctx.evidence_index and not article_ctx.operational_timeline:
-            raise NoSubstantiveEditorialError("no evidence or timeline present in article context")
-
-        context_str = article_ctx.to_prompt_context()
-
-        system_prompt = f"""Вы — опытный выпускающий редактор и автор регионального издания.
+    def _build_event_article_system_prompt(self) -> str:
+        """Compose the Event-First article prompt from safety and narrative newsroom contracts."""
+        narrative_contract = build_article_narrative_contract(output_language=self.output_language)
+        return f"""Вы — опытный выпускающий редактор и автор регионального издания.
 Ваша задача — написать связную, объективную и информативную журналистскую обзорную статью на русском языке на основе проверенных фактов, оперативной хроники и сообщений.
 
-Правила:
+{narrative_contract}
+
+### Обязательные правила валидации и доказательной базы (Evidence Boundary):
 1. Опирайтесь ТОЛЬКО на предоставленные единицы поддержки [SUPPORT id]. Категорически запрещено выдумывать неподтвержденные детали, цифры, адреса, организации, длительности, причины, механизмы и события.
 2. Every title, lead, heading and paragraph must cite support IDs, and MUST decompose its factual assertions into discrete claim atoms (`claims` / `title_claims` / `lead_claims` / `heading_claims`).
 3. The set of `cited_support_ids` in each unit MUST exactly equal the union of support IDs cited in that unit's claim atoms.
-4. Temporal roles and framing:
+4. Temporal roles and framing (Reporting Window):
    - CURRENT_WINDOW: События и оперативная обстановка текущего отчетного окна. Заголовок и лид ОБЯЗАНЫ опираться на факты текущего окна.
    - HISTORICAL_CONTEXT: Фоновая информация прошлых дней. Если упоминается в статье, ОБЯЗАТЕЛЬНО используйте маркеры предыстории или продолжения (ранее, с начала, до этого, сохраняется, продолжается) и никогда не подавайте как новые события дня.
    - FUTURE_SCHEDULED: Анонсы плановых работ на будущие даты. ОБЯЗАТЕЛЬНО используйте явные маркеры будущего времени (запланировано, предстоит, будет, дата) и НИКОГДА не описывайте как действующую аварию/отключение.
@@ -695,8 +686,8 @@ class ArticleGenerator:
 7. If a detail is not explicit in cited support, omit it.
 8. Do not infer that repairs were completed merely because work had started.
 9. Do not infer a cause/mechanism from chronology alone.
-10. Язык статьи: {self.output_language}. Стиль — новостная журналистика: сдержанный, фактологический, грамотный, без патетики и клише.
-11. Структура и формат:
+10. Язык статьи: {self.output_language}.
+11. Структура и формат схемы:
     - title: Информативный заголовок, отражающий ключевые события дня.
     - title_support_ids: Массив ID поддержки для заголовка.
     - title_claims: Массив атомарных утверждений заголовка: [{{"text": "краткое утверждение", "cited_support_ids": ["SUPPORT_ID"]}}].
@@ -745,6 +736,21 @@ class ArticleGenerator:
   ]
 }}
 """
+
+    async def generate_from_event_article_context(  # noqa: C901
+        self,
+        article_ctx: ArticleEditorialContext,
+        attempt_observer: Any | None = None,
+    ) -> Tuple[str, str, str]:
+        """Synthesize long-form editorial article directly from ArticleEditorialContext in one LLM call."""
+        if article_ctx is None:
+            raise NoSubstantiveEditorialError("no article editorial context present")
+
+        if not article_ctx.evidence_index and not article_ctx.operational_timeline:
+            raise NoSubstantiveEditorialError("no evidence or timeline present in article context")
+
+        context_str = article_ctx.to_prompt_context()
+        system_prompt = self._build_event_article_system_prompt()
         user_prompt = f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\n{context_str}"
 
         writer_attempt_id = 0
