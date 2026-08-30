@@ -197,18 +197,117 @@ class PublicationGenerationService:
                     rubrics_config=self.config.settings.digest_rubrics,
                     custom_rubrics=getattr(self.config.settings, "digest_groups", None),
                 )
-                att_id = await observer.attempt_started(
-                    "story_renderer_fallback", metadata={"renderer": run.publication_type}
+
+                narrative_draft = None
+                pub_edit = getattr(self.config.settings, "publication_editorial", None)
+                narrative_mode = (
+                    getattr(pub_edit, "digest_narrative_mode", "deterministic")
+                    if pub_edit
+                    else "deterministic"
                 )
-                if run.publication_type == "digest_channel":
-                    title, lead, body = renderer.render_channel_digest(
-                        frozen, snapshot_at=run.snapshot_at
+
+                if (
+                    narrative_mode == "single_call"
+                    and run.publication_type != "digest_channel"
+                    and frozen.analysis.cards
+                ):
+                    from src.publication.digest_narrative import (
+                        DigestNarrativeWriter,
+                        build_digest_support_text_index,
+                        plan_digest_narrative_blocks,
+                        validate_digest_narrative,
                     )
-                else:
-                    title, lead, body = renderer.render_grouped_digest(
-                        frozen, snapshot_at=run.snapshot_at
+
+                    evidence_dict = getattr(frozen.analysis, "evidence", {}) or {}
+                    max_cards = getattr(pub_edit, "digest_narrative_max_cards_per_block", 6)
+                    max_tokens = getattr(pub_edit, "digest_narrative_max_output_tokens", 4096)
+                    plan = plan_digest_narrative_blocks(
+                        cards=frozen.analysis.cards,
+                        evidence=evidence_dict,
+                        rubrics=renderer.rubrics,
+                        max_cards_per_block=max_cards,
                     )
-                await observer.attempt_finished(att_id, "succeeded")
+
+                    writer_provider = getattr(self.generator, "provider", None)
+                    writer = DigestNarrativeWriter(provider=writer_provider)
+                    att_id = await observer.attempt_started(
+                        "writer",
+                        metadata={
+                            "subkind": "digest_narrative",
+                            "block_count": len(plan.blocks),
+                            "card_count": len(frozen.analysis.cards),
+                        },
+                    )
+                    try:
+                        draft_cand = await writer.generate_narrative_draft(
+                            plan=plan,
+                            cards=frozen.analysis.cards,
+                            evidence=evidence_dict,
+                            situation_rollup=frozen.analysis.city_situation,
+                            language=getattr(self.config.settings, "output_language", "Russian"),
+                            max_output_tokens=max_tokens,
+                        )
+                        support_text_index = build_digest_support_text_index(
+                            evidence=evidence_dict,
+                            cards=frozen.analysis.cards,
+                            frozen_input=frozen,
+                        )
+                        val_res = validate_digest_narrative(
+                            draft_cand,
+                            plan,
+                            support_text_by_id=support_text_index,
+                        )
+                        if val_res.is_valid:
+                            narrative_draft = draft_cand
+                            title, lead, body = renderer.render_grouped_digest(
+                                frozen,
+                                snapshot_at=run.snapshot_at,
+                                narrative_draft=narrative_draft,
+                            )
+                            await observer.attempt_finished(
+                                att_id,
+                                "succeeded",
+                                metadata={
+                                    "validation": {"is_valid": True},
+                                    "block_count": len(draft_cand.blocks),
+                                },
+                            )
+                        else:
+                            await observer.attempt_finished(
+                                att_id,
+                                "failed",
+                                error_kind="digest_narrative_validation_failed",
+                                metadata={
+                                    "error_message": "; ".join(val_res.violations[:5]),
+                                    "violations": list(val_res.violations),
+                                },
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "digest narrative synthesis failed (%s: %s); falling back to deterministic",
+                            type(exc).__name__,
+                            exc,
+                        )
+                        await observer.attempt_finished(
+                            att_id,
+                            "failed",
+                            error_kind="digest_narrative_synthesis_failed",
+                            metadata={"error_message": str(exc)},
+                        )
+
+                if narrative_draft is None:
+                    att_id = await observer.attempt_started(
+                        "story_renderer_fallback", metadata={"renderer": run.publication_type}
+                    )
+                    if run.publication_type == "digest_channel":
+                        title, lead, body = renderer.render_channel_digest(
+                            frozen, snapshot_at=run.snapshot_at
+                        )
+                    else:
+                        title, lead, body = renderer.render_grouped_digest(
+                            frozen, snapshot_at=run.snapshot_at
+                        )
+                    await observer.attempt_finished(att_id, "succeeded")
 
             else:
                 title, lead, body = await self.generator.generate_from_frozen_input(

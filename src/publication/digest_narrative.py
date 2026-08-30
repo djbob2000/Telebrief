@@ -6,7 +6,6 @@ import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
-from src.config_loader import DigestRubricConfig
 from src.editorial_models import StoryCard
 from src.publication.article_claims import ConcreteClaim, find_unsupported_claims
 from src.publication.evidence import PublicationEvidence
@@ -143,36 +142,55 @@ def plan_digest_narrative_blocks(
     *,
     cards: Sequence[StoryCard],
     evidence: Mapping[str, PublicationEvidence],
-    rubrics: Sequence[DigestRubricConfig],
+    rubrics: Sequence[Any],
     max_cards_per_block: int = 6,
 ) -> DigestNarrativePlan:
     """Build immutable narrative blocks from classified story cards strictly preserving order."""
     if not cards:
         return DigestNarrativePlan(blocks=())
 
-    rubric_map: dict[str, DigestRubricConfig] = {r.id: r for r in rubrics}
-    fallback_rubric = next((r for r in rubrics if r.fallback), rubrics[0] if rubrics else None)
-    fallback_id = fallback_rubric.id if fallback_rubric else "other"
+    def _get_r_info(r: Any) -> tuple[str, str, bool]:
+        if isinstance(r, Mapping):
+            return (
+                str(r.get("id", "")),
+                str(r.get("title") or r.get("name") or ""),
+                bool(r.get("fallback", False)),
+            )
+        return (
+            str(getattr(r, "id", "")),
+            str(getattr(r, "name", "")),
+            bool(getattr(r, "fallback", False)),
+        )
+
+    rubric_infos = [_get_r_info(r) for r in rubrics]
+    rubric_ids = [info[0] for info in rubric_infos if info[0]]
+    fallback_info = next(
+        (info for info in rubric_infos if info[2]),
+        rubric_infos[0] if rubric_infos else ("other", "Другое", True),
+    )
+    fallback_id = fallback_info[0] if fallback_info[0] else "other"
 
     # Group cards by rubric, preserving rubric sequence
-    cards_by_rubric: dict[str, list[StoryCard]] = {r.id: [] for r in rubrics}
+    cards_by_rubric: dict[str, list[StoryCard]] = {rid: [] for rid in rubric_ids}
     for card in cards:
-        rid = card.rubric_id if card.rubric_id in rubric_map else fallback_id
+        rid = card.rubric_id if card.rubric_id in cards_by_rubric else fallback_id
         if rid not in cards_by_rubric:
             cards_by_rubric[rid] = []
         cards_by_rubric[rid].append(card)
 
     blocks: list[DigestNarrativeBlock] = []
 
-    for r in rubrics:
-        rubric_cards = cards_by_rubric.get(r.id, [])
+    for rid, rname, _ in rubric_infos:
+        if not rid:
+            continue
+        rubric_cards = cards_by_rubric.get(rid, [])
         if not rubric_cards:
             continue
 
         bound = max(1, max_cards_per_block)
         for chunk_idx in range(0, len(rubric_cards), bound):
             chunk = rubric_cards[chunk_idx : chunk_idx + bound]
-            block_id = f"block:{r.id}:{chunk_idx // bound}"
+            block_id = f"block:{rid}:{chunk_idx // bound}"
             story_ids = tuple(c.id for c in chunk)
 
             # Collect canonical notes from cards
@@ -205,8 +223,8 @@ def plan_digest_narrative_blocks(
             blocks.append(
                 DigestNarrativeBlock(
                     block_id=block_id,
-                    rubric_id=r.id,
-                    rubric_title=r.name,
+                    rubric_id=rid,
+                    rubric_title=rname,
                     story_ids=story_ids,
                     support_ids=tuple(block_support_ids),
                     canonical_notes=tuple(notes),
