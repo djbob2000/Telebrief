@@ -67,6 +67,8 @@ _QUOTES_RE = re.compile(r"[«»“”\"]")
 def _stem(word: str) -> str:
     """Conservative Russian suffix trimmer for entity/relation token matching."""
     w = word.lower()
+    if len(w) > 5 and (w.endswith("ся") or w.endswith("сь")):
+        w = w[:-2]
     for suffix in (
         "ами",
         "ями",
@@ -81,6 +83,14 @@ def _stem(word: str) -> str:
         "скую",
         "ские",
         "ских",
+        "ются",
+        "ется",
+        "атся",
+        "ятся",
+        "аются",
+        "яются",
+        "ивать",
+        "ывать",
         "ов",
         "ев",
         "ей",
@@ -98,6 +108,21 @@ def _stem(word: str) -> str:
         "ее",
         "ые",
         "ие",
+        "ать",
+        "ять",
+        "ить",
+        "еть",
+        "ал",
+        "ял",
+        "ил",
+        "ел",
+        "ли",
+        "ла",
+        "ло",
+        "ут",
+        "ют",
+        "ат",
+        "ят",
         "а",
         "я",
         "о",
@@ -106,10 +131,14 @@ def _stem(word: str) -> str:
         "и",
         "у",
         "ю",
+        "ь",
     ):
         if len(w) > len(suffix) + 3 and w.endswith(suffix):
             return w[: -len(suffix)]
     return w
+
+
+stem_word = _stem
 
 
 def normalize_support_text(text: str) -> str:

@@ -286,6 +286,7 @@ class PublicationEditorialConfig:
     article_min_sections: int = 3
     article_max_sections: int = 6
     article_max_direct_quotes: int = 4
+    article_claim_min_content_coverage: float = 0.70
 
     def __post_init__(self) -> None:
         if self.conflict_window_minutes <= 0:
@@ -300,6 +301,8 @@ class PublicationEditorialConfig:
             raise ValueError("article_min_sections cannot be greater than article_max_sections")
         if self.article_max_direct_quotes < 0:
             raise ValueError("article_max_direct_quotes cannot be negative")
+        if not (0.5 <= self.article_claim_min_content_coverage <= 1.0):
+            raise ValueError("article_claim_min_content_coverage must be between 0.5 and 1.0")
 
 
 @dataclass
