@@ -52,7 +52,7 @@ def test_derive_article_length_profile_thin():
 def test_derive_article_length_profile_standard():
     config = PublicationEditorialConfig(article_max_words=1600)
     supports = tuple(
-        _make_support(f"story:{i}:evidence:{j}:frag:{i*10+j}")
+        _make_support(f"story:{i}:evidence:{j}:frag:{i * 10 + j}")
         for i in range(1, 7)
         for j in range(2)
     )  # 6 stories, 12 supports
@@ -75,7 +75,7 @@ def test_derive_article_length_profile_standard():
 def test_derive_article_length_profile_rich():
     config = PublicationEditorialConfig(article_max_words=1600, article_max_sections=6)
     supports = tuple(
-        _make_support(f"story:{i}:evidence:{j}:frag:{i*10+j}")
+        _make_support(f"story:{i}:evidence:{j}:frag:{i * 10 + j}")
         for i in range(1, 13)
         for j in range(3)
     )  # 12 stories, 36 supports

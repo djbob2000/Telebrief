@@ -639,9 +639,7 @@ def test_digest_narrative_item_grouping_three_stories():
                     {
                         "headline": "Подтвержденных сроков восстановления света пока нет",
                         "body": (
-                            "Отключение света 101. "
-                            "Отключение света 102. "
-                            "Отключение света 103."
+                            "Отключение света 101. Отключение света 102. Отключение света 103."
                         ),
                         "covered_story_ids": list(block.story_ids),
                         "cited_support_ids": list(block.support_ids),
