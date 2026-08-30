@@ -1,0 +1,57 @@
+{
+  "stories": [
+    {
+      "story_id": "story:power",
+      "topic": "Электроснабжение и вода",
+      "importance": "high",
+      "supports": [
+        {"id": "story:power:evidence:0:frag:1", "text": "Жители сообщают, что света нет около месяца", "kind": "community_report"},
+        {"id": "story:power:evidence:1:frag:2", "text": "Жильцы дома скидываются по 300 рублей на общий генератор для подачи воды", "kind": "community_report"},
+        {"id": "story:power:evidence:2:frag:3", "text": "Один житель запитал оборудование провайдера от своего генератора", "kind": "service_access"},
+        {"id": "story:power:evidence:3:frag:4", "text": "Жители заряжают телефоны от солнечных панелей", "kind": "community_report"}
+      ]
+    },
+    {
+      "story_id": "story:safety",
+      "topic": "Ночные события над морем",
+      "importance": "high",
+      "supports": [
+        {"id": "story:safety:evidence:0:frag:5", "text": "Жители видели две вспышки над морем", "kind": "community_report"},
+        {"id": "story:safety:evidence:1:frag:6", "text": "Примерно через 30 секунд были слышны громкие звуки", "kind": "community_report"}
+      ]
+    },
+    {
+      "story_id": "story:telecom",
+      "topic": "Связь при отключениях",
+      "importance": "medium",
+      "supports": [
+        {"id": "story:telecom:evidence:0:frag:7", "text": "Оборудование провайдера работает от генератора", "kind": "service_access"},
+        {"id": "story:telecom:evidence:1:frag:8", "text": "Жители сравнивают качество мобильной связи", "kind": "community_report"}
+      ]
+    },
+    {
+      "story_id": "story:sport",
+      "topic": "Набор в спортивную школу",
+      "importance": "medium",
+      "supports": [
+        {"id": "story:sport:evidence:0:frag:9", "text": "Спортивная школа объявила бесплатный набор детей на футбол", "kind": "service_access"}
+      ]
+    },
+    {
+      "story_id": "story:route",
+      "topic": "Междугородний транспорт",
+      "importance": "medium",
+      "supports": [
+        {"id": "story:route:evidence:0:frag:10", "text": "Ежедневно есть рейсы в Краснодар и Ростов", "source_text": "Ежедневные рейсы в Краснодар и Ростов. Бронирование +79900292947, https://bus.example", "kind": "service_access"}
+      ]
+    },
+    {
+      "story_id": "story:question",
+      "topic": "Вопрос о пенсионном фонде",
+      "importance": "medium",
+      "supports": [
+        {"id": "story:question:evidence:0:frag:11", "text": "Житель спрашивает, работает ли пенсионный фонд", "kind": "resident_question", "publication_use": "CONTEXT"}
+      ]
+    }
+  ]
+}
