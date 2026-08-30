@@ -817,6 +817,15 @@ class ArticleGenerator:
                     "source_refs": list(u.source_refs),
                     "fragment_ids": list(u.fragment_ids),
                     "source_item_ids": list(u.source_item_ids),
+                    "temporal_roles": list(u.temporal_roles),
+                    "claim_atoms": [
+                        {
+                            "text": atom.text,
+                            "support_ids": list(atom.support_ids),
+                            "temporal_roles": list(atom.temporal_roles),
+                        }
+                        for atom in u.claim_atoms
+                    ],
                 }
                 for u in trace
             ]
@@ -828,6 +837,7 @@ class ArticleGenerator:
                 },
                 "claim_trace": trace_meta,
             }
+
             if attempt_observer is not None and writer_attempt_id > 0:
                 await attempt_observer.attempt_finished(
                     writer_attempt_id, "succeeded", metadata=success_meta

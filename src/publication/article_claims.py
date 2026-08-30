@@ -69,9 +69,12 @@ def _stem(word: str) -> str:
     w = word.lower()
     if len(w) > 5 and (w.endswith("ся") or w.endswith("сь")):
         w = w[:-2]
+
+    # Pass 1: Inflectional endings (case, number, gender, verbal endings)
     for suffix in (
         "ами",
         "ями",
+        "иями",
         "ого",
         "его",
         "ому",
@@ -100,8 +103,10 @@ def _stem(word: str) -> str:
         "ей",
         "ах",
         "ях",
+        "иях",
         "ым",
         "им",
+        "иям",
         "ую",
         "юю",
         "ое",
@@ -114,6 +119,23 @@ def _stem(word: str) -> str:
         "ий",
         "ых",
         "их",
+        "ение",
+        "ения",
+        "ению",
+        "ением",
+        "ении",
+        "ений",
+        "ание",
+        "ания",
+        "анию",
+        "анием",
+        "ании",
+        "аний",
+        "ией",
+        "ием",
+        "ию",
+        "ия",
+        "ии",
         "ать",
         "ять",
         "ить",
@@ -140,7 +162,25 @@ def _stem(word: str) -> str:
         "ь",
     ):
         if len(w) > len(suffix) + 3 and w.endswith(suffix):
-            return w[: -len(suffix)]
+            w = w[: -len(suffix)]
+            break
+
+    # Pass 2: Common derivational adjective/noun suffixes
+    for suffix in (
+        "ическ",
+        "тельн",
+        "ованн",
+        "альн",
+        "ийн",
+        "ск",
+        "ов",
+        "ев",
+        "н",
+    ):
+        if len(w) > len(suffix) + 3 and w.endswith(suffix):
+            w = w[: -len(suffix)]
+            break
+
     return w
 
 

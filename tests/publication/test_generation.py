@@ -1315,24 +1315,40 @@ async def test_event_first_article_successful_writer_records_claim_trace(conn, p
     sup_id = f"story:{story_id}:evidence:0:frag:{frag_id}"
     mock_provider.chat_completion.return_value = json.dumps(
         {
-            "title": "Отключение света в центре",
+            "title": "Авария на подстанции в центре",
             "title_support_ids": [sup_id],
-            "lead": "В центре города ликвидируют аварию на подстанции.",
+            "title_claims": [
+                {"text": "Авария на подстанции в центре", "cited_support_ids": [sup_id]}
+            ],
+            "lead": "Авария на подстанции в центре.",
             "lead_support_ids": [sup_id],
+            "lead_claims": [
+                {"text": "Авария на подстанции в центре", "cited_support_ids": [sup_id]}
+            ],
             "sections": [
                 {
-                    "heading": "Энергоснабжение",
+                    "heading": "Авария на подстанции",
                     "heading_support_ids": [sup_id],
+                    "heading_claims": [
+                        {"text": "Авария на подстанции", "cited_support_ids": [sup_id]}
+                    ],
                     "paragraphs": [
                         {
-                            "text": "В центре временно обесточены жилые кварталы из-за аварии на подстанции.",
+                            "text": "Авария на подстанции в центре.",
                             "cited_support_ids": [sup_id],
+                            "claims": [
+                                {
+                                    "text": "Авария на подстанции в центре",
+                                    "cited_support_ids": [sup_id],
+                                }
+                            ],
                         }
                     ],
                 }
             ],
         }
     )
+
     generator.provider = mock_provider
 
     service = PublicationGenerationService(
