@@ -33,6 +33,10 @@ from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, EditorialWriter
 from src.publication.article_context import ArticleEditorialContext
+from src.publication.article_length import (
+    ArticleLengthProfile,
+    derive_article_length_profile,
+)
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_validator import validate_article_draft
 from src.publication.narrative_contract import build_article_narrative_contract
@@ -665,9 +669,15 @@ class ArticleGenerator:
             attempt_observer=attempt_observer,
         )
 
-    def _build_event_article_system_prompt(self) -> str:
+    def _build_event_article_system_prompt(
+        self,
+        length_profile: ArticleLengthProfile | None = None,
+    ) -> str:
         """Compose the Event-First article prompt from safety and narrative newsroom contracts."""
-        narrative_contract = build_article_narrative_contract(output_language=self.output_language)
+        narrative_contract = build_article_narrative_contract(
+            output_language=self.output_language,
+            length_profile=length_profile,
+        )
         return f"""Вы — опытный выпускающий редактор и автор регионального издания.
 Ваша задача — написать связную, объективную и информативную журналистскую обзорную статью на русском языке на основе проверенных фактов, оперативной хроники и сообщений.
 
@@ -675,8 +685,8 @@ class ArticleGenerator:
 
 ### Обязательные правила валидации и доказательной базы (Evidence Boundary):
 1. Опирайтесь ТОЛЬКО на предоставленные единицы поддержки [SUPPORT id]. Категорически запрещено выдумывать неподтвержденные детали, цифры, адреса, организации, длительности, причины, механизмы и события.
-2. Every title, lead, heading and paragraph must cite support IDs, and MUST decompose its factual assertions into discrete claim atoms (`claims` / `title_claims` / `lead_claims` / `heading_claims`).
-3. The set of `cited_support_ids` in each unit MUST exactly equal the union of support IDs cited in that unit's claim atoms.
+2. Every title, lead, heading and paragraph must cite support IDs, and MUST decompose its factual assertions into discrete claim atoms (`claims` / `title_claims` / `lead_claims` / `heading_claims`). Section headings are thematic titles and do not require claim atoms unless they assert concrete figures, dates, or prices.
+3. The set of `cited_support_ids` in each unit MUST exactly equal the union of support IDs cited in that unit's claim atoms (for headings with empty `heading_claims`, `heading_support_ids` must cite supports present in that section).
 4. Temporal roles and framing (Reporting Window):
    - CURRENT_WINDOW: События и оперативная обстановка текущего отчетного окна. Заголовок и лид ОБЯЗАНЫ опираться на факты текущего окна.
    - HISTORICAL_CONTEXT: Фоновая информация прошлых дней. Если упоминается в статье, ОБЯЗАТЕЛЬНО используйте маркеры предыстории или продолжения (ранее, с начала, до этого, сохраняется, продолжается) и никогда не подавайте как новые события дня.
@@ -697,7 +707,7 @@ class ArticleGenerator:
     - sections: Тематические разделы (3-6 разделов). Каждый раздел содержит:
       - heading: Название раздела.
       - heading_support_ids: Массив ID поддержки для заголовка раздела.
-      - heading_claims: Массив атомарных утверждений заголовка раздела.
+      - heading_claims: Массив атомарных утверждений заголовка раздела (может быть пустым для чисто тематических названий).
       - paragraphs: Массив объектов параграфов:
         - text: Текст параграфа.
         - cited_support_ids: Массив ID поддержки.
@@ -720,9 +730,7 @@ class ArticleGenerator:
     {{
       "heading": "Название раздела",
       "heading_support_ids": ["story:1:evidence:0:frag:101"],
-      "heading_claims": [
-        {{"text": "Название раздела", "cited_support_ids": ["story:1:evidence:0:frag:101"]}}
-      ],
+      "heading_claims": [],
       "paragraphs": [
         {{
           "text": "Текст параграфа...",
@@ -749,8 +757,13 @@ class ArticleGenerator:
         if not article_ctx.evidence_index and not article_ctx.operational_timeline:
             raise NoSubstantiveEditorialError("no evidence or timeline present in article context")
 
+        editorial_config = getattr(
+            self.config.settings, "publication_editorial", PublicationEditorialConfig()
+        )
+        length_profile = derive_article_length_profile(article_ctx, editorial_config)
+
         context_str = article_ctx.to_prompt_context()
-        system_prompt = self._build_event_article_system_prompt()
+        system_prompt = self._build_event_article_system_prompt(length_profile=length_profile)
         user_prompt = f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\n{context_str}"
 
         writer_attempt_id = 0
@@ -797,10 +810,9 @@ class ArticleGenerator:
                 raise ValueError("article writer response is not a JSON object")
 
             draft = StructuredArticleDraft.from_dict(parsed)
-            editorial_config = getattr(
-                self.config.settings, "publication_editorial", PublicationEditorialConfig()
+            val_res = validate_article_draft(
+                draft, article_ctx, editorial_config, length_profile=length_profile
             )
-            val_res = validate_article_draft(draft, article_ctx, editorial_config)
 
             if not val_res.is_valid:
                 self.logger.warning(
@@ -813,7 +825,9 @@ class ArticleGenerator:
                         "failed",
                         error_kind="ValidationFailed",
                         metadata={
+                            "status": "validation_fallback",
                             "violations": list(val_res.violations),
+                            "length_profile": length_profile.richness,
                             "unsupported_claims": [
                                 {"kind": c.kind, "raw": c.raw, "excerpt": c.excerpt}
                                 for c in val_res.unsupported_claims
@@ -824,7 +838,11 @@ class ArticleGenerator:
                     article_ctx,
                     attempt_observer=attempt_observer,
                     reason="article_evidence_validation_failed",
-                    metadata={"violations": list(val_res.violations)},
+                    metadata={
+                        "status": "validation_fallback",
+                        "violations": list(val_res.violations),
+                        "length_profile": length_profile.richness,
+                    },
                 )
 
             body = draft.render_markdown()
@@ -851,8 +869,18 @@ class ArticleGenerator:
                 for u in trace
             ]
             success_meta = {
+                "status": "writer_success",
+                "length_profile": length_profile.richness,
+                "target_bounds": {
+                    "min_words": length_profile.target_min_words,
+                    "max_words": length_profile.target_max_words,
+                    "min_sections": length_profile.target_min_sections,
+                    "max_sections": length_profile.target_max_sections,
+                },
                 "validation": {
                     "is_valid": True,
+                    "word_count": val_res.word_count,
+                    "section_count": val_res.section_count,
                     "unsupported_claim_count": 0,
                     "unit_count": len(trace),
                 },
@@ -874,12 +902,16 @@ class ArticleGenerator:
             )
             if attempt_observer is not None and writer_attempt_id > 0:
                 await attempt_observer.attempt_finished(
-                    writer_attempt_id, "failed", error_kind=type(exc).__name__
+                    writer_attempt_id,
+                    "failed",
+                    error_kind=type(exc).__name__,
+                    metadata={"status": "writer_error_fallback"},
                 )
             return await self._render_event_article_fallback_with_attempt(
                 article_ctx,
                 attempt_observer=attempt_observer,
                 reason=f"writer_error:{type(exc).__name__}",
+                metadata={"status": "writer_error_fallback"},
             )
 
     async def _render_event_article_fallback_with_attempt(

@@ -6,12 +6,30 @@ without city-specific examples or aliases.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.publication.article_length import ArticleLengthProfile
+
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v1"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v1"
 
 
-def build_article_narrative_contract(*, output_language: str = "Russian") -> str:
+def build_article_narrative_contract(
+    *,
+    output_language: str = "Russian",
+    length_profile: ArticleLengthProfile | None = None,
+) -> str:
     """Build generic narrative editorial newsroom instructions for long-form articles."""
+    target_str = ""
+    if length_profile is not None:
+        target_str = (
+            f"\n- Target Editorial Profile ({length_profile.richness.upper()}): "
+            f"{length_profile.target_min_words}–{length_profile.target_max_words} words "
+            f"across {length_profile.target_min_sections}–{length_profile.target_max_sections} thematic sections. "
+            f"Focus on natural narrative depth without padding."
+        )
+
     return f"""### Journalistic Synthesis & Narrative Standards (Output Language: {output_language})
 
 1. Role & Voice:
@@ -21,6 +39,8 @@ def build_article_narrative_contract(*, output_language: str = "Russian") -> str
 2. Presentation vs. Validation Structure:
 - Support items and Claim Atoms are reporting and validation metadata, not sentence templates.
 - A single natural paragraph may combine several independently supported claims when they form one coherent narrative thought.
+- Group 2–5 related supports into a cohesive narrative section under an intuitive thematic heading.
+- Section headings are thematic titles and do not require claim atoms unless they contain concrete numbers, dates, or prices.
 - Do not mechanically generate one sentence per support. Synthesize related observations into natural, flowing prose.
 
 3. Narrative Composition Principles:
@@ -32,7 +52,7 @@ def build_article_narrative_contract(*, output_language: str = "Russian") -> str
 - Transitions: Neutral connective phrases (e.g. "meanwhile", "at the same time", "against this background") are permitted only when they connect verified observations without asserting unsupported causal links.
 - Direct quotes: Use direct quotes sparingly and only when exact quoted text exists in authorized supports.
 - Evidence boundary: Prefer concrete supported details over abstract editorial generalizations or commentary.
-- Proportion & length: Do not pad a thin day to reach an arbitrary length. State supported facts concisely without fluff.
+- Proportion & length: Do not pad a thin day to reach an arbitrary length. State supported facts concisely without fluff. On rich days, develop major storylines thoroughly across sections without repeating facts.{target_str}
 - Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented consequences, invented mechanisms, or speculative interpretations.
 """
 
