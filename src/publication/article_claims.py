@@ -7,6 +7,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from src.publication.article_semantic_lexicon import (
+    canonical_semantic_concepts,
+    canonicalize_semantic_token,
+)
+
 ClaimKind = Literal[
     "number",
     "date",
@@ -426,10 +431,23 @@ def find_unsupported_claims(
     for claim in claims:
         norm = claim.normalized
 
-        if claim.kind in ("phone", "money", "percent", "acronym"):
+        if claim.kind in ("phone", "money", "percent"):
             # Direct normalized substring search
             if not any(norm in sup for sup in norm_supports):
                 unsupported.append(claim)
+
+        elif claim.kind == "acronym":
+            if not any(norm in sup for sup in norm_supports):
+                acronym_concept = canonicalize_semantic_token(norm)
+                if not (
+                    acronym_concept.startswith("concept:")
+                    and any(
+                        acronym_concept in canonical_semantic_concepts(st)
+                        for st in support_texts
+                        if st
+                    )
+                ):
+                    unsupported.append(claim)
 
         elif claim.kind == "direct_quote":
             quote_sources = (

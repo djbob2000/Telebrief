@@ -7,6 +7,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from src.publication.article_claims import stem_word
+from src.publication.article_semantic_lexicon import (
+    canonical_semantic_concepts,
+    canonicalize_semantic_token,
+)
 
 _TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]+")
 _SENTENCE_SPLIT_RE = re.compile(r"[.!?\n]+")
@@ -356,24 +360,30 @@ def assess_semantic_support(
     # 1. Prepare support tokens and stems
     support_stems: set[str] = set()
     support_tokens_lower: set[str] = set()
+    support_concepts: set[str] = set()
     for st in support_texts:
         if not st:
             continue
+        support_concepts.update(canonical_semantic_concepts(st))
         cleaned = st.lower().replace("ё", "е")
         for tok in _TOKEN_RE.findall(cleaned):
             if len(tok) >= 2 and tok not in _STOPWORDS:
                 support_tokens_lower.add(tok)
                 support_stems.add(stem_word(tok))
 
+    claim_concepts = canonical_semantic_concepts(claim_text)
+
     # 2. Extract and check claim proper names
     claim_proper_names = _extract_proper_name_candidates(claim_text)
     unmatched_proper_names_set: set[str] = set()
     for pn in claim_proper_names:
         pn_stem = stem_word(pn)
+        pn_concept = canonicalize_semantic_token(pn)
         matched = (
             pn in support_tokens_lower
             or any(_stems_match(pn_stem, s_stem) for s_stem in support_stems)
             or any(pn in st.lower().replace("ё", "е") for st in support_texts)
+            or (pn_concept.startswith("concept:") and pn_concept in support_concepts)
         )
         if not matched:
             unmatched_proper_names_set.add(pn)
@@ -417,11 +427,27 @@ def assess_semantic_support(
     unmatched_non_glue: list[str] = []
     matched_count = 0
 
+    has_quantity_100 = "quantity:>100" in claim_concepts and "quantity:>100" in support_concepts
+    quantity_100_tokens = {
+        "более",
+        "свыше",
+        "понад",
+        "більше",
+        "сто",
+        "ста",
+        "сотня",
+        "сотню",
+        "сотні",
+    }
+
     for tok, stem in zip(claim_content_tokens, claim_content_stems, strict=True):
+        tok_concept = canonicalize_semantic_token(tok)
         matched = (
             tok in support_tokens_lower
             or stem in support_stems
             or any(_stems_match(stem, s_stem) for s_stem in support_stems)
+            or (tok_concept.startswith("concept:") and tok_concept in support_concepts)
+            or (has_quantity_100 and tok in quantity_100_tokens)
         )
         if matched:
             matched_count += 1

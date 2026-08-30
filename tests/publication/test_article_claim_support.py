@@ -225,3 +225,18 @@ def test_attempt74_fixture_contains_required_regression_groups() -> None:
         "unsupported-water-domain",
         "unsupported-street-scope",
     }
+
+
+@pytest.mark.unit
+def test_ru_ua_uav_paraphrase_is_semantically_supported() -> None:
+    support = make_support("застосувала 626 безпілотників")
+    assessment = assess_claim_against_supports("Применила 626 БПЛА", [support])
+    assert assessment.supported is True
+    assert assessment.unsupported_concrete_claims == ()
+
+
+@pytest.mark.unit
+def test_ru_ua_over_hundred_reports_is_semantically_supported() -> None:
+    support = make_support("надійшло понад сотню повідомлень")
+    assessment = assess_claim_against_supports("Поступило более ста сообщений", [support])
+    assert assessment.supported is True
