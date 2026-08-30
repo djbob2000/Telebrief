@@ -764,7 +764,11 @@ class ArticleGenerator:
         if article_ctx is None:
             raise NoSubstantiveEditorialError("no article editorial context present")
 
-        if not article_ctx.evidence_index and not article_ctx.operational_timeline:
+        if (
+            not article_ctx.support_index
+            and not article_ctx.evidence_index
+            and not article_ctx.operational_timeline
+        ):
             raise NoSubstantiveEditorialError("no evidence or timeline present in article context")
 
         editorial_config = getattr(

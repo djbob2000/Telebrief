@@ -27,7 +27,11 @@ from src.publication.repository import (
 _NOW = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
 
 
-def _make_config(*, digest_narrative_mode: str = "single_call") -> Config:
+def _make_config(
+    *,
+    digest_narrative_mode: str = "single_call",
+    article_min_words: int = 800,
+) -> Config:
     return Config(
         telegram_api_id=12345,
         telegram_api_hash="test_hash",
@@ -45,6 +49,7 @@ def _make_config(*, digest_narrative_mode: str = "single_call") -> Config:
             publication_editorial=PublicationEditorialConfig(
                 digest_narrative_mode=digest_narrative_mode,
                 digest_narrative_max_cards_per_block=6,
+                article_min_words=article_min_words,
             ),
         ),
     )
@@ -406,3 +411,225 @@ async def test_digest_narrative_single_call_validation_failure_falls_back_to_det
     assert mock_provider.chat_completion.call_count == 1
     # Fallback to deterministic bullets
     assert "• **Ремонт на сетях**" in pub.body
+
+
+class _RecordingObserver:
+    def __init__(self):
+        self.started: list[dict] = []
+        self.finished: list[dict] = []
+
+    async def attempt_started(self, stage: str, **kwargs) -> int:
+        self.started.append({"stage": stage, **kwargs})
+        return len(self.started)
+
+    async def attempt_finished(self, attempt_id: int, status: str, **kwargs) -> None:
+        self.finished.append({"attempt_id": attempt_id, "status": status, **kwargs})
+
+
+@pytest.mark.asyncio
+async def test_event_first_article_city_life_broad_coverage():
+    from src.editorial_models import StoryCard
+    from src.publication.article_context import ArticleEditorialContext, ArticleSupport
+
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    config = _make_config(article_min_words=100)
+
+    card_power = StoryCard(
+        id="story:power", topic="Электроснабжение", importance="high", summary="Свет"
+    )
+
+    card_safety = StoryCard(
+        id="story:safety", topic="Безопасность над морем", importance="high", summary="Вспышки"
+    )
+    card_telecom = StoryCard(
+        id="story:telecom", topic="Связь при отключениях", importance="medium", summary="Связь"
+    )
+    card_sport = StoryCard(
+        id="story:sport", topic="Набор в спортшколу", importance="low", summary="Спорт"
+    )
+
+    s_p1 = ArticleSupport(
+        support_id="story:power:1",
+        text="Света нет около месяца",
+        source_text="Света нет около месяца в некоторых районах",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=now,
+        evidence_kind="community_report",
+        story_id="story:power",
+    )
+    s_p2 = ArticleSupport(
+        support_id="story:power:2",
+        text="Жильцы дома скидываются по 300 рублей на генератор",
+        source_text="Жильцы дома скидываются по 300 рублей на генератор для воды",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-2",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=now,
+        evidence_kind="community_report",
+        story_id="story:power",
+    )
+    s_sf = ArticleSupport(
+        support_id="story:safety:1",
+        text="Видели две вспышки над морем",
+        source_text="Жители видели две вспышки над морем ночью",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-3",),
+        fragment_ids=(3,),
+        source_item_ids=(3,),
+        observed_at=now,
+        evidence_kind="community_report",
+        story_id="story:safety",
+    )
+    s_tel = ArticleSupport(
+        support_id="story:telecom:1",
+        text="Оборудование провайдера работает от генератора",
+        source_text="Оборудование провайдера работает от генератора жителя",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-4",),
+        fragment_ids=(4,),
+        source_item_ids=(4,),
+        observed_at=now,
+        evidence_kind="service_access",
+        story_id="story:telecom",
+    )
+    s_sp = ArticleSupport(
+        support_id="story:sport:1",
+        text="Спортивная школа объявила бесплатный набор детей на футбол",
+        source_text="Спортивная школа объявила бесплатный набор детей на футбол",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-5",),
+        fragment_ids=(5,),
+        source_item_ids=(5,),
+        observed_at=now,
+        evidence_kind="service_access",
+        story_id="story:sport",
+    )
+
+    all_supports = (s_p1, s_p2, s_sf, s_tel, s_sp)
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение", "Безопасность", "Связь", "Спорт"),
+        support_index=all_supports,
+        support_by_id={s.support_id: s for s in all_supports},
+        evidence_index=all_supports,
+        recurring_topics=("utilities", "sport"),
+        story_cards=(card_power, card_safety, card_telecom, card_sport),
+    )
+
+    valid_draft_json = {
+        "title": "Обстановка в городе: электроснабжение, события на побережье и связь",
+        "title_support_ids": ["story:power:1"],
+        "title_claims": [
+            {"text": "Света нет около месяца", "cited_support_ids": ["story:power:1"]}
+        ],
+        "lead": "По сообщениям жителей, в городе около месяца нет света, жильцы скидываются на генератор, а в ночное время очевидцы видели две вспышки над морем.",
+        "lead_support_ids": ["story:power:1", "story:power:2", "story:safety:1"],
+        "lead_claims": [
+            {"text": "Света нет около месяца", "cited_support_ids": ["story:power:1"]},
+            {
+                "text": "Жильцы дома скидываются по 300 рублей на генератор",
+                "cited_support_ids": ["story:power:2"],
+            },
+            {"text": "Видели две вспышки над морем", "cited_support_ids": ["story:safety:1"]},
+        ],
+        "sections": [
+            {
+                "heading": "Электроснабжение и решения жителей",
+                "heading_support_ids": ["story:power:1"],
+                "heading_claims": [],
+                "paragraphs": [
+                    {
+                        "text": "По сообщениям жителей, света нет около месяца во многих домах города. Жители рассказывают о продолжающихся сложностях и делятся способами организации быта. Жильцы дома скидываются по 300 рублей на генератор, чтобы организовать подачу воды в помещения. Такое совместное решение жильцов дома позволяет регулярно обеспечивать водой квартиры в период длительных отключений электроэнергии.",
+                        "cited_support_ids": ["story:power:1", "story:power:2"],
+                        "claims": [
+                            {
+                                "text": "Света нет около месяца",
+                                "cited_support_ids": ["story:power:1"],
+                            },
+                            {
+                                "text": "Жильцы дома скидываются по 300 рублей на генератор",
+                                "cited_support_ids": ["story:power:2"],
+                            },
+                        ],
+                    }
+                ],
+            },
+            {
+                "heading": "События в акватории",
+                "heading_support_ids": ["story:safety:1"],
+                "heading_claims": [],
+                "paragraphs": [
+                    {
+                        "text": "Жители сообщают о ночных наблюдениях в прибрежной части города. Очевидцы рассказывают, что видели две вспышки над морем в ночное время. Жители обсуждают увиденные две вспышки над морем и делятся информацией в городских сообществах, описывая события ночи.",
+                        "cited_support_ids": ["story:safety:1"],
+                        "claims": [
+                            {
+                                "text": "Видели две вспышки над морем",
+                                "cited_support_ids": ["story:safety:1"],
+                            },
+                        ],
+                    }
+                ],
+            },
+            {
+                "heading": "Связь и городская жизнь",
+                "heading_support_ids": ["story:telecom:1", "story:sport:1"],
+                "heading_claims": [],
+                "paragraphs": [
+                    {
+                        "text": "В сфере коммуникаций жители находят способы оставаться на связи. Оборудование провайдера работает от генератора для поддержания доступа к сервисам. Кроме того, спортивная школа объявила бесплатный набор детей на футбол. Бесплатный набор детей на футбол открывает возможность для регулярных занятий спортом.",
+                        "cited_support_ids": ["story:telecom:1", "story:sport:1"],
+                        "claims": [
+                            {
+                                "text": "Оборудование провайдера работает от генератора",
+                                "cited_support_ids": ["story:telecom:1"],
+                            },
+                            {
+                                "text": "Спортивная школа объявила бесплатный набор детей на футбол",
+                                "cited_support_ids": ["story:sport:1"],
+                            },
+                        ],
+                    }
+                ],
+            },
+        ],
+    }
+
+    mock_provider = AsyncMock()
+    mock_provider.chat_completion.return_value = json.dumps(valid_draft_json)
+
+    import logging
+
+    generator = ArticleGenerator(config=config, logger=logging.getLogger("test"))
+    generator.provider = mock_provider
+    observer = _RecordingObserver()
+
+    title, lead, body = await generator.generate_from_event_article_context(
+        ctx, attempt_observer=observer
+    )
+
+    assert mock_provider.chat_completion.call_count == 1
+    call_kwargs = mock_provider.chat_completion.call_args.kwargs
+    user_prompt = next(m["content"] for m in call_kwargs["messages"] if m["role"] == "user")
+    assert "ARTICLE COVERAGE PLAN" in user_prompt
+    assert "DETAIL SUPPORTS:" in user_prompt
+
+    assert len(observer.finished) == 1
+    meta = observer.finished[0]["metadata"]
+    assert meta["status"] == "writer_success"
+    cov = meta["coverage"]
+    assert cov["planned_story_count"] == 4
+    assert cov["covered_story_count"] == 4
+    assert cov["develop_story_coverage"] == 1.0
+    assert cov["weave_story_coverage"] == 1.0
+    assert cov["brief_story_coverage"] == 1.0
+    assert cov["detail_support_coverage"] == 1.0
+    assert cov["leaked_contact_payloads"] == []

@@ -53,5 +53,26 @@
         {"id": "story:question:evidence:0:frag:11", "text": "Житель спрашивает, работает ли пенсионный фонд", "kind": "resident_question", "publication_use": "CONTEXT"}
       ]
     }
-  ]
+  ],
+  "expectations": {
+    "must_plan_story_ids": [
+      "story:power",
+      "story:safety",
+      "story:telecom",
+      "story:sport",
+      "story:route"
+    ],
+    "must_not_plan_story_ids": [
+      "story:question"
+    ],
+    "must_preserve_detail_support_ids": [
+      "story:power:evidence:1:frag:2",
+      "story:power:evidence:2:frag:3",
+      "story:safety:evidence:1:frag:6"
+    ],
+    "writer_source_must_not_contain": [
+      "+79900292947",
+      "https://bus.example"
+    ]
+  }
 }
