@@ -58,8 +58,8 @@ def test_plan_digest_narrative_blocks_single_rubric_under_limit():
         for i in range(1, 6)
     ]
     evidence_map = {
-        f"story:{i}:evidence:0:frag:{100+i}": _make_evidence(
-            f"story:{i}:evidence:0:frag:{100+i}", i, f"Факт {i}"
+        f"story:{i}:evidence:0:frag:{100 + i}": _make_evidence(
+            f"story:{i}:evidence:0:frag:{100 + i}", i, f"Факт {i}"
         )
         for i in range(1, 6)
     }
