@@ -2,16 +2,38 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 from dataclasses import dataclass
 
 from src.config_loader import PublicationEditorialConfig
+from src.publication.article_claim_support import assess_claim_against_supports
 from src.publication.article_claims import ConcreteClaim, find_unsupported_claims
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
-from src.publication.article_models import StructuredArticleDraft
+from src.publication.article_models import ArticleClaimAtom, StructuredArticleDraft
 
 _INTERNAL_HANDLE_PATTERN = re.compile(
     r"\[(?:story:\d+:evidence:\d+:frag:\d+|story:\d+|evidence:\d+:frag:\d+|op:[^\]]+|SUPPORT\s+[^\]]+)\]",
+    re.IGNORECASE,
+)
+
+_EXPANSION_RE = re.compile(
+    r"\b(?:хроник[а-я]*\s+недел[а-я]*|итог[а-я]*\s+недел[а-я]*|событи[а-я]*\s+недел[а-я]*|обзор[а-я]*\s+недел[а-я]*|за\s+недел[а-я]*|итог[а-я]*\s+месяц[а-я]*|событи[а-я]*\s+месяц[а-я]*|обзор[а-я]*\s+месяц[а-я]*|за\s+месяц[а-я]*)\b",
+    re.IGNORECASE,
+)
+
+_CONTINUATION_RE = re.compile(
+    r"\b(?:продолжа[а-я]+|сохраня[а-я]+|по-прежнему|ранее|с начала|до этого|прежде)\b",
+    re.IGNORECASE,
+)
+
+_FUTURE_MARKER_RE = re.compile(
+    r"\b(?:будет|будут|запланирован[а-я]*|предстоит|ожидает[а-я]*|намечен[а-я]*|планирует[а-я]*)\b|\b\d{1,2}\s+(?:января|февраля|марта|апреля|мая|июня|июля|августа|сентября|октября|ноября|декабря)|\b\d{1,2}\.\d{2}\b",
+    re.IGNORECASE,
+)
+
+_CURRENT_STATE_OUTAGE_RE = re.compile(
+    r"\b(?:отключен[оаыи]|отключен|не\s+работа[а-я]+|отсутству[а-я]+|прекращен[оаыи]|прекращен|обесточен[оаыи]|обесточен)\b",
     re.IGNORECASE,
 )
 
@@ -116,25 +138,50 @@ def validate_article_draft(
             )
         )
 
-    # 3. Unit-by-unit validation
-    # Construct sequence of units: (unit_id, unit_type, text, cited_support_ids)
-    units: list[tuple[str, str, str, tuple[str, ...]]] = []
-    units.append(("TITLE", "title", draft.title, draft.title_support_ids))
-    units.append(("LEAD", "lead", draft.lead, draft.lead_support_ids))
+    # 3. Reporting window expansion check (for windows <= 48h)
+    is_short_window = True
+    if context.publication_window is not None:
+        delta = context.publication_window.snapshot_at - context.publication_window.lookback_start
+        if delta > dt.timedelta(hours=48):
+            is_short_window = False
+
+    if is_short_window:
+        if _EXPANSION_RE.search(draft.title):
+            issues.append(
+                ArticleValidationIssue(
+                    code="REPORTING_WINDOW_EXPANSION",
+                    unit_id="TITLE",
+                    message=f"Draft title expands reporting window beyond configured lookback: '{draft.title}'",
+                )
+            )
+        if _EXPANSION_RE.search(draft.lead):
+            issues.append(
+                ArticleValidationIssue(
+                    code="REPORTING_WINDOW_EXPANSION",
+                    unit_id="LEAD",
+                    message=f"Draft lead expands reporting window beyond configured lookback: '{draft.lead}'",
+                )
+            )
+
+    # 4. Unit-by-unit validation
+    # Construct sequence of units: (unit_id, unit_type, text, cited_support_ids, claim_atoms)
+    units: list[tuple[str, str, str, tuple[str, ...], tuple[ArticleClaimAtom, ...]]] = []
+    units.append(("TITLE", "title", draft.title, draft.title_support_ids, draft.title_claims))
+    units.append(("LEAD", "lead", draft.lead, draft.lead_support_ids, draft.lead_claims))
 
     p_idx = 1
     for s_idx, sec in enumerate(draft.sections, start=1):
         h_id = f"H{s_idx:03d}"
-        units.append((h_id, "heading", sec.heading, sec.heading_support_ids))
+        units.append((h_id, "heading", sec.heading, sec.heading_support_ids, sec.heading_claims))
         for para in sec.paragraphs:
             p_id = f"P{p_idx:03d}"
-            units.append((p_id, "paragraph", para.text, para.cited_support_ids))
+            units.append((p_id, "paragraph", para.text, para.cited_support_ids, para.claims))
             p_idx += 1
 
     # Support map from context
     support_map = context.support_by_id
 
-    for unit_id, unit_type, unit_text, cited_ids in units:
+    for unit_id, unit_type, unit_text, cited_ids, claim_atoms in units:
         if not unit_text.strip():
             continue
 
@@ -159,6 +206,29 @@ def validate_article_draft(
             )
             continue
 
+        # Check claim atoms existence
+        if not claim_atoms:
+            issues.append(
+                ArticleValidationIssue(
+                    code="MISSING_CLAIM_ATOMS",
+                    unit_id=unit_id,
+                    message=f"Unit {unit_id} ({unit_type}) must contain at least one claim atom",
+                    support_ids=cited_ids,
+                )
+            )
+        else:
+            unit_sids = set(cited_ids)
+            claim_sids = {sid for c in claim_atoms for sid in c.cited_support_ids}
+            if unit_sids != claim_sids:
+                issues.append(
+                    ArticleValidationIssue(
+                        code="CLAIM_SUPPORT_MISMATCH",
+                        unit_id=unit_id,
+                        message=f"Unit {unit_id} support IDs {sorted(unit_sids)} do not match claim atom support IDs {sorted(claim_sids)}",
+                        support_ids=cited_ids,
+                    )
+                )
+
         valid_supports: list[ArticleSupport] = []
         has_unknown = False
         for sid in cited_ids:
@@ -176,12 +246,40 @@ def validate_article_draft(
             else:
                 valid_supports.append(support_map[sid])
 
+        # Also verify claim atoms' support IDs
+        for claim in claim_atoms:
+            for csid in claim.cited_support_ids:
+                if csid not in support_map:
+                    unknown_evidence_ids.append(csid)
+                    has_unknown = True
+                    issues.append(
+                        ArticleValidationIssue(
+                            code="UNKNOWN_CLAIM_SUPPORT_ID",
+                            unit_id=unit_id,
+                            message=f"Unit {unit_id} claim '{claim.text}' cites unknown support ID '{csid}'",
+                            support_ids=(csid,),
+                        )
+                    )
+
         if has_unknown or not valid_supports:
             continue
 
-        # Check publication policy
-        # title, lead, heading require at least one PUBLISH support
-        if unit_type in ("title", "lead", "heading"):
+        # Check publication policy and temporal roles for title and lead
+        if unit_type in ("title", "lead"):
+            has_publish_current = any(
+                s.publication_use == "PUBLISH" and s.temporal_role == "CURRENT_WINDOW"
+                for s in valid_supports
+            )
+            if not has_publish_current:
+                issues.append(
+                    ArticleValidationIssue(
+                        code="INVALID_SUPPORT_POLICY",
+                        unit_id=unit_id,
+                        message=f"Unit {unit_id} ({unit_type}) requires at least one PUBLISH support with CURRENT_WINDOW temporal role",
+                        support_ids=cited_ids,
+                    )
+                )
+        elif unit_type == "heading":
             if not any(s.publication_use == "PUBLISH" for s in valid_supports):
                 issues.append(
                     ArticleValidationIssue(
@@ -192,11 +290,75 @@ def validate_article_draft(
                     )
                 )
 
-        # Check unsupported concrete claims against cited support texts
+        # Temporal framing checks
+        # 1. Historical context framing
+        has_hist = any(s.temporal_role == "HISTORICAL_CONTEXT" for s in valid_supports)
+        if has_hist:
+            if unit_type in ("title", "lead"):
+                has_curr = any(s.temporal_role == "CURRENT_WINDOW" for s in valid_supports)
+                has_continuation = bool(_CONTINUATION_RE.search(unit_text))
+                if not (has_curr and has_continuation):
+                    issues.append(
+                        ArticleValidationIssue(
+                            code="HISTORICAL_CONTEXT_UNFRAMED",
+                            unit_id=unit_id,
+                            message=f"Unit {unit_id} cites historical context without current window evidence and continuation framing",
+                            support_ids=cited_ids,
+                        )
+                    )
+
+        # 2. Future scheduled framing
+        all_future = bool(valid_supports) and all(
+            s.temporal_role == "FUTURE_SCHEDULED" for s in valid_supports
+        )
+        if all_future:
+            has_active_outage_desc = bool(_CURRENT_STATE_OUTAGE_RE.search(unit_text))
+            if unit_type in ("lead", "paragraph"):
+                has_future_marker = bool(_FUTURE_MARKER_RE.search(unit_text))
+                if not has_future_marker or has_active_outage_desc:
+                    issues.append(
+                        ArticleValidationIssue(
+                            code="FUTURE_CONTEXT_UNFRAMED",
+                            unit_id=unit_id,
+                            message=f"Unit {unit_id} ({unit_type}) with future scheduled supports lacks explicit future marker or describes outage as current",
+                            support_ids=cited_ids,
+                        )
+                    )
+            elif unit_type == "heading":
+                if has_active_outage_desc:
+                    issues.append(
+                        ArticleValidationIssue(
+                            code="FUTURE_CONTEXT_UNFRAMED",
+                            unit_id=unit_id,
+                            message=f"Heading {unit_id} with future scheduled supports describes outage as currently active",
+                            support_ids=cited_ids,
+                        )
+                    )
+
+        # Check claim atoms against their cited supports
+        for claim in claim_atoms:
+            c_supports = [support_map[sid] for sid in claim.cited_support_ids if sid in support_map]
+            if c_supports:
+                assessment = assess_claim_against_supports(
+                    claim.text,
+                    c_supports,
+                    min_content_coverage=config.article_claim_min_content_coverage,
+                )
+                if not assessment.supported:
+                    issues.append(
+                        ArticleValidationIssue(
+                            code="UNSUPPORTED_CLAIM_ATOM",
+                            unit_id=unit_id,
+                            message=f"Unit {unit_id} claim atom '{claim.text}' is not supported: missing stems {assessment.unsupported_content_stems}",
+                            support_ids=claim.cited_support_ids,
+                            unsupported_claims=assessment.unsupported_concrete_claims,
+                        )
+                    )
+
+        # Defense in depth: Check unsupported concrete claims against cited support texts
         support_texts = [t for s in valid_supports for t in (s.text, s.source_text) if t]
         unsupported = find_unsupported_claims(unit_text, support_texts)
         if unsupported:
-            # If paragraph has concrete claims, check that it has at least one PUBLISH support
             if unit_type == "paragraph" and not any(
                 s.publication_use == "PUBLISH" for s in valid_supports
             ):
@@ -209,10 +371,10 @@ def validate_article_draft(
                     )
                 )
 
-            for claim in unsupported:
-                if claim.kind == "causal_relation":
+            for claim_item in unsupported:
+                if claim_item.kind == "causal_relation":
                     code = "UNSUPPORTED_CAUSAL_RELATION"
-                elif claim.kind == "mechanism_relation":
+                elif claim_item.kind == "mechanism_relation":
                     code = "UNSUPPORTED_MECHANISM"
                 else:
                     code = "UNSUPPORTED_CONCRETE_CLAIM"
@@ -221,9 +383,9 @@ def validate_article_draft(
                     ArticleValidationIssue(
                         code=code,
                         unit_id=unit_id,
-                        message=f"Unit {unit_id} contains unsupported {claim.kind} claim '{claim.raw}'",
+                        message=f"Unit {unit_id} contains unsupported {claim_item.kind} claim '{claim_item.raw}'",
                         support_ids=cited_ids,
-                        unsupported_claims=(claim,),
+                        unsupported_claims=(claim_item,),
                     )
                 )
 

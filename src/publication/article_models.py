@@ -82,11 +82,11 @@ class StructuredArticleDraft:
 
     title: str
     title_support_ids: tuple[str, ...]
-    title_claims: tuple[ArticleClaimAtom, ...]
     lead: str
     lead_support_ids: tuple[str, ...]
-    lead_claims: tuple[ArticleClaimAtom, ...]
     sections: tuple[ArticleSection, ...]
+    title_claims: tuple[ArticleClaimAtom, ...] = ()
+    lead_claims: tuple[ArticleClaimAtom, ...] = ()
     cited_evidence_ids: tuple[str, ...] = ()
     word_count: int = 0
 
