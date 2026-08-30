@@ -226,7 +226,6 @@ async def run_benchmark(
         print("=" * 70 + "\n")
 
 
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Publication Quality Benchmark")
     parser.add_argument("--hours", type=int, default=24, help="Lookback hours (default: 24)")
