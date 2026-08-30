@@ -6,7 +6,10 @@ from pathlib import Path
 
 from src.editorial_models import StoryCard
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
-from src.publication.article_coverage import build_article_coverage_plan
+from src.publication.article_coverage import (
+    build_article_coverage_plan,
+    score_detail_support,
+)
 
 _FIXTURE_PATH = Path(__file__).parents[1] / "fixtures" / "article_city_life_coverage_cases.json"
 
@@ -14,6 +17,24 @@ _FIXTURE_PATH = Path(__file__).parents[1] / "fixtures" / "article_city_life_cove
 def _load_cases() -> dict:
     with open(_FIXTURE_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def _make_simple_support(
+    text: str, evidence_kind: str = "community_report", source_text: str = ""
+) -> ArticleSupport:
+    return ArticleSupport(
+        support_id="story:test:evidence:0:frag:1",
+        text=text,
+        source_text=source_text or text,
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc),
+        evidence_kind=evidence_kind,
+        story_id="story:test",
+    )
 
 
 def _build_test_context(data: dict) -> tuple[list[StoryCard], ArticleEditorialContext]:
@@ -67,6 +88,24 @@ def test_city_life_fixture_contains_major_supporting_brief_and_question_cases():
     }
 
 
+def test_score_detail_support():
+    assert score_detail_support(
+        _make_simple_support("Жильцы скидываются по 300 рублей на генератор")
+    ) > score_detail_support(_make_simple_support("Жители обсуждают ситуацию"))
+
+    assert score_detail_support(_make_simple_support("Автобус ходит примерно раз в час")) > 0
+
+    assert (
+        score_detail_support(
+            _make_simple_support(
+                "Житель запитал оборудование провайдера от своего генератора",
+                evidence_kind="service_access",
+            )
+        )
+        > 0
+    )
+
+
 def test_build_article_coverage_plan_prominence_and_context_only():
     data = _load_cases()
     cards, context = _build_test_context(data)
@@ -88,3 +127,8 @@ def test_build_article_coverage_plan_prominence_and_context_only():
         "story:sport",
         "story:route",
     ]
+
+    # Detail support budgets
+    assert len(by_id["story:power"].detail_support_ids) == 3
+    assert len(by_id["story:telecom"].detail_support_ids) == 2
+    assert len(by_id["story:sport"].detail_support_ids) == 1

@@ -7,11 +7,18 @@ from dataclasses import dataclass
 from typing import Literal
 
 from src.editorial_models import StoryCard
+from src.publication.article_claims import extract_concrete_claims
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 
 _STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 
 ArticleProminence = Literal["DEVELOP", "WEAVE", "BRIEF"]
+
+_DETAIL_LIMIT: dict[ArticleProminence, int] = {
+    "DEVELOP": 3,
+    "WEAVE": 2,
+    "BRIEF": 1,
+}
 
 
 @dataclass(frozen=True)
@@ -62,6 +69,41 @@ def _prominence(card: StoryCard, support_count: int) -> ArticleProminence:
     return "BRIEF"
 
 
+def score_detail_support(support: ArticleSupport) -> int:
+    text = " ".join(part for part in (support.text, support.source_text) if part).strip()
+    if not text:
+        return 0
+
+    score = 0
+    claims = extract_concrete_claims(text)
+    if claims:
+        score += 3
+    if support.evidence_kind in {
+        "community_report",
+        "service_access",
+        "operational_observation",
+    }:
+        score += 2
+    if len(support.source_text.split()) >= 8:
+        score += 1
+    if any(marker in support.source_text for marker in ("«", "»", '"')):
+        score += 1
+    return score
+
+
+def _detail_support_ids(
+    supports: tuple[ArticleSupport, ...],
+    prominence: ArticleProminence,
+) -> tuple[str, ...]:
+    ranked = sorted(
+        supports,
+        key=lambda s: (-score_detail_support(s), s.support_id),
+    )
+    positive = [s for s in ranked if score_detail_support(s) > 0]
+    chosen = positive or list(ranked)
+    return tuple(s.support_id for s in chosen[: _DETAIL_LIMIT[prominence]])
+
+
 def build_article_coverage_plan(
     cards: Sequence[StoryCard],
     context: ArticleEditorialContext,
@@ -72,13 +114,15 @@ def build_article_coverage_plan(
         supports = support_map.get(card.id, ())
         if not supports:
             continue
+        prominence = _prominence(card, len(supports))
         stories.append(
             ArticleStoryCoverage(
                 story_id=card.id,
                 topic=card.topic or card.summary or card.id,
                 rank=rank,
-                prominence=_prominence(card, len(supports)),
+                prominence=prominence,
                 support_ids=tuple(s.support_id for s in supports),
+                detail_support_ids=_detail_support_ids(supports, prominence),
             )
         )
     return ArticleCoveragePlan(stories=tuple(stories))
