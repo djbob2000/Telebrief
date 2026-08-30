@@ -374,13 +374,38 @@ def validate_article_draft(
                     min_content_coverage=config.article_claim_min_content_coverage,
                 )
                 if not assessment.supported:
+                    if assessment.blocking_proper_names:
+                        issues.append(
+                            ArticleValidationIssue(
+                                code="UNSUPPORTED_PROPER_NAME",
+                                unit_id=unit_id,
+                                message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported proper names {assessment.blocking_proper_names}",
+                                support_ids=claim.cited_support_ids,
+                                unsupported_claims=assessment.unsupported_concrete_claims,
+                            )
+                        )
+                    else:
+                        issues.append(
+                            ArticleValidationIssue(
+                                code="UNSUPPORTED_CLAIM_ATOM",
+                                unit_id=unit_id,
+                                message=f"Unit {unit_id} claim atom '{claim.text}' is not supported: missing stems {assessment.unsupported_content_stems}",
+                                support_ids=claim.cited_support_ids,
+                                unsupported_claims=assessment.unsupported_concrete_claims,
+                            )
+                        )
+                elif assessment.lexical_only_warning:
                     issues.append(
                         ArticleValidationIssue(
-                            code="UNSUPPORTED_CLAIM_ATOM",
+                            code="CLAIM_LEXICAL_DIVERGENCE",
                             unit_id=unit_id,
-                            message=f"Unit {unit_id} claim atom '{claim.text}' is not supported: missing stems {assessment.unsupported_content_stems}",
+                            message=(
+                                f"Unit {unit_id} claim atom '{claim.text}' has low lexical overlap "
+                                f"but no blocking semantic or concrete addition"
+                            ),
                             support_ids=claim.cited_support_ids,
-                            unsupported_claims=assessment.unsupported_concrete_claims,
+                            severity="warning",
+                            blocking=False,
                         )
                     )
 

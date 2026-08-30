@@ -1080,3 +1080,144 @@ def test_validate_article_draft_with_length_profile_accepts_soft_length() -> Non
     res_profile = validate_article_draft(draft, ctx, config, length_profile=profile)
     assert res_profile.is_valid
     assert len(res_profile.issues) == 0
+
+
+@pytest.mark.unit
+def test_charging_phone_paraphrase_is_warning_not_blocking() -> None:
+    sup = ArticleSupport(
+        support_id="story:1:evidence:0:frag:101",
+        text="Есть магазины, кафе, где можно зарядить телефон.",
+        source_text="Есть магазины, кафе, где можно зарядить телефон.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(101,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Заголовок",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        recurring_topics=(),
+    )
+    config = PublicationEditorialConfig(
+        article_min_words=5,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+    draft = StructuredArticleDraft(
+        title="Возможность подзарядки телефонов",
+        title_support_ids=(sup.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Возможность подзарядки телефонов",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        lead="В городе можно зарядить телефон в магазинах и кафе.",
+        lead_support_ids=(sup.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В городе можно зарядить телефон в магазинах и кафе",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Пункты зарядки",
+                heading_support_ids=(sup.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Часть магазинов и кафе предоставляет возможность зарядить телефон.",
+                        cited_support_ids=(sup.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Часть магазинов и кафе предоставляет возможность зарядить телефон",
+                                cited_support_ids=(sup.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=20,
+    )
+
+    result = validate_article_draft(draft, ctx, config)
+    assert result.is_valid is True
+    assert "CLAIM_LEXICAL_DIVERGENCE:P001" in result.all_violations
+    assert "CLAIM_LEXICAL_DIVERGENCE:P001" not in result.violations
+
+
+@pytest.mark.unit
+def test_unsupported_destination_is_blocking_proper_name() -> None:
+    sup = ArticleSupport(
+        support_id="story:1:evidence:0:frag:101",
+        text="Есть рейсы в Ростов и Таганрог.",
+        source_text="Есть рейсы в Ростов и Таганрог.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(101,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Заголовок",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        recurring_topics=(),
+    )
+    config = PublicationEditorialConfig(
+        article_min_words=5,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+    draft = StructuredArticleDraft(
+        title="Движение автобусных рейсов",
+        title_support_ids=(sup.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Движение автобусных рейсов",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        lead="Организовано автобусное сообщение по междугородним направлениям.",
+        lead_support_ids=(sup.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="Организовано автобусное сообщение по междугородним направлениям",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Расписание рейсов",
+                heading_support_ids=(sup.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Доступны рейсы в Москву и Воронеж.",
+                        cited_support_ids=(sup.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Доступны рейсы в Москву и Воронеж",
+                                cited_support_ids=(sup.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=20,
+    )
+
+    result = validate_article_draft(draft, ctx, config)
+    assert result.is_valid is False
+    assert any(v.startswith("UNSUPPORTED_PROPER_NAME:P001") for v in result.violations)

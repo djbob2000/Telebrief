@@ -107,3 +107,97 @@ def test_article_evidence_boundary_golden_suite() -> None:
             assert (
                 expected_code in issue_codes
             ), f"Case '{case_id}' expected code '{expected_code}' in {issue_codes}"
+
+
+@pytest.mark.unit
+def test_run48_aggregate_mixed_paraphrases_and_unsupported_destination() -> None:
+    sup1 = ArticleSupport(
+        support_id="sup:1",
+        text="Есть магазины, кафе, где можно зарядить телефон.",
+        source_text="Есть магазины, кафе, где можно зарядить телефон.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(101,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+    )
+    sup2 = ArticleSupport(
+        support_id="sup:2",
+        text="Есть рейсы в Ростов и Таганрог.",
+        source_text="Есть рейсы в Ростов и Таганрог.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:2",),
+        fragment_ids=(102,),
+        source_item_ids=(2,),
+        observed_at=_NOW,
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Заголовок",),
+        support_index=(sup1, sup2),
+        support_by_id={"sup:1": sup1, "sup:2": sup2},
+        recurring_topics=(),
+    )
+    config = PublicationEditorialConfig(
+        article_min_words=5,
+        article_max_words=500,
+        article_min_sections=1,
+        article_max_sections=10,
+    )
+    draft = StructuredArticleDraft(
+        title="Городская обстановка и транспорт",
+        title_support_ids=("sup:1",),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Городская обстановка и транспорт",
+                cited_support_ids=("sup:1",),
+            ),
+        ),
+        lead="В городе работают пункты подзарядки и курсируют междугородние автобусы.",
+        lead_support_ids=("sup:1", "sup:2"),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В городе работают пункты подзарядки и курсируют междугородние автобусы",
+                cited_support_ids=("sup:1", "sup:2"),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Обслуживание и рейсы",
+                heading_support_ids=("sup:1", "sup:2"),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Часть магазинов и кафе предоставляет возможность зарядить телефон.",
+                        cited_support_ids=("sup:1",),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Часть магазинов и кафе предоставляет возможность зарядить телефон",
+                                cited_support_ids=("sup:1",),
+                            ),
+                        ),
+                    ),
+                    ArticleParagraph(
+                        text="Доступны рейсы в Москву и Воронеж.",
+                        cited_support_ids=("sup:2",),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Доступны рейсы в Москву и Воронеж",
+                                cited_support_ids=("sup:2",),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=40,
+    )
+
+    result = validate_article_draft(draft, ctx, config)
+    assert result.is_valid is False
+    assert sum(v.startswith("CLAIM_LEXICAL_DIVERGENCE") for v in result.all_violations) >= 1
+    assert any(v.startswith("UNSUPPORTED_PROPER_NAME") for v in result.violations)
+    assert not any(
+        v.startswith("UNSUPPORTED_CLAIM_ATOM") for v in result.violations if "charging" in v.lower()
+    )
