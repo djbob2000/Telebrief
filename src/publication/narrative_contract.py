@@ -54,6 +54,13 @@ def build_article_narrative_contract(
 - Evidence boundary: Prefer concrete supported details over abstract editorial generalizations or commentary.
 - Proportion & length: Do not pad a thin day to reach an arbitrary length. State supported facts concisely without fluff. On rich days, develop major storylines thoroughly across sections without repeating facts.{target_str}
 - Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented consequences, invented mechanisms, or speculative interpretations.
+
+4. Epistemic Fidelity:
+- Single-source, community, resident, eyewitness, and explicitly unverified reports are authorized publication material when supplied as PUBLISH support; lack of corroboration is not a reason to omit them.
+- Preserve the support's epistemic status. For framing=attributed_report, write natural attribution such as "residents report", "according to a participant", or the output-language equivalent.
+- Do not upgrade community or attributed material to "officially confirmed", "established", or equivalent wording unless a cited support itself establishes that status.
+- Claim Atoms must contain the factual proposition being supported, not attribution boilerplate. Example: prose may say "According to residents, the district has no power" while the claim atom is "The district has no power" with the same support IDs.
+- Corroboration may strengthen wording or grouping, but never require two sources merely to publish a legitimate local report.
 """
 
 
@@ -79,4 +86,5 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 - Every concrete claim (numbers, dates, times, durations, status, locations) must be strictly grounded in the provided support texts.
 - Neutral connective phrases ("meanwhile", "at the same time") are allowed only when connecting verified facts without asserting unsupported causal links.
 - No speculation, sensationalism, or decorative filler.
+- Community/single-source reports marked as authorized support are publishable. Attribute them naturally; do not omit them only for lack of corroboration and do not present them as officially confirmed.
 """

@@ -381,8 +381,11 @@ class DigestNarrativeWriter:
                             "id": sid,
                             "text": evi.text,
                             "role": evi.source_role,
+                            "evidence_kind": evi.kind,
+                            "publication_use": evi.publication_use,
                         }
                     )
+
             blocks_payload.append(
                 {
                     "block_id": b.block_id,

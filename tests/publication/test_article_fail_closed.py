@@ -180,3 +180,81 @@ async def test_event_article_writer_error_rejects_instead_of_rendering_fallback(
     assert caught.value.metadata["exception_type"] == "TimeoutError"
     assert observer.started_kinds == ["writer"]
     assert observer.finished_attempts[1]["status"] == "failed"
+
+
+@pytest.mark.asyncio
+async def test_event_article_prompt_contains_epistemic_fidelity_and_no_corroboration_gate(
+    article_generator,
+):
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    sup = ArticleSupport(
+        support_id="story:1:evidence:0:frag:101",
+        text="На Горе света нет",
+        source_text="На Горе света нет",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(101,),
+        source_item_ids=(1,),
+        observed_at=now,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="community_report",
+        source_roles=("community",),
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Сообщения жителей",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        evidence_index=(sup,),
+        recurring_topics=("utilities",),
+    )
+
+    valid_json = json.dumps(
+        {
+            "title": "На Горе света нет",
+            "title_support_ids": [sup.support_id],
+            "title_claims": [{"text": "На Горе света нет", "cited_support_ids": [sup.support_id]}],
+            "lead": "Жители сообщают о проблемах со светом на Горе.",
+            "lead_support_ids": [sup.support_id],
+            "lead_claims": [{"text": "На Горе света нет", "cited_support_ids": [sup.support_id]}],
+            "sections": [
+                {
+                    "heading": "Обстановка на Горе",
+                    "heading_support_ids": [sup.support_id],
+                    "heading_claims": [],
+                    "paragraphs": [
+                        {
+                            "text": "По сообщениям жителей, на Горе нет света.",
+                            "cited_support_ids": [sup.support_id],
+                            "claims": [
+                                {
+                                    "text": "На Горе нет света",
+                                    "cited_support_ids": [sup.support_id],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    article_generator.provider.chat_completion.return_value = valid_json
+
+    await article_generator.generate_from_event_article_context(context)
+
+    assert article_generator.provider.chat_completion.call_count == 1
+    call_kwargs = article_generator.provider.chat_completion.call_args.kwargs
+    messages = call_kwargs["messages"]
+    system_content = next(m["content"] for m in messages if m["role"] == "system")
+    user_content = next(m["content"] for m in messages if m["role"] == "user")
+
+    # Epistemic instructions present
+    assert "community_report" in user_content
+    assert "framing=attributed_report" in user_content
+    assert "Epistemic Fidelity" in system_content or "epistemic" in system_content.lower()
+
+    # No second-source / corroboration gate
+    assert "two independent sources" not in system_content.lower()
+    assert "must be corroborated" not in system_content.lower()
+    assert "official confirmation required" not in system_content.lower()

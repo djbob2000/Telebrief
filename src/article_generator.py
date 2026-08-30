@@ -714,8 +714,11 @@ class ArticleGenerator:
         - cited_support_ids: Массив ID поддержки.
         - claims: Массив атомарных утверждений параграфа: [{{"text": "краткое утверждение", "cited_support_ids": ["SUPPORT_ID"]}}].
 12. Внутренние ID вида [story:...] или [SUPPORT...] НЕ должны появляться внутри текста заголовка, лида или параграфов — указывайте их только в массивах support_ids / cited_support_ids.
+13. Epistemic metadata (evidence_kind, source_roles, framing):
+    - The support packet contains evidence_kind, source_roles, and framing. These fields describe how to phrase a supported claim, not whether the report is allowed to appear. A PUBLISH community_report is valid material. Attribute it naturally and never invent corroboration or official confirmation.
 
 Формат ответа — строго валидный JSON:
+
 {{
   "title": "Заголовок статьи",
   "title_support_ids": ["story:1:evidence:0:frag:101"],

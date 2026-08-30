@@ -13,6 +13,23 @@ from src.publication.digest_narrative import (
     plan_digest_narrative_blocks,
 )
 from src.publication.evidence import PublicationEvidence
+from src.publication.narrative_contract import (
+    build_article_narrative_contract,
+    build_digest_narrative_contract,
+)
+
+
+def test_narrative_contracts_epistemic_fidelity():
+    article_contract = build_article_narrative_contract(output_language="Russian")
+    assert "single-source" in article_contract.lower()
+    assert "community" in article_contract.lower()
+    assert "not a reason to omit" in article_contract.lower()
+    assert "do not upgrade" in article_contract.lower()
+
+    digest_contract = build_digest_narrative_contract(output_language="Russian")
+    assert "single-source" in digest_contract.lower()
+    assert "community" in digest_contract.lower()
+
 
 _NOW = dt.datetime(2026, 8, 29, 12, 0, tzinfo=dt.timezone.utc)
 
