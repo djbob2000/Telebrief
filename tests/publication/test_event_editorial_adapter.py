@@ -832,3 +832,260 @@ async def test_event_editorial_adapter_epistemic_evidence_partitioning(conn, poo
 
     # Assert the community item does not appear in hard_facts with status="established"
     assert not any(e.text == "На Горе света нет" for e in card.hard_facts)
+
+
+@pytest.mark.postgres
+async def test_event_editorial_adapter_resident_questions_suppressed_as_cards_kept_as_context(
+    conn, pool, edition
+):
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_repo = PublicationPolicyRepository()
+
+    elig = await policy_repo.get_or_create_eligibility_policy(
+        conn, edition_id=edition.id, config_hash="h-e-q", prompt_version="v1"
+    )
+    sel = await policy_repo.get_or_create_selection_policy(
+        conn, edition_id=edition.id, config_hash="h-s-q", prompt_version="v1"
+    )
+    wri = await policy_repo.get_or_create_writer_policy(
+        conn, edition_id=edition.id, config_hash="h-w-q", prompt_version="v1"
+    )
+
+    # 1. Pure question story
+    cur = await conn.execute(
+        """
+        INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+        VALUES (%s, 'active', 'event_first', %s)
+        RETURNING id
+        """,
+        (edition.id, _NOW),
+    )
+    q_story_id = (await cur.fetchone())[0]
+
+    q_payload = {
+        "topic": "Вопрос о пенсионном фонде",
+        "tags": ["пенсионный фонд", "вопрос"],
+        "urgency": "normal",
+        "publishability": "brief",
+        "headline": "Жители спрашивают о работе пенсионного фонда",
+        "digest_summary": "В чатах интересуются графиком работы учреждения.",
+        "key_facts": [],
+        "evidence_items": [
+            {
+                "text": "Работает ли пенсионный фонд?",
+                "kind": "resident_question",
+                "publication_use": "CONTEXT",
+                "source_fragment_ids": [7001],
+            }
+        ],
+        "operational_observations": [],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-q-rev', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            q_story_id,
+            q_payload["digest_summary"],
+            q_payload["headline"],
+            q_payload["digest_summary"],
+            json.dumps(q_payload),
+            _NOW,
+        ),
+    )
+    q_rev_id = (await cur.fetchone())[0]
+
+    # 2. Mixed story (question + actual answer)
+    cur = await conn.execute(
+        """
+        INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+        VALUES (%s, 'active', 'event_first', %s)
+        RETURNING id
+        """,
+        (edition.id, _NOW),
+    )
+    m_story_id = (await cur.fetchone())[0]
+
+    m_payload = {
+        "topic": "Работа нотариуса",
+        "tags": ["нотариус", "услуги"],
+        "urgency": "normal",
+        "publishability": "brief",
+        "headline": "Нотариус принимает по записи",
+        "digest_summary": "Нотариус работает от генератора.",
+        "key_facts": [],
+        "evidence_items": [
+            {
+                "text": "Работает ли нотариус?",
+                "kind": "resident_question",
+                "publication_use": "CONTEXT",
+                "source_fragment_ids": [7002],
+            },
+            {
+                "text": "Нотариус работает от генератора",
+                "kind": "service_access",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [7003],
+            },
+        ],
+        "operational_observations": [],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-m-rev', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            m_story_id,
+            m_payload["digest_summary"],
+            m_payload["headline"],
+            m_payload["digest_summary"],
+            json.dumps(m_payload),
+            _NOW,
+        ),
+    )
+    m_rev_id = (await cur.fetchone())[0]
+
+    # Insert sources & fragments
+    cur = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name, role)
+        VALUES ('telegram', 'channel', '-10099', 'https://t.me/chat', 'Чат Бердянск', 'community')
+        RETURNING id
+        """
+    )
+    src_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_id, edition.id),
+    )
+
+    cur = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'message', 'msg-7001', %s)
+        RETURNING id
+        """,
+        (src_id, _NOW),
+    )
+    si_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'h-si-7001', 'Текст')
+        RETURNING id
+        """,
+        (si_id,),
+    )
+    sir_id = (await cur.fetchone())[0]
+
+    for ord_idx, (fid, txt) in enumerate(
+        [
+            (7001, "Работает ли пенсионный фонд?"),
+            (7002, "Работает ли нотариус?"),
+            (7003, "Нотариус работает от генератора"),
+        ]
+    ):
+        await conn.execute(
+            """
+            INSERT INTO source_fragments (
+                id, source_item_revision_id, ordinal, text_content, normalized_hash,
+                fragmenter_version, is_candidate, created_at
+            ) OVERRIDING SYSTEM VALUE VALUES (%s, %s, %s, %s, %s, 'v1', TRUE, %s)
+            """,
+            (fid, sir_id, ord_idx, txt, f"hash-{fid}", _NOW),
+        )
+
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        request_key="test-resident-questions-cards",
+        snapshot_at=_NOW,
+        policy_ids=(elig.id, sel.id, wri.id),
+    )
+    cand_q = await repo.insert_candidate(
+        conn, run.id, story_id=q_story_id, story_revision_id=q_rev_id, deterministic_rank=1
+    )
+    dec_q = await repo.insert_selection_decision(
+        conn,
+        run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=run.id,
+            candidate_id=cand_q.id,
+            decision="INCLUDE",
+            presentation_intent="lead",
+            confidence=0.95,
+            reason="OK",
+            rank=1,
+            metadata={},
+            created_at=_NOW,
+        ),
+    )
+    pub_in_q = await repo.freeze_selected_input(
+        conn,
+        run.id,
+        story_id=q_story_id,
+        story_revision_id=q_rev_id,
+        selection_decision_id=dec_q.id,
+        presentation_intent="lead",
+        rank=1,
+        fragment_ids=[7001],
+    )
+
+    cand_m = await repo.insert_candidate(
+        conn, run.id, story_id=m_story_id, story_revision_id=m_rev_id, deterministic_rank=2
+    )
+    dec_m = await repo.insert_selection_decision(
+        conn,
+        run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=run.id,
+            candidate_id=cand_m.id,
+            decision="INCLUDE",
+            presentation_intent="normal",
+            confidence=0.95,
+            reason="OK",
+            rank=2,
+            metadata={},
+            created_at=_NOW,
+        ),
+    )
+    pub_in_m = await repo.freeze_selected_input(
+        conn,
+        run.id,
+        story_id=m_story_id,
+        story_revision_id=m_rev_id,
+        selection_decision_id=dec_m.id,
+        presentation_intent="normal",
+        rank=2,
+        fragment_ids=[7002, 7003],
+    )
+
+    adapter = EventEditorialAdapter(uow=uow, repo=repo)
+    editorial = await adapter.adapt_inputs_on(conn, run.id, inputs=[pub_in_q, pub_in_m])
+
+    # Question-only story creates no StoryCard
+    assert all(card.id != f"story:{q_story_id}" for card in editorial.analysis.cards)
+    # But question evidence is preserved in all_evidence as CONTEXT
+    q_evi = next(e for e in editorial.analysis.evidence.values() if e.story_id == q_story_id)
+    assert q_evi.kind == "resident_question"
+    assert q_evi.publication_use == "CONTEXT"
+
+    # Mixed story creates a StoryCard with uncertainty for the question and useful_detail for the answer
+    m_card = next(card for card in editorial.analysis.cards if card.id == f"story:{m_story_id}")
+    assert any(u.basis == "resident_question" for u in m_card.uncertainties)
+    assert any("работает" in d.text.lower() for d in m_card.useful_details)

@@ -19,6 +19,7 @@ from src.editorial_models import (
     SourceRecord,
     StoryCard,
     StoryElement,
+    Uncertainty,
 )
 from src.processing.event_analysis import EventAnalysisPayload
 from src.publication.editorial_adapter import FrozenEditorialInput
@@ -281,6 +282,7 @@ class EventEditorialAdapter:
             hard_facts: list[StoryElement] = []
             community_evidence: list[StoryElement] = []
             useful_details: list[StoryElement] = []
+            uncertainties: list[Uncertainty] = []
 
             if payload and payload.evidence_items:
                 for evi in payload.evidence_items:
@@ -291,6 +293,15 @@ class EventEditorialAdapter:
                         for fid in evi.source_fragment_ids
                         if fid in frag_id_to_ref
                     ] or fallback_refs
+                    if evi.kind == "resident_question":
+                        uncertainties.append(
+                            Uncertainty(
+                                text=evi.text,
+                                basis="resident_question",
+                                related_source_refs=source_refs,
+                            )
+                        )
+                        continue
                     attribution = _attribution_for_refs(source_refs, records)
                     bucket, element = _evidence_story_element(
                         text=evi.text,
@@ -406,22 +417,34 @@ class EventEditorialAdapter:
                 if is_utility_domain and not has_non_op_evidence:
                     pure_op_story_ids.add(inp.story_id)
 
-            card = StoryCard(
-                id=f"story:{inp.story_id}",
-                topic=headline,
-                importance=importance,
-                summary=digest_summary or headline,
-                tags=list(payload.tags) if payload else [],
-                rubric_id="",
-                category=payload.category if payload else "",
-                representative_source_refs=card_source_refs,
-                hard_facts=hard_facts,
-                community_observations=community_evidence
-                + legacy_community_observations
-                + op_obs_elements,
-                useful_details=useful_details,
-            )
-            story_cards.append(card)
+            if payload and payload.evidence_items:
+                has_publishable_evidence = any(
+                    evi.publication_use == "PUBLISH" and evi.kind != "resident_question"
+                    for evi in payload.evidence_items
+                )
+                has_valid_operational = bool(payload.operational_observations)
+                should_emit_card = has_publishable_evidence or has_valid_operational
+            else:
+                should_emit_card = True
+
+            if should_emit_card:
+                card = StoryCard(
+                    id=f"story:{inp.story_id}",
+                    topic=headline,
+                    importance=importance,
+                    summary=digest_summary or headline,
+                    tags=list(payload.tags) if payload else [],
+                    rubric_id="",
+                    category=payload.category if payload else "",
+                    representative_source_refs=card_source_refs,
+                    hard_facts=hard_facts,
+                    community_observations=community_evidence
+                    + legacy_community_observations
+                    + op_obs_elements,
+                    useful_details=useful_details,
+                    uncertainties=uncertainties,
+                )
+                story_cards.append(card)
 
         # Build CitySituationRollup for digest publication runs
         run = await self.repo.get_run_by_id(conn, run_id)

@@ -91,6 +91,8 @@ class ArticleSupport:
 
 
 def _support_framing(support: ArticleSupport) -> str:
+    if support.evidence_kind == "resident_question":
+        return "question_context"
     if support.evidence_kind in {"community_report", "community_observation", "quote_assertion"}:
         return "attributed_report"
     if support.evidence_kind == "official_statement":

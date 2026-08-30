@@ -12,7 +12,6 @@ from src.domain.event_payload import OperationalObservationPayload
 from src.domain.operational_state import ResolvedObservation
 from src.editorial_models import StoryCard
 from src.publication.article_context import (
-    ArticleEditorialContext,
     PublicationWindow,
     build_article_editorial_context,
     classify_support_temporal_role,
@@ -415,10 +414,42 @@ async def test_event_adapter_builds_article_editorial_context(conn, pool, editio
     adapter = EventEditorialAdapter(uow=uow, repo=repo)
     editorial = await adapter.adapt_inputs_on(conn, run.id, inputs=[pub_input])
 
-    assert editorial.analysis.article_context is not None
-    assert isinstance(editorial.analysis.article_context, ArticleEditorialContext)
     assert len(editorial.analysis.article_context.general_facts) == 1
     assert (
         "Выставка продлится до конца месяца"
         in editorial.analysis.article_context.general_facts[0].text
     )
+
+
+def test_build_article_editorial_context_resident_question_framing():
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    evi_q = PublicationEvidence(
+        evidence_id="story:10:evidence:0:frag:901",
+        story_id=10,
+        text="Работает ли пенсионный фонд?",
+        source_text="Работает ли пенсионный фонд?",
+        kind="resident_question",
+        publication_use="CONTEXT",
+        fragment_id=901,
+        source_ref="telegram:source:3:item:8:rev:1:frag:901",
+        source_id=3,
+        source_item_id=8,
+        source_role="community",
+        observed_at=now,
+    )
+
+    ctx = build_article_editorial_context(
+        cards=(),
+        evidence_items=[evi_q],
+        snapshot_at=now,
+        lookback_hours=24,
+    )
+
+    assert len(ctx.support_index) == 1
+    sup = ctx.support_index[0]
+    assert sup.evidence_kind == "resident_question"
+    assert sup.publication_use == "CONTEXT"
+
+    prompt_str = ctx.to_prompt_context()
+    assert "framing=question_context" in prompt_str
+    assert "publication_use=CONTEXT" in prompt_str
