@@ -777,7 +777,22 @@ class ArticleGenerator:
                 response_format={"type": "json_object"},
             )
 
-            parsed = json.loads(response)
+            cleaned = (response or "").strip()
+            if cleaned.startswith("```"):
+                lines = cleaned.splitlines()
+                if lines and lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                cleaned = "\n".join(lines).strip()
+
+            if "{" in cleaned and "}" in cleaned:
+                first_brace = cleaned.find("{")
+                last_brace = cleaned.rfind("}")
+                if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                    cleaned = cleaned[first_brace : last_brace + 1]
+
+            parsed = json.loads(cleaned)
             if not isinstance(parsed, dict):
                 raise ValueError("article writer response is not a JSON object")
 
