@@ -1,89 +1,127 @@
-"""Diagnostic metrics for editorial prose cohesion, synthesis, and narrative style.
-
-Observability-only module: these metrics are diagnostics for comparative benchmarking
-and A/B evaluation, and are NEVER used as hard publication truth gates.
-"""
+"""Reader-first presentation quality and structural density metrics."""
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
+from src.publication.article_length import ArticleLengthProfile
 from src.publication.article_models import StructuredArticleDraft
-
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+(?=[А-ЯA-Z«\"])")
-_REPEATED_ATTRIBUTION_START_RE = re.compile(
-    r"^(?:по\s+(?:сообщениям|данным|информации|словам|сведениям|сводкам)|жители\s+(?:сообщают|жалуются|отмечают|пишут)|как\s+(?:сообщают|стало\s+известно|передают))\b",
-    re.IGNORECASE,
-)
-_DATABASE_LABEL_RE = re.compile(
-    r"^[А-Яа-яA-Za-z0-9\s_-]+(?:\s*\([^)]+\))?\s*:\s+[А-Яа-яA-Za-z]",
-)
-_DIRECT_QUOTE_RE = re.compile(r"«[^»]+»|\"[^\"]+\"")
+from src.publication.digest_narrative import DigestNarrativeDraft, DigestNarrativePlan
 
 
 @dataclass(frozen=True)
-class NarrativeQualityReport:
-    """Prose quality and synthesis diagnostic report for an editorial draft."""
+class DigestReaderMetrics:
+    """Quantitative presentation metrics for scan-first narrative digests."""
 
-    paragraph_count: int
-    multi_support_paragraph_count: int
-    repeated_attribution_starts: int
-    database_label_patterns: int
-    direct_quote_count: int
-    avg_sentences_per_paragraph: float
-
-    @property
-    def synthesis_ratio(self) -> float:
-        """Ratio of paragraphs synthesizing 2 or more distinct support items."""
-        if self.paragraph_count == 0:
-            return 0.0
-        return self.multi_support_paragraph_count / self.paragraph_count
+    total_blocks: int
+    total_items: int
+    avg_items_per_block: float
+    max_items_per_block: int
+    grouped_item_count: int
+    single_item_count: int
+    avg_headline_words: float
+    max_headline_words: int
+    avg_body_words: float
+    max_body_words: int
+    giant_paragraph_block_count: int
 
 
-def evaluate_article_narrative(draft: StructuredArticleDraft) -> NarrativeQualityReport:
-    """Compute deterministic diagnostic quality metrics on a structured article draft."""
-    paragraphs: list[str] = []
-    multi_support_count = 0
-    direct_quotes = 0
-    attribution_starts = 0
-    db_labels = 0
-    total_sentences = 0
+@dataclass(frozen=True)
+class ArticleReaderMetrics:
+    """Quantitative presentation metrics for selective long-read articles."""
 
-    for section in draft.sections:
-        for para in section.paragraphs:
-            text = para.text.strip()
-            if not text:
-                continue
-            paragraphs.append(text)
+    word_count: int
+    section_count: int
+    avg_words_per_section: float
+    richness: str
+    target_min_words: int
+    target_max_words: int
+    is_within_target: bool
+    is_above_hard_floor: bool
+    unsupported_claim_count: int
 
-            distinct_supports = set(para.cited_support_ids)
-            if len(distinct_supports) >= 2:
-                multi_support_count += 1
 
-            if _DATABASE_LABEL_RE.search(text):
-                db_labels += 1
+def measure_digest_reader_metrics(
+    draft: DigestNarrativeDraft,
+    plan: DigestNarrativePlan,
+) -> DigestReaderMetrics:
+    """Compute reader UX metrics for narrative digest draft."""
+    total_blocks = len(draft.blocks)
+    if total_blocks == 0:
+        return DigestReaderMetrics(
+            total_blocks=0,
+            total_items=0,
+            avg_items_per_block=0.0,
+            max_items_per_block=0,
+            grouped_item_count=0,
+            single_item_count=0,
+            avg_headline_words=0.0,
+            max_headline_words=0,
+            avg_body_words=0.0,
+            max_body_words=0,
+            giant_paragraph_block_count=0,
+        )
 
-            # Check quotes
-            quotes = _DIRECT_QUOTE_RE.findall(text)
-            direct_quotes += len(quotes)
+    all_items = [item for b in draft.blocks for item in b.items]
+    total_items = len(all_items)
+    items_per_block = [len(b.items) for b in draft.blocks]
+    max_items = max(items_per_block) if items_per_block else 0
+    avg_items = total_items / total_blocks if total_blocks else 0.0
 
-            # Check sentence splits & sentence-level attribution starts
-            raw_sentences = [s.strip() for s in _SENTENCE_SPLIT_RE.split(text) if s.strip()]
-            total_sentences += max(1, len(raw_sentences))
+    grouped_items = sum(1 for item in all_items if len(item.covered_story_ids) > 1)
+    single_items = sum(1 for item in all_items if len(item.covered_story_ids) <= 1)
 
-            for sent in raw_sentences:
-                if _REPEATED_ATTRIBUTION_START_RE.search(sent):
-                    attribution_starts += 1
+    headline_word_counts = [len(item.headline.split()) for item in all_items]
+    body_word_counts = [len(item.body.split()) for item in all_items]
 
-    para_count = len(paragraphs)
-    avg_sentences = (total_sentences / para_count) if para_count > 0 else 0.0
+    avg_hl = sum(headline_word_counts) / total_items if total_items else 0.0
+    max_hl = max(headline_word_counts) if headline_word_counts else 0
+    avg_b = sum(body_word_counts) / total_items if total_items else 0.0
+    max_b = max(body_word_counts) if body_word_counts else 0
 
-    return NarrativeQualityReport(
-        paragraph_count=para_count,
-        multi_support_paragraph_count=multi_support_count,
-        repeated_attribution_starts=attribution_starts,
-        database_label_patterns=db_labels,
-        direct_quote_count=direct_quotes,
-        avg_sentences_per_paragraph=round(avg_sentences, 2),
+    giant_blocks = 0
+    for b in draft.blocks:
+        if len(b.items) == 1:
+            it = b.items[0]
+            if len(it.covered_story_ids) >= 3 and len(it.body) > 400:
+                giant_blocks += 1
+
+    return DigestReaderMetrics(
+        total_blocks=total_blocks,
+        total_items=total_items,
+        avg_items_per_block=round(avg_items, 2),
+        max_items_per_block=max_items,
+        grouped_item_count=grouped_items,
+        single_item_count=single_items,
+        avg_headline_words=round(avg_hl, 2),
+        max_headline_words=max_hl,
+        avg_body_words=round(avg_b, 2),
+        max_body_words=max_b,
+        giant_paragraph_block_count=giant_blocks,
+    )
+
+
+def measure_article_reader_metrics(
+    draft: StructuredArticleDraft,
+    length_profile: ArticleLengthProfile,
+    unsupported_claim_count: int = 0,
+) -> ArticleReaderMetrics:
+    """Compute reader UX metrics for long-form article draft."""
+    w_count = draft.word_count
+    sec_count = len(draft.sections)
+    avg_words_sec = round(w_count / sec_count, 2) if sec_count else 0.0
+
+    within_target = length_profile.target_min_words <= w_count <= length_profile.target_max_words
+    above_hard_floor = w_count >= length_profile.hard_min_words
+
+    return ArticleReaderMetrics(
+        word_count=w_count,
+        section_count=sec_count,
+        avg_words_per_section=avg_words_sec,
+        richness=length_profile.richness,
+        target_min_words=length_profile.target_min_words,
+        target_max_words=length_profile.target_max_words,
+        is_within_target=within_target,
+        is_above_hard_floor=above_hard_floor,
+        unsupported_claim_count=unsupported_claim_count,
     )
