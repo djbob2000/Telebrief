@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v3"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v4"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v1"
 
 
@@ -43,21 +43,32 @@ def build_article_narrative_contract(
 - Section headings are thematic titles and do not require claim atoms unless they contain concrete numbers, dates, or prices.
 - Do not mechanically generate one sentence per support. Synthesize related observations into natural, flowing prose.
 
-3. Narrative Composition Principles:
+3. Claim Atom discipline:
+- Claim Atoms are validation metadata, not polished article prose.
+- Keep each Claim Atom source-close and limited to ONE independently supportable proposition.
+- Split combined electricity/water, location/service, or cause/effect propositions into separate atoms with their own support IDs.
+- Omit edition-level framing such as the publication city from the atom when it is only present in reader-facing prose.
+- Claim Atoms may preserve source-language wording (including Ukrainian) even when final prose is Russian.
+- Do not add editorial transitions, thematic summaries, or bureaucratic abstractions to Claim Atoms merely because they appear in the prose.
+
+4. Narrative Composition Principles:
 - Chronology: Build clear chronological narrative sequences when the supports establish temporal order.
 - Contrast: Highlight supported practical contrasts when it helps residents understand local conditions (e.g. service availability differences, operational contrasts).
 - Lived reality: Use concrete supported resident actions, practical adaptations, and coping strategies to show real community impact.
 - Micro-locations: Weave street names and neighborhood references naturally into sentences instead of prefixing clauses with database-like labels such as "Location (Category): fact".
 - Attribution discipline: Group repeated observations sharing the same epistemic status under a single natural attribution. Vary sentence openings and avoid mechanically repeating identical attribution phrases at the start of every sentence.
 - Transitions: Neutral connective phrases (e.g. "meanwhile", "at the same time", "against this background") are permitted only when they connect verified observations without asserting unsupported causal links.
-- Direct quotes: Use direct quotes sparingly and only when exact quoted text exists in authorized supports.
+- Direct quotes:
+  * Quotation marks mean exact primary-source wording.
+  * NEVER translate or grammar-correct text inside quotation marks, normalize grammar, shorten, or merge words inside a direct quotation.
+  * If you need Russian translation, correction, or compression, remove quotation marks and write indirect speech.
 - Evidence boundary: Prefer concrete supported details over abstract editorial generalizations or commentary.
 - Preserve source date granularity: If a support says only a bare day number like "31" or "31-го", do not expand it and do not infer a missing month or year (e.g. do not expand to "31 августа" or add a year) unless that month/year is explicitly present in the cited support. Prefer the source's own granularity over inferred precision.
 - Proportion & length: Do not pad a thin day to reach an arbitrary length. State supported facts concisely without fluff. On rich days, develop major storylines thoroughly across sections without repeating facts.{target_str}
 - Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented consequences, invented mechanisms, or speculative interpretations.
 
 
-4. Epistemic Fidelity:
+5. Epistemic Fidelity:
 - Single-source, community, resident, eyewitness, and explicitly unverified reports are authorized publication material when supplied as PUBLISH support; lack of corroboration is not a reason to omit them.
 - Preserve the support's epistemic status. For framing=attributed_report, write natural attribution such as "residents report", "according to a participant", or the output-language equivalent.
 - Do not upgrade community or attributed material to "officially confirmed", "established", or equivalent wording unless a cited support itself establishes that status.

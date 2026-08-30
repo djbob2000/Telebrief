@@ -686,7 +686,8 @@ class ArticleGenerator:
 
 ### Обязательные правила валидации и доказательной базы (Evidence Boundary):
 1. Опирайтесь ТОЛЬКО на предоставленные единицы поддержки [SUPPORT id]. Категорически запрещено выдумывать неподтвержденные детали, цифры, адреса, организации, длительности, причины, механизмы и события.
-2. Every title, lead, heading and paragraph must cite support IDs, and MUST decompose its factual assertions into discrete claim atoms (`claims` / `title_claims` / `lead_claims` / `heading_claims`). Section headings are thematic titles and do not require claim atoms unless they assert concrete figures, dates, or prices.
+2. Every title, lead, heading and paragraph must cite support IDs, and MUST decompose its factual assertions into discrete claim atoms (`claims` / `title_claims` / `lead_claims` / `heading_claims`). Claim Atoms describe evidence propositions, not the wording of the article sentence. Keep them short, source-close and atomic. A polished sentence may map to several Claim Atoms. Section headings are thematic titles and do not require claim atoms unless they assert concrete figures, dates, or prices.
+
 3. The set of `cited_support_ids` in each unit MUST exactly equal the union of support IDs cited in that unit's claim atoms (for headings with empty `heading_claims`, `heading_support_ids` must cite supports present in that section).
 4. Temporal roles and framing (Reporting Window):
    - CURRENT_WINDOW: События и оперативная обстановка текущего отчетного окна. Заголовок и лид ОБЯЗАНЫ опираться на факты текущего окна.

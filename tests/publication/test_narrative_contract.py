@@ -24,7 +24,12 @@ def test_article_narrative_contract_invariants():
     assert "resident" in contract_lower
     assert "unsupported caus" in contract_lower
     assert "do not pad" in contract_lower
-    assert ARTICLE_NARRATIVE_PROMPT_VERSION == "event-article-narrative-v3"
+    assert "source-close" in contract_lower
+    assert "one independently supportable proposition" in contract_lower
+    assert "claim atoms may preserve source-language wording" in contract_lower
+    assert "never translate or grammar-correct text inside quotation marks" in contract_lower
+    assert "remove quotation marks and write indirect speech" in contract_lower
+    assert ARTICLE_NARRATIVE_PROMPT_VERSION == "event-article-narrative-v4"
 
 
 def test_digest_narrative_contract_invariants():
