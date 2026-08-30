@@ -142,24 +142,23 @@ class AIPublicationSelectionModel:
                 "non-commercial evidence of a broader public condition, such as an outage, shortage, disruption, documented citywide "
                 "price change, municipal action, or public access problem.\n\n"
                 "CRITICAL RULES:\n"
-                "1. Return exactly one proposal for each candidate story in the candidate set.\n"
-                "2. For INCLUDE, exclusion_reason must be null.\n"
-                "3. If candidate is commercial-only, set decision='OMIT' and exclusion_reason='commercial_classified'.\n"
-                "4. For subjective civic prioritization, keep decision='INCLUDE' and use rank / presentation_intent instead of OMIT.\n"
-                "5. Rank included stories starting at rank 1 for the most important lead item.\n"
-                "6. Respond strictly with a JSON object containing a 'proposals' array."
+                "1. Select legitimate civic candidate stories to INCLUDE in the publication.\n"
+                "2. Single-source, community, or unverified status is NEVER by itself a reason to omit.\n"
+                "3. Commercial-only offers/ads should NOT be included.\n"
+                "4. Rank included stories starting at rank 1 for the most important lead item.\n"
+                "5. Respond strictly with a JSON object containing an 'included' list of selected story IDs."
             )
         else:
             system_content = (
                 "You are an editorial selection AI for regional publication articles. "
-                "Evaluate candidate stories and decide whether to INCLUDE or OMIT them.\n\n"
+                "Evaluate candidate stories and select the ones to INCLUDE.\n\n"
                 "CRITICAL RULES:\n"
-                "1. Return exactly one decision for each candidate story in the candidate set.\n"
-                "2. Single-source, community, or unverified status is NEVER by itself a valid reason to OMIT. "
+                "1. Select legitimate candidate stories to INCLUDE in the article.\n"
+                "2. Single-source, community, or unverified status is NEVER by itself a reason to omit. "
                 "Low-risk useful reports from single channels or community groups should be INCLUDED with "
                 "presentation_intent='unverified_operational', 'normal', or 'brief'.\n"
                 "3. Rank included stories starting at rank 1 for the most important lead item.\n"
-                "4. Respond strictly with a JSON object containing a 'proposals' array."
+                "4. Respond strictly with a JSON object containing an 'included' list of selected story IDs."
             )
 
         messages = [

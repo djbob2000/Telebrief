@@ -95,6 +95,8 @@ def build_article_narrative_contract(
 - Proportion & length: Do not pad a thin day to reach an arbitrary length. State supported facts concisely without fluff. On rich days, develop major storylines thoroughly across sections without repeating facts.{target_str}
 - Logical clarity and natural precision:
   * Distinguish technical infrastructure from human actions cleanly (e.g. do not produce awkward compression like «делятся интернетом через оптоволокно» — write naturally: «подключают оптоволокно (GPON) и делятся Wi-Fi с соседями» or «раздают интернет по Wi-Fi»). Keep technical mechanisms and social actions logically accurate.
+  * Brand and service naming: Always enclose commercial brands and courier services in quotation marks with an explanatory noun (e.g. write «служба доставки „+7“», «маркетплейс „Озон“», never bare digits like «+7» or «Доставка (+7)»).
+  * Relocation services and external geography: When describing assistance centers, administrative services, or cultural events for displaced residents in other cities (e.g. Zaporizhzhia), always explicitly state the host city before the street address (e.g. write «в Запорожье по адресу: ул. Независимой Украины, 86-А», NEVER cite an external street without its host city name).
 - Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented consequences, invented mechanisms, or speculative interpretations.
 
 
@@ -133,5 +135,7 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 - Every concrete claim (numbers, dates, times, durations, status, locations) must be strictly grounded in the provided support texts.
 - Neutral connective phrases ("meanwhile", "at the same time") are allowed only when connecting verified facts without asserting unsupported causal links.
 - No speculation, sensationalism, or decorative filler.
+- Brand and service naming: Enclose brands and courier services in quotation marks with explanatory nouns (e.g. «служба доставки „+7“», «маркетплейс „Озон“»).
+- Relocation services and external geography: Always prefix external street addresses with their host city name (e.g. «в Запорожье по адресу: ул. Независимой Украины, 86-А»).
 - Community/single-source reports marked as authorized support are publishable. Attribute them naturally; do not omit them only for lack of corroboration and do not present them as officially confirmed.
 """
