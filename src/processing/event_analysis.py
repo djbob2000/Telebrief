@@ -170,8 +170,29 @@ class EventAnalysisService:
         if not sampled:
             return None
 
-        # 3. Format prompt
-        prompt_lines = ["Source fragments for analysis:"]
+        # 3. Format prompt with geographic context
+        cur_ed = await conn.execute(
+            """
+            SELECT e.slug, e.name
+            FROM stories st
+            JOIN editions e ON e.id = st.edition_id
+            WHERE st.id = %s
+            """,
+            (story_id,),
+        )
+        row_ed = await cur_ed.fetchone()
+        ed_slug = str(row_ed[0]) if row_ed else "unknown"
+        ed_name = str(row_ed[1]) if row_ed and row_ed[1] else ed_slug.capitalize()
+
+        from src.domain.edition_geography import resolve_edition_geography
+
+        geo_context = resolve_edition_geography(ed_slug, ed_name)
+
+        prompt_lines = [
+            geo_context.to_prompt_section(),
+            "",
+            "Source fragments for analysis:",
+        ]
         for s in sampled:
             role_tag = "[OFFICIAL]" if s.is_official else f"[{s.source_type.upper()}]"
             time_str = s.timestamp.strftime("%Y-%m-%d %H:%M UTC")

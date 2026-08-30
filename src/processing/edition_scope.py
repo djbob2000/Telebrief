@@ -10,6 +10,10 @@ from typing import Literal
 import psycopg
 
 from src.config_loader import Config, EditionScopeConfig
+from src.domain.edition_geography import (
+    EditionGeographyContext,
+    resolve_edition_geography,
+)
 
 SCOPE_VERSION = "v1"
 EditionScopeClass = Literal["LOCAL", "DIRECT_IMPACT", "OUT_OF_SCOPE", "UNCERTAIN"]
@@ -47,22 +51,36 @@ async def resolve_edition_scope(
     config: Config,
     edition_id: int,
 ) -> tuple[str, EditionScopeConfig]:
-    cur = await conn.execute("SELECT slug FROM editions WHERE id = %s", (edition_id,))
+    cur = await conn.execute("SELECT slug, name FROM editions WHERE id = %s", (edition_id,))
     row = await cur.fetchone()
     if row is None:
         raise ValueError(f"edition {edition_id} not found")
     slug = str(row[0])
+    name = str(row[1]) if len(row) > 1 and row[1] else slug.capitalize()
     scope = config.settings.edition_scopes.get(slug)
     if scope is None:
-        raise ValueError(f"no edition scope configured for slug {slug!r}")
+        geo = resolve_edition_geography(slug, name)
+        scope = EditionScopeConfig(
+            name=geo.edition_name,
+            focus_places=geo.target_locations,
+            direct_impact_only=False,
+            notes=(),
+        )
     return slug, scope
 
 
-def build_scope_contract(scope: EditionScopeConfig) -> str:
+def build_scope_contract(
+    scope: EditionScopeConfig,
+    geo_context: EditionGeographyContext | None = None,
+) -> str:
     focus_list = ", ".join(scope.focus_places)
     notes_block = ""
     if scope.notes:
         notes_block = "\n" + "\n".join(f"- {note}" for note in scope.notes)
+
+    geo_block = ""
+    if geo_context is not None:
+        geo_block = "\n\n" + geo_context.to_prompt_section()
 
     return f"""GEOGRAPHIC SCOPE RULES:
 - LOCAL: event occurs in one of the configured focus places ({focus_list}).
@@ -75,4 +93,4 @@ CRITICAL INVARIANTS:
 2. Same oblast/region/nation, broad strategic relevance, and similarly named military directions are not DIRECT_IMPACT by themselves (same region is not enough).
 3. Explicit external geography overrides a local-source assumption unless a concrete local consequence is stated.
 Target Edition: {scope.name}
-Focus Places: {focus_list}{notes_block}"""
+Focus Places: {focus_list}{notes_block}{geo_block}"""

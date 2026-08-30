@@ -262,14 +262,22 @@ class StoryTriageService:
                 + "\n\n"
             )
 
-        # 4. Build prompt
-        contract_text = build_scope_contract(scope_config)
+        # 4. Build prompt with geographic context
+        cur_slug = await conn.execute("SELECT slug FROM editions WHERE id = %s", (edition_id,))
+        row_slug = await cur_slug.fetchone()
+        edition_slug = str(row_slug[0]) if row_slug else "unknown"
+
+        from src.domain.edition_geography import resolve_edition_geography
+
+        geo_context = resolve_edition_geography(edition_slug, scope_config.name)
+        contract_text = build_scope_contract(scope_config, geo_context)
         prompt_lines = [
             contract_text,
             "",
             hint_text,
             "Stories for Gate V2 triage and brief synthesis:",
         ]
+
         for s in uncached_stories:
             excerpts = story_sampled_excerpts.get(s.story_id, [])
             excerpts_str = "\n".join(excerpts) if excerpts else "(No text)"
