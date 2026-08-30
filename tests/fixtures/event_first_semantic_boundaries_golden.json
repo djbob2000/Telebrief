@@ -1,0 +1,41 @@
+{
+  "snapshot_at": "2026-08-29T21:00:00+00:00",
+  "lookback_hours": 24,
+  "temporal_cases": [
+    {
+      "id": "current_power_outage",
+      "observed_at": "2026-08-29T10:15:00+00:00",
+      "effective_from": null,
+      "effective_until": null,
+      "expected_role": "CURRENT_WINDOW"
+    },
+    {
+      "id": "historical_week_old_context",
+      "observed_at": "2026-08-22T09:00:00+00:00",
+      "effective_from": null,
+      "effective_until": "2026-08-23T09:00:00+00:00",
+      "expected_role": "HISTORICAL_CONTEXT"
+    },
+    {
+      "id": "future_gas_outage",
+      "observed_at": "2026-08-29T11:00:00+00:00",
+      "effective_from": "2026-08-30T08:00:00+00:00",
+      "effective_until": "2026-08-30T17:00:00+00:00",
+      "expected_role": "FUTURE_SCHEDULED"
+    }
+  ],
+  "unsupported_soft_claims": [
+    "Отключения вынуждают жителей переходить на генераторы",
+    "В городе отмечается дефицит запчастей для генераторов",
+    "Жители организуют самостоятельный подвоз питьевой воды",
+    "Нестабильная связь осложняет передачу заявок аварийным службам"
+  ],
+  "geography_cases": [
+    {"text": "На АКЗ снова пропал свет", "expected_local_signal": true},
+    {"text": "На Колонии нет воды", "expected_local_signal": true},
+    {"text": "На улице Карла Маркса авария", "expected_local_signal": true},
+    {"text": "В Николаевке завтра отключат газ", "expected_local_signal": true},
+    {"text": "На Бердянском направлении идут бои", "expected_nonlocal_relation": "military_direction"},
+    {"text": "В Буче произошел пожар", "expected_local_signal": false}
+  ]
+}
