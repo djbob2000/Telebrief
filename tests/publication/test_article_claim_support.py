@@ -12,6 +12,7 @@ from src.publication.article_claim_support import (
     assess_claim_against_supports,
 )
 from src.publication.article_context import ArticleSupport
+from src.publication.article_semantic_support import assess_semantic_support
 
 _T0 = dt.datetime(2026, 8, 29, 10, 0, tzinfo=dt.timezone.utc)
 _REGRESSION_FIXTURE = (
@@ -153,3 +154,31 @@ def test_real_semantic_additions_remain_hard_rejected() -> None:
         ]
         assessment = assess_claim_against_supports(str(case["claim"]), supports)
         assert assessment.supported is False, case["id"]
+
+
+@pytest.mark.unit
+def test_semantic_support_matches_russian_inflection_and_proven_paraphrases() -> None:
+    signals = assess_semantic_support(
+        "Часть магазинов и кафе предоставляет возможность зарядить телефон.",
+        ["Есть магазины, кафе, где можно зарядить телефон."],
+    )
+    assert signals.blocking_terms == ()
+
+
+@pytest.mark.unit
+def test_semantic_support_blocks_multiple_new_content_terms() -> None:
+    signals = assess_semantic_support(
+        "Отключения вынуждают жителей переходить на автономные генераторы.",
+        ["В центре города нет электричества."],
+    )
+    assert any("генератор" in term for term in signals.blocking_terms)
+
+
+@pytest.mark.unit
+def test_semantic_support_blocks_new_proper_name_destination() -> None:
+    signals = assess_semantic_support(
+        "Доступны рейсы в Москву и Воронеж.",
+        ["Есть рейсы в Ростов и Таганрог."],
+    )
+    assert set(signals.unmatched_proper_names) >= {"москву", "воронеж"}
+    assert set(signals.blocking_proper_names) >= {"москву", "воронеж"}
