@@ -1295,3 +1295,120 @@ def test_date_granularity_expansion_without_support_is_blocked() -> None:
         "UNSUPPORTED_CONCRETE_CLAIM" in v or "UNSUPPORTED_CLAIM_ATOM" in v
         for v in result.violations
     )
+
+
+@pytest.mark.unit
+def test_article_validator_blocks_question_context_overclaim() -> None:
+    sup_q = ArticleSupport(
+        support_id="story:10:evidence:0:frag:901",
+        text="Работает ли пенсионный фонд?",
+        source_text="Работает ли пенсионный фонд?",
+        support_kind="evidence",
+        publication_use="CONTEXT",
+        source_refs=("ref-901",),
+        fragment_ids=(901,),
+        source_item_ids=(10,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="resident_question",
+        source_roles=("community",),
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Вопросы жителей",),
+        support_index=(sup_q,),
+        support_by_id={sup_q.support_id: sup_q},
+        recurring_topics=(),
+    )
+    config = PublicationEditorialConfig(
+        article_min_words=5,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+
+    # 1. Unframed factual proposition asserting that fund works (from a question support)
+    overclaim_draft = StructuredArticleDraft(
+        title="Вопросы работы учреждений",
+        title_support_ids=(sup_q.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Вопросы работы учреждений",
+                cited_support_ids=(sup_q.support_id,),
+            ),
+        ),
+        lead="В городе обсуждают график приема граждан.",
+        lead_support_ids=(sup_q.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В городе обсуждают график приема граждан",
+                cited_support_ids=(sup_q.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Пенсионный фонд",
+                heading_support_ids=(sup_q.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Пенсионный фонд возобновил прием граждан.",
+                        cited_support_ids=(sup_q.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Пенсионный фонд работает",
+                                cited_support_ids=(sup_q.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=20,
+    )
+
+    res_overclaim = validate_article_draft(overclaim_draft, ctx, config)
+    assert res_overclaim.is_valid is False
+    assert any("QUESTION_CONTEXT_OVERCLAIM" in v for v in res_overclaim.violations)
+
+    # 2. Inquiry-framed draft citing the same question support passes QUESTION_CONTEXT_OVERCLAIM
+    inquiry_draft = StructuredArticleDraft(
+        title="Вопросы жителей",
+        title_support_ids=(sup_q.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Вопросы жителей",
+                cited_support_ids=(sup_q.support_id,),
+            ),
+        ),
+        lead="Жители уточняют работу социальных служб.",
+        lead_support_ids=(sup_q.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="Жители уточняют работу социальных служб",
+                cited_support_ids=(sup_q.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Пенсионный фонд",
+                heading_support_ids=(sup_q.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Жители в чатах спрашивают, работает ли пенсионный фонд.",
+                        cited_support_ids=(sup_q.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Жители спрашивают, работает ли пенсионный фонд",
+                                cited_support_ids=(sup_q.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=20,
+    )
+
+    res_inquiry = validate_article_draft(inquiry_draft, ctx, config)
+    assert not any("QUESTION_CONTEXT_OVERCLAIM" in v for v in res_inquiry.violations)

@@ -226,6 +226,7 @@ def plan_digest_narrative_blocks(
                         for eid, evi in evidence.items():
                             if (
                                 getattr(evi, "story_id", None) == num_sid
+                                and getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
                                 and eid not in block_support_ids
                             ):
                                 block_support_ids.append(eid)

@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v2"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v3"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v1"
 
 
@@ -61,6 +61,10 @@ def build_article_narrative_contract(
 - Single-source, community, resident, eyewitness, and explicitly unverified reports are authorized publication material when supplied as PUBLISH support; lack of corroboration is not a reason to omit them.
 - Preserve the support's epistemic status. For framing=attributed_report, write natural attribution such as "residents report", "according to a participant", or the output-language equivalent.
 - Do not upgrade community or attributed material to "officially confirmed", "established", or equivalent wording unless a cited support itself establishes that status.
+- Resident questions (framing=question_context or publication_use=CONTEXT):
+  * A resident question is background context, NOT an established fact or an answered status.
+  * If you mention a resident question, frame it strictly as an inquiry or uncertainty (e.g. "жители интересуются...", "поступают вопросы о..."), NEVER as an established fact (e.g. do not state "фонд закрыт" or "нотариус работает" unless a PUBLISH support separately states that fact).
+  * Do not assert trends such as "участились вопросы" or "повышенный интерес" from a single question.
 - Claim Atoms must contain the factual proposition being supported, not attribution boilerplate. Example: prose may say "According to residents, the district has no power" while the claim atom is "The district has no power" with the same support IDs.
 - Corroboration may strengthen wording or grouping, but never require two sources merely to publish a legitimate local report.
 """

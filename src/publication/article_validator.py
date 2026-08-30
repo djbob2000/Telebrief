@@ -368,6 +368,37 @@ def validate_article_draft(
         for claim in claim_atoms:
             c_supports = [support_map[sid] for sid in claim.cited_support_ids if sid in support_map]
             if c_supports:
+                if all(
+                    s.evidence_kind == "resident_question" or s.publication_use == "CONTEXT"
+                    for s in c_supports
+                ):
+                    question_markers = (
+                        "вопрос",
+                        "спрашива",
+                        "интересу",
+                        "уточня",
+                        "выясня",
+                        "неизвестно",
+                        "неясно",
+                        "?",
+                    )
+                    claim_lower = claim.text.lower()
+                    unit_lower = unit_text.lower()
+                    if not any(m in claim_lower or m in unit_lower for m in question_markers):
+                        issues.append(
+                            ArticleValidationIssue(
+                                code="QUESTION_CONTEXT_OVERCLAIM",
+                                unit_id=unit_id,
+                                message=(
+                                    f"Unit {unit_id} claim atom '{claim.text}' is supported only by resident "
+                                    f"questions/context but asserts a factual proposition without inquiry framing"
+                                ),
+                                support_ids=claim.cited_support_ids,
+                                severity="error",
+                                blocking=True,
+                            )
+                        )
+
                 assessment = assess_claim_against_supports(
                     claim.text,
                     c_supports,

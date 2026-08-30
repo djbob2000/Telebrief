@@ -28,6 +28,9 @@ def test_narrative_contracts_epistemic_fidelity():
     assert "preserve source date granularity" in article_contract.lower()
     assert "bare day number" in article_contract.lower()
     assert "do not infer a missing month or year" in article_contract.lower()
+    assert "resident questions" in article_contract.lower()
+    assert "question_context" in article_contract.lower()
+    assert "background context" in article_contract.lower()
 
     digest_contract = build_digest_narrative_contract(output_language="Russian")
     assert "single-source" in digest_contract.lower()
@@ -127,6 +130,41 @@ def test_plan_digest_narrative_blocks_splits_by_max_bound():
     assert len(plan.blocks[0].story_ids) == 6
     assert plan.blocks[1].block_id == "block:utilities:1"
     assert len(plan.blocks[1].story_ids) == 1
+
+
+def test_plan_digest_narrative_blocks_excludes_context_evidence():
+    cards = [
+        StoryCard(
+            id="story:1",
+            topic="Справка",
+            importance="medium",
+            summary="Вопрос",
+            rubric_id="utilities",
+        )
+    ]
+    evi_publish = _make_evidence("story:1:evi:1", 1, "Ремонт завершен")
+    evi_context = PublicationEvidence(
+        evidence_id="story:1:evi:2",
+        story_id=1,
+        text="Работает ли учреждение?",
+        source_text="Работает ли учреждение?",
+        kind="resident_question",
+        publication_use="CONTEXT",
+        fragment_id=102,
+        source_ref="ref-1",
+        source_id=1,
+        source_item_id=1,
+        source_role="community",
+        observed_at=_NOW,
+    )
+    plan = plan_digest_narrative_blocks(
+        cards=cards,
+        evidence={"story:1:evi:1": evi_publish, "story:1:evi:2": evi_context},
+        rubrics=[_RUBRIC_UTIL],
+    )
+    assert len(plan.blocks) == 1
+    assert "story:1:evi:1" in plan.blocks[0].support_ids
+    assert "story:1:evi:2" not in plan.blocks[0].support_ids
 
 
 def test_plan_digest_narrative_blocks_multiple_rubrics_preserves_order():
