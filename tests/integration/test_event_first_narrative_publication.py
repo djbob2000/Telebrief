@@ -205,10 +205,10 @@ async def test_digest_narrative_single_call_success(conn, pool, edition):
             "blocks": [
                 {
                     "block_id": "block:other:0",
-                    "heading": "Городское хозяйство",
-                    "paragraphs": [
+                    "items": [
                         {
-                            "text": "Водоканал завершил ремонт на сетях в центре города.",
+                            "headline": "Ремонт на сетях водоснабжения",
+                            "body": "Водоканал завершил ремонт на сетях в центре города.",
                             "cited_support_ids": [evidence_id],
                             "covered_story_ids": [f"story:{story_id}"],
                         }
@@ -376,10 +376,10 @@ async def test_digest_narrative_single_call_validation_failure_falls_back_to_det
             "blocks": [
                 {
                     "block_id": "block:other:0",
-                    "heading": "Городские службы",
-                    "paragraphs": [
+                    "items": [
                         {
-                            "text": "Водоканал отключил 950 домов в центре города.",
+                            "headline": "Отключение 950 домов в центре",
+                            "body": "Водоканал отключил 950 домов в центре города.",
                             "cited_support_ids": [evidence_id],
                             "covered_story_ids": [f"story:{story_id}"],
                         }

@@ -371,12 +371,16 @@ class PublicationDigestRenderer:
                     if (rubric and self.use_emojis and rubric.get("emoji"))
                     else ""
                 )
-                heading = block_draft.heading or (rubric["title"] if rubric else "Разное")
+                heading = rubric["title"] if rubric else "Разное"
                 header = f"*{emoji}{heading}*"
 
-                paras = [p.text.strip() for p in block_draft.paragraphs if p.text.strip()]
-                if paras:
-                    sections.append(f"{header}\n\n" + "\n\n".join(paras))
+                item_lines = [
+                    f"• **{item.headline.strip()}**: {item.body.strip()}"
+                    for item in block_draft.items
+                    if item.headline.strip() and item.body.strip()
+                ]
+                if item_lines:
+                    sections.append(f"{header}\n" + "\n".join(item_lines))
         else:
             # Group cards by classified rubric
             grouped_cards: dict[str, list[StoryCard]] = {}

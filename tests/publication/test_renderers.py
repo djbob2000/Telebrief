@@ -299,16 +299,23 @@ class TestPublicationDigestRenderer:
 
     def test_render_grouped_digest_with_narrative_draft(self):
         from src.publication.digest_narrative import (
+            DigestEditorialItemDraft,
             DigestNarrativeBlockDraft,
             DigestNarrativeDraft,
-            DigestNarrativeParagraph,
         )
 
-        card = StoryCard(
+        card1 = StoryCard(
             id="story:1",
             topic="Водоснабжение",
             importance="high",
             summary="Ремонт завершен",
+            rubric_id="utilities",
+        )
+        card2 = StoryCard(
+            id="story:2",
+            topic="Банковские услуги",
+            importance="medium",
+            summary="Работа банкоматов",
             rubric_id="utilities",
         )
         msg = Message(
@@ -327,9 +334,9 @@ class TestPublicationDigestRenderer:
             )
         }
         frozen = FrozenEditorialInput(
-            analysis=EditorialAnalysis(cards=[card]),
+            analysis=EditorialAnalysis(cards=[card1, card2]),
             writer_bundle=PreparedBundle(
-                records=records, prompt_text="", total_messages=1, candidate_count=1
+                records=records, prompt_text="", total_messages=1, candidate_count=2
             ),
         )
 
@@ -337,12 +344,18 @@ class TestPublicationDigestRenderer:
             blocks=(
                 DigestNarrativeBlockDraft(
                     block_id="block:utilities:0",
-                    heading="Городское хозяйство",
-                    paragraphs=(
-                        DigestNarrativeParagraph(
-                            text="Водоканал завершил ремонтные работы на сетях в центре города.",
+                    items=(
+                        DigestEditorialItemDraft(
+                            headline="Подтвержденных сроков восстановления света пока нет",
+                            body="Сообщения об отключениях поступали в разные дни.",
                             cited_support_ids=("sup:1",),
                             covered_story_ids=("story:1",),
+                        ),
+                        DigestEditorialItemDraft(
+                            headline="На Горе банкоматы без связи, но карты в магазинах принимают",
+                            body="Безналичная оплата в торговых точках города проходит без сбоев.",
+                            cited_support_ids=("sup:2",),
+                            covered_story_ids=("story:2",),
                         ),
                     ),
                 ),
@@ -356,7 +369,17 @@ class TestPublicationDigestRenderer:
             narrative_draft=narrative_draft,
         )
 
-        assert "*⚡️ Городское хозяйство*" in body or "Городское хозяйство" in body
-        assert "Водоканал завершил ремонтные работы на сетях в центре города." in body
-        assert "• **Водоснабжение**" not in body  # Replaced by flowing paragraph!
+        assert (
+            "• **Подтвержденных сроков восстановления света пока нет**: Сообщения об отключениях поступали в разные дни."
+            in body
+        )
+        assert (
+            "• **На Горе банкоматы без связи, но карты в магазинах принимают**: Безналичная оплата в торговых точках города проходит без сбоев."
+            in body
+        )
+        assert "story:" not in body
+        assert "sup:" not in body
+        assert (
+            "• **Водоснабжение**" not in body
+        )  # Canonical card bullets are suppressed when narrative draft is used!
         assert "Статистика:" in body
