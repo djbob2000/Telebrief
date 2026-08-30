@@ -117,3 +117,71 @@ def test_build_article_claim_trace_unions_provenance() -> None:
     assert p_unit.claim_atoms[0].temporal_roles == ("CURRENT_WINDOW",)
     assert p_unit.claim_atoms[1].text == "Факт 2"
     assert p_unit.claim_atoms[1].support_ids == ("story:1:evidence:1:frag:2003",)
+
+
+@pytest.mark.unit
+def test_build_article_claim_trace_preserves_epistemic_metadata() -> None:
+    sup = ArticleSupport(
+        support_id="story:1:evidence:0:frag:2002",
+        text="На Горе света нет",
+        source_text="На Горе света нет",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("telegram:src:1:item:202:frag:2002",),
+        fragment_ids=(2002,),
+        source_item_ids=(202,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="community_report",
+        source_roles=("community",),
+    )
+
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Заголовок",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        recurring_topics=("utilities",),
+    )
+
+    draft = StructuredArticleDraft(
+        title="Заголовок",
+        title_support_ids=("story:1:evidence:0:frag:2002",),
+        title_claims=(
+            ArticleClaimAtom(text="Заголовок", cited_support_ids=("story:1:evidence:0:frag:2002",)),
+        ),
+        lead="Лид",
+        lead_support_ids=("story:1:evidence:0:frag:2002",),
+        lead_claims=(
+            ArticleClaimAtom(text="Лид", cited_support_ids=("story:1:evidence:0:frag:2002",)),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Раздел",
+                heading_support_ids=("story:1:evidence:0:frag:2002",),
+                heading_claims=(
+                    ArticleClaimAtom(
+                        text="Раздел", cited_support_ids=("story:1:evidence:0:frag:2002",)
+                    ),
+                ),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="По сообщениям жителей, на Горе нет света.",
+                        cited_support_ids=("story:1:evidence:0:frag:2002",),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="На Горе нет света",
+                                cited_support_ids=("story:1:evidence:0:frag:2002",),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    trace = build_article_claim_trace(draft, ctx)
+    unit = next(item for item in trace if item.unit_id == "P001")
+    assert unit.evidence_kinds == ("community_report",)
+    assert unit.source_roles == ("community",)
+    assert unit.claim_atoms[0].evidence_kinds == ("community_report",)
+    assert unit.claim_atoms[0].source_roles == ("community",)

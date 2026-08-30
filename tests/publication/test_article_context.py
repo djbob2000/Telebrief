@@ -195,6 +195,40 @@ def test_build_article_editorial_context_preserves_evidence_and_timeline():
     assert "Порыв трубы d=500мм на АКЗ" in prompt_str
 
 
+def test_build_article_editorial_context_epistemic_propagation():
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    evi = PublicationEvidence(
+        evidence_id="story:1:evidence:0:frag:101",
+        story_id=1,
+        text="На Горе света нет",
+        source_text="На Горе света нет",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=101,
+        source_ref="telegram:source:7:item:9:rev:1:frag:101",
+        source_id=7,
+        source_item_id=9,
+        source_role="community",
+        observed_at=now,
+    )
+
+    context = build_article_editorial_context(
+        cards=(),
+        evidence_items=[evi],
+        snapshot_at=now,
+        lookback_hours=24,
+    )
+
+    support = context.support_index[0]
+    assert support.evidence_kind == "community_report"
+    assert support.source_roles == ("community",)
+
+    prompt = context.to_prompt_context()
+    assert "evidence_kind=community_report" in prompt
+    assert "source_roles=community" in prompt
+    assert "framing=attributed_report" in prompt
+
+
 def test_classify_support_temporal_role():
     window = PublicationWindow(
         snapshot_at=dt.datetime(2026, 8, 29, 21, 0, tzinfo=dt.timezone.utc),

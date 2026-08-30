@@ -86,6 +86,20 @@ class ArticleSupport:
     effective_from: dt.datetime | None = None
     effective_until: dt.datetime | None = None
     temporal_role: TemporalRole = "CURRENT_WINDOW"
+    evidence_kind: str = "established_fact"
+    source_roles: tuple[str, ...] = ()
+
+
+def _support_framing(support: ArticleSupport) -> str:
+    if support.evidence_kind in {"community_report", "community_observation", "quote_assertion"}:
+        return "attributed_report"
+    if support.evidence_kind == "official_statement":
+        return "official_attribution"
+    if support.evidence_kind == "service_access":
+        return "service_access_report"
+    if support.support_kind == "operational" and support.source_roles == ("community",):
+        return "attributed_report"
+    return "factual_support"
 
 
 @dataclass(frozen=True)
@@ -117,9 +131,12 @@ class ArticleEditorialContext:
         for sup in self.support_index:
             if sup.publication_use == "EXCLUDE":
                 continue
+            roles = ",".join(sup.source_roles) if sup.source_roles else "unknown"
             lines = [
                 f"[SUPPORT {sup.support_id}]",
                 f"role={sup.temporal_role} kind={sup.support_kind} publication_use={sup.publication_use}",
+                f"evidence_kind={sup.evidence_kind} source_roles={roles}",
+                f"framing={_support_framing(sup)}",
             ]
             if sup.observed_at:
                 lines.append(f"observed_at={sup.observed_at.isoformat()}")
@@ -207,6 +224,8 @@ def build_article_editorial_context(
                 source_item_ids=(evi.source_item_id,) if evi.source_item_id else (),
                 observed_at=evi.observed_at,
                 temporal_role=temporal_role,
+                evidence_kind=evi.kind,
+                source_roles=(evi.source_role,) if evi.source_role else (),
             )
         )
 
@@ -269,6 +288,14 @@ def build_article_editorial_context(
                     window=pub_win,
                 )
 
+            source_roles = tuple(
+                dict.fromkeys(
+                    records[ref].source_type
+                    for ref in matching_refs
+                    if ref in records and records[ref].source_type
+                )
+            )
+
             support_list.append(
                 ArticleSupport(
                     support_id=sup_id,
@@ -283,6 +310,8 @@ def build_article_editorial_context(
                     effective_from=obs_res.effective_from,
                     effective_until=obs_res.effective_until,
                     temporal_role=op_role,
+                    evidence_kind="operational_observation",
+                    source_roles=source_roles,
                 )
             )
 

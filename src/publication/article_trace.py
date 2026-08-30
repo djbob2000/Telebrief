@@ -19,6 +19,8 @@ class ArticleClaimTraceAtom:
     fragment_ids: tuple[int, ...]
     source_item_ids: tuple[int, ...]
     temporal_roles: tuple[str, ...]
+    evidence_kinds: tuple[str, ...]
+    source_roles: tuple[str, ...]
     concrete_claims: tuple[ConcreteClaim, ...]
 
 
@@ -33,6 +35,8 @@ class ArticleClaimTraceUnit:
     fragment_ids: tuple[int, ...]
     source_item_ids: tuple[int, ...]
     temporal_roles: tuple[str, ...]
+    evidence_kinds: tuple[str, ...]
+    source_roles: tuple[str, ...]
     concrete_claims: tuple[ConcreteClaim, ...]
     claim_atoms: tuple[ArticleClaimTraceAtom, ...] = ()
 
@@ -68,6 +72,8 @@ def build_article_claim_trace(
         frag_ids: list[int] = []
         item_ids: list[int] = []
         roles: list[str] = []
+        evidence_kinds: list[str] = []
+        source_roles: list[str] = []
 
         for sid in support_ids:
             if sid in support_map:
@@ -76,6 +82,8 @@ def build_article_claim_trace(
                 frag_ids.extend(sup.fragment_ids)
                 item_ids.extend(sup.source_item_ids)
                 roles.append(sup.temporal_role)
+                evidence_kinds.append(sup.evidence_kind)
+                source_roles.extend(sup.source_roles)
 
         concrete = extract_concrete_claims(text)
 
@@ -85,6 +93,8 @@ def build_article_claim_trace(
             atom_frags: list[int] = []
             atom_items: list[int] = []
             atom_roles: list[str] = []
+            atom_evidence_kinds: list[str] = []
+            atom_source_roles: list[str] = []
             for asid in atom.cited_support_ids:
                 if asid in support_map:
                     asup = support_map[asid]
@@ -92,6 +102,8 @@ def build_article_claim_trace(
                     atom_frags.extend(asup.fragment_ids)
                     atom_items.extend(asup.source_item_ids)
                     atom_roles.append(asup.temporal_role)
+                    atom_evidence_kinds.append(asup.evidence_kind)
+                    atom_source_roles.extend(asup.source_roles)
             atom_concrete = extract_concrete_claims(atom.text)
             trace_atoms.append(
                 ArticleClaimTraceAtom(
@@ -101,6 +113,8 @@ def build_article_claim_trace(
                     fragment_ids=tuple(dict.fromkeys(atom_frags)),
                     source_item_ids=tuple(dict.fromkeys(atom_items)),
                     temporal_roles=tuple(dict.fromkeys(atom_roles)),
+                    evidence_kinds=tuple(dict.fromkeys(atom_evidence_kinds)),
+                    source_roles=tuple(dict.fromkeys(atom_source_roles)),
                     concrete_claims=atom_concrete,
                 )
             )
@@ -114,6 +128,8 @@ def build_article_claim_trace(
                 fragment_ids=tuple(dict.fromkeys(frag_ids)),
                 source_item_ids=tuple(dict.fromkeys(item_ids)),
                 temporal_roles=tuple(dict.fromkeys(roles)),
+                evidence_kinds=tuple(dict.fromkeys(evidence_kinds)),
+                source_roles=tuple(dict.fromkeys(source_roles)),
                 concrete_claims=concrete,
                 claim_atoms=tuple(trace_atoms),
             )
