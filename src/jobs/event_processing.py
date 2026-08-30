@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
+from typing import Any
 
 from src.ai_providers import create_provider
 from src.config_loader import load_config
@@ -16,7 +18,7 @@ from src.processing.event_brief import EventBriefService
 from src.processing.event_clustering import EventClusteringService
 from src.processing.event_triage import StoryTriageService
 from src.processing.fragments import split_into_fragments
-from src.repositories.event_clusters import EventClusterRepository
+from src.repositories.event_clusters import EventClusterRepository, StoryClusterState
 from src.repositories.fragments import FragmentRepository
 from src.repositories.stories import StoryRepository
 from src.runtime import get_runtime
@@ -172,92 +174,85 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
         "analyzed": 0,
     }
 
-    rich_calls_count = 0
-
     async with runtime.uow.transaction() as conn:
         if edition_id is not None:
             editions_to_process = [edition_id]
         else:
             editions_to_process = await cluster_repo.list_dirty_edition_ids(conn)
 
-        if not editions_to_process:
-            return stats
+    if not editions_to_process:
+        return stats
 
-        for current_edition_id in editions_to_process:
-            dirty_stories = await cluster_repo.list_dirty_cluster_states(
-                conn, current_edition_id, limit=cfg.live_batch_size
-            )
-            stats["scanned"] += len(dirty_stories)
-            if not dirty_stories:
-                continue
+    triage_sem = asyncio.Semaphore(4)
 
-            # Filter settled stories: quiet window has passed since last fragment arrived
-            quiet_delta = dt.timedelta(seconds=cfg.analysis_quiet_seconds)
-            settled = [s for s in dirty_stories if (now - s.last_seen_at) >= quiet_delta]
-
-            stats["settled"] += len(settled)
-            if not settled:
-                continue
-
-            # Resolve edition scope
-            _slug, scope_config = await resolve_edition_scope(conn, config, current_edition_id)
-            scope_hash = scope_config_hash(scope_config)
-
-            # Chunk into triage_batch_size
-            for start in range(0, len(settled), cfg.triage_batch_size):
-                gate_batch = settled[start : start + cfg.triage_batch_size]
+    async def _process_gate_batch(
+        gate_batch: list[StoryClusterState],
+        cur_ed_id: int,
+        sc_cfg: Any,
+        sc_hsh: str,
+    ) -> dict[str, Any]:
+        b_stats = {
+            "gated": len(gate_batch),
+            "triaged": 0,
+            "deferred": 0,
+            "scope_local": 0,
+            "scope_direct_impact": 0,
+            "scope_out_of_scope": 0,
+            "scope_uncertain": 0,
+            "analyzed": 0,
+        }
+        async with triage_sem:
+            async with runtime.uow.transaction() as batch_conn:
                 batch_result = await triage_service.triage_stories_batch(
-                    conn,
+                    batch_conn,
                     gate_batch,
-                    edition_id=current_edition_id,
-                    scope_config=scope_config,
-                    scope_hash=scope_hash,
+                    edition_id=cur_ed_id,
+                    scope_config=sc_cfg,
+                    scope_hash=sc_hsh,
                     excerpt_chars=cfg.triage_excerpt_chars,
                     min_ignore_confidence=cfg.triage_min_ignore_confidence,
                 )
-                stats["gated"] += len(gate_batch)
-                stats["triaged"] += len(batch_result.results)
-
+                b_stats["triaged"] = len(batch_result.results)
                 results_by_id = {item.story_id: item for item in batch_result.results}
 
                 for state in gate_batch:
                     if state.story_id in batch_result.deferred_story_ids:
-                        stats["deferred"] += 1
+                        b_stats["deferred"] += 1
                         continue
 
                     result = results_by_id.get(state.story_id)
                     if result is None:
-                        stats["deferred"] += 1
+                        b_stats["deferred"] += 1
                         continue
 
                     if result.scope == "OUT_OF_SCOPE":
-                        stats["scope_out_of_scope"] += 1
+                        b_stats["scope_out_of_scope"] += 1
                         await cluster_repo.mark_cluster_processed_without_analysis(
-                            conn,
+                            batch_conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
                         )
                         continue
 
                     if result.scope == "UNCERTAIN":
-                        stats["scope_uncertain"] += 1
+                        b_stats["scope_uncertain"] += 1
                         await cluster_repo.mark_cluster_processed_without_analysis(
-                            conn,
+                            batch_conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
                         )
                         continue
 
                     if result.scope == "LOCAL":
-                        stats["scope_local"] += 1
+                        b_stats["scope_local"] += 1
                     elif result.scope == "DIRECT_IMPACT":
-                        stats["scope_direct_impact"] += 1
+                        b_stats["scope_direct_impact"] += 1
                     else:
                         raise AssertionError(f"validated unexpected scope {result.scope!r}")
 
                     if result.retention == "DROP":
                         await cluster_repo.mark_cluster_processed_without_analysis(
-                            conn,
+                            batch_conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
                         )
@@ -265,7 +260,7 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
 
                     # In-scope KEEP: persist brief revision first
                     await brief_service.persist_brief(
-                        conn,
+                        batch_conn,
                         story_id=state.story_id,
                         assignment_id=state.latest_assignment_id,
                         payload=result.brief_payload,
@@ -280,33 +275,71 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
 
                     if effective_enrichment == "BRIEF":
                         await cluster_repo.mark_cluster_processed_without_analysis(
-                            conn,
+                            batch_conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
                         )
                         continue
 
                     # effective_enrichment == "ANALYZE"
-                    if rich_calls_count >= cfg.rich_analysis_max_calls_per_cycle:
-                        # Budget exhausted for this cycle; leave dirty for next cycle
-                        continue
-
                     min_interval_delta = dt.timedelta(seconds=cfg.analysis_min_interval_seconds)
                     if (
                         state.last_analyzed_at is not None
                         and (now - state.last_analyzed_at) < min_interval_delta
                     ):
-                        # Throttled by min interval; leave dirty for next cycle
                         continue
 
-                    rich_calls_count += 1
                     rev = await analysis_service.analyze_story(
-                        conn,
+                        batch_conn,
                         state.story_id,
                         max_representative_fragments=cfg.representative_fragment_limit,
                         max_input_chars=cfg.analysis_max_input_chars,
                     )
                     if rev is not None:
-                        stats["analyzed"] += 1
+                        b_stats["analyzed"] += 1
+
+        return b_stats
+
+    for current_edition_id in editions_to_process:
+        async with runtime.uow.transaction() as conn:
+            dirty_stories = await cluster_repo.list_dirty_cluster_states(
+                conn, current_edition_id, limit=cfg.live_batch_size
+            )
+            _slug, scope_config = await resolve_edition_scope(conn, config, current_edition_id)
+            scope_hash = scope_config_hash(scope_config)
+
+        stats["scanned"] += len(dirty_stories)
+        if not dirty_stories:
+            continue
+
+        # Filter settled stories: quiet window has passed since last fragment arrived
+        quiet_delta = dt.timedelta(seconds=cfg.analysis_quiet_seconds)
+        settled = [s for s in dirty_stories if (now - s.last_seen_at) >= quiet_delta]
+
+        stats["settled"] += len(settled)
+        if not settled:
+            continue
+
+        # Prepare batches and run concurrently with Semaphore(4)
+        batches = [
+            settled[start : start + cfg.triage_batch_size]
+            for start in range(0, len(settled), cfg.triage_batch_size)
+        ]
+        batch_results = await asyncio.gather(
+            *[_process_gate_batch(b, current_edition_id, scope_config, scope_hash) for b in batches]
+        )
+
+        for b_stat in batch_results:
+            for k in (
+                "gated",
+                "triaged",
+                "deferred",
+                "scope_local",
+                "scope_direct_impact",
+                "scope_out_of_scope",
+                "scope_uncertain",
+                "analyzed",
+            ):
+                stats[k] += b_stat[k]
 
     return stats

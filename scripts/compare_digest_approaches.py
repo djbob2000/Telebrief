@@ -122,7 +122,7 @@ async def generate_new_approach_digest(infra, config: Config) -> tuple[str, str,
         snapshot_at=now,
         request_key=f"compare:new:{now.isoformat()}",
         config=config,
-        lookback_hours_override=24,
+        lookback_hours_override=48,
     )
     await snapshot_service.seal_candidates(run.id)
     await selection_service.select(run.id, defer_generation=False)
@@ -142,7 +142,7 @@ async def generate_new_approach_digest(infra, config: Config) -> tuple[str, str,
 async def generate_old_custom_digest(infra, config: Config) -> str:
     """Generate digest using old/custom approach (raw message summarization)."""
     uow = infra.uow
-    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=24)
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=48)
 
     async with uow.transaction() as conn:
         cur = await conn.execute(
