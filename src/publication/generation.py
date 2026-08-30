@@ -19,6 +19,7 @@ from src.publication.editorial_adapter import (
     KnowledgeEditorialAdapter,
 )
 from src.publication.editorializer import DigestEditorializer
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.models import Publication
 from src.publication.repository import PublicationRepository
 from src.publication.rubrics import (
@@ -315,6 +316,22 @@ class PublicationGenerationService:
                 title, lead, body = await self.generator.generate_from_frozen_input(
                     frozen, attempt_observer=observer
                 )
+        except ArticlePublicationRejected as exc:
+            logger.warning(
+                "article publication rejected for run %s: %s (%s)",
+                run_id,
+                exc.reason,
+                exc,
+            )
+            async with self.uow.transaction() as conn:
+                await self.repo.transition_run(
+                    conn,
+                    run_id,
+                    "failed",
+                    error_kind=exc.error_kind,
+                    completed_at=dt.datetime.now(dt.timezone.utc),
+                )
+            raise
         except Exception as exc:
             logger.error("generation failed completely for run %s: %s", run_id, exc)
             async with self.uow.transaction() as conn:

@@ -7,6 +7,7 @@ import psycopg
 import pytest
 
 from src.db.uow import DatabaseUnitOfWork
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.generation import PublicationGenerationService
 from src.publication.models import PublicationSelectionDecision
 from src.publication.repository import (
@@ -1118,12 +1119,33 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
         generator=generator,
     )
 
-    pub = await service.generate(run.id, defer_delivery=False)
-    assert pub.publication_run_id == run.id
+    with pytest.raises(ArticlePublicationRejected) as caught:
+        await service.generate(run.id, defer_delivery=False)
+    assert caught.value.reason == "validation_failed"
+    assert caught.value.error_kind == "article_validation_rejected"
+
     # Assert provider was called exactly ONCE
     assert mock_provider.chat_completion.call_count == 1
 
-    # Check generation attempts in DB
+    # Check run row in DB
+    run_row = await (
+        await conn.execute(
+            "SELECT status, error_kind FROM publication_runs WHERE id = %s",
+            (run.id,),
+        )
+    ).fetchone()
+    assert run_row == ("failed", "article_validation_rejected")
+
+    # Check zero publications created
+    pub_count = await (
+        await conn.execute(
+            "SELECT count(*) FROM publications WHERE publication_run_id = %s",
+            (run.id,),
+        )
+    ).fetchone()
+    assert pub_count[0] == 0
+
+    # Check generation attempts in DB: exactly one failed writer attempt, zero fallback
     cur = await conn.execute(
         """
         SELECT kind, status, error_kind, metadata
@@ -1134,23 +1156,217 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
         (run.id,),
     )
     attempts = await cur.fetchall()
-    assert len(attempts) == 2
-    # 1. writer failed with ValidationFailed
+    assert len(attempts) == 1
     assert attempts[0][0] == "writer"
     assert attempts[0][1] == "failed"
-    assert attempts[0][2] == "ValidationFailed"
-    # 2. story_renderer_fallback succeeded
-    assert attempts[1][0] == "story_renderer_fallback"
-    assert attempts[1][1] == "succeeded"
+    assert attempts[0][2] == "article_validation_rejected"
 
-    # Winning attempt is story_renderer_fallback
+
+@pytest.mark.postgres
+async def test_event_first_article_writer_error_rejects_and_creates_no_publication(
+    conn, pool, edition
+):
+    """When the AI writer raises an exception, the run fails with article_writer_rejected and no publication."""
+    import logging
+    from unittest.mock import AsyncMock
+
+    from src.article_generator import ArticleGenerator
+    from src.config_loader import Config, PublicationEditorialConfig, Settings
+
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_ids = await _seed_policies(conn, edition.id)
+
     cur = await conn.execute(
-        "SELECT kind FROM publication_generation_attempts WHERE id = %s",
-        (pub.winning_generation_attempt_id,),
+        """
+        INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+        VALUES (%s, 'active', 'event_first', %s)
+        RETURNING id
+        """,
+        (edition.id, _NOW),
     )
-    assert (await cur.fetchone())[0] == "story_renderer_fallback"
-    # Ensure unsupported hallucinated phrase is NOT in publication
-    assert "полутора часов" not in pub.body
+    story_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name, role)
+        VALUES ('telegram', 'channel', '-10042_err', 'https://t.me/res_err', 'РЭС', 'official')
+        RETURNING id
+        """
+    )
+    src_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_id, edition.id),
+    )
+    cur = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'msg', 'm1_err', %s) RETURNING id
+        """,
+        (src_id, _NOW),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'h1_err', 'Авария на подстанции: временно обесточен центр.')
+        RETURNING id
+        """,
+        (item_id,),
+    )
+    sir_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
+        VALUES (%s, 0, 'Авария на подстанции: временно обесточен центр.', 'hf1_err', 'v1', TRUE, %s)
+        RETURNING id
+        """,
+        (sir_id, _NOW),
+    )
+    frag_id = (await cur.fetchone())[0]
+
+    event_payload = {
+        "topic": "Авария на подстанции",
+        "headline": "Отключение света в центре",
+        "digest_summary": "Авария на подстанции в центре.",
+        "evidence_items": [
+            {
+                "text": "Авария на подстанции: временно обесточен центр.",
+                "kind": "established_fact",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [frag_id],
+            }
+        ],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-rev1_err', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            story_id,
+            event_payload["digest_summary"],
+            event_payload["headline"],
+            event_payload["digest_summary"],
+            json.dumps(event_payload),
+            _NOW,
+        ),
+    )
+    rev_id = (await cur.fetchone())[0]
+
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="article",
+        request_key="test-writer-err-run",
+        snapshot_at=_NOW,
+        policy_ids=policy_ids,
+    )
+    cand = await repo.insert_candidate(
+        conn, run.id, story_id=story_id, story_revision_id=rev_id, deterministic_rank=1
+    )
+    dec = await repo.insert_selection_decision(
+        conn,
+        run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=run.id,
+            candidate_id=cand.id,
+            decision="INCLUDE",
+            presentation_intent="lead",
+            confidence=0.98,
+            reason="Good",
+            rank=1,
+            metadata={},
+            created_at=_NOW,
+        ),
+    )
+    await repo.freeze_selected_input(
+        conn,
+        run.id,
+        story_id=story_id,
+        story_revision_id=rev_id,
+        selection_decision_id=dec.id,
+        presentation_intent="lead",
+        rank=1,
+        fragment_ids=[frag_id],
+    )
+    await repo.transition_run(conn, run.id, "selected_inputs_sealed")
+
+    settings = Settings(
+        schedule_time="09:00",
+        timezone="UTC",
+        lookback_hours=24,
+        openai_model="gpt-4",
+        openai_temperature=0.7,
+        ai_provider="openai",
+        publication_editorial=PublicationEditorialConfig(
+            article_min_words=5,
+            article_min_sections=1,
+        ),
+    )
+    config = Config(
+        channels=[],
+        settings=settings,
+        telegram_api_id=1,
+        telegram_api_hash="hash",
+        telegram_bot_token="token",
+        openai_api_key="key",
+        log_level="INFO",
+    )
+
+    generator = ArticleGenerator(config=config, logger=logging.getLogger("test"))
+    mock_provider = AsyncMock()
+    mock_provider.chat_completion.side_effect = TimeoutError("writer timeout")
+    generator.provider = mock_provider
+
+    service = PublicationGenerationService(
+        uow=uow,
+        config=config,
+        repo=repo,
+        generator=generator,
+    )
+
+    with pytest.raises(ArticlePublicationRejected) as caught:
+        await service.generate(run.id, defer_delivery=False)
+    assert caught.value.reason == "writer_failed"
+    assert caught.value.error_kind == "article_writer_rejected"
+
+    run_row = await (
+        await conn.execute(
+            "SELECT status, error_kind FROM publication_runs WHERE id = %s",
+            (run.id,),
+        )
+    ).fetchone()
+    assert run_row == ("failed", "article_writer_rejected")
+
+    pub_count = await (
+        await conn.execute(
+            "SELECT count(*) FROM publications WHERE publication_run_id = %s",
+            (run.id,),
+        )
+    ).fetchone()
+    assert pub_count[0] == 0
+
+    cur = await conn.execute(
+        """
+        SELECT kind, status, error_kind, metadata
+        FROM publication_generation_attempts
+        WHERE publication_run_id = %s
+        ORDER BY attempt_no ASC
+        """,
+        (run.id,),
+    )
+    attempts = await cur.fetchall()
+    assert len(attempts) == 1
+    assert attempts[0][0] == "writer"
+    assert attempts[0][1] == "failed"
+    assert attempts[0][2] == "article_writer_rejected"
 
 
 @pytest.mark.postgres
