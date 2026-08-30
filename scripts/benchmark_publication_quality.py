@@ -155,6 +155,39 @@ async def run_benchmark(
             len(win_meta.get("claim_trace", [])) if isinstance(win_meta, dict) else 0
         )
 
+        # 3. Candidate and Cluster Diagnostics
+        async with uow.transaction() as conn:
+            cur = await conn.execute(
+                """
+                SELECT c.id, c.story_id, r.title, r.summary, r.event_payload
+                FROM publication_candidates c
+                JOIN story_revisions r ON r.id = c.story_revision_id
+                WHERE c.publication_run_id = %s
+                """,
+                (digest_run.id,),
+            )
+            cand_rows = await cur.fetchall()
+
+        scope_counts: dict[str, int] = {}
+        candidate_titles: list[str] = []
+        for crow in cand_rows:
+            p = crow[4]
+            sc = p.get("geographic_scope", "UNKNOWN") if isinstance(p, dict) else "UNKNOWN"
+            scope_counts[sc] = scope_counts.get(sc, 0) + 1
+            if crow[2]:
+                candidate_titles.append(crow[2])
+
+        # Simple pairwise title token jaccard to flag potential fragment duplicates
+        frag_pairs: list[tuple[str, str, float]] = []
+        for i in range(len(candidate_titles)):
+            tokens_i = set(candidate_titles[i].lower().split())
+            for j in range(i + 1, len(candidate_titles)):
+                tokens_j = set(candidate_titles[j].lower().split())
+                if tokens_i and tokens_j:
+                    jacc = len(tokens_i & tokens_j) / len(tokens_i | tokens_j)
+                    if jacc >= 0.50:
+                        frag_pairs.append((candidate_titles[i], candidate_titles[j], jacc))
+
         # Print Benchmark Report
         print("\n" + "=" * 70)
         print("  PUBLICATION QUALITY & AI BUDGET BENCHMARK REPORT")
@@ -162,6 +195,13 @@ async def run_benchmark(
         print(f"Edition:             {name} ({slug})")
         print(f"Lookback Window:     {hours} hours")
         print(f"Timestamp:           {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+        print("-" * 70)
+        print("CANDIDATE & CLUSTER DIAGNOSTICS:")
+        print(f"  Total Candidates:  {len(cand_rows)}")
+        print(f"  Scope Breakdown:   {scope_counts}")
+        print(f"  Potential Cluster Frags (Jaccard >= 0.50): {len(frag_pairs)}")
+        for t1, t2, jscore in frag_pairs[:3]:
+            print(f"    - [{jscore:.2f}] '{t1[:35]}...' vs '{t2[:35]}...'")
         print("-" * 70)
         print("DIGEST RESULTS:")
         print(f"  Candidates:        {len(digest_candidates)}")
@@ -184,6 +224,7 @@ async def run_benchmark(
         print(f"  Chat LLM Calls:    {article_chat_calls} (Target: <= 1)")
         print(f"  Duration:          {t_article:.2f}s")
         print("=" * 70 + "\n")
+
 
 
 def main() -> None:
