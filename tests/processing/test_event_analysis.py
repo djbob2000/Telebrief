@@ -8,9 +8,38 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from src.domain.event_payload import EventPayload, ensure_keep_publishability
 from src.processing.event_analysis import EventAnalysisPayload, EventAnalysisService
 from src.repositories.event_clusters import EventClusterRepository
 from src.repositories.stories import StoryRepository
+
+
+@pytest.mark.unit
+def test_ensure_keep_publishability_preserves_evidence_and_normalizes_internal_only():
+    payload = EventPayload.from_dict(
+        {
+            "topic": "Свет на Горе",
+            "publishability": "internal_only",
+            "headline": "На Горе нет света",
+            "digest_summary": "Житель сообщает об отсутствии света.",
+            "evidence_items": [
+                {
+                    "text": "На Горе света нет",
+                    "kind": "community_report",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [101],
+                }
+            ],
+        },
+        allowed_fragment_ids={101},
+    )
+
+    normalized = ensure_keep_publishability(payload)
+
+    assert normalized.publishability == "brief"
+    assert normalized.evidence_items == payload.evidence_items
+    assert normalized.evidence_items[0].kind == "community_report"
+    assert normalized.evidence_items[0].publication_use == "PUBLISH"
 
 
 @pytest.mark.unit

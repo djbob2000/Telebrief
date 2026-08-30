@@ -12,7 +12,7 @@ import psycopg
 
 from src.config_loader import EditionScopeConfig
 from src.domain.event_clusters import StoryClusterState
-from src.domain.event_payload import EventPayload, parse_event_payload
+from src.domain.event_payload import EventPayload, ensure_keep_publishability, parse_event_payload
 from src.processing.edition_scope import (
     SCOPE_VERSION,
     EditionScopeClass,
@@ -37,6 +37,9 @@ Same-region, national importance, front-line direction names, and broad strategi
 OUT_OF_SCOPE or UNCERTAIN is normalized to DROP+NONE without requiring a brief.
 
 For LOCAL or DIRECT_IMPACT content:
+- Lack of corroboration, a single community source, or lack of official confirmation is NOT by itself a reason to DROP an otherwise legitimate LOCAL or DIRECT_IMPACT report.
+- Represent source uncertainty through evidence kind, wording, and confidence; do not erase the event.
+- For retention=KEEP, brief_payload.publishability must be "news" or "brief". Do not use "internal_only" or "noise" merely because evidence is community, conversational, single-source, or unverified.
 - DROP is only for high-confidence hard noise/commercial-only content and must use enrichment=NONE with exclusion_reason in ('commercial_classified', 'obvious_noise').
 - In-scope KEEP uses BRIEF for simple useful local information, and ANALYZE only when rich synthesis is justified.
 - Publication use is semantic, not topic-based.
@@ -448,6 +451,9 @@ class StoryTriageService:
                             retention = "KEEP"
                             enrichment = "BRIEF"
                             ex_reason = None
+                            brief_payload = ensure_keep_publishability(
+                                brief_payload, default="brief"
+                            )
                         else:
                             # Unsafe drop without a valid brief must defer
                             deferred_ids.append(s.story_id)
@@ -459,6 +465,7 @@ class StoryTriageService:
                         retention = "KEEP"
                         enrichment = enrichment_raw  # type: ignore[assignment]
                         ex_reason = None
+                        brief_payload = ensure_keep_publishability(brief_payload, default="brief")
                     else:
                         deferred_ids.append(s.story_id)
                         continue

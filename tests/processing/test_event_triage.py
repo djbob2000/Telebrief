@@ -1147,3 +1147,142 @@ async def test_story_triage_80_singletons_one_call_no_rich_analysis(conn, editio
     assert mock_ai.generate_text.call_count == 1
     assert all(r.retention == "KEEP" for r in result.results)
     assert all(r.enrichment == "BRIEF" for r in result.results)
+
+
+@pytest.mark.postgres
+async def test_single_community_source_keep_internal_only_normalized_to_brief(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    # Create source with role 'community'
+    cursor = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name, role)
+        VALUES ('telegram', 'channel', '-1009999', 'https://t.me/community', 'Community Chat', 'community')
+        RETURNING id
+        """
+    )
+    community_source_id = (await cursor.fetchone())[0]
+    cursor = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'message', '9999', now())
+        RETURNING id
+        """,
+        (community_source_id,),
+    )
+    community_item_id = (await cursor.fetchone())[0]
+    cursor = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'hash-comm-1', 'На Горе света нет')
+        RETURNING id
+        """,
+        (community_item_id,),
+    )
+    comm_rev_id = (await cursor.fetchone())[0]
+
+    sid = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES (8999, 'h_comm', '[1, 0]'::vector, 'm', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES (9999, %s, 0, 'На Горе света нет', 'h_comm', 'v1', TRUE, NULL, %s)
+        """,
+        (comm_rev_id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES (10999, 9999, 8999)
+        """
+    )
+    aid = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9999,
+        fragment_embedding_id=10999,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid,
+        centroid=[1.0, 0.0],
+        model="m",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid,
+        analysis_dirty=True,
+    )
+    st = await cluster_repo.get_cluster_state(conn, sid)
+    assert st is not None
+
+    scope_config = EditionScopeConfig(name="Бердянск", focus_places=("Бердянск",))
+    scope_hash = scope_config_hash(scope_config)
+
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "story_id": sid,
+                    "scope": "LOCAL",
+                    "scope_confidence": 0.93,
+                    "scope_reason": "In target city",
+                    "retention": "KEEP",
+                    "enrichment": "BRIEF",
+                    "exclusion_reason": None,
+                    "confidence": 0.74,
+                    "reason": "Single community source outage",
+                    "brief_payload": {
+                        "topic": "Отключение света на Горе",
+                        "publishability": "internal_only",
+                        "headline": "Жители Горы сообщают об отсутствии света",
+                        "digest_summary": "По сообщению жителя, на Горе нет электричества.",
+                        "evidence_items": [
+                            {
+                                "text": "На Горе света нет",
+                                "kind": "community_report",
+                                "publication_use": "PUBLISH",
+                                "source_fragment_ids": [9999],
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    batch = await service.triage_stories_batch(
+        conn,
+        [st],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert len(batch.results) == 1
+    result = batch.results[0]
+    assert result.retention == "KEEP"
+    assert result.enrichment == "BRIEF"
+    assert result.brief_payload is not None
+    assert result.brief_payload.publishability == "brief"
+    assert result.brief_payload.evidence_items[0].kind == "community_report"
+    assert result.brief_payload.evidence_items[0].publication_use == "PUBLISH"

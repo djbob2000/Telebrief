@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal, cast
 
 OPERATIONAL_STATES: frozenset[str] = frozenset(
@@ -385,3 +385,22 @@ def parse_event_payload(
 ) -> EventPayload:
     """Parse a mapping into a canonical EventPayload."""
     return EventPayload.from_dict(data, allowed_fragment_ids=allowed_fragment_ids)
+
+
+_KEEP_PUBLISHABILITY = frozenset({"news", "brief"})
+
+
+def ensure_keep_publishability(
+    payload: EventPayload,
+    *,
+    default: Literal["news", "brief"] = "brief",
+) -> EventPayload:
+    """Keep Gate-retained Event payloads eligible for publication.
+
+    This does not assert that source material is externally confirmed. It only
+    prevents a downstream enrichment payload from contradicting an already-made
+    KEEP retention decision.
+    """
+    if payload.publishability in _KEEP_PUBLISHABILITY:
+        return payload
+    return replace(payload, publishability=default)
