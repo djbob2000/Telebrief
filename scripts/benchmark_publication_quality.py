@@ -197,7 +197,26 @@ async def run_benchmark(
                 if tokens_i and tokens_j:
                     jacc = len(tokens_i & tokens_j) / len(tokens_i | tokens_j)
                     if jacc >= 0.50:
-                        frag_pairs.append((candidate_titles[i], candidate_titles[j], jacc))
+        # Classify outcomes
+        def _classify_outcome(attempts: list[Any], win_kind: str, win_meta: dict[str, Any], mode: str) -> str:
+            if mode == "deterministic":
+                return "deterministic_selected"
+            if win_kind == "writer" and win_meta.get("status") == "writer_success":
+                return "writer_success"
+            if any(a[1] == "writer" and a[2] == "failed" and a[3] == "ValidationFailed" for a in attempts):
+                return "validation_fallback"
+            if any(a[1] == "writer" and a[2] == "failed" for a in attempts):
+                return "writer_error_fallback"
+            if win_kind == "story_renderer_fallback":
+                reason = win_meta.get("reason", "")
+                if "validation" in reason:
+                    return "validation_fallback"
+                return "writer_error_fallback"
+            return "deterministic_selected"
+
+        digest_mode = getattr(getattr(config.settings, "publication_editorial", None), "digest_narrative_mode", "deterministic")
+        digest_outcome = _classify_outcome(digest_attempts, digest_win_kind, digest_win_meta, digest_mode)
+        article_outcome = _classify_outcome(article_attempts, win_kind, win_meta, "single_call")
 
         # Print Benchmark Report
         print("\n" + "=" * 70)
@@ -219,9 +238,8 @@ async def run_benchmark(
         print(f"  Selected:          {len(digest_inputs)}")
         print(f"  Publication ID:    {digest_pub.id if digest_pub else 'N/A (no inputs)'}")
         print(f"  Length (chars):    {len(digest_pub.body or '') if digest_pub else 0}")
-        print(
-            f"  Mode:              {getattr(getattr(config.settings, 'publication_editorial', None), 'digest_narrative_mode', 'deterministic')}"
-        )
+        print(f"  Mode:              {digest_mode}")
+        print(f"  Outcome Status:    {digest_outcome}")
         print(f"  Winning Attempt:   {digest_win_kind}")
         if digest_win_meta and "block_count" in digest_win_meta:
             print(f"  Narrative Blocks:  {digest_win_meta['block_count']}")
@@ -236,6 +254,7 @@ async def run_benchmark(
         print(
             f"  Word count:        {len((article_pub.body or '').split()) if article_pub else 0} words"
         )
+        print(f"  Outcome Status:    {article_outcome}")
         print(f"  Winning Attempt:   {win_kind}")
         print(f"  Claim Trace Units: {claim_trace_count}")
         print(f"  Chat LLM Calls:    {article_chat_calls} (Target: <= 1)")
@@ -244,7 +263,6 @@ async def run_benchmark(
             from src.publication.article_models import ArticleParagraph, ArticleSection, StructuredArticleDraft
             from src.publication.narrative_quality import evaluate_article_narrative
 
-            # Parse markdown body paragraphs for diagnostic narrative evaluation
             raw_paras = [p.strip() for p in article_pub.body.split("\n\n") if p.strip() and not p.startswith("#")]
             draft_for_diag = StructuredArticleDraft(
                 title=article_pub.title or "",
