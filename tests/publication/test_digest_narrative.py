@@ -322,3 +322,61 @@ def test_validate_digest_narrative_detects_block_mismatch_and_unsupported_claims
     assert any("DISALLOWED_SUPPORT_ID" in v for v in res.violations)
     assert any("INTERNAL_LEAKAGE" in v for v in res.violations)
     assert len(res.unsupported_claims) >= 1
+
+
+@pytest.mark.asyncio
+async def test_digest_narrative_writer_single_call_success(mocker):
+    import json
+
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        DigestNarrativeWriter,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ и город",
+                story_ids=("story:1",),
+                support_ids=("sup:1",),
+                canonical_notes=("Водоканал завершил ремонт",),
+            ),
+        )
+    )
+
+    mock_provider = mocker.AsyncMock()
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "blocks": [
+                {
+                    "block_id": "block:utilities:0",
+                    "heading": "Городское хозяйство",
+                    "paragraphs": [
+                        {
+                            "text": "Водоканал завершил ремонтные работы на сетях.",
+                            "cited_support_ids": ["sup:1"],
+                            "covered_story_ids": ["story:1"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    writer = DigestNarrativeWriter(provider=mock_provider)
+    draft = await writer.generate_narrative_draft(
+        plan=plan,
+        cards=[],
+        evidence={},
+        situation_rollup=None,
+        language="Russian",
+    )
+
+    assert isinstance(draft, DigestNarrativeDraft)
+    assert mock_provider.chat_completion.call_count == 1
+    assert len(draft.blocks) == 1
+    assert draft.blocks[0].block_id == "block:utilities:0"

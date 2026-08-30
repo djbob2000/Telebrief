@@ -304,3 +304,86 @@ def validate_digest_narrative(
         violations=tuple(violations),
         unsupported_claims=tuple(unsupported_claims),
     )
+
+
+class DigestNarrativeWriter:
+    """Single-call narrative digest writer synthesizing flowing prose across rubric blocks."""
+
+    def __init__(self, provider: Any) -> None:
+        self._provider = provider
+
+    async def generate_narrative_draft(
+        self,
+        *,
+        plan: DigestNarrativePlan,
+        cards: Sequence[StoryCard],
+        evidence: Mapping[str, PublicationEvidence],
+        situation_rollup: Any | None = None,
+        language: str = "Russian",
+        max_output_tokens: int = 4096,
+    ) -> DigestNarrativeDraft:
+        """Synthesize structured narrative draft in exactly one LLM call."""
+        import json
+
+        from src.publication.narrative_contract import build_digest_narrative_contract
+
+        blocks_payload = []
+        for b in plan.blocks:
+            supports_payload = []
+            for sid in b.support_ids:
+                if sid in evidence:
+                    evi = evidence[sid]
+                    supports_payload.append(
+                        {
+                            "id": sid,
+                            "text": evi.text,
+                            "role": evi.source_role,
+                        }
+                    )
+            blocks_payload.append(
+                {
+                    "block_id": b.block_id,
+                    "rubric_id": b.rubric_id,
+                    "rubric_title": b.rubric_title,
+                    "story_ids": list(b.story_ids),
+                    "canonical_notes": list(b.canonical_notes),
+                    "supports": supports_payload,
+                }
+            )
+
+        contract = build_digest_narrative_contract(output_language=language)
+        system_prompt = (
+            f"{contract}\n\n"
+            "Return a strictly valid JSON object with the following schema:\n"
+            "{\n"
+            '  "blocks": [\n'
+            "    {\n"
+            '      "block_id": "string (must match input block_id exactly)",\n'
+            '      "heading": "string (clear section heading)",\n'
+            '      "paragraphs": [\n'
+            "        {\n"
+            '          "text": "string (flowing editorial prose synthesizing events)",\n'
+            '          "cited_support_ids": ["string (support IDs)"],\n'
+            '          "covered_story_ids": ["string (story IDs covered)"]\n'
+            "        }\n"
+            "      ]\n"
+            "    }\n"
+            "  ]\n"
+            "}\n"
+        )
+        user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
+
+        raw_response = await self._provider.chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        try:
+            parsed = json.loads(raw_response)
+        except Exception as err:
+            raise ValueError(f"Failed to decode LLM response as JSON: {err}") from err
+
+        return DigestNarrativeDraft.from_dict(parsed)
