@@ -205,3 +205,23 @@ def test_new_semantic_content_still_blocks_without_concrete_regex_claim() -> Non
     )
     assert assessment.supported is False
     assert assessment.blocking_semantic_terms
+
+
+_ATTEMPT74_FIXTURE = Path(__file__).parents[1] / "fixtures" / "article_attempt74_regressions.json"
+
+
+def _load_attempt74_cases() -> dict[str, list[dict[str, object]]]:
+    return json.loads(_ATTEMPT74_FIXTURE.read_text(encoding="utf-8"))
+
+
+@pytest.mark.unit
+def test_attempt74_fixture_contains_required_regression_groups() -> None:
+    cases = _load_attempt74_cases()
+    assert {"expected_pass", "expected_block", "cross_language_pass", "direct_quote_cases"} <= set(
+        cases
+    )
+    assert {str(c["id"]) for c in cases["expected_block"]} >= {
+        "unsupported-azmol-location",
+        "unsupported-water-domain",
+        "unsupported-street-scope",
+    }
