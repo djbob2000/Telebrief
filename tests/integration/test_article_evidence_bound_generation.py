@@ -12,6 +12,7 @@ import pytest
 from src.article_generator import ArticleGenerator
 from src.config_loader import Config, PublicationEditorialConfig, Settings
 from src.db.uow import DatabaseUnitOfWork
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.generation import PublicationGenerationService
 from src.publication.models import PublicationSelectionDecision
 from src.publication.repository import (
@@ -445,9 +446,28 @@ async def test_end_to_end_article_generation_invalid_draft_fails_to_fallback(con
         generator=generator,
     )
 
-    pub = await service.generate(run.id, defer_delivery=False)
-    assert pub.publication_run_id == run.id
+    with pytest.raises(ArticlePublicationRejected) as caught:
+        await service.generate(run.id, defer_delivery=False)
+    assert caught.value.reason == "validation_failed"
     assert mock_provider.chat_completion.call_count == 1
+
+    # Assert 0 publications created
+    pub_count = await (
+        await conn.execute(
+            "SELECT count(*) FROM publications WHERE publication_run_id = %s",
+            (run.id,),
+        )
+    ).fetchone()
+    assert pub_count[0] == 0
+
+    # Assert run is failed with article_validation_rejected
+    run_row = await (
+        await conn.execute(
+            "SELECT status, error_kind FROM publication_runs WHERE id = %s",
+            (run.id,),
+        )
+    ).fetchone()
+    assert run_row == ("failed", "article_validation_rejected")
 
     cur = await conn.execute(
         """
@@ -459,13 +479,10 @@ async def test_end_to_end_article_generation_invalid_draft_fails_to_fallback(con
         (run.id,),
     )
     attempts = await cur.fetchall()
-    assert len(attempts) == 2
+    assert len(attempts) == 1
     assert attempts[0][0] == "writer"
     assert attempts[0][1] == "failed"
-    assert attempts[0][2] == "ValidationFailed"
-    assert attempts[1][0] == "story_renderer_fallback"
-    assert attempts[1][1] == "succeeded"
-    assert "20 минут" not in pub.body
+    assert attempts[0][2] == "article_validation_rejected"
 
 
 @pytest.mark.postgres
