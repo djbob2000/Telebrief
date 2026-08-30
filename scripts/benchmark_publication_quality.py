@@ -4,15 +4,22 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import dataclass, field
 import datetime as dt
 import logging
 import os
+import sys
 import time
+from pathlib import Path
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from psycopg_pool import AsyncConnectionPool
 
 from src.config_loader import Config, load_config
 from src.db.uow import DatabaseUnitOfWork
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.generation import PublicationGenerationService
 from src.publication.repository import PublicationRepository
 from src.publication.selection import EditorialSelectionService
@@ -20,6 +27,99 @@ from src.publication.snapshot import PublicationSnapshotService
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("benchmark")
+
+
+@dataclass
+class BenchmarkAttemptRecord:
+    kind: str
+    status: str
+    error_kind: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class BenchmarkRunRecord:
+    run_id: int
+    publication_type: str
+    status: str
+    error_kind: str | None = None
+    publication_id: int | None = None
+    attempts: list[BenchmarkAttemptRecord] = field(default_factory=list)
+
+
+def calculate_benchmark_metrics(runs: list[BenchmarkRunRecord]) -> dict[str, Any]:
+    article_runs = [r for r in runs if r.publication_type == "article"]
+    article_writer_attempts = sum(
+        1 for r in article_runs for a in r.attempts if a.kind == "writer"
+    )
+    article_writer_successes = sum(
+        1
+        for r in article_runs
+        for a in r.attempts
+        if a.kind == "writer" and a.status == "succeeded"
+    )
+    article_rejections = sum(
+        1
+        for r in article_runs
+        if r.error_kind in ("article_validation_rejected", "article_writer_rejected")
+        or (
+            r.status == "failed"
+            and any(a.kind == "writer" and a.status == "failed" for a in r.attempts)
+        )
+    )
+    article_publications = sum(
+        1 for r in article_runs if r.publication_id is not None or r.status == "succeeded"
+    )
+    article_fallback_content_attempts = sum(
+        1 for r in article_runs for a in r.attempts if a.kind == "story_renderer_fallback"
+    )
+    article_writer_success_rate = (
+        article_writer_successes / article_writer_attempts
+        if article_writer_attempts > 0
+        else 0.0
+    )
+    max_article_writer_calls_per_run = max(
+        [sum(1 for a in r.attempts if a.kind == "writer") for r in article_runs],
+        default=0,
+    )
+    return {
+        "runs": runs,
+        "article_writer_attempts": article_writer_attempts,
+        "article_writer_successes": article_writer_successes,
+        "article_rejections": article_rejections,
+        "article_publications": article_publications,
+        "article_fallback_content_attempts": article_fallback_content_attempts,
+        "article_writer_success_rate": article_writer_success_rate,
+        "max_article_writer_calls_per_run": max_article_writer_calls_per_run,
+    }
+
+
+def validate_benchmark_gates(metrics: dict[str, Any]) -> list[str]:
+    violations: list[str] = []
+    if metrics.get("article_fallback_content_attempts", 0) != 0:
+        violations.append(
+            f"article_fallback_content_attempts != 0 ({metrics['article_fallback_content_attempts']})"
+        )
+    if metrics.get("article_publications", 0) > metrics.get("article_writer_successes", 0):
+        violations.append(
+            f"article_publications ({metrics['article_publications']}) > "
+            f"article_writer_successes ({metrics['article_writer_successes']})"
+        )
+    if metrics.get("max_article_writer_calls_per_run", 0) > 1:
+        violations.append(
+            f"max_article_writer_calls_per_run ({metrics['max_article_writer_calls_per_run']}) > 1"
+        )
+    for r in metrics.get("runs", []):
+        if r.publication_type == "article" and (
+            r.publication_id is not None or r.status == "succeeded"
+        ):
+            if not any(a.kind == "writer" and a.status == "succeeded" for a in r.attempts):
+                violations.append(
+                    f"published article run {r.run_id} has no succeeded writer attempt"
+                )
+    return violations
 
 
 async def run_benchmark(
@@ -109,6 +209,14 @@ async def run_benchmark(
                 digest_win_kind = win_row[0] if win_row else "unknown"
                 digest_win_meta = win_row[1] if win_row else {}
 
+            cur = await conn.execute(
+                "SELECT status, error_kind FROM publication_runs WHERE id = %s",
+                (digest_run.id,),
+            )
+            d_row = await cur.fetchone()
+            digest_status = d_row[0] if d_row else "unknown"
+            digest_error_kind = d_row[1] if d_row else None
+
         digest_chat_calls = sum(
             1
             for a in digest_attempts
@@ -132,7 +240,14 @@ async def run_benchmark(
         win_kind = "none"
         win_meta = {}
         if article_inputs:
-            article_pub = await generation_service.generate(article_run.id, defer_delivery=False)
+            try:
+                article_pub = await generation_service.generate(
+                    article_run.id, defer_delivery=False
+                )
+            except ArticlePublicationRejected as exc:
+                logger.warning(
+                    "Article rejected during benchmark: %s (%s)", exc.reason, exc.error_kind
+                )
 
         t_article = time.perf_counter() - t0
 
@@ -156,6 +271,14 @@ async def run_benchmark(
                 win_row = await cur.fetchone()
                 win_kind = win_row[0] if win_row else "unknown"
                 win_meta = win_row[1] if win_row else {}
+
+            cur = await conn.execute(
+                "SELECT status, error_kind FROM publication_runs WHERE id = %s",
+                (article_run.id,),
+            )
+            a_row = await cur.fetchone()
+            article_status = a_row[0] if a_row else "unknown"
+            article_error_kind = a_row[1] if a_row else None
 
         article_chat_calls = sum(
             1
@@ -188,7 +311,6 @@ async def run_benchmark(
             if crow[2]:
                 candidate_titles.append(crow[2])
 
-        # Simple pairwise title token jaccard to flag potential fragment duplicates
         frag_pairs: list[tuple[str, str, float]] = []
         for i in range(len(candidate_titles)):
             tokens_i = set(candidate_titles[i].lower().split())
@@ -197,26 +319,98 @@ async def run_benchmark(
                 if tokens_i and tokens_j:
                     jacc = len(tokens_i & tokens_j) / len(tokens_i | tokens_j)
                     if jacc >= 0.50:
-        # Classify outcomes
-        def _classify_outcome(attempts: list[Any], win_kind: str, win_meta: dict[str, Any], mode: str) -> str:
+                        frag_pairs.append((candidate_titles[i], candidate_titles[j], jacc))
+
+        # Build records for structured metrics
+        runs_records = [
+            BenchmarkRunRecord(
+                run_id=digest_run.id,
+                publication_type="digest_grouped",
+                status=digest_status,
+                error_kind=digest_error_kind,
+                publication_id=digest_pub.id if digest_pub else None,
+                attempts=[
+                    BenchmarkAttemptRecord(
+                        kind=a[1],
+                        status=a[2],
+                        error_kind=a[3],
+                        provider=a[4],
+                        model=a[5],
+                        metadata=a[6] or {},
+                    )
+                    for a in digest_attempts
+                ],
+            ),
+            BenchmarkRunRecord(
+                run_id=article_run.id,
+                publication_type="article",
+                status=article_status,
+                error_kind=article_error_kind,
+                publication_id=article_pub.id if article_pub else None,
+                attempts=[
+                    BenchmarkAttemptRecord(
+                        kind=a[1],
+                        status=a[2],
+                        error_kind=a[3],
+                        provider=a[4],
+                        model=a[5],
+                        metadata=a[6] or {},
+                    )
+                    for a in article_attempts
+                ],
+            ),
+        ]
+
+        metrics = calculate_benchmark_metrics(runs_records)
+        gate_violations = validate_benchmark_gates(metrics)
+
+        def _classify_outcome(
+            attempts: list[Any],
+            win_kind: str,
+            win_meta: dict[str, Any],
+            mode: str,
+            run_error_kind: str | None = None,
+        ) -> str:
+            if run_error_kind == "article_validation_rejected":
+                return "article_validation_rejected"
+            if run_error_kind == "article_writer_rejected":
+                return "article_writer_rejected"
             if mode == "deterministic":
                 return "deterministic_selected"
             if win_kind == "writer" and win_meta.get("status") == "writer_success":
                 return "writer_success"
-            if any(a[1] == "writer" and a[2] == "failed" and a[3] == "ValidationFailed" for a in attempts):
-                return "validation_fallback"
+            if any(
+                a[1] == "writer"
+                and a[2] == "failed"
+                and a[3] == "article_validation_rejected"
+                for a in attempts
+            ):
+                return "article_validation_rejected"
             if any(a[1] == "writer" and a[2] == "failed" for a in attempts):
-                return "writer_error_fallback"
+                return "article_writer_rejected"
             if win_kind == "story_renderer_fallback":
-                reason = win_meta.get("reason", "")
-                if "validation" in reason:
-                    return "validation_fallback"
-                return "writer_error_fallback"
+                return "story_renderer_fallback"
             return "deterministic_selected"
 
-        digest_mode = getattr(getattr(config.settings, "publication_editorial", None), "digest_narrative_mode", "deterministic")
-        digest_outcome = _classify_outcome(digest_attempts, digest_win_kind, digest_win_meta, digest_mode)
-        article_outcome = _classify_outcome(article_attempts, win_kind, win_meta, "single_call")
+        digest_mode = getattr(
+            getattr(config.settings, "publication_editorial", None),
+            "digest_narrative_mode",
+            "deterministic",
+        )
+        digest_outcome = _classify_outcome(
+            digest_attempts,
+            digest_win_kind,
+            digest_win_meta,
+            digest_mode,
+            digest_error_kind,
+        )
+        article_outcome = _classify_outcome(
+            article_attempts,
+            win_kind,
+            win_meta,
+            "single_call",
+            article_error_kind,
+        )
 
         # Print Benchmark Report
         print("\n" + "=" * 70)
@@ -243,13 +437,17 @@ async def run_benchmark(
         print(f"  Winning Attempt:   {digest_win_kind}")
         if digest_win_meta and "block_count" in digest_win_meta:
             print(f"  Narrative Blocks:  {digest_win_meta['block_count']}")
-        print(f"  Chat LLM Calls:    {digest_chat_calls} (Target: <= 1 in single_call, 0 in deterministic)")
+        print(
+            f"  Chat LLM Calls:    {digest_chat_calls} (Target: <= 1 in single_call, 0 in deterministic)"
+        )
         print(f"  Duration:          {t_digest:.2f}s")
         print("-" * 70)
         print("ARTICLE RESULTS:")
         print(f"  Candidates:        {len(article_candidates)}")
         print(f"  Selected:          {len(article_inputs)}")
-        print(f"  Publication ID:    {article_pub.id if article_pub else 'N/A (no inputs)'}")
+        print(
+            f"  Publication ID:    {article_pub.id if article_pub else 'N/A (rejected or no inputs)'}"
+        )
         print(f"  Title:             {article_pub.title if article_pub else 'N/A'}")
         print(
             f"  Word count:        {len((article_pub.body or '').split()) if article_pub else 0} words"
@@ -259,11 +457,32 @@ async def run_benchmark(
         print(f"  Claim Trace Units: {claim_trace_count}")
         print(f"  Chat LLM Calls:    {article_chat_calls} (Target: <= 1)")
         print(f"  Duration:          {t_article:.2f}s")
+        print("-" * 70)
+        print("ARTICLE RELIABILITY & BUDGET:")
+        print(f"  Article writer attempts:      {metrics['article_writer_attempts']}")
+        print(
+            f"  Article writer successes:     {metrics['article_writer_successes']} "
+            f"({metrics['article_writer_success_rate'] * 100:.1f}%)"
+        )
+        print(f"  Article rejections:           {metrics['article_rejections']}")
+        print(f"  Article fallback attempts:    {metrics['article_fallback_content_attempts']}")
+        print(f"  Article max writer calls/run: {metrics['max_article_writer_calls_per_run']}")
+        if gate_violations:
+            print(f"  GATE VIOLATIONS:              {gate_violations}")
+
         if article_pub and article_pub.body:
-            from src.publication.article_models import ArticleParagraph, ArticleSection, StructuredArticleDraft
+            from src.publication.article_models import (
+                ArticleParagraph,
+                ArticleSection,
+                StructuredArticleDraft,
+            )
             from src.publication.narrative_quality import evaluate_article_narrative
 
-            raw_paras = [p.strip() for p in article_pub.body.split("\n\n") if p.strip() and not p.startswith("#")]
+            raw_paras = [
+                p.strip()
+                for p in article_pub.body.split("\n\n")
+                if p.strip() and not p.startswith("#")
+            ]
             draft_for_diag = StructuredArticleDraft(
                 title=article_pub.title or "",
                 title_support_ids=(),
