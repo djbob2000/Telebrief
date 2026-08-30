@@ -10,7 +10,11 @@ from typing import Any
 
 import psycopg
 
-from src.domain.event_payload import EventPayload, ensure_keep_publishability
+from src.domain.event_payload import (
+    EventPayload,
+    ensure_keep_publishability,
+    normalize_question_evidence,
+)
 from src.domain.event_pipeline import SourceFragment
 from src.domain.stories import NewStoryRevision, StoryRevision
 from src.processing.evidence_sampling import (
@@ -24,7 +28,7 @@ from src.repositories.stories import StoryRepository
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_VERSION = "v2"
+ANALYSIS_VERSION = "v3"
 
 _EVENT_ANALYSIS_SYSTEM_PROMPT = """You are an expert investigative regional news editor.
 Analyze the following chronological source fragments from multiple channels regarding a single local event.
@@ -38,6 +42,11 @@ Publication use is semantic, not topic-based.
 - A service-access fact may be PUBLISH even when a business or bank is named (e.g. ATM cash availability, backup power for telecom, state fee / document procedures).
 - A sales offer, discount, product listing, seller phone number, or promotional price is EXCLUDE.
 - Do not convert EXCLUDE commercial details into useful_details merely to preserve them.
+- Use resident_question for a resident asking whether/where/when/how something works when the excerpt itself does not provide the answer.
+- resident_question is CONTEXT, not PUBLISH.
+- A question alone MUST NOT create an operational_observation or service state.
+- If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
+- Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
 
 Respond ONLY with a valid JSON object with the exact keys:
 {
@@ -52,7 +61,7 @@ Respond ONLY with a valid JSON object with the exact keys:
   "evidence_items": [
     {
       "text": "Fact or service access detail",
-      "kind": "established_fact | community_report | service_access | official_statement | commercial_offer",
+      "kind": "established_fact | community_report | service_access | official_statement | commercial_offer | resident_question",
       "publication_use": "PUBLISH | CONTEXT | EXCLUDE",
       "source_fragment_ids": [101]
     }
@@ -279,7 +288,8 @@ class EventAnalysisService:
             parsed["analysis_version"] = ANALYSIS_VERSION
             parsed["representative_fragment_ids"] = [s.fragment_id for s in sampled]
             payload = ensure_keep_publishability(
-                EventAnalysisPayload.from_dict(parsed), default="brief"
+                normalize_question_evidence(EventAnalysisPayload.from_dict(parsed)),
+                default="brief",
             )
 
             await conn.execute(

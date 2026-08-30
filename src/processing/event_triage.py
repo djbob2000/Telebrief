@@ -12,7 +12,12 @@ import psycopg
 
 from src.config_loader import EditionScopeConfig
 from src.domain.event_clusters import StoryClusterState
-from src.domain.event_payload import EventPayload, ensure_keep_publishability, parse_event_payload
+from src.domain.event_payload import (
+    EventPayload,
+    ensure_keep_publishability,
+    normalize_question_evidence,
+    parse_event_payload,
+)
 from src.processing.edition_scope import (
     SCOPE_VERSION,
     EditionScopeClass,
@@ -22,7 +27,7 @@ from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v3"
+TRIAGE_VERSION = "v4"
 
 _GATE_V2_SYSTEM_PROMPT = """You are a fast geographic, editorial retention, and operational triage classifier for a regional newsroom digest.
 You are evaluating candidate event Stories for ONE configured edition.
@@ -47,9 +52,14 @@ For LOCAL or DIRECT_IMPACT content:
 - A sales offer, discount, product listing, seller phone number, or promotional price is EXCLUDE.
 - Do not convert EXCLUDE commercial details into useful_details merely to preserve them.
 - Resident questions, resident answers, service availability, outage reports, and operational workarounds are not noise merely because they are conversational. Preserve current local actionable information about everyday civilian access to services.
+- Use resident_question for a resident asking whether/where/when/how something works when the excerpt itself does not provide the answer.
+- resident_question is CONTEXT, not PUBLISH.
+- A question alone MUST NOT create an operational_observation or service state.
+- If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
+- Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
 - For KEEP, provide a brief_payload with topic, tags, urgency, publishability, headline, digest_summary, operational_observations, and evidence_items.
 - Every operational observation MUST cite one or more exact source_fragment_ids from the excerpts for that Story. Valid states: AVAILABLE, UNAVAILABLE, DEGRADED, RESTRICTED, UNKNOWN, SCHEDULED. Limit to at most 4 operational observations. Include effective_from / effective_until in ISO-8601 when the source reports a future or scheduled window.
-- Every evidence item MUST have text, kind (established_fact, community_report, service_access, official_statement, commercial_offer), publication_use (PUBLISH, CONTEXT, EXCLUDE), and exact source_fragment_ids.
+- Every evidence item MUST have text, kind (established_fact, community_report, service_access, official_statement, commercial_offer, resident_question), publication_use (PUBLISH, CONTEXT, EXCLUDE), and exact source_fragment_ids.
 
 Respond ONLY with a valid JSON object containing a "results" array:
 {
@@ -89,7 +99,7 @@ Respond ONLY with a valid JSON object containing a "results" array:
         "evidence_items": [
           {
             "text": "Fact or service access detail",
-            "kind": "established_fact | community_report | service_access | official_statement | commercial_offer",
+            "kind": "established_fact | community_report | service_access | official_statement | commercial_offer | resident_question",
             "publication_use": "PUBLISH | CONTEXT | EXCLUDE",
             "source_fragment_ids": [101]
           }
@@ -420,8 +430,8 @@ class StoryTriageService:
                 brief_payload: EventPayload | None = None
                 if isinstance(raw_brief, dict):
                     try:
-                        brief_payload = parse_event_payload(
-                            raw_brief, allowed_fragment_ids=allowed_fids
+                        brief_payload = normalize_question_evidence(
+                            parse_event_payload(raw_brief, allowed_fragment_ids=allowed_fids)
                         )
                     except Exception as e:
                         self.logger.debug(
@@ -452,7 +462,7 @@ class StoryTriageService:
                             enrichment = "BRIEF"
                             ex_reason = None
                             brief_payload = ensure_keep_publishability(
-                                brief_payload, default="brief"
+                                normalize_question_evidence(brief_payload), default="brief"
                             )
                         else:
                             # Unsafe drop without a valid brief must defer
@@ -465,7 +475,9 @@ class StoryTriageService:
                         retention = "KEEP"
                         enrichment = enrichment_raw  # type: ignore[assignment]
                         ex_reason = None
-                        brief_payload = ensure_keep_publishability(brief_payload, default="brief")
+                        brief_payload = ensure_keep_publishability(
+                            normalize_question_evidence(brief_payload), default="brief"
+                        )
                     else:
                         deferred_ids.append(s.story_id)
                         continue
