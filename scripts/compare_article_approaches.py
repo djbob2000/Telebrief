@@ -1,156 +1,174 @@
-import asyncio
-import json
-import logging
-import os
-import psycopg
+"""Generate and compare long-form editorial articles: New Reader-First Approach vs Old Custom Approach."""
 
-from src.config_loader import load_config
-from src.editorial_models import StoryCard, StoryElement, EditorialAnalysis, PreparedBundle
-from src.publication.editorial_adapter import FrozenEditorialInput
-from src.publication.evidence import PublicationEvidence
-from src.publication.article_context import build_article_editorial_context
+from __future__ import annotations
+
+import asyncio
+import datetime as dt
+import logging
+import sys
+
 from src.article_generator import ArticleGenerator
+from src.bootstrap import build_infrastructure
+from src.collector import Message
+from src.config_loader import Config, load_config
+from src.publication.generation import PublicationGenerationService
+from src.publication.repository import PublicationRepository
+from src.publication.selection import EditorialSelectionService
+from src.publication.snapshot import PublicationSnapshotService
+from src.repositories.editions import EditionRepository
+from src.runtime import install_runtime
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("compare_articles")
 
-async def main():
-    config = load_config()
-    db_url = os.environ.get("DATABASE_URL", "postgresql://air@localhost:5432/telebrief")
 
-    # 1. Fetch real stories from DB
-    async with await psycopg.AsyncConnection.connect(db_url) as conn:
-        cur = await conn.execute("""
-            SELECT DISTINCT ON (r.title) s.id, r.title, r.summary, r.event_payload, s.created_at
-            FROM stories s
-            JOIN story_revisions r ON r.story_id = s.id
-            WHERE r.event_payload IS NOT NULL AND length(r.title) > 0
-            ORDER BY r.title, s.id DESC
-            LIMIT 5
-        """)
+async def generate_new_approach_article(config: Config) -> tuple[str, str, str, dict]:
+    """Generate long-form article using current Event-First Reader-First approach."""
+    infra = await build_infrastructure(config.database)
+    install_runtime(infra)
+
+    from src.ai_providers import ProviderCascade
+    ProviderCascade._global_slot_cooldowns.clear()
+
+    uow = infra.uow
+    repo = PublicationRepository()
+
+    now = dt.datetime.now(dt.timezone.utc)
+    edition_slug = "berdyansk"
+
+    async with uow.transaction() as conn:
+        edition = await EditionRepository().get_by_slug(conn, edition_slug)
+        if edition is None:
+            raise ValueError(f"Edition {edition_slug} not found")
+
+    snapshot_service = PublicationSnapshotService(uow=uow, repo=repo)
+    selection_service = EditorialSelectionService(uow=uow, repo=repo, config=config)
+    generation_service = PublicationGenerationService(uow=uow, config=config, repo=repo)
+
+    run = await snapshot_service.create_run(
+        edition_id=edition.id,
+        publication_type="article",
+        snapshot_at=now,
+        request_key=f"compare:article:new:{now.isoformat()}",
+        config=config,
+        lookback_hours_override=48,
+    )
+    await snapshot_service.seal_candidates(run.id)
+    await selection_service.select(run.id, defer_generation=False)
+    pub = await generation_service.generate(run.id, defer_delivery=False)
+
+    meta = {}
+    async with uow.transaction() as conn:
+        cur = await conn.execute(
+            """
+            SELECT kind, status, error_kind, metadata
+            FROM publication_generation_attempts
+            WHERE publication_run_id = %s
+            ORDER BY attempt_no ASC
+            """,
+            (run.id,),
+        )
+        meta["attempts"] = await cur.fetchall()
+
+    return pub.title or "", pub.lead or "", pub.body or "", meta
+
+
+async def generate_old_custom_article(config: Config) -> tuple[str, str, str]:
+    """Generate article using old/custom approach (EditorialAnalyzer + StoryCards + EditorialWriter)."""
+    infra = await build_infrastructure(config.database)
+    uow = infra.uow
+
+    cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=48)
+
+    async with uow.transaction() as conn:
+        cur = await conn.execute(
+            """
+            SELECT s.name, i.external_id, i.published_at, i.canonical_url, r.text_content
+            FROM source_items i
+            JOIN sources s ON s.id = i.source_id
+            JOIN source_item_revisions r ON r.source_item_id = i.id
+            WHERE i.published_at >= %s AND r.text_content IS NOT NULL AND LENGTH(TRIM(r.text_content)) > 20
+            ORDER BY i.published_at DESC
+            LIMIT 60
+            """,
+            (cutoff,),
+        )
         rows = await cur.fetchall()
 
-    cards = []
-    evidence_items = []
+    if not rows:
+        return "Нет свежих сообщений", "Нет данных", "Нет сообщений за 48 часов для генерации старой статьи."
 
-    for idx, r in enumerate(rows):
-        sid, title, summary, payload, created_at = r[0], r[1], r[2], r[3], r[4]
-        sup_id = f"story:{sid}:evidence:0:frag:10{idx}"
-
-        facts = []
-        if isinstance(payload, dict):
-            for hf in payload.get("hard_facts", []):
-                facts.append(StoryElement(text=hf, source_refs=[sup_id]))
-        if not facts:
-            facts.append(StoryElement(text=f"{title}. {summary}", source_refs=[sup_id]))
-
-        cards.append(StoryCard(
-            id=f"story:{sid}",
-            topic=title,
-            importance="high",
-            summary=summary,
-            rubric_id="utilities" if "свет" in title.lower() or "вод" in title.lower() else "society",
-            hard_facts=facts,
-        ))
-
-        evi = PublicationEvidence(
-            evidence_id=sup_id,
-            story_id=sid,
-            text=f"{title}. {summary}",
-            source_text=f"{title}. {summary}",
-            kind="established_fact",
-            publication_use="PUBLISH",
-            fragment_id=100 + idx,
-            source_ref=f"ref-{sid}",
-            source_id=sid,
-            source_item_id=sid,
-            source_role="official" if idx % 2 == 0 else "community",
-            observed_at=created_at,
+    messages = [
+        Message(
+            text=text,
+            sender=src_name,
+            channel_name=src_name,
+            timestamp=pub_at,
+            message_id=int(ext_id) if str(ext_id).isdigit() else idx,
+            link=url or "#",
         )
-        evidence_items.append(evi)
+        for idx, (src_name, ext_id, pub_at, url, text) in enumerate(rows, start=1)
+    ]
 
-    # -------------------------------------------------------------
-    # 1. NEW APPROACH: Event-First Evidence-Bound Narrative Generator
-    # -------------------------------------------------------------
-    art_ctx = build_article_editorial_context(
-        cards=cards,
-        evidence_items=evidence_items,
-        operational_observations=[],
-    )
-    analysis = EditorialAnalysis(
-        cards=cards,
-        article_context=art_ctx,
-    )
-    bundle = PreparedBundle(records={}, prompt_text="", total_messages=len(cards), candidate_count=len(cards))
-    frozen_input = FrozenEditorialInput(
-        analysis=analysis,
-        writer_bundle=bundle,
-        run_id=1001,
-    )
+    from collections import defaultdict
 
-    gen = ArticleGenerator(config=config, logger=logger)
-    logger.info("Generating article with NEW Event-First Narrative approach (Single Call)...")
-    new_title, new_lead, new_body = await gen.generate_from_frozen_input(frozen_input)
+    messages_by_channel: dict[str, list[Message]] = defaultdict(list)
+    for msg in messages:
+        messages_by_channel[msg.channel_name].append(msg)
 
-    # -------------------------------------------------------------
-    # 2. OLD APPROACH: Custom Free-Form Prompt (Simulated with same model)
-    # -------------------------------------------------------------
-    logger.info("Generating article with OLD Custom Free-Form approach...")
-    cards_text = "\n\n".join([f"Story Card {c.id}:\n- Topic: {c.topic}\n- Summary: {c.summary}\n- Facts: " + "; ".join(f.text for f in c.hard_facts) for c in cards])
+    from src.ai_providers import ProviderCascade
+    ProviderCascade._global_slot_cooldowns.clear()
 
-    old_system_prompt = """You are the article writer for a regional news outlet in Berdyansk.
-Write a free-form editorial article in Russian based on the Story Cards below.
-Combine and connect the material naturally into 2-3 thematic chapters.
-Return JSON matching:
-{
-  "headline": "...",
-  "lead": "...",
-  "sections": [
-    {
-      "heading": "...",
-      "paragraphs": ["..."]
-    }
-  ]
-}"""
-    old_user_prompt = f"Here are the Story Cards:\n\n{cards_text}"
+    generator = ArticleGenerator(config=config, logger=logger)
+    title, lead, body = await generator.generate_article(dict(messages_by_channel))
+    return title, lead, body
 
-    raw_old = await gen.provider.chat_completion(
-        messages=[
-            {"role": "system", "content": old_system_prompt},
-            {"role": "user", "content": old_user_prompt},
-        ],
-        model=config.settings.ai_model,
-        response_format={"type": "json_object"},
-    )
 
-    cleaned_old = raw_old.strip()
-    if cleaned_old.startswith("```"):
-        lines = cleaned_old.splitlines()
-        if lines and lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        cleaned_old = "\n".join(lines).strip()
+async def main():
+    config = load_config()
+    print("\n" + "=" * 80)
+    print("🚀 GENERATING ARTICLES FOR COMPARISON")
+    print(f"Provider: {config.settings.ai_provider} | Model: {config.settings.ai_model}")
+    print("=" * 80 + "\n")
 
-    old_json = json.loads(cleaned_old)
-    old_title = old_json.get("headline") or old_json.get("title")
-    old_lead = old_json.get("lead")
-    old_body_parts = []
-    for s in old_json.get("sections", []):
-        old_body_parts.append(f"## {s.get('heading', '')}\n")
-        for p in s.get('paragraphs', []):
-            old_body_parts.append(p + "\n")
-    old_body = "\n".join(old_body_parts)
+    print("⏳ [1/2] Generating Article with NEW Approach (Event-First Evidence-Bound + Adaptive Length)...")
+    t0 = asyncio.get_event_loop().time()
+    try:
+        new_title, new_lead, new_body, new_meta = await generate_new_approach_article(config)
+        new_time = asyncio.get_event_loop().time() - t0
+        print(f"✅ NEW Article Generated in {new_time:.2f}s\n")
+    except Exception as e:
+        logger.exception("Failed to generate new article: %s", e)
+        return
 
-    print("\n" + "="*80)
-    print("1. СТАРЫЙ ПОДХОД (Custom / Free-form Multi-pass Prompt)")
-    print("="*80)
-    print(f"# {old_title}\n\n{old_lead}\n\n{old_body}")
+    print("⏳ [2/2] Generating Article with OLD Approach (Custom branch Story Cards + Multi-pass Writer)...")
+    t0 = asyncio.get_event_loop().time()
+    try:
+        old_title, old_lead, old_body = await generate_old_custom_article(config)
+        old_time = asyncio.get_event_loop().time() - t0
+        print(f"✅ OLD Article Generated in {old_time:.2f}s\n")
+    except Exception as e:
+        logger.exception("Failed to generate old article: %s", e)
+        return
 
-    print("\n" + "="*80)
-    print("2. НОВЫЙ ПОДХОД (Event-First Narrative Evidence-Bound Single-Call)")
-    print("="*80)
-    print(f"# {new_title}\n\n{new_lead}\n\n{new_body}")
+    # Print New Article
+    print("\n" + "█" * 80)
+    print("  📰 [НОВЫЙ ПОДХОД: Reader-First Selective Long-Read Article]")
+    print("█" * 80 + "\n")
+    print(f"TITLE: {new_title}\n")
+    print(f"LEAD: {new_lead}\n")
+    print(new_body)
+    print("\n" + "─" * 80)
+
+    # Print Old Article
+    print("\n" + "█" * 80)
+    print("  📜 [СТАРЫЙ ПОДХОД С ВЕТКИ CUSTOM: Story Card Article]")
+    print("█" * 80 + "\n")
+    print(f"TITLE: {old_title}\n")
+    print(f"LEAD: {old_lead}\n")
+    print(old_body)
+    print("\n" + "─" * 80)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
