@@ -85,3 +85,46 @@ async def test_select_stories_job_runs_with_fail_open_selection(
         )
         status = (await cur.fetchone())[0]
         assert status == "selected_inputs_sealed"
+
+
+@pytest.mark.asyncio
+async def test_generate_publication_job_does_not_retry_terminal_article_rejection(monkeypatch):
+    from types import SimpleNamespace
+
+    from src import runtime
+    from src.jobs.publication import generate_publication
+    from src.publication.errors import ArticlePublicationRejected
+
+    runtime._runtime = SimpleNamespace(uow=AsyncMock())
+    mocked_generate = AsyncMock(
+        side_effect=ArticlePublicationRejected(
+            reason="validation_failed",
+            message="invalid article",
+        )
+    )
+    monkeypatch.setattr(
+        "src.publication.generation.PublicationGenerationService.generate",
+        mocked_generate,
+    )
+
+    await generate_publication({}, run_id=42)
+
+    mocked_generate.assert_awaited_once_with(42)
+
+
+@pytest.mark.asyncio
+async def test_generate_publication_job_still_raises_infrastructure_failure(monkeypatch):
+    from types import SimpleNamespace
+
+    from src import runtime
+    from src.jobs.publication import generate_publication
+
+    runtime._runtime = SimpleNamespace(uow=AsyncMock())
+    mocked_generate = AsyncMock(side_effect=ConnectionError("db unavailable"))
+    monkeypatch.setattr(
+        "src.publication.generation.PublicationGenerationService.generate",
+        mocked_generate,
+    )
+
+    with pytest.raises(ConnectionError):
+        await generate_publication({}, run_id=42)

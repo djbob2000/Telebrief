@@ -51,11 +51,20 @@ async def select_stories_for_publication(context: Any, run_id: int) -> None:
 )
 async def generate_publication(context: Any, run_id: int) -> None:
     """Generate publication from sealed inputs."""
+    from src.publication.errors import ArticlePublicationRejected
     from src.publication.generation import PublicationGenerationService
 
     runtime = get_runtime()
     service = PublicationGenerationService(uow=runtime.uow)
-    await service.generate(run_id)
+    try:
+        await service.generate(run_id)
+    except ArticlePublicationRejected as exc:
+        logger.warning(
+            "publication run %s ended with terminal article rejection: %s",
+            run_id,
+            exc.error_kind,
+        )
+        return
 
 
 @procrastinate_app.task(
