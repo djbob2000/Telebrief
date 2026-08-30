@@ -717,6 +717,11 @@ class ArticleGenerator:
 12. Внутренние ID вида [story:...] или [SUPPORT...] НЕ должны появляться внутри текста заголовка, лида или параграфов — указывайте их только в массивах support_ids / cited_support_ids.
 13. Epistemic metadata (evidence_kind, source_roles, framing):
     - The support packet contains evidence_kind, source_roles, and framing. These fields describe how to phrase a supported claim, not whether the report is allowed to appear. A PUBLISH community_report is valid material. Attribute it naturally and never invent corroboration or official confirmation.
+14. ARTICLE COVERAGE PLAN Presentation Depth:
+    - Use the ARTICLE COVERAGE PLAN as a presentation-depth contract.
+    - DEVELOP / WEAVE / BRIEF are not factual status labels.
+    - Cover BRIEF stories compactly instead of dropping them solely for being minor.
+    - Do not mechanically create one section per Story; group related WEAVE/BRIEF stories naturally.
 
 Формат ответа — строго валидный JSON:
 
@@ -767,7 +772,11 @@ class ArticleGenerator:
         )
         length_profile = derive_article_length_profile(article_ctx, editorial_config)
 
-        context_str = article_ctx.to_prompt_context()
+        from src.publication.article_coverage import build_article_coverage_plan
+        from src.publication.article_writer_context import render_article_writer_context
+
+        coverage_plan = build_article_coverage_plan(article_ctx.story_cards, article_ctx)
+        context_str = render_article_writer_context(article_ctx, coverage_plan)
         system_prompt = self._build_event_article_system_prompt(length_profile=length_profile)
         user_prompt = f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\n{context_str}"
 

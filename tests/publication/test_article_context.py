@@ -172,6 +172,7 @@ def test_build_article_editorial_context_preserves_evidence_and_timeline():
     assert "Авария на водоводе" in ctx.headline_candidates
     assert "Выставка картин" in ctx.headline_candidates
     assert "Новости дня" not in ctx.headline_candidates
+    assert [c.id for c in ctx.story_cards] == ["story:1", "story:2", "story:3"]
 
     # 2. Unified ArticleSupport tests
     assert "story:1:evidence:0:frag:101" in ctx.support_by_id

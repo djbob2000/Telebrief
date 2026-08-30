@@ -253,6 +253,8 @@ async def test_event_article_prompt_contains_epistemic_fidelity_and_no_corrobora
     assert "community_report" in user_content
     assert "framing=attributed_report" in user_content
     assert "Epistemic Fidelity" in system_content or "epistemic" in system_content.lower()
+    assert "ARTICLE COVERAGE PLAN" in user_content
+    assert "DETAIL SUPPORTS:" in user_content
 
     # No second-source / corroboration gate
     assert "two independent sources" not in system_content.lower()

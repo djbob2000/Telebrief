@@ -121,6 +121,7 @@ class ArticleEditorialContext:
     publication_window: PublicationWindow | None = None
     edition_name: str = ""
     edition_anchor_terms: tuple[str, ...] = ()
+    story_cards: tuple[StoryCard, ...] = ()
 
     @property
     def supports(self) -> tuple[ArticleSupport, ...]:
@@ -364,4 +365,5 @@ def build_article_editorial_context(
         publication_window=pub_win,
         edition_name=edition_name,
         edition_anchor_terms=_edition_anchor_terms(edition_name),
+        story_cards=tuple(cards),
     )

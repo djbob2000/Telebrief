@@ -109,8 +109,14 @@ def build_article_coverage_plan(
     context: ArticleEditorialContext,
 ) -> ArticleCoveragePlan:
     support_map = _publish_supports_by_story(context)
+    card_list = list(cards)
+    if not card_list:
+        card_list = [
+            StoryCard(id=sid, topic=sid, importance="medium", summary=sid)
+            for sid in support_map.keys()
+        ]
     stories: list[ArticleStoryCoverage] = []
-    for rank, card in enumerate(cards, start=1):
+    for rank, card in enumerate(card_list, start=1):
         supports = support_map.get(card.id, ())
         if not supports:
             continue
