@@ -337,6 +337,7 @@ class PublicationDigestRenderer:
         *,
         edition_name: str = "Бердянск",
         snapshot_at: dt.datetime | None = None,
+        narrative_draft: Any | None = None,
     ) -> tuple[str, str, str]:
         date_str = (snapshot_at or dt.datetime.now(dt.timezone.utc)).strftime("%d.%m.%Y")
         title = (
@@ -348,17 +349,6 @@ class PublicationDigestRenderer:
             body = f"*{title}*\n\n📭 Нет актуальных событий за отчетный период."
             return title, "", body
 
-        # Group cards by classified rubric
-        grouped_cards: dict[str, list[StoryCard]] = {}
-        for card in cards:
-            if card.rubric_id and any(r["id"] == card.rubric_id for r in self.rubrics):
-                rubric_id = card.rubric_id
-            elif self.rubrics_config is not None:
-                rubric_id = self.rubrics_config.fallback.id
-            else:
-                rubric_id = classify_card_rubric(card, self.rubrics)
-            grouped_cards.setdefault(rubric_id, []).append(card)
-
         sections: list[str] = [f"*{title}*"]
 
         if frozen_input.analysis.city_situation:
@@ -368,91 +358,128 @@ class PublicationDigestRenderer:
             if sit_text:
                 sections.append(sit_text)
 
-        for rubric in self.rubrics:
-            rubric_id = str(rubric["id"])
-            if rubric_id not in grouped_cards:
-                continue
-
-            rubric_cards = grouped_cards[rubric_id]
-            emoji = f"{rubric['emoji']} " if (self.use_emojis and rubric.get("emoji")) else ""
-            header = f"*{emoji}{rubric['title']}*"
-
-            rubric_bullets: list[str] = []
-            for card in rubric_cards:
-                bullet_lines: list[str] = []
-                topic = card.topic.strip()
-                summary = card.summary.strip().rstrip(".")
-
-                has_generic_topic = not topic or topic.lower() in {
-                    t.lower() for t in GENERIC_FALLBACK_TOPICS
-                }
-
-                is_tautological_summary = (
-                    not summary
-                    or summary.lower() == topic.lower()
-                    or summary.lower().startswith(topic.lower() + ":")
-                    or summary.lower().startswith(topic.lower() + ".")
-                    or topic.lower().startswith(summary.lower())
+        if narrative_draft is not None and getattr(narrative_draft, "blocks", None):
+            for block_draft in narrative_draft.blocks:
+                rubric_id = (
+                    block_draft.block_id.split(":")[1]
+                    if ":" in block_draft.block_id
+                    else block_draft.block_id
                 )
+                rubric = next((r for r in self.rubrics if r.get("id") == rubric_id), None)
+                emoji = (
+                    f"{rubric['emoji']} "
+                    if (rubric and self.use_emojis and rubric.get("emoji"))
+                    else ""
+                )
+                heading = block_draft.heading or (rubric["title"] if rubric else "Разное")
+                header = f"*{emoji}{heading}*"
 
-                # Extract clean additional hard facts not already in summary/topic
-                extra_facts: list[str] = []
-                base_text_for_dedup = f"{topic} {summary}".lower()
-                for fact in card.hard_facts:
-                    f_text = fact.text.strip().rstrip(".")
-                    if f_text and f_text.lower() not in base_text_for_dedup and len(f_text) > 10:
-                        extra_facts.append(f_text)
-
-                # Extract useful details (working hours, contacts, exact addresses)
-                extra_details: list[str] = []
-                for detail in card.useful_details:
-                    d_text = detail.text.strip().rstrip(".")
-                    if d_text and d_text.lower() not in base_text_for_dedup:
-                        extra_details.append(d_text)
-
-                details_parts = [p for p in (extra_facts[:2] + extra_details[:2]) if p]
-                combined_details = ". ".join(details_parts).strip()
-
-                if has_generic_topic:
-                    if not is_tautological_summary:
-                        body_text = (
-                            f"{summary}. {combined_details}." if combined_details else f"{summary}."
-                        )
-                    else:
-                        body_text = f"{combined_details}." if combined_details else f"{topic}."
-                    bullet_text = f"• {body_text}"
+                paras = [p.text.strip() for p in block_draft.paragraphs if p.text.strip()]
+                if paras:
+                    sections.append(f"{header}\n\n" + "\n\n".join(paras))
+        else:
+            # Group cards by classified rubric
+            grouped_cards: dict[str, list[StoryCard]] = {}
+            for card in cards:
+                if card.rubric_id and any(r["id"] == card.rubric_id for r in self.rubrics):
+                    rubric_id = card.rubric_id
+                elif self.rubrics_config is not None:
+                    rubric_id = self.rubrics_config.fallback.id
                 else:
-                    if not is_tautological_summary:
-                        if combined_details and combined_details.lower() not in summary.lower():
-                            body_text = f"{summary}. {combined_details}."
+                    rubric_id = classify_card_rubric(card, self.rubrics)
+                grouped_cards.setdefault(rubric_id, []).append(card)
+
+            for rubric in self.rubrics:
+                rubric_id = str(rubric["id"])
+                if rubric_id not in grouped_cards:
+                    continue
+
+                rubric_cards = grouped_cards[rubric_id]
+                emoji = f"{rubric['emoji']} " if (self.use_emojis and rubric.get("emoji")) else ""
+                header = f"*{emoji}{rubric['title']}*"
+
+                rubric_bullets: list[str] = []
+                for card in rubric_cards:
+                    bullet_lines: list[str] = []
+                    topic = card.topic.strip()
+                    summary = card.summary.strip().rstrip(".")
+
+                    has_generic_topic = not topic or topic.lower() in {
+                        t.lower() for t in GENERIC_FALLBACK_TOPICS
+                    }
+
+                    is_tautological_summary = (
+                        not summary
+                        or summary.lower() == topic.lower()
+                        or summary.lower().startswith(topic.lower() + ":")
+                        or summary.lower().startswith(topic.lower() + ".")
+                        or topic.lower().startswith(summary.lower())
+                    )
+
+                    # Extract clean additional hard facts not already in summary/topic
+                    extra_facts: list[str] = []
+                    base_text_for_dedup = f"{topic} {summary}".lower()
+                    for fact in card.hard_facts:
+                        f_text = fact.text.strip().rstrip(".")
+                        if (
+                            f_text
+                            and f_text.lower() not in base_text_for_dedup
+                            and len(f_text) > 10
+                        ):
+                            extra_facts.append(f_text)
+
+                    # Extract useful details (working hours, contacts, exact addresses)
+                    extra_details: list[str] = []
+                    for detail in card.useful_details:
+                        d_text = detail.text.strip().rstrip(".")
+                        if d_text and d_text.lower() not in base_text_for_dedup:
+                            extra_details.append(d_text)
+
+                    details_parts = [p for p in (extra_facts[:2] + extra_details[:2]) if p]
+                    combined_details = ". ".join(details_parts).strip()
+
+                    if has_generic_topic:
+                        if not is_tautological_summary:
+                            body_text = (
+                                f"{summary}. {combined_details}."
+                                if combined_details
+                                else f"{summary}."
+                            )
                         else:
-                            body_text = f"{summary}."
-                        bullet_text = f"• **{topic}**: {body_text}"
+                            body_text = f"{combined_details}." if combined_details else f"{topic}."
+                        bullet_text = f"• {body_text}"
                     else:
-                        if combined_details:
-                            bullet_text = f"• **{topic}**: {combined_details}."
+                        if not is_tautological_summary:
+                            if combined_details and combined_details.lower() not in summary.lower():
+                                body_text = f"{summary}. {combined_details}."
+                            else:
+                                body_text = f"{summary}."
+                            bullet_text = f"• **{topic}**: {body_text}"
                         else:
-                            bullet_text = f"• **{topic}**"
+                            if combined_details:
+                                bullet_text = f"• **{topic}**: {combined_details}."
+                            else:
+                                bullet_text = f"• **{topic}**"
 
-                bullet_lines.append(bullet_text)
+                    bullet_lines.append(bullet_text)
 
-                # If there are resident observations / quotes, add as a subtle sub-point
-                if card.community_observations and len(card.community_observations) <= 2:
-                    obs_items = [
-                        o.text.strip()
-                        for o in card.community_observations
-                        if o.text.strip()
-                        and o.text.strip().lower() not in summary.lower()
-                        and o.text.strip().lower() not in combined_details.lower()
-                    ]
-                    if obs_items:
-                        obs_text = "; ".join(obs_items)
-                        bullet_lines.append(f"  _По сообщениям жителей: {obs_text}_")
+                    # If there are resident observations / quotes, add as a subtle sub-point
+                    if card.community_observations and len(card.community_observations) <= 2:
+                        obs_items = [
+                            o.text.strip()
+                            for o in card.community_observations
+                            if o.text.strip()
+                            and o.text.strip().lower() not in summary.lower()
+                            and o.text.strip().lower() not in combined_details.lower()
+                        ]
+                        if obs_items:
+                            obs_text = "; ".join(obs_items)
+                            bullet_lines.append(f"  _По сообщениям жителей: {obs_text}_")
 
-                rubric_bullets.append("\n".join(bullet_lines))
+                    rubric_bullets.append("\n".join(bullet_lines))
 
-            if rubric_bullets:
-                sections.append(f"{header}\n" + "\n".join(rubric_bullets))
+                if rubric_bullets:
+                    sections.append(f"{header}\n" + "\n".join(rubric_bullets))
 
         if self.include_statistics:
             stat_emoji = "📊 " if self.use_emojis else ""

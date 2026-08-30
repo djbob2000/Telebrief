@@ -2,9 +2,11 @@
 
 import datetime as dt
 
+from src.collector import Message
 from src.editorial_models import (
     EditorialAnalysis,
     PreparedBundle,
+    SourceRecord,
     StoryCard,
     StoryElement,
 )
@@ -294,3 +296,67 @@ class TestPublicationDigestRenderer:
 
         # 2. 4-level statistics rendered
         assert "Статистика: источников: 1, сообщений: 2, фактов: 2, событий: 1." in body
+
+    def test_render_grouped_digest_with_narrative_draft(self):
+        from src.publication.digest_narrative import (
+            DigestNarrativeBlockDraft,
+            DigestNarrativeDraft,
+            DigestNarrativeParagraph,
+        )
+
+        card = StoryCard(
+            id="story:1",
+            topic="Водоснабжение",
+            importance="high",
+            summary="Ремонт завершен",
+            rubric_id="utilities",
+        )
+        msg = Message(
+            text="Водоканал завершил ремонтные работы на сетях.",
+            sender="Official",
+            timestamp=_NOW,
+            link="https://t.me/c/1",
+            channel_id="c1",
+            channel_name="Official",
+        )
+        records = {
+            "telegram:source:1:item:1:rev:1:frag:1": SourceRecord(
+                ref="telegram:source:1:item:1:rev:1:frag:1",
+                message=msg,
+                source_type="official",
+            )
+        }
+        frozen = FrozenEditorialInput(
+            analysis=EditorialAnalysis(cards=[card]),
+            writer_bundle=PreparedBundle(
+                records=records, prompt_text="", total_messages=1, candidate_count=1
+            ),
+        )
+
+        narrative_draft = DigestNarrativeDraft(
+            blocks=(
+                DigestNarrativeBlockDraft(
+                    block_id="block:utilities:0",
+                    heading="Городское хозяйство",
+                    paragraphs=(
+                        DigestNarrativeParagraph(
+                            text="Водоканал завершил ремонтные работы на сетях в центре города.",
+                            cited_support_ids=("sup:1",),
+                            covered_story_ids=("story:1",),
+                        ),
+                    ),
+                ),
+            )
+        )
+
+        renderer = PublicationDigestRenderer(use_emojis=True, include_statistics=True)
+        title, lead, body = renderer.render_grouped_digest(
+            frozen,
+            edition_name="Бердянск",
+            narrative_draft=narrative_draft,
+        )
+
+        assert "*⚡️ Городское хозяйство*" in body or "Городское хозяйство" in body
+        assert "Водоканал завершил ремонтные работы на сетях в центре города." in body
+        assert "• **Водоснабжение**" not in body  # Replaced by flowing paragraph!
+        assert "Статистика:" in body
