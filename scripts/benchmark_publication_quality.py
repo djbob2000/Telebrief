@@ -86,6 +86,8 @@ async def run_benchmark(
             digest_pub = await generation_service.generate(digest_run.id, defer_delivery=False)
         t_digest = time.perf_counter() - t0
 
+        digest_win_kind = "none"
+        digest_win_meta = {}
         async with uow.transaction() as conn:
             cur = await conn.execute(
                 """
@@ -97,6 +99,15 @@ async def run_benchmark(
                 (digest_run.id,),
             )
             digest_attempts = await cur.fetchall()
+
+            if digest_pub is not None:
+                cur = await conn.execute(
+                    "SELECT kind, metadata FROM publication_generation_attempts WHERE id = %s",
+                    (digest_pub.winning_generation_attempt_id,),
+                )
+                win_row = await cur.fetchone()
+                digest_win_kind = win_row[0] if win_row else "unknown"
+                digest_win_meta = win_row[1] if win_row else {}
 
         digest_chat_calls = sum(
             1
@@ -208,7 +219,13 @@ async def run_benchmark(
         print(f"  Selected:          {len(digest_inputs)}")
         print(f"  Publication ID:    {digest_pub.id if digest_pub else 'N/A (no inputs)'}")
         print(f"  Length (chars):    {len(digest_pub.body or '') if digest_pub else 0}")
-        print(f"  Chat LLM Calls:    {digest_chat_calls} (Target: <= 1)")
+        print(
+            f"  Mode:              {getattr(getattr(config.settings, 'publication_editorial', None), 'digest_narrative_mode', 'deterministic')}"
+        )
+        print(f"  Winning Attempt:   {digest_win_kind}")
+        if digest_win_meta and "block_count" in digest_win_meta:
+            print(f"  Narrative Blocks:  {digest_win_meta['block_count']}")
+        print(f"  Chat LLM Calls:    {digest_chat_calls} (Target: <= 1 in single_call, 0 in deterministic)")
         print(f"  Duration:          {t_digest:.2f}s")
         print("-" * 70)
         print("ARTICLE RESULTS:")
