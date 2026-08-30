@@ -159,21 +159,21 @@ def test_plan_digest_narrative_blocks_empty():
 
 def test_digest_narrative_draft_parser_valid():
     from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
         DigestNarrativeBlockDraft,
         DigestNarrativeDraft,
-        DigestNarrativeParagraph,
     )
 
     data = {
         "blocks": [
             {
                 "block_id": "block:utilities:0",
-                "heading": "Городское хозяйство",
-                "paragraphs": [
+                "items": [
                     {
-                        "text": "В центральной части города устранили аварию на водоводе.",
-                        "cited_support_ids": ["sup:1", "sup:2"],
-                        "covered_story_ids": ["story:1", "story:2"],
+                        "headline": "В центре устранили порыв водовода",
+                        "body": "Водоснабжение центральной части города полностью восстановлено к полудню.",
+                        "covered_story_ids": ["story:101", "story:102"],
+                        "cited_support_ids": ["support:1", "support:2"],
                     }
                 ],
             }
@@ -185,13 +185,13 @@ def test_digest_narrative_draft_parser_valid():
     b = draft.blocks[0]
     assert isinstance(b, DigestNarrativeBlockDraft)
     assert b.block_id == "block:utilities:0"
-    assert b.heading == "Городское хозяйство"
-    assert len(b.paragraphs) == 1
-    p = b.paragraphs[0]
-    assert isinstance(p, DigestNarrativeParagraph)
-    assert p.text == "В центральной части города устранили аварию на водоводе."
-    assert p.cited_support_ids == ("sup:1", "sup:2")
-    assert p.covered_story_ids == ("story:1", "story:2")
+    assert len(b.items) == 1
+    item = b.items[0]
+    assert isinstance(item, DigestEditorialItemDraft)
+    assert item.headline == "В центре устранили порыв водовода"
+    assert item.body == "Водоснабжение центральной части города полностью восстановлено к полудню."
+    assert item.covered_story_ids == ("story:101", "story:102")
+    assert item.cited_support_ids == ("support:1", "support:2")
 
 
 @pytest.mark.parametrize(
@@ -200,20 +200,108 @@ def test_digest_narrative_draft_parser_valid():
         ("not_a_dict", "root must be a mapping"),
         ({}, "missing 'blocks' list"),
         ({"blocks": "not_a_list"}, "'blocks' must be a list"),
-        ({"blocks": [{"heading": "no id"}]}, "missing or empty 'block_id'"),
+        ({"blocks": [{"items": []}]}, "missing or empty 'block_id'"),
         (
             {
                 "blocks": [
-                    {"block_id": "b1", "paragraphs": [{"text": "t", "cited_support_ids": ["s1"]}]},
-                    {"block_id": "b1", "paragraphs": [{"text": "t2", "cited_support_ids": ["s1"]}]},
+                    {
+                        "block_id": "b1",
+                        "items": [
+                            {
+                                "headline": "h1",
+                                "body": "b1",
+                                "covered_story_ids": ["s1"],
+                                "cited_support_ids": ["sup1"],
+                            }
+                        ],
+                    },
+                    {
+                        "block_id": "b1",
+                        "items": [
+                            {
+                                "headline": "h2",
+                                "body": "b2",
+                                "covered_story_ids": ["s2"],
+                                "cited_support_ids": ["sup2"],
+                            }
+                        ],
+                    },
                 ]
             },
             "duplicate block_id",
         ),
-        ({"blocks": [{"block_id": "b1", "paragraphs": []}]}, "must contain at least one paragraph"),
+        ({"blocks": [{"block_id": "b1", "items": []}]}, "must contain at least one item"),
         (
-            {"blocks": [{"block_id": "b1", "paragraphs": [{"text": ""}]}]},
-            "paragraph text cannot be empty",
+            {
+                "blocks": [
+                    {
+                        "block_id": "b1",
+                        "items": [
+                            {
+                                "headline": "",
+                                "body": "b1",
+                                "covered_story_ids": ["s1"],
+                                "cited_support_ids": ["sup1"],
+                            }
+                        ],
+                    }
+                ]
+            },
+            "digest editorial item requires headline, body, stories and supports",
+        ),
+        (
+            {
+                "blocks": [
+                    {
+                        "block_id": "b1",
+                        "items": [
+                            {
+                                "headline": "h1",
+                                "body": "",
+                                "covered_story_ids": ["s1"],
+                                "cited_support_ids": ["sup1"],
+                            }
+                        ],
+                    }
+                ]
+            },
+            "digest editorial item requires headline, body, stories and supports",
+        ),
+        (
+            {
+                "blocks": [
+                    {
+                        "block_id": "b1",
+                        "items": [
+                            {
+                                "headline": "h1",
+                                "body": "b1",
+                                "covered_story_ids": [],
+                                "cited_support_ids": ["sup1"],
+                            }
+                        ],
+                    }
+                ]
+            },
+            "digest editorial item requires headline, body, stories and supports",
+        ),
+        (
+            {
+                "blocks": [
+                    {
+                        "block_id": "b1",
+                        "items": [
+                            {
+                                "headline": "h1",
+                                "body": "b1",
+                                "covered_story_ids": ["s1"],
+                                "cited_support_ids": [],
+                            }
+                        ],
+                    }
+                ]
+            },
+            "digest editorial item requires headline, body, stories and supports",
         ),
     ],
 )
@@ -226,10 +314,10 @@ def test_digest_narrative_draft_parser_rejections(invalid_data, error):
 
 def test_validate_digest_narrative_valid():
     from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
         DigestNarrativeBlock,
         DigestNarrativeBlockDraft,
         DigestNarrativeDraft,
-        DigestNarrativeParagraph,
         DigestNarrativePlan,
         validate_digest_narrative,
     )
@@ -251,12 +339,18 @@ def test_validate_digest_narrative_valid():
         blocks=(
             DigestNarrativeBlockDraft(
                 block_id="block:utilities:0",
-                heading="Городское хозяйство",
-                paragraphs=(
-                    DigestNarrativeParagraph(
-                        text="В центральной части города устранили аварию на водоводе, тогда как на подстанции продолжается ремонт.",
-                        cited_support_ids=("sup:1", "sup:2"),
-                        covered_story_ids=("story:1", "story:2"),
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="В центре восстановили водоснабжение",
+                        body="В центральной части города устранили аварию на водоводе.",
+                        cited_support_ids=("sup:1",),
+                        covered_story_ids=("story:1",),
+                    ),
+                    DigestEditorialItemDraft(
+                        headline="На подстанции продолжается ремонт",
+                        body="На подстанции продолжается ремонт сетей.",
+                        cited_support_ids=("sup:2",),
+                        covered_story_ids=("story:2",),
                     ),
                 ),
             ),
@@ -276,10 +370,10 @@ def test_validate_digest_narrative_valid():
 
 def test_validate_digest_narrative_detects_block_mismatch_and_unsupported_claims():
     from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
         DigestNarrativeBlock,
         DigestNarrativeBlockDraft,
         DigestNarrativeDraft,
-        DigestNarrativeParagraph,
         DigestNarrativePlan,
         validate_digest_narrative,
     )
@@ -297,15 +391,15 @@ def test_validate_digest_narrative_detects_block_mismatch_and_unsupported_claims
         )
     )
 
-    # 1. Uncovered story:2 + unknown support sup:99 + unsupported concrete number 500
+    # 1. Uncovered story:2 (STORY_PARTITION_MISMATCH) + disallowed support sup:99 + unsupported concrete number 500
     draft = DigestNarrativeDraft(
         blocks=(
             DigestNarrativeBlockDraft(
                 block_id="block:utilities:0",
-                heading="Городское хозяйство",
-                paragraphs=(
-                    DigestNarrativeParagraph(
-                        text="Устранили аварию, 500 домов без воды [story:1].",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Устранили аварию в городе",
+                        body="Устранили аварию, 500 домов без воды [story:1].",
                         cited_support_ids=("sup:99",),
                         covered_story_ids=("story:1",),
                     ),
@@ -318,10 +412,112 @@ def test_validate_digest_narrative_detects_block_mismatch_and_unsupported_claims
 
     res = validate_digest_narrative(draft, plan, support_text_by_id=support_texts)
     assert res.is_valid is False
-    assert any("UNCOVERED_STORY" in v for v in res.violations)
-    assert any("DISALLOWED_SUPPORT_ID" in v for v in res.violations)
-    assert any("INTERNAL_LEAKAGE" in v for v in res.violations)
+    assert any("STORY_PARTITION_MISMATCH" in v for v in res.violations)
+    assert any("SUPPORT_OUTSIDE_BLOCK" in v for v in res.violations)
+    assert any("INTERNAL_ID_LEAK" in v for v in res.violations)
     assert len(res.unsupported_claims) >= 1
+
+
+def test_validate_digest_narrative_duplicate_story_and_length_limits():
+    from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ и город",
+                story_ids=("story:1", "story:2"),
+                support_ids=("sup:1",),
+                canonical_notes=(),
+            ),
+        )
+    )
+
+    # Duplicate story:1 in two items, story:2 covered as well, headline > 140 chars
+    long_headline = "Очень длинный заголовок новости " * 10
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline=long_headline,
+                        body="Устранили аварию на сетях водоснабжения.",
+                        cited_support_ids=("sup:1",),
+                        covered_story_ids=("story:1",),
+                    ),
+                    DigestEditorialItemDraft(
+                        headline="Второй заголовок",
+                        body="Второе сообщение о ремонте сетей водоснабжения.",
+                        cited_support_ids=("sup:1",),
+                        covered_story_ids=("story:1", "story:2"),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    support_texts = {"sup:1": "Устранили аварию на сетях водоснабжения."}
+
+    res = validate_digest_narrative(draft, plan, support_text_by_id=support_texts)
+    assert res.is_valid is False
+    assert any("DUPLICATE_STORY_COVERAGE" in v for v in res.violations)
+    assert any("HEADLINE_TOO_LONG" in v for v in res.violations)
+
+
+def test_validate_digest_narrative_headline_unsupported_claim():
+    from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ и город",
+                story_ids=("story:1",),
+                support_ids=("sup:1",),
+                canonical_notes=(),
+            ),
+        )
+    )
+
+    # Headline contains unsupported number "3 дня"
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Свет восстановят через 3 дня",
+                        body="Жители обсуждают несколько неподтвержденных сроков восстановления.",
+                        cited_support_ids=("sup:1",),
+                        covered_story_ids=("story:1",),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    support_texts = {"sup:1": "Жители обсуждают несколько неподтвержденных сроков восстановления."}
+
+    res = validate_digest_narrative(draft, plan, support_text_by_id=support_texts)
+    assert res.is_valid is False
+    assert any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in res.violations)
 
 
 @pytest.mark.asyncio
@@ -354,10 +550,10 @@ async def test_digest_narrative_writer_single_call_success(mocker):
             "blocks": [
                 {
                     "block_id": "block:utilities:0",
-                    "heading": "Городское хозяйство",
-                    "paragraphs": [
+                    "items": [
                         {
-                            "text": "Водоканал завершил ремонтные работы на сетях.",
+                            "headline": "Водоканал завершил ремонтные работы",
+                            "body": "Водоканал завершил ремонтные работы на сетях водопровода.",
                             "cited_support_ids": ["sup:1"],
                             "covered_story_ids": ["story:1"],
                         }
@@ -380,6 +576,8 @@ async def test_digest_narrative_writer_single_call_success(mocker):
     assert mock_provider.chat_completion.call_count == 1
     assert len(draft.blocks) == 1
     assert draft.blocks[0].block_id == "block:utilities:0"
+    assert len(draft.blocks[0].items) == 1
+    assert draft.blocks[0].items[0].headline == "Водоканал завершил ремонтные работы"
 
 
 def test_build_digest_support_text_index():
@@ -454,7 +652,7 @@ def test_digest_narrative_item_grouping_three_stories():
     }
 
     draft = DigestNarrativeDraft.from_dict(raw)
-    support_index = build_digest_support_text_index(evi, cards)
+    support_index = build_digest_support_text_index(evidence=evi, cards=cards)
     result = validate_digest_narrative(draft, plan, support_index)
     assert result.is_valid
     assert draft.blocks[0].items[0].covered_story_ids == block.story_ids

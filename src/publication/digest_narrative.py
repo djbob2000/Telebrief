@@ -42,12 +42,52 @@ class DigestNarrativePlan:
 
 
 @dataclass(frozen=True)
-class DigestNarrativeParagraph:
-    """A single editorial paragraph within a narrative digest block."""
+class DigestEditorialItemDraft:
+    """A single scan-first editorial item within a narrative digest block."""
 
-    text: str
-    cited_support_ids: tuple[str, ...] = ()
-    covered_story_ids: tuple[str, ...] = ()
+    headline: str
+    body: str
+    covered_story_ids: tuple[str, ...]
+    cited_support_ids: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> DigestEditorialItemDraft:
+        if not isinstance(raw, Mapping):
+            raise ValueError("digest item must be a mapping")
+        headline = str(raw.get("headline", "")).strip()
+        body = str(raw.get("body", "")).strip()
+        raw_stories = raw.get("covered_story_ids", [])
+        if isinstance(raw_stories, (str, int)):
+            raw_stories = [raw_stories]
+        if not isinstance(raw_stories, list):
+            raise ValueError("covered_story_ids must be a list")
+        story_ids = tuple(
+            dict.fromkeys(
+                str(x).strip()
+                for x in raw_stories
+                if x and isinstance(x, (str, int)) and str(x).strip()
+            )
+        )
+        raw_supports = raw.get("cited_support_ids", [])
+        if isinstance(raw_supports, (str, int)):
+            raw_supports = [raw_supports]
+        if not isinstance(raw_supports, list):
+            raise ValueError("cited_support_ids must be a list")
+        support_ids = tuple(
+            dict.fromkeys(
+                str(x).strip()
+                for x in raw_supports
+                if x and isinstance(x, (str, int)) and str(x).strip()
+            )
+        )
+        if not headline or not body or not story_ids or not support_ids:
+            raise ValueError("digest editorial item requires headline, body, stories and supports")
+        return cls(
+            headline=headline,
+            body=body,
+            covered_story_ids=story_ids,
+            cited_support_ids=support_ids,
+        )
 
 
 @dataclass(frozen=True)
@@ -55,8 +95,7 @@ class DigestNarrativeBlockDraft:
     """A single rendered block in a narrative digest draft."""
 
     block_id: str
-    heading: str
-    paragraphs: tuple[DigestNarrativeParagraph, ...]
+    items: tuple[DigestEditorialItemDraft, ...]
 
 
 @dataclass(frozen=True)
@@ -91,47 +130,18 @@ class DigestNarrativeDraft:
                 raise ValueError(f"duplicate block_id: {block_id}")
             seen_block_ids.add(block_id)
 
-            heading = str(b.get("heading") or "").strip()
-            raw_paras = b.get("paragraphs")
-            if raw_paras is None or not isinstance(raw_paras, list) or len(raw_paras) == 0:
-                raise ValueError(f"block {block_id} must contain at least one paragraph")
+            raw_items = b.get("items")
+            if raw_items is None or not isinstance(raw_items, list) or len(raw_items) == 0:
+                raise ValueError(f"block {block_id} must contain at least one item")
 
-            para_drafts: list[DigestNarrativeParagraph] = []
-            for p in raw_paras:
-                if not isinstance(p, Mapping):
-                    raise ValueError("paragraph must be a mapping")
-
-                text = str(p.get("text") or "").strip()
-                if not text:
-                    raise ValueError(f"paragraph text cannot be empty in block {block_id}")
-
-                raw_supports = p.get("cited_support_ids", [])
-                if isinstance(raw_supports, str):
-                    raw_supports = [raw_supports]
-                if not isinstance(raw_supports, list):
-                    raise ValueError(f"cited_support_ids must be a list in block {block_id}")
-                cited_supports = tuple(str(s).strip() for s in raw_supports if str(s).strip())
-
-                raw_stories = p.get("covered_story_ids", [])
-                if isinstance(raw_stories, str):
-                    raw_stories = [raw_stories]
-                if not isinstance(raw_stories, list):
-                    raise ValueError(f"covered_story_ids must be a list in block {block_id}")
-                covered_stories = tuple(str(s).strip() for s in raw_stories if str(s).strip())
-
-                para_drafts.append(
-                    DigestNarrativeParagraph(
-                        text=text,
-                        cited_support_ids=cited_supports,
-                        covered_story_ids=covered_stories,
-                    )
-                )
+            item_drafts: list[DigestEditorialItemDraft] = []
+            for item_raw in raw_items:
+                item_drafts.append(DigestEditorialItemDraft.from_dict(item_raw))
 
             block_drafts.append(
                 DigestNarrativeBlockDraft(
                     block_id=block_id,
-                    heading=heading,
-                    paragraphs=tuple(para_drafts),
+                    items=tuple(item_drafts),
                 )
             )
 
@@ -234,15 +244,22 @@ def plan_digest_narrative_blocks(
     return DigestNarrativePlan(blocks=tuple(blocks))
 
 
+DIGEST_ITEM_HEADLINE_MAX_CHARS = 140
+DIGEST_ITEM_BODY_MAX_CHARS = 900
+DIGEST_ITEM_MAX_STORIES = 6
+
+
 def validate_digest_narrative(
     draft: DigestNarrativeDraft,
     plan: DigestNarrativePlan,
+    support_index: Mapping[str, str] | None = None,
     *,
-    support_text_by_id: Mapping[str, str],
+    support_text_by_id: Mapping[str, str] | None = None,
 ) -> DigestNarrativeValidationResult:
     """Validate structured narrative digest draft strictly against deterministic plan and evidence."""
     violations: list[str] = []
     unsupported_claims: list[ConcreteClaim] = []
+    support_map = support_index if support_index is not None else (support_text_by_id or {})
 
     plan_blocks_by_id = {b.block_id: b for b in plan.blocks}
     draft_block_ids = [b.block_id for b in draft.blocks]
@@ -250,71 +267,78 @@ def validate_digest_narrative(
 
     if len(draft.blocks) != len(plan.blocks):
         violations.append(
-            f"BLOCK_COUNT_MISMATCH: expected {len(plan.blocks)} blocks, got {len(draft.blocks)}"
+            f"BLOCK_SET_MISMATCH: expected {len(plan.blocks)} blocks, got {len(draft.blocks)}"
         )
 
     if draft_block_ids != plan_block_ids:
-        violations.append(
-            f"BLOCK_ID_SEQUENCE_MISMATCH: expected {plan_block_ids}, got {draft_block_ids}"
-        )
+        violations.append(f"BLOCK_SET_MISMATCH: expected {plan_block_ids}, got {draft_block_ids}")
 
-    seen_story_ids: set[str] = set()
-
-    for block_draft in draft.blocks:
-        plan_block = plan_blocks_by_id.get(block_draft.block_id)
+    for out_block in draft.blocks:
+        plan_block = plan_blocks_by_id.get(out_block.block_id)
         if plan_block is None:
-            violations.append(f"UNKNOWN_BLOCK_ID: {block_draft.block_id}")
+            violations.append(f"UNKNOWN_BLOCK_ID: {out_block.block_id}")
             continue
 
         allowed_supports = set(plan_block.support_ids)
-        allowed_stories = set(plan_block.story_ids)
-        covered_stories_in_block: set[str] = set()
+        expected_story_ids = set(plan_block.story_ids)
 
-        for para in block_draft.paragraphs:
-            if _INTERNAL_LEAKAGE_RE.search(para.text):
+        flat_story_ids = [sid for item in out_block.items for sid in item.covered_story_ids]
+        if len(flat_story_ids) != len(set(flat_story_ids)):
+            violations.append(f"DUPLICATE_STORY_COVERAGE: {out_block.block_id}")
+
+        for sid in flat_story_ids:
+            if sid not in expected_story_ids:
+                violations.append(f"UNKNOWN_STORY_ID: {sid} in block {out_block.block_id}")
+
+        if set(flat_story_ids) != expected_story_ids:
+            violations.append(f"STORY_PARTITION_MISMATCH: {out_block.block_id}")
+
+        for item in out_block.items:
+            if len(item.covered_story_ids) > DIGEST_ITEM_MAX_STORIES:
                 violations.append(
-                    f"INTERNAL_LEAKAGE: found internal identifier in block {block_draft.block_id}"
+                    f"ITEM_TOO_MANY_STORIES: item in block {out_block.block_id} covers {len(item.covered_story_ids)} stories (max {DIGEST_ITEM_MAX_STORIES})"
+                )
+            if len(item.headline) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
+                violations.append(
+                    f"HEADLINE_TOO_LONG: headline exceeds {DIGEST_ITEM_HEADLINE_MAX_CHARS} chars in block {out_block.block_id}"
+                )
+            if len(item.body) > DIGEST_ITEM_BODY_MAX_CHARS:
+                violations.append(
+                    f"BODY_TOO_LONG: body exceeds {DIGEST_ITEM_BODY_MAX_CHARS} chars in block {out_block.block_id}"
                 )
 
-            if not para.cited_support_ids:
+            if _INTERNAL_LEAKAGE_RE.search(item.headline) or _INTERNAL_LEAKAGE_RE.search(item.body):
                 violations.append(
-                    f"MISSING_SUPPORT_CITATION: paragraph in block {block_draft.block_id} cites no supports"
+                    f"INTERNAL_ID_LEAK: found internal identifier in block {out_block.block_id}"
                 )
 
-            for sup_id in para.cited_support_ids:
+            if not item.cited_support_ids:
+                violations.append(
+                    f"MISSING_SUPPORT_CITATION: item in block {out_block.block_id} cites no supports"
+                )
+
+            for sup_id in item.cited_support_ids:
                 if sup_id not in allowed_supports and allowed_supports:
                     violations.append(
-                        f"DISALLOWED_SUPPORT_ID: {sup_id} not allowed in block {block_draft.block_id}"
+                        f"SUPPORT_OUTSIDE_BLOCK: {sup_id} not allowed in block {out_block.block_id}"
                     )
-                if sup_id not in support_text_by_id:
+                if sup_id not in support_map:
                     violations.append(
                         f"UNKNOWN_SUPPORT_ID: {sup_id} not found in support text index"
                     )
 
-            for sid in para.covered_story_ids:
-                if sid not in allowed_stories:
-                    violations.append(
-                        f"DISALLOWED_STORY_ID: {sid} not allowed in block {block_draft.block_id}"
-                    )
-                covered_stories_in_block.add(sid)
-                seen_story_ids.add(sid)
-
             # Validate concrete claims against cited support texts
-            c_supports = [
-                support_text_by_id[s] for s in para.cited_support_ids if s in support_text_by_id
-            ]
-            para_unsupported = find_unsupported_claims(para.text, c_supports)
-            for unc in para_unsupported:
+            c_supports = [support_map[s] for s in item.cited_support_ids if s in support_map]
+            for unc in find_unsupported_claims(item.headline, c_supports):
                 unsupported_claims.append(unc)
                 violations.append(
-                    f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in block {block_draft.block_id}"
+                    f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in headline of block {out_block.block_id}"
                 )
-
-        uncovered_stories = allowed_stories - covered_stories_in_block
-        for unc_sid in uncovered_stories:
-            violations.append(
-                f"UNCOVERED_STORY: {unc_sid} was not covered in block {block_draft.block_id}"
-            )
+            for unc in find_unsupported_claims(item.body, c_supports):
+                unsupported_claims.append(unc)
+                violations.append(
+                    f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in body of block {out_block.block_id}"
+                )
 
     is_valid = len(violations) == 0 and len(unsupported_claims) == 0
     return DigestNarrativeValidationResult(
@@ -381,12 +405,12 @@ class DigestNarrativeWriter:
             '  "blocks": [\n'
             "    {\n"
             '      "block_id": "string (must match input block_id exactly)",\n'
-            '      "heading": "string (clear section heading)",\n'
-            '      "paragraphs": [\n'
+            '      "items": [\n'
             "        {\n"
-            '          "text": "string (flowing editorial prose synthesizing events)",\n'
-            '          "cited_support_ids": ["string (support IDs)"],\n'
-            '          "covered_story_ids": ["string (story IDs covered)"]\n'
+            '          "headline": "string (bold mini-summary answer to what happened)",\n'
+            '          "body": "string (compact 2-4 sentences adding context/chronology/status)",\n'
+            '          "covered_story_ids": ["string (story IDs covered)"],\n'
+            '          "cited_support_ids": ["string (support IDs cited)"]\n'
             "        }\n"
             "      ]\n"
             "    }\n"
