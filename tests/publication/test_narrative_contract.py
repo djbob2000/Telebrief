@@ -29,7 +29,13 @@ def test_article_narrative_contract_invariants():
     assert "claim atoms may preserve source-language wording" in contract_lower
     assert "never translate or grammar-correct text inside quotation marks" in contract_lower
     assert "remove quotation marks and write indirect speech" in contract_lower
-    assert ARTICLE_NARRATIVE_PROMPT_VERSION == "event-article-narrative-v4"
+    assert "broad city-life coverage" in contract_lower
+    assert "prominence controls depth, not inclusion" in contract_lower
+    assert "do not collapse concrete evidence into generic summaries" in contract_lower
+    assert "microdetail" in contract_lower
+    assert "brief stories" in contract_lower
+    assert "phone numbers" in contract_lower
+    assert ARTICLE_NARRATIVE_PROMPT_VERSION == "event-article-narrative-v5"
 
 
 def test_digest_narrative_contract_invariants():

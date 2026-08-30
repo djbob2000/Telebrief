@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v4"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v5"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v1"
 
 
@@ -43,7 +43,28 @@ def build_article_narrative_contract(
 - Section headings are thematic titles and do not require claim atoms unless they contain concrete numbers, dates, or prices.
 - Do not mechanically generate one sentence per support. Synthesize related observations into natural, flowing prose.
 
-3. Claim Atom discipline:
+3. Broad City-Life Coverage & Editorial Hierarchy:
+- The product is a broad city-life coverage long read, not a minimal three-story analysis.
+- Prominence controls depth, not inclusion.
+- DEVELOP stories deserve substantial narrative depth when evidence exists.
+- WEAVE stories should be integrated into related sections with compact but concrete treatment.
+- BRIEF stories should usually receive at least one factual sentence and may be grouped into a natural city-life section.
+- Do not omit a legitimate PUBLISH Story merely because it is smaller than the main themes.
+- Do not give all Stories equal space.
+
+
+4. Microdetail Preservation:
+- Do not collapse concrete evidence into generic summaries when useful supported specifics exist.
+- When DETAIL SUPPORTS are provided, use their concrete anchors where they improve reader understanding: neighborhood, amount, interval, resident action, service name, timing, or a short exact quote.
+- Prefer "residents pooled 300 units for a shared generator" over "residents are adapting" when the amount and action are supported.
+- Prefer one or two strong specifics over a raw inventory of every source sentence.
+
+5. Directory / Promotion Hygiene:
+- Do not print phone numbers, booking URLs, handles, or call-to-action copy in the long read.
+- Do not turn a service-access Story into an advertisement.
+- Organization names, locations, prices, schedules, or addresses may appear when the detail itself is editorially relevant and supported.
+
+6. Claim Atom discipline:
 - Claim Atoms are validation metadata, not polished article prose.
 - Keep each Claim Atom source-close and limited to ONE independently supportable proposition.
 - Split combined electricity/water, location/service, or cause/effect propositions into separate atoms with their own support IDs.
@@ -51,7 +72,7 @@ def build_article_narrative_contract(
 - Claim Atoms may preserve source-language wording (including Ukrainian) even when final prose is Russian.
 - Do not add editorial transitions, thematic summaries, or bureaucratic abstractions to Claim Atoms merely because they appear in the prose.
 
-4. Narrative Composition Principles:
+7. Narrative Composition Principles:
 - Chronology: Build clear chronological narrative sequences when the supports establish temporal order.
 - Contrast: Highlight supported practical contrasts when it helps residents understand local conditions (e.g. service availability differences, operational contrasts).
 - Lived reality: Use concrete supported resident actions, practical adaptations, and coping strategies to show real community impact.
@@ -67,8 +88,7 @@ def build_article_narrative_contract(
 - Proportion & length: Do not pad a thin day to reach an arbitrary length. State supported facts concisely without fluff. On rich days, develop major storylines thoroughly across sections without repeating facts.{target_str}
 - Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented consequences, invented mechanisms, or speculative interpretations.
 
-
-5. Epistemic Fidelity:
+8. Epistemic Fidelity:
 - Single-source, community, resident, eyewitness, and explicitly unverified reports are authorized publication material when supplied as PUBLISH support; lack of corroboration is not a reason to omit them.
 - Preserve the support's epistemic status. For framing=attributed_report, write natural attribution such as "residents report", "according to a participant", or the output-language equivalent.
 - Do not upgrade community or attributed material to "officially confirmed", "established", or equivalent wording unless a cited support itself establishes that status.
