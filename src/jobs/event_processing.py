@@ -183,7 +183,7 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
     if not editions_to_process:
         return stats
 
-    triage_sem = asyncio.Semaphore(4)
+    triage_sem = asyncio.Semaphore(1)
 
     async def _process_gate_batch(
         gate_batch: list[StoryClusterState],

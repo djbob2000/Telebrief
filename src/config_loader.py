@@ -335,7 +335,8 @@ class Settings:
     auto_cleanup_old_digests: bool = True
     max_messages_per_channel: int = 5000
     max_prompt_chars: int = 8000
-    api_timeout: int = 30
+    api_timeout: int = 300
+
     ai_provider: str = "openai"
     ai_model: str = ""
     ollama_base_url: str = "http://localhost:11434"
@@ -1880,7 +1881,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         auto_cleanup_old_digests=settings_dict.get("auto_cleanup_old_digests", True),
         max_messages_per_channel=settings_dict.get("max_messages_per_channel", 5000),
         max_prompt_chars=settings_dict.get("max_prompt_chars", 8000),
-        api_timeout=int(settings_dict.get("api_timeout", 30)),
+        api_timeout=int(settings_dict.get("api_timeout", 300)),
         ai_provider=ai_provider,
         ai_model=ai_model,
         ollama_base_url=settings_dict.get("ollama_base_url", "http://localhost:11434"),

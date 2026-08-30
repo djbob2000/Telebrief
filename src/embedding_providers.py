@@ -111,7 +111,7 @@ class GoogleGeminiEmbeddingProvider:
         self,
         api_key: str,
         logger: logging.Logger,
-        timeout: int = 45,
+        timeout: int = 300,
     ):
         if not api_key:
             raise ValueError("GoogleGeminiEmbeddingProvider requires a Gemini API key")
@@ -119,7 +119,7 @@ class GoogleGeminiEmbeddingProvider:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=GOOGLE_BASE_URL,
-            timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+            timeout=httpx.Timeout(timeout, connect=min(15.0, float(timeout))),
             max_retries=0,
         )
 
@@ -196,7 +196,7 @@ class OpenRouterEmbeddingProvider:
         api_key: str,
         logger: logging.Logger,
         base_url: str = OPENROUTER_BASE_URL,
-        timeout: int = 45,
+        timeout: int = 300,
     ):
         if not api_key:
             raise ValueError("OpenRouterEmbeddingProvider requires an OpenRouter API key")
@@ -204,7 +204,7 @@ class OpenRouterEmbeddingProvider:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+            timeout=httpx.Timeout(timeout, connect=min(15.0, float(timeout))),
             max_retries=0,
         )
 
@@ -281,7 +281,7 @@ class OpenAIEmbeddingProvider:
         api_key: str,
         logger: logging.Logger,
         base_url: str | None = None,
-        timeout: int = 45,
+        timeout: int = 300,
     ):
         if not api_key:
             raise ValueError("OpenAIEmbeddingProvider requires an OpenAI API key")
@@ -289,7 +289,7 @@ class OpenAIEmbeddingProvider:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+            timeout=httpx.Timeout(timeout, connect=min(15.0, float(timeout))),
             max_retries=0,
         )
 
@@ -364,7 +364,7 @@ def create_embedding_provider(
     embedding_config = getattr(config, "embedding", config)
     provider_name = (getattr(embedding_config, "provider", "google") or "google").lower()
     api_key = getattr(embedding_config, "api_key", "")
-    timeout = getattr(embedding_config, "timeout", 45)
+    timeout = getattr(embedding_config, "timeout", 300)
 
     if provider_name == "google":
         return GoogleGeminiEmbeddingProvider(

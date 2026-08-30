@@ -38,10 +38,12 @@ def build_article_narrative_contract(
 
 2. Presentation vs. Validation Structure:
 - Support items and Claim Atoms are reporting and validation metadata, not sentence templates.
+- Title and Lead must cite active PUBLISH support IDs with CURRENT_WINDOW temporal role from the main lead/DEVELOP storylines.
 - A single natural paragraph may combine several independently supported claims when they form one coherent narrative thought.
 - Group 2–5 related supports into a cohesive narrative section under an intuitive thematic heading.
 - Section headings are thematic titles and do not require claim atoms unless they contain concrete numbers, dates, or prices.
 - Do not mechanically generate one sentence per support. Synthesize related observations into natural, flowing prose.
+
 
 3. Broad City-Life Coverage & Editorial Hierarchy:
 - The product is a broad city-life coverage long read, not a minimal three-story analysis.
@@ -80,13 +82,21 @@ def build_article_narrative_contract(
 - Attribution discipline: Group repeated observations sharing the same epistemic status under a single natural attribution. Vary sentence openings and avoid mechanically repeating identical attribution phrases at the start of every sentence.
 - Transitions: Neutral connective phrases (e.g. "meanwhile", "at the same time", "against this background") are permitted only when they connect verified observations without asserting unsupported causal links.
 - Direct quotes:
-  * Quotation marks mean exact primary-source wording.
+  * Quotation marks («...») mean exact primary-source wording and MUST be used ONLY when quoting the EXACT primary-source words verbatim from `source=...`.
   * NEVER translate or grammar-correct text inside quotation marks, normalize grammar, shorten, or merge words inside a direct quotation.
   * If you need Russian translation, correction, or compression, remove quotation marks and write indirect speech.
-- Evidence boundary: Prefer concrete supported details over abstract editorial generalizations or commentary.
+
+- Proper names & Places:
+  * Do NOT introduce external city names, persons, or organizations that are not explicitly mentioned in that paragraph's cited support.
+- Title and Lead constraints:
+  * Title and Lead MUST cite only supports marked `CURRENT_WINDOW (VALID FOR TITLE/LEAD)`.
+
 - Preserve source date granularity: If a support says only a bare day number like "31" or "31-го", do not expand it and do not infer a missing month or year (e.g. do not expand to "31 августа" or add a year) unless that month/year is explicitly present in the cited support. Prefer the source's own granularity over inferred precision.
 - Proportion & length: Do not pad a thin day to reach an arbitrary length. State supported facts concisely without fluff. On rich days, develop major storylines thoroughly across sections without repeating facts.{target_str}
+- Logical clarity and natural precision:
+  * Distinguish technical infrastructure from human actions cleanly (e.g. do not produce awkward compression like «делятся интернетом через оптоволокно» — write naturally: «подключают оптоволокно (GPON) и делятся Wi-Fi с соседями» or «раздают интернет по Wi-Fi»). Keep technical mechanisms and social actions logically accurate.
 - Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented consequences, invented mechanisms, or speculative interpretations.
+
 
 8. Epistemic Fidelity:
 - Single-source, community, resident, eyewitness, and explicitly unverified reports are authorized publication material when supplied as PUBLISH support; lack of corroboration is not a reason to omit them.

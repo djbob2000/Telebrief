@@ -187,12 +187,13 @@ class AIPublicationSelectionModel:
     ) -> str:
         candidates_data = []
         for cand in candidates:
+            feat = cand.snapshot_features or {}
+            summary = feat.get("semantic_text") or feat.get("summary") or ""
             candidates_data.append(
                 {
                     "story_id": cand.story_id,
                     "story_revision_id": cand.story_revision_id,
-                    "deterministic_rank": cand.deterministic_rank,
-                    "snapshot_features": cand.snapshot_features,
+                    "summary": summary if summary else "No summary",
                 }
             )
 
@@ -204,19 +205,18 @@ class AIPublicationSelectionModel:
             f"Snapshot At: {run.snapshot_at.isoformat()}\n"
             f"Candidate Stories ({len(candidates)} items):\n"
             f"{json.dumps(candidates_data, ensure_ascii=False, indent=2)}\n\n"
-            "Respond strictly with a compact JSON object with this schema:\n"
+            "Select the most meaningful and relevant stories to INCLUDE in the publication.\n"
+            "Respond strictly with a compact JSON object containing the 'included' list:\n"
             "{\n"
-            '  "proposals": [\n'
+            '  "included": [\n'
             "    {\n"
             '      "story_id": <int>,\n'
-            '      "story_revision_id": <int>,\n'
-            '      "decision": "INCLUDE" | "OMIT",\n'
-            '      "exclusion_reason": "commercial_classified" | null,\n'
-            '      "presentation_intent": "lead" | "normal" | "brief" | "unverified_operational" | null,\n'
-            '      "rank": <int> | null\n'
+            '      "presentation_intent": "lead" | "normal" | "brief" | "unverified_operational",\n'
+            '      "rank": <int>\n'
             "    }\n"
             "  ]\n"
             "}\n"
+            "All candidate stories not listed in 'included' will be automatically omitted.\n"
         )
         return "\n".join(prompt_parts)
 
@@ -233,42 +233,67 @@ class AIPublicationSelectionModel:
         except Exception as err:
             raise InvalidSelectionResponse(f"failed to parse selector JSON: {err}") from err
 
+        expected_keys = {(c.story_id, c.story_revision_id) for c in candidates}
+        story_to_rev = {c.story_id: c.story_revision_id for c in candidates}
+        seen_keys: set[tuple[int, int]] = set()
+        proposals: list[SelectionProposal] = []
+
+        is_compact_included = False
         if isinstance(data, dict):
-            raw_list = data.get("proposals") or data.get("decisions") or data.get("candidates")
-            if not isinstance(raw_list, list):
-                raise InvalidSelectionResponse("JSON response missing 'proposals' list")
+            if "included" in data or "selected" in data:
+                raw_list = data.get("included") or data.get("selected") or []
+                is_compact_included = True
+            else:
+                raw_list = data.get("proposals") or data.get("decisions") or data.get("candidates")
+                if not isinstance(raw_list, list):
+                    raise InvalidSelectionResponse(
+                        "JSON response missing 'proposals' or 'included' list"
+                    )
         elif isinstance(data, list):
             raw_list = data
         else:
             raise InvalidSelectionResponse(f"unexpected JSON root type: {type(data)}")
 
-        expected_keys = {(c.story_id, c.story_revision_id) for c in candidates}
-        seen_keys: set[tuple[int, int]] = set()
-        proposals: list[SelectionProposal] = []
+        if not isinstance(raw_list, list):
+            raise InvalidSelectionResponse("proposals/included must be a JSON array")
 
         for item in raw_list:
             if not isinstance(item, dict):
                 raise InvalidSelectionResponse("each proposal must be a JSON object")
 
-            story_id = item.get("story_id")
-            story_rev_id = item.get("story_revision_id")
+            story_id = item.get("story_id") or item.get("id")
+            story_rev_id = item.get("story_revision_id") or item.get("rev")
+            if isinstance(story_id, str) and story_id.isdigit():
+                story_id = int(story_id)
+            if isinstance(story_rev_id, str) and story_rev_id.isdigit():
+                story_rev_id = int(story_rev_id)
+
+            if isinstance(story_id, int) and not isinstance(story_rev_id, int):
+                story_rev_id = story_to_rev.get(story_id)
+
             if not isinstance(story_id, int) or not isinstance(story_rev_id, int):
-                raise InvalidSelectionResponse("story_id and story_revision_id must be integers")
+                continue
 
             key = (story_id, story_rev_id)
             if key not in expected_keys:
+                if is_compact_included:
+                    continue
                 raise InvalidSelectionResponse(f"unknown candidate story in proposals: {key}")
+
             if key in seen_keys:
-                raise InvalidSelectionResponse(f"duplicate candidate in proposals: {key}")
+                continue
             seen_keys.add(key)
 
             decision = item.get("decision")
+            if is_compact_included and decision is None:
+                decision = "INCLUDE"
+
             if decision not in VALID_DECISIONS:
                 raise InvalidSelectionResponse(
                     f"invalid decision {decision!r}, expected one of {VALID_DECISIONS}"
                 )
 
-            intent = item.get("presentation_intent")
+            intent = item.get("presentation_intent") or item.get("intent")
             if intent is not None and intent not in VALID_PRESENTATION_INTENTS:
                 raise InvalidSelectionResponse(
                     f"invalid presentation_intent {intent!r}, expected one of {VALID_PRESENTATION_INTENTS}"
@@ -310,9 +335,29 @@ class AIPublicationSelectionModel:
                 )
             )
 
-        if seen_keys != expected_keys:
-            missing = expected_keys - seen_keys
-            raise InvalidSelectionResponse(f"selector omitted decisions for candidates: {missing}")
+        if is_compact_included:
+            # For any candidate not in included list, create default OMIT proposal
+            for cand in candidates:
+                cand_key = (cand.story_id, cand.story_revision_id)
+                if cand_key not in seen_keys:
+                    proposals.append(
+                        SelectionProposal(
+                            story_id=cand.story_id,
+                            story_revision_id=cand.story_revision_id,
+                            decision="OMIT",
+                            presentation_intent=None,
+                            confidence=1.0,
+                            reason="Not selected by editorial model",
+                            rank=None,
+                            exclusion_reason=None,
+                        )
+                    )
+        else:
+            if seen_keys != expected_keys:
+                missing = expected_keys - seen_keys
+                raise InvalidSelectionResponse(
+                    f"selector omitted decisions for candidates: {missing}"
+                )
 
         return proposals
 

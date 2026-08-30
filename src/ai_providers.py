@@ -399,17 +399,18 @@ class OpenAIProvider(AIProvider):
         self,
         api_key: str,
         logger: logging.Logger,
-        timeout: int = 60,
+        timeout: int = 300,
         base_url: str = "",
     ):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url or None,
-            timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+            timeout=httpx.Timeout(timeout, connect=min(15.0, float(timeout))),
             max_retries=0,
         )
         self.logger = logger
         self.base_url = base_url.lower()
+        self._semaphore = asyncio.Semaphore(1)
 
     async def chat_completion(  # pylint: disable=too-many-positional-arguments
         self,
@@ -439,10 +440,11 @@ class OpenAIProvider(AIProvider):
         if response_format is not None:
             create_kwargs["response_format"] = response_format
 
-        try:
-            response = await self.client.chat.completions.create(**create_kwargs)
-        except OpenAIBadRequestError as exc:
-            response = await self._handle_bad_request(create_kwargs, exc, reasoning_effort)
+        async with self._semaphore:
+            try:
+                response = await self.client.chat.completions.create(**create_kwargs)
+            except OpenAIBadRequestError as exc:
+                response = await self._handle_bad_request(create_kwargs, exc, reasoning_effort)
 
         return _extract_chat_completion_text(response, self.logger, "OpenAI")
 
@@ -495,13 +497,13 @@ class GoogleProvider(AIProvider):
         self,
         api_key: str,
         logger: logging.Logger,
-        timeout: int = 45,
+        timeout: int = 300,
         default_reasoning_effort: str = "high",
     ):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=GOOGLE_BASE_URL,
-            timeout=httpx.Timeout(timeout, connect=min(10.0, float(timeout))),
+            timeout=httpx.Timeout(timeout, connect=min(15.0, float(timeout))),
             max_retries=0,
         )
         self.logger = logger
@@ -636,7 +638,7 @@ class OllamaProvider(AIProvider):
 class AnthropicProvider(AIProvider):
     """Anthropic Claude API provider."""
 
-    def __init__(self, api_key: str, logger: logging.Logger, timeout: int = 60):
+    def __init__(self, api_key: str, logger: logging.Logger, timeout: int = 300):
         self._api_key = api_key
         self.logger = logger
         self.timeout = aiohttp.ClientTimeout(total=timeout)
@@ -731,7 +733,7 @@ def create_provider(  # noqa: C901
     openrouter_base_url: str = OPENROUTER_BASE_URL,
     openrouter_model: str = "openrouter/free",
     ollama_base_url: str = "http://localhost:11434",
-    api_timeout: int = 60,
+    api_timeout: int = 300,
     reasoning_effort: str | None = None,
 ) -> AIProvider:
     """

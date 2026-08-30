@@ -50,12 +50,19 @@ def render_article_writer_context(
         if sup.publication_use == "EXCLUDE":
             continue
         roles = ",".join(sup.source_roles) if sup.source_roles else "unknown"
+        role_tag: str = str(sup.temporal_role)
+        if sup.publication_use == "PUBLISH" and sup.temporal_role == "CURRENT_WINDOW":
+            role_tag = "CURRENT_WINDOW (VALID FOR TITLE/LEAD)"
+        elif sup.temporal_role == "HISTORICAL_CONTEXT":
+            role_tag = "HISTORICAL_CONTEXT (Background only - do NOT cite for Title/Lead)"
+
         lines = [
             f"[SUPPORT {sup.support_id}]",
-            f"role={sup.temporal_role} kind={sup.support_kind} publication_use={sup.publication_use}",
+            f"role={role_tag} kind={sup.support_kind} publication_use={sup.publication_use}",
             f"evidence_kind={sup.evidence_kind} source_roles={roles}",
             f"framing={_support_framing(sup)}",
         ]
+
         if sup.observed_at:
             lines.append(f"observed_at={sup.observed_at.isoformat()}")
         if sup.effective_from:

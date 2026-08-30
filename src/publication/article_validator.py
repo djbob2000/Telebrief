@@ -400,9 +400,7 @@ def validate_article_draft(
                             )
                         )
 
-                allowed_context_terms: tuple[str, ...] = ()
-                if unit_type in ("title", "lead"):
-                    allowed_context_terms = context.edition_anchor_terms
+                allowed_context_terms = context.edition_anchor_terms
 
                 assessment = assess_claim_against_supports(
                     claim.text,

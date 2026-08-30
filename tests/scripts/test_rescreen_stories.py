@@ -10,7 +10,7 @@ import pytest
 
 from scripts.rescreen_stories import run_rescreen
 
-_NOW = dt.datetime(2026, 8, 29, 20, 0, tzinfo=dt.timezone.utc)
+_NOW = dt.datetime.now(dt.timezone.utc)
 
 
 @pytest.mark.postgres

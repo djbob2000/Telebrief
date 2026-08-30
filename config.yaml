@@ -112,9 +112,11 @@ settings:
 
   # OpenRouter provider settings:
   ai_provider: "openrouter"
+  api_timeout: 300
 
   ai_model: "minimax/minimax-m3:free"
   max_tokens_per_summary: 65536
+
 
   digest_mode: "digest"
   dedup_topics: true
@@ -207,9 +209,9 @@ settings:
   persistent_ingestion: true
   max_messages_per_channel: 5000
   max_prompt_chars: 300000
-  api_timeout: 60
 
   article:
+
     enabled: true
     schedule_time: "21:15"
     lookback_hours: 24
