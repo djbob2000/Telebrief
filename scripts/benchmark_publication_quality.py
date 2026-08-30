@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from dataclasses import dataclass, field
 import datetime as dt
 import logging
 import os
 import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -51,9 +51,7 @@ class BenchmarkRunRecord:
 
 def calculate_benchmark_metrics(runs: list[BenchmarkRunRecord]) -> dict[str, Any]:
     article_runs = [r for r in runs if r.publication_type == "article"]
-    article_writer_attempts = sum(
-        1 for r in article_runs for a in r.attempts if a.kind == "writer"
-    )
+    article_writer_attempts = sum(1 for r in article_runs for a in r.attempts if a.kind == "writer")
     article_writer_successes = sum(
         1
         for r in article_runs
@@ -76,9 +74,7 @@ def calculate_benchmark_metrics(runs: list[BenchmarkRunRecord]) -> dict[str, Any
         1 for r in article_runs for a in r.attempts if a.kind == "story_renderer_fallback"
     )
     article_writer_success_rate = (
-        article_writer_successes / article_writer_attempts
-        if article_writer_attempts > 0
-        else 0.0
+        article_writer_successes / article_writer_attempts if article_writer_attempts > 0 else 0.0
     )
     max_article_writer_calls_per_run = max(
         [sum(1 for a in r.attempts if a.kind == "writer") for r in article_runs],
@@ -380,9 +376,7 @@ async def run_benchmark(
             if win_kind == "writer" and win_meta.get("status") == "writer_success":
                 return "writer_success"
             if any(
-                a[1] == "writer"
-                and a[2] == "failed"
-                and a[3] == "article_validation_rejected"
+                a[1] == "writer" and a[2] == "failed" and a[3] == "article_validation_rejected"
                 for a in attempts
             ):
                 return "article_validation_rejected"

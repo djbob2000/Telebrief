@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-import sys
 
 from src.article_generator import ArticleGenerator
 from src.bootstrap import build_infrastructure
@@ -28,6 +27,7 @@ async def generate_new_approach_article(config: Config) -> tuple[str, str, str, 
     install_runtime(infra)
 
     from src.ai_providers import ProviderCascade
+
     ProviderCascade._global_slot_cooldowns.clear()
 
     uow = infra.uow
@@ -96,7 +96,11 @@ async def generate_old_custom_article(config: Config) -> tuple[str, str, str]:
         rows = await cur.fetchall()
 
     if not rows:
-        return "Нет свежих сообщений", "Нет данных", "Нет сообщений за 48 часов для генерации старой статьи."
+        return (
+            "Нет свежих сообщений",
+            "Нет данных",
+            "Нет сообщений за 48 часов для генерации старой статьи.",
+        )
 
     messages = [
         Message(
@@ -117,6 +121,7 @@ async def generate_old_custom_article(config: Config) -> tuple[str, str, str]:
         messages_by_channel[msg.channel_name].append(msg)
 
     from src.ai_providers import ProviderCascade
+
     ProviderCascade._global_slot_cooldowns.clear()
 
     generator = ArticleGenerator(config=config, logger=logger)
@@ -131,7 +136,9 @@ async def main():
     print(f"Provider: {config.settings.ai_provider} | Model: {config.settings.ai_model}")
     print("=" * 80 + "\n")
 
-    print("⏳ [1/2] Generating Article with NEW Approach (Event-First Evidence-Bound + Adaptive Length)...")
+    print(
+        "⏳ [1/2] Generating Article with NEW Approach (Event-First Evidence-Bound + Adaptive Length)..."
+    )
     t0 = asyncio.get_event_loop().time()
     try:
         new_title, new_lead, new_body, new_meta = await generate_new_approach_article(config)
@@ -141,7 +148,9 @@ async def main():
         logger.exception("Failed to generate new article: %s", e)
         return
 
-    print("⏳ [2/2] Generating Article with OLD Approach (Custom branch Story Cards + Multi-pass Writer)...")
+    print(
+        "⏳ [2/2] Generating Article with OLD Approach (Custom branch Story Cards + Multi-pass Writer)..."
+    )
     t0 = asyncio.get_event_loop().time()
     try:
         old_title, old_lead, old_body = await generate_old_custom_article(config)

@@ -5,14 +5,9 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
-import os
-import sys
 
-from src.ai_providers import ProviderCascade
 from src.bootstrap import build_infrastructure
 from src.config_loader import Config, load_config
-from src.db.uow import DatabaseUnitOfWork
-from src.formatter import DigestFormatter
 from src.publication.generation import PublicationGenerationService
 from src.publication.repository import PublicationRepository
 from src.publication.selection import EditorialSelectionService
@@ -119,6 +114,7 @@ async def generate_old_custom_digest(config: Config) -> str:
     messages_payload = "\n".join(messages_xml)
 
     from src.ai_providers import create_provider
+
     provider = create_provider(
         provider_name=config.settings.ai_provider,
         logger=logger,
