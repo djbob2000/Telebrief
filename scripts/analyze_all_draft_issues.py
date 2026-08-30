@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 from pathlib import Path
 
@@ -15,7 +14,7 @@ from src.publication.article_claim_support import (
     assess_claim_against_supports,
     extract_content_stems,
 )
-from src.publication.article_claims import find_unsupported_claims, stem_word
+from src.publication.article_claims import find_unsupported_claims
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_validator import validate_article_draft
 from src.publication.event_editorial_adapter import EventEditorialAdapter
@@ -88,19 +87,35 @@ async def main():
         units.append(("LEAD", "lead", draft.lead, draft.lead_support_ids, draft.lead_claims))
         p_idx = 1
         for s_idx, sec in enumerate(draft.sections, start=1):
-            units.append((f"H{s_idx:03d}", "heading", sec.heading, sec.heading_support_ids, sec.heading_claims))
+            units.append(
+                (
+                    f"H{s_idx:03d}",
+                    "heading",
+                    sec.heading,
+                    sec.heading_support_ids,
+                    sec.heading_claims,
+                )
+            )
             for p in sec.paragraphs:
                 units.append((f"P{p_idx:03d}", "paragraph", p.text, p.cited_support_ids, p.claims))
                 p_idx += 1
 
         for unit_id, unit_type, text, cited_ids, claims in units:
-            print(f"\n================================================================================")
+            print(
+                "\n================================================================================"
+            )
             print(f">>> UNIT: {unit_id} ({unit_type})")
             print(f"    Text: {text}")
             print(f"    Cited Support IDs: {cited_ids}")
-            print(f"================================================================================")
+            print(
+                "================================================================================"
+            )
             for c_idx, c in enumerate(claims, start=1):
-                c_supports = [ctx.support_by_id[sid] for sid in c.cited_support_ids if sid in ctx.support_by_id]
+                c_supports = [
+                    ctx.support_by_id[sid]
+                    for sid in c.cited_support_ids
+                    if sid in ctx.support_by_id
+                ]
                 ass = assess_claim_against_supports(c.text, c_supports, min_content_coverage=0.70)
 
                 claim_stems = extract_content_stems(c.text)
@@ -116,7 +131,9 @@ async def main():
                 concrete = find_unsupported_claims(c.text, supp_texts)
 
                 status_icon = "✅ PASS" if ass.supported else "❌ FAIL"
-                print(f"  Claim [{c_idx}]: {status_icon} | Coverage: {cov:.1%} (matched {len(matched)}/{len(claim_stems)})")
+                print(
+                    f"  Claim [{c_idx}]: {status_icon} | Coverage: {cov:.1%} (matched {len(matched)}/{len(claim_stems)})"
+                )
                 print(f"    Text: '{c.text}'")
                 print(f"    Supports cited: {c.cited_support_ids}")
                 print(f"    Missing stems: {sorted(missing)}")
@@ -124,8 +141,9 @@ async def main():
                 if concrete:
                     print(f"    Concrete violations: {concrete}")
                 for s in c_supports:
-                    print(f"      -> Support {s.support_id} [kind={s.evidence_kind}]: fact='{s.text}' | source='{s.source_text}'")
-
+                    print(
+                        f"      -> Support {s.support_id} [kind={s.evidence_kind}]: fact='{s.text}' | source='{s.source_text}'"
+                    )
 
 
 if __name__ == "__main__":

@@ -202,13 +202,18 @@ async def main():
     config = load_config()
     print("\n" + "=" * 80, flush=True)
     print("🚀 GENERATING DIGESTS FOR COMPARISON", flush=True)
-    print(f"Provider: {config.settings.ai_provider} | Model: {config.settings.ai_model}", flush=True)
+    print(
+        f"Provider: {config.settings.ai_provider} | Model: {config.settings.ai_model}", flush=True
+    )
     print("=" * 80 + "\n", flush=True)
 
     infra = await build_infrastructure(config.database)
     install_runtime(infra)
 
-    print("⏳ [1/2] Generating Digest with NEW Approach (Event-First + Scan-First Narrative)...", flush=True)
+    print(
+        "⏳ [1/2] Generating Digest with NEW Approach (Event-First + Scan-First Narrative)...",
+        flush=True,
+    )
     t0 = asyncio.get_event_loop().time()
     try:
         new_title, new_lead, new_body, new_meta = await generate_new_approach_digest(infra, config)
@@ -218,7 +223,10 @@ async def main():
         logger.exception("Failed to generate new digest: %s", e)
         return
 
-    print("⏳ [2/2] Generating Digest with OLD Approach (Custom branch raw message summary)...", flush=True)
+    print(
+        "⏳ [2/2] Generating Digest with OLD Approach (Custom branch raw message summary)...",
+        flush=True,
+    )
     t0 = asyncio.get_event_loop().time()
     try:
         old_text = await generate_old_custom_digest(infra, config)

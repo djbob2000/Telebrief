@@ -133,7 +133,9 @@ async def main():
     config = load_config()
     print("\n" + "=" * 80, flush=True)
     print("🚀 GENERATING ARTICLES FOR COMPARISON", flush=True)
-    print(f"Provider: {config.settings.ai_provider} | Model: {config.settings.ai_model}", flush=True)
+    print(
+        f"Provider: {config.settings.ai_provider} | Model: {config.settings.ai_model}", flush=True
+    )
     print("=" * 80 + "\n", flush=True)
 
     infra = await build_infrastructure(config.database)

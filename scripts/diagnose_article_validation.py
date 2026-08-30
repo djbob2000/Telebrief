@@ -4,28 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import sys
 from pathlib import Path
 
-import psycopg
-from psycopg.rows import dict_row
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.bootstrap import build_infrastructure
 from src.config_loader import load_config
-from src.publication.article_claim_support import assess_claim_against_supports
-from src.publication.article_context import build_article_editorial_context
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_validator import (
-    find_unsupported_claims,
     validate_article_draft,
 )
 from src.publication.event_editorial_adapter import EventEditorialAdapter
 from src.publication.repository import PublicationRepository
-from src.bootstrap import build_infrastructure
 from src.runtime import install_runtime
-
 
 
 async def main():
@@ -57,10 +49,10 @@ async def main():
         run_id = row[1]
         metadata = row[5] or {}
 
-        print(f"================================================================================")
+        print("================================================================================")
         print(f"🔍 INSPECTING REJECTED ARTICLE ATTEMPT (Attempt ID: {row[0]}, Run ID: {run_id})")
         print(f"Status: {row[3]} | Error Kind: {row[4]}")
-        print(f"================================================================================\n")
+        print("================================================================================\n")
 
         # Load run, selected inputs, and reconstruct context
         selected_inputs = await repo.load_sealed_inputs(conn, run_id)
@@ -70,8 +62,6 @@ async def main():
         if ctx is None:
             print("article_context is None in editorial_input.analysis")
             return
-
-
 
         draft_dict = metadata.get("raw_draft") or metadata.get("draft")
         if not draft_dict and "raw_response" in metadata:
@@ -87,7 +77,10 @@ async def main():
                 print(f"Could not parse raw_response: {e}")
 
         if not draft_dict:
-            print("Could not find draft dictionary in attempt metadata. Keys available:", list(metadata.keys()))
+            print(
+                "Could not find draft dictionary in attempt metadata. Keys available:",
+                list(metadata.keys()),
+            )
             if "validation_issues" in metadata:
                 print("\nSaved Validation Issues:")
                 for iss in metadata["validation_issues"]:
@@ -99,6 +92,7 @@ async def main():
         editorial_config = getattr(config.settings, "publication_editorial", None)
         if editorial_config is None:
             from src.config_loader import PublicationEditorialConfig
+
             editorial_config = PublicationEditorialConfig()
 
         val_result = validate_article_draft(draft, ctx, editorial_config)
@@ -123,7 +117,7 @@ async def main():
             for p_idx, para in enumerate(sec.paragraphs, start=1):
                 print(f"  P{p_idx}: {para.text}")
                 print(f"    Cited Support IDs: {para.cited_support_ids}")
-                print(f"    Claims:")
+                print("    Claims:")
                 for c in para.claims:
                     print(f"      - Text: '{c.text}' | Supports: {c.cited_support_ids}")
 
@@ -132,15 +126,21 @@ async def main():
         print("=" * 80)
 
         for idx, iss in enumerate(val_result.issues, start=1):
-            print(f"\n[{idx}] {iss.code} on Unit: {iss.unit_id} (Blocking: {iss.blocking}, Severity: {iss.severity})")
+            print(
+                f"\n[{idx}] {iss.code} on Unit: {iss.unit_id} (Blocking: {iss.blocking}, Severity: {iss.severity})"
+            )
             print(f"    Message: {iss.message}")
             if iss.support_ids:
                 print(f"    Cited Support IDs: {iss.support_ids}")
-                c_sups = [ctx.support_by_id[sid] for sid in iss.support_ids if sid in ctx.support_by_id]
+                c_sups = [
+                    ctx.support_by_id[sid] for sid in iss.support_ids if sid in ctx.support_by_id
+                ]
                 for supp in c_sups:
                     print(f"      Support [{supp.support_id}]: text='{supp.text}'")
                     print(f"                                   source='{supp.source_text}'")
-                    print(f"                                   kind='{supp.evidence_kind}', use='{supp.publication_use}'")
+                    print(
+                        f"                                   kind='{supp.evidence_kind}', use='{supp.publication_use}'"
+                    )
                 for sid in iss.support_ids:
                     if sid not in ctx.support_by_id:
                         print(f"      Support [{sid}]: UNKNOWN ID")
