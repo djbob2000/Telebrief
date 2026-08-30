@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v1"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v2"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v1"
 
 
@@ -52,8 +52,10 @@ def build_article_narrative_contract(
 - Transitions: Neutral connective phrases (e.g. "meanwhile", "at the same time", "against this background") are permitted only when they connect verified observations without asserting unsupported causal links.
 - Direct quotes: Use direct quotes sparingly and only when exact quoted text exists in authorized supports.
 - Evidence boundary: Prefer concrete supported details over abstract editorial generalizations or commentary.
+- Preserve source date granularity: If a support says only a bare day number like "31" or "31-го", do not expand it and do not infer a missing month or year (e.g. do not expand to "31 августа" or add a year) unless that month/year is explicitly present in the cited support. Prefer the source's own granularity over inferred precision.
 - Proportion & length: Do not pad a thin day to reach an arbitrary length. State supported facts concisely without fluff. On rich days, develop major storylines thoroughly across sections without repeating facts.{target_str}
 - Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented consequences, invented mechanisms, or speculative interpretations.
+
 
 4. Epistemic Fidelity:
 - Single-source, community, resident, eyewitness, and explicitly unverified reports are authorized publication material when supplied as PUBLISH support; lack of corroboration is not a reason to omit them.

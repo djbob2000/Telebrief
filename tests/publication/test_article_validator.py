@@ -1221,3 +1221,77 @@ def test_unsupported_destination_is_blocking_proper_name() -> None:
     result = validate_article_draft(draft, ctx, config)
     assert result.is_valid is False
     assert any(v.startswith("UNSUPPORTED_PROPER_NAME:P001") for v in result.violations)
+
+
+@pytest.mark.unit
+def test_date_granularity_expansion_without_support_is_blocked() -> None:
+    sup = ArticleSupport(
+        support_id="story:1:evidence:0:frag:101",
+        text="Обещали 26, потом 28, сегодня обещают 31.",
+        source_text="Обещали 26, потом 28, сегодня обещают 31.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(101,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Заголовок",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        recurring_topics=(),
+    )
+    config = PublicationEditorialConfig(
+        article_min_words=5,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+    # Expanding "31" to "31 августа" when month is absent is blocked
+    draft = StructuredArticleDraft(
+        title="Сроки подачи воды",
+        title_support_ids=(sup.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Сроки подачи воды",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        lead="Сроки подачи воды неоднократно переносились.",
+        lead_support_ids=(sup.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="Сроки подачи воды неоднократно переносились",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Новый срок",
+                heading_support_ids=(sup.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Срок перенесли на 31 августа.",
+                        cited_support_ids=(sup.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Срок перенесли на 31 августа",
+                                cited_support_ids=(sup.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=20,
+    )
+
+    result = validate_article_draft(draft, ctx, config)
+    assert result.is_valid is False
+    assert any(
+        "UNSUPPORTED_CONCRETE_CLAIM" in v or "UNSUPPORTED_CLAIM_ATOM" in v
+        for v in result.violations
+    )

@@ -25,6 +25,9 @@ def test_narrative_contracts_epistemic_fidelity():
     assert "community" in article_contract.lower()
     assert "not a reason to omit" in article_contract.lower()
     assert "do not upgrade" in article_contract.lower()
+    assert "preserve source date granularity" in article_contract.lower()
+    assert "bare day number" in article_contract.lower()
+    assert "do not infer a missing month or year" in article_contract.lower()
 
     digest_contract = build_digest_narrative_contract(output_language="Russian")
     assert "single-source" in digest_contract.lower()
