@@ -10,6 +10,7 @@ from src.config_loader import PublicationEditorialConfig
 from src.publication.article_claim_support import assess_claim_against_supports
 from src.publication.article_claims import ConcreteClaim, find_unsupported_claims
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
+from src.publication.article_length import ArticleLengthProfile
 from src.publication.article_models import ArticleClaimAtom, StructuredArticleDraft
 
 _INTERNAL_HANDLE_PATTERN = re.compile(
@@ -75,6 +76,8 @@ def validate_article_draft(
     draft: StructuredArticleDraft,
     context: ArticleEditorialContext,
     config: PublicationEditorialConfig | None = None,
+    *,
+    length_profile: ArticleLengthProfile | None = None,
 ) -> ArticleValidationResult:
     """Validate structured article draft against support bounds, factual claims, and length constraints."""
     if config is None:
@@ -102,39 +105,50 @@ def validate_article_draft(
         )
 
     # 2. Section count and word count
+    if length_profile is None:
+        min_words = config.article_min_words
+        max_words = config.article_max_words
+        min_sections = config.article_min_sections
+        max_sections = config.article_max_sections
+    else:
+        min_words = length_profile.hard_min_words
+        max_words = length_profile.hard_max_words
+        min_sections = 1
+        max_sections = config.article_max_sections
+
     section_count = len(draft.sections)
-    if section_count < config.article_min_sections:
+    if section_count < min_sections:
         issues.append(
             ArticleValidationIssue(
                 code="SECTION_COUNT_OUT_OF_BOUNDS",
                 unit_id="DRAFT",
-                message=f"Draft has {section_count} sections, minimum required is {config.article_min_sections}",
+                message=f"Draft has {section_count} sections, minimum required is {min_sections}",
             )
         )
-    elif section_count > config.article_max_sections:
+    elif section_count > max_sections:
         issues.append(
             ArticleValidationIssue(
                 code="SECTION_COUNT_OUT_OF_BOUNDS",
                 unit_id="DRAFT",
-                message=f"Draft has {section_count} sections, maximum allowed is {config.article_max_sections}",
+                message=f"Draft has {section_count} sections, maximum allowed is {max_sections}",
             )
         )
 
     word_count = draft.word_count
-    if word_count < config.article_min_words:
+    if word_count < min_words:
         issues.append(
             ArticleValidationIssue(
                 code="WORD_COUNT_OUT_OF_BOUNDS",
                 unit_id="DRAFT",
-                message=f"Draft has {word_count} words, minimum required is {config.article_min_words}",
+                message=f"Draft has {word_count} words, minimum required is {min_words}",
             )
         )
-    elif word_count > config.article_max_words:
+    elif word_count > max_words:
         issues.append(
             ArticleValidationIssue(
                 code="WORD_COUNT_OUT_OF_BOUNDS",
                 unit_id="DRAFT",
-                message=f"Draft has {word_count} words, maximum allowed is {config.article_max_words}",
+                message=f"Draft has {word_count} words, maximum allowed is {max_words}",
             )
         )
 

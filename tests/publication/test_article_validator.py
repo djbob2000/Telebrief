@@ -904,3 +904,73 @@ def test_thematic_heading_without_claim_atoms():
     result = validate_article_draft(draft, ctx, config)
     assert not result.is_valid
     assert any("MISSING_CLAIM_ATOMS:H001" in v for v in result.violations)
+
+
+@pytest.mark.unit
+def test_validate_article_draft_with_length_profile_accepts_soft_length() -> None:
+    from src.publication.article_length import ArticleLengthProfile
+
+    sup_id = "story:1:evidence:0:frag:101"
+    ctx = _make_sample_context()
+    config = PublicationEditorialConfig(article_min_words=800, article_max_words=1600)
+
+    # 350 words draft: fails against default config (min 800), but passes with thin length profile (hard min 180)
+    section = ArticleSection(
+        heading="Авария на подстанции",
+        heading_support_ids=(sup_id,),
+        heading_claims=(
+            ArticleClaimAtom(
+                text="Авария на подстанции",
+                cited_support_ids=(sup_id,),
+            ),
+        ),
+        paragraphs=(
+            ArticleParagraph(
+                text="Авария на подстанции: временно обесточена центральная часть Бердянска. Бригада РЭС ведет восстановительные работы.",
+                cited_support_ids=(sup_id,),
+                claims=(
+                    ArticleClaimAtom(
+                        text="Авария на подстанции: временно обесточена центральная часть Бердянска. Бригада РЭС ведет восстановительные работы",
+                        cited_support_ids=(sup_id,),
+                    ),
+                ),
+            ),
+        ),
+    )
+    draft = StructuredArticleDraft(
+        title="Авария на подстанции в Бердянске",
+        title_support_ids=(sup_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Авария на подстанции в Бердянске",
+                cited_support_ids=(sup_id,),
+            ),
+        ),
+        lead="Бригада РЭС ведет восстановительные работы после аварии на подстанции.",
+        lead_support_ids=(sup_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="Бригада РЭС ведет восстановительные работы после аварии на подстанции",
+                cited_support_ids=(sup_id,),
+            ),
+        ),
+        sections=(section,),
+        word_count=350,
+    )
+
+    res_default = validate_article_draft(draft, ctx, config)
+    assert not res_default.is_valid
+    assert any("WORD_COUNT_OUT_OF_BOUNDS" in v for v in res_default.violations)
+
+    profile = ArticleLengthProfile(
+        richness="thin",
+        target_min_words=300,
+        target_max_words=700,
+        target_min_sections=2,
+        target_max_sections=3,
+        hard_min_words=180,
+        hard_max_words=1600,
+    )
+    res_profile = validate_article_draft(draft, ctx, config, length_profile=profile)
+    assert res_profile.is_valid
+    assert len(res_profile.issues) == 0

@@ -103,6 +103,10 @@ class ArticleEditorialContext:
     resident_observations: tuple[PublicationEvidence, ...] = ()
     publication_window: PublicationWindow | None = None
 
+    @property
+    def supports(self) -> tuple[ArticleSupport, ...]:
+        return self.support_index
+
     def to_prompt_context(self) -> str:
         """Render deterministic, structured support context for the single article writing LLM call."""
         blocks: list[str] = []
