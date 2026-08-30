@@ -1555,3 +1555,219 @@ def test_unsupported_location_in_lead_remains_blocking() -> None:
     res = validate_article_draft(draft, ctx, config)
     assert res.is_valid is False
     assert any(i.code == "UNSUPPORTED_PROPER_NAME" and "Азмол" in i.message for i in res.issues)
+
+
+@pytest.mark.unit
+def test_corrected_direct_quote_fails_with_unsupported_direct_quote() -> None:
+    sup = ArticleSupport(
+        support_id="story:1:frag:1",
+        text="житель отметил, что все починят к обеду",
+        source_text='житель отметил: "все починят к обеду"',
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Ремонт",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        recurring_topics=("utilities",),
+    )
+    config = PublicationEditorialConfig(
+        article_min_words=5,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+    draft = StructuredArticleDraft(
+        title="Восстановительные работы",
+        title_support_ids=(sup.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Восстановительные работы",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        lead='Житель отметил: "все починят к вечеру".',
+        lead_support_ids=(sup.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text='Житель отметил: "все починят к вечеру"',
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Работы",
+                heading_support_ids=(sup.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Ведутся работы на сети.",
+                        cited_support_ids=(sup.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Ведутся работы на сети",
+                                cited_support_ids=(sup.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=20,
+    )
+    res = validate_article_draft(draft, ctx, config)
+    assert res.is_valid is False
+    assert any(i.code == "UNSUPPORTED_DIRECT_QUOTE" and i.blocking for i in res.issues)
+
+
+@pytest.mark.unit
+def test_unsupported_critical_term_emits_unsupported_critical_term() -> None:
+    sup = ArticleSupport(
+        support_id="story:1:frag:1",
+        text="Власти молчат, света нет 3 недели и более",
+        source_text="Власти молчат, света нет 3 недели и более",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Света нет",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        recurring_topics=("utilities",),
+    )
+    config = PublicationEditorialConfig(
+        article_min_words=5,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+    draft = StructuredArticleDraft(
+        title="Нет информации о сроках восстановления света и воды",
+        title_support_ids=(sup.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Нет информации о сроках восстановления света и воды",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        lead="Света нет 3 недели и более.",
+        lead_support_ids=(sup.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="Света нет 3 недели и более",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Отключения",
+                heading_support_ids=(sup.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Власти молчат о сроках.",
+                        cited_support_ids=(sup.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Власти молчат о сроках",
+                                cited_support_ids=(sup.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=25,
+    )
+    res = validate_article_draft(draft, ctx, config)
+    assert res.is_valid is False
+    assert any(i.code == "UNSUPPORTED_CRITICAL_TERM" and i.blocking for i in res.issues)
+
+
+@pytest.mark.unit
+def test_unsupported_location_in_reader_prose_blocks_even_if_omitted_from_atom() -> None:
+    sup = ArticleSupport(
+        support_id="story:1:frag:1",
+        text="оборудование Юпитера запитали от генератора, сигнал пошел на роутеры всего дома",
+        source_text="оборудование Юпитера запитали от генератора, сигнал пошел на роутеры всего дома",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Юпитер",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        recurring_topics=("utilities",),
+        edition_name="Бердянск",
+        edition_anchor_terms=("Бердянск",),
+    )
+    config = PublicationEditorialConfig(
+        article_min_words=5,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+    draft = StructuredArticleDraft(
+        title="Оборудование Юпитера запитали от генератора",
+        title_support_ids=(sup.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Оборудование Юпитера запитали от генератора",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        # Reader-facing prose adds "на Азмоле", but the claim atom omits it:
+        lead="В одном из домов на Азмоле оборудование Юпитера запитали от генератора.",
+        lead_support_ids=(sup.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="Оборудование Юпитера запитали от генератора",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Связь",
+                heading_support_ids=(sup.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Оборудование Юпитера запитали от генератора.",
+                        cited_support_ids=(sup.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Оборудование Юпитера запитали от генератора",
+                                cited_support_ids=(sup.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=30,
+    )
+    res = validate_article_draft(draft, ctx, config)
+    assert res.is_valid is False
+    assert any(
+        i.code == "UNSUPPORTED_PROPER_NAME"
+        and i.unit_id == "LEAD"
+        and "азмол" in i.message.lower()
+        and i.blocking
+        for i in res.issues
+    )

@@ -13,6 +13,7 @@ from src.publication.article_claims import ConcreteClaim, find_unsupported_claim
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 from src.publication.article_length import ArticleLengthProfile
 from src.publication.article_models import ArticleClaimAtom, StructuredArticleDraft
+from src.publication.article_semantic_support import assess_semantic_support
 
 _INTERNAL_HANDLE_PATTERN = re.compile(
     r"\[(?:story:\d+:evidence:\d+:frag:\d+|story:\d+|evidence:\d+:frag:\d+|op:[^\]]+|SUPPORT\s+[^\]]+)\]",
@@ -411,12 +412,34 @@ def validate_article_draft(
                 )
 
                 if not assessment.supported:
-                    if assessment.blocking_proper_names:
+                    if any(
+                        c.kind == "direct_quote" for c in assessment.unsupported_concrete_claims
+                    ):
+                        issues.append(
+                            ArticleValidationIssue(
+                                code="UNSUPPORTED_DIRECT_QUOTE",
+                                unit_id=unit_id,
+                                message=f"Unit {unit_id} claim atom '{claim.text}' contains direct quote not matching exact primary source text",
+                                support_ids=claim.cited_support_ids,
+                                unsupported_claims=assessment.unsupported_concrete_claims,
+                            )
+                        )
+                    elif assessment.blocking_proper_names:
                         issues.append(
                             ArticleValidationIssue(
                                 code="UNSUPPORTED_PROPER_NAME",
                                 unit_id=unit_id,
                                 message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported proper names {assessment.blocking_proper_names}",
+                                support_ids=claim.cited_support_ids,
+                                unsupported_claims=assessment.unsupported_concrete_claims,
+                            )
+                        )
+                    elif assessment.blocking_critical_terms:
+                        issues.append(
+                            ArticleValidationIssue(
+                                code="UNSUPPORTED_CRITICAL_TERM",
+                                unit_id=unit_id,
+                                message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported critical concepts {assessment.blocking_critical_terms}",
                                 support_ids=claim.cited_support_ids,
                                 unsupported_claims=assessment.unsupported_concrete_claims,
                             )
@@ -448,7 +471,14 @@ def validate_article_draft(
 
         # Defense in depth: Check unsupported concrete claims against cited support texts
         support_texts = [t for s in valid_supports for t in (s.text, s.source_text) if t]
-        unsupported = find_unsupported_claims(unit_text, support_texts)
+        primary_source_texts = [s.source_text for s in valid_supports if s.source_text]
+        unit_context_terms = context.edition_anchor_terms if unit_type in ("title", "lead") else ()
+
+        unsupported = find_unsupported_claims(
+            unit_text,
+            support_texts,
+            direct_quote_source_texts=primary_source_texts,
+        )
         if unsupported:
             if unit_type == "paragraph" and not any(
                 s.publication_use == "PUBLISH" for s in valid_supports
@@ -463,7 +493,9 @@ def validate_article_draft(
                 )
 
             for claim_item in unsupported:
-                if claim_item.kind == "causal_relation":
+                if claim_item.kind == "direct_quote":
+                    code = "UNSUPPORTED_DIRECT_QUOTE"
+                elif claim_item.kind == "causal_relation":
                     code = "UNSUPPORTED_CAUSAL_RELATION"
                 elif claim_item.kind == "mechanism_relation":
                     code = "UNSUPPORTED_MECHANISM"
@@ -477,6 +509,38 @@ def validate_article_draft(
                         message=f"Unit {unit_id} contains unsupported {claim_item.kind} claim '{claim_item.raw}'",
                         support_ids=cited_ids,
                         unsupported_claims=(claim_item,),
+                    )
+                )
+
+        # Defense in depth: Check reader-facing unit text for unsupported proper names or critical concepts
+        if unit_type != "heading" or claim_atoms:
+            unit_semantic = assess_semantic_support(
+                unit_text,
+                support_texts,
+                allowed_context_terms=unit_context_terms,
+            )
+            if unit_semantic.blocking_proper_names:
+                issues.append(
+                    ArticleValidationIssue(
+                        code="UNSUPPORTED_PROPER_NAME",
+                        unit_id=unit_id,
+                        message=(
+                            f"Unit {unit_id} reader-facing text contains unsupported proper names "
+                            f"{unit_semantic.blocking_proper_names}"
+                        ),
+                        support_ids=cited_ids,
+                    )
+                )
+            if unit_semantic.blocking_critical_terms:
+                issues.append(
+                    ArticleValidationIssue(
+                        code="UNSUPPORTED_CRITICAL_TERM",
+                        unit_id=unit_id,
+                        message=(
+                            f"Unit {unit_id} reader-facing text contains unsupported critical concepts "
+                            f"{unit_semantic.blocking_critical_terms}"
+                        ),
+                        support_ids=cited_ids,
                     )
                 )
 
