@@ -10,7 +10,7 @@ from typing import Any
 
 import psycopg
 
-from src.domain.event_payload import EventPayload
+from src.domain.event_payload import EventPayload, ensure_keep_publishability
 from src.domain.event_pipeline import SourceFragment
 from src.domain.stories import NewStoryRevision, StoryRevision
 from src.processing.evidence_sampling import (
@@ -30,6 +30,8 @@ _EVENT_ANALYSIS_SYSTEM_PROMPT = """You are an expert investigative regional news
 Analyze the following chronological source fragments from multiple channels regarding a single local event.
 Extract objective facts, distinguish official statements from community observations, highlight contradictions or uncertainties, and summarize the event.
 
+A Story reaches this rich-analysis stage only after Event-First retention has kept it. Rich analysis may express uncertainty through evidence kinds, community_observations, conflicts_or_uncertainties, and confidence_score, but must not reverse KEEP merely because the report is single-source, community-sourced, conversational, or unverified.
+
 Tags are descriptive metadata, not digest sections. Use whatever concise terms best describe the event (3-8 short topic tags in Russian; open vocabulary; do not choose from a predefined taxonomy). Never force an event into a predefined city category.
 
 Publication use is semantic, not topic-based.
@@ -42,8 +44,9 @@ Respond ONLY with a valid JSON object with the exact keys:
   "topic": "Concise topic label (e.g. Авария на водоводе в микрорайоне АКЗ)",
   "tags": ["3-8 short topic tags in Russian; open vocabulary; do not choose from a predefined taxonomy"],
   "urgency": "critical | high | normal | low",
-  "publishability": "news | brief | internal_only | noise",
+  "publishability": "news | brief",
   "headline": "Professional informative headline in Russian",
+
   "digest_summary": "1-3 concise sentences summarizing what happened, who is affected, and current status",
   "key_facts": ["List of confirmed facts"],
   "evidence_items": [
@@ -275,7 +278,9 @@ class EventAnalysisService:
             parsed = json.loads(cleaned_json)
             parsed["analysis_version"] = ANALYSIS_VERSION
             parsed["representative_fragment_ids"] = [s.fragment_id for s in sampled]
-            payload = EventAnalysisPayload.from_dict(parsed)
+            payload = ensure_keep_publishability(
+                EventAnalysisPayload.from_dict(parsed), default="brief"
+            )
 
             await conn.execute(
                 """

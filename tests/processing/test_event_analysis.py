@@ -197,3 +197,93 @@ async def test_event_analysis_service_workflow(conn, edition, revision):
     assert row[0] == "succeeded"
     assert row[1] == story_id
     assert row[2] == 1
+
+
+@pytest.mark.postgres
+async def test_event_analysis_preserves_kept_community_story_publishability(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    story_id = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (5002, 'hash_comm', '[1, 0, 0, 0]'::vector, 'test-model', 4)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (6002, %s, 0, 'На Горе света нет', 'hash_comm', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (7002, 6002, 5002)
+        """
+    )
+
+    assignment_id = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=story_id,
+        fragment_id=6002,
+        fragment_embedding_id=7002,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=story_id,
+        centroid=[1.0, 0.0, 0.0, 0.0],
+        model="test-model",
+        dimensions=4,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=assignment_id,
+        analysis_dirty=True,
+    )
+
+    mock_ai = AsyncMock()
+    mock_ai.primary_provider_name = "mock_provider"
+    mock_ai.model_name = "mock-model"
+    llm_output = {
+        "topic": "Свет на Горе",
+        "urgency": "normal",
+        "publishability": "internal_only",
+        "headline": "Жители Горы сообщают об отсутствии света",
+        "digest_summary": "По сообщению жителя, на Горе нет света.",
+        "evidence_items": [
+            {
+                "text": "На Горе света нет",
+                "kind": "community_report",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [6002],
+            }
+        ],
+        "community_observations": ["На Горе света нет"],
+        "confidence_score": 0.62,
+    }
+    mock_ai.generate_text.return_value = json.dumps(llm_output)
+
+    service = EventAnalysisService(ai_cascade=mock_ai)
+
+    rev = await service.analyze_story(conn, story_id)
+    assert rev is not None
+    assert rev.event_payload["publishability"] == "brief"
+    assert rev.event_payload["evidence_items"][0]["kind"] == "community_report"
+    assert rev.event_payload["evidence_items"][0]["publication_use"] == "PUBLISH"
+    assert rev.event_payload["confidence_score"] == 0.62
