@@ -28,6 +28,40 @@ from src.publication.repository import PublicationRepository
 logger = logging.getLogger(__name__)
 
 
+def _evidence_story_element(
+    *,
+    text: str,
+    kind: str,
+    source_refs: list[str],
+    attribution: str,
+) -> tuple[str, StoryElement]:
+    status = "established" if kind == "established_fact" else "attributed"
+    element = StoryElement(
+        text=text,
+        source_refs=source_refs,
+        status=status,
+        attribution=attribution if status == "attributed" else "",
+    )
+
+    if kind == "community_report":
+        return "community_observations", element
+    if kind == "service_access":
+        return "useful_details", element
+    return "hard_facts", element
+
+
+def _attribution_for_refs(source_refs: list[str], records: dict[str, SourceRecord]) -> str:
+    names: list[str] = []
+    for ref in source_refs:
+        record = records.get(ref)
+        if record is None:
+            continue
+        name = record.message.channel_name or record.message.sender or record.source_type
+        if name and name not in names:
+            names.append(name)
+    return ", ".join(names)
+
+
 class EventEditorialAdapter:
     """Adapts event-first publication inputs into frozen editorial bundles."""
 
@@ -244,21 +278,32 @@ class EventEditorialAdapter:
 
             fallback_refs = card_source_refs or [f"story:{inp.story_id}"]
 
+            hard_facts: list[StoryElement] = []
+            community_evidence: list[StoryElement] = []
+            useful_details: list[StoryElement] = []
+
             if payload and payload.evidence_items:
-                hard_facts = [
-                    StoryElement(
+                for evi in payload.evidence_items:
+                    if evi.publication_use == "EXCLUDE":
+                        continue
+                    source_refs = [
+                        frag_id_to_ref[fid]
+                        for fid in evi.source_fragment_ids
+                        if fid in frag_id_to_ref
+                    ] or fallback_refs
+                    attribution = _attribution_for_refs(source_refs, records)
+                    bucket, element = _evidence_story_element(
                         text=evi.text,
-                        source_refs=[
-                            frag_id_to_ref[fid]
-                            for fid in evi.source_fragment_ids
-                            if fid in frag_id_to_ref
-                        ]
-                        or fallback_refs,
-                        status="established",
+                        kind=evi.kind,
+                        source_refs=source_refs,
+                        attribution=attribution,
                     )
-                    for evi in payload.evidence_items
-                    if evi.publication_use != "EXCLUDE"
-                ]
+                    if bucket == "community_observations":
+                        community_evidence.append(element)
+                    elif bucket == "useful_details":
+                        useful_details.append(element)
+                    else:
+                        hard_facts.append(element)
             else:
                 hard_facts = [
                     StoryElement(
@@ -313,14 +358,14 @@ class EventEditorialAdapter:
                         )
                         all_observations_with_time.append((obs, obs_ts, obs_refs))
 
-            comm_obs = [
+            legacy_community_observations = [
                 StoryElement(
                     text=obs,
                     source_refs=fallback_refs,
                     status="attributed",
                 )
                 for obs in (payload.community_observations if payload else [])
-            ] + op_obs_elements
+            ]
 
             importance = "high" if payload and payload.urgency in ("critical", "high") else "medium"
             # Check if this story is a pure operational update
@@ -371,7 +416,10 @@ class EventEditorialAdapter:
                 category=payload.category if payload else "",
                 representative_source_refs=card_source_refs,
                 hard_facts=hard_facts,
-                community_observations=comm_obs,
+                community_observations=community_evidence
+                + legacy_community_observations
+                + op_obs_elements,
+                useful_details=useful_details,
             )
             story_cards.append(card)
 

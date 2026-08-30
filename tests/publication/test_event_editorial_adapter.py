@@ -608,3 +608,227 @@ async def test_event_editorial_adapter_missing_or_invalid_lookback_raises(conn, 
         ValueError, match="frozen eligibility policy missing numeric lookback_hours"
     ):
         await adapter.adapt_inputs_on(conn, run.id, inputs=[])
+
+
+@pytest.mark.postgres
+async def test_event_editorial_adapter_epistemic_evidence_partitioning(conn, pool, edition):
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_repo = PublicationPolicyRepository()
+
+    elig = await policy_repo.get_or_create_eligibility_policy(
+        conn, edition_id=edition.id, config_hash="h-e-ep", prompt_version="v1"
+    )
+    sel = await policy_repo.get_or_create_selection_policy(
+        conn, edition_id=edition.id, config_hash="h-s-ep", prompt_version="v1"
+    )
+    wri = await policy_repo.get_or_create_writer_policy(
+        conn, edition_id=edition.id, config_hash="h-w-ep", prompt_version="v1"
+    )
+
+    cur = await conn.execute(
+        """
+        INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+        VALUES (%s, 'active', 'event_first', %s)
+        RETURNING id
+        """,
+        (edition.id, _NOW),
+    )
+    story_id = (await cur.fetchone())[0]
+
+    # Official source
+    cur = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name, role)
+        VALUES ('telegram', 'channel', '-10042', 'https://t.me/official', 'Официальный канал', 'official')
+        RETURNING id
+        """
+    )
+    src_off_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_off_id, edition.id),
+    )
+    cur = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'message', 'msg-off', %s)
+        RETURNING id
+        """,
+        (src_off_id, _NOW),
+    )
+    item_off_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'h-off-rev', 'Официальное сообщение')
+        RETURNING id
+        """,
+        (item_off_id,),
+    )
+    sir_off_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
+        VALUES (%s, 0, 'Официальный фрагмент', 'h-f-off', 'v1', TRUE, %s)
+        RETURNING id
+        """,
+        (sir_off_id, _NOW),
+    )
+    official_frag_id = (await cur.fetchone())[0]
+
+    # Community source
+    cur = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name, role)
+        VALUES ('telegram', 'channel', '-10099', 'https://t.me/comm', 'Городской чат', 'community')
+        RETURNING id
+        """
+    )
+    src_comm_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_comm_id, edition.id),
+    )
+    cur = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'message', 'msg-comm', %s)
+        RETURNING id
+        """,
+        (src_comm_id, _NOW),
+    )
+    item_comm_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'h-comm-rev', 'Сообщение жителей')
+        RETURNING id
+        """,
+        (item_comm_id,),
+    )
+    sir_comm_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
+        VALUES (%s, 0, 'Фрагмент жителей', 'h-f-comm', 'v1', TRUE, %s)
+        RETURNING id
+        """,
+        (sir_comm_id, _NOW),
+    )
+    community_frag_id = (await cur.fetchone())[0]
+
+    event_payload = {
+        "topic": "Энергетика и сервисы",
+        "headline": "Ситуация с электричеством",
+        "digest_summary": "Сводка событий.",
+        "evidence_items": [
+            {
+                "text": "На подстанции зафиксировано технологическое повреждение",
+                "kind": "established_fact",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [official_frag_id],
+            },
+            {
+                "text": "Водоканал сообщил о ремонтных работах",
+                "kind": "official_statement",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [official_frag_id],
+            },
+            {
+                "text": "На Горе света нет",
+                "kind": "community_report",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [community_frag_id],
+            },
+            {
+                "text": "Банкомат на Морозова выдает наличные",
+                "kind": "service_access",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [community_frag_id],
+            },
+        ],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-ep-rev', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            story_id,
+            event_payload["digest_summary"],
+            event_payload["headline"],
+            event_payload["digest_summary"],
+            json.dumps(event_payload),
+            _NOW,
+        ),
+    )
+    rev_id = (await cur.fetchone())[0]
+
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        request_key="test-epistemic-partitioning",
+        snapshot_at=_NOW,
+        policy_ids=(elig.id, sel.id, wri.id),
+    )
+    cand = await repo.insert_candidate(
+        conn, run.id, story_id=story_id, story_revision_id=rev_id, deterministic_rank=1
+    )
+    dec = await repo.insert_selection_decision(
+        conn,
+        run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=run.id,
+            candidate_id=cand.id,
+            decision="INCLUDE",
+            presentation_intent="lead",
+            confidence=0.95,
+            reason="OK",
+            rank=1,
+            metadata={},
+            created_at=_NOW,
+        ),
+    )
+    pub_input = await repo.freeze_selected_input(
+        conn,
+        run.id,
+        story_id=story_id,
+        story_revision_id=rev_id,
+        selection_decision_id=dec.id,
+        presentation_intent="lead",
+        rank=1,
+        fragment_ids=[official_frag_id, community_frag_id],
+    )
+
+    adapter = EventEditorialAdapter(uow=uow, repo=repo)
+    editorial = await adapter.adapt_inputs_on(conn, run.id, inputs=[pub_input])
+
+    assert len(editorial.analysis.cards) == 1
+    card = editorial.analysis.cards[0]
+
+    assert [e.text for e in card.hard_facts] == [
+        "На подстанции зафиксировано технологическое повреждение",
+        "Водоканал сообщил о ремонтных работах",
+    ]
+    assert card.hard_facts[0].status == "established"
+    assert card.hard_facts[1].status == "attributed"
+
+    assert any(e.text == "На Горе света нет" for e in card.community_observations)
+    community = next(e for e in card.community_observations if e.text == "На Горе света нет")
+    assert community.status == "attributed"
+
+    assert any(e.text == "Банкомат на Морозова выдает наличные" for e in card.useful_details)
+    service = next(
+        e for e in card.useful_details if e.text == "Банкомат на Морозова выдает наличные"
+    )
+    assert service.status == "attributed"
+
+    # Assert the community item does not appear in hard_facts with status="established"
+    assert not any(e.text == "На Горе света нет" for e in card.hard_facts)
