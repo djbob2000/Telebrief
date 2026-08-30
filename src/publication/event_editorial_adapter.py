@@ -407,6 +407,19 @@ class EventEditorialAdapter:
         # Build ArticleEditorialContext for article runs
         article_ctx = None
         if run is not None and run.publication_type == "article":
+            eligibility = await self.repo.get_eligibility_policy_by_id(
+                conn, run.eligibility_policy_id
+            )
+            if eligibility is None:
+                raise ValueError(f"eligibility policy {run.eligibility_policy_id} not found")
+
+            lookback_raw = eligibility.config.get("lookback_hours")
+            if isinstance(lookback_raw, bool) or not isinstance(lookback_raw, (int, float)):
+                raise ValueError("frozen eligibility policy missing numeric lookback_hours")
+            lookback_hours = int(lookback_raw)
+            if lookback_hours <= 0:
+                raise ValueError("frozen lookback_hours must be positive")
+
             from src.domain.operational_state import ResolvedObservation, _parse_iso_ts
             from src.publication.article_context import build_article_editorial_context
 
@@ -428,6 +441,8 @@ class EventEditorialAdapter:
                 evidence_items=list(all_evidence.values()),
                 operational_observations=resolved_obs_list,
                 source_records=records,
+                snapshot_at=run.snapshot_at,
+                lookback_hours=lookback_hours,
             )
 
         analysis = EditorialAnalysis(

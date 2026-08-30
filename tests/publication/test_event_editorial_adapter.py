@@ -202,8 +202,13 @@ async def test_event_editorial_adapter_exact_observation_provenance(conn, pool, 
     policy_repo = PublicationPolicyRepository()
 
     elig = await policy_repo.get_or_create_eligibility_policy(
-        conn, edition_id=edition.id, config_hash="h-e2", prompt_version="v1"
+        conn,
+        edition_id=edition.id,
+        config_hash="h-e2",
+        prompt_version="v1",
+        config={"lookback_hours": 24},
     )
+
     sel = await policy_repo.get_or_create_selection_policy(
         conn, edition_id=edition.id, config_hash="h-s2", prompt_version="v1"
     )
@@ -378,10 +383,14 @@ async def test_event_editorial_adapter_preserves_evidence_source_text(conn, pool
     uow = DatabaseUnitOfWork(pool)
     repo = PublicationRepository()
     policy_repo = PublicationPolicyRepository()
-
     elig = await policy_repo.get_or_create_eligibility_policy(
-        conn, edition_id=edition.id, config_hash="h-e3", prompt_version="v1"
+        conn,
+        edition_id=edition.id,
+        config_hash="h-e3",
+        prompt_version="v1",
+        config={"lookback_hours": 24},
     )
+
     sel = await policy_repo.get_or_create_selection_policy(
         conn, edition_id=edition.id, config_hash="h-s3", prompt_version="v1"
     )
@@ -524,3 +533,78 @@ async def test_event_editorial_adapter_preserves_evidence_source_text(conn, pool
     assert evidence.text == "Центральная часть города временно обесточена"
     assert evidence.source_text == raw_fragment_text
     assert evidence.fragment_id == frag_id
+
+
+@pytest.mark.postgres
+async def test_event_editorial_adapter_frozen_lookback_binding(conn, pool, edition):
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_repo = PublicationPolicyRepository()
+
+    elig = await policy_repo.get_or_create_eligibility_policy(
+        conn,
+        edition_id=edition.id,
+        config_hash="h-e-24",
+        prompt_version="v1",
+        config={"lookback_hours": 24},
+    )
+    sel = await policy_repo.get_or_create_selection_policy(
+        conn, edition_id=edition.id, config_hash="h-s-24", prompt_version="v1"
+    )
+    wri = await policy_repo.get_or_create_writer_policy(
+        conn, edition_id=edition.id, config_hash="h-w-24", prompt_version="v1"
+    )
+
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="article",
+        request_key="test-frozen-lookback",
+        snapshot_at=_NOW,
+        policy_ids=(elig.id, sel.id, wri.id),
+    )
+
+    adapter = EventEditorialAdapter(uow=uow, repo=repo)
+    editorial = await adapter.adapt_inputs_on(conn, run.id, inputs=[])
+
+    ctx = editorial.analysis.article_context
+    assert ctx is not None
+    assert ctx.publication_window is not None
+    assert ctx.publication_window.snapshot_at == _NOW
+    assert ctx.publication_window.lookback_start == _NOW - dt.timedelta(hours=24)
+
+
+@pytest.mark.postgres
+async def test_event_editorial_adapter_missing_or_invalid_lookback_raises(conn, pool, edition):
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_repo = PublicationPolicyRepository()
+
+    elig_missing = await policy_repo.get_or_create_eligibility_policy(
+        conn,
+        edition_id=edition.id,
+        config_hash="h-e-missing",
+        prompt_version="v1",
+        config={},
+    )
+    sel = await policy_repo.get_or_create_selection_policy(
+        conn, edition_id=edition.id, config_hash="h-s-x", prompt_version="v1"
+    )
+    wri = await policy_repo.get_or_create_writer_policy(
+        conn, edition_id=edition.id, config_hash="h-w-x", prompt_version="v1"
+    )
+
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="article",
+        request_key="test-missing-lookback",
+        snapshot_at=_NOW,
+        policy_ids=(elig_missing.id, sel.id, wri.id),
+    )
+
+    adapter = EventEditorialAdapter(uow=uow, repo=repo)
+    with pytest.raises(
+        ValueError, match="frozen eligibility policy missing numeric lookback_hours"
+    ):
+        await adapter.adapt_inputs_on(conn, run.id, inputs=[])

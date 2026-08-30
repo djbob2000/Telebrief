@@ -22,8 +22,13 @@ _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
 async def _seed_policies(conn: psycopg.AsyncConnection, edition_id: int) -> tuple[int, int, int]:
     policy_repo = PublicationPolicyRepository()
     elig = await policy_repo.get_or_create_eligibility_policy(
-        conn, edition_id=edition_id, config_hash="elig-hash-1", prompt_version="elig-v1"
+        conn,
+        edition_id=edition_id,
+        config_hash="elig-hash-1",
+        prompt_version="elig-v1",
+        config={"lookback_hours": 24},
     )
+
     sel = await policy_repo.get_or_create_selection_policy(
         conn, edition_id=edition_id, config_hash="sel-hash-1", prompt_version="sel-v1"
     )

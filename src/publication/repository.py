@@ -54,6 +54,22 @@ class PublicationPolicyRepository:
             from_row=EligibilityPolicyVersion.from_row,
         )
 
+    async def get_eligibility_policy_by_id(
+        self,
+        conn: psycopg.AsyncConnection,
+        policy_id: int,
+    ) -> EligibilityPolicyVersion | None:
+        cursor = await conn.execute(
+            """
+            SELECT id, edition_id, version, config_hash, prompt_version, config, created_at
+            FROM eligibility_policy_versions
+            WHERE id = %s
+            """,
+            (policy_id,),
+        )
+        row = await cursor.fetchone()
+        return EligibilityPolicyVersion.from_row(row) if row is not None else None
+
     async def get_or_create_selection_policy(
         self,
         conn: psycopg.AsyncConnection,
@@ -233,6 +249,22 @@ class PublicationRepository:
         )
         row = await cursor.fetchone()
         return PublicationRun.from_row(row) if row is not None else None
+
+    async def get_eligibility_policy_by_id(
+        self,
+        conn: psycopg.AsyncConnection,
+        policy_id: int,
+    ) -> EligibilityPolicyVersion | None:
+        cursor = await conn.execute(
+            """
+            SELECT id, edition_id, version, config_hash, prompt_version, config, created_at
+            FROM eligibility_policy_versions
+            WHERE id = %s
+            """,
+            (policy_id,),
+        )
+        row = await cursor.fetchone()
+        return EligibilityPolicyVersion.from_row(row) if row is not None else None
 
     async def lock_run(self, conn: psycopg.AsyncConnection, run_id: int) -> PublicationRun | None:
         cursor = await conn.execute(

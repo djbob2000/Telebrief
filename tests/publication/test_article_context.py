@@ -258,8 +258,13 @@ async def test_event_adapter_builds_article_editorial_context(conn, pool, editio
     policy_repo = PublicationPolicyRepository()
 
     elig = await policy_repo.get_or_create_eligibility_policy(
-        conn, edition_id=edition.id, config_hash="h-e-ctx", prompt_version="v1"
+        conn,
+        edition_id=edition.id,
+        config_hash="h-e-ctx",
+        prompt_version="v1",
+        config={"lookback_hours": 24},
     )
+
     sel = await policy_repo.get_or_create_selection_policy(
         conn, edition_id=edition.id, config_hash="h-s-ctx", prompt_version="v1"
     )
