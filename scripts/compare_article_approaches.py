@@ -1,4 +1,4 @@
-"""Generate and compare long-form editorial articles: New Reader-First Approach vs Old Custom Approach."""
+"""Generate and compare long-form editorial articles: New Event-First Approach vs Old Custom Approach."""
 
 from __future__ import annotations
 
@@ -26,11 +26,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("compare_articles")
 
 
-async def generate_new_approach_article(config: Config) -> tuple[str, str, str, dict]:
+async def generate_new_approach_article(infra, config: Config) -> tuple[str, str, str, dict]:
     """Generate long-form article using current Event-First Reader-First approach."""
-    infra = await build_infrastructure(config.database)
-    install_runtime(infra)
-
     from src.ai_providers import ProviderCascade
 
     ProviderCascade._global_slot_cooldowns.clear()
@@ -78,11 +75,9 @@ async def generate_new_approach_article(config: Config) -> tuple[str, str, str, 
     return pub.title or "", pub.lead or "", pub.body or "", meta
 
 
-async def generate_old_custom_article(config: Config) -> tuple[str, str, str]:
+async def generate_old_custom_article(infra, config: Config) -> tuple[str, str, str]:
     """Generate article using old/custom approach (EditorialAnalyzer + StoryCards + EditorialWriter)."""
-    infra = await build_infrastructure(config.database)
     uow = infra.uow
-
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=48)
 
     async with uow.transaction() as conn:
@@ -136,20 +131,24 @@ async def generate_old_custom_article(config: Config) -> tuple[str, str, str]:
 
 async def main():
     config = load_config()
-    print("\n" + "=" * 80)
-    print("🚀 GENERATING ARTICLES FOR COMPARISON")
-    print(f"Provider: {config.settings.ai_provider} | Model: {config.settings.ai_model}")
-    print("=" * 80 + "\n")
+    print("\n" + "=" * 80, flush=True)
+    print("🚀 GENERATING ARTICLES FOR COMPARISON", flush=True)
+    print(f"Provider: {config.settings.ai_provider} | Model: {config.settings.ai_model}", flush=True)
+    print("=" * 80 + "\n", flush=True)
+
+    infra = await build_infrastructure(config.database)
+    install_runtime(infra)
 
     print(
-        "⏳ [1/2] Generating Article with NEW Approach (Event-First Evidence-Bound + Adaptive Length)..."
+        "⏳ [1/2] Generating Article with NEW Approach (Event-First Evidence-Bound + Adaptive Length)...",
+        flush=True,
     )
     t0 = asyncio.get_event_loop().time()
     new_title, new_lead, new_body = "", "", ""
     try:
-        new_title, new_lead, new_body, new_meta = await generate_new_approach_article(config)
+        new_title, new_lead, new_body, new_meta = await generate_new_approach_article(infra, config)
         new_time = asyncio.get_event_loop().time() - t0
-        print(f"✅ NEW Article Generated in {new_time:.2f}s\n")
+        print(f"✅ NEW Article Generated in {new_time:.2f}s\n", flush=True)
     except ArticlePublicationRejected as e:
         new_time = asyncio.get_event_loop().time() - t0
         new_title = "🛑 ОТКЛОНЕНО ВАЛИДАЦИЕЙ (Fail-Closed Rejection)"
@@ -160,43 +159,44 @@ async def main():
             f"Нарушения доказательной границы ({len(violations)}):\n"
             + "\n".join(f"  - {v}" for v in violations[:10])
         )
-        print(f"🛑 NEW Article REJECTED (Fail-Closed) in {new_time:.2f}s: {e.reason}\n")
+        print(f"🛑 NEW Article REJECTED (Fail-Closed) in {new_time:.2f}s: {e.reason}\n", flush=True)
     except Exception as e:
         logger.exception("Failed to generate new article: %s", e)
         new_title = "❌ ОШИБКА ГЕНЕРАЦИИ"
         new_body = str(e)
 
     print(
-        "⏳ [2/2] Generating Article with OLD Approach (Custom branch Story Cards + Multi-pass Writer)..."
+        "⏳ [2/2] Generating Article with OLD Approach (Custom branch Story Cards + Multi-pass Writer)...",
+        flush=True,
     )
     t0 = asyncio.get_event_loop().time()
     old_title, old_lead, old_body = "", "", ""
     try:
-        old_title, old_lead, old_body = await generate_old_custom_article(config)
+        old_title, old_lead, old_body = await generate_old_custom_article(infra, config)
         old_time = asyncio.get_event_loop().time() - t0
-        print(f"✅ OLD Article Generated in {old_time:.2f}s\n")
+        print(f"✅ OLD Article Generated in {old_time:.2f}s\n", flush=True)
     except Exception as e:
         logger.exception("Failed to generate old article: %s", e)
         old_title = "❌ ОШИБКА СТАРОГО ПОДХОДА"
         old_body = str(e)
 
     # Print New Article
-    print("\n" + "█" * 80)
-    print("  📰 [НОВЫЙ ПОДХОД: Reader-First Selective Long-Read Article]")
-    print("█" * 80 + "\n")
-    print(f"TITLE: {new_title}\n")
-    print(f"LEAD: {new_lead}\n")
-    print(new_body)
-    print("\n" + "─" * 80)
+    print("\n" + "█" * 80, flush=True)
+    print("  📰 [НОВЫЙ ПОДХОД: Reader-First Selective Long-Read Article]", flush=True)
+    print("█" * 80 + "\n", flush=True)
+    print(f"TITLE: {new_title}\n", flush=True)
+    print(f"LEAD: {new_lead}\n", flush=True)
+    print(new_body, flush=True)
+    print("\n" + "─" * 80, flush=True)
 
     # Print Old Article
-    print("\n" + "█" * 80)
-    print("  📜 [СТАРЫЙ ПОДХОД С ВЕТКИ CUSTOM: Story Card Article]")
-    print("█" * 80 + "\n")
-    print(f"TITLE: {old_title}\n")
-    print(f"LEAD: {old_lead}\n")
-    print(old_body)
-    print("\n" + "─" * 80)
+    print("\n" + "█" * 80, flush=True)
+    print("  📜 [СТАРЫЙ ПОДХОД С ВЕТКИ CUSTOM: Story Card Article]", flush=True)
+    print("█" * 80 + "\n", flush=True)
+    print(f"TITLE: {old_title}\n", flush=True)
+    print(f"LEAD: {old_lead}\n", flush=True)
+    print(old_body, flush=True)
+    print("\n" + "─" * 80, flush=True)
 
 
 if __name__ == "__main__":
