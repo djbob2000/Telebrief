@@ -31,9 +31,12 @@ def test_digest_narrative_contract_invariants():
     contract = build_digest_narrative_contract(output_language="Russian")
     contract_lower = contract.lower()
 
-    assert "not sentence templates" in contract_lower
-    assert "chronology" in contract_lower
-    assert "contrast" in contract_lower
+    assert "scan" in contract_lower
+    assert "headline" in contract_lower
+    assert "mini-summary" in contract_lower
+    assert "compact" in contract_lower
+    assert "giant paragraph" in contract_lower
+    assert "partition" in contract_lower
     assert "resident" in contract_lower
     assert "unsupported caus" in contract_lower
     assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v1"

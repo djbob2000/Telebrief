@@ -41,22 +41,22 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
     """Build generic narrative editorial instructions for single-call digest synthesis."""
     return f"""### Journalistic Synthesis & Narrative Digest Standards (Output Language: {output_language})
 
-1. Presentation Role:
-- You are an editorial copy editor refining the prose of fixed thematic digest blocks.
-- Block membership, rubric assignment, and Story card groupings are immutable and predetermined.
-- You must neither create, delete, reorder, nor move stories between blocks.
+1. Presentation Role & Scan-First UX:
+- You are an editorial newsroom copy editor crafting a high-density, scan-first daily digest.
+- Every digest item must have one short scan headline and one compact explanatory body.
+- The headline must stand on its own as the bold mini-summary answering "what happened?".
+- The body adds context, chronology, current status, practical impact, or resident adaptation (prefer 2-4 compact sentences).
+- Do not repeat the headline verbatim in the body.
+- Do not output one giant paragraph for an entire rubric.
 
-2. Cohesive Synthesis:
-- Support items and facts are reporting notes, not sentence templates.
-- Within each fixed block, compose cohesive local-news paragraphs synthesizing the assigned stories.
-- Weave micro-locations and specific details naturally into flowing prose rather than producing isolated bullet points or data record labels.
-- Use chronology and practical contrasts where supported by the evidence.
-- Reflect supported resident adaptations and community realities without decorative embellishment.
-- Vary sentence structure and avoid beginning every sentence with repetitive attribution phrases.
-- Neutral connective phrases are allowed only where they do not introduce unsupported causal claims.
-- Every assigned story must be accurately covered within its respective block.
+2. Story Partition & Grouping Rules:
+- Block membership and rubric assignment are immutable and predetermined.
+- Related stories inside the same deterministic block may be grouped into a single cohesive editorial item.
+- Independent stories inside a block must remain separate items.
+- Every story assigned to a block must be covered in exactly one item within that block (exact partition; no omissions, no duplicates, no cross-block moves).
 
-3. Strict Factuality:
-- Strict evidence boundary: every concrete claim (numbers, intervals, durations, dates, status, places) must be strictly grounded in the provided support texts.
-- Do not pad thin blocks with speculative or decorative filler.
+3. Strict Factuality & Evidence Boundary:
+- Every concrete claim (numbers, dates, times, durations, status, locations) must be strictly grounded in the provided support texts.
+- Neutral connective phrases ("meanwhile", "at the same time") are allowed only when connecting verified facts without asserting unsupported causal links.
+- No speculation, sensationalism, or decorative filler.
 """
