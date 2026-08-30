@@ -24,7 +24,7 @@ def test_article_narrative_contract_invariants():
     assert "resident" in contract_lower
     assert "unsupported caus" in contract_lower
     assert "do not pad" in contract_lower
-    assert ARTICLE_NARRATIVE_PROMPT_VERSION == "event-article-narrative-v1"
+    assert ARTICLE_NARRATIVE_PROMPT_VERSION == "event-article-narrative-v3"
 
 
 def test_digest_narrative_contract_invariants():
