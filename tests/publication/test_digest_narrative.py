@@ -405,3 +405,56 @@ def test_build_digest_support_text_index():
     assert "story:1:evidence:0:frag:101" in index
     assert "Авария на водоводе" in index["story:1:evidence:0:frag:101"]
     assert any("Давление восстановлено" in v for v in index.values())
+
+
+def test_digest_narrative_item_grouping_three_stories():
+    from src.publication.digest_narrative import (
+        DigestNarrativeDraft,
+        build_digest_support_text_index,
+        validate_digest_narrative,
+    )
+
+    rubrics = [_RUBRIC_UTIL]
+    cards = [
+        StoryCard(
+            id=f"story:{i}",
+            topic=f"Авария на электросетях {i}",
+            importance="high",
+            summary=f"Отключение {i}",
+            rubric_id="utilities",
+        )
+        for i in (101, 102, 103)
+    ]
+    evi = {
+        f"sup:power:{i}": _make_evidence(f"sup:power:{i}", i, f"Отключение света {i}")
+        for i in (101, 102, 103)
+    }
+    plan = plan_digest_narrative_blocks(cards=cards, evidence=evi, rubrics=rubrics)
+    assert len(plan.blocks) == 1
+    block = plan.blocks[0]
+
+    raw = {
+        "blocks": [
+            {
+                "block_id": block.block_id,
+                "items": [
+                    {
+                        "headline": "Подтвержденных сроков восстановления света пока нет",
+                        "body": (
+                            "Отключение света 101. "
+                            "Отключение света 102. "
+                            "Отключение света 103."
+                        ),
+                        "covered_story_ids": list(block.story_ids),
+                        "cited_support_ids": list(block.support_ids),
+                    }
+                ],
+            }
+        ]
+    }
+
+    draft = DigestNarrativeDraft.from_dict(raw)
+    support_index = build_digest_support_text_index(evi, cards)
+    result = validate_digest_narrative(draft, plan, support_index)
+    assert result.is_valid
+    assert draft.blocks[0].items[0].covered_story_ids == block.story_ids

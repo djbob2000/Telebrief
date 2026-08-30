@@ -158,5 +158,20 @@
         "expected_violations": ["UNSUPPORTED_CAUSAL_RELATION", "UNSUPPORTED_QUALITATIVE_CLAIM"]
       }
     }
-  ]
+  ],
+  "reader_first_expectations": {
+    "digest": {
+      "electricity_story_ids": ["sup:power:1", "sup:power:2", "sup:power:3"],
+      "expected_block_id": "rubric:utilities:0",
+      "allow_single_editorial_item_for_related_stories": true,
+      "require_each_story_exactly_once": true,
+      "require_bold_scan_headline": true
+    },
+    "article": {
+      "claim_atoms_are_not_sentence_templates": true,
+      "allow_thematic_heading_without_claim_atoms": true,
+      "require_writer_success_for_quality_gate": true,
+      "fallback_is_safety_only": true
+    }
+  }
 }

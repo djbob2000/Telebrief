@@ -858,3 +858,49 @@ def test_draft_temporal_framing_validation() -> None:
     )
     res_fut_valid = validate_article_draft(draft_future_valid, ctx, config)
     assert res_fut_valid.is_valid is True
+
+
+def test_thematic_heading_without_claim_atoms():
+    ctx = _make_sample_context()
+    sup_id = ctx.support_index[0].support_id
+    config = PublicationEditorialConfig(article_min_words=10, article_max_words=2000)
+    section = ArticleSection(
+        heading="Свет по цепочке",
+        heading_support_ids=(sup_id,),
+        heading_claims=(),
+        paragraphs=(
+            ArticleParagraph(
+                text="Авария на подстанции: временно обесточена центральная часть Бердянска.",
+                cited_support_ids=(sup_id,),
+                claims=(
+                    ArticleClaimAtom(
+                        text="Авария на подстанции: временно обесточена центральная часть",
+                        cited_support_ids=(sup_id,),
+                    ),
+                ),
+            ),
+        ),
+    )
+    draft = StructuredArticleDraft(
+        title="Энергетический сбой в городе",
+        title_support_ids=(sup_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Энергетический сбой в городе",
+                cited_support_ids=(sup_id,),
+            ),
+        ),
+        lead="Центральная часть осталась без электричества.",
+        lead_support_ids=(sup_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="Центральная часть осталась без электричества",
+                cited_support_ids=(sup_id,),
+            ),
+        ),
+        sections=(section,),
+        word_count=50,
+    )
+    result = validate_article_draft(draft, ctx, config)
+    assert not result.is_valid
+    assert any("MISSING_CLAIM_ATOMS:H001" in v for v in result.violations)
