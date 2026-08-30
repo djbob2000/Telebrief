@@ -1771,3 +1771,131 @@ def test_unsupported_location_in_reader_prose_blocks_even_if_omitted_from_atom()
         and i.blocking
         for i in res.issues
     )
+
+
+@pytest.mark.unit
+def test_attempt74_full_draft_validation() -> None:
+    raw_supports = [
+        ("story:1:frag:1", "Расцвел настолько что месяц без света сидим, это ягодки пошли?"),
+        (
+            "story:1:frag:2",
+            "Логично, что если власти молчат, света нет 3 недели и более, и даже временно не дают",
+        ),
+        (
+            "story:1:frag:3",
+            "За 29 дней уж точно можно было объяснить всё населению. Сказать хотя бы, к чему готовиться, иль рассчитывать только на свои силы.",
+        ),
+        (
+            "story:1:frag:4",
+            "Обещали 26, потом обещали 28, сегодня обещают 31, 31 начнут обещать 4 сентября и так далее",
+        ),
+        (
+            "story:1:frag:5",
+            "В нашем доме нашёлся добрый человек, он от своего генератора запитал оборудование Юпитера, а дальше сигнал пошёл на роутеры всего дома... и гоууу вай фай!",
+        ),
+        ("story:1:frag:6", "Я на горе, света нет"),
+        ("story:1:frag:7", "надійшло понад сотню повідомлень"),
+        ("story:1:frag:8", "застосувала 626 безпілотників"),
+        ("story:1:frag:9", "осенью нам всем понадобится подобные буржуйки"),
+        ("story:1:frag:10", "поступило обращение от жителей"),
+        ("story:1:frag:11", "ремонтные бригады продолжают работу"),
+        ("story:1:frag:12", "света нет в нескольких районах"),
+    ]
+
+    supports = tuple(
+        ArticleSupport(
+            support_id=sid,
+            text=text,
+            source_text=text,
+            support_kind="evidence",
+            publication_use="PUBLISH",
+            source_refs=(f"ref-{idx}",),
+            fragment_ids=(idx,),
+            source_item_ids=(idx,),
+            observed_at=_NOW,
+            temporal_role="CURRENT_WINDOW",
+        )
+        for idx, (sid, text) in enumerate(raw_supports, start=1)
+    )
+
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Проблемы со светом",),
+        support_index=supports,
+        support_by_id={s.support_id: s for s in supports},
+        recurring_topics=("utilities", "power"),
+        edition_name="Бердянск",
+        edition_anchor_terms=("Бердянск",),
+    )
+
+    config = PublicationEditorialConfig(
+        article_min_words=10,
+        article_max_words=500,
+        article_min_sections=2,
+        article_max_sections=4,
+    )
+
+    draft = StructuredArticleDraft(
+        title="Жители Бердянска сообщают об отсутствии света около месяца",
+        title_support_ids=("story:1:frag:1",),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Жители Бердянска сообщают об отсутствии электроснабжения около месяца",
+                cited_support_ids=("story:1:frag:1",),
+            ),
+        ),
+        lead="В Бердянске жители пишут, что власти молчат о сроках восстановления электроснабжения, а света нет около месяца.",
+        lead_support_ids=("story:1:frag:1", "story:1:frag:2"),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="Жители пишут, что власти молчат",
+                cited_support_ids=("story:1:frag:2",),
+            ),
+            ArticleClaimAtom(
+                text="Жители Бердянска сообщают об отсутствии электроснабжения около месяца",
+                cited_support_ids=("story:1:frag:1",),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Проблемы с электричеством",
+                heading_support_ids=("story:1:frag:4",),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Жители отмечают, что обещанные сроки постоянно сдвигаются: обещали 26, потом 28, затем 31 число.",
+                        cited_support_ids=("story:1:frag:4",),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В сообщениях обещали 26, потом 28, затем 31",
+                                cited_support_ids=("story:1:frag:4",),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            ArticleSection(
+                heading="Локальные решения",
+                heading_support_ids=("story:1:frag:5",),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В одном из домов житель от генератора запитал оборудование Юпитера, восстановив интернет для всего дома.",
+                        cited_support_ids=("story:1:frag:5",),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В одном из домов оборудование Юпитера запитали от генератора и восстановили интернет для дома",
+                                cited_support_ids=("story:1:frag:5",),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=65,
+    )
+
+    result = validate_article_draft(draft, ctx, config)
+    blocking_issues = [i for i in result.issues if i.blocking]
+    assert result.is_valid is True, f"Expected valid draft, got blocking issues: {blocking_issues}"
+    assert blocking_issues == []
+    assert all(i.severity == "warning" and not i.blocking for i in result.issues)
