@@ -863,9 +863,60 @@ def test_draft_temporal_framing_validation() -> None:
 def test_thematic_heading_without_claim_atoms():
     ctx = _make_sample_context()
     sup_id = ctx.support_index[0].support_id
-    config = PublicationEditorialConfig(article_min_words=10, article_max_words=2000)
+    config = PublicationEditorialConfig(
+        article_min_words=10, article_max_words=2000, article_min_sections=1
+    )
     section = ArticleSection(
         heading="Свет по цепочке",
+        heading_support_ids=(sup_id,),
+        heading_claims=(),
+        paragraphs=(
+            ArticleParagraph(
+                text="Авария на подстанции: временно обесточена центральная часть Бердянска.",
+                cited_support_ids=(sup_id,),
+                claims=(
+                    ArticleClaimAtom(
+                        text="Авария на подстанции: временно обесточена центральная часть",
+                        cited_support_ids=(sup_id,),
+                    ),
+                ),
+            ),
+        ),
+    )
+    draft = StructuredArticleDraft(
+        title="Авария на подстанции в Бердянске",
+        title_support_ids=(sup_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Авария на подстанции в Бердянске",
+                cited_support_ids=(sup_id,),
+            ),
+        ),
+        lead="Временно обесточена центральная часть Бердянска.",
+        lead_support_ids=(sup_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="Временно обесточена центральная часть Бердянска",
+                cited_support_ids=(sup_id,),
+            ),
+        ),
+        sections=(section,),
+        word_count=50,
+    )
+    result = validate_article_draft(draft, ctx, config)
+    assert result.is_valid is True
+    assert len(result.issues) == 0
+
+
+def test_heading_with_unsupported_concrete_claim_fails():
+    ctx = _make_sample_context()
+    sup_id = ctx.support_index[0].support_id
+    config = PublicationEditorialConfig(
+        article_min_words=10, article_max_words=2000, article_min_sections=1
+    )
+    # Heading claims 500 houses without support
+    section = ArticleSection(
+        heading="Обесточены 500 домов в центре",
         heading_support_ids=(sup_id,),
         heading_claims=(),
         paragraphs=(
@@ -902,8 +953,8 @@ def test_thematic_heading_without_claim_atoms():
         word_count=50,
     )
     result = validate_article_draft(draft, ctx, config)
-    assert not result.is_valid
-    assert any("MISSING_CLAIM_ATOMS:H001" in v for v in result.violations)
+    assert result.is_valid is False
+    assert any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in result.violations)
 
 
 @pytest.mark.unit

@@ -222,14 +222,15 @@ def validate_article_draft(
 
         # Check claim atoms existence
         if not claim_atoms:
-            issues.append(
-                ArticleValidationIssue(
-                    code="MISSING_CLAIM_ATOMS",
-                    unit_id=unit_id,
-                    message=f"Unit {unit_id} ({unit_type}) must contain at least one claim atom",
-                    support_ids=cited_ids,
+            if unit_type != "heading":
+                issues.append(
+                    ArticleValidationIssue(
+                        code="MISSING_CLAIM_ATOMS",
+                        unit_id=unit_id,
+                        message=f"Unit {unit_id} ({unit_type}) must contain at least one claim atom",
+                        support_ids=cited_ids,
+                    )
                 )
-            )
         else:
             unit_sids = set(cited_ids)
             claim_sids = {sid for c in claim_atoms for sid in c.cited_support_ids}
