@@ -282,10 +282,11 @@ class PublicationEditorialConfig:
 
     conflict_window_minutes: int = 90
     article_min_words: int = 800
-    article_max_words: int = 1400
+    article_max_words: int = 2200
     article_min_sections: int = 3
-    article_max_sections: int = 6
+    article_max_sections: int = 8
     article_max_direct_quotes: int = 4
+
     article_claim_min_content_coverage: float = 0.70
     digest_narrative_mode: str = "deterministic"
     digest_narrative_max_cards_per_block: int = 6

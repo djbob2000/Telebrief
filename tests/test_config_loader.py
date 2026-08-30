@@ -2362,10 +2362,11 @@ def test_publication_editorial_config_defaults(temp_config_file, mock_env_vars):
     pub_edit = config.settings.publication_editorial
     assert pub_edit.conflict_window_minutes == 90
     assert pub_edit.article_min_words == 800
-    assert pub_edit.article_max_words == 1400
+    assert pub_edit.article_max_words == 2200
     assert pub_edit.article_min_sections == 3
-    assert pub_edit.article_max_sections == 6
+    assert pub_edit.article_max_sections == 8
     assert pub_edit.article_max_direct_quotes == 4
+
     assert pub_edit.digest_narrative_mode == "deterministic"
     assert pub_edit.digest_narrative_max_cards_per_block == 6
     assert pub_edit.digest_narrative_max_output_tokens == 4096
