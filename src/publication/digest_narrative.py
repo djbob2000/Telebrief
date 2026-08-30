@@ -387,3 +387,61 @@ class DigestNarrativeWriter:
             raise ValueError(f"Failed to decode LLM response as JSON: {err}") from err
 
         return DigestNarrativeDraft.from_dict(parsed)
+
+
+def build_digest_support_text_index(
+    *,
+    evidence: Mapping[str, PublicationEvidence],
+    cards: Sequence[StoryCard],
+    frozen_input: Any | None = None,
+) -> dict[str, str]:
+    """Build unified mapping from support IDs and synthesized card IDs to exact support texts."""
+    index: dict[str, str] = {}
+
+    # 1. Primary publication evidence items
+    for eid, evi in evidence.items():
+        if getattr(evi, "text", None):
+            index[eid] = evi.text
+        elif getattr(evi, "source_text", None):
+            index[eid] = evi.source_text
+
+    # 2. Frozen input writer records if present
+    if frozen_input is not None and getattr(frozen_input, "writer_bundle", None):
+        records = getattr(frozen_input.writer_bundle, "records", {})
+        if isinstance(records, dict):
+            for ref, rec in records.items():
+                msg = getattr(rec, "message", None)
+                msg_text = getattr(msg, "text", "") if msg else ""
+                if msg_text and ref not in index:
+                    index[ref] = msg_text
+
+    # 3. Card-level canonical notes and elements
+    for c in cards:
+        card_texts: list[str] = []
+        if c.topic:
+            card_texts.append(c.topic)
+        if c.summary:
+            card_texts.append(c.summary)
+        for hf in c.hard_facts:
+            if hf.text:
+                card_texts.append(hf.text)
+                for r in hf.source_refs:
+                    if r not in index and hf.text:
+                        index[r] = hf.text
+        for ud in c.useful_details:
+            if ud.text:
+                card_texts.append(ud.text)
+                for r in ud.source_refs:
+                    if r not in index and ud.text:
+                        index[r] = ud.text
+        for co in c.community_observations:
+            if co.text:
+                card_texts.append(co.text)
+                for r in co.source_refs:
+                    if r not in index and co.text:
+                        index[r] = co.text
+
+        if card_texts and c.id not in index:
+            index[c.id] = " ".join(card_texts)
+
+    return index

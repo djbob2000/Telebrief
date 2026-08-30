@@ -380,3 +380,28 @@ async def test_digest_narrative_writer_single_call_success(mocker):
     assert mock_provider.chat_completion.call_count == 1
     assert len(draft.blocks) == 1
     assert draft.blocks[0].block_id == "block:utilities:0"
+
+
+def test_build_digest_support_text_index():
+    from src.publication.digest_narrative import build_digest_support_text_index
+
+    evi = _make_evidence("story:1:evidence:0:frag:101", 1, "Авария на водоводе в центре города")
+    card = StoryCard(
+        id="story:1",
+        topic="Водоснабжение",
+        importance="high",
+        summary="Ремонт завершен",
+        rubric_id="utilities",
+        hard_facts=[
+            StoryElement(text="Давление восстановлено", source_refs=["ref-1"], status="established")
+        ],
+    )
+
+    index = build_digest_support_text_index(
+        evidence={"story:1:evidence:0:frag:101": evi},
+        cards=[card],
+    )
+
+    assert "story:1:evidence:0:frag:101" in index
+    assert "Авария на водоводе" in index["story:1:evidence:0:frag:101"]
+    assert any("Давление восстановлено" in v for v in index.values())
