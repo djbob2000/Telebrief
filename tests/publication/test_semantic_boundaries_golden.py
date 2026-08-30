@@ -48,6 +48,51 @@ def test_event_first_semantic_boundaries_golden_schema() -> None:
             "FUTURE_SCHEDULED",
         }
 
+
+def test_golden_temporal_cases_classification() -> None:
+    from src.publication.article_context import (
+        PublicationWindow,
+        classify_support_temporal_role,
+    )
+
+    fixture_path = (
+        Path(__file__).resolve().parent.parent
+        / "fixtures"
+        / "event_first_semantic_boundaries_golden.json"
+    )
+    with open(fixture_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    snapshot_at = dt.datetime.fromisoformat(data["snapshot_at"])
+    lookback_hours = data["lookback_hours"]
+    window = PublicationWindow(
+        snapshot_at=snapshot_at,
+        lookback_start=snapshot_at - dt.timedelta(hours=lookback_hours),
+    )
+
+    for tc in data["temporal_cases"]:
+        obs = dt.datetime.fromisoformat(tc["observed_at"])
+        ef = (
+            dt.datetime.fromisoformat(tc["effective_from"])
+            if tc["effective_from"] is not None
+            else None
+        )
+        eu = (
+            dt.datetime.fromisoformat(tc["effective_until"])
+            if tc["effective_until"] is not None
+            else None
+        )
+        role = classify_support_temporal_role(
+            observed_at=obs,
+            effective_from=ef,
+            effective_until=eu,
+            support_kind="operational" if (ef or eu) else "evidence",
+            window=window,
+        )
+        assert (
+            role == tc["expected_role"]
+        ), f"Mismatch for case {tc['id']}: {role} != {tc['expected_role']}"
+
     # 3. Unsupported soft claims
     soft_claims = data.get("unsupported_soft_claims", [])
     assert len(soft_claims) >= 4

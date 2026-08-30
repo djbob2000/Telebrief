@@ -13,7 +13,9 @@ from src.domain.operational_state import ResolvedObservation
 from src.editorial_models import StoryCard
 from src.publication.article_context import (
     ArticleEditorialContext,
+    PublicationWindow,
     build_article_editorial_context,
+    classify_support_temporal_role,
 )
 from src.publication.event_editorial_adapter import EventEditorialAdapter
 from src.publication.evidence import PublicationEvidence
@@ -189,7 +191,63 @@ def test_build_article_editorial_context_preserves_evidence_and_timeline():
     prompt_str = ctx.to_prompt_context()
     assert "[SUPPORT story:1:evidence:0:frag:101]" in prompt_str
     assert "[SUPPORT op:gas_supply:availability:frag:2003]" in prompt_str
+    assert "role=" in prompt_str
     assert "Порыв трубы d=500мм на АКЗ" in prompt_str
+
+
+def test_classify_support_temporal_role():
+    window = PublicationWindow(
+        snapshot_at=dt.datetime(2026, 8, 29, 21, 0, tzinfo=dt.timezone.utc),
+        lookback_start=dt.datetime(2026, 8, 28, 21, 0, tzinfo=dt.timezone.utc),
+    )
+
+    # 1. future scheduled state announced today
+    assert (
+        classify_support_temporal_role(
+            observed_at=dt.datetime(2026, 8, 29, 11, tzinfo=dt.timezone.utc),
+            effective_from=dt.datetime(2026, 8, 30, 8, tzinfo=dt.timezone.utc),
+            effective_until=dt.datetime(2026, 8, 30, 17, tzinfo=dt.timezone.utc),
+            support_kind="operational",
+            window=window,
+        )
+        == "FUTURE_SCHEDULED"
+    )
+
+    # 2. ordinary current-window evidence
+    assert (
+        classify_support_temporal_role(
+            observed_at=dt.datetime(2026, 8, 29, 10, tzinfo=dt.timezone.utc),
+            effective_from=None,
+            effective_until=None,
+            support_kind="evidence",
+            window=window,
+        )
+        == "CURRENT_WINDOW"
+    )
+
+    # 3. old resolved evidence
+    assert (
+        classify_support_temporal_role(
+            observed_at=dt.datetime(2026, 8, 22, 10, tzinfo=dt.timezone.utc),
+            effective_from=None,
+            effective_until=dt.datetime(2026, 8, 23, 10, tzinfo=dt.timezone.utc),
+            support_kind="operational",
+            window=window,
+        )
+        == "HISTORICAL_CONTEXT"
+    )
+
+    # 4. old operational state whose effective interval still covers snapshot
+    assert (
+        classify_support_temporal_role(
+            observed_at=dt.datetime(2026, 8, 22, 10, tzinfo=dt.timezone.utc),
+            effective_from=dt.datetime(2026, 8, 22, 10, tzinfo=dt.timezone.utc),
+            effective_until=None,
+            support_kind="operational",
+            window=window,
+        )
+        == "CURRENT_WINDOW"
+    )
 
 
 @pytest.mark.postgres

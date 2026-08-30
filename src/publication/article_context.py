@@ -16,6 +16,59 @@ from src.publication.evidence import PublicationEvidence
 _FRAG_ID_RE = re.compile(r":frag:(\d+)")
 _ITEM_ID_RE = re.compile(r":item:(\d+)")
 
+TemporalRole = Literal["CURRENT_WINDOW", "HISTORICAL_CONTEXT", "FUTURE_SCHEDULED"]
+
+
+@dataclass(frozen=True)
+class PublicationWindow:
+    """Explicit frozen reporting window for publication generation."""
+
+    snapshot_at: dt.datetime
+    lookback_start: dt.datetime
+
+
+def _normalize_dt(d: dt.datetime | None) -> dt.datetime | None:
+    if d is None:
+        return None
+    if d.tzinfo is None:
+        return d.replace(tzinfo=dt.timezone.utc)
+    return d.astimezone(dt.timezone.utc)
+
+
+def classify_support_temporal_role(
+    *,
+    observed_at: dt.datetime | None,
+    effective_from: dt.datetime | None,
+    effective_until: dt.datetime | None,
+    support_kind: Literal["evidence", "operational"],
+    window: PublicationWindow,
+) -> TemporalRole:
+    """Classify an ArticleSupport item into its temporal reporting role."""
+    snap = _normalize_dt(window.snapshot_at)
+    start = _normalize_dt(window.lookback_start)
+    ef = _normalize_dt(effective_from)
+    eu = _normalize_dt(effective_until)
+    obs = _normalize_dt(observed_at)
+
+    if snap is None or start is None:
+        return "CURRENT_WINDOW"
+
+    # 1. effective_from > snapshot_at -> FUTURE_SCHEDULED
+    if ef is not None and ef > snap:
+        return "FUTURE_SCHEDULED"
+
+    # 2. lookback_start <= observed_at <= snapshot_at -> CURRENT_WINDOW
+    if obs is not None and start <= obs <= snap:
+        return "CURRENT_WINDOW"
+
+    # 3. for support_kind == "operational", if effective_from <= snapshot_at and (effective_until is None or effective_until >= snapshot_at) -> CURRENT_WINDOW
+    if support_kind == "operational" and ef is not None and ef <= snap:
+        if eu is None or eu >= snap:
+            return "CURRENT_WINDOW"
+
+    # 4. otherwise -> HISTORICAL_CONTEXT
+    return "HISTORICAL_CONTEXT"
+
 
 @dataclass(frozen=True)
 class ArticleSupport:
@@ -32,6 +85,7 @@ class ArticleSupport:
     observed_at: dt.datetime | None
     effective_from: dt.datetime | None = None
     effective_until: dt.datetime | None = None
+    temporal_role: TemporalRole = "CURRENT_WINDOW"
 
 
 @dataclass(frozen=True)
@@ -47,16 +101,21 @@ class ArticleEditorialContext:
     evidence_by_id: dict[str, PublicationEvidence] | None = None
     general_facts: tuple[PublicationEvidence, ...] = ()
     resident_observations: tuple[PublicationEvidence, ...] = ()
+    publication_window: PublicationWindow | None = None
 
     def to_prompt_context(self) -> str:
         """Render deterministic, structured support context for the single article writing LLM call."""
         blocks: list[str] = []
+        if self.publication_window is not None:
+            blocks.append(
+                f"REPORT WINDOW: {self.publication_window.lookback_start.isoformat()} .. {self.publication_window.snapshot_at.isoformat()}"
+            )
         for sup in self.support_index:
             if sup.publication_use == "EXCLUDE":
                 continue
             lines = [
                 f"[SUPPORT {sup.support_id}]",
-                f"kind={sup.support_kind} publication_use={sup.publication_use}",
+                f"role={sup.temporal_role} kind={sup.support_kind} publication_use={sup.publication_use}",
             ]
             if sup.observed_at:
                 lines.append(f"observed_at={sup.observed_at.isoformat()}")
@@ -76,9 +135,24 @@ def build_article_editorial_context(
     evidence_items: Sequence[PublicationEvidence],
     operational_observations: Sequence[ResolvedObservation] = (),
     source_records: Mapping[str, SourceRecord] | None = None,
+    *,
+    snapshot_at: dt.datetime | None = None,
+    lookback_hours: int | None = None,
+    publication_window: PublicationWindow | None = None,
 ) -> ArticleEditorialContext:
     """Build structured ArticleEditorialContext with unified ArticleSupport packets."""
     records = source_records or {}
+
+    pub_win: PublicationWindow | None = None
+    if publication_window is not None:
+        pub_win = publication_window
+    elif snapshot_at is not None and lookback_hours is not None:
+        snap_norm = _normalize_dt(snapshot_at)
+        if snap_norm is not None:
+            pub_win = PublicationWindow(
+                snapshot_at=snap_norm,
+                lookback_start=snap_norm - dt.timedelta(hours=lookback_hours),
+            )
 
     # Filter out generic fallback titles from headline candidates
     headlines: list[str] = []
@@ -107,6 +181,16 @@ def build_article_editorial_context(
             general_facts.append(evi)
 
         # Build ArticleSupport for allowed evidence
+        temporal_role: TemporalRole = "CURRENT_WINDOW"
+        if pub_win is not None:
+            temporal_role = classify_support_temporal_role(
+                observed_at=evi.observed_at,
+                effective_from=None,
+                effective_until=None,
+                support_kind="evidence",
+                window=pub_win,
+            )
+
         support_list.append(
             ArticleSupport(
                 support_id=evi.evidence_id,
@@ -118,6 +202,7 @@ def build_article_editorial_context(
                 fragment_ids=(evi.fragment_id,) if evi.fragment_id else (),
                 source_item_ids=(evi.source_item_id,) if evi.source_item_id else (),
                 observed_at=evi.observed_at,
+                temporal_role=temporal_role,
             )
         )
 
@@ -170,6 +255,16 @@ def build_article_editorial_context(
                 fact_parts.append(st_det)
             fact_text = " ".join(fact_parts) if fact_parts else obs.detail
 
+            op_role: TemporalRole = "CURRENT_WINDOW"
+            if pub_win is not None:
+                op_role = classify_support_temporal_role(
+                    observed_at=obs_res.observed_at,
+                    effective_from=obs_res.effective_from,
+                    effective_until=obs_res.effective_until,
+                    support_kind="operational",
+                    window=pub_win,
+                )
+
             support_list.append(
                 ArticleSupport(
                     support_id=sup_id,
@@ -183,6 +278,7 @@ def build_article_editorial_context(
                     observed_at=obs_res.observed_at,
                     effective_from=obs_res.effective_from,
                     effective_until=obs_res.effective_until,
+                    temporal_role=op_role,
                 )
             )
 
@@ -205,4 +301,5 @@ def build_article_editorial_context(
         evidence_by_id=evidence_by_id,
         general_facts=tuple(general_facts),
         resident_observations=tuple(resident_obs),
+        publication_window=pub_win,
     )
