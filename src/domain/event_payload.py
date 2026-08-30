@@ -18,6 +18,7 @@ EVIDENCE_KINDS: frozenset[str] = frozenset(
         "service_access",
         "official_statement",
         "commercial_offer",
+        "resident_question",
     }
 )
 
@@ -63,6 +64,7 @@ class EvidenceItemPayload:
         "service_access",
         "official_statement",
         "commercial_offer",
+        "resident_question",
     ]
     publication_use: Literal["PUBLISH", "CONTEXT", "EXCLUDE"]
     source_fragment_ids: tuple[int, ...]
@@ -112,7 +114,9 @@ class EvidenceItemPayload:
             raise ValueError(msg)
 
         raw_pub_use = str(data.get("publication_use", "")).strip().upper()
-        if not raw_pub_use:
+        if raw_kind == "resident_question":
+            raw_pub_use = "CONTEXT"
+        elif not raw_pub_use:
             raw_pub_use = "EXCLUDE" if raw_kind == "commercial_offer" else "PUBLISH"
         if raw_pub_use not in PUBLICATION_USES:
             msg = (
@@ -151,6 +155,7 @@ class EvidenceItemPayload:
                     "service_access",
                     "official_statement",
                     "commercial_offer",
+                    "resident_question",
                 ],
                 raw_kind,
             ),
@@ -404,3 +409,29 @@ def ensure_keep_publishability(
     if payload.publishability in _KEEP_PUBLISHABILITY:
         return payload
     return replace(payload, publishability=default)
+
+
+def normalize_question_evidence(payload: EventPayload) -> EventPayload:
+    """Normalize resident question evidence to CONTEXT and remove question-only operational observations."""
+    canonical_items = tuple(
+        replace(item, publication_use="CONTEXT")
+        if item.kind == "resident_question" and item.publication_use != "CONTEXT"
+        else item
+        for item in payload.evidence_items
+    )
+    publishable_fragment_ids = {
+        fid
+        for item in canonical_items
+        if item.kind != "resident_question" and item.publication_use == "PUBLISH"
+        for fid in item.source_fragment_ids
+    }
+    kept_observations = tuple(
+        obs
+        for obs in payload.operational_observations
+        if any(fid in publishable_fragment_ids for fid in obs.source_fragment_ids)
+    )
+    return replace(
+        payload,
+        evidence_items=canonical_items,
+        operational_observations=kept_observations,
+    )

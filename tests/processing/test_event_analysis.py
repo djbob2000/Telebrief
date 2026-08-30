@@ -8,10 +8,116 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.domain.event_payload import EventPayload, ensure_keep_publishability
+from src.domain.event_payload import (
+    EventPayload,
+    EvidenceItemPayload,
+    ensure_keep_publishability,
+    normalize_question_evidence,
+)
 from src.processing.event_analysis import EventAnalysisPayload, EventAnalysisService
 from src.repositories.event_clusters import EventClusterRepository
 from src.repositories.stories import StoryRepository
+
+
+@pytest.mark.unit
+def test_resident_question_is_valid_context_evidence() -> None:
+    item = EvidenceItemPayload.from_dict(
+        {
+            "text": "Работает ли пенсионный фонд?",
+            "kind": "resident_question",
+            "publication_use": "CONTEXT",
+            "source_fragment_ids": [101],
+        }
+    )
+    assert item.kind == "resident_question"
+    assert item.publication_use == "CONTEXT"
+
+
+@pytest.mark.unit
+def test_resident_question_publish_is_normalized_to_context() -> None:
+    item = EvidenceItemPayload.from_dict(
+        {
+            "text": "Где купить уголь?",
+            "kind": "resident_question",
+            "publication_use": "PUBLISH",
+            "source_fragment_ids": [102],
+        }
+    )
+    assert item.publication_use == "CONTEXT"
+
+
+@pytest.mark.unit
+def test_normalize_question_evidence_strips_question_only_observations():
+    payload = EventPayload.from_dict(
+        {
+            "headline": "Работа пенсионного фонда",
+            "digest_summary": "Жители спрашивают, работает ли пенсионный фонд.",
+            "evidence_items": [
+                {
+                    "text": "Работает пенсионный фонд?",
+                    "kind": "resident_question",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [11],
+                }
+            ],
+            "operational_observations": [
+                {
+                    "subject_key": "pension_fund",
+                    "subject_label": "Пенсионный фонд",
+                    "dimension": "availability",
+                    "location": "Бердянск",
+                    "entity": "пенсионный фонд",
+                    "state": "UNKNOWN",
+                    "detail": "Жители спрашивают, работает ли учреждение",
+                    "source_fragment_ids": [11],
+                }
+            ],
+        }
+    )
+    normalized = normalize_question_evidence(payload)
+    assert normalized.evidence_items[0].publication_use == "CONTEXT"
+    assert normalized.operational_observations == ()
+
+
+@pytest.mark.unit
+def test_normalize_question_evidence_preserves_answered_observations():
+    payload = EventPayload.from_dict(
+        {
+            "headline": "Работа нотариуса",
+            "digest_summary": "Жители уточняли график, нотариус работает от генератора.",
+            "evidence_items": [
+                {
+                    "text": "Работает ли нотариус?",
+                    "kind": "resident_question",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [11],
+                },
+                {
+                    "text": "Нотариус принимает по записи и работает от генератора.",
+                    "kind": "service_access",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [12],
+                },
+            ],
+            "operational_observations": [
+                {
+                    "subject_key": "notary",
+                    "subject_label": "Нотариус",
+                    "dimension": "availability",
+                    "location": "Бердянск",
+                    "entity": "нотариус",
+                    "state": "AVAILABLE",
+                    "detail": "Работает от генератора",
+                    "source_fragment_ids": [12],
+                }
+            ],
+        }
+    )
+    normalized = normalize_question_evidence(payload)
+    assert normalized.evidence_items[0].publication_use == "CONTEXT"
+    assert normalized.evidence_items[1].publication_use == "PUBLISH"
+    assert len(normalized.operational_observations) == 1
+    assert normalized.operational_observations[0].state == "AVAILABLE"
 
 
 @pytest.mark.unit
