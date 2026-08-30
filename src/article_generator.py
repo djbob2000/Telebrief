@@ -874,8 +874,12 @@ class ArticleGenerator:
                 )
 
             body = draft.render_markdown()
+            from src.publication.article_coverage_diagnostics import (
+                diagnose_article_coverage,
+            )
             from src.publication.article_trace import build_article_claim_trace
 
+            coverage_diag = diagnose_article_coverage(draft, coverage_plan)
             trace = build_article_claim_trace(draft, article_ctx)
             trace_meta = [
                 {
@@ -911,6 +915,21 @@ class ArticleGenerator:
                     "section_count": val_res.section_count,
                     "unsupported_claim_count": 0,
                     "unit_count": len(trace),
+                },
+                "coverage": {
+                    "planned_story_count": coverage_diag.planned_story_count,
+                    "covered_story_count": coverage_diag.covered_story_count,
+                    "uncovered_story_ids": list(coverage_diag.uncovered_story_ids),
+                    "develop_story_coverage": coverage_diag.develop_story_coverage,
+                    "weave_story_coverage": coverage_diag.weave_story_coverage,
+                    "brief_story_coverage": coverage_diag.brief_story_coverage,
+                    "planned_detail_support_count": coverage_diag.planned_detail_support_count,
+                    "covered_detail_support_count": coverage_diag.covered_detail_support_count,
+                    "uncovered_detail_support_ids": list(
+                        coverage_diag.uncovered_detail_support_ids
+                    ),
+                    "detail_support_coverage": coverage_diag.detail_support_coverage,
+                    "leaked_contact_payloads": list(coverage_diag.leaked_contact_payloads),
                 },
                 "claim_trace": trace_meta,
             }
