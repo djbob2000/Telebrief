@@ -5,11 +5,16 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.article_generator import ArticleGenerator
 from src.bootstrap import build_infrastructure
 from src.collector import Message
 from src.config_loader import Config, load_config
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.generation import PublicationGenerationService
 from src.publication.repository import PublicationRepository
 from src.publication.selection import EditorialSelectionService
@@ -140,25 +145,40 @@ async def main():
         "⏳ [1/2] Generating Article with NEW Approach (Event-First Evidence-Bound + Adaptive Length)..."
     )
     t0 = asyncio.get_event_loop().time()
+    new_title, new_lead, new_body = "", "", ""
     try:
         new_title, new_lead, new_body, new_meta = await generate_new_approach_article(config)
         new_time = asyncio.get_event_loop().time() - t0
         print(f"✅ NEW Article Generated in {new_time:.2f}s\n")
+    except ArticlePublicationRejected as e:
+        new_time = asyncio.get_event_loop().time() - t0
+        new_title = "🛑 ОТКЛОНЕНО ВАЛИДАЦИЕЙ (Fail-Closed Rejection)"
+        new_lead = f"Причина отказа: {e.reason} ({e.error_kind})"
+        violations = e.metadata.get("violations", [])
+        new_body = (
+            f"Статья отклонена, публикация не создана (0 строк в БД).\n"
+            f"Нарушения доказательной границы ({len(violations)}):\n"
+            + "\n".join(f"  - {v}" for v in violations[:10])
+        )
+        print(f"🛑 NEW Article REJECTED (Fail-Closed) in {new_time:.2f}s: {e.reason}\n")
     except Exception as e:
         logger.exception("Failed to generate new article: %s", e)
-        return
+        new_title = "❌ ОШИБКА ГЕНЕРАЦИИ"
+        new_body = str(e)
 
     print(
         "⏳ [2/2] Generating Article with OLD Approach (Custom branch Story Cards + Multi-pass Writer)..."
     )
     t0 = asyncio.get_event_loop().time()
+    old_title, old_lead, old_body = "", "", ""
     try:
         old_title, old_lead, old_body = await generate_old_custom_article(config)
         old_time = asyncio.get_event_loop().time() - t0
         print(f"✅ OLD Article Generated in {old_time:.2f}s\n")
     except Exception as e:
         logger.exception("Failed to generate old article: %s", e)
-        return
+        old_title = "❌ ОШИБКА СТАРОГО ПОДХОДА"
+        old_body = str(e)
 
     # Print New Article
     print("\n" + "█" * 80)

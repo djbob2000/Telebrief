@@ -16,6 +16,7 @@ from src.publication.article_context import (
     build_article_editorial_context,
 )
 from src.publication.editorial_adapter import FrozenEditorialInput
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.evidence import PublicationEvidence
 
 _NOW = dt.datetime(2026, 8, 29, 20, 0, tzinfo=dt.timezone.utc)
@@ -196,7 +197,7 @@ async def test_event_first_article_generation_single_call_and_clean_markdown() -
 
 
 @pytest.mark.unit
-async def test_event_first_article_generation_falls_back_on_invalid_draft_without_retry() -> None:
+async def test_event_first_article_generation_rejects_on_writer_failure_without_retry() -> None:
     config = _make_article_config()
     logger = logging.getLogger("test")
     generator = ArticleGenerator(config=config, logger=logger)
@@ -238,16 +239,15 @@ async def test_event_first_article_generation_falls_back_on_invalid_draft_withou
         run_id=1,
     )
 
-    # Provider throws or returns invalid JSON
+    # Provider throws
     mock_provider = AsyncMock()
     mock_provider.chat_completion.side_effect = RuntimeError("AI server error")
     generator.provider = mock_provider
 
-    title, lead, body = await generator.generate_from_frozen_input(frozen_input)
+    with pytest.raises(ArticlePublicationRejected) as caught:
+        await generator.generate_from_frozen_input(frozen_input)
 
-    # Assert exactly 1 attempt was made (no infinite retries)
+    assert caught.value.reason == "writer_failed"
+    assert caught.value.error_kind == "article_writer_rejected"
+    # Assert exactly 1 attempt was made (no retries)
     assert mock_provider.chat_completion.call_count == 1
-    # Fallback produced deterministic text from article context
-    assert title == "Заголовок кандидата"
-    assert "## События и факты" in body
-    assert "Факт водопровода" in body
