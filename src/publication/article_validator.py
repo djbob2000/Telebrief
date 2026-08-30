@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 from dataclasses import dataclass
+from typing import Literal
 
 from src.config_loader import PublicationEditorialConfig
 from src.publication.article_claim_support import assess_claim_against_supports
@@ -48,6 +49,8 @@ class ArticleValidationIssue:
     message: str
     support_ids: tuple[str, ...] = ()
     unsupported_claims: tuple[ConcreteClaim, ...] = ()
+    severity: Literal["error", "warning"] = "error"
+    blocking: bool = True
 
 
 @dataclass(frozen=True)
@@ -62,6 +65,10 @@ class ArticleValidationResult:
 
     @property
     def violations(self) -> tuple[str, ...]:
+        return tuple(f"{iss.code}:{iss.unit_id}" for iss in self.issues if iss.blocking)
+
+    @property
+    def all_violations(self) -> tuple[str, ...]:
         return tuple(f"{iss.code}:{iss.unit_id}" for iss in self.issues)
 
     @property
@@ -235,12 +242,19 @@ def validate_article_draft(
             unit_sids = set(cited_ids)
             claim_sids = {sid for c in claim_atoms for sid in c.cited_support_ids}
             if unit_sids != claim_sids:
+                all_known = unit_sids.issubset(support_map.keys()) and claim_sids.issubset(
+                    support_map.keys()
+                )
+                blocking = not all_known
+                severity: Literal["error", "warning"] = "error" if blocking else "warning"
                 issues.append(
                     ArticleValidationIssue(
                         code="CLAIM_SUPPORT_MISMATCH",
                         unit_id=unit_id,
                         message=f"Unit {unit_id} support IDs {sorted(unit_sids)} do not match claim atom support IDs {sorted(claim_sids)}",
                         support_ids=cited_ids,
+                        severity=severity,
+                        blocking=blocking,
                     )
                 )
 
@@ -404,7 +418,7 @@ def validate_article_draft(
                     )
                 )
 
-    is_valid = len(issues) == 0
+    is_valid = not any(iss.blocking for iss in issues)
 
     return ArticleValidationResult(
         is_valid=is_valid,

@@ -513,6 +513,62 @@ def test_draft_missing_claim_atoms_and_support_mismatch() -> None:
 
     # 2. Support mismatch: unit cites frag:101 and frag:201, but claim atom only cites frag:101
     draft_mismatch = StructuredArticleDraft(
+        title="Авария на подстанции в Бердянске",
+        title_support_ids=("story:1:evidence:0:frag:101",),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Авария на подстанции в Бердянске",
+                cited_support_ids=("story:1:evidence:0:frag:101",),
+            ),
+        ),
+        lead="В центральной части Бердянска обесточены дома из-за аварии на подстанции.",
+        lead_support_ids=("story:1:evidence:0:frag:101",),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В центральной части Бердянска авария на подстанции",
+                cited_support_ids=("story:1:evidence:0:frag:101",),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Авария на подстанции",
+                heading_support_ids=("story:1:evidence:0:frag:101",),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Бригада РЭС ведет восстановительные работы.",
+                        cited_support_ids=(
+                            "story:1:evidence:0:frag:101",
+                            "story:2:evidence:0:frag:201",
+                        ),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Бригада РЭС ведет восстановительные работы",
+                                cited_support_ids=("story:1:evidence:0:frag:101",),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=10,
+    )
+    res_mismatch = validate_article_draft(draft_mismatch, ctx, config)
+
+    assert res_mismatch.is_valid is True
+    mismatch_issue = next(
+        iss for iss in res_mismatch.issues if iss.code == "CLAIM_SUPPORT_MISMATCH"
+    )
+    assert mismatch_issue.severity == "warning"
+    assert mismatch_issue.blocking is False
+
+
+@pytest.mark.unit
+def test_draft_with_unknown_claim_support_id_is_blocking_error() -> None:
+    ctx = _make_sample_context()
+    config = PublicationEditorialConfig(article_min_words=5, article_min_sections=1)
+
+    draft_unknown = StructuredArticleDraft(
         title="Заголовок",
         title_support_ids=("story:1:evidence:0:frag:101",),
         title_claims=(
@@ -535,14 +591,11 @@ def test_draft_missing_claim_atoms_and_support_mismatch() -> None:
                 paragraphs=(
                     ArticleParagraph(
                         text="Текст параграфа.",
-                        cited_support_ids=(
-                            "story:1:evidence:0:frag:101",
-                            "story:2:evidence:0:frag:201",
-                        ),
+                        cited_support_ids=("story:1:evidence:0:frag:101",),
                         claims=(
                             ArticleClaimAtom(
                                 text="Текст параграфа",
-                                cited_support_ids=("story:1:evidence:0:frag:101",),
+                                cited_support_ids=("story:999:unknown",),
                             ),
                         ),
                     ),
@@ -551,9 +604,11 @@ def test_draft_missing_claim_atoms_and_support_mismatch() -> None:
         ),
         word_count=10,
     )
-    res_mismatch = validate_article_draft(draft_mismatch, ctx, config)
-    assert res_mismatch.is_valid is False
-    assert any(iss.code == "CLAIM_SUPPORT_MISMATCH" for iss in res_mismatch.issues)
+    res_unknown = validate_article_draft(draft_unknown, ctx, config)
+    assert res_unknown.is_valid is False
+    assert any(
+        iss.code == "UNKNOWN_CLAIM_SUPPORT_ID" and iss.blocking for iss in res_unknown.issues
+    )
 
 
 @pytest.mark.unit
