@@ -465,3 +465,59 @@ def test_article_context_carries_generic_edition_anchor() -> None:
     assert ctx.edition_name == "Бердянск"
     assert "Бердянск" in ctx.edition_anchor_terms
     assert "EDITION CONTEXT: Бердянск" in ctx.to_prompt_context()
+
+
+def test_article_support_preserves_story_id_for_evidence():
+    card = StoryCard(id="story:42", topic="Тема", importance="high", summary="Сводка")
+    evi = PublicationEvidence(
+        evidence_id="story:42:evidence:0:frag:101",
+        story_id=42,
+        text="Факт",
+        source_text="Факт",
+        kind="established_fact",
+        publication_use="PUBLISH",
+        fragment_id=101,
+        source_ref="telegram:source:1:item:1:rev:1:frag:101",
+        source_id=1,
+        source_item_id=1,
+        source_role="official",
+        observed_at=_T0,
+    )
+    ctx = build_article_editorial_context(
+        cards=[card],
+        evidence_items=[evi],
+    )
+    support = ctx.support_index[0]
+    assert support.story_id == "story:42"
+
+
+def test_article_support_preserves_story_id_for_operational():
+    card = StoryCard(
+        id="story:77",
+        topic="Газ",
+        importance="high",
+        summary="Сводка",
+        representative_source_refs=["telegram:source:1:item:5:rev:1:frag:700"],
+    )
+    gas_obs = OperationalObservationPayload(
+        subject_key="gas_supply",
+        subject_label="Газ",
+        dimension="availability",
+        location="Центр",
+        entity="газопровод",
+        state="SCHEDULED",
+        detail="Отключение газа",
+        source_fragment_ids=(700,),
+    )
+    obs_res = ResolvedObservation(
+        observation=gas_obs,
+        observed_at=_T0,
+        source_refs=("telegram:source:1:item:5:rev:1:frag:700",),
+    )
+    ctx = build_article_editorial_context(
+        cards=[card],
+        evidence_items=[],
+        operational_observations=[obs_res],
+    )
+    op_support = next(s for s in ctx.support_index if s.support_kind == "operational")
+    assert op_support.story_id == "story:77"

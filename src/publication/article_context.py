@@ -88,6 +88,7 @@ class ArticleSupport:
     temporal_role: TemporalRole = "CURRENT_WINDOW"
     evidence_kind: str = "established_fact"
     source_roles: tuple[str, ...] = ()
+    story_id: str = ""
 
 
 def _support_framing(support: ArticleSupport) -> str:
@@ -238,8 +239,14 @@ def build_article_editorial_context(
                 temporal_role=temporal_role,
                 evidence_kind=evi.kind,
                 source_roles=(evi.source_role,) if evi.source_role else (),
+                story_id=f"story:{evi.story_id}" if evi.story_id is not None else "",
             )
         )
+
+    story_id_by_source_ref: dict[str, str] = {}
+    for card in cards:
+        for ref in card.representative_source_refs:
+            story_id_by_source_ref.setdefault(ref, card.id)
 
     # Build ArticleSupport for operational observations
     for obs_res in operational_observations:
@@ -308,6 +315,13 @@ def build_article_editorial_context(
                 )
             )
 
+            op_story_ids = [
+                story_id_by_source_ref[ref]
+                for ref in matching_refs
+                if ref in story_id_by_source_ref
+            ]
+            op_story_id = op_story_ids[0] if op_story_ids else ""
+
             support_list.append(
                 ArticleSupport(
                     support_id=sup_id,
@@ -324,6 +338,7 @@ def build_article_editorial_context(
                     temporal_role=op_role,
                     evidence_kind="operational_observation",
                     source_roles=source_roles,
+                    story_id=op_story_id,
                 )
             )
 
