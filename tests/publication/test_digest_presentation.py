@@ -990,3 +990,323 @@ def test_positive_story_drill_down_and_positive_budget_omitted_coverage() -> Non
     # Omitted positive story from dashboard budget remains in thematic layer as NORMAL
     assert hints_by_id["story:docs"].detail_role == "NORMAL"
     assert "story:docs" in plan.detail_story_ids
+
+
+def test_digest_presentation_requires_exact_service_access_provenance() -> None:
+    import datetime as dt
+
+    from src.editorial_models import StoryCard
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime.now(dt.timezone.utc)
+    rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="power",
+                subject_label="Электросеть",
+                dimension="availability",
+                location="",
+                entity="",
+                state="UNAVAILABLE",
+                detail="Нет света",
+                source_refs=("ref-shared",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+                current_source_refs=("ref-shared",),
+            ),
+        )
+    )
+
+    card_a = StoryCard(
+        id="story:1",
+        topic="Отключение света",
+        importance="high",
+        summary="Нет света",
+        representative_source_refs=["ref-shared"],
+        story_kind="operational_status",
+    )
+    card_b = StoryCard(
+        id="story:2",
+        topic="Работа магазинов",
+        importance="medium",
+        summary="Магазины открыты",
+        representative_source_refs=["ref-shared"],
+        story_kind="community_report",
+    )
+
+    evi_a = PublicationEvidence(
+        evidence_id="story:1:evi:1",
+        story_id=1,
+        text="Света нет в центре",
+        source_text="Света нет в центре",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=101,
+        source_ref="ref-shared",
+        source_id=1,
+        source_item_id=1,
+        source_role="official",
+        observed_at=now,
+    )
+    evi_b = PublicationEvidence(
+        evidence_id="story:2:evi:1",
+        story_id=2,
+        text="Магазины работают без перебоев",
+        source_text="Магазины работают без перебоев",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=102,
+        source_ref="ref-shared",
+        source_id=1,
+        source_item_id=1,
+        source_role="community",
+        observed_at=now,
+    )
+
+    evidence_dict = {
+        "story:1:evi:1": evi_a,
+        "story:2:evi:1": evi_b,
+    }
+
+    plan = build_digest_presentation_plan(
+        cards=[card_a, card_b],
+        city_situation=rollup,
+        evidence=evidence_dict,
+    )
+
+    by_story = {p.story_id: p for p in plan.story_presentations}
+    assert by_story["story:1"].mode == "DASHBOARD_ONLY"
+    assert by_story["story:2"].mode == "DETAIL_ONLY"
+    assert "story:1" not in plan.detail_story_ids
+    assert "story:2" in plan.detail_story_ids
+
+
+def test_digest_presentation_dashboard_and_drilldown_mode() -> None:
+    import datetime as dt
+
+    from src.editorial_models import StoryCard
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime.now(dt.timezone.utc)
+    rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="water",
+                subject_label="Водоснабжение",
+                dimension="availability",
+                location="",
+                entity="",
+                state="UNAVAILABLE",
+                detail="Воды нет",
+                source_refs=("ref-water",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+                current_source_refs=("ref-water",),
+            ),
+        )
+    )
+
+    card = StoryCard(
+        id="story:1",
+        topic="Отключение воды",
+        importance="high",
+        summary="Воды нет, жильцы скидываются на подвоз",
+        representative_source_refs=["ref-water"],
+        story_kind="operational_status",
+    )
+
+    evi_status = PublicationEvidence(
+        evidence_id="story:1:evi:dash",
+        story_id=1,
+        text="Воды нет в районе",
+        source_text="Воды нет в районе",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=101,
+        source_ref="ref-water",
+        source_id=1,
+        source_item_id=1,
+        source_role="official",
+        observed_at=now,
+    )
+    evi_detail = PublicationEvidence(
+        evidence_id="story:1:evi:extra",
+        story_id=1,
+        text="Жильцы дома скинулись по 300 рублей на подвоз воды",
+        source_text="Жильцы дома скинулись по 300 рублей на подвоз воды",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=102,
+        source_ref="ref-community",
+        source_id=1,
+        source_item_id=1,
+        source_role="community",
+        observed_at=now,
+    )
+
+    plan = build_digest_presentation_plan(
+        cards=[card],
+        city_situation=rollup,
+        evidence={
+            "story:1:evi:dash": evi_status,
+            "story:1:evi:extra": evi_detail,
+        },
+    )
+
+    pres = plan.story_presentations[0]
+    assert pres.mode == "DASHBOARD_AND_DRILLDOWN"
+    assert "story:1:evi:extra" in pres.detail_support_ids
+    assert "story:1:evi:dash" not in pres.detail_support_ids
+    assert "story:1" in plan.detail_story_ids
+
+
+def test_digest_presentation_dashboard_only_mode() -> None:
+    import datetime as dt
+
+    from src.editorial_models import StoryCard
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime.now(dt.timezone.utc)
+    rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="power",
+                subject_label="Электросеть",
+                dimension="availability",
+                location="",
+                entity="",
+                state="UNAVAILABLE",
+                detail="Нет света",
+                source_refs=("ref-power",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+                current_source_refs=("ref-power",),
+            ),
+        )
+    )
+
+    card = StoryCard(
+        id="story:1",
+        topic="Свет",
+        importance="high",
+        summary="Нет света",
+        representative_source_refs=["ref-power"],
+        story_kind="operational_status",
+    )
+
+    evi = PublicationEvidence(
+        evidence_id="story:1:evi:dash",
+        story_id=1,
+        text="Света нет",
+        source_text="Света нет",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=101,
+        source_ref="ref-power",
+        source_id=1,
+        source_item_id=1,
+        source_role="official",
+        observed_at=now,
+    )
+
+    plan = build_digest_presentation_plan(
+        cards=[card],
+        city_situation=rollup,
+        evidence={"story:1:evi:dash": evi},
+    )
+
+    pres = plan.story_presentations[0]
+    assert pres.mode == "DASHBOARD_ONLY"
+    assert pres.detail_support_ids == ()
+    assert "story:1" not in plan.detail_story_ids
+
+
+def test_digest_presentation_caps_preserve_all_substantive_stories_as_detail_only() -> None:
+    import datetime as dt
+
+    from src.editorial_models import StoryCard
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime.now(dt.timezone.utc)
+    # Create 3 distinct positive subjects
+    items = []
+    cards = []
+    evidence_dict = {}
+
+    subjects = [
+        ("bank", "Банки", "ref-bank", 1),
+        ("transport", "Транспорт", "ref-transport", 2),
+        ("docs", "Документы", "ref-docs", 3),
+    ]
+
+    for subj_key, subj_label, ref, sid in subjects:
+        items.append(
+            CitySituationItem(
+                subject_key=subj_key,
+                subject_label=subj_label,
+                dimension="availability",
+                location="",
+                entity="",
+                state="AVAILABLE",
+                detail=f"{subj_label} работают",
+                source_refs=(ref,),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+                current_source_refs=(ref,),
+            )
+        )
+        cards.append(
+            StoryCard(
+                id=f"story:{sid}",
+                topic=subj_label,
+                importance="medium",
+                summary=f"{subj_label} работают",
+                story_kind="operational_status",
+            )
+        )
+        evidence_dict[f"story:{sid}:evi:1"] = PublicationEvidence(
+            evidence_id=f"story:{sid}:evi:1",
+            story_id=sid,
+            text=f"{subj_label} работают в штатном режиме",
+            source_text=f"{subj_label} работают в штатном режиме",
+            kind="service_access",
+            publication_use="PUBLISH",
+            fragment_id=100 + sid,
+            source_ref=ref,
+            source_id=sid,
+            source_item_id=sid,
+            source_role="official",
+            observed_at=now,
+        )
+
+    rollup = CitySituationRollup(items=tuple(items))
+
+    # Cap positive items to 2
+    plan = build_digest_presentation_plan(
+        cards=cards,
+        city_situation=rollup,
+        evidence=evidence_dict,
+        max_city_situation_positive_items=2,
+    )
+
+    assert len(plan.city_situation.groups) == 2
+    assert len(plan.story_presentations) == 3
+    assert set(plan.story_ids) == {"story:1", "story:2", "story:3"}
+
+    by_story = {p.story_id: p for p in plan.story_presentations}
+    # Two are DASHBOARD_ONLY (or DASHBOARD_AND_DRILLDOWN), and the capped third is DETAIL_ONLY
+    modes = {sid: p.mode for sid, p in by_story.items()}
+    assert sum(1 for m in modes.values() if m == "DETAIL_ONLY") == 1
+    assert sum(1 for m in modes.values() if m == "DASHBOARD_ONLY") == 2
