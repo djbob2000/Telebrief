@@ -35,7 +35,7 @@ from src.db.schema_version import SchemaVersionError
 from src.db.uow import DatabaseUnitOfWork
 from src.runtime import clear_runtime, get_runtime, install_runtime
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 TEST_DATABASE_URL_ENV = "TELEBRIEF_TEST_DATABASE_URL"
 
 requires_test_db = pytest.mark.skipif(

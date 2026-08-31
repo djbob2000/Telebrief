@@ -15,7 +15,7 @@ from src.editorial_audit import FactCheckResult
 from src.editorial_models import EditorialAnalysis, StoryCard, StoryElement
 from src.editorial_writer import ArticleDraft
 
-FIXTURE = Path(__file__).parent / "fixtures" / "editorial_longform_day.json"
+FIXTURE = Path(__file__).parent.parent / "fixtures" / "editorial_longform_day.json"
 
 
 def _load_messages() -> dict[str, list[Message]]:

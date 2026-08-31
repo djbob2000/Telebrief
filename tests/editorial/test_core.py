@@ -579,8 +579,8 @@ async def test_apply_filters_filter_exception_skips_that_filter_preserves_list(
 ):
     """filter() raises -> error logged, that step skipped, next filter still runs."""
     sample_config.settings.filters = [
-        _make_filter_spec("tests.test_core._BrokenFilter"),
-        _make_filter_spec("tests.test_core._PassFilter"),
+        _make_filter_spec("tests.editorial.test_core._BrokenFilter"),
+        _make_filter_spec("tests.editorial.test_core._PassFilter"),
     ]
     ch_cfg = ChannelConfig(id="@test", name="Test Channel")
     result = await _apply_filters(ch_cfg, sample_messages, sample_config, mock_logger)
