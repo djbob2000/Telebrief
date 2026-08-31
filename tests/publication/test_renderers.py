@@ -75,7 +75,7 @@ class TestPublicationDigestRenderer:
         )
 
         assert "Дайджест: Бердянск" in title
-        assert "Ремонт водовода на АКЗ" in lead
+        assert lead == ""
         assert "Коммунальная обстановка" in body
         assert "Ремонт водовода на АКЗ" in body
         assert "Транспорт и дороги" in body

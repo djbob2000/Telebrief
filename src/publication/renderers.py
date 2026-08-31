@@ -533,7 +533,7 @@ class PublicationDigestRenderer:
             sections.append(f"_{stat_emoji}Статистика: {stat_text}._")
 
         body = "\n\n".join(s.strip() for s in sections if s.strip())
-        lead = cards[0].summary if cards else ""
+        lead = ""
         return title, lead, body
 
     def render_grouped_digest_chunks(
