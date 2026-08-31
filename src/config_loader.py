@@ -291,6 +291,8 @@ class PublicationEditorialConfig:
     digest_narrative_mode: str = "deterministic"
     digest_narrative_max_cards_per_block: int = 6
     digest_narrative_max_output_tokens: int = 4096
+    digest_city_situation_max_items: int = 7
+    digest_city_situation_max_details_per_item: int = 2
 
     def __post_init__(self) -> None:
         if self.conflict_window_minutes <= 0:
@@ -315,6 +317,10 @@ class PublicationEditorialConfig:
             raise ValueError("digest_narrative_max_cards_per_block must be a positive integer")
         if self.digest_narrative_max_output_tokens <= 0:
             raise ValueError("digest_narrative_max_output_tokens must be a positive integer")
+        if not (1 <= self.digest_city_situation_max_items <= 12):
+            raise ValueError("digest_city_situation_max_items must be between 1 and 12")
+        if not (1 <= self.digest_city_situation_max_details_per_item <= 4):
+            raise ValueError("digest_city_situation_max_details_per_item must be between 1 and 4")
 
 
 @dataclass
@@ -1638,6 +1644,10 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
             "digest_narrative_max_cards_per_block", 6
         ),
         digest_narrative_max_output_tokens=_val_pos_int("digest_narrative_max_output_tokens", 4096),
+        digest_city_situation_max_items=_val_pos_int("digest_city_situation_max_items", 7),
+        digest_city_situation_max_details_per_item=_val_pos_int(
+            "digest_city_situation_max_details_per_item", 2
+        ),
     )
 
 
