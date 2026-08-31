@@ -1090,3 +1090,163 @@ async def test_event_editorial_adapter_resident_questions_suppressed_as_cards_ke
     m_card = next(card for card in editorial.analysis.cards if card.id == f"story:{m_story_id}")
     assert any(u.basis == "resident_question" for u in m_card.uncertainties)
     assert any("работает" in d.text.lower() for d in m_card.useful_details)
+
+
+@pytest.mark.postgres
+async def test_event_editorial_adapter_derives_city_situation_from_service_state(
+    conn, pool, edition
+):
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_repo = PublicationPolicyRepository()
+
+    elig = await policy_repo.get_or_create_eligibility_policy(
+        conn, edition_id=edition.id, config_hash="h-e-srv", prompt_version="v1"
+    )
+    sel = await policy_repo.get_or_create_selection_policy(
+        conn, edition_id=edition.id, config_hash="h-s-srv", prompt_version="v1"
+    )
+    wri = await policy_repo.get_or_create_writer_policy(
+        conn, edition_id=edition.id, config_hash="h-w-srv", prompt_version="v1"
+    )
+
+    cur = await conn.execute(
+        """
+        INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+        VALUES (%s, 'active', 'event_first', %s)
+        RETURNING id
+        """,
+        (edition.id, _NOW),
+    )
+    story_id = (await cur.fetchone())[0]
+
+    event_payload = {
+        "topic": "Отключение воды",
+        "tags": ["вода", "авария"],
+        "urgency": "high",
+        "publishability": "news",
+        "headline": "В Бердянске отключили воду",
+        "digest_summary": "Авария на магистрали оставила город без воды.",
+        "evidence_items": [
+            {
+                "text": "В Бердянске отключили воду из-за аварии",
+                "kind": "service_access",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [8001],
+                "service_state": {
+                    "subject_key": "water_supply",
+                    "subject_label": "Водоснабжение",
+                    "dimension": "availability",
+                    "state": "UNAVAILABLE",
+                    "expected_now": True,
+                    "basis": "direct_failure",
+                },
+            }
+        ],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-srv-rev', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            story_id,
+            event_payload["digest_summary"],
+            event_payload["headline"],
+            event_payload["digest_summary"],
+            json.dumps(event_payload),
+            _NOW,
+        ),
+    )
+    rev_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name, role)
+        VALUES ('telegram', 'channel', '-10088', 'https://t.me/water', 'Водоканал', 'official')
+        RETURNING id
+        """
+    )
+    src_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_id, edition.id),
+    )
+    cur = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'message', 'msg-88', %s)
+        RETURNING id
+        """,
+        (src_id, _NOW),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'h-rev-88', 'Авария на магистрали')
+        RETURNING id
+        """,
+        (item_id,),
+    )
+    sir_id = (await cur.fetchone())[0]
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES (8001, %s, 0, 'Авария на магистрали', 'h-f-88', 'v1', TRUE, %s)
+        """,
+        (sir_id, _NOW),
+    )
+
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        request_key="test-service-state-city-situation",
+        snapshot_at=_NOW,
+        policy_ids=(elig.id, sel.id, wri.id),
+    )
+    cand = await repo.insert_candidate(
+        conn, run.id, story_id=story_id, story_revision_id=rev_id, deterministic_rank=1
+    )
+    dec = await repo.insert_selection_decision(
+        conn,
+        run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=run.id,
+            candidate_id=cand.id,
+            decision="INCLUDE",
+            presentation_intent="lead",
+            confidence=0.95,
+            reason="OK",
+            rank=1,
+            metadata={},
+            created_at=_NOW,
+        ),
+    )
+    pub_in = await repo.freeze_selected_input(
+        conn,
+        run.id,
+        story_id=story_id,
+        story_revision_id=rev_id,
+        selection_decision_id=dec.id,
+        presentation_intent="lead",
+        rank=1,
+        fragment_ids=[8001],
+    )
+
+    adapter = EventEditorialAdapter(uow=uow, repo=repo)
+    editorial = await adapter.adapt_inputs_on(conn, run.id, inputs=[pub_in])
+
+    assert editorial.analysis.city_situation is not None
+    item = next(
+        it for it in editorial.analysis.city_situation.items if it.subject_key == "water_supply"
+    )
+    assert item.state == "UNAVAILABLE"

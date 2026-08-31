@@ -22,6 +22,7 @@ from src.editorial_models import (
     Uncertainty,
 )
 from src.processing.event_analysis import EventAnalysisPayload
+from src.processing.operational_semantics import derive_operational_observations
 from src.publication.editorial_adapter import FrozenEditorialInput
 from src.publication.models import PublicationInput
 from src.publication.repository import PublicationRepository
@@ -325,9 +326,17 @@ class EventEditorialAdapter:
                     for fact in (payload.key_facts if payload else [])
                 ]
 
+            effective_observations: tuple[OperationalObservationPayload, ...] = ()
+            if payload:
+                derived = derive_operational_observations(payload)
+                if derived:
+                    effective_observations = derived
+                elif payload.operational_observations:
+                    effective_observations = payload.operational_observations
+
             op_obs_elements: list[StoryElement] = []
-            if payload and payload.operational_observations:
-                for obs in payload.operational_observations:
+            if effective_observations:
+                for obs in effective_observations:
                     obs_refs = [
                         frag_id_to_ref[fid]
                         for fid in obs.source_fragment_ids
@@ -380,14 +389,14 @@ class EventEditorialAdapter:
 
             importance = "high" if payload and payload.urgency in ("critical", "high") else "medium"
             # Check if this story is a pure operational update
-            if payload and payload.operational_observations:
+            if effective_observations:
                 has_non_op_evidence = any(
                     evi.kind not in ("service_access", "utility_status")
                     and evi.publication_use == "PUBLISH"
-                    for evi in payload.evidence_items
+                    for evi in (payload.evidence_items if payload else [])
                 )
-                cat = (payload.category or "").lower()
-                tags = {t.lower() for t in payload.tags}
+                cat = (payload.category or "").lower() if payload else ""
+                tags = {t.lower() for t in payload.tags} if payload else set()
                 is_utility_domain = (
                     cat
                     in (
@@ -422,7 +431,7 @@ class EventEditorialAdapter:
                     evi.publication_use == "PUBLISH" and evi.kind != "resident_question"
                     for evi in payload.evidence_items
                 )
-                has_valid_operational = bool(payload.operational_observations)
+                has_valid_operational = bool(effective_observations)
                 should_emit_card = has_publishable_evidence or has_valid_operational
             else:
                 should_emit_card = True
