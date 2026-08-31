@@ -6,7 +6,11 @@ from dataclasses import dataclass
 
 from src.publication.article_claims import ConcreteClaim, extract_concrete_claims
 from src.publication.article_context import ArticleEditorialContext
-from src.publication.article_models import ArticleClaimAtom, StructuredArticleDraft
+from src.publication.article_models import (
+    ArticleClaimAtom,
+    ArticleGenerationOrigin,
+    StructuredArticleDraft,
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +43,7 @@ class ArticleClaimTraceUnit:
     source_roles: tuple[str, ...]
     concrete_claims: tuple[ConcreteClaim, ...]
     claim_atoms: tuple[ArticleClaimTraceAtom, ...] = ()
+    generation_origin: ArticleGenerationOrigin = "AI"
 
 
 def build_article_claim_trace(
@@ -49,22 +54,52 @@ def build_article_claim_trace(
     support_map = context.support_by_id
     trace_units: list[ArticleClaimTraceUnit] = []
 
-    # Sequence of (unit_id, text, cited_support_ids, claim_atoms)
-    raw_units: list[tuple[str, str, tuple[str, ...], tuple[ArticleClaimAtom, ...]]] = [
-        ("TITLE", draft.title, draft.title_support_ids, draft.title_claims),
-        ("LEAD", draft.lead, draft.lead_support_ids, draft.lead_claims),
+    # Sequence of (unit_id, text, cited_support_ids, claim_atoms, generation_origin)
+    raw_units: list[
+        tuple[str, str, tuple[str, ...], tuple[ArticleClaimAtom, ...], ArticleGenerationOrigin]
+    ] = [
+        (
+            "TITLE",
+            draft.title,
+            draft.title_support_ids,
+            draft.title_claims,
+            draft.title_generation_origin,
+        ),
+        (
+            "LEAD",
+            draft.lead,
+            draft.lead_support_ids,
+            draft.lead_claims,
+            draft.lead_generation_origin,
+        ),
     ]
 
     p_idx = 1
     for s_idx, sec in enumerate(draft.sections, start=1):
         h_id = f"H{s_idx:03d}"
-        raw_units.append((h_id, sec.heading, sec.heading_support_ids, sec.heading_claims))
+        raw_units.append(
+            (
+                h_id,
+                sec.heading,
+                sec.heading_support_ids,
+                sec.heading_claims,
+                sec.heading_generation_origin,
+            )
+        )
         for para in sec.paragraphs:
             p_id = f"P{p_idx:03d}"
-            raw_units.append((p_id, para.text, para.cited_support_ids, para.claims))
+            raw_units.append(
+                (
+                    p_id,
+                    para.text,
+                    para.cited_support_ids,
+                    para.claims,
+                    para.generation_origin,
+                )
+            )
             p_idx += 1
 
-    for unit_id, text, support_ids, claim_atoms in raw_units:
+    for unit_id, text, support_ids, claim_atoms, generation_origin in raw_units:
         if not text.strip():
             continue
 
@@ -132,6 +167,7 @@ def build_article_claim_trace(
                 source_roles=tuple(dict.fromkeys(source_roles)),
                 concrete_claims=concrete,
                 claim_atoms=tuple(trace_atoms),
+                generation_origin=generation_origin,
             )
         )
 

@@ -155,3 +155,53 @@ def test_structured_article_draft_legacy_string_paragraphs_fail_closed_empty_sup
     assert p.text == "К вечеру воды не было."
     # Legacy string paragraph must NOT inherit section cited_evidence_ids
     assert p.cited_support_ids == ()
+
+
+@pytest.mark.unit
+def test_structured_article_from_dict_forces_ai_origin() -> None:
+    draft = StructuredArticleDraft.from_dict(
+        {
+            "title": "Заголовок",
+            "title_support_ids": ["story:1:evidence:0:frag:1"],
+            "title_claims": [
+                {
+                    "text": "Заголовок",
+                    "cited_support_ids": ["story:1:evidence:0:frag:1"],
+                }
+            ],
+            "lead": "Лид",
+            "lead_support_ids": ["story:1:evidence:0:frag:1"],
+            "lead_claims": [
+                {
+                    "text": "Лид",
+                    "cited_support_ids": ["story:1:evidence:0:frag:1"],
+                }
+            ],
+            "title_generation_origin": "FALLBACK",
+            "sections": [
+                {
+                    "heading": "Раздел",
+                    "heading_support_ids": ["story:1:evidence:0:frag:1"],
+                    "heading_generation_origin": "FALLBACK",
+                    "paragraphs": [
+                        {
+                            "text": "Абзац",
+                            "cited_support_ids": ["story:1:evidence:0:frag:1"],
+                            "generation_origin": "FALLBACK",
+                            "claims": [
+                                {
+                                    "text": "Абзац",
+                                    "cited_support_ids": ["story:1:evidence:0:frag:1"],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert draft.title_generation_origin == "AI"
+    assert draft.lead_generation_origin == "AI"
+    assert draft.sections[0].heading_generation_origin == "AI"
+    assert draft.sections[0].paragraphs[0].generation_origin == "AI"

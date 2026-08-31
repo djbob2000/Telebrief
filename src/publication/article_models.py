@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 _INTERNAL_EVIDENCE_ID_RE = re.compile(
     r"\[(?:story:\d+:evidence:\d+:frag:\d+|story:\d+|evidence:\d+:frag:\d+|op:[^\]]+)\]",
@@ -12,10 +12,7 @@ _INTERNAL_EVIDENCE_ID_RE = re.compile(
 )
 
 
-_INTERNAL_EVIDENCE_ID_RE = re.compile(
-    r"\[(?:story:\d+:evidence:\d+:frag:\d+|story:\d+|evidence:\d+:frag:\d+|op:[^\]]+)\]",
-    re.IGNORECASE,
-)
+ArticleGenerationOrigin = Literal["AI", "SUPPLEMENT", "FALLBACK"]
 
 
 @dataclass(frozen=True)
@@ -63,6 +60,7 @@ class ArticleParagraph:
     text: str
     cited_support_ids: tuple[str, ...] = ()
     claims: tuple[ArticleClaimAtom, ...] = ()
+    generation_origin: ArticleGenerationOrigin = "AI"
 
 
 @dataclass(frozen=True)
@@ -74,6 +72,7 @@ class ArticleSection:
     heading_claims: tuple[ArticleClaimAtom, ...] = ()
     paragraphs: tuple[ArticleParagraph, ...] = ()
     cited_evidence_ids: tuple[str, ...] = ()
+    heading_generation_origin: ArticleGenerationOrigin = "AI"
 
 
 @dataclass(frozen=True)
@@ -89,6 +88,8 @@ class StructuredArticleDraft:
     lead_claims: tuple[ArticleClaimAtom, ...] = ()
     cited_evidence_ids: tuple[str, ...] = ()
     word_count: int = 0
+    title_generation_origin: ArticleGenerationOrigin = "AI"
+    lead_generation_origin: ArticleGenerationOrigin = "AI"
 
     @property
     def cited_support_ids(self) -> tuple[str, ...]:

@@ -185,3 +185,80 @@ def test_build_article_claim_trace_preserves_epistemic_metadata() -> None:
     assert unit.source_roles == ("community",)
     assert unit.claim_atoms[0].evidence_kinds == ("community_report",)
     assert unit.claim_atoms[0].source_roles == ("community",)
+
+
+@pytest.mark.unit
+def test_build_article_claim_trace_propagates_generation_origin() -> None:
+    sup1 = ArticleSupport(
+        support_id="story:1:evidence:0:frag:2002",
+        text="Факт 1",
+        source_text="Факт 1",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("telegram:src:1:item:202:frag:2002",),
+        fragment_ids=(2002,),
+        source_item_ids=(202,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    sup2 = ArticleSupport(
+        support_id="story:2:evidence:0:frag:2003",
+        text="Факт 2",
+        source_text="Факт 2",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("telegram:src:1:item:203:frag:2003",),
+        fragment_ids=(2003,),
+        source_item_ids=(203,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    supports = (sup1, sup2)
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Заголовок",),
+        support_index=supports,
+        support_by_id={s.support_id: s for s in supports},
+        recurring_topics=(),
+    )
+    draft = StructuredArticleDraft(
+        title="Заголовок",
+        title_support_ids=("story:1:evidence:0:frag:2002",),
+        title_generation_origin="AI",
+        lead="Лид",
+        lead_support_ids=("story:1:evidence:0:frag:2002",),
+        lead_generation_origin="AI",
+        sections=(
+            ArticleSection(
+                heading="Раздел AI",
+                heading_support_ids=("story:1:evidence:0:frag:2002",),
+                heading_generation_origin="AI",
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Параграф AI.",
+                        cited_support_ids=("story:1:evidence:0:frag:2002",),
+                        generation_origin="AI",
+                    ),
+                ),
+            ),
+            ArticleSection(
+                heading="Коротко о других событиях города",
+                heading_support_ids=("story:2:evidence:0:frag:2003",),
+                heading_generation_origin="SUPPLEMENT",
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Параграф Supplement.",
+                        cited_support_ids=("story:2:evidence:0:frag:2003",),
+                        generation_origin="SUPPLEMENT",
+                    ),
+                ),
+            ),
+        ),
+    )
+    trace = build_article_claim_trace(draft, ctx)
+    by_unit = {u.unit_id: u for u in trace}
+    assert by_unit["TITLE"].generation_origin == "AI"
+    assert by_unit["LEAD"].generation_origin == "AI"
+    assert by_unit["H001"].generation_origin == "AI"
+    assert by_unit["P001"].generation_origin == "AI"
+    assert by_unit["H002"].generation_origin == "SUPPLEMENT"
+    assert by_unit["P002"].generation_origin == "SUPPLEMENT"
