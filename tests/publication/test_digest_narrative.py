@@ -712,3 +712,47 @@ def test_digest_narrative_item_grouping_three_stories():
     result = validate_digest_narrative(draft, plan, support_index)
     assert result.is_valid
     assert draft.blocks[0].items[0].covered_story_ids == block.story_ids
+
+
+def test_validate_digest_narrative_rejects_unrelated_story_grouping():
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    block = DigestNarrativeBlock(
+        block_id="block:utilities:0",
+        rubric_id="utilities",
+        rubric_title="ЖКХ",
+        story_ids=("story:100", "story:101"),
+        support_ids=("sup:100", "sup:101"),
+        canonical_notes=(),
+        merge_group_by_story=(("story:100", "merge:100"), ("story:101", "merge:101")),
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+
+    raw = {
+        "blocks": [
+            {
+                "block_id": "block:utilities:0",
+                "items": [
+                    {
+                        "headline": "Городские новости",
+                        "body": "Назначение нового сотрудника и лаборатория проводит анализы.",
+                        "covered_story_ids": ["story:100", "story:101"],
+                        "cited_support_ids": ["sup:100", "sup:101"],
+                    }
+                ],
+            }
+        ]
+    }
+    draft = DigestNarrativeDraft.from_dict(raw)
+    support_index = {
+        "sup:100": "Назначение нового сотрудника",
+        "sup:101": "Лаборатория проводит анализы",
+    }
+    result = validate_digest_narrative(draft, plan, support_index)
+    assert not result.is_valid
+    assert any("UNRELATED_STORY_GROUPING" in v for v in result.violations)

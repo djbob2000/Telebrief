@@ -328,3 +328,160 @@ def test_build_digest_presentation_plan_preserves_hybrid_story() -> None:
     )
 
     assert "story:20" in plan.detail_story_ids
+
+
+def test_score_digest_detail_evidence_prefers_concrete_facts() -> None:
+    import datetime as dt
+
+    from src.publication.digest_presentation import score_digest_detail_evidence
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime.now(dt.timezone.utc)
+    generic_evi = PublicationEvidence(
+        evidence_id="evi:1",
+        story_id=1,
+        text="Горожане адаптируются к сложной ситуации",
+        source_text="Горожане адаптируются к сложной ситуации в городе",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=1,
+        source_ref="ref:1",
+        source_id=1,
+        source_item_id=1,
+        source_role="citizen",
+        observed_at=now,
+    )
+    concrete_evi = PublicationEvidence(
+        evidence_id="evi:2",
+        story_id=1,
+        text="Жильцы скинулись по 300 рублей на генератор",
+        source_text="Жильцы скинулись по 300 рублей на домовой генератор для насоса",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=2,
+        source_ref="ref:2",
+        source_id=1,
+        source_item_id=1,
+        source_role="citizen",
+        observed_at=now,
+    )
+    assert score_digest_detail_evidence(concrete_evi) > score_digest_detail_evidence(generic_evi)
+
+
+def test_build_digest_presentation_plan_selects_microdetail_hints() -> None:
+    import datetime as dt
+
+    from src.editorial_models import StoryCard
+    from src.publication.digest_presentation import build_digest_presentation_plan
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime.now(dt.timezone.utc)
+    evi_generic = PublicationEvidence(
+        evidence_id="story:1:evi:1",
+        story_id=1,
+        text="Жители адаптируются",
+        source_text="Жители адаптируются",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=1,
+        source_ref="ref:1",
+        source_id=1,
+        source_item_id=1,
+        source_role="citizen",
+        observed_at=now,
+    )
+    evi_concrete = PublicationEvidence(
+        evidence_id="story:1:evi:2",
+        story_id=1,
+        text="Жильцы скинулись по 300 рублей на генератор",
+        source_text="Жильцы скинулись по 300 рублей на генератор",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=2,
+        source_ref="ref:2",
+        source_id=1,
+        source_item_id=1,
+        source_role="citizen",
+        observed_at=now,
+    )
+    card = StoryCard(
+        id="story:1",
+        topic="Генераторы",
+        importance="medium",
+        summary="Генераторы",
+        tags=["генераторы"],
+        rubric_id="society",
+        category="society",
+        story_kind="",
+        representative_source_refs=["ref:1", "ref:2"],
+    )
+    plan = build_digest_presentation_plan(
+        cards=[card],
+        city_situation=None,
+        evidence={"story:1:evi:1": evi_generic, "story:1:evi:2": evi_concrete},
+        max_city_situation_items=7,
+        max_city_situation_details=2,
+    )
+    assert len(plan.story_hints) == 1
+    hint = plan.story_hints[0]
+    assert hint.story_id == "story:1"
+    assert "story:1:evi:2" in hint.detail_support_ids
+
+
+def test_build_digest_presentation_plan_assigns_merge_groups_by_tags() -> None:
+    from src.editorial_models import StoryCard
+    from src.publication.digest_presentation import build_digest_presentation_plan
+
+    # Disjoint stories in same rubric
+    card_a = StoryCard(
+        id="story:100",
+        topic="Администрация",
+        importance="low",
+        summary="Назначение",
+        tags=["городская администрация", "назначение"],
+        rubric_id="society",
+        category="society",
+        story_kind="",
+    )
+    card_b = StoryCard(
+        id="story:101",
+        topic="Лаборатория",
+        importance="low",
+        summary="Анализы",
+        tags=["лаборатория", "медицина"],
+        rubric_id="society",
+        category="society",
+        story_kind="",
+    )
+    # Related stories in same rubric
+    card_c = StoryCard(
+        id="story:102",
+        topic="Сети электроснабжения",
+        importance="low",
+        summary="Ремонт ЛЭП",
+        tags=["электроснабжение", "лэп"],
+        rubric_id="utilities",
+        category="utilities",
+        story_kind="",
+    )
+    card_d = StoryCard(
+        id="story:103",
+        topic="Подстанция",
+        importance="low",
+        summary="Трансформатор",
+        tags=["электроснабжение", "подстанция"],
+        rubric_id="utilities",
+        category="utilities",
+        story_kind="",
+    )
+
+    plan = build_digest_presentation_plan(
+        cards=[card_a, card_b, card_c, card_d],
+        city_situation=None,
+        evidence={},
+        max_city_situation_items=7,
+        max_city_situation_details=2,
+    )
+    hints_by_id = {h.story_id: h for h in plan.story_hints}
+    assert hints_by_id["story:100"].merge_group_id != hints_by_id["story:101"].merge_group_id
+    assert hints_by_id["story:102"].merge_group_id == hints_by_id["story:103"].merge_group_id

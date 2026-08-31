@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from src.publication.city_situation import (
     CitySituationItem,
@@ -226,6 +226,63 @@ class DigestPresentationPlan:
     story_hints: tuple[DigestStoryPresentationHint, ...]
 
 
+def score_digest_detail_evidence(evi: Any) -> int:
+    """Score evidence for microdetail richness (concrete numbers, dates, times, amounts, quotes)."""
+    from src.publication.article_claims import extract_concrete_claims
+
+    text = " ".join(
+        part for part in (getattr(evi, "text", ""), getattr(evi, "source_text", "")) if part
+    ).strip()
+    if not text:
+        return 0
+    score = 0
+    if extract_concrete_claims(text):
+        score += 3
+    if getattr(evi, "kind", "") in {"community_report", "service_access", "official_statement"}:
+        score += 2
+    src_text = getattr(evi, "source_text", "") or ""
+    if len(src_text.split()) >= 8:
+        score += 1
+    if any(mark in src_text for mark in ("«", "»", '"')):
+        score += 1
+    return score
+
+
+_GENERIC_STOP_TAGS = {
+    "город",
+    "города",
+    "городской",
+    "городские",
+    "житель",
+    "жители",
+    "жителей",
+    "новость",
+    "новости",
+    "информация",
+    "информации",
+    "местный",
+    "местные",
+    "общество",
+    "происшествия",
+    "события",
+    "news",
+    "city",
+    "resident",
+    "local",
+    "info",
+}
+
+
+def _card_meaningful_tags(card: Any) -> set[str]:
+    tags: set[str] = set()
+    raw_tags = getattr(card, "tags", []) or []
+    for t in raw_tags:
+        norm = " ".join(str(t).casefold().split())
+        if norm and norm not in _GENERIC_STOP_TAGS and len(norm) > 2:
+            tags.add(norm)
+    return tags
+
+
 def _card_is_consumed_by_dashboard(
     card: Any,
     covered_refs: set[str],
@@ -238,6 +295,56 @@ def _card_is_consumed_by_dashboard(
     else:
         refs = {ref for ref in getattr(card, "representative_source_refs", []) if ref}
     return bool(refs) and refs <= covered_refs
+
+
+def _compute_merge_groups(cards: Sequence[Any]) -> dict[str, str]:
+    """Group cards in the same rubric that share at least one non-generic normalized tag."""
+    # Group by rubric_id
+    by_rubric: dict[str, list[Any]] = {}
+    for c in cards:
+        rid = getattr(c, "rubric_id", "") or ""
+        by_rubric.setdefault(rid, []).append(c)
+
+    merge_group_by_id: dict[str, str] = {}
+    for _rid, r_cards in by_rubric.items():
+        n = len(r_cards)
+        # Adjacency list
+        adj: dict[int, set[int]] = {i: set() for i in range(n)}
+        for i in range(n):
+            tags_i = _card_meaningful_tags(r_cards[i])
+            if not tags_i:
+                continue
+            for j in range(i + 1, n):
+                tags_j = _card_meaningful_tags(r_cards[j])
+                if tags_i & tags_j:
+                    adj[i].add(j)
+                    adj[j].add(i)
+
+        visited: set[int] = set()
+        for i in range(n):
+            if i in visited:
+                continue
+            component: list[int] = []
+            queue = [i]
+            visited.add(i)
+            while queue:
+                curr = queue.pop()
+                component.append(curr)
+                for neighbor in adj[curr]:
+                    if neighbor not in visited:
+                        visited.add(neighbor)
+                        queue.append(neighbor)
+
+            if len(component) > 1:
+                comp_cards = [r_cards[idx] for idx in component]
+                gid = f"merge:{min(c.id for c in comp_cards)}"
+                for c in comp_cards:
+                    merge_group_by_id[c.id] = gid
+            else:
+                card = r_cards[i]
+                merge_group_by_id[card.id] = card.id
+
+    return merge_group_by_id
 
 
 def build_digest_presentation_plan(
@@ -255,19 +362,67 @@ def build_digest_presentation_plan(
         max_details_per_item=max_city_situation_details,
     )
     covered_refs = set(city_plan.covered_source_refs)
-    detail_story_ids = tuple(
-        card.id for card in cards if not _card_is_consumed_by_dashboard(card, covered_refs)
-    )
-    story_hints = tuple(
-        DigestStoryPresentationHint(
-            story_id=sid,
-            detail_support_ids=(),
-            merge_group_id=sid,
+    detail_cards = [
+        card for card in cards if not _card_is_consumed_by_dashboard(card, covered_refs)
+    ]
+    detail_story_ids = tuple(card.id for card in detail_cards)
+
+    merge_groups = _compute_merge_groups(detail_cards)
+
+    evidence_map = evidence if isinstance(evidence, Mapping) else {}
+
+    story_hints: list[DigestStoryPresentationHint] = []
+    for card in detail_cards:
+        sid = card.id
+        merge_gid = merge_groups.get(sid, sid)
+
+        # Extract numeric story id if applicable
+        num_sid: int | None = None
+        if sid.startswith("story:"):
+            num_part = sid.split(":", 1)[1]
+            if num_part.isdigit():
+                num_sid = int(num_part)
+
+        # Find matching evidence
+        candidate_evi: list[Any] = []
+        for eid, evi in evidence_map.items():
+            evi_sid = getattr(evi, "story_id", None)
+            if (
+                (evi_sid is not None and num_sid is not None and evi_sid == num_sid)
+                or eid.startswith(f"{sid}:")
+                or getattr(evi, "story_id", None) == sid
+            ):
+                if (
+                    getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
+                    and getattr(evi, "kind", "") != "resident_question"
+                ):
+                    candidate_evi.append(evi)
+
+        # Score candidate evidence
+        scored_evi = [
+            (score_digest_detail_evidence(evi), getattr(evi, "evidence_id", ""))
+            for evi in candidate_evi
+        ]
+        scored_evi.sort(key=lambda x: (-x[0], x[1]))
+
+        positive_supports = [eid for score, eid in scored_evi if score > 0 and eid][:2]
+        if positive_supports:
+            detail_support_ids = tuple(positive_supports)
+        elif scored_evi and scored_evi[0][1]:
+            detail_support_ids = (scored_evi[0][1],)
+        else:
+            detail_support_ids = ()
+
+        story_hints.append(
+            DigestStoryPresentationHint(
+                story_id=sid,
+                detail_support_ids=detail_support_ids,
+                merge_group_id=merge_gid,
+            )
         )
-        for sid in detail_story_ids
-    )
+
     return DigestPresentationPlan(
         city_situation=city_plan,
         detail_story_ids=detail_story_ids,
-        story_hints=story_hints,
+        story_hints=tuple(story_hints),
     )

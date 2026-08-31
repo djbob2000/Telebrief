@@ -32,6 +32,8 @@ class DigestNarrativeBlock:
     story_ids: tuple[str, ...]
     support_ids: tuple[str, ...]
     canonical_notes: tuple[str, ...]
+    detail_support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    merge_group_by_story: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -154,6 +156,7 @@ def plan_digest_narrative_blocks(
     evidence: Mapping[str, PublicationEvidence],
     rubrics: Sequence[Any],
     max_cards_per_block: int = 6,
+    presentation_plan: Any = None,
 ) -> DigestNarrativePlan:
     """Build immutable narrative blocks from classified story cards strictly preserving order."""
     if not cards:
@@ -171,6 +174,10 @@ def plan_digest_narrative_blocks(
             str(getattr(r, "name", "")),
             bool(getattr(r, "fallback", False)),
         )
+
+    hints_by_id = {}
+    if presentation_plan is not None and getattr(presentation_plan, "story_hints", None):
+        hints_by_id = {h.story_id: h for h in presentation_plan.story_hints}
 
     rubric_infos = [_get_r_info(r) for r in rubrics]
     rubric_ids = [info[0] for info in rubric_infos if info[0]]
@@ -231,6 +238,15 @@ def plan_digest_narrative_blocks(
                             ):
                                 block_support_ids.append(eid)
 
+            detail_supports = tuple(
+                (c.id, hints_by_id[c.id].detail_support_ids)
+                for c in chunk
+                if c.id in hints_by_id and hints_by_id[c.id].detail_support_ids
+            )
+            merge_groups = tuple(
+                (c.id, hints_by_id[c.id].merge_group_id) for c in chunk if c.id in hints_by_id
+            )
+
             blocks.append(
                 DigestNarrativeBlock(
                     block_id=block_id,
@@ -239,6 +255,8 @@ def plan_digest_narrative_blocks(
                     story_ids=story_ids,
                     support_ids=tuple(block_support_ids),
                     canonical_notes=tuple(notes),
+                    detail_support_ids_by_story=detail_supports,
+                    merge_group_by_story=merge_groups,
                 )
             )
 
@@ -282,6 +300,7 @@ def validate_digest_narrative(
 
         allowed_supports = set(plan_block.support_ids)
         expected_story_ids = set(plan_block.story_ids)
+        merge_group_map = dict(plan_block.merge_group_by_story)
 
         flat_story_ids = [sid for item in out_block.items for sid in item.covered_story_ids]
         if len(flat_story_ids) != len(set(flat_story_ids)):
@@ -299,6 +318,10 @@ def validate_digest_narrative(
                 violations.append(
                     f"ITEM_TOO_MANY_STORIES: item in block {out_block.block_id} covers {len(item.covered_story_ids)} stories (max {DIGEST_ITEM_MAX_STORIES})"
                 )
+            if len(item.covered_story_ids) > 1 and merge_group_map:
+                m_groups = {merge_group_map.get(sid, sid) for sid in item.covered_story_ids}
+                if len(m_groups) > 1:
+                    violations.append(f"UNRELATED_STORY_GROUPING: {out_block.block_id}")
             if len(item.headline) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
                 violations.append(
                     f"HEADLINE_TOO_LONG: headline exceeds {DIGEST_ITEM_HEADLINE_MAX_CHARS} chars in block {out_block.block_id}"
