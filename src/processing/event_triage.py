@@ -23,11 +23,12 @@ from src.processing.edition_scope import (
     EditionScopeClass,
     build_scope_contract,
 )
+from src.processing.operational_semantics import normalize_operational_payload
 from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v5"
+TRIAGE_VERSION = "v6"
 
 _GATE_V2_SYSTEM_PROMPT = """You are a fast geographic, editorial retention, and operational triage classifier for a regional newsroom digest.
 You are evaluating candidate event Stories for ONE configured edition.
@@ -48,6 +49,13 @@ For LOCAL or DIRECT_IMPACT content:
 - DROP is only for high-confidence hard noise/commercial-only content and must use enrichment=NONE with exclusion_reason in ('commercial_classified', 'obvious_noise').
 - In-scope KEEP uses BRIEF for simple useful local information, and ANALYZE only when rich synthesis is justified.
 - Publication use is semantic, not topic-based.
+- Evidence kind describes semantic content, not source trust.
+- Use service_access for a concrete current or scheduled resident-facing service availability/access state even when reported by a community source.
+- Use community_report for useful community facts that are not themselves service availability/access states.
+- Every PUBLISH service_access evidence item SHOULD have a matching operational_observation with overlapping source_fragment_ids.
+- Do not label resident coping behavior, household tools, safety advice, personal burden, demand, sentiment, discussion, or future concern as service_access merely to create an operational observation.
+- Absence of a seasonal or optional service is not a current outage unless the excerpts establish that operation is currently expected, was operating and failed, or explicitly report a current system failure/restriction.
+- If a workaround creates a concrete service outcome, preserve the coping action separately and create a service state only for the explicitly supported outcome.
 - A service-access fact may be PUBLISH even when a business or bank is named (e.g. ATM cash availability, backup power for telecom, state fee / document procedures).
 - A sales offer, discount, product listing, seller phone number, or promotional price is EXCLUDE.
 - Do not convert EXCLUDE commercial details into useful_details merely to preserve them.
@@ -63,6 +71,7 @@ For LOCAL or DIRECT_IMPACT content:
 - For KEEP, provide a brief_payload with topic, tags, urgency, publishability, headline, digest_summary, operational_observations, and evidence_items.
 - Every operational observation MUST cite one or more exact source_fragment_ids from the excerpts for that Story. Valid states: AVAILABLE, UNAVAILABLE, DEGRADED, RESTRICTED, UNKNOWN, SCHEDULED. Limit to at most 4 operational observations. Include effective_from / effective_until in ISO-8601 when the source reports a future or scheduled window.
 - Every evidence item MUST have text, kind (established_fact, community_report, service_access, official_statement, commercial_offer, resident_question), publication_use (PUBLISH, CONTEXT, EXCLUDE), and exact source_fragment_ids.
+
 
 Respond ONLY with a valid JSON object containing a "results" array:
 {
@@ -436,6 +445,22 @@ class StoryTriageService:
                         brief_payload = normalize_question_evidence(
                             parse_event_payload(raw_brief, allowed_fragment_ids=allowed_fids)
                         )
+                        brief_payload, operational_audit = normalize_operational_payload(
+                            brief_payload
+                        )
+                        if operational_audit.dropped_observation_count > 0:
+                            self.logger.debug(
+                                "Gate dropped %s invalid operational observations for story %s: %s",
+                                operational_audit.dropped_observation_count,
+                                s.story_id,
+                                operational_audit.dropped_observation_subject_keys,
+                            )
+                        if operational_audit.uncovered_service_access_fragment_ids:
+                            self.logger.debug(
+                                "Gate story %s has uncovered service_access fragments: %s",
+                                s.story_id,
+                                operational_audit.uncovered_service_access_fragment_ids,
+                            )
                     except Exception as e:
                         self.logger.debug(
                             "Brief payload parsing error for story %s: %s", s.story_id, e
@@ -467,6 +492,7 @@ class StoryTriageService:
                             brief_payload = ensure_keep_publishability(
                                 normalize_question_evidence(brief_payload), default="brief"
                             )
+                            brief_payload, _ = normalize_operational_payload(brief_payload)
                         else:
                             # Unsafe drop without a valid brief must defer
                             deferred_ids.append(s.story_id)
@@ -481,6 +507,7 @@ class StoryTriageService:
                         brief_payload = ensure_keep_publishability(
                             normalize_question_evidence(brief_payload), default="brief"
                         )
+                        brief_payload, _ = normalize_operational_payload(brief_payload)
                     else:
                         deferred_ids.append(s.story_id)
                         continue

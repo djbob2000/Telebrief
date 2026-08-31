@@ -1413,7 +1413,8 @@ def test_gate_v5_operational_observation_contract_is_service_state_only() -> Non
     from src.processing import event_triage
 
     prompt = event_triage._GATE_V2_SYSTEM_PROMPT.lower()
-    assert event_triage.TRIAGE_VERSION == "v5"
+    assert event_triage.TRIAGE_VERSION == "v6"
+
     assert "resident-facing" in prompt
     assert "do not create an operational observation" in prompt
     assert "coping" in prompt
@@ -1532,4 +1533,142 @@ async def test_gate_non_operational_coping_evidence_preserves_keep_without_obser
     assert res.brief_payload is not None
     assert len(res.brief_payload.evidence_items) == 1
     assert res.brief_payload.evidence_items[0].publication_use == "PUBLISH"
+    assert res.brief_payload.operational_observations == ()
+
+
+def test_gate_v6_operational_semantic_contract():
+    from src.processing.event_triage import _GATE_V2_SYSTEM_PROMPT, TRIAGE_VERSION
+
+    assert TRIAGE_VERSION == "v6"
+
+    prompt = _GATE_V2_SYSTEM_PROMPT.lower()
+
+    assert "service_access" in prompt
+    assert "semantic" in prompt
+    assert "every publish service_access" in prompt
+    assert "seasonal" in prompt
+    assert "coping" in prompt
+    assert "resident_question" in prompt
+
+
+@pytest.mark.postgres
+async def test_gate_v6_drops_invalid_operational_projections_on_keep(conn, edition, revision):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8992, 'hash_coping_gate', '[1, 0]'::vector, 'test-model', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9992, %s, 0, 'Жители включают генератор на ночь для холодильников', 'hash_coping_gate', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10992, 9992, 8992)
+        """
+    )
+    aid = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9992,
+        fragment_embedding_id=10992,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid,
+        centroid=[1.0, 0.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid,
+    )
+
+    st = await cluster_repo.get_cluster_state(conn, sid)
+    assert st is not None
+
+    scope_config = EditionScopeConfig(name="Бердянск", focus_places=("Бердянск",))
+    scope_hash = scope_config_hash(scope_config)
+
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "story_id": sid,
+                    "scope": "LOCAL",
+                    "scope_confidence": 0.95,
+                    "scope_reason": "Resident generator use in focus city",
+                    "retention": "KEEP",
+                    "enrichment": "BRIEF",
+                    "exclusion_reason": None,
+                    "confidence": 0.9,
+                    "reason": "Residents running generator",
+                    "brief_payload": {
+                        "topic": "Использование генераторов жителями",
+                        "publishability": "news",
+                        "headline": "Жильцы дома используют генератор ночью",
+                        "digest_summary": "Жители включают генератор для холодильников.",
+                        "evidence_items": [
+                            {
+                                "text": "Жители включают генератор на ночь для холодильников",
+                                "kind": "community_report",
+                                "publication_use": "PUBLISH",
+                                "source_fragment_ids": [9992],
+                            }
+                        ],
+                        "operational_observations": [
+                            {
+                                "subject_key": "household_generator",
+                                "subject_label": "Генератор",
+                                "dimension": "availability",
+                                "location": "Бердянск",
+                                "entity": "жители",
+                                "state": "AVAILABLE",
+                                "detail": "Генератор доступен",
+                                "source_fragment_ids": [9992],
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    batch = await service.triage_stories_batch(
+        conn,
+        [st],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert len(batch.results) == 1
+    res = batch.results[0]
+    assert res.retention == "KEEP"
+    assert res.enrichment == "BRIEF"
+    assert res.brief_payload is not None
+    assert len(res.brief_payload.evidence_items) == 1
     assert res.brief_payload.operational_observations == ()
