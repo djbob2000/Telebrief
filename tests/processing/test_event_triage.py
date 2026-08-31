@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -149,6 +150,7 @@ async def test_story_triage_service_batch_flow(conn, edition, revision):
             {
                 "story_id": local_sid,
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [9001],
                 "scope_confidence": 0.99,
                 "scope_reason": "The event text explicitly names the target city.",
                 "retention": "KEEP",
@@ -164,16 +166,22 @@ async def test_story_triage_service_batch_flow(conn, edition, revision):
                     "publishability": "brief",
                     "headline": "Ремонтные работы в Бердянске",
                     "digest_summary": "На улице Ленина проводятся коммунальные работы.",
-                    "operational_observations": [
+                    "evidence_items": [
                         {
-                            "subject_key": "municipal_repair",
-                            "subject_label": "Ремонтные работы",
-                            "dimension": "status",
-                            "location": "Ленина",
-                            "entity": "дорога",
-                            "state": "RESTRICTED",
-                            "detail": "Ремонтные работы",
+                            "text": "Ремонтные работы на улице Ленина",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
                             "source_fragment_ids": [9001],
+                            "service_state": {
+                                "subject_key": "municipal_repair",
+                                "subject_label": "Ремонтные работы",
+                                "dimension": "status",
+                                "state": "RESTRICTED",
+                                "location": "Ленина",
+                                "entity": "дорога",
+                                "expected_now": True,
+                                "basis": "explicit_restriction",
+                            },
                         }
                     ],
                 },
@@ -181,6 +189,7 @@ async def test_story_triage_service_batch_flow(conn, edition, revision):
             {
                 "story_id": external_sid,
                 "scope": "OUT_OF_SCOPE",
+                "scope_basis_fragment_ids": [],
                 "scope_confidence": 0.99,
                 "scope_reason": "The event is explicitly in another city and no target impact is stated.",
                 "retention": "DROP",
@@ -193,6 +202,7 @@ async def test_story_triage_service_batch_flow(conn, edition, revision):
             {
                 "story_id": impact_sid,
                 "scope": "DIRECT_IMPACT",
+                "scope_basis_fragment_ids": [9003],
                 "scope_confidence": 0.96,
                 "scope_reason": "The external grid failure explicitly caused an outage in the target city.",
                 "retention": "KEEP",
@@ -208,16 +218,22 @@ async def test_story_triage_service_batch_flow(conn, edition, revision):
                     "publishability": "news",
                     "headline": "Блэкаут из-за аварии на внешней линии",
                     "digest_summary": "Авария на внешней линии привела к отключению света в Бердянске.",
-                    "operational_observations": [
+                    "evidence_items": [
                         {
-                            "subject_key": "power_supply",
-                            "subject_label": "Электроснабжение",
-                            "dimension": "availability",
-                            "location": "Бердянск",
-                            "entity": "ЛЭП",
-                            "state": "UNAVAILABLE",
-                            "detail": "Авария на магистральной линии",
+                            "text": "Авария на внешней линии привела к отключению света в Бердянске",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
                             "source_fragment_ids": [9003],
+                            "service_state": {
+                                "subject_key": "power_supply",
+                                "subject_label": "Электроснабжение",
+                                "dimension": "availability",
+                                "state": "UNAVAILABLE",
+                                "location": "Бердянск",
+                                "entity": "ЛЭП",
+                                "expected_now": True,
+                                "basis": "direct_failure",
+                            },
                         }
                     ],
                 },
@@ -333,6 +349,7 @@ async def test_story_triage_service_cache_lookup_avoids_llm_call(conn, edition, 
                 {
                     "story_id": sid,
                     "scope": "LOCAL",
+                    "scope_basis_fragment_ids": [9050],
                     "scope_confidence": 0.99,
                     "scope_reason": "In city",
                     "retention": "KEEP",
@@ -344,16 +361,22 @@ async def test_story_triage_service_cache_lookup_avoids_llm_call(conn, edition, 
                         "topic": "Cached Topic",
                         "headline": "Cached Headline",
                         "digest_summary": "Cached Summary",
-                        "operational_observations": [
+                        "evidence_items": [
                             {
-                                "subject_key": "cached_service",
-                                "subject_label": "Service",
-                                "dimension": "availability",
-                                "location": "City",
-                                "entity": "serv",
-                                "state": "AVAILABLE",
-                                "detail": "Active",
+                                "text": "Active",
+                                "kind": "service_access",
+                                "publication_use": "PUBLISH",
                                 "source_fragment_ids": [9050],
+                                "service_state": {
+                                    "subject_key": "cached_service",
+                                    "subject_label": "Service",
+                                    "dimension": "availability",
+                                    "location": "City",
+                                    "entity": "serv",
+                                    "state": "AVAILABLE",
+                                    "expected_now": True,
+                                    "basis": "normal_operation",
+                                },
                             }
                         ],
                     },
@@ -578,6 +601,7 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
             {
                 "story_id": sids[0],
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [9021],
                 "scope_confidence": 0.95,
                 "scope_reason": "In city",
                 "retention": "KEEP",
@@ -589,16 +613,22 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
                     "topic": "Valid brief",
                     "headline": "Valid",
                     "digest_summary": "Valid summary",
-                    "operational_observations": [
+                    "evidence_items": [
                         {
-                            "subject_key": "serv",
-                            "subject_label": "Serv",
-                            "dimension": "av",
-                            "location": "City",
-                            "entity": "e",
-                            "state": "AVAILABLE",
-                            "detail": "d",
+                            "text": "d",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
                             "source_fragment_ids": [9021],
+                            "service_state": {
+                                "subject_key": "serv",
+                                "subject_label": "Serv",
+                                "dimension": "av",
+                                "location": "City",
+                                "entity": "e",
+                                "state": "AVAILABLE",
+                                "expected_now": True,
+                                "basis": "normal_operation",
+                            },
                         }
                     ],
                 },
@@ -606,6 +636,7 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
             {
                 "story_id": sids[2],
                 "scope": "REGIONAL",
+                "scope_basis_fragment_ids": [],
                 "scope_confidence": 0.95,
                 "scope_reason": "In region",
                 "retention": "KEEP",
@@ -617,6 +648,7 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
             {
                 "story_id": sids[3],
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [9024],
                 "scope_confidence": 1.5,
                 "scope_reason": "In city",
                 "retention": "KEEP",
@@ -628,6 +660,7 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
             {
                 "story_id": sids[4],
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [9025],
                 "scope_confidence": 0.95,
                 "scope_reason": "In city",
                 "retention": "KEEP",
@@ -639,15 +672,11 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
                     "topic": "Invalid fragment ref",
                     "headline": "Invalid",
                     "digest_summary": "Invalid",
-                    "operational_observations": [
+                    "evidence_items": [
                         {
-                            "subject_key": "serv",
-                            "subject_label": "Serv",
-                            "dimension": "av",
-                            "location": "City",
-                            "entity": "e",
-                            "state": "AVAILABLE",
-                            "detail": "d",
+                            "text": "d",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
                             "source_fragment_ids": [99999],  # invalid!
                         }
                     ],
@@ -772,6 +801,7 @@ async def test_story_triage_service_drop_normalization_rules(conn, edition, revi
             {
                 "story_id": sid_valid_drop,
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [9031],
                 "scope_confidence": 0.99,
                 "scope_reason": "In city",
                 "retention": "DROP",
@@ -784,6 +814,7 @@ async def test_story_triage_service_drop_normalization_rules(conn, edition, revi
                 # Low confidence drop but has valid brief -> normalized to KEEP + BRIEF
                 "story_id": sid_low_conf_with_brief,
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [9032],
                 "scope_confidence": 0.99,
                 "scope_reason": "In city",
                 "retention": "DROP",
@@ -795,16 +826,22 @@ async def test_story_triage_service_drop_normalization_rules(conn, edition, revi
                     "topic": "ATM cash info",
                     "headline": "ATM is dispensing cash",
                     "digest_summary": "Residents report cash available at ATM",
-                    "operational_observations": [
+                    "evidence_items": [
                         {
-                            "subject_key": "banking_cash",
-                            "subject_label": "Банкоматы",
-                            "dimension": "availability",
-                            "location": "AKZ",
-                            "entity": "ATM",
-                            "state": "AVAILABLE",
-                            "detail": "ATM working",
+                            "text": "ATM working",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
                             "source_fragment_ids": [9032],
+                            "service_state": {
+                                "subject_key": "banking_cash",
+                                "subject_label": "Банкоматы",
+                                "dimension": "availability",
+                                "location": "AKZ",
+                                "entity": "ATM",
+                                "state": "AVAILABLE",
+                                "expected_now": True,
+                                "basis": "normal_operation",
+                            },
                         }
                     ],
                 },
@@ -813,6 +850,7 @@ async def test_story_triage_service_drop_normalization_rules(conn, edition, revi
                 # Low confidence drop without brief -> deferred
                 "story_id": sid_low_conf_without_brief,
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [9033],
                 "scope_confidence": 0.99,
                 "scope_reason": "In city",
                 "retention": "DROP",
@@ -956,36 +994,35 @@ async def test_story_triage_utility_vs_commercial_prompt_contract(conn, edition,
 
         brief = None
         if exp_ret == "KEEP":
+            item_data: dict[str, Any] = {
+                "text": text,
+                "kind": kind,
+                "publication_use": pub_use,
+                "source_fragment_ids": [fid],
+            }
+            if kind == "service_access":
+                item_data["service_state"] = {
+                    "subject_key": f"subj_{name}",
+                    "subject_label": f"Label {name}",
+                    "dimension": "status",
+                    "location": "Center",
+                    "entity": "service",
+                    "state": "AVAILABLE",
+                    "expected_now": True,
+                    "basis": "normal_operation",
+                }
             brief = {
                 "topic": f"Topic for {name}",
                 "headline": f"Headline for {name}",
                 "digest_summary": f"Summary for {name}",
-                "evidence_items": [
-                    {
-                        "text": text,
-                        "kind": kind,
-                        "publication_use": pub_use,
-                        "source_fragment_ids": [fid],
-                    }
-                ],
-                "operational_observations": [
-                    {
-                        "subject_key": f"subj_{name}",
-                        "subject_label": f"Label {name}",
-                        "dimension": "status",
-                        "location": "Center",
-                        "entity": "service",
-                        "state": "AVAILABLE",
-                        "detail": text,
-                        "source_fragment_ids": [fid],
-                    }
-                ],
+                "evidence_items": [item_data],
             }
 
         triage_results.append(
             {
                 "story_id": sid,
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [fid],
                 "scope_confidence": 0.99,
                 "scope_reason": "In target city",
                 "retention": exp_ret,
@@ -1092,6 +1129,7 @@ async def test_story_triage_80_singletons_one_call_no_rich_analysis(conn, editio
             {
                 "story_id": sid,
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [fid],
                 "scope_confidence": 0.99,
                 "scope_reason": "In target city",
                 "retention": "KEEP",
@@ -1109,18 +1147,16 @@ async def test_story_triage_80_singletons_one_call_no_rich_analysis(conn, editio
                             "kind": "service_access",
                             "publication_use": "PUBLISH",
                             "source_fragment_ids": [fid],
-                        }
-                    ],
-                    "operational_observations": [
-                        {
-                            "subject_key": f"util_{idx}",
-                            "subject_label": f"Utility {idx}",
-                            "dimension": "status",
-                            "location": "City",
-                            "entity": "grid",
-                            "state": "AVAILABLE",
-                            "detail": f"Service active #{idx}",
-                            "source_fragment_ids": [fid],
+                            "service_state": {
+                                "subject_key": f"util_{idx}",
+                                "subject_label": f"Utility {idx}",
+                                "dimension": "status",
+                                "location": "City",
+                                "entity": "grid",
+                                "state": "AVAILABLE",
+                                "expected_now": True,
+                                "basis": "normal_operation",
+                            },
                         }
                     ],
                 },
@@ -1243,6 +1279,7 @@ async def test_single_community_source_keep_internal_only_normalized_to_brief(
                 {
                     "story_id": sid,
                     "scope": "LOCAL",
+                    "scope_basis_fragment_ids": [9999],
                     "scope_confidence": 0.93,
                     "scope_reason": "In target city",
                     "retention": "KEEP",
@@ -1351,6 +1388,7 @@ async def test_gate_v2_normalizes_resident_question_brief_payload(conn, edition,
                 {
                     "story_id": sid,
                     "scope": "LOCAL",
+                    "scope_basis_fragment_ids": [9888],
                     "scope_confidence": 0.95,
                     "scope_reason": "Resident question in target city",
                     "retention": "KEEP",
@@ -1368,18 +1406,6 @@ async def test_gate_v2_normalizes_resident_question_brief_payload(conn, edition,
                                 "text": "Работает ли пенсионный фонд?",
                                 "kind": "resident_question",
                                 "publication_use": "PUBLISH",
-                                "source_fragment_ids": [9888],
-                            }
-                        ],
-                        "operational_observations": [
-                            {
-                                "subject_key": "pension_fund",
-                                "subject_label": "Пенсионный фонд",
-                                "dimension": "availability",
-                                "location": "Бердянск",
-                                "entity": "пенсионный фонд",
-                                "state": "UNKNOWN",
-                                "detail": "Жители спрашивают, работает ли учреждение",
                                 "source_fragment_ids": [9888],
                             }
                         ],
@@ -1405,21 +1431,20 @@ async def test_gate_v2_normalizes_resident_question_brief_payload(conn, edition,
     assert result.brief_payload is not None
     assert result.brief_payload.evidence_items[0].kind == "resident_question"
     assert result.brief_payload.evidence_items[0].publication_use == "CONTEXT"
-    # Question-only observation was stripped
-    assert result.brief_payload.operational_observations == ()
+    assert result.brief_payload.evidence_items[0].service_state is None
 
 
-def test_gate_v5_operational_observation_contract_is_service_state_only() -> None:
-    from src.processing import event_triage
+def test_gate_v7_uses_unified_service_state_contract() -> None:
+    from src.processing.event_triage import _GATE_V2_SYSTEM_PROMPT, TRIAGE_VERSION
 
-    prompt = event_triage._GATE_V2_SYSTEM_PROMPT.lower()
-    assert event_triage.TRIAGE_VERSION == "v6"
+    assert TRIAGE_VERSION == "v7"
+    prompt = _GATE_V2_SYSTEM_PROMPT
 
-    assert "resident-facing" in prompt
-    assert "do not create an operational observation" in prompt
-    assert "coping" in prompt
-    assert "regional" in prompt
-    assert "safety advice" in prompt
+    assert '"service_state"' in prompt
+    assert '"expected_now"' in prompt
+    assert '"basis"' in prompt
+    assert '"scope_basis_fragment_ids"' in prompt
+    assert '"operational_observations"' not in prompt
 
 
 @pytest.mark.postgres
@@ -1490,6 +1515,7 @@ async def test_gate_non_operational_coping_evidence_preserves_keep_without_obser
                 {
                     "story_id": sid,
                     "scope": "LOCAL",
+                    "scope_basis_fragment_ids": [9901],
                     "scope_confidence": 0.95,
                     "scope_reason": "Resident workaround in target city",
                     "retention": "KEEP",
@@ -1510,7 +1536,6 @@ async def test_gate_non_operational_coping_evidence_preserves_keep_without_obser
                                 "source_fragment_ids": [9901],
                             }
                         ],
-                        "operational_observations": [],
                     },
                 }
             ]
@@ -1533,26 +1558,130 @@ async def test_gate_non_operational_coping_evidence_preserves_keep_without_obser
     assert res.brief_payload is not None
     assert len(res.brief_payload.evidence_items) == 1
     assert res.brief_payload.evidence_items[0].publication_use == "PUBLISH"
-    assert res.brief_payload.operational_observations == ()
-
-
-def test_gate_v6_operational_semantic_contract():
-    from src.processing.event_triage import _GATE_V2_SYSTEM_PROMPT, TRIAGE_VERSION
-
-    assert TRIAGE_VERSION == "v6"
-
-    prompt = _GATE_V2_SYSTEM_PROMPT.lower()
-
-    assert "service_access" in prompt
-    assert "semantic" in prompt
-    assert "every publish service_access" in prompt
-    assert "seasonal" in prompt
-    assert "coping" in prompt
-    assert "resident_question" in prompt
 
 
 @pytest.mark.postgres
-async def test_gate_v6_drops_invalid_operational_projections_on_keep(conn, edition, revision):
+async def test_gate_v7_water_auto_projection_readiness(conn, edition, revision):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8991, 'hash_water_gate', '[1, 0]'::vector, 'test-model', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9991, %s, 0, 'Water is absent on upper floors in Berdyansk', 'hash_water_gate', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10991, 9991, 8991)
+        """
+    )
+    aid = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9991,
+        fragment_embedding_id=10991,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid,
+        centroid=[1.0, 0.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid,
+    )
+    st = await cluster_repo.get_cluster_state(conn, sid)
+    assert st is not None
+
+    scope_config = EditionScopeConfig(name="Бердянск", focus_places=("Бердянск",))
+    scope_hash = scope_config_hash(scope_config)
+
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "story_id": sid,
+                    "scope": "LOCAL",
+                    "scope_basis_fragment_ids": [9991],
+                    "scope_confidence": 0.98,
+                    "scope_reason": "Water outage in target city",
+                    "retention": "KEEP",
+                    "enrichment": "BRIEF",
+                    "exclusion_reason": None,
+                    "confidence": 0.95,
+                    "reason": "Water failure reported",
+                    "brief_payload": {
+                        "topic": "Отсутствие воды на верхних этажах",
+                        "publishability": "news",
+                        "headline": "В Бердянске на верхних этажах пропала вода",
+                        "digest_summary": "Жители сообщают об отсутствии воды.",
+                        "evidence_items": [
+                            {
+                                "kind": "service_access",
+                                "publication_use": "PUBLISH",
+                                "text": "Water is absent on upper floors in Berdyansk",
+                                "source_fragment_ids": [9991],
+                                "service_state": {
+                                    "subject_key": "water_supply",
+                                    "subject_label": "Water supply",
+                                    "dimension": "availability",
+                                    "state": "UNAVAILABLE",
+                                    "location": "upper floors",
+                                    "entity": "",
+                                    "expected_now": True,
+                                    "basis": "direct_failure",
+                                },
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    batch = await service.triage_stories_batch(
+        conn,
+        [st],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert len(batch.results) == 1
+    res = batch.results[0]
+    assert res.retention == "KEEP"
+    assert res.brief_payload is not None
+    item = res.brief_payload.evidence_items[0]
+    assert item.service_state is not None
+    assert item.service_state.subject_key == "water_supply"
+
+
+@pytest.mark.postgres
+async def test_gate_v7_coping_false_positive_demoted_to_community_report(conn, edition, revision):
     now = dt.datetime.now(dt.timezone.utc)
     story_repo = StoryRepository()
     cluster_repo = EventClusterRepository()
@@ -1618,6 +1747,7 @@ async def test_gate_v6_drops_invalid_operational_projections_on_keep(conn, editi
                 {
                     "story_id": sid,
                     "scope": "LOCAL",
+                    "scope_basis_fragment_ids": [9992],
                     "scope_confidence": 0.95,
                     "scope_reason": "Resident generator use in focus city",
                     "retention": "KEEP",
@@ -1633,21 +1763,19 @@ async def test_gate_v6_drops_invalid_operational_projections_on_keep(conn, editi
                         "evidence_items": [
                             {
                                 "text": "Жители включают генератор на ночь для холодильников",
-                                "kind": "community_report",
+                                "kind": "service_access",
                                 "publication_use": "PUBLISH",
                                 "source_fragment_ids": [9992],
-                            }
-                        ],
-                        "operational_observations": [
-                            {
-                                "subject_key": "household_generator",
-                                "subject_label": "Генератор",
-                                "dimension": "availability",
-                                "location": "Бердянск",
-                                "entity": "жители",
-                                "state": "AVAILABLE",
-                                "detail": "Генератор доступен",
-                                "source_fragment_ids": [9992],
+                                "service_state": {
+                                    "subject_key": "backup_power",
+                                    "subject_label": "Генератор",
+                                    "dimension": "availability",
+                                    "location": "Бердянск",
+                                    "entity": "жители",
+                                    "state": "AVAILABLE",
+                                    "expected_now": True,
+                                    "basis": "normal_operation",
+                                },
                             }
                         ],
                     },
@@ -1671,4 +1799,5 @@ async def test_gate_v6_drops_invalid_operational_projections_on_keep(conn, editi
     assert res.enrichment == "BRIEF"
     assert res.brief_payload is not None
     assert len(res.brief_payload.evidence_items) == 1
-    assert res.brief_payload.operational_observations == ()
+    assert res.brief_payload.evidence_items[0].kind == "community_report"
+    assert res.brief_payload.evidence_items[0].service_state is None

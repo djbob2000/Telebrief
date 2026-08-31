@@ -23,12 +23,15 @@ from src.processing.edition_scope import (
     EditionScopeClass,
     build_scope_contract,
 )
-from src.processing.operational_semantics import normalize_operational_payload
+from src.processing.operational_semantics import (
+    has_unstructured_publish_service_access,
+    normalize_service_state_evidence,
+)
 from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v6"
+TRIAGE_VERSION = "v7"
 
 _GATE_V2_SYSTEM_PROMPT = """You are a fast geographic, editorial retention, and operational triage classifier for a regional newsroom digest.
 You are evaluating candidate event Stories for ONE configured edition.
@@ -52,26 +55,26 @@ For LOCAL or DIRECT_IMPACT content:
 - Evidence kind describes semantic content, not source trust.
 - Use service_access for a concrete current or scheduled resident-facing service availability/access state even when reported by a community source.
 - Use community_report for useful community facts that are not themselves service availability/access states.
-- Every PUBLISH service_access evidence item SHOULD have a matching operational_observation with overlapping source_fragment_ids.
-- Do not label resident coping behavior, household tools, safety advice, personal burden, demand, sentiment, discussion, or future concern as service_access merely to create an operational observation.
-- Absence of a seasonal or optional service is not a current outage unless the excerpts establish that operation is currently expected, was operating and failed, or explicitly report a current system failure/restriction.
-- If a workaround creates a concrete service outcome, preserve the coping action separately and create a service state only for the explicitly supported outcome.
-- A service-access fact may be PUBLISH even when a business or bank is named (e.g. ATM cash availability, backup power for telecom, state fee / document procedures).
 - A sales offer, discount, product listing, seller phone number, or promotional price is EXCLUDE.
 - Do not convert EXCLUDE commercial details into useful_details merely to preserve them.
 - Resident questions, resident answers, service availability, outage reports, and operational workarounds are not noise merely because they are conversational. Preserve current local actionable information about everyday civilian access to services.
 - Use resident_question for a resident asking whether/where/when/how something works when the excerpt itself does not provide the answer.
 - resident_question is CONTEXT, not PUBLISH.
-- A question alone MUST NOT create an operational_observation or service state.
+- A question alone MUST NOT create a service state.
 - If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
 - Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
-- operational_observations are ONLY for a concrete current/scheduled state of resident-facing utility, infrastructure, transport, communications, financial/municipal service, or service-access function.
-- Do NOT create an operational observation for resident coping behavior, safety advice, personal burden, demand/interest, discussion sentiment, or broad regional incident totals unless the excerpt explicitly establishes a concrete current local service state.
-- Such facts may remain PUBLISH evidence and may remain in the digest thematic layer.
-- For KEEP, provide a brief_payload with topic, tags, urgency, publishability, headline, digest_summary, operational_observations, and evidence_items.
-- Every operational observation MUST cite one or more exact source_fragment_ids from the excerpts for that Story. Valid states: AVAILABLE, UNAVAILABLE, DEGRADED, RESTRICTED, UNKNOWN, SCHEDULED. Limit to at most 4 operational observations. Include effective_from / effective_until in ISO-8601 when the source reports a future or scheduled window.
-- Every evidence item MUST have text, kind (established_fact, community_report, service_access, official_statement, commercial_offer, resident_question), publication_use (PUBLISH, CONTEXT, EXCLUDE), and exact source_fragment_ids.
 
+SERVICE-STATE CONTRACT:
+- Operational service truth exists only inside a PUBLISH evidence item with kind=service_access and a non-null service_state object.
+- Do not output an operational_observations array.
+- service_state describes the external resident-facing service outcome, not the resident workaround mechanism.
+- A generator, battery, private well, neighbor collection, charging action, VPN choice, fuel burden, or other coping action is not itself a resident-facing service state.
+- If a workaround causes an explicitly stated service outcome, keep the coping action as separate evidence and attach service_state only to the evidence sentence that states the water/internet/banking/transport/etc. outcome.
+- For UNAVAILABLE, DEGRADED, or RESTRICTED, expected_now MUST be true and the excerpts must establish that the service is expected to operate now or explicitly describe a current failure/restriction.
+- Do not infer expected_now from the calendar or general season knowledge.
+- For SCHEDULED, basis must be scheduled_change and effective_from is required.
+- Valid basis values: normal_operation, direct_failure, degraded_access, explicit_restriction, scheduled_change.
+- LOCAL or DIRECT_IMPACT MUST cite one or more exact scope_basis_fragment_ids from the Story excerpts that establish the local occurrence or concrete local consequence.
 
 Respond ONLY with a valid JSON object containing a "results" array:
 {
@@ -79,6 +82,7 @@ Respond ONLY with a valid JSON object containing a "results" array:
     {
       "story_id": 123,
       "scope": "LOCAL | DIRECT_IMPACT | OUT_OF_SCOPE | UNCERTAIN",
+      "scope_basis_fragment_ids": [101],
       "scope_confidence": 0.98,
       "scope_reason": "Brief geographic explanation",
       "retention": "KEEP | DROP",
@@ -94,26 +98,24 @@ Respond ONLY with a valid JSON object containing a "results" array:
         "publishability": "news | brief | internal_only | noise",
         "headline": "Informative headline",
         "digest_summary": "1-2 concise sentences",
-        "operational_observations": [
-          {
-            "subject_key": "power_supply",
-            "subject_label": "Электроснабжение",
-            "dimension": "availability",
-            "location": "Центр",
-            "entity": "электросеть",
-            "state": "UNAVAILABLE",
-            "detail": "Аварийное отключение",
-            "source_fragment_ids": [101],
-            "effective_from": "2026-08-30T08:00:00+00:00",
-            "effective_until": "2026-08-30T17:00:00+00:00"
-          }
-        ],
         "evidence_items": [
           {
             "text": "Fact or service access detail",
             "kind": "established_fact | community_report | service_access | official_statement | commercial_offer | resident_question",
             "publication_use": "PUBLISH | CONTEXT | EXCLUDE",
-            "source_fragment_ids": [101]
+            "source_fragment_ids": [101],
+            "service_state": {
+              "subject_key": "water_supply",
+              "subject_label": "Водоснабжение",
+              "dimension": "availability",
+              "state": "UNAVAILABLE",
+              "location": "",
+              "entity": "",
+              "expected_now": true,
+              "basis": "direct_failure",
+              "effective_from": null,
+              "effective_until": null
+            }
           }
         ]
       }
@@ -135,6 +137,7 @@ class StoryGateResult:
     confidence: float
     reason: str
     brief_payload: EventPayload | None
+    scope_basis_fragment_ids: tuple[int, ...] = ()
 
     @property
     def decision(self) -> str:
@@ -437,6 +440,24 @@ class StoryTriageService:
 
                 allowed_fids = all_story_frag_ids.get(s.story_id, set())
 
+                raw_scope_basis = item.get("scope_basis_fragment_ids", [])
+                if isinstance(raw_scope_basis, (list, tuple)):
+                    scope_basis_ids = tuple(
+                        int(x)
+                        for x in raw_scope_basis
+                        if isinstance(x, (int, str)) and str(x).isdigit()
+                    )
+                else:
+                    scope_basis_ids = ()
+
+                if set(scope_basis_ids) - allowed_fids:
+                    deferred_ids.append(s.story_id)
+                    continue
+
+                if scope in {"LOCAL", "DIRECT_IMPACT"} and not scope_basis_ids:
+                    deferred_ids.append(s.story_id)
+                    continue
+
                 # Parse brief_payload if present
                 raw_brief = item.get("brief_payload")
                 brief_payload: EventPayload | None = None
@@ -445,21 +466,20 @@ class StoryTriageService:
                         brief_payload = normalize_question_evidence(
                             parse_event_payload(raw_brief, allowed_fragment_ids=allowed_fids)
                         )
-                        brief_payload, operational_audit = normalize_operational_payload(
+                        brief_payload, service_audit = normalize_service_state_evidence(
                             brief_payload
                         )
-                        if operational_audit.dropped_observation_count > 0:
+                        if service_audit.rejected_count > 0:
                             self.logger.debug(
-                                "Gate dropped %s invalid operational observations for story %s: %s",
-                                operational_audit.dropped_observation_count,
+                                "Gate rejected %s invalid service states for story %s: %s",
+                                service_audit.rejected_count,
                                 s.story_id,
-                                operational_audit.dropped_observation_subject_keys,
+                                service_audit.rejection_reasons,
                             )
-                        if operational_audit.uncovered_service_access_fragment_ids:
+                        if has_unstructured_publish_service_access(brief_payload):
                             self.logger.debug(
-                                "Gate story %s has uncovered service_access fragments: %s",
+                                "Gate story %s has unstructured publish service_access evidence",
                                 s.story_id,
-                                operational_audit.uncovered_service_access_fragment_ids,
                             )
                     except Exception as e:
                         self.logger.debug(
@@ -492,7 +512,7 @@ class StoryTriageService:
                             brief_payload = ensure_keep_publishability(
                                 normalize_question_evidence(brief_payload), default="brief"
                             )
-                            brief_payload, _ = normalize_operational_payload(brief_payload)
+                            brief_payload, _ = normalize_service_state_evidence(brief_payload)
                         else:
                             # Unsafe drop without a valid brief must defer
                             deferred_ids.append(s.story_id)
@@ -507,7 +527,7 @@ class StoryTriageService:
                         brief_payload = ensure_keep_publishability(
                             normalize_question_evidence(brief_payload), default="brief"
                         )
-                        brief_payload, _ = normalize_operational_payload(brief_payload)
+                        brief_payload, _ = normalize_service_state_evidence(brief_payload)
                     else:
                         deferred_ids.append(s.story_id)
                         continue
@@ -526,6 +546,7 @@ class StoryTriageService:
                     confidence=confidence,
                     reason=reason,
                     brief_payload=brief_payload,
+                    scope_basis_fragment_ids=scope_basis_ids,
                 )
                 new_valid_results.append(gate_res)
 
@@ -695,6 +716,7 @@ class StoryTriageService:
                 confidence=conf,
                 reason=reason,
                 brief_payload=brief_payload,
+                scope_basis_fragment_ids=(),
             )
 
         return cached
