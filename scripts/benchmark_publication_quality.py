@@ -126,6 +126,7 @@ def evaluate_digest_short_read_quality(
     # Redundancy and presentation metrics
     dashboard_group_count = 0
     dashboard_covered_refs_count = 0
+    positive_dashboard_group_count = 0
     thematic_detail_story_count = 0
     thematic_suppressed_story_count = 0
     drill_down_story_count = 0
@@ -134,7 +135,11 @@ def evaluate_digest_short_read_quality(
     if presentation_plan is not None:
         cit_sit = getattr(presentation_plan, "city_situation", None)
         if cit_sit is not None:
-            dashboard_group_count = len(getattr(cit_sit, "groups", ()))
+            groups = getattr(cit_sit, "groups", ())
+            dashboard_group_count = len(groups)
+            positive_dashboard_group_count = sum(
+                1 for g in groups if getattr(g, "state", "").upper() in ("AVAILABLE", "RESOLVED")
+            )
             dashboard_covered_refs_count = len(getattr(cit_sit, "covered_source_refs", ()))
         thematic_detail_story_count = len(getattr(presentation_plan, "detail_story_ids", ()))
         hints = getattr(presentation_plan, "story_hints", ())
@@ -157,6 +162,12 @@ def evaluate_digest_short_read_quality(
                             if detail_supports and not (item_supports & detail_supports):
                                 redundant_thematic_items_count += 1
 
+    prose_quality_audit = None
+    if narrative_draft is not None:
+        from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+
+        prose_quality_audit = audit_digest_prose_quality(narrative_draft, {}).as_metadata()
+
     return {
         "max_headline_len": max(headline_lengths, default=0),
         "avg_headline_len": sum(headline_lengths) / len(headline_lengths)
@@ -165,14 +176,17 @@ def evaluate_digest_short_read_quality(
         "max_situation_len": max(situation_lengths, default=0),
         "max_detail_len": max(detail_lengths, default=0),
         "dashboard_group_count": dashboard_group_count,
+        "positive_dashboard_group_count": positive_dashboard_group_count,
         "dashboard_covered_refs_count": dashboard_covered_refs_count,
         "thematic_detail_story_count": thematic_detail_story_count,
         "thematic_suppressed_story_count": thematic_suppressed_story_count,
         "drill_down_story_count": drill_down_story_count,
         "redundant_thematic_items_count": redundant_thematic_items_count,
+        "prose_quality_audit": prose_quality_audit,
         "violations": violations,
         "is_valid": len(violations) == 0,
     }
+
 
 
 
