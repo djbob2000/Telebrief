@@ -1109,3 +1109,130 @@ async def test_digest_narrative_writer_prompt_excludes_situation_items() -> None
     user_prompt = captured_messages[1]["content"]
     assert '"blocks"' in user_prompt
     assert '"situation_items"' not in user_prompt
+
+
+def test_plan_digest_narrative_blocks_captures_detail_roles() -> None:
+    from src.editorial_models import StoryCard
+    from src.publication.digest_narrative import plan_digest_narrative_blocks
+    from src.publication.digest_presentation import (
+        CitySituationPresentationPlan,
+        DigestPresentationPlan,
+        DigestStoryPresentationHint,
+    )
+
+    card1 = StoryCard(
+        id="story:elec",
+        topic="Свет",
+        importance="high",
+        summary="Генераторы",
+        rubric_id="utilities",
+    )
+    card2 = StoryCard(
+        id="story:road",
+        topic="Дороги",
+        importance="low",
+        summary="Асфальт",
+        rubric_id="utilities",
+    )
+
+    presentation_plan = DigestPresentationPlan(
+        city_situation=CitySituationPresentationPlan(groups=(), covered_source_refs=()),
+        detail_story_ids=("story:elec", "story:road"),
+        story_hints=(
+            DigestStoryPresentationHint(
+                story_id="story:elec",
+                detail_support_ids=("sup:gen",),
+                merge_group_id="story:elec",
+                detail_role="DRILL_DOWN",
+            ),
+            DigestStoryPresentationHint(
+                story_id="story:road",
+                detail_support_ids=("sup:road",),
+                merge_group_id="story:road",
+                detail_role="NORMAL",
+            ),
+        ),
+    )
+
+    plan = plan_digest_narrative_blocks(
+        cards=[card1, card2],
+        evidence={},
+        rubrics=[{"id": "utilities", "name": "ЖКХ"}],
+        max_cards_per_block=6,
+        presentation_plan=presentation_plan,
+    )
+
+    assert len(plan.blocks) == 1
+    block = plan.blocks[0]
+    roles_dict = dict(block.detail_roles_by_story)
+    assert roles_dict.get("story:elec") == "DRILL_DOWN"
+    assert roles_dict.get("story:road") == "NORMAL"
+
+
+def test_validate_digest_narrative_enforces_drill_down_evidence_citation() -> None:
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    block = DigestNarrativeBlock(
+        block_id="block:utilities:0",
+        rubric_id="utilities",
+        rubric_title="ЖКХ",
+        story_ids=("story:elec",),
+        support_ids=("ref-status", "ref-workaround"),
+        canonical_notes=(),
+        detail_support_ids_by_story=(("story:elec", ("ref-workaround",)),),
+        detail_roles_by_story=(("story:elec", "DRILL_DOWN"),),
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+
+    support_index = {
+        "ref-status": "На Горе нет света.",
+        "ref-workaround": "Жильцы дома 12 скинулись по 300 рублей на генератор.",
+    }
+
+    # 1. Reject draft where DRILL_DOWN item only cites dashboard/status support
+    draft_missing_detail = DigestNarrativeDraft.from_dict(
+        {
+            "blocks": [
+                {
+                    "block_id": "block:utilities:0",
+                    "items": [
+                        {
+                            "headline": "Отключение света",
+                            "body": "На Горе отсутствует электроэнергия.",
+                            "covered_story_ids": ["story:elec"],
+                            "cited_support_ids": ["ref-status"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    res_bad = validate_digest_narrative(draft_missing_detail, plan, support_index)
+    assert not res_bad.is_valid
+    assert any("DRILL_DOWN" in v for v in res_bad.violations)
+
+    # 2. Accept draft where DRILL_DOWN item cites the distinct detail support
+    draft_with_detail = DigestNarrativeDraft.from_dict(
+        {
+            "blocks": [
+                {
+                    "block_id": "block:utilities:0",
+                    "items": [
+                        {
+                            "headline": "Домовой генератор на Горе",
+                            "body": "Жильцы дома 12 скинулись по 300 рублей на генератор.",
+                            "covered_story_ids": ["story:elec"],
+                            "cited_support_ids": ["ref-workaround"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    res_good = validate_digest_narrative(draft_with_detail, plan, support_index)
+    assert res_good.is_valid

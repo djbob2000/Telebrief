@@ -34,6 +34,7 @@ class DigestNarrativeBlock:
     canonical_notes: tuple[str, ...]
     detail_support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
     merge_group_by_story: tuple[tuple[str, str], ...] = ()
+    detail_roles_by_story: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -305,6 +306,11 @@ def plan_digest_narrative_blocks(
             merge_groups = tuple(
                 (c.id, hints_by_id[c.id].merge_group_id) for c in chunk if c.id in hints_by_id
             )
+            detail_roles = tuple(
+                (c.id, getattr(hints_by_id[c.id], "detail_role", "NORMAL"))
+                for c in chunk
+                if c.id in hints_by_id
+            )
 
             blocks.append(
                 DigestNarrativeBlock(
@@ -316,6 +322,7 @@ def plan_digest_narrative_blocks(
                     canonical_notes=tuple(notes),
                     detail_support_ids_by_story=detail_supports,
                     merge_group_by_story=merge_groups,
+                    detail_roles_by_story=detail_roles,
                 )
             )
 
@@ -424,6 +431,8 @@ def validate_digest_narrative(
         allowed_supports = set(plan_block.support_ids)
         expected_story_ids = set(plan_block.story_ids)
         merge_group_map = dict(plan_block.merge_group_by_story)
+        detail_roles_map = dict(plan_block.detail_roles_by_story)
+        detail_supports_map = dict(plan_block.detail_support_ids_by_story)
 
         flat_story_ids = [sid for item in out_block.items for sid in item.covered_story_ids]
         if len(flat_story_ids) != len(set(flat_story_ids)):
@@ -463,6 +472,16 @@ def validate_digest_narrative(
                 violations.append(
                     f"MISSING_SUPPORT_CITATION: item in block {out_block.block_id} cites no supports"
                 )
+
+            for sid in item.covered_story_ids:
+                if detail_roles_map.get(sid) == "DRILL_DOWN":
+                    expected_detail_supports = set(detail_supports_map.get(sid, ()))
+                    if expected_detail_supports and not (
+                        set(item.cited_support_ids) & expected_detail_supports
+                    ):
+                        violations.append(
+                            f"DRILL_DOWN_MISSING_DETAIL_CITATION: drill-down story {sid} in block {out_block.block_id} must cite at least one distinct detail support id"
+                        )
 
             for sup_id in item.cited_support_ids:
                 if sup_id not in allowed_supports and allowed_supports:
