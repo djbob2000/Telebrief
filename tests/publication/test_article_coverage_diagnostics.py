@@ -182,3 +182,31 @@ def test_diagnostics_are_non_blocking_on_validation():
 
     diag = diagnose_article_coverage(draft, plan)
     assert diag.detail_support_coverage < 1.0
+
+
+def test_diagnose_article_coverage_explicit_story_coverage():
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Story 1",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=("story:1:1",),
+                detail_support_ids=("story:1:1",),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:2",
+                topic="Story 2",
+                rank=2,
+                prominence="DEVELOP",
+                support_ids=("story:2:1",),
+                detail_support_ids=("story:2:1",),
+            ),
+        )
+    )
+    draft = _make_dummy_draft(cited_ids=("story:1:1",))
+    diag = diagnose_article_coverage(draft, plan)
+    assert diag.covered_story_ids == ("story:1",)
+    assert diag.uncovered_story_ids == ("story:2",)
+    assert diag.story_coverage == 0.5

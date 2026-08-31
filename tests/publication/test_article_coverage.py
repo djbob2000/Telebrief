@@ -155,3 +155,16 @@ def test_city_life_coverage_golden_expectations():
     # 3. Directory payload is absent from writer context
     for forbidden_payload in expectations.get("writer_source_must_not_contain", []):
         assert forbidden_payload not in rendered
+
+
+def test_article_coverage_plan_exposes_canonical_indexes():
+    data = _load_cases()
+    cards, context = _build_test_context(data)
+    plan = build_article_coverage_plan(cards, context)
+
+    assert plan.story_ids
+    assert set(plan.by_story_id) == set(plan.story_ids)
+    assert set(plan.support_ids_by_story) == set(plan.story_ids)
+    for story_id in plan.story_ids:
+        assert plan.by_story_id[story_id].support_ids
+        assert plan.support_ids_by_story[story_id] == plan.by_story_id[story_id].support_ids

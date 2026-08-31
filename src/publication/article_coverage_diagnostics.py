@@ -11,7 +11,9 @@ from src.publication.article_writer_context import _PHONE_RE, _URL_RE
 class ArticleCoverageDiagnostics:
     planned_story_count: int
     covered_story_count: int
+    covered_story_ids: tuple[str, ...]
     uncovered_story_ids: tuple[str, ...]
+    story_coverage: float
     develop_story_coverage: float
     weave_story_coverage: float
     brief_story_coverage: float
@@ -82,6 +84,7 @@ def diagnose_article_coverage(
             uncovered_story_ids.append(item.story_id)
 
     covered_story_count = len(covered_story_ids)
+    story_coverage = covered_story_count / planned_story_count if planned_story_count > 0 else 1.0
 
     # Prominence ratios
     def _ratio_for_prominence(prominence: str) -> float:
@@ -120,7 +123,9 @@ def diagnose_article_coverage(
     return ArticleCoverageDiagnostics(
         planned_story_count=planned_story_count,
         covered_story_count=covered_story_count,
+        covered_story_ids=tuple(covered_story_ids),
         uncovered_story_ids=tuple(uncovered_story_ids),
+        story_coverage=story_coverage,
         develop_story_coverage=develop_coverage,
         weave_story_coverage=weave_coverage,
         brief_story_coverage=brief_coverage,

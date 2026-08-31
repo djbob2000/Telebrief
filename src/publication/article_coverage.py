@@ -39,6 +39,14 @@ class ArticleCoveragePlan:
     def story_ids(self) -> tuple[str, ...]:
         return tuple(item.story_id for item in self.stories)
 
+    @property
+    def by_story_id(self) -> dict[str, ArticleStoryCoverage]:
+        return {item.story_id: item for item in self.stories}
+
+    @property
+    def support_ids_by_story(self) -> dict[str, tuple[str, ...]]:
+        return {item.story_id: item.support_ids for item in self.stories}
+
 
 def _story_id_from_support_id(support_id: str) -> str:
     match = _STORY_ID_RE.search(support_id)
