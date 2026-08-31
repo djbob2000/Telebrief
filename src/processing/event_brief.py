@@ -61,6 +61,16 @@ def merge_brief_into_existing_payload(
             seen_obs_keys.add(key)
             merged_observations.append(obs)
 
+    # Merge evidence items (stable union by text + kind)
+    seen_evidence: set[tuple[str, str]] = {
+        (e.text.strip(), e.kind) for e in existing.evidence_items
+    }
+    merged_evidence = list(existing.evidence_items)
+    for e in brief.evidence_items:
+        if (e.text.strip(), e.kind) not in seen_evidence:
+            seen_evidence.add((e.text.strip(), e.kind))
+            merged_evidence.append(e)
+
     return EventPayload(
         topic=existing.topic or brief.topic,
         tags=tuple(merged_tags),
@@ -68,6 +78,7 @@ def merge_brief_into_existing_payload(
         publishability=existing.publishability or brief.publishability,
         headline=existing.headline or brief.headline,
         digest_summary=existing.digest_summary or brief.digest_summary,
+        evidence_items=tuple(merged_evidence),
         operational_observations=tuple(merged_observations),
         enrichment_level="analysis",  # never downgrade
         key_facts=existing.key_facts,

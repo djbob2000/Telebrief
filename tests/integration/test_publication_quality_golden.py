@@ -240,29 +240,48 @@ async def test_berdyansk_publication_quality_golden_oracle_pipeline(
             )
         )
 
-        obs_payloads = []
+        evidence_items_payload = []
         for exp_obs in case.get("expected_observations", []):
             mapped_fids = [
                 frag_db_ids[fid]
                 for fid in exp_obs.get("source_fragment_ids", [])
                 if fid in frag_db_ids
             ]
-            obs_payloads.append(
+            st = exp_obs["state"]
+            basis = (
+                "scheduled_change"
+                if st == "SCHEDULED"
+                else (
+                    "normal_operation"
+                    if st == "AVAILABLE"
+                    else (
+                        "explicit_restriction"
+                        if st == "RESTRICTED"
+                        else ("degraded_access" if st == "DEGRADED" else "direct_failure")
+                    )
+                )
+            )
+            evidence_items_payload.append(
                 {
-                    "subject_key": exp_obs["subject_key"],
-                    "subject_label": exp_obs["subject_label"],
-                    "dimension": exp_obs["dimension"],
-                    "location": exp_obs["location"],
-                    "entity": exp_obs["entity"],
-                    "state": exp_obs["state"],
-                    "detail": exp_obs["detail"],
+                    "text": exp_obs.get("detail", exp_obs["subject_label"]),
+                    "kind": "service_access",
+                    "publication_use": "PUBLISH",
                     "source_fragment_ids": mapped_fids or [last_frag_id],
-                    "effective_from": exp_obs.get("effective_from"),
-                    "effective_until": exp_obs.get("effective_until"),
+                    "service_state": {
+                        "subject_key": exp_obs["subject_key"],
+                        "subject_label": exp_obs["subject_label"],
+                        "dimension": exp_obs["dimension"],
+                        "location": exp_obs.get("location"),
+                        "entity": exp_obs.get("entity"),
+                        "state": exp_obs["state"],
+                        "expected_now": True,
+                        "basis": basis,
+                        "effective_from": exp_obs.get("effective_from"),
+                        "effective_until": exp_obs.get("effective_until"),
+                    },
                 }
             )
 
-        evidence_items_payload = []
         for exp_evi in case.get("expected_evidence_items", []):
             mapped_fids = [
                 frag_db_ids[fid]
@@ -278,23 +297,35 @@ async def test_berdyansk_publication_quality_golden_oracle_pipeline(
                 }
             )
 
+        if not evidence_items_payload and case.get("fragments"):
+            evidence_items_payload.append(
+                {
+                    "text": case["fragments"][0]["text"],
+                    "kind": "community_report",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [last_frag_id],
+                }
+            )
+
         brief_dict = None
         if case["expected_retention"] == "KEEP":
             brief_dict = {
                 "topic": case.get("topic", f"Story #{s_id}"),
                 "headline": case.get("topic", f"Story #{s_id}"),
                 "digest_summary": case.get("topic", f"Summary of #{s_id}"),
-                "category": case.get("expected_subject_key", "general"),
+                "tags": [case.get("expected_subject_key", "general")],
                 "key_facts": [case.get("topic", "Fact")],
-                "operational_observations": obs_payloads,
                 "evidence_items": evidence_items_payload,
                 "confidence_score": 0.95,
             }
+
+        scope_basis = [last_frag_id] if case["expected_scope"] in ("LOCAL", "DIRECT_IMPACT") else []
 
         triage_results_payload.append(
             {
                 "story_id": s_id,
                 "scope": case["expected_scope"],
+                "scope_basis_fragment_ids": scope_basis,
                 "scope_confidence": 0.95,
                 "scope_reason": f"Scope reason for {case['id']}",
                 "confidence": 0.95,
@@ -495,7 +526,10 @@ def test_operational_semantic_boundaries_end_to_end() -> None:
     """Verifies that coping behaviors do not leak into dashboard and positive statuses are subject coherent."""
     from src.domain.event_payload import EventPayload
     from src.editorial_models import StoryCard
-    from src.processing.operational_semantics import normalize_operational_payload
+    from src.processing.operational_semantics import (
+        derive_operational_observations,
+        normalize_service_state_evidence,
+    )
     from src.publication.city_situation import CitySituationItem, CitySituationRollup
     from src.publication.digest_narrative import (
         DigestEditorialItemDraft,
@@ -508,22 +542,12 @@ def test_operational_semantic_boundaries_end_to_end() -> None:
 
     now = dt.datetime(2026, 8, 29, 12, 0, tzinfo=dt.timezone.utc)
 
-    # 1. Payload with coping behavior mistakenly marked as operational observation
+    # 1. Coping behavior (community_report, not service_access) -> derives no operational observations
     coping_payload = EventPayload.from_dict(
         {
             "headline": "Жители используют домовой генератор",
             "digest_summary": "Жители скинулись по 300 рублей на генератор для воды",
             "category": "utilities",
-            "operational_observations": [
-                {
-                    "subject_key": "power_supply",
-                    "subject_label": "Электроснабжение",
-                    "dimension": "availability",
-                    "state": "DEGRADED",
-                    "detail": "Жители скинулись по 300 рублей на домовой генератор",
-                    "source_fragment_ids": [101],
-                }
-            ],
             "evidence_items": [
                 {
                     "source_fragment_ids": [101],
@@ -534,41 +558,40 @@ def test_operational_semantic_boundaries_end_to_end() -> None:
             ],
         }
     )
-    normalized, audit = normalize_operational_payload(coping_payload)
-    # The coping observation is dropped from operational_observations
-    assert len(normalized.operational_observations) == 0
-    assert "power_supply" in audit.dropped_observation_subject_keys
+    normalized, audit = normalize_service_state_evidence(coping_payload)
+    derived = derive_operational_observations(normalized)
+    assert len(derived) == 0
 
-    # 2. Community outage report with service_access
+    # 2. Community outage report with service_access and service_state
     service_payload = EventPayload.from_dict(
         {
             "headline": "Нет воды на верхних этажах",
             "digest_summary": "Вода не доходит до верхних этажах на Азмоле",
             "category": "utilities",
-            "operational_observations": [
-                {
-                    "subject_key": "water_supply",
-                    "subject_label": "Водоснабжение",
-                    "dimension": "availability",
-                    "location": "Азмол",
-                    "state": "DEGRADED",
-                    "detail": "Слабый напор, на верхних этажах воды нет",
-                    "source_fragment_ids": [102],
-                }
-            ],
             "evidence_items": [
                 {
                     "source_fragment_ids": [102],
                     "text": "Слабый напор, на верхних этажах воды нет",
                     "kind": "service_access",
                     "publication_use": "PUBLISH",
+                    "service_state": {
+                        "subject_key": "water_supply",
+                        "subject_label": "Водоснабжение",
+                        "dimension": "availability",
+                        "location": "Азмол",
+                        "state": "DEGRADED",
+                        "expected_now": True,
+                        "basis": "degraded_access",
+                    },
                 }
             ],
         }
     )
-    norm_service, audit_serv = normalize_operational_payload(service_payload)
-    assert len(norm_service.operational_observations) == 1
-    assert len(audit_serv.dropped_observation_subject_keys) == 0
+    norm_service, audit_serv = normalize_service_state_evidence(service_payload)
+    derived_serv = derive_operational_observations(norm_service)
+    assert len(derived_serv) == 1
+    assert derived_serv[0].subject_key == "water_supply"
+    assert derived_serv[0].state == "DEGRADED"
 
     # 3. Presentation plan verifies subject-coherent positive status and no global bundle
     sit_items = (

@@ -106,6 +106,9 @@ async def test_event_brief_service_merges_into_rich_revision_without_downgrading
         conn, edition_id=edition.id, knowledge_source="event_first"
     )
 
+    from src.domain.event_payload import EvidenceItemPayload
+    from src.domain.service_state import ServiceStatePayload
+
     # 1. Existing rich analysis revision
     rich_payload = EventPayload(
         topic="Water Outage in Koloniya",
@@ -118,16 +121,22 @@ async def test_event_brief_service_merges_into_rich_revision_without_downgrading
         key_facts=("Burst at 8am", "Excavators on site"),
         timeline_summary="Morning burst",
         confidence_score=0.95,
-        operational_observations=(
-            OperationalObservationPayload(
-                subject_key="water_supply",
-                subject_label="Водоснабжение",
-                dimension="availability",
-                location="Koloniya",
-                entity="pipe",
-                state="UNAVAILABLE",
-                detail="Morning outage",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Morning outage in Koloniya",
+                kind="service_access",
+                publication_use="PUBLISH",
                 source_fragment_ids=(7011,),
+                service_state=ServiceStatePayload(
+                    subject_key="water_supply",
+                    subject_label="Водоснабжение",
+                    dimension="availability",
+                    location="Koloniya",
+                    entity="pipe",
+                    state="UNAVAILABLE",
+                    expected_now=True,
+                    basis="direct_failure",
+                ),
             ),
         ),
     )
@@ -162,16 +171,22 @@ async def test_event_brief_service_merges_into_rich_revision_without_downgrading
         headline="Water restored in Koloniya",
         digest_summary="Water has returned at 2pm.",
         enrichment_level="brief",
-        operational_observations=(
-            OperationalObservationPayload(
-                subject_key="water_supply",
-                subject_label="Водоснабжение",
-                dimension="availability",
-                location="Koloniya",
-                entity="pipe",
-                state="AVAILABLE",
-                detail="Afternoon restoration",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Afternoon restoration in Koloniya",
+                kind="service_access",
+                publication_use="PUBLISH",
                 source_fragment_ids=(7012,),
+                service_state=ServiceStatePayload(
+                    subject_key="water_supply",
+                    subject_label="Водоснабжение",
+                    dimension="availability",
+                    location="Koloniya",
+                    entity="pipe",
+                    state="AVAILABLE",
+                    expected_now=True,
+                    basis="normal_operation",
+                ),
             ),
         ),
     )
@@ -187,7 +202,7 @@ async def test_event_brief_service_merges_into_rich_revision_without_downgrading
         "Burst at 8am",
         "Excavators on site",
     ]  # preserved!
-    assert len(merged_rev.event_payload["operational_observations"]) == 2
+    assert len(merged_rev.event_payload["evidence_items"]) == 2
 
 
 @pytest.mark.postgres

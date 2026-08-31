@@ -216,6 +216,7 @@ async def test_coalesce_dirty_stories_task_end_to_end(conn, pool, uow, sample_co
             {
                 "story_id": sid,
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [9902],
                 "scope_confidence": 0.98,
                 "scope_reason": "In AKZ",
                 "retention": "KEEP",
@@ -227,16 +228,23 @@ async def test_coalesce_dirty_stories_task_end_to_end(conn, pool, uow, sample_co
                     "topic": "Авария на водоводе в АКЗ",
                     "headline": "Порыв водопровода",
                     "digest_summary": "Водоканал ликвидирует аварию.",
-                    "operational_observations": [
+                    "tags": ["utilities"],
+                    "evidence_items": [
                         {
-                            "subject_key": "water_supply",
-                            "subject_label": "Водоснабжение",
-                            "dimension": "availability",
-                            "location": "АКЗ",
-                            "entity": "водовод",
-                            "state": "UNAVAILABLE",
-                            "detail": "Аварийное отключение",
+                            "text": "На АКЗ порыв водопровода",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
                             "source_fragment_ids": [9902],
+                            "service_state": {
+                                "subject_key": "water_supply",
+                                "subject_label": "Водоснабжение",
+                                "dimension": "availability",
+                                "location": "АКЗ",
+                                "entity": "водовод",
+                                "state": "UNAVAILABLE",
+                                "expected_now": True,
+                                "basis": "direct_failure",
+                            },
                         }
                     ],
                 },
@@ -671,6 +679,7 @@ async def test_coalesce_retry_cache_cost(conn, pool, uow, sample_config):
             {
                 "story_id": sid,
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [9942],
                 "scope_confidence": 0.99,
                 "scope_reason": "In Berdyansk",
                 "retention": "KEEP",
@@ -682,16 +691,23 @@ async def test_coalesce_retry_cache_cost(conn, pool, uow, sample_config):
                     "topic": "Topic",
                     "headline": "Headline",
                     "digest_summary": "Summary",
-                    "operational_observations": [
+                    "tags": ["power"],
+                    "evidence_items": [
                         {
-                            "subject_key": "power_supply",
-                            "subject_label": "Электросеть",
-                            "dimension": "availability",
-                            "location": "Бердянск",
-                            "entity": "сеть",
-                            "state": "AVAILABLE",
-                            "detail": "active",
+                            "text": "В Бердянске активна сеть",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
                             "source_fragment_ids": [9942],
+                            "service_state": {
+                                "subject_key": "power_supply",
+                                "subject_label": "Электросеть",
+                                "dimension": "availability",
+                                "location": "Бердянск",
+                                "entity": "сеть",
+                                "state": "AVAILABLE",
+                                "expected_now": True,
+                                "basis": "normal_operation",
+                            },
                         }
                     ],
                 },

@@ -93,6 +93,7 @@ Rules:
 - Commercial classifieds, private disputes, personal accusations, phone-number spam, repetitive ad copy, and directory-style payload must not dominate the digest.
 - Community reports must preserve their epistemic status through natural attribution without duplicating attribution phrases in both headline and body.
 - The digest should be compact and easy to scan, but not so aggressively compressed that meaningful local facts disappear.
+- Grouped/channel digests render directly with title -> City Situation -> thematic blocks -> stats; the publication lead is intentionally empty (`lead = ""`) to avoid duplicating the lead story.
 
 
 **Digest optimization target:** broad coverage + fast scanning + operational usefulness.
@@ -413,6 +414,14 @@ Scope values:
 
 Retention/enrichment must preserve useful local reports and only hard-drop high-confidence noise/commercial-only material according to the current contract.
 
+### Broad-region scope guard
+
+Gate v7 outputs `scope_basis_fragment_ids` identifying which fragments support the scope classification. A narrow deterministic guard (`broad_region_without_focus_impact`) normalizes broad regional news (e.g. general oblast-wide reports, frontline summaries, or non-focus settlements) to `OUT_OF_SCOPE / DROP` unless the cited scope-basis fragments specifically mention the edition's focus places.
+
+### Canonical service state representation
+
+Service availability truth is unified in `EvidenceItemPayload.service_state: ServiceStatePayload`. LLMs output nested `service_state` within `service_access` evidence items only; there is no separate top-level LLM-authored operational observations array. Deterministic pipeline normalization (`normalize_service_state_evidence` / `derive_operational_observations`) cleans states and projects them into `OperationalObservationPayload` for downstream rollups and card building.
+
 ### Resident questions
 
 Evidence kind `resident_question` means:
@@ -432,7 +441,7 @@ Current important kinds include:
 - `established_fact`
 - `community_report`
 - `resident_question`
-- `service_access`
+- `service_access` (carries nested `service_state: ServiceStatePayload`)
 - `official_statement`
 - `commercial_offer`
 
@@ -455,7 +464,7 @@ Rich analysis should preserve:
 - exact evidence provenance;
 - official vs community status;
 - uncertainty/conflict;
-- operational observations;
+- canonical service-state evidence items (`service_access.service_state`);
 - temporal meaning;
 - source fragment IDs.
 
