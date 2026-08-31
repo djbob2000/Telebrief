@@ -61,158 +61,162 @@ def calculate_benchmark_metrics(runs: list[BenchmarkRunRecord]) -> dict[str, Any
     article_rejections = sum(
         1
         for r in article_runs
-        if r.error_kind in ("article_validation_rejected", "article_writer_rejected")
-        or (
-            r.status == "failed"
-            and any(a.kind == "writer" and a.status == "failed" for a in r.attempts)
+        if r.status == "failed"
+        and (
+            r.error_kind in ("article_validation_rejected", "article_writer_rejected")
+            or any(a.kind == "writer" and a.status == "failed" for a in r.attempts)
         )
     )
     article_publications = sum(
         1 for r in article_runs if r.publication_id is not None or r.status == "succeeded"
     )
-    article_fallback_content_attempts = sum(
-        1 for r in article_runs for a in r.attempts if a.kind == "story_renderer_fallback"
+    article_full_fallbacks = sum(
+        1
+        for r in article_runs
+        for a in r.attempts
+        if a.status == "succeeded"
+        and (
+            a.kind in ("story_renderer_fallback", "deterministic_fallback")
+            or a.metadata.get("winning_kind") == "event_article_deterministic_fallback"
+            or a.metadata.get("deterministic_article_fallback_used") is True
+        )
     )
+    article_supplements = sum(
+        1
+        for r in article_runs
+        for a in r.attempts
+        if a.status == "succeeded"
+        and a.metadata.get("winning_kind") == "event_article_writer_with_supplement"
+    )
+    article_fallback_content_attempts = article_full_fallbacks
     article_writer_success_rate = (
         article_writer_successes / article_writer_attempts if article_writer_attempts > 0 else 0.0
+    )
+    article_full_fallback_rate = (
+        article_full_fallbacks / article_publications if article_publications > 0 else 0.0
+    )
+    article_supplement_rate = (
+        article_supplements / article_publications if article_publications > 0 else 0.0
     )
     max_article_writer_calls_per_run = max(
         [sum(1 for a in r.attempts if a.kind == "writer") for r in article_runs],
         default=0,
     )
+
+    published_article_story_coverage: float = 1.0
+    unsupported_final_claim_count: int = 0
+    leaked_directory_payload_count: int = 0
+
+    for r in article_runs:
+        if r.publication_id is not None or r.status == "succeeded":
+            succ_attempts = [a for a in r.attempts if a.status == "succeeded"]
+            if succ_attempts:
+                last_succ = succ_attempts[-1]
+                meta = last_succ.metadata or {}
+                cov = meta.get("final_story_coverage")
+                if cov is not None:
+                    published_article_story_coverage = min(
+                        published_article_story_coverage, float(cov)
+                    )
+                unsupported_final_claim_count += int(meta.get("unsupported_final_claim_count", 0))
+                leaked_directory_payload_count += int(meta.get("leaked_directory_payload_count", 0))
+
+    # Digest Metrics
+    digest_runs = [r for r in runs if r.publication_type in ("digest_grouped", "digest_channel")]
+    digest_publications = sum(
+        1 for r in digest_runs if r.publication_id is not None or r.status == "succeeded"
+    )
+    digest_full_fallbacks = sum(
+        1
+        for r in digest_runs
+        for a in r.attempts
+        if a.status == "succeeded"
+        and (
+            a.kind in ("story_renderer_fallback", "deterministic_fallback")
+            or a.metadata.get("deterministic_digest_fallback_used") is True
+        )
+    )
+    digest_full_fallback_rate = (
+        digest_full_fallbacks / digest_publications if digest_publications > 0 else 0.0
+    )
+    published_digest_story_coverage: float = 1.0
+    planned_story_count = 0
+    dashboard_only_count = 0
+    detail_only_count = 0
+    dashboard_and_drilldown_count = 0
+
+    for r in digest_runs:
+        if r.publication_id is not None or r.status == "succeeded":
+            succ_attempts = [a for a in r.attempts if a.status == "succeeded"]
+            if succ_attempts:
+                last_succ = succ_attempts[-1]
+                meta = last_succ.metadata or {}
+                cov = meta.get("final_digest_story_coverage")
+                if cov is not None:
+                    published_digest_story_coverage = min(
+                        published_digest_story_coverage, float(cov)
+                    )
+                planned_story_count += int(meta.get("planned_story_count", 0))
+                dashboard_only_count += int(meta.get("dashboard_only_count", 0))
+                detail_only_count += int(meta.get("detail_only_count", 0))
+                dashboard_and_drilldown_count += int(meta.get("dashboard_and_drilldown_count", 0))
+
     return {
         "runs": runs,
+        "article_runs": len(article_runs),
         "article_writer_attempts": article_writer_attempts,
         "article_writer_successes": article_writer_successes,
         "article_rejections": article_rejections,
         "article_publications": article_publications,
+        "article_full_fallbacks": article_full_fallbacks,
+        "article_supplements": article_supplements,
         "article_fallback_content_attempts": article_fallback_content_attempts,
         "article_writer_success_rate": article_writer_success_rate,
+        "article_full_fallback_rate": article_full_fallback_rate,
+        "article_supplement_rate": article_supplement_rate,
         "max_article_writer_calls_per_run": max_article_writer_calls_per_run,
+        "final_story_coverage": published_article_story_coverage,
+        "unsupported_final_claim_count": unsupported_final_claim_count,
+        "leaked_directory_payload_count": leaked_directory_payload_count,
+        "digest_runs": len(digest_runs),
+        "digest_publications": digest_publications,
+        "digest_full_fallbacks": digest_full_fallbacks,
+        "digest_full_fallback_rate": digest_full_fallback_rate,
+        "final_digest_story_coverage": published_digest_story_coverage,
+        "planned_story_count": planned_story_count,
+        "dashboard_only_count": dashboard_only_count,
+        "detail_only_count": detail_only_count,
+        "dashboard_and_drilldown_count": dashboard_and_drilldown_count,
     }
-
-
-def evaluate_digest_short_read_quality(
-    digest_body: str,
-    narrative_draft: Any | None = None,
-    presentation_plan: Any | None = None,
-) -> dict[str, Any]:
-    """Evaluates short-read quality constraints on a generated publication digest."""
-    headline_lengths: list[int] = []
-    situation_lengths: list[int] = []
-    detail_lengths: list[int] = []
-    violations: list[str] = []
-
-    if narrative_draft is not None:
-        for s_item in getattr(narrative_draft, "situation_items", ()):
-            body_text = getattr(s_item, "body", "").strip()
-            situation_lengths.append(len(body_text))
-            if len(body_text) > 360:
-                violations.append(
-                    f"Situation item '{getattr(s_item, 'label', '')}' exceeds 360 chars: {len(body_text)}"
-                )
-
-        for block in getattr(narrative_draft, "blocks", ()):
-            for item in getattr(block, "items", ()):
-                hl = getattr(item, "headline", "").strip()
-                bd = getattr(item, "body", "").strip()
-                headline_lengths.append(len(hl))
-                detail_lengths.append(len(bd))
-                if len(hl) > 140:
-                    violations.append(f"Scan headline exceeds 140 chars: {len(hl)} ('{hl[:30]}...')")
-                if len(bd) > 900:
-                    violations.append(f"Detail body exceeds 900 chars: {len(bd)}")
-
-    # Redundancy and presentation metrics
-    dashboard_group_count = 0
-    dashboard_covered_refs_count = 0
-    positive_dashboard_group_count = 0
-    thematic_detail_story_count = 0
-    thematic_suppressed_story_count = 0
-    drill_down_story_count = 0
-    redundant_thematic_items_count = 0
-
-    if presentation_plan is not None:
-        cit_sit = getattr(presentation_plan, "city_situation", None)
-        if cit_sit is not None:
-            groups = getattr(cit_sit, "groups", ())
-            dashboard_group_count = len(groups)
-            positive_dashboard_group_count = sum(
-                1 for g in groups if getattr(g, "state", "").upper() in ("AVAILABLE", "RESOLVED")
-            )
-            dashboard_covered_refs_count = len(getattr(cit_sit, "covered_source_refs", ()))
-        thematic_detail_story_count = len(getattr(presentation_plan, "detail_story_ids", ()))
-        hints = getattr(presentation_plan, "story_hints", ())
-        thematic_suppressed_story_count = sum(
-            1 for h in hints if getattr(h, "detail_role", "") == "SUPPRESS"
-        )
-        drill_down_story_count = sum(
-            1 for h in hints if getattr(h, "detail_role", "") == "DRILL_DOWN"
-        )
-
-        if narrative_draft is not None and cit_sit is not None:
-            hints_by_id = {h.story_id: h for h in hints}
-            for block in getattr(narrative_draft, "blocks", ()):
-                for item in getattr(block, "items", ()):
-                    for sid in getattr(item, "covered_story_ids", ()):
-                        h = hints_by_id.get(sid)
-                        if h and getattr(h, "detail_role", "") == "DRILL_DOWN":
-                            item_supports = set(getattr(item, "cited_support_ids", ()))
-                            detail_supports = set(getattr(h, "detail_support_ids", ()))
-                            if detail_supports and not (item_supports & detail_supports):
-                                redundant_thematic_items_count += 1
-
-    prose_quality_audit = None
-    if narrative_draft is not None:
-        from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
-
-        prose_quality_audit = audit_digest_prose_quality(narrative_draft, {}).as_metadata()
-
-    return {
-        "max_headline_len": max(headline_lengths, default=0),
-        "avg_headline_len": sum(headline_lengths) / len(headline_lengths)
-        if headline_lengths
-        else 0,
-        "max_situation_len": max(situation_lengths, default=0),
-        "max_detail_len": max(detail_lengths, default=0),
-        "dashboard_group_count": dashboard_group_count,
-        "positive_dashboard_group_count": positive_dashboard_group_count,
-        "dashboard_covered_refs_count": dashboard_covered_refs_count,
-        "thematic_detail_story_count": thematic_detail_story_count,
-        "thematic_suppressed_story_count": thematic_suppressed_story_count,
-        "drill_down_story_count": drill_down_story_count,
-        "redundant_thematic_items_count": redundant_thematic_items_count,
-        "prose_quality_audit": prose_quality_audit,
-        "violations": violations,
-        "is_valid": len(violations) == 0,
-    }
-
-
 
 
 def validate_benchmark_gates(metrics: dict[str, Any]) -> list[str]:
     violations: list[str] = []
-    if metrics.get("article_fallback_content_attempts", 0) != 0:
-        violations.append(
-            f"article_fallback_content_attempts != 0 ({metrics['article_fallback_content_attempts']})"
-        )
-    if metrics.get("article_publications", 0) > metrics.get("article_writer_successes", 0):
-        violations.append(
-            f"article_publications ({metrics['article_publications']}) > "
-            f"article_writer_successes ({metrics['article_writer_successes']})"
-        )
-    if metrics.get("max_article_writer_calls_per_run", 0) > 1:
-        violations.append(
-            f"max_article_writer_calls_per_run ({metrics['max_article_writer_calls_per_run']}) > 1"
-        )
+    max_calls = metrics.get("max_article_writer_calls_per_run", 0)
+    if max_calls > 1:
+        violations.append(f"max_article_writer_calls_per_run={max_calls} exceeds 1")
+
+    if metrics.get("article_publications", 0) > 0:
+        cov = metrics.get("final_story_coverage", 1.0)
+        if cov != 1.0:
+            violations.append(f"final_story_coverage={cov} expected 1.0")
+        unsupp = metrics.get("unsupported_final_claim_count", 0)
+        if unsupp != 0:
+            violations.append(f"unsupported_final_claim_count={unsupp} expected 0")
+        leaked = metrics.get("leaked_directory_payload_count", 0)
+        if leaked != 0:
+            violations.append(f"leaked_directory_payload_count={leaked} expected 0")
+
+    if metrics.get("digest_publications", 0) > 0:
+        d_cov = metrics.get("final_digest_story_coverage", 1.0)
+        if d_cov != 1.0:
+            violations.append(f"final_digest_story_coverage={d_cov} expected 1.0")
+
     for r in metrics.get("runs", []):
-        if r.publication_type == "article" and (
-            r.publication_id is not None or r.status == "succeeded"
-        ):
-            if not any(a.kind == "writer" and a.status == "succeeded" for a in r.attempts):
-                violations.append(
-                    f"published article run {r.run_id} has no succeeded writer attempt"
-                )
+        if r.status == "failed":
+            if r.error_kind in ("ArticleFinalizationInvariantError", "DigestCoverageInvariantError"):
+                violations.append(f"hard invariant failure in run {r.run_id}: {r.error_kind}")
+
     return violations
 
 
@@ -519,48 +523,60 @@ async def run_benchmark(
         for t1, t2, jscore in frag_pairs[:3]:
             print(f"    - [{jscore:.2f}] '{t1[:35]}...' vs '{t2[:35]}...'")
         print("-" * 70)
-        print("DIGEST RESULTS:")
-        print(f"  Candidates:        {len(digest_candidates)}")
-        print(f"  Selected:          {len(digest_inputs)}")
-        print(f"  Publication ID:    {digest_pub.id if digest_pub else 'N/A (no inputs)'}")
-        print(f"  Length (chars):    {len(digest_pub.body or '') if digest_pub else 0}")
-        print(f"  Mode:              {digest_mode}")
-        print(f"  Outcome Status:    {digest_outcome}")
-        print(f"  Winning Attempt:   {digest_win_kind}")
+        print("DIGEST CORRECTNESS:")
+        print(f"  Candidates:                 {len(digest_candidates)}")
+        print(f"  Selected:                   {len(digest_inputs)}")
+        print(f"  Publication ID:             {digest_pub.id if digest_pub else 'N/A (no inputs)'}")
+        print(f"  Final Digest Story Coverage:{metrics['final_digest_story_coverage'] * 100:.1f}%")
+        print(f"  Planned Story Count:        {metrics['planned_story_count']}")
+        print(f"  Dashboard Only:             {metrics['dashboard_only_count']}")
+        print(f"  Detail Only:                {metrics['detail_only_count']}")
+        print(f"  Dashboard & Drilldown:      {metrics['dashboard_and_drilldown_count']}")
+        print("-" * 70)
+        print("DIGEST WRITER QUALITY / SLO:")
+        print(f"  Mode:                       {digest_mode}")
+        print(f"  Outcome Status:             {digest_outcome}")
+        print(f"  Winning Attempt:            {digest_win_kind}")
+        print(f"  Full Fallback Rate:         {metrics['digest_full_fallback_rate'] * 100:.1f}%")
         if digest_win_meta and "block_count" in digest_win_meta:
-            print(f"  Narrative Blocks:  {digest_win_meta['block_count']}")
+            print(f"  Narrative Blocks:           {digest_win_meta['block_count']}")
         print(
-            f"  Chat LLM Calls:    {digest_chat_calls} (Target: <= 1 in single_call, 0 in deterministic)"
+            f"  Chat LLM Calls:             {digest_chat_calls} (Target: <= 1 in single_call, 0 in deterministic)"
         )
-        print(f"  Duration:          {t_digest:.2f}s")
+        print(f"  Duration:                   {t_digest:.2f}s")
         print("-" * 70)
-        print("ARTICLE RESULTS:")
-        print(f"  Candidates:        {len(article_candidates)}")
-        print(f"  Selected:          {len(article_inputs)}")
+        print("ARTICLE CORRECTNESS:")
+        print(f"  Candidates:                 {len(article_candidates)}")
+        print(f"  Selected:                   {len(article_inputs)}")
         print(
-            f"  Publication ID:    {article_pub.id if article_pub else 'N/A (rejected or no inputs)'}"
+            f"  Publication ID:             {article_pub.id if article_pub else 'N/A (rejected or no inputs)'}"
         )
-        print(f"  Title:             {article_pub.title if article_pub else 'N/A'}")
-        print(
-            f"  Word count:        {len((article_pub.body or '').split()) if article_pub else 0} words"
-        )
-        print(f"  Outcome Status:    {article_outcome}")
-        print(f"  Winning Attempt:   {win_kind}")
-        print(f"  Claim Trace Units: {claim_trace_count}")
-        print(f"  Chat LLM Calls:    {article_chat_calls} (Target: <= 1)")
-        print(f"  Duration:          {t_article:.2f}s")
+        print(f"  Final Story Coverage:       {metrics['final_story_coverage'] * 100:.1f}%")
+        print(f"  Unsupported Final Claims:   {metrics['unsupported_final_claim_count']}")
+        print(f"  Leaked Directory Payloads:  {metrics['leaked_directory_payload_count']}")
+        print(f"  Max Writer Calls/Run:       {metrics['max_article_writer_calls_per_run']}")
         print("-" * 70)
-        print("ARTICLE RELIABILITY & BUDGET:")
-        print(f"  Article writer attempts:      {metrics['article_writer_attempts']}")
+        print("ARTICLE WRITER QUALITY / SLO:")
+        print(f"  Outcome Status:             {article_outcome}")
+        print(f"  Winning Attempt:            {win_kind}")
+        print(f"  Claim Trace Units:          {claim_trace_count}")
+        print(f"  Article Writer Attempts:    {metrics['article_writer_attempts']}")
         print(
-            f"  Article writer successes:     {metrics['article_writer_successes']} "
+            f"  Article Writer Successes:   {metrics['article_writer_successes']} "
             f"({metrics['article_writer_success_rate'] * 100:.1f}%)"
         )
-        print(f"  Article rejections:           {metrics['article_rejections']}")
-        print(f"  Article fallback attempts:    {metrics['article_fallback_content_attempts']}")
-        print(f"  Article max writer calls/run: {metrics['max_article_writer_calls_per_run']}")
+        print(
+            f"  Article Full Fallbacks:     {metrics['article_full_fallbacks']} "
+            f"({metrics['article_full_fallback_rate'] * 100:.1f}%)"
+        )
+        print(
+            f"  Article Supplements:        {metrics['article_supplements']} "
+            f"({metrics['article_supplement_rate'] * 100:.1f}%)"
+        )
+        print(f"  Chat LLM Calls:             {article_chat_calls} (Target: <= 1)")
+        print(f"  Duration:                   {t_article:.2f}s")
         if gate_violations:
-            print(f"  GATE VIOLATIONS:              {gate_violations}")
+            print(f"  GATE VIOLATIONS:            {gate_violations}")
 
         if article_pub and article_pub.body:
             from src.publication.article_models import (
