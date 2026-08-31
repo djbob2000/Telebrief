@@ -1988,3 +1988,110 @@ async def test_gate_broad_regional_guard_drops_summary_without_local_consequence
     assert r2.scope == "DIRECT_IMPACT"
     assert r2.retention == "KEEP"
     assert r2.brief_payload is not None
+
+
+@pytest.mark.postgres
+async def test_load_recent_subject_hints_reads_service_state(conn, edition, revision):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8999, 'h_hints', '[1, 0]'::vector, 'm', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9999, %s, 0, 'В Бердянске отключен свет', 'h_hints', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10999, 9999, 8999)
+        """
+    )
+    aid = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9999,
+        fragment_embedding_id=10999,
+        assignment_kind="new_story",
+    )
+
+    scope_config = EditionScopeConfig(name="Бердянск", focus_places=("Бердянск",))
+    scope_hash = scope_config_hash(scope_config)
+
+    from src.processing.event_triage import TRIAGE_VERSION
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_event_triage_runs (
+            triage_version, provider, model, prompt_hash, story_count, input_chars, status
+        ) VALUES (%s, 'p', 'm', 'h', 1, 100, 'succeeded')
+        RETURNING id
+        """,
+        (TRIAGE_VERSION,),
+    )
+    run_id = (await cur.fetchone())[0]
+
+    # Insert scope decision
+    await conn.execute(
+        """
+        INSERT INTO story_edition_scope_decisions (
+            triage_run_id, story_id, edition_id, latest_assignment_id, scope_class, confidence,
+            reason, scope_config_hash, scope_version, created_at
+        ) VALUES (%s, %s, %s, %s, 'LOCAL', 0.95, 'In city', %s, 'v1', %s)
+        """,
+        (run_id, sid, edition.id, aid, scope_hash, now),
+    )
+
+    # Insert triage decision with service_state in brief_payload evidence_items
+    brief_data = {
+        "topic": "Свет",
+        "evidence_items": [
+            {
+                "text": "В Бердянске отключен свет",
+                "kind": "service_access",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [9999],
+                "service_state": {
+                    "subject_key": "power_supply",
+                    "subject_label": "Электроснабжение",
+                    "dimension": "availability",
+                    "state": "UNAVAILABLE",
+                    "expected_now": True,
+                    "basis": "direct_failure",
+                },
+            }
+        ],
+    }
+
+    await conn.execute(
+        """
+        INSERT INTO story_event_triage_decisions (
+            run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
+            decision, retention, enrichment, confidence, reason, brief_payload, created_at
+        ) VALUES (%s, %s, %s, %s, %s, 'ANALYZE', 'KEEP', 'BRIEF', 0.95, 'OK', %s, %s)
+        """,
+        (run_id, sid, aid, TRIAGE_VERSION, scope_hash, json.dumps(brief_data), now),
+    )
+
+    service = StoryTriageService(ai_cascade=AsyncMock(), cluster_repo=cluster_repo)
+    hints = await service._load_recent_subject_hints(conn, edition.id)
+
+    assert len(hints) == 1
+    assert hints[0] == ("power_supply", "Электроснабжение")

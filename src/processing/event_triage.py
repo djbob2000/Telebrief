@@ -746,24 +746,46 @@ class StoryTriageService:
     ) -> list[tuple[str, str]]:
         cursor = await conn.execute(
             """
-            SELECT DISTINCT
-                obs->>'subject_key' AS subject_key,
-                obs->>'subject_label' AS subject_label
-            FROM story_event_triage_decisions setd
-            JOIN story_edition_scope_decisions sesd
-              ON sesd.story_id = setd.story_id
-             AND sesd.latest_assignment_id = setd.latest_assignment_id
-             AND sesd.scope_config_hash = setd.scope_config_hash
-            CROSS JOIN LATERAL jsonb_array_elements(COALESCE(setd.brief_payload->'operational_observations', '[]'::jsonb)) AS obs
-            WHERE sesd.edition_id = %s
-              AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
-              AND setd.retention = 'KEEP'
-              AND setd.triage_version = %s
-              AND obs->>'subject_key' IS NOT NULL
+            WITH extracted_hints AS (
+                SELECT
+                    item->'service_state'->>'subject_key' AS subject_key,
+                    item->'service_state'->>'subject_label' AS subject_label
+                FROM story_event_triage_decisions setd
+                JOIN story_edition_scope_decisions sesd
+                  ON sesd.story_id = setd.story_id
+                 AND sesd.latest_assignment_id = setd.latest_assignment_id
+                 AND sesd.scope_config_hash = setd.scope_config_hash
+                CROSS JOIN LATERAL jsonb_array_elements(COALESCE(setd.brief_payload->'evidence_items', '[]'::jsonb)) AS item
+                WHERE sesd.edition_id = %s
+                  AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
+                  AND setd.retention = 'KEEP'
+                  AND setd.triage_version = %s
+                  AND item->'service_state'->>'subject_key' IS NOT NULL
+
+                UNION
+
+                SELECT
+                    obs->>'subject_key' AS subject_key,
+                    obs->>'subject_label' AS subject_label
+                FROM story_event_triage_decisions setd
+                JOIN story_edition_scope_decisions sesd
+                  ON sesd.story_id = setd.story_id
+                 AND sesd.latest_assignment_id = setd.latest_assignment_id
+                 AND sesd.scope_config_hash = setd.scope_config_hash
+                CROSS JOIN LATERAL jsonb_array_elements(COALESCE(setd.brief_payload->'operational_observations', '[]'::jsonb)) AS obs
+                WHERE sesd.edition_id = %s
+                  AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
+                  AND setd.retention = 'KEEP'
+                  AND setd.triage_version = %s
+                  AND obs->>'subject_key' IS NOT NULL
+            )
+            SELECT DISTINCT subject_key, subject_label
+            FROM extracted_hints
+            WHERE subject_key IS NOT NULL AND subject_key != ''
             ORDER BY subject_key
             LIMIT %s
             """,
-            (edition_id, TRIAGE_VERSION, limit),
+            (edition_id, TRIAGE_VERSION, edition_id, TRIAGE_VERSION, limit),
         )
         hints: list[tuple[str, str]] = []
         async for row in cursor:
