@@ -1,0 +1,28 @@
+{
+  "cases": [
+    {
+      "id": "rich_day_dashboard_is_capped_without_losing_detail_story",
+      "expected": {
+        "max_city_situation_lines": 7,
+        "omitted_pure_operational_story_remains_in_detail": true
+      }
+    },
+    {
+      "id": "microdetails_survive_thematic_compression",
+      "expected_detail_markers": ["300", "18:30", "19:15", "Юпитер"]
+    },
+    {
+      "id": "unrelated_small_stories_remain_separate",
+      "expected_max_stories_per_item": 1
+    },
+    {
+      "id": "non_operational_city_life_stays_out_of_dashboard",
+      "expected_dashboard_exclusions": [
+        "generator_safety_advice",
+        "resident_fuel_burden",
+        "vpn_workaround",
+        "regional_incident_totals"
+      ]
+    }
+  ]
+}
