@@ -28,7 +28,7 @@ from src.repositories.stories import StoryRepository
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_VERSION = "v3"
+ANALYSIS_VERSION = "v4"
 
 _EVENT_ANALYSIS_SYSTEM_PROMPT = """You are an expert investigative regional news editor.
 Analyze the following chronological source fragments from multiple channels regarding a single local event.
@@ -47,6 +47,9 @@ Publication use is semantic, not topic-based.
 - A question alone MUST NOT create an operational_observation or service state.
 - If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
 - Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
+- operational_observations are ONLY for a concrete current/scheduled state of resident-facing utility, infrastructure, transport, communications, financial/municipal service, or service-access function.
+- Do NOT create an operational observation for resident coping behavior, safety advice, personal burden, demand/interest, discussion sentiment, or broad regional incident totals unless the excerpt explicitly establishes a concrete current local service state.
+- Such facts may remain PUBLISH evidence and may remain in the digest thematic layer.
 
 Respond ONLY with a valid JSON object with the exact keys:
 {

@@ -1407,3 +1407,129 @@ async def test_gate_v2_normalizes_resident_question_brief_payload(conn, edition,
     assert result.brief_payload.evidence_items[0].publication_use == "CONTEXT"
     # Question-only observation was stripped
     assert result.brief_payload.operational_observations == ()
+
+
+def test_gate_v5_operational_observation_contract_is_service_state_only() -> None:
+    from src.processing import event_triage
+
+    prompt = event_triage._GATE_V2_SYSTEM_PROMPT.lower()
+    assert event_triage.TRIAGE_VERSION == "v5"
+    assert "resident-facing" in prompt
+    assert "do not create an operational observation" in prompt
+    assert "coping" in prompt
+    assert "regional" in prompt
+    assert "safety advice" in prompt
+
+
+@pytest.mark.postgres
+async def test_gate_non_operational_coping_evidence_preserves_keep_without_observation(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8901, 'hash_coping_1', '[1, 0]'::vector, 'test-model', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9901, %s, 0, 'Жильцы скинулись по 300 рублей на домовой генератор', 'hash_coping_1', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10901, 9901, 8901)
+        """
+    )
+    aid1 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9901,
+        fragment_embedding_id=10901,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid,
+        centroid=[1.0, 0.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid1,
+        analysis_dirty=True,
+    )
+    st = await cluster_repo.get_cluster_state(conn, sid)
+    assert st is not None
+
+    scope_config = EditionScopeConfig(name="Бердянск", focus_places=("Бердянск",))
+    scope_hash = scope_config_hash(scope_config)
+
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "story_id": sid,
+                    "scope": "LOCAL",
+                    "scope_confidence": 0.95,
+                    "scope_reason": "Resident workaround in target city",
+                    "retention": "KEEP",
+                    "enrichment": "BRIEF",
+                    "exclusion_reason": None,
+                    "confidence": 0.9,
+                    "reason": "Residents sharing generator costs",
+                    "brief_payload": {
+                        "topic": "Использование генераторов жителями",
+                        "publishability": "news",
+                        "headline": "Жильцы дома установили общий генератор",
+                        "digest_summary": "Жители собрали средства на работу насоса.",
+                        "evidence_items": [
+                            {
+                                "text": "Жильцы скинулись по 300 рублей на домовой генератор",
+                                "kind": "community_report",
+                                "publication_use": "PUBLISH",
+                                "source_fragment_ids": [9901],
+                            }
+                        ],
+                        "operational_observations": [],
+                    },
+                }
+            ]
+        }
+    )
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    batch = await service.triage_stories_batch(
+        conn,
+        [st],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert len(batch.results) == 1
+    res = batch.results[0]
+    assert res.retention == "KEEP"
+    assert res.enrichment == "BRIEF"
+    assert res.brief_payload is not None
+    assert len(res.brief_payload.evidence_items) == 1
+    assert res.brief_payload.evidence_items[0].publication_use == "PUBLISH"
+    assert res.brief_payload.operational_observations == ()

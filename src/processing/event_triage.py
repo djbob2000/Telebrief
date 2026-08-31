@@ -27,7 +27,7 @@ from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v4"
+TRIAGE_VERSION = "v5"
 
 _GATE_V2_SYSTEM_PROMPT = """You are a fast geographic, editorial retention, and operational triage classifier for a regional newsroom digest.
 You are evaluating candidate event Stories for ONE configured edition.
@@ -57,6 +57,9 @@ For LOCAL or DIRECT_IMPACT content:
 - A question alone MUST NOT create an operational_observation or service state.
 - If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
 - Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
+- operational_observations are ONLY for a concrete current/scheduled state of resident-facing utility, infrastructure, transport, communications, financial/municipal service, or service-access function.
+- Do NOT create an operational observation for resident coping behavior, safety advice, personal burden, demand/interest, discussion sentiment, or broad regional incident totals unless the excerpt explicitly establishes a concrete current local service state.
+- Such facts may remain PUBLISH evidence and may remain in the digest thematic layer.
 - For KEEP, provide a brief_payload with topic, tags, urgency, publishability, headline, digest_summary, operational_observations, and evidence_items.
 - Every operational observation MUST cite one or more exact source_fragment_ids from the excerpts for that Story. Valid states: AVAILABLE, UNAVAILABLE, DEGRADED, RESTRICTED, UNKNOWN, SCHEDULED. Limit to at most 4 operational observations. Include effective_from / effective_until in ISO-8601 when the source reports a future or scheduled window.
 - Every evidence item MUST have text, kind (established_fact, community_report, service_access, official_statement, commercial_offer, resident_question), publication_use (PUBLISH, CONTEXT, EXCLUDE), and exact source_fragment_ids.

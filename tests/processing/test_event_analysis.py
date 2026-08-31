@@ -393,3 +393,16 @@ async def test_event_analysis_preserves_kept_community_story_publishability(
     assert rev.event_payload["evidence_items"][0]["kind"] == "community_report"
     assert rev.event_payload["evidence_items"][0]["publication_use"] == "PUBLISH"
     assert rev.event_payload["confidence_score"] == 0.62
+
+
+@pytest.mark.unit
+def test_event_analysis_v4_operational_observation_contract_is_service_state_only() -> None:
+    from src.processing import event_analysis
+
+    prompt = event_analysis._EVENT_ANALYSIS_SYSTEM_PROMPT.lower()
+    assert event_analysis.ANALYSIS_VERSION == "v4"
+    assert "resident-facing" in prompt
+    assert "do not create an operational observation" in prompt
+    assert "coping" in prompt
+    assert "regional" in prompt
+    assert "safety advice" in prompt
