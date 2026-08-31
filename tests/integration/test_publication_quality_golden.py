@@ -416,6 +416,7 @@ async def test_berdyansk_publication_quality_golden_oracle_pipeline(
 
     # Digest rendering & Presentation Plan
     from src.publication.digest_presentation import build_digest_presentation_plan
+    from src.publication.digest_relation_support import find_unsupported_digest_relations
 
     evidence_dict = getattr(editorial_input.analysis, "evidence", {}) or {}
     plan = build_digest_presentation_plan(
@@ -433,11 +434,53 @@ async def test_berdyansk_publication_quality_golden_oracle_pipeline(
     )
     assert len(all_covered_and_detail_ids) > 0
 
+    # Verify story hints have explicit detail_role assigned
+    assert len(plan.story_hints) > 0
+    roles = {h.detail_role for h in plan.story_hints}
+    assert roles.issubset({"SUPPRESS", "DRILL_DOWN", "NORMAL"})
+
     renderer = PublicationDigestRenderer(use_emojis=True, include_statistics=True)
-    title, lead, body = renderer.render_grouped_digest(editorial_input, edition_name="Бердянск")
+    title, lead, body = renderer.render_grouped_digest(
+        editorial_input,
+        edition_name="Бердянск",
+        presentation_plan=plan,
+    )
     digest_text = f"{title}\n{lead}\n{body}"
 
     # Semantic assertions
     assert digest_text.count("Колони") >= 1
     assert "Буч" not in digest_text
     assert "скидк" not in digest_text.lower()
+
+    # Causal / mechanism validation passes with zero unsupported relations
+    from src.publication.digest_narrative import build_digest_support_text_index
+
+    support_index = build_digest_support_text_index(
+        evidence=evidence_dict,
+        cards=editorial_input.analysis.cards,
+        frozen_input=editorial_input,
+    )
+    violations = find_unsupported_digest_relations(digest_text, list(support_index.values()))
+    assert len(violations) == 0
+
+
+@pytest.mark.integration
+def test_city_life_short_read_digest_golden_scenarios_contract() -> None:
+    """Verifies that all 5 final-polish golden scenarios are present and defined."""
+    fixture_path = (
+        Path(__file__).resolve().parent.parent
+        / "fixtures"
+        / "city_life_short_read_digest_golden.json"
+    )
+    with fixture_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    case_ids = {c["id"] for c in data.get("cases", [])}
+    expected_final_polish = {
+        "mixed_bank_status_is_one_dashboard_group",
+        "dashboard_label_is_deterministic",
+        "covered_status_with_microdetail_becomes_drill_down",
+        "covered_status_without_extra_detail_is_suppressed",
+        "unsupported_causal_compression_is_rejected",
+    }
+    assert expected_final_polish.issubset(case_ids)
