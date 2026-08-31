@@ -464,9 +464,8 @@ async def test_berdyansk_publication_quality_golden_oracle_pipeline(
     assert len(violations) == 0
 
 
-@pytest.mark.integration
 def test_city_life_short_read_digest_golden_scenarios_contract() -> None:
-    """Verifies that all 5 final-polish golden scenarios are present and defined."""
+    """Verifies that all final-polish and operational semantic golden scenarios are present and defined."""
     fixture_path = (
         Path(__file__).resolve().parent.parent
         / "fixtures"
@@ -476,11 +475,17 @@ def test_city_life_short_read_digest_golden_scenarios_contract() -> None:
         data = json.load(f)
 
     case_ids = {c["id"] for c in data.get("cases", [])}
-    expected_final_polish = {
+    expected_operational_cleanup = {
         "mixed_bank_status_is_one_dashboard_group",
         "dashboard_label_is_deterministic",
         "covered_status_with_microdetail_becomes_drill_down",
         "covered_status_without_extra_detail_is_suppressed",
         "unsupported_causal_compression_is_rejected",
+        "coping_behavior_is_not_dashboard_state",
+        "community_service_state_is_operational",
+        "seasonal_absence_requires_current_expectation",
+        "positive_dashboard_groups_are_subject_coherent",
+        "question_context_does_not_become_meta_news",
+        "headline_body_attribution_is_not_duplicated",
     }
-    assert expected_final_polish.issubset(case_ids)
+    assert expected_operational_cleanup.issubset(case_ids)

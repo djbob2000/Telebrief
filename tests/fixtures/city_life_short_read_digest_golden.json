@@ -56,6 +56,40 @@
       "expected": {
         "blocking_code": "UNSUPPORTED_DIGEST_RELATION"
       }
+    },
+    {
+      "id": "coping_behavior_is_not_dashboard_state",
+      "expected_dashboard_exclusions": [
+        "household_generator_use",
+        "future_cold_concern"
+      ]
+    },
+    {
+      "id": "community_service_state_is_operational",
+      "expected_dashboard_inclusions": [
+        "upper_floor_water_unavailable"
+      ]
+    },
+    {
+      "id": "seasonal_absence_requires_current_expectation",
+      "expected_dashboard_exclusions": [
+        "heating_absence_without_expected_operation"
+      ]
+    },
+    {
+      "id": "positive_dashboard_groups_are_subject_coherent",
+      "expected": {
+        "global_available_services_bundle": false,
+        "max_positive_subjects": 2
+      }
+    },
+    {
+      "id": "question_context_does_not_become_meta_news",
+      "expected_meta_question_headlines": 0
+    },
+    {
+      "id": "headline_body_attribution_is_not_duplicated",
+      "expected_duplicate_attribution_items": 0
     }
   ]
 }

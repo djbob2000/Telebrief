@@ -27,6 +27,12 @@ def test_city_life_short_read_golden_fixture_has_final_polish_cases() -> None:
         "covered_status_with_microdetail_becomes_drill_down",
         "covered_status_without_extra_detail_is_suppressed",
         "unsupported_causal_compression_is_rejected",
+        "coping_behavior_is_not_dashboard_state",
+        "community_service_state_is_operational",
+        "seasonal_absence_requires_current_expectation",
+        "positive_dashboard_groups_are_subject_coherent",
+        "question_context_does_not_become_meta_news",
+        "headline_body_attribution_is_not_duplicated",
     } <= ids
 
 
