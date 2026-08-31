@@ -302,6 +302,13 @@ class PublicationGenerationService:
                                 narrative_draft=narrative_draft,
                                 presentation_plan=presentation_plan,
                             )
+                            from src.publication.digest_quality_diagnostics import (
+                                audit_digest_prose_quality,
+                            )
+
+                            quality_audit = audit_digest_prose_quality(
+                                draft_cand, evidence=evidence_dict
+                            )
                             await observer.attempt_finished(
                                 att_id,
                                 "succeeded",
@@ -309,8 +316,10 @@ class PublicationGenerationService:
                                     "validation": {"is_valid": True},
                                     "block_count": len(draft_cand.blocks),
                                     "situation_item_count": len(draft_cand.situation_items),
+                                    "prose_quality_audit": quality_audit.as_metadata(),
                                 },
                             )
+
                         else:
                             await observer.attempt_finished(
                                 att_id,

@@ -2212,6 +2212,18 @@ async def test_event_first_digest_narrative_generation_with_city_situation(
     assert "Водоснабжение" in pub.body
     assert "Новое расписание маршрута №4" in pub.body
 
+    cur = await conn.execute(
+        "SELECT metadata FROM publication_generation_attempts WHERE id = %s",
+        (pub.winning_generation_attempt_id,),
+    )
+    attempt_row = await cur.fetchone()
+    assert attempt_row is not None
+    attempt_meta = (
+        attempt_row[0] if isinstance(attempt_row[0], dict) else json.loads(attempt_row[0])
+    )
+    assert "prose_quality_audit" in attempt_meta
+    assert attempt_meta["prose_quality_audit"]["version"] == "digest-diagnostics-v1"
+
 
 @pytest.mark.postgres
 async def test_event_first_digest_deterministic_mode_uses_digest_presentation_plan(
