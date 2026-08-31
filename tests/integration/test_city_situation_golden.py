@@ -230,23 +230,55 @@ async def test_berdyansk_city_situation_golden_oracle_pipeline(
         )
 
         # Build simulated AI triage output for this story
-        obs_payloads = []
+        evidence_items_payload = []
         for exp_obs in case.get("expected_observations", []):
             mapped_fids = [
                 frag_db_ids[fid]
                 for fid in exp_obs.get("source_fragment_ids", [])
                 if fid in frag_db_ids
             ]
-            obs_payloads.append(
+            st = exp_obs["state"]
+            basis = (
+                "scheduled_change"
+                if st == "SCHEDULED"
+                else (
+                    "normal_operation"
+                    if st == "AVAILABLE"
+                    else (
+                        "explicit_restriction"
+                        if st == "RESTRICTED"
+                        else ("degraded_access" if st == "DEGRADED" else "direct_failure")
+                    )
+                )
+            )
+            evidence_items_payload.append(
                 {
-                    "subject_key": exp_obs["subject_key"],
-                    "subject_label": exp_obs["subject_label"],
-                    "dimension": exp_obs["dimension"],
-                    "location": exp_obs["location"],
-                    "entity": exp_obs["entity"],
-                    "state": exp_obs["state"],
-                    "detail": exp_obs["detail"],
+                    "text": exp_obs.get("detail", exp_obs["subject_label"]),
+                    "kind": "service_access",
+                    "publication_use": "PUBLISH",
                     "source_fragment_ids": mapped_fids or [last_frag_id],
+                    "service_state": {
+                        "subject_key": exp_obs["subject_key"],
+                        "subject_label": exp_obs["subject_label"],
+                        "dimension": exp_obs["dimension"],
+                        "location": exp_obs["location"],
+                        "entity": exp_obs["entity"],
+                        "state": exp_obs["state"],
+                        "expected_now": True,
+                        "basis": basis,
+                        "effective_from": exp_obs.get("effective_from"),
+                        "effective_until": exp_obs.get("effective_until"),
+                    },
+                }
+            )
+
+        if not evidence_items_payload and case.get("fragments"):
+            evidence_items_payload.append(
+                {
+                    "text": case["fragments"][0]["text"],
+                    "kind": "community_report",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [last_frag_id],
                 }
             )
 
@@ -256,17 +288,19 @@ async def test_berdyansk_city_situation_golden_oracle_pipeline(
                 "topic": case.get("topic", f"Story #{s_id}"),
                 "headline": case.get("topic", f"Story #{s_id}"),
                 "digest_summary": case.get("topic", f"Summary of #{s_id}"),
-                "category": case.get("expected_subject_key", "general"),
-                "key_facts": [case.get("topic", "Fact")],
-                "operational_observations": obs_payloads,
+                "tags": [case.get("expected_subject_key", "general")],
+                "evidence_items": evidence_items_payload,
                 "confidence_score": 0.95,
                 "publishability": "brief",
             }
+
+        scope_basis = [last_frag_id] if case["expected_scope"] in ("LOCAL", "DIRECT_IMPACT") else []
 
         triage_results_payload.append(
             {
                 "story_id": s_id,
                 "scope": case["expected_scope"],
+                "scope_basis_fragment_ids": scope_basis,
                 "scope_confidence": 0.95,
                 "scope_reason": f"Scope reason for {case['id']}",
                 "confidence": 0.95,
