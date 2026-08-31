@@ -396,98 +396,20 @@ async def test_event_analysis_preserves_kept_community_story_publishability(
 
 
 @pytest.mark.unit
-def test_event_analysis_v5_operational_observation_contract_is_service_state_only() -> None:
+def test_event_analysis_v6_service_state_contract() -> None:
     from src.processing import event_analysis
 
-    prompt = event_analysis._EVENT_ANALYSIS_SYSTEM_PROMPT.lower()
-    assert event_analysis.ANALYSIS_VERSION == "v5"
-    assert "service_access" in prompt
-    assert "every publish service_access" in prompt
-    assert "seasonal" in prompt
-    assert "coping" in prompt
-    assert "resident-facing" in prompt
-    assert "do not create an operational observation" in prompt
-    assert "regional" in prompt
-    assert "safety advice" in prompt
-
-
-@pytest.mark.unit
-def test_resident_question_vs_community_report_operational_boundary() -> None:
-    from src.domain.event_payload import (
-        EventPayload,
-        normalize_question_evidence,
-    )
-
-    # 1. Pure resident question must NOT produce operational observation
-    question_payload = EventPayload.from_dict(
-        {
-            "headline": "Вопрос о свете в Центре",
-            "digest_summary": "Жители интересуются, есть ли свет в Центре.",
-            "evidence_items": [
-                {
-                    "text": "Подскажите, есть ли свет в Центре?",
-                    "kind": "resident_question",
-                    "publication_use": "PUBLISH",
-                    "source_fragment_ids": [1],
-                }
-            ],
-            "operational_observations": [
-                {
-                    "subject_key": "power_supply",
-                    "subject_label": "Электроснабжение",
-                    "dimension": "availability",
-                    "location": "Центр",
-                    "entity": "электросеть",
-                    "state": "UNKNOWN",
-                    "detail": "Жители интересуются наличием света",
-                    "source_fragment_ids": [1],
-                }
-            ],
-        }
-    )
-    normalized_q = normalize_question_evidence(question_payload)
-    assert normalized_q.evidence_items[0].kind == "resident_question"
-    assert normalized_q.evidence_items[0].publication_use == "CONTEXT"
-    assert len(normalized_q.operational_observations) == 0
-
-    # 2. Community report with observed state is PUBLISH and retains operational observation
-    report_payload = EventPayload.from_dict(
-        {
-            "headline": "Отсутствие света на Горе",
-            "digest_summary": "По сообщениям жителей, на Горе нет света.",
-            "evidence_items": [
-                {
-                    "text": "На Горе света нет",
-                    "kind": "community_report",
-                    "publication_use": "PUBLISH",
-                    "source_fragment_ids": [2],
-                }
-            ],
-            "operational_observations": [
-                {
-                    "subject_key": "power_supply",
-                    "subject_label": "Электроснабжение",
-                    "dimension": "availability",
-                    "location": "Гора",
-                    "entity": "электросеть",
-                    "state": "UNAVAILABLE",
-                    "detail": "Гора: нет света",
-                    "source_fragment_ids": [2],
-                }
-            ],
-        }
-    )
-    normalized_r = normalize_question_evidence(report_payload)
-    assert normalized_r.evidence_items[0].kind == "community_report"
-    assert normalized_r.evidence_items[0].publication_use == "PUBLISH"
-    assert len(normalized_r.operational_observations) == 1
-    assert normalized_r.operational_observations[0].state == "UNAVAILABLE"
+    prompt = event_analysis._EVENT_ANALYSIS_SYSTEM_PROMPT
+    assert event_analysis.ANALYSIS_VERSION == "v6"
+    assert '"service_access"' in prompt or "service_access" in prompt
+    assert '"service_state"' in prompt
+    assert '"expected_now"' in prompt
+    assert '"basis"' in prompt
+    assert '"operational_observations"' not in prompt
 
 
 @pytest.mark.postgres
-async def test_event_analysis_v5_drops_invalid_coping_operational_observation(
-    conn, edition, revision
-):
+async def test_event_analysis_v6_demotes_coping_service_state(conn, edition, revision):
     now = dt.datetime.now(dt.timezone.utc)
     story_repo = StoryRepository()
     cluster_repo = EventClusterRepository()
@@ -554,21 +476,19 @@ async def test_event_analysis_v5_drops_invalid_coping_operational_observation(
             "evidence_items": [
                 {
                     "text": "Жители включают генератор на ночь для холодильников",
-                    "kind": "community_report",
+                    "kind": "service_access",
                     "publication_use": "PUBLISH",
                     "source_fragment_ids": [9993],
-                }
-            ],
-            "operational_observations": [
-                {
-                    "subject_key": "household_generator",
-                    "subject_label": "Генератор",
-                    "dimension": "availability",
-                    "location": "Бердянск",
-                    "entity": "жители",
-                    "state": "AVAILABLE",
-                    "detail": "Генератор доступен",
-                    "source_fragment_ids": [9993],
+                    "service_state": {
+                        "subject_key": "backup_power",
+                        "subject_label": "Генератор",
+                        "dimension": "availability",
+                        "location": "Бердянск",
+                        "entity": "жители",
+                        "state": "AVAILABLE",
+                        "expected_now": True,
+                        "basis": "normal_operation",
+                    },
                 }
             ],
             "official_positions": [],
@@ -586,4 +506,108 @@ async def test_event_analysis_v5_drops_invalid_coping_operational_observation(
     assert rev is not None
     assert rev.event_payload is not None
     assert len(rev.event_payload["evidence_items"]) == 1
-    assert rev.event_payload["operational_observations"] == []
+    assert rev.event_payload["evidence_items"][0]["kind"] == "community_report"
+    assert rev.event_payload["evidence_items"][0].get("service_state") is None
+
+
+@pytest.mark.postgres
+async def test_event_analysis_v6_valid_service_state_persisted(conn, edition, revision):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8995, 'hash_water_analysis', '[1, 0]'::vector, 'test-model', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9995, %s, 0, 'В микрорайоне АКЗ нет воды из-за аварии', 'hash_water_analysis', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10995, 9995, 8995)
+        """
+    )
+    aid = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9995,
+        fragment_embedding_id=10995,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid,
+        centroid=[1.0, 0.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid,
+        analysis_dirty=True,
+    )
+
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "topic": "Авария на водоводе в АКЗ",
+            "tags": ["вода", "авария"],
+            "urgency": "high",
+            "publishability": "news",
+            "headline": "В АКЗ пропало водоснабжение",
+            "digest_summary": "Авария оставила район без воды.",
+            "key_facts": ["Водоснабжение отсутствует"],
+            "evidence_items": [
+                {
+                    "text": "В микрорайоне АКЗ нет воды из-за аварии",
+                    "kind": "service_access",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [9995],
+                    "service_state": {
+                        "subject_key": "water_supply",
+                        "subject_label": "Водоснабжение",
+                        "dimension": "availability",
+                        "location": "АКЗ",
+                        "entity": "водовод",
+                        "state": "UNAVAILABLE",
+                        "expected_now": True,
+                        "basis": "direct_failure",
+                    },
+                }
+            ],
+            "official_positions": [],
+            "community_observations": ["Воды нет"],
+            "conflicts_or_uncertainties": [],
+            "affected_areas": ["АКЗ"],
+            "timeline_summary": "Утром отключилась вода",
+            "confidence_score": 0.95,
+        }
+    )
+
+    service = EventAnalysisService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    rev = await service.analyze_story(conn, sid)
+
+    assert rev is not None
+    assert rev.event_payload is not None
+    item = rev.event_payload["evidence_items"][0]
+    assert item["kind"] == "service_access"
+    assert item["service_state"]["subject_key"] == "water_supply"
+    assert item["service_state"]["state"] == "UNAVAILABLE"

@@ -21,7 +21,10 @@ from src.processing.evidence_sampling import (
     FragmentWithContext,
     RepresentativeEvidenceSampler,
 )
-from src.processing.operational_semantics import normalize_operational_payload
+from src.processing.operational_semantics import (
+    has_unstructured_publish_service_access,
+    normalize_service_state_evidence,
+)
 from src.repositories.embeddings import _vec_to_list
 from src.repositories.event_clusters import EventClusterRepository
 from src.repositories.fragments import FragmentRepository
@@ -29,7 +32,7 @@ from src.repositories.stories import StoryRepository
 
 logger = logging.getLogger(__name__)
 
-ANALYSIS_VERSION = "v5"
+ANALYSIS_VERSION = "v6"
 
 _EVENT_ANALYSIS_SYSTEM_PROMPT = """You are an expert investigative regional news editor.
 Analyze the following chronological source fragments from multiple channels regarding a single local event.
@@ -39,26 +42,17 @@ A Story reaches this rich-analysis stage only after Event-First retention has ke
 
 Tags are descriptive metadata, not digest sections. Use whatever concise terms best describe the event (3-8 short topic tags in Russian; open vocabulary; do not choose from a predefined taxonomy). Never force an event into a predefined city category.
 
-Publication use is semantic, not topic-based.
-- Evidence kind describes semantic content, not source trust.
-- Use service_access for a concrete current or scheduled resident-facing service availability/access state even when reported by a community source.
-- Use community_report for useful community facts that are not themselves service availability/access states.
-- Every PUBLISH service_access evidence item SHOULD have a matching operational_observation with overlapping source_fragment_ids.
-- Do not label resident coping behavior, household tools, safety advice, personal burden, demand, sentiment, discussion, or future concern as service_access merely to create an operational observation.
-- Absence of a seasonal or optional service is not a current outage unless the excerpts establish that operation is currently expected, was operating and failed, or explicitly report a current system failure/restriction.
-- If a workaround creates a concrete service outcome, preserve the coping action separately and create a service state only for the explicitly supported outcome.
-- A service-access fact may be PUBLISH even when a business or bank is named (e.g. ATM cash availability, backup power for telecom, state fee / document procedures).
-- A sales offer, discount, product listing, seller phone number, or promotional price is EXCLUDE.
-- Do not convert EXCLUDE commercial details into useful_details merely to preserve them.
-- Use resident_question for a resident asking whether/where/when/how something works when the excerpt itself does not provide the answer.
-- resident_question is CONTEXT, not PUBLISH.
-- A question alone MUST NOT create an operational_observation or service state.
-- If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
-- Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
-- operational_observations are ONLY for a concrete current/scheduled state of resident-facing utility, infrastructure, transport, communications, financial/municipal service, or service-access function.
-- Do NOT create an operational observation for resident coping behavior, safety advice, personal burden, demand/interest, discussion sentiment, or broad regional incident totals unless the excerpt explicitly establishes a concrete current local service state.
-- Such facts may remain PUBLISH evidence and may remain in the digest thematic layer.
-
+SERVICE-STATE CONTRACT:
+- Operational service truth exists only inside a PUBLISH evidence item with kind=service_access and a non-null service_state object.
+- Do not create a separate operational observations array.
+- service_state describes the external resident-facing service outcome, not the resident workaround mechanism.
+- A generator, battery, private well, neighbor collection, charging action, VPN choice, fuel burden, or other coping action is not itself a resident-facing service state.
+- If a workaround causes an explicitly stated service outcome, keep the coping action as separate evidence and attach service_state only to the evidence sentence that states the water/internet/banking/transport/etc. outcome.
+- For UNAVAILABLE, DEGRADED, or RESTRICTED, expected_now MUST be true and the excerpts must establish that the service is expected to operate now or explicitly describe a current failure/restriction.
+- Do not infer expected_now from the calendar or general season knowledge.
+- For SCHEDULED, basis must be scheduled_change and effective_from is required.
+- Valid basis values: normal_operation, direct_failure, degraded_access, explicit_restriction, scheduled_change.
+- Broad regional totals or incidents that do not state a concrete consequence inside the edition focus area must not be promoted into local key_facts, service_access, or digest_summary merely because they share the edition's region.
 
 Respond ONLY with a valid JSON object with the exact keys:
 {
@@ -67,7 +61,6 @@ Respond ONLY with a valid JSON object with the exact keys:
   "urgency": "critical | high | normal | low",
   "publishability": "news | brief",
   "headline": "Professional informative headline in Russian",
-
   "digest_summary": "1-3 concise sentences summarizing what happened, who is affected, and current status",
   "key_facts": ["List of confirmed facts"],
   "evidence_items": [
@@ -75,21 +68,19 @@ Respond ONLY with a valid JSON object with the exact keys:
       "text": "Fact or service access detail",
       "kind": "established_fact | community_report | service_access | official_statement | commercial_offer | resident_question",
       "publication_use": "PUBLISH | CONTEXT | EXCLUDE",
-      "source_fragment_ids": [101]
-    }
-  ],
-  "operational_observations": [
-    {
-      "subject_key": "power_supply",
-      "subject_label": "Электроснабжение",
-      "dimension": "availability",
-      "location": "Центр",
-      "entity": "электросеть",
-      "state": "UNAVAILABLE | AVAILABLE | DEGRADED | RESTRICTED | UNKNOWN | SCHEDULED",
-      "detail": "Аварийное отключение",
       "source_fragment_ids": [101],
-      "effective_from": "2026-08-30T08:00:00+00:00",
-      "effective_until": "2026-08-30T17:00:00+00:00"
+      "service_state": {
+        "subject_key": "water_supply",
+        "subject_label": "Водоснабжение",
+        "dimension": "availability",
+        "state": "UNAVAILABLE | AVAILABLE | DEGRADED | RESTRICTED | UNKNOWN | SCHEDULED",
+        "location": "АКЗ",
+        "entity": "водовод",
+        "expected_now": true,
+        "basis": "direct_failure | normal_operation | degraded_access | explicit_restriction | scheduled_change",
+        "effective_from": "2026-08-30T08:00:00+00:00",
+        "effective_until": "2026-08-30T17:00:00+00:00"
+      }
     }
   ],
   "official_positions": [{"source": "Source name", "statement": "Summary of official position"}],
@@ -303,19 +294,18 @@ class EventAnalysisService:
                 normalize_question_evidence(EventAnalysisPayload.from_dict(parsed)),
                 default="brief",
             )
-            payload, operational_audit = normalize_operational_payload(parsed_payload)
-            if operational_audit.dropped_observation_count > 0:
+            payload, service_audit = normalize_service_state_evidence(parsed_payload)
+            if service_audit.rejected_count > 0:
                 self.logger.debug(
-                    "Analysis dropped %s invalid operational observations for story %s: %s",
-                    operational_audit.dropped_observation_count,
+                    "Analysis rejected %s invalid service states for story %s: %s",
+                    service_audit.rejected_count,
                     story_id,
-                    operational_audit.dropped_observation_subject_keys,
+                    service_audit.rejection_reasons,
                 )
-            if operational_audit.uncovered_service_access_fragment_ids:
+            if has_unstructured_publish_service_access(payload):
                 self.logger.debug(
-                    "Analysis story %s has uncovered service_access fragments: %s",
+                    "Analysis story %s has unstructured publish service_access evidence",
                     story_id,
-                    operational_audit.uncovered_service_access_fragment_ids,
                 )
 
             await conn.execute(
