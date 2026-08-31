@@ -186,3 +186,184 @@ def test_trace_matching_and_offline_gate_metrics():
     assert report_full.legacy_floor_coverage == 1.0
     assert report_full.legacy_microdetail_retention == 1.0
     assert report_full.regression_unit_ids == ()
+
+
+def test_build_export_payload_pure():
+    from scripts.export_publication_regression_case import build_export_payload
+
+    run = {
+        "id": 123,
+        "edition": "berdyansk",
+        "snapshot_at": "2026-08-31T20:00:00+00:00",
+    }
+    source_corpus = [
+        {
+            "fixture_fragment_id": "frag-1",
+            "source_fingerprint": "a" * 64,
+        }
+    ]
+    publish_evidence = [{"evidence_id": "story:1:evidence:0:frag:1"}]
+    candidates = [{"story_id": "story:1"}]
+    sealed_story_ids = ["story:1"]
+    article_plan_story_ids = ["story:1"]
+    digest_plan_story_ids = ["story:1"]
+    article_claim_trace = [{"unit_id": "P001", "support_ids": ["story:1:evidence:0:frag:1"]}]
+    digest_coverage_trace = [{"story_id": "story:1", "mode": "DETAIL_ONLY"}]
+
+    payload = build_export_payload(
+        run=run,
+        source_corpus=source_corpus,
+        publish_evidence=publish_evidence,
+        candidates=candidates,
+        sealed_story_ids=sealed_story_ids,
+        article_plan_story_ids=article_plan_story_ids,
+        digest_plan_story_ids=digest_plan_story_ids,
+        article_claim_trace=article_claim_trace,
+        digest_coverage_trace=digest_coverage_trace,
+    )
+    assert payload["run"] == run
+    assert payload["source_corpus"] == source_corpus
+    assert payload["publish_evidence"] == publish_evidence
+    assert payload["candidates"] == candidates
+    assert payload["sealed_story_ids"] == sealed_story_ids
+    assert payload["article_plan_story_ids"] == article_plan_story_ids
+    assert payload["digest_plan_story_ids"] == digest_plan_story_ids
+    assert payload["article_claim_trace"] == article_claim_trace
+    assert payload["digest_coverage_trace"] == digest_coverage_trace
+
+
+@pytest.mark.postgres
+async def test_export_publication_case_postgres(conn, edition):
+    import datetime as dt
+    import json
+
+    from scripts.export_publication_regression_case import export_publication_case
+    from src.publication.repository import PublicationPolicyRepository
+
+    policy_repo = PublicationPolicyRepository()
+    elig = await policy_repo.get_or_create_eligibility_policy(
+        conn, edition_id=edition.id, config_hash="h-e-test", prompt_version="v1"
+    )
+    sel = await policy_repo.get_or_create_selection_policy(
+        conn, edition_id=edition.id, config_hash="h-s-test", prompt_version="v1"
+    )
+    wri = await policy_repo.get_or_create_writer_policy(
+        conn, edition_id=edition.id, config_hash="h-w-test", prompt_version="v1"
+    )
+
+    now = dt.datetime.now(dt.timezone.utc)
+    # Seed publication run
+    cur = await conn.execute(
+        """
+        INSERT INTO publication_runs (
+            edition_id, publication_type, status, request_key, snapshot_at,
+            eligibility_policy_id, selection_policy_id, writer_policy_id, created_at
+        )
+        VALUES (%s, 'article', 'succeeded', 'req-exp-test', %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (edition.id, now, elig.id, sel.id, wri.id, now),
+    )
+    run_id = (await cur.fetchone())[0]
+
+    # Seed story with revision
+    cur = await conn.execute(
+        "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+        (edition.id, now),
+    )
+    story_id = (await cur.fetchone())[0]
+
+    ep = {
+        "evidence_items": [
+            {
+                "evidence_id": f"story:{story_id}:evidence:0:frag:1",
+                "source_fragment_ids": [1],
+                "text": "Электричество восстановлено в Центре.",
+                "publication_use": "PUBLISH",
+            }
+        ]
+    }
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, event_payload, created_at)
+        VALUES (%s, 1, 'open', 'Электричество в Центре', 'h-exp-1', %s, %s)
+        RETURNING id
+        """,
+        (story_id, json.dumps(ep), now),
+    )
+    rev_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+    )
+
+    # Seed candidate and sealed input
+    cur = await conn.execute(
+        """
+        INSERT INTO publication_candidates (
+            publication_run_id, story_id, story_revision_id, deterministic_rank, snapshot_features
+        )
+        VALUES (%s, %s, %s, 1, '{}')
+        RETURNING id
+        """,
+        (run_id, story_id, rev_id),
+    )
+    cand_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO publication_selection_decisions (
+            publication_run_id, candidate_id, decision, presentation_intent, confidence, reason, rank, metadata
+        )
+        VALUES (%s, %s, 'INCLUDE', 'normal', 1.0, 'test', 1, '{}')
+        RETURNING id
+        """,
+        (run_id, cand_id),
+    )
+    dec_id = (await cur.fetchone())[0]
+
+    await conn.execute(
+        """
+        INSERT INTO publication_inputs (
+            publication_run_id, story_id, story_revision_id, selection_decision_id, presentation_intent, rank
+        )
+        VALUES (%s, %s, %s, %s, 'normal', 1)
+        """,
+        (run_id, story_id, rev_id, dec_id),
+    )
+
+    # Seed generation attempt
+    cur = await conn.execute(
+        """
+        INSERT INTO publication_generation_attempts (
+            publication_run_id, attempt_no, kind, provider, model, prompt_hash, metadata
+        )
+        VALUES (%s, 1, 'writer', 'mock', 'mock', 'h-mock', '{}')
+        RETURNING id
+        """,
+        (run_id,),
+    )
+    att_id = (await cur.fetchone())[0]
+
+    # Seed publication with trace metadata
+    meta = {
+        "article_claim_trace": {
+            "units": [{"unit_id": "P001", "support_ids": [f"story:{story_id}:evidence:0:frag:1"]}],
+            "story_coverage": 1.0,
+        }
+    }
+    await conn.execute(
+        """
+        INSERT INTO publications (publication_run_id, winning_generation_attempt_id, publication_type, title, lead, body, metadata, created_at)
+        VALUES (%s, %s, 'article', 'Заголовок', 'Лид', 'Текст статьи', %s, %s)
+        """,
+        (run_id, att_id, json.dumps(meta), now),
+    )
+
+    exported = await export_publication_case(conn, run_id)
+    assert exported["run"]["id"] == run_id
+    assert exported["run"]["edition_id"] == edition.id
+    assert len(exported["candidates"]) == 1
+    assert exported["sealed_story_ids"] == [f"story:{story_id}"]
+    assert len(exported["publish_evidence"]) == 1
+    assert len(exported["article_claim_trace"]) == 1
+    assert exported["article_claim_trace"][0]["unit_id"] == "P001"
