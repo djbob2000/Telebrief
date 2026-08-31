@@ -98,6 +98,7 @@ def plan_city_situation_presentation(
     *,
     max_items: int = 7,
     max_details_per_item: int = 2,
+    max_positive_items: int = 2,
 ) -> CitySituationPresentationPlan:
     """Consolidate and cap operational observations into a structured dashboard plan."""
     if not rollup or not rollup.items:
@@ -117,15 +118,9 @@ def plan_city_situation_presentation(
             int,  # observation count
         ]
     ] = []
-    pure_positive_items: list[CitySituationItem] = []
 
     for (norm_subj, norm_dim), group_items in grouped.items():
         pres_state = _presentation_state(group_items)
-
-        # Pure positive subjects can be bundled into available_services
-        if pres_state.upper() in _POSITIVE_STATES:
-            pure_positive_items.extend(group_items)
-            continue
 
         first_item = group_items[0]
         subject_label = next(
@@ -159,64 +154,35 @@ def plan_city_situation_presentation(
         )
         candidate_groups.append((presentation_group, worst_sev, latest_ts, obs_count))
 
-    # Sort non-positive candidate groups
-    candidate_groups.sort(
+    positive = [row for row in candidate_groups if row[0].state.upper() in _POSITIVE_STATES]
+    non_positive = [row for row in candidate_groups if row[0].state.upper() not in _POSITIVE_STATES]
+
+    positive.sort(
         key=lambda entry: (
-            entry[1],  # severity (1=most severe)
-            -entry[2].timestamp(),  # latest observation
-            -entry[3],  # observation count
+            entry[1],
+            -entry[2].timestamp(),
+            -entry[3],
+            entry[0].subject_label.casefold(),
+        )
+    )
+    non_positive.sort(
+        key=lambda entry: (
+            entry[1],
+            -entry[2].timestamp(),
+            -entry[3],
             entry[0].subject_label.casefold(),
         )
     )
 
-    # Prepare positive available_services bundle if pure positive items exist
-    available_group: CitySituationPresentationGroup | None = None
-    if pure_positive_items:
-        seen_pos_refs: set[str] = set()
-        merged_pos_refs: list[str] = []
-        for it in pure_positive_items:
-            for r in it.source_refs:
-                if r and r not in seen_pos_refs:
-                    seen_pos_refs.add(r)
-                    merged_pos_refs.append(r)
+    reserve_positive = 1 if positive and non_positive and max_items >= 2 else 0
+    negative_limit = max_items - reserve_positive
 
-        seen_pos_details: set[str] = set()
-        pos_detail_lines: list[str] = []
-        for it in pure_positive_items:
-            line = _positive_detail_line(it)
-            norm_l = line.casefold()
-            if line and norm_l not in seen_pos_details:
-                seen_pos_details.add(norm_l)
-                pos_detail_lines.append(line)
-                if len(pos_detail_lines) >= max(max_details_per_item, 4):
-                    break
+    selected_groups: list[CitySituationPresentationGroup] = [
+        row[0] for row in non_positive[:negative_limit]
+    ]
+    remaining = max_items - len(selected_groups)
 
-        available_group = CitySituationPresentationGroup(
-            group_id="situation:available_services",
-            group_kind="available_services",
-            subject_key="available_services",
-            subject_label="Работающие службы и доступные сервисы",
-            state="AVAILABLE",
-            source_refs=tuple(merged_pos_refs),
-            detail_lines=tuple(pos_detail_lines),
-        )
-
-    # Rank and select final groups up to max_items
-    selected_groups: list[CitySituationPresentationGroup] = []
-
-    if available_group and max_items >= 2 and candidate_groups:
-        # Reserve 1 slot for positive bundle, remaining max_items - 1 for non-positive
-        non_pos_limit = max_items - 1
-        for grp_tuple in candidate_groups[:non_pos_limit]:
-            selected_groups.append(grp_tuple[0])
-        selected_groups.append(available_group)
-    elif available_group and not candidate_groups:
-        selected_groups.append(available_group)
-    else:
-        for grp_tuple in candidate_groups[:max_items]:
-            selected_groups.append(grp_tuple[0])
-        if available_group and len(selected_groups) < max_items:
-            selected_groups.append(available_group)
+    selected_groups.extend(row[0] for row in positive[: min(max_positive_items, remaining)])
 
     # covered_source_refs = union of source refs of selected groups only
     seen_covered: set[str] = set()
@@ -378,13 +344,16 @@ def build_digest_presentation_plan(
     evidence: Any = None,
     max_city_situation_items: int = 7,
     max_city_situation_details: int = 2,
+    max_city_situation_positive_items: int = 2,
 ) -> DigestPresentationPlan:
     """Build the comprehensive presentation plan for a digest run."""
     city_plan = plan_city_situation_presentation(
         city_situation,
         max_items=max_city_situation_items,
         max_details_per_item=max_city_situation_details,
+        max_positive_items=max_city_situation_positive_items,
     )
+
     covered_refs = set(city_plan.covered_source_refs)
     evidence_map = evidence if isinstance(evidence, Mapping) else {}
 

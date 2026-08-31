@@ -293,6 +293,7 @@ class PublicationEditorialConfig:
     digest_narrative_max_output_tokens: int = 4096
     digest_city_situation_max_items: int = 7
     digest_city_situation_max_details_per_item: int = 2
+    digest_city_situation_max_positive_items: int = 2
 
     def __post_init__(self) -> None:
         if self.conflict_window_minutes <= 0:
@@ -321,6 +322,8 @@ class PublicationEditorialConfig:
             raise ValueError("digest_city_situation_max_items must be between 1 and 12")
         if not (1 <= self.digest_city_situation_max_details_per_item <= 4):
             raise ValueError("digest_city_situation_max_details_per_item must be between 1 and 4")
+        if not (0 <= self.digest_city_situation_max_positive_items <= 4):
+            raise ValueError("digest_city_situation_max_positive_items must be between 0 and 4")
 
 
 @dataclass
@@ -1647,6 +1650,9 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
         digest_city_situation_max_items=_val_pos_int("digest_city_situation_max_items", 7),
         digest_city_situation_max_details_per_item=_val_pos_int(
             "digest_city_situation_max_details_per_item", 2
+        ),
+        digest_city_situation_max_positive_items=_val_nonneg_int(
+            "digest_city_situation_max_positive_items", 2
         ),
     )
 

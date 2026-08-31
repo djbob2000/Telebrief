@@ -2446,6 +2446,7 @@ def test_publication_editorial_city_situation_defaults() -> None:
     cfg = PublicationEditorialConfig()
     assert cfg.digest_city_situation_max_items == 7
     assert cfg.digest_city_situation_max_details_per_item == 2
+    assert cfg.digest_city_situation_max_positive_items == 2
 
 
 @pytest.mark.unit
@@ -2460,3 +2461,10 @@ def test_city_situation_max_items_bounds(value: int) -> None:
 def test_city_situation_max_details_bounds(value: int) -> None:
     with pytest.raises(ValueError):
         PublicationEditorialConfig(digest_city_situation_max_details_per_item=value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [-1, 5])
+def test_city_situation_max_positive_items_bounds(value: int) -> None:
+    with pytest.raises(ValueError):
+        PublicationEditorialConfig(digest_city_situation_max_positive_items=value)

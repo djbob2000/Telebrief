@@ -166,7 +166,50 @@ def test_plan_city_situation_presentation_caps_at_max_items_and_tracks_covered_r
     assert "ref-8" not in plan.covered_source_refs
 
 
-def test_plan_city_situation_presentation_reserves_slot_for_available_bundle() -> None:
+def test_positive_subjects_are_not_collapsed_into_global_bundle() -> None:
+    import datetime as dt
+
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import plan_city_situation_presentation
+
+    now = dt.datetime.now(dt.timezone.utc)
+    items = (
+        CitySituationItem(
+            subject_key="banking",
+            subject_label="Банки",
+            dimension="availability",
+            location="Центр",
+            entity="Банк",
+            state="AVAILABLE",
+            detail="Отделения открыты",
+            source_refs=("ref-bank",),
+            first_observed_at=now,
+            last_observed_at=now,
+            observation_count=1,
+        ),
+        CitySituationItem(
+            subject_key="transport",
+            subject_label="Транспорт",
+            dimension="availability",
+            location="Город",
+            entity="Автобусы",
+            state="AVAILABLE",
+            detail="Автобусы ходят",
+            source_refs=("ref-transport",),
+            first_observed_at=now,
+            last_observed_at=now,
+            observation_count=1,
+        ),
+    )
+    rollup = CitySituationRollup(items=items)
+    plan = plan_city_situation_presentation(rollup, max_items=7, max_positive_items=2)
+    assert len(plan.groups) == 2
+    assert all(g.subject_key != "available_services" for g in plan.groups)
+    assert {g.subject_key for g in plan.groups} == {"banking", "transport"}
+    assert all(g.group_kind == "subject_status" for g in plan.groups)
+
+
+def test_mixed_day_reserves_at_least_one_positive_subject() -> None:
     import datetime as dt
 
     from src.publication.city_situation import CitySituationItem, CitySituationRollup
@@ -220,15 +263,76 @@ def test_plan_city_situation_presentation_reserves_slot_for_available_bundle() -
         ]
     )
     rollup = CitySituationRollup(items=tuple(items))
-    plan = plan_city_situation_presentation(rollup, max_items=7, max_details_per_item=2)
+    plan = plan_city_situation_presentation(
+        rollup, max_items=7, max_details_per_item=2, max_positive_items=2
+    )
     assert len(plan.groups) == 7
-    kinds = [g.group_kind for g in plan.groups]
-    assert kinds.count("available_services") == 1
-    assert kinds.count("subject_status") == 6
-    avail_grp = next(g for g in plan.groups if g.group_kind == "available_services")
-    assert set(avail_grp.source_refs) == {"ref-avail-1", "ref-avail-2"}
-    assert "ref-avail-1" in plan.covered_source_refs
-    assert "ref-avail-2" in plan.covered_source_refs
+    assert all(g.subject_key != "available_services" for g in plan.groups)
+    pos_groups = [g for g in plan.groups if g.state in ("AVAILABLE", "RESOLVED")]
+    non_pos_groups = [g for g in plan.groups if g.state not in ("AVAILABLE", "RESOLVED")]
+    assert len(pos_groups) == 1
+    assert len(non_pos_groups) == 6
+
+
+def test_positive_subject_budget_is_two_by_default() -> None:
+    import datetime as dt
+
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import plan_city_situation_presentation
+
+    now = dt.datetime.now(dt.timezone.utc)
+    items = [
+        CitySituationItem(
+            subject_key=f"positive_{i}",
+            subject_label=f"Служба {i}",
+            dimension="availability",
+            location="Город",
+            entity=f"entity_{i}",
+            state="AVAILABLE",
+            detail=f"Работает {i}",
+            source_refs=(f"ref-pos-{i}",),
+            first_observed_at=now,
+            last_observed_at=now - dt.timedelta(minutes=i),
+            observation_count=1,
+        )
+        for i in range(5)
+    ]
+    rollup = CitySituationRollup(items=tuple(items))
+    plan = plan_city_situation_presentation(rollup, max_items=7)
+    assert len(plan.groups) == 2
+    assert all(g.subject_key != "available_services" for g in plan.groups)
+
+
+def test_omitted_positive_refs_are_not_marked_dashboard_covered() -> None:
+    import datetime as dt
+
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import plan_city_situation_presentation
+
+    now = dt.datetime.now(dt.timezone.utc)
+    items = [
+        CitySituationItem(
+            subject_key=f"positive_{i}",
+            subject_label=f"Служба {i}",
+            dimension="availability",
+            location="Город",
+            entity=f"entity_{i}",
+            state="AVAILABLE",
+            detail=f"Работает {i}",
+            source_refs=(f"ref-pos-{i}",),
+            first_observed_at=now,
+            last_observed_at=now - dt.timedelta(minutes=i),
+            observation_count=1,
+        )
+        for i in range(4)
+    ]
+    rollup = CitySituationRollup(items=tuple(items))
+    plan = plan_city_situation_presentation(rollup, max_items=7, max_positive_items=2)
+    assert len(plan.groups) == 2
+    assert "ref-pos-0" in plan.covered_source_refs
+    assert "ref-pos-1" in plan.covered_source_refs
+    assert "ref-pos-2" not in plan.covered_source_refs
+    assert "ref-pos-3" not in plan.covered_source_refs
 
 
 def test_build_digest_presentation_plan_preserves_omitted_operational_story() -> None:
