@@ -289,6 +289,7 @@ class PublicationGenerationService:
                         )
                         if val_res.is_valid:
                             narrative_draft = draft_cand
+
                             title, lead, body = renderer.render_grouped_digest(
                                 frozen,
                                 snapshot_at=run.snapshot_at,
@@ -314,12 +315,14 @@ class PublicationGenerationService:
                                     "violations": list(val_res.violations),
                                 },
                             )
+
                     except Exception as exc:
                         logger.warning(
                             "digest narrative synthesis failed (%s: %s); falling back to deterministic",
                             type(exc).__name__,
                             exc,
                         )
+
                         await observer.attempt_finished(
                             att_id,
                             "failed",

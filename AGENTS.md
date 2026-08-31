@@ -81,12 +81,17 @@ Rules:
 - `resident_question` is context, not a fact and not an operational status.
 - A question such as "Работает ли пенсионный фонд?" must not become "пенсионный фонд не работает" or create a dashboard status by itself.
 - A useful short community report must not be discarded merely because it is conversational, single-source, or unofficial.
+- Mixed positive/negative states for the same subject/dimension consolidate into one `CONFLICTING` group rendering yellow (🟡) with both positive and non-positive detail lines.
+- City Situation rendering is fully deterministic; the LLM does NOT author or rename dashboard groups.
+- Overlapping thematic items use explicit detail roles (`SUPPRESS / DRILL_DOWN / NORMAL`); `DRILL_DOWN` items must cite distinct detail evidence rather than duplicating dashboard status.
+- Narrow deterministic causal relation validation rejects unsupported mechanism/cause claims with `UNSUPPORTED_DIGEST_RELATION`.
 - Related stories may be grouped for presentation inside their deterministic rubric/block, but legitimate coverage must not silently disappear.
 - Commercial classifieds, private disputes, personal accusations, phone-number spam, repetitive ad copy, and directory-style payload must not dominate the digest.
 - Community reports must preserve their epistemic status through natural attribution.
 - The digest should be compact and easy to scan, but not so aggressively compressed that meaningful local facts disappear.
 
 **Digest optimization target:** broad coverage + fast scanning + operational usefulness.
+
 
 ## 0.3 Article product contract: city-life long read
 
@@ -533,13 +538,15 @@ When evaluating semantic changes, make sure the test corpus was produced by the 
 Relevant modules include:
 
 - `src/publication/city_situation.py`
+- `src/publication/digest_presentation.py`
 - `src/publication/digest_narrative.py`
+- `src/publication/digest_relation_support.py`
 - `src/publication/renderers.py`
 - `src/publication/narrative_contract.py`
 
 ## 5.1 City Situation
 
-City Situation is a point-in-time operational dashboard.
+City Situation is a point-in-time operational dashboard rendered deterministically from `DigestPresentationPlan`.
 
 Good dimensions include actual current state for services such as:
 
@@ -551,17 +558,22 @@ Good dimensions include actual current state for services such as:
 - urban transport;
 - active safety status where supported.
 
-Do not fill City Situation with questions, generic demand, or unrelated directory/service listings.
-
-`resident_question` by itself must not create a City Situation row.
+Rules:
+- Mixed positive and negative availability observations for the same subject/dimension consolidate into a single `CONFLICTING` group rendering yellow (🟡) with both positive and non-positive detail lines before capping.
+- The `available_services` bundle renders with green icon (🟢) and only includes purely available subjects.
+- The LLM does NOT author or rename dashboard groups; dashboard presentation is fully deterministic across single-call, deterministic, and fallback modes.
+- `resident_question` by itself must not create a City Situation row.
 
 ## 5.2 Scan-first digest narrative
 
 The digest should render compact reader-facing items with strong mini-headlines and short explanatory bodies.
 
-The LLM may synthesize closely related Stories within a deterministic rubric/block when the current contract permits it, but it may not invent Story membership or move Stories across rubrics.
-
-The digest is not an article and should not expand every item into long prose.
+Rules:
+- Thematic items act as drill-downs (`SUPPRESS / DRILL_DOWN / NORMAL`).
+- Stories overlapping the dashboard with distinct microdetails are marked `DRILL_DOWN` and must cite distinct detail evidence rather than duplicating dashboard status.
+- Stories overlapping the dashboard without distinct microdetails are marked `SUPPRESS` and omitted from thematic blocks.
+- Narrow deterministic relation safety checks (`find_unsupported_digest_relations`) reject unsupported causal claims (e.g. invented causal mechanisms like "Авария на подстанции оставила Гору без света" from pure outage reports) with code `UNSUPPORTED_DIGEST_RELATION`.
+- The LLM may synthesize closely related Stories within a deterministic rubric/block when the current contract permits it, but it may not invent Story membership or move Stories across rubrics.
 
 ## 5.3 Digest failure behavior
 
@@ -572,6 +584,7 @@ This is intentionally different from Event-First article failure behavior.
 Do not copy article fail-closed semantics onto the digest unless explicitly redesigning the product.
 
 ---
+
 
 # 6. Article Architecture
 

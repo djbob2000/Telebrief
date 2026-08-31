@@ -351,7 +351,7 @@ def validate_digest_narrative(
     support_map = support_index if support_index is not None else (support_text_by_id or {})
 
     # Validate City Situation items if situation_plan is supplied
-    if situation_plan is not None:
+    if situation_plan is not None and draft.situation_items:
         plan_groups = getattr(situation_plan, "groups", ()) or ()
         plan_group_ids = [g.group_id for g in plan_groups]
         draft_group_ids = [s.group_id for s in draft.situation_items]

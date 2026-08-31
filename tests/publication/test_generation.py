@@ -2143,30 +2143,27 @@ async def test_event_first_digest_narrative_generation_with_city_situation(
     )
     await repo.transition_run(conn, run.id, "selected_inputs_sealed")
 
-    ref_str = f"telegram:source:{src_id}:item:{item_id}:rev:1:frag:{frag_id}"
+    # Mock provider response for narrative digest writer (v3 schema: blocks only)
 
-    # Mock provider response for narrative digest writer
     mock_provider = AsyncMock()
     mock_provider.chat_completion.return_value = json.dumps(
         {
-            "situation_items": [
-                {
-                    "group_id": "situation:available_services",
-                    "label": "Водоснабжение",
-                    "body": "Центр: водоснабжение восстановлено.",
-                    "cited_support_ids": [ref_str],
-                }
-            ],
             "blocks": [
                 {
                     "block_id": "block:other:0",
                     "items": [
                         {
+                            "headline": "Ремонт водовода в Центре",
+                            "body": "Водоканал завершил ремонт на водоводе в Центре.",
+                            "covered_story_ids": [f"story:{story_id}"],
+                            "cited_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
+                        },
+                        {
                             "headline": "Новое расписание маршрута №4",
                             "body": "Автобус №4 ходит по новому графику с 1 сентября.",
                             "covered_story_ids": [f"story:{story2_id}"],
                             "cited_support_ids": [f"story:{story2_id}:evidence:0:frag:{frag2_id}"],
-                        }
+                        },
                     ],
                 }
             ],
