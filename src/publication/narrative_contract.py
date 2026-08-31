@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v5"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v3"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v4"
 
 
 def build_article_narrative_contract(
@@ -124,9 +124,10 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
   2. Thematic Rubrics: structured blocks containing scan-first editorial items written here.
 - Write only thematic detail blocks.
 - Every detail editorial item must have one short scan headline and one compact explanatory body.
-- The headline must stand on its own as the bold mini-summary answering "what happened?".
+- The headline must be fact-first / answer-first: a bold mini-summary answering "what happened?".
 - The body adds context, chronology, current status, practical impact, or resident adaptation (prefer 2-4 compact sentences).
 - Do not repeat the headline verbatim in the body.
+- Attribution Discipline (Attribution Once): Do NOT repeat conversational attribution ("жители сообщают", "по сообщениям жителей", "горожане пишут") in both the headline and body of the same item. If the headline already states attribution, the body proceeds directly to facts and adaptation; if the body uses attribution, the headline should be a direct factual headline without conversational boilerplate.
 - Do not output one giant paragraph for an entire rubric.
 
 2. Thematic Detail & Dashboard Overlap Rules:
@@ -152,4 +153,9 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 - Brand and service naming: Enclose brands and courier services in quotation marks with explanatory nouns (e.g. «служба доставки „+7“», «маркетплейс „Озон“»).
 - Relocation services and external geography: Always prefix external street addresses with their host city name (e.g. «в Запорожье по адресу: ул. Независимой Украины, 86-А»).
 - Community/single-source reports marked as authorized support are publishable. Attribute them naturally; do not omit them only for lack of corroboration and do not present them as officially confirmed.
+- Resident questions (`resident_question` / `framing=question_context` / `publication_use=CONTEXT`):
+  * Resident questions are background context, NOT standalone news items or established facts.
+  * Do NOT frame a resident question as meta-news about resident inquiries (e.g. do NOT write headlines like «Жители интересуются графиком работы нотариуса» or «Вопрос о пенсионном фонде»).
+  * When context is provided alongside a real factual development or answer, focus the item and headline on the factual development/answer.
+  * If a question has no factual development, it provides context only and must never become an operational status or established assertion.
 """

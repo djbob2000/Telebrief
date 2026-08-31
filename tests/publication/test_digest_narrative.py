@@ -21,7 +21,7 @@ from src.publication.narrative_contract import (
 
 
 def test_narrative_contracts_epistemic_fidelity():
-    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v3"
+    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v4"
 
     article_contract = build_article_narrative_contract(output_language="Russian")
     assert "single-source" in article_contract.lower()
@@ -40,6 +40,10 @@ def test_narrative_contracts_epistemic_fidelity():
     assert "community" in digest_contract.lower()
     assert "city situation" in digest_contract.lower()
     assert "microdetail" in digest_contract.lower()
+    assert "fact-first" in digest_contract.lower()
+    assert "attribution once" in digest_contract.lower()
+    assert "resident questions" in digest_contract.lower()
+    assert "not standalone news" in digest_contract.lower()
 
 
 _NOW = dt.datetime(2026, 8, 29, 12, 0, tzinfo=dt.timezone.utc)
