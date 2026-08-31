@@ -95,6 +95,7 @@ def calculate_benchmark_metrics(runs: list[BenchmarkRunRecord]) -> dict[str, Any
 def evaluate_digest_short_read_quality(
     digest_body: str,
     narrative_draft: Any | None = None,
+    presentation_plan: Any | None = None,
 ) -> dict[str, Any]:
     """Evaluates short-read quality constraints on a generated publication digest."""
     headline_lengths: list[int] = []
@@ -122,14 +123,57 @@ def evaluate_digest_short_read_quality(
                 if len(bd) > 900:
                     violations.append(f"Detail body exceeds 900 chars: {len(bd)}")
 
+    # Redundancy and presentation metrics
+    dashboard_group_count = 0
+    dashboard_covered_refs_count = 0
+    thematic_detail_story_count = 0
+    thematic_suppressed_story_count = 0
+    drill_down_story_count = 0
+    redundant_thematic_items_count = 0
+
+    if presentation_plan is not None:
+        cit_sit = getattr(presentation_plan, "city_situation", None)
+        if cit_sit is not None:
+            dashboard_group_count = len(getattr(cit_sit, "groups", ()))
+            dashboard_covered_refs_count = len(getattr(cit_sit, "covered_source_refs", ()))
+        thematic_detail_story_count = len(getattr(presentation_plan, "detail_story_ids", ()))
+        hints = getattr(presentation_plan, "story_hints", ())
+        thematic_suppressed_story_count = sum(
+            1 for h in hints if getattr(h, "detail_role", "") == "SUPPRESS"
+        )
+        drill_down_story_count = sum(
+            1 for h in hints if getattr(h, "detail_role", "") == "DRILL_DOWN"
+        )
+
+        if narrative_draft is not None and cit_sit is not None:
+            hints_by_id = {h.story_id: h for h in hints}
+            for block in getattr(narrative_draft, "blocks", ()):
+                for item in getattr(block, "items", ()):
+                    for sid in getattr(item, "covered_story_ids", ()):
+                        h = hints_by_id.get(sid)
+                        if h and getattr(h, "detail_role", "") == "DRILL_DOWN":
+                            item_supports = set(getattr(item, "cited_support_ids", ()))
+                            detail_supports = set(getattr(h, "detail_support_ids", ()))
+                            if detail_supports and not (item_supports & detail_supports):
+                                redundant_thematic_items_count += 1
+
     return {
         "max_headline_len": max(headline_lengths, default=0),
-        "avg_headline_len": sum(headline_lengths) / len(headline_lengths) if headline_lengths else 0,
+        "avg_headline_len": sum(headline_lengths) / len(headline_lengths)
+        if headline_lengths
+        else 0,
         "max_situation_len": max(situation_lengths, default=0),
         "max_detail_len": max(detail_lengths, default=0),
+        "dashboard_group_count": dashboard_group_count,
+        "dashboard_covered_refs_count": dashboard_covered_refs_count,
+        "thematic_detail_story_count": thematic_detail_story_count,
+        "thematic_suppressed_story_count": thematic_suppressed_story_count,
+        "drill_down_story_count": drill_down_story_count,
+        "redundant_thematic_items_count": redundant_thematic_items_count,
         "violations": violations,
         "is_valid": len(violations) == 0,
     }
+
 
 
 def validate_benchmark_gates(metrics: dict[str, Any]) -> list[str]:
