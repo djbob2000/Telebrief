@@ -354,6 +354,7 @@ class StoryTriageService:
                     system_prompt=_GATE_V2_SYSTEM_PROMPT,
                     temperature=0.0,
                     json_mode=True,
+                    max_tokens=65536,
                 )
             elif hasattr(self.ai, "chat_completion"):
                 raw_response = await self.ai.chat_completion(
@@ -363,7 +364,7 @@ class StoryTriageService:
                     ],
                     model=self.model,
                     temperature=0.0,
-                    max_tokens=16384,
+                    max_tokens=65536,
                     response_format={"type": "json_object"},
                 )
             else:

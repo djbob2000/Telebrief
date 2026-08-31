@@ -2167,7 +2167,7 @@ def test_event_pipeline_config_defaults(tmp_path, mock_env_vars):
     assert ep.embedding_batch_size == 128
     assert ep.direct_analysis_min_fragments == 3
     assert ep.direct_analysis_min_unique_sources == 2
-    assert ep.triage_batch_size == 80
+    assert ep.triage_batch_size == 30
     assert ep.triage_excerpt_chars == 320
     assert ep.triage_min_ignore_confidence == 0.95
     assert ep.analysis_quiet_seconds == 120
