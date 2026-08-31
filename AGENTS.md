@@ -78,17 +78,22 @@ Rules:
 
 - City Situation comes first when operational observations exist.
 - City Situation contains actual operational states, not merely topics people ask about.
+- `service_access` represents a concrete current or scheduled availability/access state of an external resident-facing utility or service (utilities, transport, communications, banking/municipal). Operational observations must be grounded in `service_access` evidence.
+- Resident coping behaviors (household generators, battery workarounds, neighbor assistance) are `community_report`, not dashboard states. They belong in the thematic layer.
 - `resident_question` is context, not a fact and not an operational status.
-- A question such as "Работает ли пенсионный фонд?" must not become "пенсионный фонд не работает" or create a dashboard status by itself.
+- A question such as "Работает ли пенсионный фонд?" must not become "пенсионный фонд не работает" or create a dashboard status by itself, and must not become meta-news ("жители интересуются...") in thematic headlines.
 - A useful short community report must not be discarded merely because it is conversational, single-source, or unofficial.
 - Mixed positive/negative states for the same subject/dimension consolidate into one `CONFLICTING` group rendering yellow (🟡) with both positive and non-positive detail lines.
+- Pure positive statuses render as distinct subject-coherent dashboard groups (e.g. 🟢 **Банки**, 🟢 **Транспорт**) up to `digest_city_situation_max_positive_items` (default 2), reserving at least 1 slot on mixed days. There is no global catch-all `available_services` bucket.
+- Positive stories omitted from the dashboard by the positive budget remain fully eligible for thematic rubric coverage.
 - City Situation rendering is fully deterministic; the LLM does NOT author or rename dashboard groups.
 - Overlapping thematic items use explicit detail roles (`SUPPRESS / DRILL_DOWN / NORMAL`); `DRILL_DOWN` items must cite distinct detail evidence rather than duplicating dashboard status.
 - Narrow deterministic causal relation validation rejects unsupported mechanism/cause claims with `UNSUPPORTED_DIGEST_RELATION`.
 - Related stories may be grouped for presentation inside their deterministic rubric/block, but legitimate coverage must not silently disappear.
 - Commercial classifieds, private disputes, personal accusations, phone-number spam, repetitive ad copy, and directory-style payload must not dominate the digest.
-- Community reports must preserve their epistemic status through natural attribution.
+- Community reports must preserve their epistemic status through natural attribution without duplicating attribution phrases in both headline and body.
 - The digest should be compact and easy to scan, but not so aggressively compressed that meaningful local facts disappear.
+
 
 **Digest optimization target:** broad coverage + fast scanning + operational usefulness.
 
@@ -560,9 +565,10 @@ Good dimensions include actual current state for services such as:
 
 Rules:
 - Mixed positive and negative availability observations for the same subject/dimension consolidate into a single `CONFLICTING` group rendering yellow (🟡) with both positive and non-positive detail lines before capping.
-- The `available_services` bundle renders with green icon (🟢) and only includes purely available subjects.
+- Pure positive statuses render as distinct subject-coherent dashboard groups (🟢) up to `digest_city_situation_max_positive_items` (default 2), reserving at least 1 slot on mixed days. There is no global catch-all `available_services` group.
 - The LLM does NOT author or rename dashboard groups; dashboard presentation is fully deterministic across single-call, deterministic, and fallback modes.
 - `resident_question` by itself must not create a City Situation row.
+
 
 ## 5.2 Scan-first digest narrative
 

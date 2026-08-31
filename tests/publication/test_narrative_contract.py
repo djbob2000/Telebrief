@@ -50,7 +50,7 @@ def test_digest_narrative_contract_invariants():
     assert "partition" in contract_lower
     assert "resident" in contract_lower
     assert "unsupported caus" in contract_lower
-    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v3"
+    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v4"
 
 
 def test_narrative_contract_is_pure_and_has_no_city_specific_leakage():
