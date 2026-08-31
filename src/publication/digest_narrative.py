@@ -508,6 +508,7 @@ class DigestNarrativeWriter:
         cards: Sequence[StoryCard],
         evidence: Mapping[str, PublicationEvidence],
         situation_rollup: Any | None = None,
+        situation_plan: Any | None = None,
         language: str = "Russian",
         max_output_tokens: int = 4096,
         model: str | None = None,
@@ -516,6 +517,20 @@ class DigestNarrativeWriter:
         import json
 
         from src.publication.narrative_contract import build_digest_narrative_contract
+
+        sit_plan = situation_plan
+        situation_payload = []
+        if sit_plan is not None and getattr(sit_plan, "groups", None):
+            for g in sit_plan.groups:
+                situation_payload.append(
+                    {
+                        "group_id": g.group_id,
+                        "label": g.subject_label,
+                        "state": g.state,
+                        "source_refs": list(g.source_refs),
+                        "detail_lines": list(g.detail_lines),
+                    }
+                )
 
         blocks_payload = []
         for b in plan.blocks:
@@ -533,32 +548,47 @@ class DigestNarrativeWriter:
                         }
                     )
 
-            blocks_payload.append(
-                {
-                    "block_id": b.block_id,
-                    "rubric_id": b.rubric_id,
-                    "rubric_title": b.rubric_title,
-                    "story_ids": list(b.story_ids),
-                    "canonical_notes": list(b.canonical_notes),
-                    "supports": supports_payload,
-                }
-            )
+            block_dict: dict[str, Any] = {
+                "block_id": b.block_id,
+                "rubric_id": b.rubric_id,
+                "rubric_title": b.rubric_title,
+                "story_ids": list(b.story_ids),
+                "canonical_notes": list(b.canonical_notes),
+                "supports": supports_payload,
+            }
+            if b.detail_support_ids_by_story:
+                block_dict["detail_support_hints"] = [
+                    {"story_id": sid, "detail_support_ids": list(sids)}
+                    for sid, sids in b.detail_support_ids_by_story
+                ]
+            if b.merge_group_by_story:
+                block_dict["merge_group_hints"] = [
+                    {"story_id": sid, "merge_group_id": mgid}
+                    for sid, mgid in b.merge_group_by_story
+                ]
+            blocks_payload.append(block_dict)
 
         narrative_contract = build_digest_narrative_contract(output_language=language)
-        system_prompt = (
-            "You are a professional regional newsroom editor and journalist.\n"
-            "Your task is to write a cohesive, engaging, and strictly factual daily news digest.\n\n"
-            f"{narrative_contract}\n\n"
-            "OUTPUT FORMAT REQUIREMENTS:\n"
-            "Return ONLY valid JSON strictly matching this schema:\n"
-            "{\n"
+        schema_desc = "{\n"
+        if situation_payload:
+            schema_desc += (
+                '  "situation_items": [\n'
+                "    {\n"
+                '      "group_id": "string (must match input group_id exactly)",\n'
+                '      "label": "string (service/domain label)",\n'
+                '      "body": "string (compact operational update grounded in detail_lines/supports)",\n'
+                '      "cited_support_ids": ["string (source_ref IDs cited)"]\n'
+                "    }\n"
+                "  ],\n"
+            )
+        schema_desc += (
             '  "blocks": [\n'
             "    {\n"
             '      "block_id": "string (must match input block_id exactly)",\n'
             '      "items": [\n'
             "        {\n"
             '          "headline": "string (bold mini-summary answer to what happened)",\n'
-            '          "body": "string (compact 2-4 sentences adding context/chronology/status)",\n'
+            '          "body": "string (compact 2-4 sentences adding context/chronology/status/microdetails)",\n'
             '          "covered_story_ids": ["string (story IDs covered)"],\n'
             '          "cited_support_ids": ["string (support IDs cited)"]\n'
             "        }\n"
@@ -567,7 +597,20 @@ class DigestNarrativeWriter:
             "  ]\n"
             "}\n"
         )
-        user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
+
+        system_prompt = (
+            "You are a professional regional newsroom editor and journalist.\n"
+            "Your task is to write a cohesive, engaging, and strictly factual daily news digest.\n\n"
+            f"{narrative_contract}\n\n"
+            "OUTPUT FORMAT REQUIREMENTS:\n"
+            "Return ONLY valid JSON strictly matching this schema:\n"
+            f"{schema_desc}"
+        )
+        user_dict: dict[str, Any] = {}
+        if situation_payload:
+            user_dict["situation_items"] = situation_payload
+        user_dict["blocks"] = blocks_payload
+        user_prompt = json.dumps(user_dict, ensure_ascii=False, indent=2)
 
         chat_kwargs: dict[str, Any] = {
             "messages": [

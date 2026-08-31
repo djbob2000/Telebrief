@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v5"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v1"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v2"
 
 
 def build_article_narrative_contract(
@@ -20,7 +20,7 @@ def build_article_narrative_contract(
     output_language: str = "Russian",
     length_profile: ArticleLengthProfile | None = None,
 ) -> str:
-    """Build generic narrative editorial newsroom instructions for long-form articles."""
+    """Build generic narrative editorial instructions for long-form articles."""
     target_str = ""
     if length_profile is not None:
         target_str = (
@@ -97,7 +97,7 @@ def build_article_narrative_contract(
   * Distinguish technical infrastructure from human actions cleanly (e.g. do not produce awkward compression like «делятся интернетом через оптоволокно» — write naturally: «подключают оптоволокно (GPON) и делятся Wi-Fi с соседями» or «раздают интернет по Wi-Fi»). Keep technical mechanisms and social actions logically accurate.
   * Brand and service naming: Always enclose commercial brands and courier services in quotation marks with an explanatory noun (e.g. write «служба доставки „+7“», «маркетплейс „Озон“», never bare digits like «+7» or «Доставка (+7)»).
   * Relocation services and external geography: When describing assistance centers, administrative services, or cultural events for displaced residents in other cities (e.g. Zaporizhzhia), always explicitly state the host city before the street address (e.g. write «в Запорожье по адресу: ул. Независимой Украины, 86-А», NEVER cite an external street without its host city name).
-- Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented consequences, invented mechanisms, or speculative interpretations.
+- Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented mechanisms, or speculative interpretations.
 
 
 8. Epistemic Fidelity:
@@ -119,19 +119,34 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 
 1. Presentation Role & Scan-First UX:
 - You are an editorial newsroom copy editor crafting a high-density, scan-first daily digest.
-- Every digest item must have one short scan headline and one compact explanatory body.
+- The publication has a layered structure:
+  1. City Situation (Operational Dashboard): compact, point-in-time service status updates when operational observations are present.
+  2. Thematic Rubrics: structured blocks containing scan-first editorial items.
+- Every detail editorial item must have one short scan headline and one compact explanatory body.
 - The headline must stand on its own as the bold mini-summary answering "what happened?".
 - The body adds context, chronology, current status, practical impact, or resident adaptation (prefer 2-4 compact sentences).
 - Do not repeat the headline verbatim in the body.
 - Do not output one giant paragraph for an entire rubric.
 
-2. Story Partition & Grouping Rules:
+2. City Situation Operational Dashboard Rules:
+- If `situation_items` are requested in the presentation plan, you must output exactly one item per situation group.
+- State what is known and reported about service availability and infrastructure states.
+- Be concise, practical, and objective.
+- Preserve locations and specific service nuances from the detail lines and supports.
+- Never invent causes, repairs, or completion deadlines unless explicitly present in the cited support.
+
+3. Microdetail Preservation & Detail Depth:
+- Do not collapse concrete evidence into generic summaries when useful supported specifics exist.
+- Retain microdetails (neighborhood, amount, interval, resident action, service name, timing, or exact quotes) from the provided detail supports and notes.
+- Prefer "residents pooled 300 units for a shared generator" over "residents are adapting" when supported.
+
+4. Story Partition & Grouping Rules:
 - Block membership and rubric assignment are immutable and predetermined.
-- Related stories inside the same deterministic block may be grouped into a single cohesive editorial item.
-- Independent stories inside a block must remain separate items.
+- Multi-Story Grouping Constraint: You may group 2-3 stories into a single editorial item ONLY if they share the same merge group ID (`merge_group_id`) inside that deterministic block.
+- Independent or unrelated stories inside a block must remain separate items.
 - Every story assigned to a block must be covered in exactly one item within that block (exact partition; no omissions, no duplicates, no cross-block moves).
 
-3. Strict Factuality & Evidence Boundary:
+5. Strict Factuality & Evidence Boundary:
 - Every concrete claim (numbers, dates, times, durations, status, locations) must be strictly grounded in the provided support texts.
 - Neutral connective phrases ("meanwhile", "at the same time") are allowed only when connecting verified facts without asserting unsupported causal links.
 - No speculation, sensationalism, or decorative filler.
