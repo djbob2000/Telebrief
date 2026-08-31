@@ -24,6 +24,7 @@ class CitySituationItem:
     first_observed_at: dt.datetime
     last_observed_at: dt.datetime
     observation_count: int
+    current_source_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class CitySituationRollup:
                     "state": item.state,
                     "detail": item.detail,
                     "source_refs": list(item.source_refs),
+                    "current_source_refs": list(item.current_source_refs),
                     "first_observed_at": item.first_observed_at.isoformat(),
                     "last_observed_at": item.last_observed_at.isoformat(),
                     "observation_count": item.observation_count,
@@ -79,6 +81,7 @@ class CitySituationRollup:
                     first_observed_at=f_ts,
                     last_observed_at=l_ts,
                     observation_count=int(d.get("observation_count", 1)),
+                    current_source_refs=tuple(str(r) for r in d.get("current_source_refs", [])),
                 )
             )
         return cls(items=tuple(items))
@@ -128,23 +131,42 @@ def build_city_situation_rollup(
             st.subject_label or st.subject_key,
         ),
     )
-    items = tuple(
-        CitySituationItem(
-            subject_key=st.subject_key,
-            subject_label=st.subject_label,
-            dimension=st.dimension,
-            location=st.location,
-            entity=st.entity,
-            state=st.current_state,
-            detail=st.detail,
-            source_refs=st.source_refs,
-            first_observed_at=st.first_observed_at,
-            last_observed_at=st.last_observed_at,
-            observation_count=st.observation_count,
+    items = []
+    for st in sorted_states:
+        current_refs: tuple[str, ...] = ()
+        if st.current_observations:
+            current_refs = tuple(
+                dict.fromkeys(
+                    ref
+                    for resolved in st.current_observations
+                    for ref in resolved.source_refs
+                    if ref
+                )
+            )
+        elif getattr(st, "next_scheduled_change", None) is not None:
+            scheduled_obs = st.next_scheduled_change
+            if scheduled_obs is not None:
+                current_refs = tuple(dict.fromkeys(ref for ref in scheduled_obs.source_refs if ref))
+        if not current_refs:
+            current_refs = st.source_refs
+
+        items.append(
+            CitySituationItem(
+                subject_key=st.subject_key,
+                subject_label=st.subject_label,
+                dimension=st.dimension,
+                location=st.location,
+                entity=st.entity,
+                state=st.current_state,
+                detail=st.detail,
+                source_refs=st.source_refs,
+                first_observed_at=st.first_observed_at,
+                last_observed_at=st.last_observed_at,
+                observation_count=st.observation_count,
+                current_source_refs=current_refs,
+            )
         )
-        for st in sorted_states
-    )
-    return CitySituationRollup(items=items)
+    return CitySituationRollup(items=tuple(items))
 
 
 def render_city_situation_section(rollup: CitySituationRollup | None) -> str:

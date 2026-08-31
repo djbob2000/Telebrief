@@ -509,3 +509,53 @@ async def test_hybrid_story_with_general_news_not_suppressed_from_cards(conn, po
     assert len(digest_editorial.analysis.cards) == 1
     assert digest_editorial.analysis.cards[0].topic == "Капитальный ремонт проспекта Труда"
     assert digest_editorial.analysis.cards[0].story_kind != "operational_status"
+
+
+def test_build_city_situation_rollup_retains_current_source_refs():
+    from src.domain.event_payload import OperationalObservationPayload
+    from src.domain.operational_state import (
+        ResolvedObservation,
+        SubjectOperationalState,
+    )
+    from src.publication.city_situation import build_city_situation_rollup
+
+    t0 = dt.datetime(2026, 8, 29, 10, 0, tzinfo=dt.timezone.utc)
+    t1 = dt.datetime(2026, 8, 29, 14, 0, tzinfo=dt.timezone.utc)
+
+    op_payload = OperationalObservationPayload(
+        subject_key="power",
+        subject_label="Электросеть",
+        dimension="availability",
+        location="",
+        entity="",
+        state="AVAILABLE",
+        detail="Свет есть",
+        source_fragment_ids=(1,),
+    )
+
+    curr_obs = ResolvedObservation(
+        observation=op_payload,
+        observed_at=t1,
+        source_refs=("ref-current",),
+    )
+
+    state = SubjectOperationalState(
+        subject_key="power",
+        subject_label="Электросеть",
+        dimension="availability",
+        location="",
+        entity="",
+        current_state="AVAILABLE",
+        detail="Свет есть",
+        first_observed_at=t0,
+        last_observed_at=t1,
+        observation_count=2,
+        source_refs=("ref-old", "ref-current"),
+        current_observations=(curr_obs,),
+        history=(),
+    )
+
+    rollup = build_city_situation_rollup([state])
+    item = rollup.items[0]
+    assert item.source_refs == ("ref-old", "ref-current")
+    assert item.current_source_refs == ("ref-current",)
