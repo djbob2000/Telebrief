@@ -32,3 +32,7 @@ class ArticlePublicationRejected(RuntimeError):
 
 class ArticleFinalizationInvariantError(RuntimeError):
     """Terminal failure after deterministic Event-First article recovery is exhausted."""
+
+
+class DigestCoverageInvariantError(RuntimeError):
+    """Terminal failure when digest coverage requirements or invariants are violated."""
