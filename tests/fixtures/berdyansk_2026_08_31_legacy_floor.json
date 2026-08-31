@@ -1,0 +1,107 @@
+{
+  "id": "berdyansk_2026_08_31_legacy_floor",
+  "legacy_commit": "e642159",
+  "window_start": "2026-08-30T00:00:00Z",
+  "window_end": "2026-08-31T23:59:59Z",
+  "coverage_units": [
+    {
+      "id": "water_azmol_and_upper_floors",
+      "description": "Water supply issues in Azmol and upper floors",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "Азмол",
+        "верхние этажи"
+      ]
+    },
+    {
+      "id": "water_pipe_ordzhonikidze",
+      "description": "Water pipe repair work on Ordzhonikidze street",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "Орджоникидзе"
+      ]
+    },
+    {
+      "id": "stoves_firewood_and_heating_prep",
+      "description": "Residents preparing wood stoves and firewood for heating season",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "печи",
+        "дрова"
+      ]
+    },
+    {
+      "id": "free_charging_gagarina_1",
+      "description": "Free device charging at Gagarina 1",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "Гагарина, 1"
+      ]
+    },
+    {
+      "id": "combined_energy_heating_bill",
+      "description": "Combined utility billing announcements for electricity and heating",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "квитанции"
+      ]
+    },
+    {
+      "id": "disputed_utility_debts",
+      "description": "Resident disputes over historical utility arrears and recalculations",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "долги"
+      ]
+    },
+    {
+      "id": "mfc_outdoor_consultations",
+      "description": "MFC organizing consultations outdoors due to power outages",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "МФЦ"
+      ]
+    },
+    {
+      "id": "rosreestr_service_pause",
+      "description": "Temporary pause in Rosreestr property registration services",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "Росреестр"
+      ]
+    },
+    {
+      "id": "fluorography_generator_room_12",
+      "description": "Fluorography machine powered by generator in room 12",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "кабинет 12",
+        "генератор"
+      ]
+    },
+    {
+      "id": "school_20_generator_fuel_discussion",
+      "description": "School 20 discussing generator fuel supply for the school year",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "школа №20"
+      ]
+    },
+    {
+      "id": "dead_traffic_lights",
+      "description": "Non-functioning traffic lights at major intersections causing delays",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "светофоры"
+      ]
+    },
+    {
+      "id": "mobile_operator_reliability_difference",
+      "description": "Differences in network stability between local mobile operators",
+      "acceptable_sources": [],
+      "required_microdetails": [
+        "связь"
+      ]
+    }
+  ]
+}

@@ -367,3 +367,48 @@ async def test_export_publication_case_postgres(conn, edition):
     assert len(exported["publish_evidence"]) == 1
     assert len(exported["article_claim_trace"]) == 1
     assert exported["article_claim_trace"][0]["unit_id"] == "P001"
+
+
+def test_berdyansk_2026_08_31_legacy_floor_fixture():
+    from pathlib import Path
+
+    from scripts.publication_regression import LegacyCoverageCase, evaluate_case
+
+    fixture_path = (
+        Path(__file__).resolve().parent.parent
+        / "fixtures"
+        / "berdyansk_2026_08_31_legacy_floor.json"
+    )
+    assert fixture_path.exists(), f"Missing fixture at {fixture_path}"
+
+    case = LegacyCoverageCase.load_json(fixture_path)
+    assert case.id == "berdyansk_2026_08_31_legacy_floor"
+    assert len(case.coverage_units) >= 12
+
+    required_units = {
+        "water_azmol_and_upper_floors",
+        "water_pipe_ordzhonikidze",
+        "stoves_firewood_and_heating_prep",
+        "free_charging_gagarina_1",
+        "combined_energy_heating_bill",
+        "disputed_utility_debts",
+        "mfc_outdoor_consultations",
+        "rosreestr_service_pause",
+        "fluorography_generator_room_12",
+        "school_20_generator_fuel_discussion",
+        "dead_traffic_lights",
+        "mobile_operator_reliability_difference",
+    }
+    unit_ids = {u.id for u in case.coverage_units}
+    assert required_units.issubset(unit_ids)
+
+    # Validate free_charging_gagarina_1 specifics
+    charging_unit = next(u for u in case.coverage_units if u.id == "free_charging_gagarina_1")
+    assert "Гагарина, 1" in charging_unit.required_microdetails
+    assert "Gagarina 1" in charging_unit.description
+
+    # Test evaluation without sources -> all report SOURCE_CORPUS_LOSS (no UNEXPLAINED publication loss)
+    empty_export = {}
+    report = evaluate_case(case, empty_export)
+    for u in report.units:
+        assert u.loss.value in ("SOURCE_CORPUS_LOSS", "COVERED")
