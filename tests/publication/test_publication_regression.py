@@ -412,3 +412,13 @@ def test_berdyansk_2026_08_31_legacy_floor_fixture():
     report = evaluate_case(case, empty_export)
     for u in report.units:
         assert u.loss.value in ("SOURCE_CORPUS_LOSS", "COVERED")
+
+
+def test_compare_article_approaches_no_fake_legacy_generation():
+    import scripts.compare_article_approaches as comp
+
+    # Ensure fake legacy generation function is removed
+    assert not hasattr(comp, "generate_old_custom_article")
+    assert not hasattr(comp, "ArticleGenerator")
+    assert hasattr(comp, "generate_event_first_article")
+    assert hasattr(comp, "run_comparison")
