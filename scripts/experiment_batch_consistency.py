@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import sys
 from pathlib import Path
@@ -54,7 +53,7 @@ async def run_consistency_experiment(edition_slug: str = "berdyansk", sample_siz
             if not row:
                 print(f"Edition {edition_slug} not found")
                 return
-            ed_id, ed_name = row[0], row[1]
+            ed_id = row[0]
             _slug, scope_config = await resolve_edition_scope(conn, full_config, ed_id)
             sc_hash = scope_config_hash(scope_config)
 

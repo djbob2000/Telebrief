@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import asyncio
-import datetime as dt
-import json
 import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -26,7 +23,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("benchmark_batch_size")
 
 
-async def benchmark_batch_sizes(batch_sizes: list[int] = [50, 70, 85, 100, 120, 150], edition_slug: str = "berdyansk") -> None:
+async def benchmark_batch_sizes(
+    batch_sizes: list[int] | None = None, edition_slug: str = "berdyansk"
+) -> None:
+    if batch_sizes is None:
+        batch_sizes = [50, 70, 85, 100, 120, 150]
     db_config = load_database_config(require_enabled=True)
     full_config = load_config()
     infrastructure = await build_infrastructure(db_config)
@@ -58,7 +59,7 @@ async def benchmark_batch_sizes(batch_sizes: list[int] = [50, 70, 85, 100, 120, 
             if not row:
                 print(f"Edition {edition_slug} not found")
                 return
-            ed_id, ed_name = row[0], row[1]
+            ed_id = row[0]
             _slug, scope_config = await resolve_edition_scope(conn, full_config, ed_id)
             sc_hash = scope_config_hash(scope_config)
 

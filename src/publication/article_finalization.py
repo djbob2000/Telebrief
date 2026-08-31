@@ -72,10 +72,19 @@ def _build_final_metadata(
             "source_item_ids": list(unit.source_item_ids),
             "temporal_roles": list(unit.temporal_roles),
             "generation_origin": unit.generation_origin,
+            "claim_atoms": [
+                {
+                    "text": atom.text,
+                    "support_ids": list(atom.support_ids),
+                    "temporal_roles": list(atom.temporal_roles),
+                }
+                for atom in unit.claim_atoms
+            ],
         }
         for unit in trace
     ]
     return {
+        "status": "writer_success" if writer_status == "passed" else "fallback_success",
         "winning_kind": winning_kind,
         "writer_status": writer_status,
         "recovery_mode": recovery_mode,
@@ -90,6 +99,19 @@ def _build_final_metadata(
         if ai_diag is not None
         else 0.0,
         "final_detail_support_coverage": final_diag.detail_support_coverage,
+        "coverage": {
+            "planned_story_count": final_diag.planned_story_count,
+            "covered_story_count": final_diag.covered_story_count,
+            "uncovered_story_ids": list(final_diag.uncovered_story_ids),
+            "develop_story_coverage": final_diag.develop_story_coverage,
+            "weave_story_coverage": final_diag.weave_story_coverage,
+            "brief_story_coverage": final_diag.brief_story_coverage,
+            "planned_detail_support_count": final_diag.planned_detail_support_count,
+            "covered_detail_support_count": final_diag.covered_detail_support_count,
+            "uncovered_detail_support_ids": list(final_diag.uncovered_detail_support_ids),
+            "detail_support_coverage": final_diag.detail_support_coverage,
+            "leaked_contact_payloads": list(final_diag.leaked_contact_payloads),
+        },
         "generation_origin_counts": {
             "AI": origin_counts.get("AI", 0),
             "SUPPLEMENT": origin_counts.get("SUPPLEMENT", 0),

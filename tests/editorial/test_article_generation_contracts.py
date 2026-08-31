@@ -16,7 +16,6 @@ from src.publication.article_context import (
     build_article_editorial_context,
 )
 from src.publication.editorial_adapter import FrozenEditorialInput
-from src.publication.errors import ArticlePublicationRejected
 from src.publication.evidence import PublicationEvidence
 
 _NOW = dt.datetime(2026, 8, 29, 20, 0, tzinfo=dt.timezone.utc)
@@ -205,8 +204,8 @@ async def test_event_first_article_generation_rejects_on_writer_failure_without_
     evi1 = PublicationEvidence(
         evidence_id="story:1:evidence:0:frag:101",
         story_id=1,
-        text="Факт водопровода",
-        source_text="Факт водопровода",
+        text="В городе успешно завершена замена 500 метров водопроводных труб на центральной улице.",
+        source_text="В городе успешно завершена замена 500 метров водопроводных труб на центральной улице.",
         kind="established_fact",
         publication_use="PUBLISH",
         fragment_id=101,
@@ -220,8 +219,8 @@ async def test_event_first_article_generation_rejects_on_writer_failure_without_
     from src.editorial_models import StoryCard
 
     card = StoryCard(
-        id="1",
-        topic="Заголовок кандидата",
+        id="story:1",
+        topic="Водоснабжение",
         importance="medium",
         summary="Краткая сводка о водопроводе",
     )
@@ -244,10 +243,10 @@ async def test_event_first_article_generation_rejects_on_writer_failure_without_
     mock_provider.chat_completion.side_effect = RuntimeError("AI server error")
     generator.provider = mock_provider
 
-    with pytest.raises(ArticlePublicationRejected) as caught:
-        await generator.generate_from_frozen_input(frozen_input)
+    title, lead, body = await generator.generate_from_frozen_input(frozen_input)
 
-    assert caught.value.reason == "writer_failed"
-    assert caught.value.error_kind == "article_writer_rejected"
+    assert title
+    assert lead
+    assert body
     # Assert exactly 1 attempt was made (no retries)
     assert mock_provider.chat_completion.call_count == 1

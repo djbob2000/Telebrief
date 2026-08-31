@@ -11,7 +11,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.bootstrap import build_infrastructure
-from src.config_loader import Config, load_config
+from src.config_loader import load_config
 from src.publication.generation import PublicationGenerationService
 from src.publication.repository import PublicationRepository
 from src.publication.selection import EditorialSelectionService
