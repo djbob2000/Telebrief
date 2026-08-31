@@ -11,6 +11,10 @@ OPERATIONAL_STATES: frozenset[str] = frozenset(
     {"AVAILABLE", "UNAVAILABLE", "DEGRADED", "RESTRICTED", "UNKNOWN", "SCHEDULED"}
 )
 
+# For new Event-First payloads, evidence kind is primarily semantic.
+# A concrete current/scheduled resident-facing service availability/access
+# state uses `service_access` even when reported by a community source.
+# Source provenance remains available from the cited fragment metadata.
 EVIDENCE_KINDS: frozenset[str] = frozenset(
     {
         "established_fact",
