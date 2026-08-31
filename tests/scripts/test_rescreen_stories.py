@@ -16,6 +16,7 @@ _NOW = dt.datetime.now(dt.timezone.utc)
 @pytest.mark.postgres
 async def test_run_rescreen_end_to_end(conn, pool, edition, database_config, monkeypatch):
     test_db_url = database_config.url
+    now = dt.datetime.now(dt.timezone.utc)
 
     # Insert test active story and fragments
     cur = await conn.execute(
@@ -24,7 +25,7 @@ async def test_run_rescreen_end_to_end(conn, pool, edition, database_config, mon
         VALUES (%s, 'active', 'event_first', %s)
         RETURNING id
         """,
-        (edition.id, _NOW),
+        (edition.id, now),
     )
     story_id = (await cur.fetchone())[0]
 
@@ -38,7 +39,7 @@ async def test_run_rescreen_end_to_end(conn, pool, edition, database_config, mon
     )
     cur = await conn.execute(
         "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', 'm-rescr', %s) RETURNING id",
-        (src_id, _NOW),
+        (src_id, now),
     )
     item_id = (await cur.fetchone())[0]
     cur = await conn.execute(
@@ -48,7 +49,7 @@ async def test_run_rescreen_end_to_end(conn, pool, edition, database_config, mon
     sir_id = (await cur.fetchone())[0]
     cur = await conn.execute(
         "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, 'Водоканал ремонтирует трубу на АКЗ', 'h-frescr', 'v1', TRUE, %s) RETURNING id",
-        (sir_id, _NOW),
+        (sir_id, now),
     )
     frag_id = (await cur.fetchone())[0]
     cur = await conn.execute(
@@ -76,7 +77,7 @@ async def test_run_rescreen_end_to_end(conn, pool, edition, database_config, mon
         VALUES (%s, %s, %s, 'new_story', %s)
         RETURNING id
         """,
-        (story_id, frag_id, sfe_id, _NOW),
+        (story_id, frag_id, sfe_id, now),
     )
     assignment_id = (await cur.fetchone())[0]
 
@@ -88,7 +89,7 @@ async def test_run_rescreen_end_to_end(conn, pool, edition, database_config, mon
             latest_assignment_id, analysis_dirty
         ) VALUES (%s, '[0.1, 0.2]'::vector, 'text-embedding-3-small', 2, 1, 1, %s, %s, %s, TRUE)
         """,
-        (story_id, _NOW, _NOW, assignment_id),
+        (story_id, now, now, assignment_id),
     )
 
     ai_triage_response = {
@@ -96,6 +97,7 @@ async def test_run_rescreen_end_to_end(conn, pool, edition, database_config, mon
             {
                 "story_id": story_id,
                 "scope": "LOCAL",
+                "scope_basis_fragment_ids": [frag_id],
                 "scope_confidence": 0.95,
                 "scope_reason": "Local utility update",
                 "confidence": 0.95,
@@ -106,8 +108,23 @@ async def test_run_rescreen_end_to_end(conn, pool, edition, database_config, mon
                     "topic": "Ремонт водовода",
                     "headline": "Ремонт водовода на АКЗ",
                     "digest_summary": "Специалисты устраняют порыв.",
-                    "category": "utilities",
-                    "key_facts": ["Ремонт на АКЗ"],
+                    "tags": ["utilities"],
+                    "evidence_items": [
+                        {
+                            "text": "Водоканал ремонтирует трубу на АКЗ",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
+                            "source_fragment_ids": [frag_id],
+                            "service_state": {
+                                "subject_key": "water_supply",
+                                "subject_label": "Водоснабжение",
+                                "dimension": "availability",
+                                "state": "UNAVAILABLE",
+                                "expected_now": True,
+                                "basis": "direct_failure",
+                            },
+                        }
+                    ],
                     "confidence_score": 0.95,
                 },
             }
@@ -118,6 +135,8 @@ async def test_run_rescreen_end_to_end(conn, pool, edition, database_config, mon
     mock_ai.generate_text = AsyncMock(return_value=json.dumps(ai_triage_response))
     mock_ai.provider_name = "test_provider"
     mock_ai.model_name = "test_model"
+
+    await conn.commit()
 
     stats = await run_rescreen(
         hours=24,
