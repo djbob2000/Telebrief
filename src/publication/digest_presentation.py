@@ -52,6 +52,44 @@ def _positive_detail_line(item: CitySituationItem) -> str:
     return label
 
 
+_POSITIVE_STATES = frozenset({"AVAILABLE", "RESOLVED"})
+
+
+def _presentation_state(items: Sequence[CitySituationItem]) -> str:
+    states = {item.state.upper() for item in items}
+    has_positive = bool(states & _POSITIVE_STATES)
+    has_non_positive = bool(states - _POSITIVE_STATES)
+    if has_positive and has_non_positive:
+        return "CONFLICTING"
+    return min(items, key=lambda item: city_situation_severity(item.state)).state
+
+
+def _select_group_details(
+    items: Sequence[CitySituationItem],
+    *,
+    limit: int,
+) -> tuple[str, ...]:
+    positive = [item for item in items if item.state.upper() in _POSITIVE_STATES]
+    non_positive = [item for item in items if item.state.upper() not in _POSITIVE_STATES]
+    ordered: list[CitySituationItem] = []
+    if positive and non_positive:
+        ordered.extend([non_positive[0], positive[0]])
+    for item in items:
+        if item not in ordered:
+            ordered.append(item)
+    lines: list[str] = []
+    seen: set[str] = set()
+    for item in ordered:
+        line = _detail_line(item)
+        key = line.casefold()
+        if line and key not in seen:
+            seen.add(key)
+            lines.append(line)
+        if len(lines) >= limit:
+            break
+    return tuple(lines)
+
+
 def plan_city_situation_presentation(
     rollup: CitySituationRollup | None,
     *,
@@ -62,21 +100,11 @@ def plan_city_situation_presentation(
     if not rollup or not rollup.items:
         return CitySituationPresentationPlan(groups=(), covered_source_refs=())
 
-    non_positive_items: list[CitySituationItem] = []
-    positive_items: list[CitySituationItem] = []
-
+    # Group all items by (subject_key, dimension)
+    grouped: dict[tuple[str, str], list[CitySituationItem]] = {}
     for item in rollup.items:
-        st_upper = item.state.upper()
-        if st_upper in ("AVAILABLE", "RESOLVED"):
-            positive_items.append(item)
-        else:
-            non_positive_items.append(item)
-
-    # Group non-positive items by (subject_key, dimension)
-    grouped_non_positive: dict[tuple[str, str], list[CitySituationItem]] = {}
-    for item in non_positive_items:
         key = (_norm_key(item.subject_key), _norm_key(item.dimension))
-        grouped_non_positive.setdefault(key, []).append(item)
+        grouped.setdefault(key, []).append(item)
 
     candidate_groups: list[
         tuple[
@@ -86,21 +114,22 @@ def plan_city_situation_presentation(
             int,  # observation count
         ]
     ] = []
+    pure_positive_items: list[CitySituationItem] = []
 
-    for (norm_subj, norm_dim), group_items in grouped_non_positive.items():
+    for (norm_subj, norm_dim), group_items in grouped.items():
+        pres_state = _presentation_state(group_items)
+
+        # Pure positive subjects can be bundled into available_services
+        if pres_state.upper() in _POSITIVE_STATES:
+            pure_positive_items.extend(group_items)
+            continue
+
         first_item = group_items[0]
         subject_label = next(
             (it.subject_label for it in group_items if it.subject_label),
             first_item.subject_key,
         )
-
-        # Worst state (minimum severity integer)
-        worst_item = min(
-            group_items,
-            key=lambda it: city_situation_severity(it.state),
-        )
-        worst_state = worst_item.state
-        worst_sev = city_situation_severity(worst_state)
+        worst_sev = city_situation_severity(pres_state)
 
         # Merge source refs preserving order / uniqueness
         seen_refs: set[str] = set()
@@ -111,18 +140,7 @@ def plan_city_situation_presentation(
                     seen_refs.add(r)
                     merged_refs.append(r)
 
-        # Detail lines
-        seen_details: set[str] = set()
-        detail_lines: list[str] = []
-        for it in group_items:
-            line = _detail_line(it)
-            norm_l = line.casefold()
-            if line and norm_l not in seen_details:
-                seen_details.add(norm_l)
-                detail_lines.append(line)
-                if len(detail_lines) >= max_details_per_item:
-                    break
-
+        detail_lines = _select_group_details(group_items, limit=max_details_per_item)
         latest_ts = max(it.last_observed_at for it in group_items)
         obs_count = sum(it.observation_count for it in group_items)
 
@@ -132,9 +150,9 @@ def plan_city_situation_presentation(
             group_kind="subject_status",
             subject_key=first_item.subject_key,
             subject_label=subject_label,
-            state=worst_state,
+            state=pres_state,
             source_refs=tuple(merged_refs),
-            detail_lines=tuple(detail_lines),
+            detail_lines=detail_lines,
         )
         candidate_groups.append((presentation_group, worst_sev, latest_ts, obs_count))
 
@@ -148,12 +166,12 @@ def plan_city_situation_presentation(
         )
     )
 
-    # Prepare positive available_services bundle if positive items exist
+    # Prepare positive available_services bundle if pure positive items exist
     available_group: CitySituationPresentationGroup | None = None
-    if positive_items:
+    if pure_positive_items:
         seen_pos_refs: set[str] = set()
         merged_pos_refs: list[str] = []
-        for it in positive_items:
+        for it in pure_positive_items:
             for r in it.source_refs:
                 if r and r not in seen_pos_refs:
                     seen_pos_refs.add(r)
@@ -161,7 +179,7 @@ def plan_city_situation_presentation(
 
         seen_pos_details: set[str] = set()
         pos_detail_lines: list[str] = []
-        for it in positive_items:
+        for it in pure_positive_items:
             line = _positive_detail_line(it)
             norm_l = line.casefold()
             if line and norm_l not in seen_pos_details:

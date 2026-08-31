@@ -30,6 +30,55 @@ def test_city_life_short_read_golden_fixture_has_final_polish_cases() -> None:
     } <= ids
 
 
+def test_plan_city_situation_consolidates_mixed_availability_into_conflicting_group() -> None:
+    import datetime as dt
+
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import plan_city_situation_presentation
+
+    now = dt.datetime.now(dt.timezone.utc)
+    rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="banking_cash",
+                subject_label="Банковские услуги и наличные",
+                dimension="availability",
+                location="Гора",
+                entity="banking",
+                state="UNAVAILABLE",
+                detail="Нет связи с банком",
+                source_refs=("ref-bank-red",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+            ),
+            CitySituationItem(
+                subject_key="banking_cash",
+                subject_label="Банковские услуги и наличные",
+                dimension="availability",
+                location="Залив",
+                entity="banking",
+                state="AVAILABLE",
+                detail="Банкомат выдает наличные",
+                source_refs=("ref-bank-green",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+            ),
+        )
+    )
+
+    plan = plan_city_situation_presentation(rollup, max_items=7, max_details_per_item=2)
+
+    assert len(plan.groups) == 1
+    group = plan.groups[0]
+    assert group.subject_key == "banking_cash"
+    assert group.state == "CONFLICTING"
+    assert set(group.source_refs) == {"ref-bank-red", "ref-bank-green"}
+    assert any("Гора" in line for line in group.detail_lines)
+    assert any("Залив" in line for line in group.detail_lines)
+
+
 def test_plan_city_situation_presentation_groups_same_subject_and_dimension() -> None:
     import datetime as dt
 
