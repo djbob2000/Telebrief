@@ -1,172 +1,224 @@
 from __future__ import annotations
 
-import datetime as dt
+import pytest
 
-from src.domain.event_payload import (
-    EventPayload,
-    EvidenceItemPayload,
-    OperationalObservationPayload,
-)
+from src.domain.event_payload import EventPayload, EvidenceItemPayload
+from src.domain.service_state import ServiceStatePayload
 from src.processing.operational_semantics import (
-    normalize_operational_payload,
+    derive_operational_observations,
+    normalize_service_state_evidence,
 )
 
-_NOW = dt.datetime(2026, 8, 29, 20, 0, tzinfo=dt.timezone.utc)
 
-
-def test_drops_observation_supported_only_by_coping_report():
-    evidence = [
-        EvidenceItemPayload(
-            text="Жители скинулись по 300 рублей на генератор.",
-            kind="community_report",
-            publication_use="PUBLISH",
-            source_fragment_ids=(1,),
-        )
-    ]
-    observations = [
-        OperationalObservationPayload(
-            subject_key="generator_use",
-            subject_label="Использование генератора",
+def _service_item(
+    *,
+    text: str,
+    fid: int,
+    subject_key: str,
+    subject_label: str,
+    state: str,
+    expected_now: bool | None,
+    basis: str,
+    kind: str = "service_access",
+    publication_use: str = "PUBLISH",
+    effective_from: str | None = None,
+    effective_until: str | None = None,
+) -> EvidenceItemPayload:
+    return EvidenceItemPayload(
+        text=text,
+        kind=kind,  # type: ignore[arg-type]
+        publication_use=publication_use,  # type: ignore[arg-type]
+        source_fragment_ids=(fid,),
+        service_state=ServiceStatePayload(
+            subject_key=subject_key,
+            subject_label=subject_label,
             dimension="availability",
-            location="",
-            entity="",
-            state="AVAILABLE",
-            detail="Генератор работает",
-            source_fragment_ids=(1,),
-        )
-    ]
-    payload = EventPayload(
-        topic="Генераторы",
-        headline="Тест",
-        digest_summary="Тест",
-        evidence_items=tuple(evidence),
-        operational_observations=tuple(observations),
+            state=state,
+            expected_now=expected_now,
+            basis=basis,  # type: ignore[arg-type]
+            effective_from=effective_from,
+            effective_until=effective_until,
+        ),
     )
 
-    normalized, audit = normalize_operational_payload(payload)
 
-    assert normalized.operational_observations == ()
-    assert audit.dropped_observation_count == 1
-    assert audit.dropped_observation_subject_keys == ("generator_use",)
-
-
-def test_keeps_observation_supported_by_publish_service_access():
-    evidence = [
-        EvidenceItemPayload(
-            text="Вода на верхние этажи не поступает.",
-            kind="service_access",
-            publication_use="PUBLISH",
-            source_fragment_ids=(2,),
-        )
-    ]
-    observations = [
-        OperationalObservationPayload(
-            subject_key="water_supply",
-            subject_label="Водоснабжение",
-            dimension="availability",
-            location="",
-            entity="",
-            state="UNAVAILABLE",
-            detail="На верхних этажах сухо",
-            source_fragment_ids=(2,),
-        )
-    ]
+def test_valid_water_service_state_projects_exactly_once():
     payload = EventPayload(
-        topic="Водоснабжение",
-        headline="Тест",
-        digest_summary="Тест",
-        evidence_items=tuple(evidence),
-        operational_observations=tuple(observations),
+        evidence_items=(
+            _service_item(
+                text="Water is absent on upper floors",
+                fid=1,
+                subject_key="water_supply",
+                subject_label="Water supply",
+                state="UNAVAILABLE",
+                expected_now=True,
+                basis="direct_failure",
+            ),
+        )
     )
 
-    normalized, audit = normalize_operational_payload(payload)
+    normalized, audit = normalize_service_state_evidence(payload)
+    observations = derive_operational_observations(normalized)
 
-    assert len(normalized.operational_observations) == 1
-    assert normalized.operational_observations[0].subject_key == "water_supply"
-    assert audit.dropped_observation_count == 0
-    assert audit.uncovered_service_access_fragment_ids == ()
+    assert audit.accepted_count == 1
+    assert audit.rejected_count == 0
+    assert len(observations) == 1
+    assert observations[0].subject_key == "water_supply"
+    assert observations[0].detail == "Water is absent on upper floors"
+    assert observations[0].source_fragment_ids == (1,)
 
 
-def test_reports_service_access_without_projection_but_does_not_invent():
-    evidence = [
-        EvidenceItemPayload(
-            text="Автобус №4 ходит по расписанию.",
-            kind="service_access",
-            publication_use="PUBLISH",
-            source_fragment_ids=(3,),
-        )
-    ]
+def test_negative_state_without_expected_now_is_not_operational():
     payload = EventPayload(
-        topic="Транспорт",
-        headline="Тест",
-        digest_summary="Тест",
-        evidence_items=tuple(evidence),
-        operational_observations=(),
+        evidence_items=(
+            _service_item(
+                text="Residents say central heating is absent",
+                fid=2,
+                subject_key="heating",
+                subject_label="Heating",
+                state="UNAVAILABLE",
+                expected_now=None,
+                basis="direct_failure",
+            ),
+        )
     )
 
-    normalized, audit = normalize_operational_payload(payload)
+    normalized, audit = normalize_service_state_evidence(payload)
 
-    assert normalized.operational_observations == ()
-    assert audit.uncovered_service_access_fragment_ids == (3,)
+    assert audit.rejected_count == 1
+    assert normalized.evidence_items[0].service_state is None
+    assert derive_operational_observations(normalized) == ()
 
 
-def test_question_context_cannot_support_operational_observation():
-    evidence = [
-        EvidenceItemPayload(
-            text="Работает ли банк?",
-            kind="resident_question",
-            publication_use="CONTEXT",
-            source_fragment_ids=(4,),
-        )
-    ]
-    observations = [
-        OperationalObservationPayload(
-            subject_key="banking",
-            subject_label="Банки",
-            dimension="availability",
-            location="",
-            entity="",
-            state="UNKNOWN",
-            detail="Неизвестно",
-            source_fragment_ids=(4,),
-        )
-    ]
-    payload = EventPayload(
-        topic="Банки",
-        headline="Тест",
-        digest_summary="Тест",
-        evidence_items=tuple(evidence),
-        operational_observations=tuple(observations),
+@pytest.mark.parametrize(
+    ("state", "basis", "expected_now"),
+    [
+        ("AVAILABLE", "normal_operation", True),
+        ("UNAVAILABLE", "direct_failure", True),
+        ("DEGRADED", "degraded_access", True),
+        ("RESTRICTED", "explicit_restriction", True),
+    ],
+)
+def test_valid_state_basis_pairs_survive(state: str, basis: str, expected_now: bool | None):
+    item = _service_item(
+        text=f"Service status update for {state}",
+        fid=10,
+        subject_key="public_transport",
+        subject_label="Транспорт",
+        state=state,
+        expected_now=expected_now,
+        basis=basis,
+    )
+    normalized, audit = normalize_service_state_evidence(EventPayload(evidence_items=(item,)))
+    assert audit.accepted_count == 1
+    assert audit.rejected_count == 0
+    assert normalized.evidence_items[0].service_state is not None
+
+
+@pytest.mark.parametrize(
+    ("state", "basis"),
+    [
+        ("AVAILABLE", "direct_failure"),
+        ("UNAVAILABLE", "normal_operation"),
+        ("DEGRADED", "scheduled_change"),
+    ],
+)
+def test_incompatible_state_basis_is_rejected(state: str, basis: str):
+    item = _service_item(
+        text="Service mismatch text",
+        fid=11,
+        subject_key="water_supply",
+        subject_label="Водоснабжение",
+        state=state,
+        expected_now=True if state != "AVAILABLE" else None,
+        basis=basis,
+    )
+    normalized, audit = normalize_service_state_evidence(EventPayload(evidence_items=(item,)))
+    assert audit.rejected_count == 1
+    assert normalized.evidence_items[0].service_state is None
+
+
+def test_scheduled_requires_effective_from():
+    item = _service_item(
+        text="Scheduled maintenance",
+        fid=12,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="SCHEDULED",
+        expected_now=False,
+        basis="scheduled_change",
+        effective_from=None,
+    )
+    normalized, audit = normalize_service_state_evidence(EventPayload(evidence_items=(item,)))
+    assert audit.rejected_count == 1
+    assert normalized.evidence_items[0].service_state is None
+
+
+def test_private_generator_use_is_demoted_not_dropped():
+    item = _service_item(
+        text="Residents run their household generators at night",
+        fid=3,
+        subject_key="backup_power",
+        subject_label="Backup power",
+        state="AVAILABLE",
+        expected_now=True,
+        basis="normal_operation",
+    )
+    normalized, audit = normalize_service_state_evidence(EventPayload(evidence_items=(item,)))
+
+    result = normalized.evidence_items[0]
+    assert audit.rejected_count == 1
+    assert result.kind == "community_report"
+    assert result.publication_use == "PUBLISH"
+    assert result.service_state is None
+    assert result.text == item.text
+
+
+def test_generator_mechanism_does_not_kill_explicit_water_outcome():
+    item = _service_item(
+        text="The building generator powers the pump, so water is available daily",
+        fid=4,
+        subject_key="water_supply",
+        subject_label="Water supply",
+        state="AVAILABLE",
+        expected_now=True,
+        basis="normal_operation",
+    )
+    normalized, audit = normalize_service_state_evidence(EventPayload(evidence_items=(item,)))
+
+    assert audit.rejected_count == 0
+    assert normalized.evidence_items[0].service_state is not None
+
+
+def test_provider_connectivity_evidence_cannot_project_as_city_power_supply():
+    item = _service_item(
+        text="Provider equipment is offline and internet connectivity is unavailable",
+        fid=5,
+        subject_key="power_supply",
+        subject_label="Electricity",
+        state="UNAVAILABLE",
+        expected_now=True,
+        basis="direct_failure",
     )
 
-    normalized, audit = normalize_operational_payload(payload)
+    normalized, audit = normalize_service_state_evidence(EventPayload(evidence_items=(item,)))
 
-    assert normalized.operational_observations == ()
-    assert audit.dropped_observation_count == 1
+    assert audit.rejected_count == 1
+    assert normalized.evidence_items[0].service_state is None
 
 
-def test_legacy_payload_without_evidence_preserves_observations():
-    observations = [
-        OperationalObservationPayload(
-            subject_key="power_supply",
-            subject_label="Электроснабжение",
-            dimension="availability",
-            location="",
-            entity="",
-            state="UNAVAILABLE",
-            detail="Света нет",
-            source_fragment_ids=(5,),
-        )
-    ]
-    payload = EventPayload(
-        topic="Свет",
-        headline="Тест",
-        digest_summary="Тест",
-        evidence_items=(),
-        operational_observations=tuple(observations),
+def test_ambiguous_unrecognized_subject_is_not_guessed():
+    item = _service_item(
+        text="Service X is unavailable today",
+        fid=6,
+        subject_key="service_x",
+        subject_label="Service X",
+        state="UNAVAILABLE",
+        expected_now=True,
+        basis="direct_failure",
     )
 
-    normalized, audit = normalize_operational_payload(payload)
+    normalized, audit = normalize_service_state_evidence(EventPayload(evidence_items=(item,)))
 
-    assert len(normalized.operational_observations) == 1
-    assert audit.dropped_observation_count == 0
+    assert audit.rejected_count == 0
+    assert normalized.evidence_items[0].service_state is not None
