@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 from src.publication.city_situation import (
     CitySituationItem,
     CitySituationRollup,
+    city_situation_icon,
     city_situation_severity,
 )
 
@@ -228,6 +229,22 @@ def plan_city_situation_presentation(
         groups=tuple(selected_groups),
         covered_source_refs=tuple(covered_refs),
     )
+
+
+def render_city_situation_presentation(
+    plan: CitySituationPresentationPlan | None,
+    *,
+    use_emojis: bool = True,
+) -> str:
+    if not plan or not plan.groups:
+        return ""
+    lines = ["*🏙 Городская обстановка*" if use_emojis else "*Городская обстановка*"]
+    for group in plan.groups:
+        icon = city_situation_icon(group.state) if use_emojis else ""
+        prefix = f"{icon} " if icon else ""
+        body = "; ".join(group.detail_lines)
+        lines.append(f"• {prefix}**{group.subject_label}**: {body}")
+    return "\n".join(lines)
 
 
 @dataclass(frozen=True)

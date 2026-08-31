@@ -338,6 +338,7 @@ class PublicationDigestRenderer:
         edition_name: str = "Бердянск",
         snapshot_at: dt.datetime | None = None,
         narrative_draft: Any | None = None,
+        presentation_plan: Any | None = None,
     ) -> tuple[str, str, str]:
         date_str = (snapshot_at or dt.datetime.now(dt.timezone.utc)).strftime("%d.%m.%Y")
         title = (
@@ -351,7 +352,17 @@ class PublicationDigestRenderer:
 
         sections: list[str] = [f"*{title}*"]
 
-        if narrative_draft is not None and getattr(narrative_draft, "situation_items", None):
+        sit_plan = None
+        if presentation_plan is not None:
+            sit_plan = getattr(presentation_plan, "city_situation", presentation_plan)
+
+        if sit_plan is not None:
+            from src.publication.digest_presentation import render_city_situation_presentation
+
+            sit_text = render_city_situation_presentation(sit_plan, use_emojis=self.use_emojis)
+            if sit_text:
+                sections.append(sit_text)
+        elif narrative_draft is not None and getattr(narrative_draft, "situation_items", None):
             emoji = "🏙 " if self.use_emojis else ""
             sit_lines = [f"*{emoji}Городская обстановка*"]
             for s_item in narrative_draft.situation_items:
