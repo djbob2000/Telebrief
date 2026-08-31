@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
+from typing import Any, Sequence
 
 from src.publication.city_situation import (
     CitySituationItem,
@@ -208,4 +209,65 @@ def plan_city_situation_presentation(
     return CitySituationPresentationPlan(
         groups=tuple(selected_groups),
         covered_source_refs=tuple(covered_refs),
+    )
+
+
+@dataclass(frozen=True)
+class DigestStoryPresentationHint:
+    story_id: str
+    detail_support_ids: tuple[str, ...]
+    merge_group_id: str
+
+
+@dataclass(frozen=True)
+class DigestPresentationPlan:
+    city_situation: CitySituationPresentationPlan
+    detail_story_ids: tuple[str, ...]
+    story_hints: tuple[DigestStoryPresentationHint, ...]
+
+
+def _card_is_consumed_by_dashboard(
+    card: Any,
+    covered_refs: set[str],
+) -> bool:
+    if getattr(card, "story_kind", "") != "operational_status":
+        return False
+    all_refs_fn = getattr(card, "all_source_refs", None)
+    if callable(all_refs_fn):
+        refs = {ref for ref in all_refs_fn() if ref}
+    else:
+        refs = {ref for ref in getattr(card, "representative_source_refs", []) if ref}
+    return bool(refs) and refs <= covered_refs
+
+
+def build_digest_presentation_plan(
+    *,
+    cards: Sequence[Any],
+    city_situation: CitySituationRollup | None,
+    evidence: Any = None,
+    max_city_situation_items: int = 7,
+    max_city_situation_details: int = 2,
+) -> DigestPresentationPlan:
+    """Build the comprehensive presentation plan for a digest run."""
+    city_plan = plan_city_situation_presentation(
+        city_situation,
+        max_items=max_city_situation_items,
+        max_details_per_item=max_city_situation_details,
+    )
+    covered_refs = set(city_plan.covered_source_refs)
+    detail_story_ids = tuple(
+        card.id for card in cards if not _card_is_consumed_by_dashboard(card, covered_refs)
+    )
+    story_hints = tuple(
+        DigestStoryPresentationHint(
+            story_id=sid,
+            detail_support_ids=(),
+            merge_group_id=sid,
+        )
+        for sid in detail_story_ids
+    )
+    return DigestPresentationPlan(
+        city_situation=city_plan,
+        detail_story_ids=detail_story_ids,
+        story_hints=story_hints,
     )

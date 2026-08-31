@@ -158,3 +158,173 @@ def test_plan_city_situation_presentation_reserves_slot_for_available_bundle() -
     assert set(avail_grp.source_refs) == {"ref-avail-1", "ref-avail-2"}
     assert "ref-avail-1" in plan.covered_source_refs
     assert "ref-avail-2" in plan.covered_source_refs
+
+
+def test_build_digest_presentation_plan_preserves_omitted_operational_story() -> None:
+    import datetime as dt
+
+    from src.editorial_models import StoryCard, StoryElement
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+
+    now = dt.datetime.now(dt.timezone.utc)
+    items = tuple(
+        CitySituationItem(
+            subject_key=f"subject_{i}",
+            subject_label=f"Служба {i}",
+            dimension="availability",
+            location="Город",
+            entity=f"entity_{i}",
+            state="DEGRADED",
+            detail=f"Проблема {i}",
+            source_refs=(f"ref-{i}",),
+            first_observed_at=now,
+            last_observed_at=now - dt.timedelta(minutes=i),
+            observation_count=1,
+        )
+        for i in range(8)
+    )
+    rollup = CitySituationRollup(items=items)
+
+    cards = [
+        StoryCard(
+            id=f"story:{i}",
+            topic=f"Служба {i}",
+            importance="medium",
+            summary=f"Проблема {i}",
+            tags=[],
+            rubric_id="",
+            category="utilities",
+            story_kind="operational_status",
+            representative_source_refs=[f"ref-{i}"],
+            hard_facts=[
+                StoryElement(
+                    text=f"Проблема {i}",
+                    source_refs=[f"ref-{i}"],
+                    status="established",
+                )
+            ],
+        )
+        for i in range(8)
+    ]
+
+    plan = build_digest_presentation_plan(
+        cards=cards,
+        city_situation=rollup,
+        evidence={},
+        max_city_situation_items=7,
+        max_city_situation_details=2,
+    )
+
+    assert len(plan.city_situation.groups) == 7
+    assert len(plan.detail_story_ids) == 1
+    assert "story:7" in plan.detail_story_ids
+
+
+def test_build_digest_presentation_plan_suppresses_covered_pure_operational_card() -> None:
+    import datetime as dt
+
+    from src.editorial_models import StoryCard, StoryElement
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+
+    now = dt.datetime.now(dt.timezone.utc)
+    items = (
+        CitySituationItem(
+            subject_key="power",
+            subject_label="Свет",
+            dimension="availability",
+            location="Город",
+            entity="РЭС",
+            state="UNAVAILABLE",
+            detail="Отключение света",
+            source_refs=("ref-power-1",),
+            first_observed_at=now,
+            last_observed_at=now,
+            observation_count=1,
+        ),
+    )
+    rollup = CitySituationRollup(items=items)
+    card = StoryCard(
+        id="story:10",
+        topic="Отключение света",
+        importance="medium",
+        summary="Отключение света",
+        tags=[],
+        rubric_id="",
+        category="utilities",
+        story_kind="operational_status",
+        representative_source_refs=["ref-power-1"],
+        hard_facts=[
+            StoryElement(
+                text="Отключение света",
+                source_refs=["ref-power-1"],
+                status="established",
+            )
+        ],
+    )
+
+    plan = build_digest_presentation_plan(
+        cards=[card],
+        city_situation=rollup,
+        evidence={},
+        max_city_situation_items=7,
+        max_city_situation_details=2,
+    )
+
+    assert len(plan.city_situation.groups) == 1
+    assert "story:10" not in plan.detail_story_ids
+
+
+def test_build_digest_presentation_plan_preserves_hybrid_story() -> None:
+    import datetime as dt
+
+    from src.editorial_models import StoryCard, StoryElement
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+
+    now = dt.datetime.now(dt.timezone.utc)
+    items = (
+        CitySituationItem(
+            subject_key="road_works",
+            subject_label="Дорожные работы",
+            dimension="availability",
+            location="Центр",
+            entity="ДРСУ",
+            state="RESTRICTED",
+            detail="Перекрытие проспекта",
+            source_refs=("ref-road-1",),
+            first_observed_at=now,
+            last_observed_at=now,
+            observation_count=1,
+        ),
+    )
+    rollup = CitySituationRollup(items=items)
+    hybrid_card = StoryCard(
+        id="story:20",
+        topic="Капитальный ремонт проспекта",
+        importance="high",
+        summary="Ремонт продлится до осени, выделено финансирование",
+        tags=["ремонт", "город"],
+        rubric_id="",
+        category="society",
+        story_kind="",  # Not operational_status
+        representative_source_refs=["ref-road-1", "ref-road-2"],
+        hard_facts=[
+            StoryElement(
+                text="Выделено финансирование",
+                source_refs=["ref-road-2"],
+                status="established",
+            )
+        ],
+    )
+
+    plan = build_digest_presentation_plan(
+        cards=[hybrid_card],
+        city_situation=rollup,
+        evidence={},
+        max_city_situation_items=7,
+        max_city_situation_details=2,
+    )
+
+    assert "story:20" in plan.detail_story_ids
