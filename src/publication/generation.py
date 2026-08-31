@@ -218,15 +218,36 @@ class PublicationGenerationService:
                         plan_digest_narrative_blocks,
                         validate_digest_narrative,
                     )
+                    from src.publication.digest_presentation import build_digest_presentation_plan
 
+                    max_sit_items = getattr(pub_edit, "digest_city_situation_max_items", 7)
+                    max_sit_details = getattr(
+                        pub_edit, "digest_city_situation_max_details_per_item", 2
+                    )
                     evidence_dict = getattr(frozen.analysis, "evidence", {}) or {}
+
+                    presentation_plan = build_digest_presentation_plan(
+                        cards=frozen.analysis.cards,
+                        city_situation=frozen.analysis.city_situation,
+                        evidence=evidence_dict,
+                        max_city_situation_items=max_sit_items,
+                        max_city_situation_details=max_sit_details,
+                    )
+
+                    detail_cards = [
+                        c
+                        for c in frozen.analysis.cards
+                        if c.id in presentation_plan.detail_story_ids
+                    ]
+
                     max_cards = getattr(pub_edit, "digest_narrative_max_cards_per_block", 6)
                     max_tokens = getattr(pub_edit, "digest_narrative_max_output_tokens", 4096)
                     plan = plan_digest_narrative_blocks(
-                        cards=frozen.analysis.cards,
+                        cards=detail_cards,
                         evidence=evidence_dict,
                         rubrics=renderer.rubrics,
                         max_cards_per_block=max_cards,
+                        presentation_plan=presentation_plan,
                     )
 
                     writer_provider = getattr(self.generator, "provider", None)
@@ -236,15 +257,16 @@ class PublicationGenerationService:
                         metadata={
                             "subkind": "digest_narrative",
                             "block_count": len(plan.blocks),
-                            "card_count": len(frozen.analysis.cards),
+                            "card_count": len(detail_cards),
+                            "situation_group_count": len(presentation_plan.city_situation.groups),
                         },
                     )
                     try:
                         draft_cand = await writer.generate_narrative_draft(
                             plan=plan,
-                            cards=frozen.analysis.cards,
+                            cards=detail_cards,
                             evidence=evidence_dict,
-                            situation_rollup=frozen.analysis.city_situation,
+                            situation_plan=presentation_plan.city_situation,
                             language=getattr(self.config.settings, "output_language", "Russian"),
                             max_output_tokens=max_tokens,
                             model=getattr(self.config.settings, "openai_model", None)
@@ -259,6 +281,7 @@ class PublicationGenerationService:
                             draft_cand,
                             plan,
                             support_text_by_id=support_text_index,
+                            situation_plan=presentation_plan.city_situation,
                         )
                         if val_res.is_valid:
                             narrative_draft = draft_cand
@@ -273,6 +296,7 @@ class PublicationGenerationService:
                                 metadata={
                                     "validation": {"is_valid": True},
                                     "block_count": len(draft_cand.blocks),
+                                    "situation_item_count": len(draft_cand.situation_items),
                                 },
                             )
                         else:

@@ -1866,3 +1866,351 @@ async def test_rejected_event_article_with_defer_delivery_creates_no_delivery_de
     assert not any(
         a[1] == "succeeded" for a in attempts if a[0] in {"writer", "story_renderer_fallback"}
     )
+
+
+@pytest.mark.postgres
+async def test_event_first_digest_narrative_generation_with_city_situation(
+    conn, pool, edition, mocker
+):
+    import json
+    from unittest.mock import AsyncMock
+
+    from src.article_generator import ArticleGenerator
+    from src.config_loader import Config, PublicationEditorialConfig, Settings
+
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_ids = await _seed_policies(conn, edition.id)
+
+    # 1. Create a story with operational observation and evidence
+    cur = await conn.execute(
+        """
+        INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+        VALUES (%s, 'active', 'event_first', %s)
+        RETURNING id
+        """,
+        (edition.id, _NOW),
+    )
+    story_id = (await cur.fetchone())[0]
+
+    # Create source and source item and fragment
+    cur = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, url, name, role)
+        VALUES ('telegram', 'channel', '-1001', 'https://t.me/src', 'Test Source', 'official')
+        RETURNING id
+        """,
+    )
+    src_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_id, edition.id),
+    )
+    cur = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'msg', 'm1', %s) RETURNING id
+        """,
+        (src_id, _NOW),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'h1', 'Водоканал завершил ремонт на водоводе в Центре.')
+        RETURNING id
+        """,
+        (item_id,),
+    )
+    sir_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
+        VALUES (%s, 0, 'Водоканал завершил ремонт на водоводе в Центре.', 'hf1', 'v1', TRUE, %s)
+        RETURNING id
+        """,
+        (sir_id, _NOW),
+    )
+    frag_id = (await cur.fetchone())[0]
+
+    event_payload = {
+        "event_id": f"story:{story_id}",
+        "schema_version": "v3",
+        "story_id": story_id,
+        "headline": "Ремонт водовода завершен",
+        "digest_summary": "Водоканал завершил ремонт на сетях",
+        "category": "utilities",
+        "tags": ["жкх", "вода"],
+        "operational_observations": [
+            {
+                "subject_key": "water_supply",
+                "subject_label": "Водоснабжение",
+                "dimension": "availability",
+                "location": "Центр",
+                "entity": "Горводоканал",
+                "state": "AVAILABLE",
+                "detail": "Водоснабжение восстановлено",
+                "source_fragment_ids": [frag_id],
+                "observed_at": _NOW.isoformat(),
+            }
+        ],
+        "evidence_items": [
+            {
+                "evidence_id": f"story:{story_id}:evidence:0:frag:{frag_id}",
+                "source_fragment_ids": [frag_id],
+                "text": "Водоканал завершил ремонт на водоводе в Центре.",
+                "source_text": "Водоканал завершил ремонт на водоводе в Центре.",
+                "kind": "service_access",
+                "publication_use": "PUBLISH",
+            }
+        ],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-rev-val', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            story_id,
+            event_payload["digest_summary"],
+            event_payload["headline"],
+            event_payload["digest_summary"],
+            json.dumps(event_payload),
+            _NOW,
+        ),
+    )
+    rev_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at)
+        VALUES (%s, 'active', 'event_first', %s)
+        RETURNING id
+        """,
+        (edition.id, _NOW),
+    )
+    story2_id = (await cur.fetchone())[0]
+
+    cur = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'msg', 'm2', %s) RETURNING id
+        """,
+        (src_id, _NOW),
+    )
+    item2_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'h2', 'Автобус №4 ходит по новому графику с 1 сентября.')
+        RETURNING id
+        """,
+        (item2_id,),
+    )
+    sir2_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        """
+        INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
+        VALUES (%s, 0, 'Автобус №4 ходит по новому графику с 1 сентября.', 'hf2', 'v1', TRUE, %s)
+        RETURNING id
+        """,
+        (sir2_id, _NOW),
+    )
+    frag2_id = (await cur.fetchone())[0]
+
+    event2_payload = {
+        "event_id": f"story:{story2_id}",
+        "schema_version": "v3",
+        "story_id": story2_id,
+        "headline": "Новое расписание автобусов",
+        "digest_summary": "Автобус №4 ходит по новому графику с 1 сентября",
+        "category": "transport",
+        "tags": ["транспорт", "автобус"],
+        "evidence_items": [
+            {
+                "evidence_id": f"story:{story2_id}:evidence:0:frag:{frag2_id}",
+                "source_fragment_ids": [frag2_id],
+                "text": "Автобус №4 ходит по новому графику с 1 сентября.",
+                "source_text": "Автобус №4 ходит по новому графику с 1 сентября.",
+                "kind": "established_fact",
+                "publication_use": "PUBLISH",
+            }
+        ],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-rev-val-2', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            story2_id,
+            event2_payload["digest_summary"],
+            event2_payload["headline"],
+            event2_payload["digest_summary"],
+            json.dumps(event2_payload),
+            _NOW,
+        ),
+    )
+    rev2_id = (await cur.fetchone())[0]
+
+    # Publication run & input
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        request_key="test-key-digest-gen",
+        snapshot_at=_NOW,
+        policy_ids=policy_ids,
+    )
+
+    cand1 = await repo.insert_candidate(
+        conn,
+        run.id,
+        story_id=story_id,
+        story_revision_id=rev_id,
+        deterministic_rank=1,
+    )
+    cand2 = await repo.insert_candidate(
+        conn,
+        run.id,
+        story_id=story2_id,
+        story_revision_id=rev2_id,
+        deterministic_rank=2,
+    )
+
+    from src.publication.models import PublicationSelectionDecision
+
+    dec1 = await repo.insert_selection_decision(
+        conn,
+        run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=run.id,
+            candidate_id=cand1.id,
+            decision="INCLUDE",
+            presentation_intent="lead",
+            confidence=0.96,
+            reason="Important news",
+            rank=1,
+            metadata={},
+            created_at=_NOW,
+        ),
+    )
+    dec2 = await repo.insert_selection_decision(
+        conn,
+        run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=run.id,
+            candidate_id=cand2.id,
+            decision="INCLUDE",
+            presentation_intent="normal",
+            confidence=0.95,
+            reason="Transport news",
+            rank=2,
+            metadata={},
+            created_at=_NOW,
+        ),
+    )
+
+    await repo.freeze_selected_input(
+        conn,
+        run.id,
+        story_id=story_id,
+        story_revision_id=rev_id,
+        selection_decision_id=dec1.id,
+        presentation_intent="lead",
+        rank=1,
+        fragment_ids=[frag_id],
+    )
+    await repo.freeze_selected_input(
+        conn,
+        run.id,
+        story_id=story2_id,
+        story_revision_id=rev2_id,
+        selection_decision_id=dec2.id,
+        presentation_intent="normal",
+        rank=2,
+        fragment_ids=[frag2_id],
+    )
+    await repo.transition_run(conn, run.id, "selected_inputs_sealed")
+
+    ref_str = f"telegram:source:{src_id}:item:{item_id}:rev:1:frag:{frag_id}"
+
+    # Mock provider response for narrative digest writer
+    mock_provider = AsyncMock()
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "situation_items": [
+                {
+                    "group_id": "situation:available_services",
+                    "label": "Водоснабжение",
+                    "body": "Центр: водоснабжение восстановлено.",
+                    "cited_support_ids": [ref_str],
+                }
+            ],
+            "blocks": [
+                {
+                    "block_id": "block:other:0",
+                    "items": [
+                        {
+                            "headline": "Новое расписание маршрута №4",
+                            "body": "Автобус №4 ходит по новому графику с 1 сентября.",
+                            "covered_story_ids": [f"story:{story2_id}"],
+                            "cited_support_ids": [f"story:{story2_id}:evidence:0:frag:{frag2_id}"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    editorial_cfg = PublicationEditorialConfig(
+        digest_narrative_mode="single_call",
+        digest_city_situation_max_items=7,
+        digest_city_situation_max_details_per_item=2,
+    )
+    settings = Settings(
+        schedule_time="09:00",
+        timezone="UTC",
+        lookback_hours=24,
+        openai_model="gpt-4",
+        openai_temperature=0.7,
+        ai_provider="openai",
+        publication_editorial=editorial_cfg,
+    )
+    config = Config(
+        channels=[],
+        telegram_api_id=1,
+        telegram_api_hash="hash",
+        telegram_bot_token="token",
+        openai_api_key="key",
+        log_level="INFO",
+        settings=settings,
+    )
+
+    import logging
+
+    test_logger = logging.getLogger("test")
+    generator = ArticleGenerator(config=config, logger=test_logger)
+    generator.provider = mock_provider
+    service = PublicationGenerationService(
+        uow=uow,
+        config=config,
+        repo=repo,
+        generator=generator,
+    )
+
+    pub = await service.generate(run.id, defer_delivery=True)
+    assert pub is not None
+    assert "Городская обстановка" in pub.body
+    assert "Водоснабжение" in pub.body
+    assert "Новое расписание маршрута №4" in pub.body
