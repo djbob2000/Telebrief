@@ -21,7 +21,8 @@ from src.publication.narrative_contract import (
 
 
 def test_narrative_contracts_epistemic_fidelity():
-    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v2"
+    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v3"
+
     article_contract = build_article_narrative_contract(output_language="Russian")
     assert "single-source" in article_contract.lower()
     assert "community" in article_contract.lower()
@@ -724,13 +725,13 @@ async def test_digest_narrative_writer_with_situation_plan(mocker):
     assert len(draft.situation_items) == 1
     assert draft.situation_items[0].group_id == "situation:water:avail"
 
-    # Verify user prompt includes situation_items
+    # Verify user prompt excludes situation_items
     call_args = mock_provider.chat_completion.call_args[1]
     messages = call_args["messages"]
     user_content = next(m["content"] for m in messages if m["role"] == "user")
     user_data = json.loads(user_content)
-    assert "situation_items" in user_data
-    assert user_data["situation_items"][0]["group_id"] == "situation:water:avail"
+    assert "situation_items" not in user_data
+    assert "blocks" in user_data
 
     assert draft.blocks[0].block_id == "block:utilities:0"
     assert len(draft.blocks[0].items) == 1
@@ -1060,3 +1061,51 @@ def test_validate_digest_narrative_checks_unsupported_situation_claims() -> None
     result = validate_digest_narrative(draft, plan, support_index, situation_plan=sit_plan)
     assert not result.is_valid
     assert any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in result.violations)
+
+
+@pytest.mark.asyncio
+async def test_digest_narrative_writer_prompt_excludes_situation_items() -> None:
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativePlan,
+        DigestNarrativeWriter,
+    )
+
+    captured_messages = []
+
+    class FakeProvider:
+        async def chat_completion(self, messages, **kwargs):
+            captured_messages.extend(messages)
+            return '{"blocks": [{"block_id": "block:utilities:0", "items": [{"headline": "H", "body": "B", "covered_story_ids": ["story:1"], "cited_support_ids": ["ref-1"]}]}]}'
+
+    writer = DigestNarrativeWriter(provider=FakeProvider())
+    block = DigestNarrativeBlock(
+        block_id="block:utilities:0",
+        rubric_id="utilities",
+        rubric_title="ЖКХ",
+        story_ids=("story:1",),
+        support_ids=("ref-1",),
+        canonical_notes=(),
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+    evidence = {
+        "ref-1": _make_evidence("ref-1", 1, "Ремонтные работы продолжаются"),
+    }
+    cards = [
+        StoryCard(
+            id="story:1",
+            topic="ЖКХ",
+            importance="high",
+            summary="Ремонт",
+            rubric_id="utilities",
+        )
+    ]
+    await writer.generate_narrative_draft(
+        plan=plan,
+        cards=cards,
+        evidence=evidence,
+    )
+    assert len(captured_messages) == 2
+    user_prompt = captured_messages[1]["content"]
+    assert '"blocks"' in user_prompt
+    assert '"situation_items"' not in user_prompt

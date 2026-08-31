@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v5"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v2"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v3"
 
 
 def build_article_narrative_contract(
@@ -120,20 +120,19 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 1. Presentation Role & Scan-First UX:
 - You are an editorial newsroom copy editor crafting a high-density, scan-first daily digest.
 - The publication has a layered structure:
-  1. City Situation (Operational Dashboard): compact, point-in-time service status updates when operational observations are present.
-  2. Thematic Rubrics: structured blocks containing scan-first editorial items.
+  1. City Situation (Operational Dashboard): preplanned and rendered deterministically outside this writer.
+  2. Thematic Rubrics: structured blocks containing scan-first editorial items written here.
+- Write only thematic detail blocks.
 - Every detail editorial item must have one short scan headline and one compact explanatory body.
 - The headline must stand on its own as the bold mini-summary answering "what happened?".
 - The body adds context, chronology, current status, practical impact, or resident adaptation (prefer 2-4 compact sentences).
 - Do not repeat the headline verbatim in the body.
 - Do not output one giant paragraph for an entire rubric.
 
-2. City Situation Operational Dashboard Rules:
-- If `situation_items` are requested in the presentation plan, you must output exactly one item per situation group.
-- State what is known and reported about service availability and infrastructure states.
-- Be concise, practical, and objective.
-- Preserve locations and specific service nuances from the detail lines and supports.
-- Never invent causes, repairs, or completion deadlines unless explicitly present in the cited support.
+2. Thematic Detail & Dashboard Overlap Rules:
+- City Situation is preplanned and rendered deterministically outside this writer.
+- Write only thematic detail blocks for the assigned stories.
+- If a Story overlaps the dashboard (e.g. DRILL_DOWN stories), add new supported concrete detail from detail_support_ids; do not merely restate the dashboard status.
 
 3. Microdetail Preservation & Detail Depth:
 - Do not collapse concrete evidence into generic summaries when useful supported specifics exist.
