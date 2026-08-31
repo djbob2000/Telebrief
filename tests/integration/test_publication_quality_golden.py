@@ -414,7 +414,25 @@ async def test_berdyansk_publication_quality_golden_oracle_pipeline(
 
     editorial_input = await adapter.adapt_inputs_on(conn, run.id, inputs=selected_inputs)
 
-    # Digest rendering
+    # Digest rendering & Presentation Plan
+    from src.publication.digest_presentation import build_digest_presentation_plan
+
+    evidence_dict = getattr(editorial_input.analysis, "evidence", {}) or {}
+    plan = build_digest_presentation_plan(
+        cards=editorial_input.analysis.cards,
+        city_situation=editorial_input.analysis.city_situation,
+        evidence=evidence_dict,
+        max_city_situation_items=7,
+        max_city_situation_details=2,
+    )
+
+    # Presentation plan verifies City Situation grouping and detail separation
+    assert len(plan.city_situation.groups) <= 7
+    all_covered_and_detail_ids = set(plan.detail_story_ids) | set(
+        plan.city_situation.covered_source_refs
+    )
+    assert len(all_covered_and_detail_ids) > 0
+
     renderer = PublicationDigestRenderer(use_emojis=True, include_statistics=True)
     title, lead, body = renderer.render_grouped_digest(editorial_input, edition_name="Бердянск")
     digest_text = f"{title}\n{lead}\n{body}"

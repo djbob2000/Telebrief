@@ -92,6 +92,46 @@ def calculate_benchmark_metrics(runs: list[BenchmarkRunRecord]) -> dict[str, Any
     }
 
 
+def evaluate_digest_short_read_quality(
+    digest_body: str,
+    narrative_draft: Any | None = None,
+) -> dict[str, Any]:
+    """Evaluates short-read quality constraints on a generated publication digest."""
+    headline_lengths: list[int] = []
+    situation_lengths: list[int] = []
+    detail_lengths: list[int] = []
+    violations: list[str] = []
+
+    if narrative_draft is not None:
+        for s_item in getattr(narrative_draft, "situation_items", ()):
+            body_text = getattr(s_item, "body", "").strip()
+            situation_lengths.append(len(body_text))
+            if len(body_text) > 360:
+                violations.append(
+                    f"Situation item '{getattr(s_item, 'label', '')}' exceeds 360 chars: {len(body_text)}"
+                )
+
+        for block in getattr(narrative_draft, "blocks", ()):
+            for item in getattr(block, "items", ()):
+                hl = getattr(item, "headline", "").strip()
+                bd = getattr(item, "body", "").strip()
+                headline_lengths.append(len(hl))
+                detail_lengths.append(len(bd))
+                if len(hl) > 140:
+                    violations.append(f"Scan headline exceeds 140 chars: {len(hl)} ('{hl[:30]}...')")
+                if len(bd) > 900:
+                    violations.append(f"Detail body exceeds 900 chars: {len(bd)}")
+
+    return {
+        "max_headline_len": max(headline_lengths, default=0),
+        "avg_headline_len": sum(headline_lengths) / len(headline_lengths) if headline_lengths else 0,
+        "max_situation_len": max(situation_lengths, default=0),
+        "max_detail_len": max(detail_lengths, default=0),
+        "violations": violations,
+        "is_valid": len(violations) == 0,
+    }
+
+
 def validate_benchmark_gates(metrics: dict[str, Any]) -> list[str]:
     violations: list[str] = []
     if metrics.get("article_fallback_content_attempts", 0) != 0:
