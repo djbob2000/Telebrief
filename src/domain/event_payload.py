@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal, cast
 
+from src.domain.service_state import ServiceStatePayload
+
 OPERATIONAL_STATES: frozenset[str] = frozenset(
     {"AVAILABLE", "UNAVAILABLE", "DEGRADED", "RESTRICTED", "UNKNOWN", "SCHEDULED"}
 )
@@ -72,6 +74,7 @@ class EvidenceItemPayload:
     ]
     publication_use: Literal["PUBLISH", "CONTEXT", "EXCLUDE"]
     source_fragment_ids: tuple[int, ...]
+    service_state: ServiceStatePayload | None = None
 
     def __post_init__(self) -> None:
         if not self.text.strip():
@@ -91,12 +94,15 @@ class EvidenceItemPayload:
             raise ValueError(msg)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "text": self.text,
             "kind": self.kind,
             "publication_use": self.publication_use,
             "source_fragment_ids": list(self.source_fragment_ids),
         }
+        if self.service_state is not None:
+            payload["service_state"] = self.service_state.to_dict()
+        return payload
 
     @classmethod
     def from_dict(
@@ -150,6 +156,13 @@ class EvidenceItemPayload:
                 )
                 raise ValueError(msg)
 
+        raw_service_state = data.get("service_state")
+        service_state = (
+            ServiceStatePayload.from_dict(raw_service_state)
+            if isinstance(raw_service_state, Mapping)
+            else None
+        )
+
         return cls(
             text=raw_text,
             kind=cast(
@@ -165,6 +178,7 @@ class EvidenceItemPayload:
             ),
             publication_use=cast(Literal["PUBLISH", "CONTEXT", "EXCLUDE"], raw_pub_use),
             source_fragment_ids=clean_ids,
+            service_state=service_state,
         )
 
 
