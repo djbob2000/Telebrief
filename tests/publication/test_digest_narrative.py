@@ -1236,3 +1236,51 @@ def test_validate_digest_narrative_enforces_drill_down_evidence_citation() -> No
     )
     res_good = validate_digest_narrative(draft_with_detail, plan, support_index)
     assert res_good.is_valid
+
+
+def test_validate_digest_narrative_rejects_unsupported_causal_relations() -> None:
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    block = DigestNarrativeBlock(
+        block_id="block:utilities:0",
+        rubric_id="utilities",
+        rubric_title="ЖКХ",
+        story_ids=("story:elec",),
+        support_ids=("ref-status",),
+        canonical_notes=(),
+        detail_support_ids_by_story=(("story:elec", ("ref-status",)),),
+        detail_roles_by_story=(("story:elec", "NORMAL"),),
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+
+    # Support only mentions outage, NOT the cause
+    support_index = {
+        "ref-status": "По сообщениям жителей, на Горе нет света.",
+    }
+
+    # Draft asserts invented cause "Авария на подстанции оставила Гору без света"
+    draft_unsupported_cause = DigestNarrativeDraft.from_dict(
+        {
+            "blocks": [
+                {
+                    "block_id": "block:utilities:0",
+                    "items": [
+                        {
+                            "headline": "Авария на подстанции оставила Гору без света",
+                            "body": "По сообщениям жителей, на Горе нет света.",
+                            "covered_story_ids": ["story:elec"],
+                            "cited_support_ids": ["ref-status"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    res = validate_digest_narrative(draft_unsupported_cause, plan, support_index)
+    assert not res.is_valid
+    assert any("UNSUPPORTED_DIGEST_RELATION" in v for v in res.violations)

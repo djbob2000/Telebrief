@@ -344,8 +344,10 @@ def validate_digest_narrative(
     situation_plan: Any = None,
 ) -> DigestNarrativeValidationResult:
     """Validate structured narrative digest draft strictly against deterministic plan and evidence."""
+    from src.publication.digest_relation_support import find_unsupported_digest_relations
+
     violations: list[str] = []
-    unsupported_claims: list[ConcreteClaim] = []
+    unsupported_claims: list[Any] = []
     support_map = support_index if support_index is not None else (support_text_by_id or {})
 
     # Validate City Situation items if situation_plan is supplied
@@ -408,6 +410,14 @@ def validate_digest_narrative(
                 unsupported_claims.append(unc)
                 violations.append(
                     f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in situation body {sit_item.group_id}"
+                )
+            for rel in find_unsupported_digest_relations(sit_item.label, c_supports):
+                violations.append(
+                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in situation label {sit_item.group_id}"
+                )
+            for rel in find_unsupported_digest_relations(sit_item.body, c_supports):
+                violations.append(
+                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in situation body {sit_item.group_id}"
                 )
 
     plan_blocks_by_id = {b.block_id: b for b in plan.blocks}
@@ -504,6 +514,14 @@ def validate_digest_narrative(
                 unsupported_claims.append(unc)
                 violations.append(
                     f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in body of block {out_block.block_id}"
+                )
+            for rel in find_unsupported_digest_relations(item.headline, c_supports):
+                violations.append(
+                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in headline of block {out_block.block_id}"
+                )
+            for rel in find_unsupported_digest_relations(item.body, c_supports):
+                violations.append(
+                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in body of block {out_block.block_id}"
                 )
 
     is_valid = len(violations) == 0 and len(unsupported_claims) == 0
