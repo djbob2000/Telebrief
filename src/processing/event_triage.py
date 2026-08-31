@@ -21,6 +21,7 @@ from src.domain.event_payload import (
 from src.processing.edition_scope import (
     SCOPE_VERSION,
     EditionScopeClass,
+    broad_region_without_focus_impact,
     build_scope_contract,
 )
 from src.processing.operational_semantics import (
@@ -457,6 +458,22 @@ class StoryTriageService:
                 if scope in {"LOCAL", "DIRECT_IMPACT"} and not scope_basis_ids:
                     deferred_ids.append(s.story_id)
                     continue
+
+                basis_texts = tuple(
+                    sf["text"]
+                    for sf in story_fragments_map.get(s.story_id, [])
+                    if sf["fragment_id"] in scope_basis_ids
+                )
+                if scope in {"LOCAL", "DIRECT_IMPACT"} and broad_region_without_focus_impact(
+                    basis_texts=basis_texts,
+                    scope=scope_config,
+                    geo_context=geo_context,
+                ):
+                    scope = "OUT_OF_SCOPE"
+                    scope_confidence = max(scope_confidence, 0.95)
+                    scope_reason = (
+                        "Broad regional summary without explicit configured focus-area consequence"
+                    )
 
                 # Parse brief_payload if present
                 raw_brief = item.get("brief_payload")

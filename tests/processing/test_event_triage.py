@@ -1801,3 +1801,190 @@ async def test_gate_v7_coping_false_positive_demoted_to_community_report(conn, e
     assert len(res.brief_payload.evidence_items) == 1
     assert res.brief_payload.evidence_items[0].kind == "community_report"
     assert res.brief_payload.evidence_items[0].service_state is None
+
+
+@pytest.mark.postgres
+async def test_gate_broad_regional_guard_drops_summary_without_local_consequence(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    # Story 1: broad regional summary without focus consequence
+    sid1 = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+    # Story 2: regional story with explicit focus consequence
+    sid2 = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8993, 'h_reg1', '[1, 0]'::vector, 'm', 2),
+        (8994, 'h_reg2', '[0, 1]'::vector, 'm', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9993, %s, 0, 'По всей Запорожской области зафиксировано 150 обстрелов', 'h_reg1', 'v1', TRUE, NULL, %s),
+        (9994, %s, 1, 'По Запорожской области введены графики; в Бердянске отключен свет', 'h_reg2', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now, revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10993, 9993, 8993),
+        (10994, 9994, 8994)
+        """
+    )
+    aid1 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid1,
+        fragment_id=9993,
+        fragment_embedding_id=10993,
+        assignment_kind="new_story",
+    )
+    aid2 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid2,
+        fragment_id=9994,
+        fragment_embedding_id=10994,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid1,
+        centroid=[1.0, 0.0],
+        model="m",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid1,
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid2,
+        centroid=[0.0, 1.0],
+        model="m",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid2,
+    )
+
+    s1 = await cluster_repo.get_cluster_state(conn, sid1)
+    s2 = await cluster_repo.get_cluster_state(conn, sid2)
+    assert s1 is not None and s2 is not None
+
+    scope_config = EditionScopeConfig(
+        name="Бердянск",
+        focus_places=("Бердянск", "Азовское"),
+        direct_impact_only=True,
+    )
+    scope_hash = scope_config_hash(scope_config)
+
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "story_id": sid1,
+                    "scope": "LOCAL",
+                    "scope_basis_fragment_ids": [9993],
+                    "scope_confidence": 0.9,
+                    "scope_reason": "Same region summary",
+                    "retention": "KEEP",
+                    "enrichment": "BRIEF",
+                    "exclusion_reason": None,
+                    "confidence": 0.9,
+                    "reason": "Regional incidents",
+                    "brief_payload": {
+                        "topic": "Обстрелы по области",
+                        "publishability": "news",
+                        "headline": "Сводка по Запорожской области",
+                        "digest_summary": "150 обстрелов в регионе.",
+                        "evidence_items": [
+                            {
+                                "text": "150 обстрелов по области",
+                                "kind": "established_fact",
+                                "publication_use": "PUBLISH",
+                                "source_fragment_ids": [9993],
+                            }
+                        ],
+                    },
+                },
+                {
+                    "story_id": sid2,
+                    "scope": "DIRECT_IMPACT",
+                    "scope_basis_fragment_ids": [9994],
+                    "scope_confidence": 0.95,
+                    "scope_reason": "Regional restriction explicitly hit Berdyansk",
+                    "retention": "KEEP",
+                    "enrichment": "BRIEF",
+                    "exclusion_reason": None,
+                    "confidence": 0.95,
+                    "reason": "Direct blackout consequence",
+                    "brief_payload": {
+                        "topic": "Отключение света",
+                        "publishability": "news",
+                        "headline": "В Бердянске отключили свет",
+                        "digest_summary": "Свет пропал из-за областных графиков.",
+                        "evidence_items": [
+                            {
+                                "text": "В Бердянске отключен свет",
+                                "kind": "service_access",
+                                "publication_use": "PUBLISH",
+                                "source_fragment_ids": [9994],
+                                "service_state": {
+                                    "subject_key": "power_supply",
+                                    "subject_label": "Электроснабжение",
+                                    "dimension": "availability",
+                                    "state": "UNAVAILABLE",
+                                    "expected_now": True,
+                                    "basis": "direct_failure",
+                                },
+                            }
+                        ],
+                    },
+                },
+            ]
+        }
+    )
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    batch = await service.triage_stories_batch(
+        conn,
+        [s1, s2],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert len(batch.results) == 2
+    r1 = next(r for r in batch.results if r.story_id == sid1)
+    r2 = next(r for r in batch.results if r.story_id == sid2)
+
+    # sid1 was normalized to OUT_OF_SCOPE / DROP by deterministic guard
+    assert r1.scope == "OUT_OF_SCOPE"
+    assert r1.retention == "DROP"
+    assert r1.enrichment == "NONE"
+    assert r1.brief_payload is None
+
+    # sid2 preserved DIRECT_IMPACT / KEEP because it explicitly mentioned Berdyansk
+    assert r2.scope == "DIRECT_IMPACT"
+    assert r2.retention == "KEEP"
+    assert r2.brief_payload is not None

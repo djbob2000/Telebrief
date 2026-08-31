@@ -94,3 +94,52 @@ CRITICAL INVARIANTS:
 3. Explicit external geography overrides a local-source assumption unless a concrete local consequence is stated.
 Target Edition: {scope.name}
 Focus Places: {focus_list}{notes_block}{geo_block}"""
+
+
+def _norm_geo_text(value: str) -> str:
+    return " ".join(value.casefold().replace("ё", "е").split())
+
+
+def _contains_any_anchor(text: str, anchors: set[str]) -> bool:
+    norm_text = _norm_geo_text(text)
+    for anchor in anchors:
+        if not anchor:
+            continue
+        norm_anchor = _norm_geo_text(anchor)
+        if norm_anchor and norm_anchor in norm_text:
+            return True
+    return False
+
+
+def broad_region_without_focus_impact(
+    *,
+    basis_texts: tuple[str, ...] | list[str],
+    scope: EditionScopeConfig,
+    geo_context: EditionGeographyContext | None,
+) -> bool:
+    """Detect if all basis fragments are broad regional summaries without focus anchors."""
+    if not basis_texts:
+        return False
+
+    focus_anchors: set[str] = set()
+    focus_anchors.update(scope.focus_places)
+    if geo_context is not None:
+        focus_anchors.update(geo_context.target_locations)
+        focus_anchors.update(geo_context.district_locations)
+
+    region_anchors: set[str] = set()
+    if geo_context is not None and geo_context.region_name:
+        region_anchors.add(geo_context.region_name)
+    generic_region_stems = {"област", "регион", "region", "across", "по всей"}
+
+    has_broad_region_mention = False
+    for text in basis_texts:
+        norm = _norm_geo_text(text)
+        if _contains_any_anchor(text, focus_anchors):
+            return False
+        if _contains_any_anchor(text, region_anchors) or any(
+            stem in norm for stem in generic_region_stems
+        ):
+            has_broad_region_mention = True
+
+    return has_broad_region_mention
