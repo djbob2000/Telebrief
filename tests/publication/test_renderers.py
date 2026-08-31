@@ -572,3 +572,175 @@ class TestPublicationDigestRenderer:
         )
         assert "Электроснабжение (Плановое)" in body
         assert "LLM Inappropriate Label" not in body
+
+    def test_render_grouped_digest_consumes_deterministic_draft_without_special_branch(self):
+        from src.publication.digest_narrative import (
+            build_deterministic_digest_draft,
+        )
+        from src.publication.digest_presentation import (
+            CitySituationPresentationGroup,
+            CitySituationPresentationPlan,
+            DigestPresentationPlan,
+            DigestStoryPresentation,
+        )
+        from src.publication.evidence import PublicationEvidence
+
+        now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+        renderer = PublicationDigestRenderer(use_emojis=True)
+
+        card_1 = StoryCard(
+            id="story:1",
+            topic="Электричество",
+            importance="high",
+            summary="Отключения",
+            rubric_id="utilities",
+        )
+        card_2 = StoryCard(
+            id="story:2",
+            topic="Спорт",
+            importance="medium",
+            summary="Бесплатный набор",
+            rubric_id="society",
+        )
+        card_3 = StoryCard(
+            id="story:3",
+            topic="Водоснабжение",
+            importance="high",
+            summary="Воды нет, жильцы скидываются",
+            rubric_id="utilities",
+        )
+
+        evi_1 = PublicationEvidence(
+            evidence_id="sup:1:dash",
+            story_id=1,
+            text="Света нет в центре",
+            source_text="Света нет в центре",
+            kind="service_access",
+            publication_use="PUBLISH",
+            fragment_id=1,
+            source_ref="ref-1",
+            source_id=1,
+            source_item_id=1,
+            source_role="official",
+            observed_at=now,
+        )
+        evi_2 = PublicationEvidence(
+            evidence_id="sup:2:detail",
+            story_id=2,
+            text="Открыт бесплатный набор детей на футбол",
+            source_text="Открыт бесплатный набор детей на футбол",
+            kind="community_report",
+            publication_use="PUBLISH",
+            fragment_id=2,
+            source_ref="ref-2",
+            source_id=2,
+            source_item_id=2,
+            source_role="community",
+            observed_at=now,
+        )
+        evi_3_dash = PublicationEvidence(
+            evidence_id="sup:3:dash",
+            story_id=3,
+            text="Воды нет в районе",
+            source_text="Воды нет в районе",
+            kind="service_access",
+            publication_use="PUBLISH",
+            fragment_id=3,
+            source_ref="ref-3",
+            source_id=3,
+            source_item_id=3,
+            source_role="official",
+            observed_at=now,
+        )
+        evi_3_detail = PublicationEvidence(
+            evidence_id="sup:3:detail",
+            story_id=3,
+            text="Жильцы дома скинулись по 300 рублей на подвоз воды",
+            source_text="Жильцы дома скинулись по 300 рублей на подвоз воды",
+            kind="community_report",
+            publication_use="PUBLISH",
+            fragment_id=4,
+            source_ref="ref-4",
+            source_id=3,
+            source_item_id=4,
+            source_role="community",
+            observed_at=now,
+        )
+
+        evidence_dict = {
+            "sup:1:dash": evi_1,
+            "sup:2:detail": evi_2,
+            "sup:3:dash": evi_3_dash,
+            "sup:3:detail": evi_3_detail,
+        }
+
+        sit_group = CitySituationPresentationGroup(
+            group_id="sit:1",
+            group_kind="subject_status",
+            subject_key="power",
+            subject_label="Электроснабжение",
+            state="UNAVAILABLE",
+            source_refs=("ref-1", "ref-3"),
+            detail_lines=("Света нет в центре", "Воды нет в районе"),
+            covered_story_ids=("story:1", "story:3"),
+            cited_support_ids=("sup:1:dash", "sup:3:dash"),
+        )
+
+        plan = DigestPresentationPlan(
+            city_situation=CitySituationPresentationPlan(
+                groups=(sit_group,),
+                covered_source_refs=("ref-1", "ref-3"),
+            ),
+            story_presentations=(
+                DigestStoryPresentation(
+                    story_id="story:1",
+                    mode="DASHBOARD_ONLY",
+                    city_situation_group_ids=("sit:1",),
+                    detail_support_ids=(),
+                    merge_group_id="story:1",
+                ),
+                DigestStoryPresentation(
+                    story_id="story:2",
+                    mode="DETAIL_ONLY",
+                    city_situation_group_ids=(),
+                    detail_support_ids=("sup:2:detail",),
+                    merge_group_id="story:2",
+                ),
+                DigestStoryPresentation(
+                    story_id="story:3",
+                    mode="DASHBOARD_AND_DRILLDOWN",
+                    city_situation_group_ids=("sit:1",),
+                    detail_support_ids=("sup:3:detail",),
+                    merge_group_id="story:3",
+                ),
+            ),
+        )
+
+        frozen = FrozenEditorialInput(
+            analysis=EditorialAnalysis(cards=[card_1, card_2, card_3]),
+            writer_bundle=PreparedBundle(
+                records={}, prompt_text="", total_messages=0, candidate_count=3
+            ),
+        )
+
+        deterministic_draft = build_deterministic_digest_draft(
+            cards=[card_1, card_2, card_3],
+            evidence=evidence_dict,
+            rubrics=renderer.rubrics,
+            presentation_plan=plan,
+        )
+
+        title, lead, body = renderer.render_grouped_digest(
+            frozen,
+            snapshot_at=now,
+            narrative_draft=deterministic_draft,
+            presentation_plan=plan,
+        )
+
+        # Story 1 appears in City Situation, not as thematic item
+        assert "Электроснабжение" in body
+        assert "Света нет в центре" in body
+
+        # Story 2 and 3 appear in thematic sections
+        assert "Спорт" in body or "Открыт бесплатный набор детей на футбол" in body
+        assert "жильцы дома скинулись по 300 рублей на подвоз воды" in body

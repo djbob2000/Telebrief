@@ -35,6 +35,8 @@ class DigestNarrativeBlock:
     detail_support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
     merge_group_by_story: tuple[tuple[str, str], ...] = ()
     detail_roles_by_story: tuple[tuple[str, str], ...] = ()
+    presentation_modes_by_story: tuple[tuple[str, str], ...] = ()
+    dashboard_support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -235,9 +237,20 @@ def plan_digest_narrative_blocks(
             bool(getattr(r, "fallback", False)),
         )
 
-    hints_by_id = {}
-    if presentation_plan is not None and getattr(presentation_plan, "story_hints", None):
-        hints_by_id = {h.story_id: h for h in presentation_plan.story_hints}
+    presentations_by_id = {}
+    if presentation_plan is not None and getattr(presentation_plan, "story_presentations", None):
+        presentations_by_id = {p.story_id: p for p in presentation_plan.story_presentations}
+    elif presentation_plan is not None and getattr(presentation_plan, "story_hints", None):
+        presentations_by_id = {h.story_id: h for h in presentation_plan.story_hints}
+
+    dashboard_supports_by_story_map: dict[str, set[str]] = {}
+    if presentation_plan is not None and getattr(presentation_plan, "city_situation", None):
+        groups = getattr(presentation_plan.city_situation, "groups", ()) or ()
+        for g in groups:
+            for sid in getattr(g, "covered_story_ids", ()):
+                dashboard_supports_by_story_map.setdefault(sid, set()).update(
+                    getattr(g, "cited_support_ids", ())
+                )
 
     rubric_infos = [_get_r_info(r) for r in rubrics]
     rubric_ids = [info[0] for info in rubric_infos if info[0]]
@@ -299,17 +312,29 @@ def plan_digest_narrative_blocks(
                                 block_support_ids.append(eid)
 
             detail_supports = tuple(
-                (c.id, hints_by_id[c.id].detail_support_ids)
+                (c.id, presentations_by_id[c.id].detail_support_ids)
                 for c in chunk
-                if c.id in hints_by_id and hints_by_id[c.id].detail_support_ids
+                if c.id in presentations_by_id and presentations_by_id[c.id].detail_support_ids
             )
             merge_groups = tuple(
-                (c.id, hints_by_id[c.id].merge_group_id) for c in chunk if c.id in hints_by_id
+                (c.id, presentations_by_id[c.id].merge_group_id)
+                for c in chunk
+                if c.id in presentations_by_id
             )
             detail_roles = tuple(
-                (c.id, getattr(hints_by_id[c.id], "detail_role", "NORMAL"))
+                (c.id, getattr(presentations_by_id[c.id], "detail_role", "NORMAL"))
                 for c in chunk
-                if c.id in hints_by_id
+                if c.id in presentations_by_id
+            )
+            pres_modes = tuple(
+                (c.id, getattr(presentations_by_id[c.id], "mode", "DETAIL_ONLY"))
+                for c in chunk
+                if c.id in presentations_by_id
+            )
+            dash_supports = tuple(
+                (c.id, tuple(dashboard_supports_by_story_map.get(c.id, ())))
+                for c in chunk
+                if c.id in dashboard_supports_by_story_map
             )
 
             blocks.append(
@@ -323,6 +348,8 @@ def plan_digest_narrative_blocks(
                     detail_support_ids_by_story=detail_supports,
                     merge_group_by_story=merge_groups,
                     detail_roles_by_story=detail_roles,
+                    presentation_modes_by_story=pres_modes,
+                    dashboard_support_ids_by_story=dash_supports,
                 )
             )
 
@@ -443,6 +470,8 @@ def validate_digest_narrative(
         merge_group_map = dict(plan_block.merge_group_by_story)
         detail_roles_map = dict(plan_block.detail_roles_by_story)
         detail_supports_map = dict(plan_block.detail_support_ids_by_story)
+        modes_map = dict(getattr(plan_block, "presentation_modes_by_story", ()))
+        dashboard_supports_map = dict(getattr(plan_block, "dashboard_support_ids_by_story", ()))
 
         flat_story_ids = [sid for item in out_block.items for sid in item.covered_story_ids]
         if len(flat_story_ids) != len(set(flat_story_ids)):
@@ -484,13 +513,23 @@ def validate_digest_narrative(
                 )
 
             for sid in item.covered_story_ids:
-                if detail_roles_map.get(sid) == "DRILL_DOWN":
-                    expected_detail_supports = set(detail_supports_map.get(sid, ()))
-                    if expected_detail_supports and not (
-                        set(item.cited_support_ids) & expected_detail_supports
+                mode = modes_map.get(sid)
+                role = detail_roles_map.get(sid)
+                if mode == "DASHBOARD_AND_DRILLDOWN" or role == "DRILL_DOWN":
+                    dashboard_ids = set(dashboard_supports_map.get(sid, ()))
+                    story_detail_ids = set(detail_supports_map.get(sid, ()))
+                    item_ids = set(item.cited_support_ids)
+                    if story_detail_ids and not (item_ids & story_detail_ids):
+                        violations.append(
+                            f"DRILL_DOWN_MISSING_DISTINCT_SUPPORT: drill-down story {sid} in block {out_block.block_id} must cite at least one non-dashboard PUBLISH support"
+                        )
+                    elif (
+                        dashboard_ids
+                        and not ((item_ids & story_detail_ids) - dashboard_ids)
+                        and not (item_ids - dashboard_ids)
                     ):
                         violations.append(
-                            f"DRILL_DOWN_MISSING_DETAIL_CITATION: drill-down story {sid} in block {out_block.block_id} must cite at least one distinct detail support id"
+                            f"DRILL_DOWN_MISSING_DISTINCT_SUPPORT: drill-down story {sid} in block {out_block.block_id} must cite at least one non-dashboard PUBLISH support"
                         )
 
             for sup_id in item.cited_support_ids:
@@ -530,6 +569,129 @@ def validate_digest_narrative(
         violations=tuple(violations),
         unsupported_claims=tuple(unsupported_claims),
     )
+
+
+def _render_deterministic_digest_evidence(evi: PublicationEvidence) -> str:
+    text = (evi.text or evi.source_text).strip()
+    if evi.kind in {"community_report", "community_observation", "quote_assertion"}:
+        if not text.casefold().startswith(("по сообщениям", "жители сообщают", "по словам")):
+            if text:
+                text = f"По сообщениям жителей, {text[:1].lower() + text[1:]}"
+    return text.rstrip(". ") + "."
+
+
+def build_deterministic_digest_draft(
+    *,
+    cards: Sequence[StoryCard],
+    evidence: Mapping[str, PublicationEvidence],
+    rubrics: Sequence[Any],
+    presentation_plan: Any,
+) -> DigestNarrativeDraft:
+    """Build a deterministic, provenance-bearing DigestNarrativeDraft from the presentation plan."""
+    from src.publication.article_claims import find_unsupported_claims
+
+    detail_story_ids = set(getattr(presentation_plan, "detail_story_ids", ()))
+    detail_cards = [c for c in cards if c.id in detail_story_ids]
+
+    narrative_plan = plan_digest_narrative_blocks(
+        cards=detail_cards,
+        evidence=evidence,
+        rubrics=rubrics,
+        presentation_plan=presentation_plan,
+    )
+
+    presentations_by_id = {
+        p.story_id: p for p in getattr(presentation_plan, "story_presentations", ())
+    }
+    cards_by_id = {c.id: c for c in detail_cards}
+
+    dashboard_supports_by_story: dict[str, set[str]] = {}
+    if getattr(presentation_plan, "city_situation", None):
+        for g in getattr(presentation_plan.city_situation, "groups", ()):
+            for sid in getattr(g, "covered_story_ids", ()):
+                dashboard_supports_by_story.setdefault(sid, set()).update(
+                    getattr(g, "cited_support_ids", ())
+                )
+
+    block_drafts: list[DigestNarrativeBlockDraft] = []
+    for plan_block in narrative_plan.blocks:
+        item_drafts: list[DigestEditorialItemDraft] = []
+        for sid in plan_block.story_ids:
+            pres = presentations_by_id.get(sid)
+            card = cards_by_id.get(sid)
+            if not card:
+                continue
+
+            dash_supp_ids = dashboard_supports_by_story.get(sid, set())
+            eligible_supports: list[str] = []
+
+            if pres and pres.detail_support_ids:
+                for supp_id in pres.detail_support_ids:
+                    if supp_id not in dash_supp_ids and supp_id in evidence:
+                        eligible_supports.append(supp_id)
+
+            if not eligible_supports:
+                num_sid: int | None = None
+                if sid.startswith("story:"):
+                    num_part = sid.split(":", 1)[1]
+                    if num_part.isdigit():
+                        num_sid = int(num_part)
+
+                for eid, evi in evidence.items():
+                    evi_sid = getattr(evi, "story_id", None)
+                    if (
+                        (evi_sid is not None and num_sid is not None and evi_sid == num_sid)
+                        or eid.startswith(f"{sid}:")
+                        or getattr(evi, "story_id", None) == sid
+                    ):
+                        if (
+                            getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
+                            and getattr(evi, "kind", "") != "resident_question"
+                            and eid not in dash_supp_ids
+                        ):
+                            eligible_supports.append(eid)
+
+            if not eligible_supports:
+                raise ValueError(f"no deterministic detail support for {sid}")
+
+            chosen_supports = eligible_supports[:2]
+            support_texts = [
+                evidence[s].text or evidence[s].source_text
+                for s in chosen_supports
+                if s in evidence
+            ]
+
+            topic = card.topic.strip()
+            if topic and not find_unsupported_claims(topic, support_texts):
+                headline = topic
+            else:
+                first_evi = evidence[chosen_supports[0]]
+                headline = _render_deterministic_digest_evidence(first_evi).rstrip(".")
+
+            rendered_sentences = [
+                _render_deterministic_digest_evidence(evidence[s])
+                for s in chosen_supports
+                if s in evidence
+            ]
+
+            item_drafts.append(
+                DigestEditorialItemDraft(
+                    headline=headline,
+                    body=" ".join(rendered_sentences),
+                    covered_story_ids=(sid,),
+                    cited_support_ids=tuple(chosen_supports),
+                )
+            )
+
+        if item_drafts:
+            block_drafts.append(
+                DigestNarrativeBlockDraft(
+                    block_id=plan_block.block_id,
+                    items=tuple(item_drafts),
+                )
+            )
+
+    return DigestNarrativeDraft(blocks=tuple(block_drafts), situation_items=())
 
 
 class DigestNarrativeWriter:

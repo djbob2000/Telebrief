@@ -1288,3 +1288,365 @@ def test_validate_digest_narrative_rejects_unsupported_causal_relations() -> Non
     res = validate_digest_narrative(draft_unsupported_cause, plan, support_index)
     assert not res.is_valid
     assert any("UNSUPPORTED_DIGEST_RELATION" in v for v in res.violations)
+
+
+def test_digest_narrative_planning_and_validation_with_presentation_modes() -> None:
+    from src.editorial_models import StoryCard
+    from src.publication.digest_narrative import (
+        DigestNarrativeDraft,
+        plan_digest_narrative_blocks,
+        validate_digest_narrative,
+    )
+    from src.publication.digest_presentation import (
+        CitySituationPresentationGroup,
+        CitySituationPresentationPlan,
+        DigestPresentationPlan,
+        DigestStoryPresentation,
+    )
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime.now(dt.timezone.utc)
+
+    card_a = StoryCard(id="story:a", topic="A", importance="medium", summary="A", rubric_id="r1")
+    card_b = StoryCard(id="story:b", topic="B", importance="high", summary="B", rubric_id="r1")
+    card_c = StoryCard(id="story:c", topic="C", importance="low", summary="C", rubric_id="r1")
+
+    evi_a = PublicationEvidence(
+        evidence_id="support:a:detail",
+        story_id=1,
+        text="Детали истории А",
+        source_text="Детали истории А",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=1,
+        source_ref="ref-a",
+        source_id=1,
+        source_item_id=1,
+        source_role="community",
+        observed_at=now,
+    )
+    evi_b_dash = PublicationEvidence(
+        evidence_id="support:b:dashboard",
+        story_id=2,
+        text="Служба Б доступна",
+        source_text="Служба Б доступна",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=2,
+        source_ref="ref-b-dash",
+        source_id=2,
+        source_item_id=2,
+        source_role="official",
+        observed_at=now,
+    )
+    evi_b_detail = PublicationEvidence(
+        evidence_id="support:b:detail",
+        story_id=2,
+        text="Подробности работы службы Б",
+        source_text="Подробности работы службы Б",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=3,
+        source_ref="ref-b-detail",
+        source_id=2,
+        source_item_id=3,
+        source_role="community",
+        observed_at=now,
+    )
+
+    sit_group = CitySituationPresentationGroup(
+        group_id="sit:b",
+        group_kind="subject_status",
+        subject_key="b",
+        subject_label="Служба Б",
+        state="AVAILABLE",
+        source_refs=("ref-b-dash",),
+        detail_lines=("Служба Б доступна",),
+        covered_story_ids=("story:b", "story:c"),
+        cited_support_ids=("support:b:dashboard",),
+    )
+
+    pres_plan = DigestPresentationPlan(
+        city_situation=CitySituationPresentationPlan(
+            groups=(sit_group,),
+            covered_source_refs=("ref-b-dash",),
+        ),
+        story_presentations=(
+            DigestStoryPresentation(
+                story_id="story:a",
+                mode="DETAIL_ONLY",
+                city_situation_group_ids=(),
+                detail_support_ids=("support:a:detail",),
+                merge_group_id="story:a",
+            ),
+            DigestStoryPresentation(
+                story_id="story:b",
+                mode="DASHBOARD_AND_DRILLDOWN",
+                city_situation_group_ids=("sit:b",),
+                detail_support_ids=("support:b:detail",),
+                merge_group_id="story:b",
+            ),
+            DigestStoryPresentation(
+                story_id="story:c",
+                mode="DASHBOARD_ONLY",
+                city_situation_group_ids=("sit:b",),
+                detail_support_ids=(),
+                merge_group_id="story:c",
+            ),
+        ),
+    )
+
+    detail_cards = [c for c in [card_a, card_b, card_c] if c.id in pres_plan.detail_story_ids]
+    narr_plan = plan_digest_narrative_blocks(
+        cards=detail_cards,
+        evidence={
+            "support:a:detail": evi_a,
+            "support:b:dashboard": evi_b_dash,
+            "support:b:detail": evi_b_detail,
+        },
+        rubrics=[{"id": "r1", "name": "Рубрика 1"}],
+        presentation_plan=pres_plan,
+    )
+
+    assert len(narr_plan.blocks) == 1
+    assert narr_plan.blocks[0].story_ids == ("story:a", "story:b")
+    assert "story:c" not in narr_plan.blocks[0].story_ids
+
+    support_index = {
+        "support:a:detail": "Детали истории А",
+        "support:b:dashboard": "Служба Б доступна",
+        "support:b:detail": "Подробности работы службы Б",
+    }
+
+    # Drilldown citing only dashboard support fails validation
+    invalid_draft = DigestNarrativeDraft.from_dict(
+        {
+            "blocks": [
+                {
+                    "block_id": narr_plan.blocks[0].block_id,
+                    "items": [
+                        {
+                            "headline": "История А",
+                            "body": "Детали истории А",
+                            "covered_story_ids": ["story:a"],
+                            "cited_support_ids": ["support:a:detail"],
+                        },
+                        {
+                            "headline": "История Б",
+                            "body": "Служба Б доступна",
+                            "covered_story_ids": ["story:b"],
+                            "cited_support_ids": ["support:b:dashboard"],
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+    res_invalid = validate_digest_narrative(invalid_draft, narr_plan, support_index)
+    assert not res_invalid.is_valid
+    assert any("DRILL_DOWN_MISSING_DISTINCT_SUPPORT" in v for v in res_invalid.violations)
+
+    # Valid draft citing detail support passes
+    valid_draft = DigestNarrativeDraft.from_dict(
+        {
+            "blocks": [
+                {
+                    "block_id": narr_plan.blocks[0].block_id,
+                    "items": [
+                        {
+                            "headline": "История А",
+                            "body": "Детали истории А",
+                            "covered_story_ids": ["story:a"],
+                            "cited_support_ids": ["support:a:detail"],
+                        },
+                        {
+                            "headline": "История Б",
+                            "body": "Подробности работы службы Б",
+                            "covered_story_ids": ["story:b"],
+                            "cited_support_ids": ["support:b:detail"],
+                        },
+                    ],
+                }
+            ]
+        }
+    )
+    res_valid = validate_digest_narrative(valid_draft, narr_plan, support_index)
+    assert res_valid.is_valid
+
+
+def test_build_deterministic_digest_draft_with_all_modes_and_attribution() -> None:
+    from src.editorial_models import StoryCard
+    from src.publication.digest_narrative import (
+        build_deterministic_digest_draft,
+        plan_digest_narrative_blocks,
+        validate_digest_narrative,
+    )
+    from src.publication.digest_presentation import (
+        CitySituationPresentationGroup,
+        CitySituationPresentationPlan,
+        DigestPresentationPlan,
+        DigestStoryPresentation,
+    )
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime.now(dt.timezone.utc)
+
+    card_1 = StoryCard(
+        id="story:1", topic="Свет", importance="high", summary="Нет света", rubric_id="utilities"
+    )
+    card_2 = StoryCard(
+        id="story:2",
+        topic="Спорт",
+        importance="medium",
+        summary="Набор в секцию",
+        rubric_id="society",
+    )
+    card_3 = StoryCard(
+        id="story:3",
+        topic="Водоснабжение",
+        importance="high",
+        summary="Воды нет, жильцы скидываются на подвоз",
+        rubric_id="utilities",
+    )
+
+    evi_1 = PublicationEvidence(
+        evidence_id="sup:1:dash",
+        story_id=1,
+        text="Света нет в центре",
+        source_text="Света нет в центре",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=1,
+        source_ref="ref-1",
+        source_id=1,
+        source_item_id=1,
+        source_role="official",
+        observed_at=now,
+    )
+    evi_2 = PublicationEvidence(
+        evidence_id="sup:2:detail",
+        story_id=2,
+        text="Открыт бесплатный набор детей на футбол",
+        source_text="Открыт бесплатный набор детей на футбол",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=2,
+        source_ref="ref-2",
+        source_id=2,
+        source_item_id=2,
+        source_role="community",
+        observed_at=now,
+    )
+    evi_3_dash = PublicationEvidence(
+        evidence_id="sup:3:dash",
+        story_id=3,
+        text="Воды нет в районе",
+        source_text="Воды нет в районе",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=3,
+        source_ref="ref-3",
+        source_id=3,
+        source_item_id=3,
+        source_role="official",
+        observed_at=now,
+    )
+    evi_3_detail = PublicationEvidence(
+        evidence_id="sup:3:detail",
+        story_id=3,
+        text="Жильцы дома скинулись по 300 рублей на подвоз воды",
+        source_text="Жильцы дома скинулись по 300 рублей на подвоз воды",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=4,
+        source_ref="ref-4",
+        source_id=3,
+        source_item_id=4,
+        source_role="community",
+        observed_at=now,
+    )
+
+    evidence_dict = {
+        "sup:1:dash": evi_1,
+        "sup:2:detail": evi_2,
+        "sup:3:dash": evi_3_dash,
+        "sup:3:detail": evi_3_detail,
+    }
+
+    sit_group = CitySituationPresentationGroup(
+        group_id="sit:1",
+        group_kind="subject_status",
+        subject_key="power",
+        subject_label="Электросеть",
+        state="UNAVAILABLE",
+        source_refs=("ref-1", "ref-3"),
+        detail_lines=("Света нет", "Воды нет"),
+        covered_story_ids=("story:1", "story:3"),
+        cited_support_ids=("sup:1:dash", "sup:3:dash"),
+    )
+
+    plan = DigestPresentationPlan(
+        city_situation=CitySituationPresentationPlan(
+            groups=(sit_group,),
+            covered_source_refs=("ref-1", "ref-3"),
+        ),
+        story_presentations=(
+            DigestStoryPresentation(
+                story_id="story:1",
+                mode="DASHBOARD_ONLY",
+                city_situation_group_ids=("sit:1",),
+                detail_support_ids=(),
+                merge_group_id="story:1",
+            ),
+            DigestStoryPresentation(
+                story_id="story:2",
+                mode="DETAIL_ONLY",
+                city_situation_group_ids=(),
+                detail_support_ids=("sup:2:detail",),
+                merge_group_id="story:2",
+            ),
+            DigestStoryPresentation(
+                story_id="story:3",
+                mode="DASHBOARD_AND_DRILLDOWN",
+                city_situation_group_ids=("sit:1",),
+                detail_support_ids=("sup:3:detail",),
+                merge_group_id="story:3",
+            ),
+        ),
+    )
+
+    rubrics = [
+        {"id": "utilities", "name": "ЖКХ"},
+        {"id": "society", "name": "Общество"},
+    ]
+
+    draft = build_deterministic_digest_draft(
+        cards=[card_1, card_2, card_3],
+        evidence=evidence_dict,
+        rubrics=rubrics,
+        presentation_plan=plan,
+    )
+
+    items = [item for block in draft.blocks for item in block.items]
+    covered = {story_id for item in items for story_id in item.covered_story_ids}
+    assert covered == {"story:2", "story:3"}
+    assert "story:1" not in covered
+
+    item_by_story = {item.covered_story_ids[0]: item for item in items}
+    assert item_by_story["story:2"].cited_support_ids == ("sup:2:detail",)
+    assert "По сообщениям жителей," in item_by_story["story:2"].body
+
+    assert item_by_story["story:3"].cited_support_ids == ("sup:3:detail",)
+    assert "sup:3:dash" not in item_by_story["story:3"].cited_support_ids
+    assert "По сообщениям жителей," in item_by_story["story:3"].body
+
+    # Validate with validator
+    narr_plan = plan_digest_narrative_blocks(
+        cards=[card_2, card_3],
+        evidence=evidence_dict,
+        rubrics=rubrics,
+        presentation_plan=plan,
+    )
+    support_index = {eid: evi.text for eid, evi in evidence_dict.items()}
+    val_res = validate_digest_narrative(draft, narr_plan, support_index)
+    assert val_res.is_valid, f"Validation failed: {val_res.violations}"

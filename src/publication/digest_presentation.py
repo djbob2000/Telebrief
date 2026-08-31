@@ -225,10 +225,33 @@ def render_city_situation_presentation(
 @dataclass(frozen=True)
 class DigestStoryPresentation:
     story_id: str
-    mode: DigestPresentationMode
-    city_situation_group_ids: tuple[str, ...]
-    detail_support_ids: tuple[str, ...]
-    merge_group_id: str
+    mode: DigestPresentationMode = "DETAIL_ONLY"
+    city_situation_group_ids: tuple[str, ...] = ()
+    detail_support_ids: tuple[str, ...] = ()
+    merge_group_id: str = ""
+
+    def __init__(
+        self,
+        story_id: str,
+        mode: DigestPresentationMode | None = None,
+        city_situation_group_ids: tuple[str, ...] = (),
+        detail_support_ids: tuple[str, ...] = (),
+        merge_group_id: str = "",
+        *,
+        detail_role: str | None = None,
+    ) -> None:
+        if mode is None:
+            if detail_role == "SUPPRESS":
+                mode = "DASHBOARD_ONLY"
+            elif detail_role == "DRILL_DOWN":
+                mode = "DASHBOARD_AND_DRILLDOWN"
+            else:
+                mode = "DETAIL_ONLY"
+        object.__setattr__(self, "story_id", str(story_id))
+        object.__setattr__(self, "mode", mode)
+        object.__setattr__(self, "city_situation_group_ids", tuple(city_situation_group_ids))
+        object.__setattr__(self, "detail_support_ids", tuple(detail_support_ids))
+        object.__setattr__(self, "merge_group_id", str(merge_group_id or story_id))
 
     @property
     def detail_role(self) -> DigestDetailRole:
@@ -246,6 +269,22 @@ DigestStoryPresentationHint = DigestStoryPresentation
 class DigestPresentationPlan:
     city_situation: CitySituationPresentationPlan
     story_presentations: tuple[DigestStoryPresentation, ...]
+
+    def __init__(
+        self,
+        city_situation: CitySituationPresentationPlan,
+        story_presentations: tuple[DigestStoryPresentation, ...] | None = None,
+        *,
+        detail_story_ids: tuple[str, ...] | None = None,
+        story_hints: tuple[DigestStoryPresentation, ...] | None = None,
+    ) -> None:
+        if story_presentations is not None:
+            object.__setattr__(self, "story_presentations", tuple(story_presentations))
+        elif story_hints is not None:
+            object.__setattr__(self, "story_presentations", tuple(story_hints))
+        else:
+            object.__setattr__(self, "story_presentations", ())
+        object.__setattr__(self, "city_situation", city_situation)
 
     @property
     def story_ids(self) -> tuple[str, ...]:
