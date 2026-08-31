@@ -396,14 +396,17 @@ async def test_event_analysis_preserves_kept_community_story_publishability(
 
 
 @pytest.mark.unit
-def test_event_analysis_v4_operational_observation_contract_is_service_state_only() -> None:
+def test_event_analysis_v5_operational_observation_contract_is_service_state_only() -> None:
     from src.processing import event_analysis
 
     prompt = event_analysis._EVENT_ANALYSIS_SYSTEM_PROMPT.lower()
-    assert event_analysis.ANALYSIS_VERSION == "v4"
+    assert event_analysis.ANALYSIS_VERSION == "v5"
+    assert "service_access" in prompt
+    assert "every publish service_access" in prompt
+    assert "seasonal" in prompt
+    assert "coping" in prompt
     assert "resident-facing" in prompt
     assert "do not create an operational observation" in prompt
-    assert "coping" in prompt
     assert "regional" in prompt
     assert "safety advice" in prompt
 
@@ -479,3 +482,108 @@ def test_resident_question_vs_community_report_operational_boundary() -> None:
     assert normalized_r.evidence_items[0].publication_use == "PUBLISH"
     assert len(normalized_r.operational_observations) == 1
     assert normalized_r.operational_observations[0].state == "UNAVAILABLE"
+
+
+@pytest.mark.postgres
+async def test_event_analysis_v5_drops_invalid_coping_operational_observation(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8993, 'hash_coping_analysis', '[1, 0]'::vector, 'test-model', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9993, %s, 0, 'Жители включают генератор на ночь для холодильников', 'hash_coping_analysis', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10993, 9993, 8993)
+        """
+    )
+    aid = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9993,
+        fragment_embedding_id=10993,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid,
+        centroid=[1.0, 0.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid,
+        analysis_dirty=True,
+    )
+
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "topic": "Использование генераторов жителями",
+            "tags": ["генераторы", "быт"],
+            "urgency": "normal",
+            "publishability": "news",
+            "headline": "Жильцы дома используют генератор ночью",
+            "digest_summary": "Жители включают генератор для холодильников.",
+            "key_facts": ["Генератор запускают ночью"],
+            "evidence_items": [
+                {
+                    "text": "Жители включают генератор на ночь для холодильников",
+                    "kind": "community_report",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [9993],
+                }
+            ],
+            "operational_observations": [
+                {
+                    "subject_key": "household_generator",
+                    "subject_label": "Генератор",
+                    "dimension": "availability",
+                    "location": "Бердянск",
+                    "entity": "жители",
+                    "state": "AVAILABLE",
+                    "detail": "Генератор доступен",
+                    "source_fragment_ids": [9993],
+                }
+            ],
+            "official_positions": [],
+            "community_observations": ["Генератор шумит"],
+            "conflicts_or_uncertainties": [],
+            "affected_areas": ["Бердянск"],
+            "timeline_summary": "Жители используют генератор ночью",
+            "confidence_score": 0.9,
+        }
+    )
+
+    service = EventAnalysisService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    rev = await service.analyze_story(conn, sid)
+
+    assert rev is not None
+    assert rev.event_payload is not None
+    assert len(rev.event_payload["evidence_items"]) == 1
+    assert rev.event_payload["operational_observations"] == []
