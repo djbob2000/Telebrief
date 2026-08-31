@@ -44,6 +44,44 @@ class DigestNarrativePlan:
 
 
 @dataclass(frozen=True)
+class DigestSituationItemDraft:
+    """A single rendered operational item within the City Situation section."""
+
+    group_id: str
+    label: str
+    body: str
+    cited_support_ids: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> DigestSituationItemDraft:
+        if not isinstance(raw, Mapping):
+            raise ValueError("situation item must be a mapping")
+        group_id = str(raw.get("group_id", "")).strip()
+        label = str(raw.get("label", "")).strip()
+        body = str(raw.get("body", "")).strip()
+        raw_supports = raw.get("cited_support_ids", [])
+        if isinstance(raw_supports, (str, int)):
+            raw_supports = [raw_supports]
+        if not isinstance(raw_supports, list):
+            raise ValueError("cited_support_ids must be a list")
+        support_ids = tuple(
+            dict.fromkeys(
+                str(x).strip()
+                for x in raw_supports
+                if x and isinstance(x, (str, int)) and str(x).strip()
+            )
+        )
+        if not group_id or not label or not body or not support_ids:
+            raise ValueError("situation item requires group_id, label, body and cited_support_ids")
+        return cls(
+            group_id=group_id,
+            label=label,
+            body=body,
+            cited_support_ids=support_ids,
+        )
+
+
+@dataclass(frozen=True)
 class DigestEditorialItemDraft:
     """A single scan-first editorial item within a narrative digest block."""
 
@@ -70,6 +108,11 @@ class DigestEditorialItemDraft:
                 if x and isinstance(x, (str, int)) and str(x).strip()
             )
         )
+        if not story_ids:
+            # Fall back to single story_id if provided
+            fallback_sid = str(raw.get("story_id", "")).strip()
+            if fallback_sid:
+                story_ids = (fallback_sid,)
         raw_supports = raw.get("cited_support_ids", [])
         if isinstance(raw_supports, (str, int)):
             raw_supports = [raw_supports]
@@ -105,12 +148,28 @@ class DigestNarrativeDraft:
     """Complete output draft from the single-call narrative digest writer."""
 
     blocks: tuple[DigestNarrativeBlockDraft, ...]
+    situation_items: tuple[DigestSituationItemDraft, ...] = ()
 
     @classmethod
     def from_dict(cls, data: Any) -> DigestNarrativeDraft:
         """Parse structured narrative digest draft with strict structural validation."""
         if not isinstance(data, Mapping):
             raise ValueError("root must be a mapping")
+
+        raw_situation = data.get("situation_items", [])
+        if raw_situation is None:
+            raw_situation = []
+        if not isinstance(raw_situation, list):
+            raise ValueError("'situation_items' must be a list")
+
+        seen_sit_ids: set[str] = set()
+        situation_drafts: list[DigestSituationItemDraft] = []
+        for s_raw in raw_situation:
+            item = DigestSituationItemDraft.from_dict(s_raw)
+            if item.group_id in seen_sit_ids:
+                raise ValueError(f"duplicate situation group_id: {item.group_id}")
+            seen_sit_ids.add(item.group_id)
+            situation_drafts.append(item)
 
         raw_blocks = data.get("blocks")
         if raw_blocks is None:
@@ -147,7 +206,7 @@ class DigestNarrativeDraft:
                 )
             )
 
-        return cls(blocks=tuple(block_drafts))
+        return cls(blocks=tuple(block_drafts), situation_items=tuple(situation_drafts))
 
 
 def plan_digest_narrative_blocks(
@@ -266,6 +325,7 @@ def plan_digest_narrative_blocks(
 DIGEST_ITEM_HEADLINE_MAX_CHARS = 140
 DIGEST_ITEM_BODY_MAX_CHARS = 900
 DIGEST_ITEM_MAX_STORIES = 6
+DIGEST_SITUATION_BODY_MAX_CHARS = 360
 
 
 def validate_digest_narrative(
@@ -274,11 +334,74 @@ def validate_digest_narrative(
     support_index: Mapping[str, str] | None = None,
     *,
     support_text_by_id: Mapping[str, str] | None = None,
+    situation_plan: Any = None,
 ) -> DigestNarrativeValidationResult:
     """Validate structured narrative digest draft strictly against deterministic plan and evidence."""
     violations: list[str] = []
     unsupported_claims: list[ConcreteClaim] = []
     support_map = support_index if support_index is not None else (support_text_by_id or {})
+
+    # Validate City Situation items if situation_plan is supplied
+    if situation_plan is not None:
+        plan_groups = getattr(situation_plan, "groups", ()) or ()
+        plan_group_ids = [g.group_id for g in plan_groups]
+        draft_group_ids = [s.group_id for s in draft.situation_items]
+        plan_groups_by_id = {g.group_id: g for g in plan_groups}
+
+        if len(draft.situation_items) != len(plan_groups):
+            violations.append(
+                f"SITUATION_GROUP_SET_MISMATCH: expected {len(plan_groups)} groups, got {len(draft.situation_items)}"
+            )
+        elif draft_group_ids != plan_group_ids:
+            violations.append(
+                f"SITUATION_GROUP_SET_MISMATCH: expected {plan_group_ids}, got {draft_group_ids}"
+            )
+
+        for sit_item in draft.situation_items:
+            plan_grp = plan_groups_by_id.get(sit_item.group_id)
+            if plan_grp is None:
+                violations.append(f"UNKNOWN_SITUATION_GROUP_ID: {sit_item.group_id}")
+                continue
+
+            if len(sit_item.body) > DIGEST_SITUATION_BODY_MAX_CHARS:
+                violations.append(
+                    f"SITUATION_BODY_TOO_LONG: body exceeds {DIGEST_SITUATION_BODY_MAX_CHARS} chars in {sit_item.group_id}"
+                )
+
+            if _INTERNAL_LEAKAGE_RE.search(sit_item.label) or _INTERNAL_LEAKAGE_RE.search(
+                sit_item.body
+            ):
+                violations.append(
+                    f"INTERNAL_ID_LEAK: found internal identifier in situation item {sit_item.group_id}"
+                )
+
+            if not sit_item.cited_support_ids:
+                violations.append(
+                    f"MISSING_SUPPORT_CITATION: situation item {sit_item.group_id} cites no supports"
+                )
+
+            allowed_sit_supports = set(getattr(plan_grp, "source_refs", ()))
+            for sup_id in sit_item.cited_support_ids:
+                if sup_id not in allowed_sit_supports and allowed_sit_supports:
+                    violations.append(
+                        f"SUPPORT_OUTSIDE_GROUP: {sup_id} not allowed in situation group {sit_item.group_id}"
+                    )
+                if sup_id not in support_map:
+                    violations.append(
+                        f"UNKNOWN_SUPPORT_ID: {sup_id} not found in support text index"
+                    )
+
+            c_supports = [support_map[s] for s in sit_item.cited_support_ids if s in support_map]
+            for unc in find_unsupported_claims(sit_item.label, c_supports):
+                unsupported_claims.append(unc)
+                violations.append(
+                    f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in situation label {sit_item.group_id}"
+                )
+            for unc in find_unsupported_claims(sit_item.body, c_supports):
+                unsupported_claims.append(unc)
+                violations.append(
+                    f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in situation body {sit_item.group_id}"
+                )
 
     plan_blocks_by_id = {b.block_id: b for b in plan.blocks}
     draft_block_ids = [b.block_id for b in draft.blocks]
