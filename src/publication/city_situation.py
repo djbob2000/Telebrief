@@ -97,6 +97,25 @@ _SEVERITY_ORDER: dict[str, int] = {
 }
 
 
+def city_situation_severity(state: str) -> int:
+    """Return the severity integer for a given state string (1=most severe, 5=fallback)."""
+    return _SEVERITY_ORDER.get(state.upper(), 5)
+
+
+def city_situation_icon(state: str) -> str:
+    """Return the emoji icon corresponding to a state string."""
+    state_upper = state.upper()
+    if state_upper in ("AVAILABLE", "RESOLVED"):
+        return "🟢"
+    if state_upper in ("UNAVAILABLE", "DISRUPTED"):
+        return "🔴"
+    if state_upper in ("RESTRICTED", "DEGRADED", "CONFLICTING"):
+        return "🟡"
+    if state_upper in ("SCHEDULED", "UNKNOWN"):
+        return "⚪"
+    return "🟡"
+
+
 def build_city_situation_rollup(
     resolved_states: Sequence[SubjectOperationalState],
 ) -> CitySituationRollup:
@@ -104,7 +123,7 @@ def build_city_situation_rollup(
     sorted_states = sorted(
         resolved_states,
         key=lambda st: (
-            _SEVERITY_ORDER.get(st.current_state.upper(), 5),
+            city_situation_severity(st.current_state),
             -st.last_observed_at.timestamp(),
             st.subject_label or st.subject_key,
         ),
@@ -134,17 +153,7 @@ def render_city_situation_section(rollup: CitySituationRollup | None) -> str:
         return ""
     lines = ["<b>Городская обстановка:</b>"]
     for item in rollup.items:
-        st_upper = item.state.upper()
-        if st_upper in ("AVAILABLE", "RESOLVED"):
-            state_icon = "🟢"
-        elif st_upper in ("UNAVAILABLE", "DISRUPTED"):
-            state_icon = "🔴"
-        elif st_upper in ("RESTRICTED", "DEGRADED", "CONFLICTING"):
-            state_icon = "🟡"
-        elif st_upper in ("SCHEDULED", "UNKNOWN"):
-            state_icon = "⚪"
-        else:
-            state_icon = "🟡"
+        state_icon = city_situation_icon(item.state)
         loc_str = f" ({item.location})" if item.location else ""
         label = item.subject_label or item.subject_key
         lines.append(f"{state_icon} <b>{label}{loc_str}</b>: {item.detail}")
