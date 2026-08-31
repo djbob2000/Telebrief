@@ -14,7 +14,7 @@ from src.editorial_models import StoryCard
 
 logger = logging.getLogger(__name__)
 
-RUBRIC_CLASSIFIER_VERSION = "digest-rubric-embedding-v1"
+RUBRIC_CLASSIFIER_VERSION = "digest-rubric-embedding-v2"
 
 
 @dataclass(frozen=True)
@@ -29,8 +29,18 @@ class RubricAssignment:
 
 def story_classification_text(card: StoryCard) -> str:
     """Build the text representation of a StoryCard for embedding classification."""
-    parts = [card.topic, card.summary, *card.tags]
-    return "\n".join(p.strip() for p in parts if isinstance(p, str) and p.strip())
+    parts: list[str] = [
+        card.topic,
+        card.summary,
+        *card.tags,
+    ]
+
+    parts.extend(item.text for item in card.hard_facts[:3])
+    parts.extend(item.text for item in card.useful_details[:2])
+    parts.extend(item.text for item in card.community_observations[:2])
+
+    text = "\n".join(part.strip() for part in parts if isinstance(part, str) and part.strip())
+    return text[:1800]
 
 
 def rubric_classification_text(rubric: DigestRubricConfig) -> str:

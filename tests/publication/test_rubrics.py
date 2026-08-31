@@ -201,3 +201,37 @@ async def test_matching_legacy_category_can_be_used_as_compatibility_hint_withou
     assert result[0].rubric_id == rubrics.items[0].id
     assert assignments[0].method == "legacy_hint"
     assert provider.calls == []
+
+
+def test_rubric_classifier_version_is_v2():
+    from src.publication.rubrics import RUBRIC_CLASSIFIER_VERSION
+
+    assert RUBRIC_CLASSIFIER_VERSION == "digest-rubric-embedding-v2"
+
+
+def test_story_classification_text_includes_facts_and_omits_uncertainties():
+    from src.editorial_models import StoryElement
+
+    card = make_card("story:1", topic="Главная тема", summary="Краткая суть", tags=["тег1"])
+    card.hard_facts = [
+        StoryElement(text="Факт 1", source_refs=["r1"], status="established"),
+        StoryElement(text="Факт 2", source_refs=["r2"], status="established"),
+    ]
+    card.useful_details = [
+        StoryElement(text="Полезная деталь", source_refs=["r3"], status="established"),
+    ]
+    card.community_observations = [
+        StoryElement(text="Наблюдение жителей", source_refs=["r4"], status="attributed"),
+    ]
+    card.uncertainties = [
+        StoryElement(text="Вопрос: работает ли банк?", source_refs=["r5"], status="attributed"),
+    ]
+
+    text = story_classification_text(card)
+    assert "Главная тема" in text
+    assert "Краткая суть" in text
+    assert "Факт 1" in text
+    assert "Факт 2" in text
+    assert "Полезная деталь" in text
+    assert "Наблюдение жителей" in text
+    assert "Вопрос: работает ли банк?" not in text
