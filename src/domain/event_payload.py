@@ -321,7 +321,7 @@ class EventPayload:
         d["conflicts_or_uncertainties"] = list(self.conflicts_or_uncertainties)
         d["affected_areas"] = list(self.affected_areas)
         d["representative_fragment_ids"] = list(self.representative_fragment_ids)
-        d["operational_observations"] = [obs.to_dict() for obs in self.operational_observations]
+        d.pop("operational_observations", None)
         d["evidence_items"] = [item.to_dict() for item in self.evidence_items]
         return d
 

@@ -275,3 +275,28 @@ def test_all_operational_states() -> None:
         "UNKNOWN",
         "SCHEDULED",
     }
+
+
+def test_event_payload_to_dict_omits_operational_observations_but_from_dict_tolerates() -> None:
+    legacy_data = {
+        "headline": "Legacy story",
+        "digest_summary": "Summary",
+        "operational_observations": [
+            {
+                "subject_key": "water_supply",
+                "subject_label": "Water",
+                "dimension": "availability",
+                "location": "City",
+                "entity": "grid",
+                "state": "AVAILABLE",
+                "detail": "Working",
+                "source_fragment_ids": [101],
+            }
+        ],
+    }
+    payload = EventPayload.from_dict(legacy_data)
+    assert len(payload.operational_observations) == 1
+    assert payload.operational_observations[0].subject_key == "water_supply"
+
+    d = payload.to_dict()
+    assert "operational_observations" not in d
