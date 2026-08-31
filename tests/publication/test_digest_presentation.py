@@ -826,3 +826,167 @@ def test_build_digest_presentation_plan_detail_roles() -> None:
 
     # DRILL_DOWN story has detail_support_ids focused on the non-dashboard / rich detail
     assert "story:elec:evi:workaround" in hints_by_id["story:elec"].detail_support_ids
+
+
+def test_positive_story_drill_down_and_positive_budget_omitted_coverage() -> None:
+    import datetime as dt
+
+    from src.editorial_models import StoryCard, StoryElement
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime.now(dt.timezone.utc)
+
+    # 3 positive subjects: banking, transport, documents
+    items = (
+        CitySituationItem(
+            subject_key="banking",
+            subject_label="Банки",
+            dimension="availability",
+            location="Центр",
+            entity="Банк",
+            state="AVAILABLE",
+            detail="Отделения открыты",
+            source_refs=("ref-bank",),
+            first_observed_at=now,
+            last_observed_at=now,
+            observation_count=1,
+        ),
+        CitySituationItem(
+            subject_key="transport",
+            subject_label="Транспорт",
+            dimension="availability",
+            location="Город",
+            entity="Автобусы",
+            state="AVAILABLE",
+            detail="Автобусы ходят",
+            source_refs=("ref-transport",),
+            first_observed_at=now,
+            last_observed_at=now - dt.timedelta(minutes=1),
+            observation_count=1,
+        ),
+        CitySituationItem(
+            subject_key="documents",
+            subject_label="Паспортный стол",
+            dimension="availability",
+            location="Город",
+            entity="МФЦ",
+            state="AVAILABLE",
+            detail="Выдача паспортов",
+            source_refs=("ref-docs",),
+            first_observed_at=now,
+            last_observed_at=now - dt.timedelta(minutes=2),
+            observation_count=1,
+        ),
+    )
+    rollup = CitySituationRollup(items=items)
+
+    # Card for banking with extra microdetail (terminal battery workaround)
+    card_bank = StoryCard(
+        id="story:bank",
+        topic="Работа отделений банка",
+        importance="medium",
+        summary="Отделения открыты, терминалы запитаны от 9V батареек",
+        tags=["банки"],
+        rubric_id="services",
+        category="services",
+        story_kind="operational_status",
+        representative_source_refs=["ref-bank", "ref-bank-battery"],
+        hard_facts=[
+            StoryElement(text="Отделения открыты", source_refs=["ref-bank"], status="established"),
+            StoryElement(
+                text="Терминалы оплаты запитаны от 9V батареек",
+                source_refs=["ref-bank-battery"],
+                status="established",
+            ),
+        ],
+    )
+    # Card for documents (omitted from dashboard due to max_positive_items=2)
+    card_docs = StoryCard(
+        id="story:docs",
+        topic="Выдача паспортов",
+        importance="low",
+        summary="Паспортный стол принимает посетителей",
+        tags=["документы"],
+        rubric_id="services",
+        category="services",
+        story_kind="operational_status",
+        representative_source_refs=["ref-docs"],
+        hard_facts=[
+            StoryElement(
+                text="Паспортный стол принимает посетителей",
+                source_refs=["ref-docs"],
+                status="established",
+            )
+        ],
+    )
+
+    evi_bank_status = PublicationEvidence(
+        evidence_id="story:bank:evi:status",
+        story_id=1,
+        text="Отделения открыты",
+        source_text="Отделения открыты",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=101,
+        source_ref="ref-bank",
+        source_id=1,
+        source_item_id=1,
+        source_role="community",
+        observed_at=now,
+    )
+    evi_bank_detail = PublicationEvidence(
+        evidence_id="story:bank:evi:detail",
+        story_id=1,
+        text="Терминалы оплаты запитаны от 9V батареек",
+        source_text="Терминалы оплаты запитаны от 9V батареек",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=102,
+        source_ref="ref-bank-battery",
+        source_id=1,
+        source_item_id=1,
+        source_role="community",
+        observed_at=now,
+    )
+    evi_docs_status = PublicationEvidence(
+        evidence_id="story:docs:evi:status",
+        story_id=2,
+        text="Паспортный стол принимает посетителей",
+        source_text="Паспортный стол принимает посетителей",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=103,
+        source_ref="ref-docs",
+        source_id=2,
+        source_item_id=2,
+        source_role="official",
+        observed_at=now,
+    )
+
+    evidence_dict = {
+        "story:bank:evi:status": evi_bank_status,
+        "story:bank:evi:detail": evi_bank_detail,
+        "story:docs:evi:status": evi_docs_status,
+    }
+
+    plan = build_digest_presentation_plan(
+        cards=[card_bank, card_docs],
+        city_situation=rollup,
+        evidence=evidence_dict,
+        max_city_situation_items=7,
+        max_city_situation_details=2,
+        max_city_situation_positive_items=2,
+    )
+
+    hints_by_id = {h.story_id: h for h in plan.story_hints}
+
+    # Selected positive story with microdetail becomes DRILL_DOWN
+    assert hints_by_id["story:bank"].detail_role == "DRILL_DOWN"
+    assert "story:bank:evi:detail" in hints_by_id["story:bank"].detail_support_ids
+    assert "story:bank" in plan.detail_story_ids
+
+    # Omitted positive story from dashboard budget remains in thematic layer as NORMAL
+    assert hints_by_id["story:docs"].detail_role == "NORMAL"
+    assert "story:docs" in plan.detail_story_ids

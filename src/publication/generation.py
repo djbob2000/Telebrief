@@ -217,6 +217,11 @@ class PublicationGenerationService:
                     if pub_edit
                     else 2
                 )
+                max_positive_items = (
+                    getattr(pub_edit, "digest_city_situation_max_positive_items", 2)
+                    if pub_edit
+                    else 2
+                )
                 evidence_dict = getattr(frozen.analysis, "evidence", {}) or {}
 
                 presentation_plan = build_digest_presentation_plan(
@@ -225,6 +230,7 @@ class PublicationGenerationService:
                     evidence=evidence_dict,
                     max_city_situation_items=max_sit_items,
                     max_city_situation_details=max_sit_details,
+                    max_city_situation_positive_items=max_positive_items,
                 )
 
                 if (
