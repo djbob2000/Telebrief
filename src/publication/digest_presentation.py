@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Literal, Mapping, Sequence
 
 from src.publication.city_situation import (
     CitySituationItem,
     CitySituationRollup,
+    city_situation_icon,
     city_situation_severity,
 )
+
+DigestDetailRole = Literal["SUPPRESS", "DRILL_DOWN", "NORMAL"]
 
 
 @dataclass(frozen=True)
@@ -52,6 +55,44 @@ def _positive_detail_line(item: CitySituationItem) -> str:
     return label
 
 
+_POSITIVE_STATES = frozenset({"AVAILABLE", "RESOLVED"})
+
+
+def _presentation_state(items: Sequence[CitySituationItem]) -> str:
+    states = {item.state.upper() for item in items}
+    has_positive = bool(states & _POSITIVE_STATES)
+    has_non_positive = bool(states - _POSITIVE_STATES)
+    if has_positive and has_non_positive:
+        return "CONFLICTING"
+    return min(items, key=lambda item: city_situation_severity(item.state)).state
+
+
+def _select_group_details(
+    items: Sequence[CitySituationItem],
+    *,
+    limit: int,
+) -> tuple[str, ...]:
+    positive = [item for item in items if item.state.upper() in _POSITIVE_STATES]
+    non_positive = [item for item in items if item.state.upper() not in _POSITIVE_STATES]
+    ordered: list[CitySituationItem] = []
+    if positive and non_positive:
+        ordered.extend([non_positive[0], positive[0]])
+    for item in items:
+        if item not in ordered:
+            ordered.append(item)
+    lines: list[str] = []
+    seen: set[str] = set()
+    for item in ordered:
+        line = _detail_line(item)
+        key = line.casefold()
+        if line and key not in seen:
+            seen.add(key)
+            lines.append(line)
+        if len(lines) >= limit:
+            break
+    return tuple(lines)
+
+
 def plan_city_situation_presentation(
     rollup: CitySituationRollup | None,
     *,
@@ -62,21 +103,11 @@ def plan_city_situation_presentation(
     if not rollup or not rollup.items:
         return CitySituationPresentationPlan(groups=(), covered_source_refs=())
 
-    non_positive_items: list[CitySituationItem] = []
-    positive_items: list[CitySituationItem] = []
-
+    # Group all items by (subject_key, dimension)
+    grouped: dict[tuple[str, str], list[CitySituationItem]] = {}
     for item in rollup.items:
-        st_upper = item.state.upper()
-        if st_upper in ("AVAILABLE", "RESOLVED"):
-            positive_items.append(item)
-        else:
-            non_positive_items.append(item)
-
-    # Group non-positive items by (subject_key, dimension)
-    grouped_non_positive: dict[tuple[str, str], list[CitySituationItem]] = {}
-    for item in non_positive_items:
         key = (_norm_key(item.subject_key), _norm_key(item.dimension))
-        grouped_non_positive.setdefault(key, []).append(item)
+        grouped.setdefault(key, []).append(item)
 
     candidate_groups: list[
         tuple[
@@ -86,21 +117,22 @@ def plan_city_situation_presentation(
             int,  # observation count
         ]
     ] = []
+    pure_positive_items: list[CitySituationItem] = []
 
-    for (norm_subj, norm_dim), group_items in grouped_non_positive.items():
+    for (norm_subj, norm_dim), group_items in grouped.items():
+        pres_state = _presentation_state(group_items)
+
+        # Pure positive subjects can be bundled into available_services
+        if pres_state.upper() in _POSITIVE_STATES:
+            pure_positive_items.extend(group_items)
+            continue
+
         first_item = group_items[0]
         subject_label = next(
             (it.subject_label for it in group_items if it.subject_label),
             first_item.subject_key,
         )
-
-        # Worst state (minimum severity integer)
-        worst_item = min(
-            group_items,
-            key=lambda it: city_situation_severity(it.state),
-        )
-        worst_state = worst_item.state
-        worst_sev = city_situation_severity(worst_state)
+        worst_sev = city_situation_severity(pres_state)
 
         # Merge source refs preserving order / uniqueness
         seen_refs: set[str] = set()
@@ -111,18 +143,7 @@ def plan_city_situation_presentation(
                     seen_refs.add(r)
                     merged_refs.append(r)
 
-        # Detail lines
-        seen_details: set[str] = set()
-        detail_lines: list[str] = []
-        for it in group_items:
-            line = _detail_line(it)
-            norm_l = line.casefold()
-            if line and norm_l not in seen_details:
-                seen_details.add(norm_l)
-                detail_lines.append(line)
-                if len(detail_lines) >= max_details_per_item:
-                    break
-
+        detail_lines = _select_group_details(group_items, limit=max_details_per_item)
         latest_ts = max(it.last_observed_at for it in group_items)
         obs_count = sum(it.observation_count for it in group_items)
 
@@ -132,9 +153,9 @@ def plan_city_situation_presentation(
             group_kind="subject_status",
             subject_key=first_item.subject_key,
             subject_label=subject_label,
-            state=worst_state,
+            state=pres_state,
             source_refs=tuple(merged_refs),
-            detail_lines=tuple(detail_lines),
+            detail_lines=detail_lines,
         )
         candidate_groups.append((presentation_group, worst_sev, latest_ts, obs_count))
 
@@ -148,12 +169,12 @@ def plan_city_situation_presentation(
         )
     )
 
-    # Prepare positive available_services bundle if positive items exist
+    # Prepare positive available_services bundle if pure positive items exist
     available_group: CitySituationPresentationGroup | None = None
-    if positive_items:
+    if pure_positive_items:
         seen_pos_refs: set[str] = set()
         merged_pos_refs: list[str] = []
-        for it in positive_items:
+        for it in pure_positive_items:
             for r in it.source_refs:
                 if r and r not in seen_pos_refs:
                     seen_pos_refs.add(r)
@@ -161,7 +182,7 @@ def plan_city_situation_presentation(
 
         seen_pos_details: set[str] = set()
         pos_detail_lines: list[str] = []
-        for it in positive_items:
+        for it in pure_positive_items:
             line = _positive_detail_line(it)
             norm_l = line.casefold()
             if line and norm_l not in seen_pos_details:
@@ -212,11 +233,28 @@ def plan_city_situation_presentation(
     )
 
 
+def render_city_situation_presentation(
+    plan: CitySituationPresentationPlan | None,
+    *,
+    use_emojis: bool = True,
+) -> str:
+    if not plan or not plan.groups:
+        return ""
+    lines = ["*🏙 Городская обстановка*" if use_emojis else "*Городская обстановка*"]
+    for group in plan.groups:
+        icon = city_situation_icon(group.state) if use_emojis else ""
+        prefix = f"{icon} " if icon else ""
+        body = "; ".join(group.detail_lines)
+        lines.append(f"• {prefix}**{group.subject_label}**: {body}")
+    return "\n".join(lines)
+
+
 @dataclass(frozen=True)
 class DigestStoryPresentationHint:
     story_id: str
     detail_support_ids: tuple[str, ...]
     merge_group_id: str
+    detail_role: DigestDetailRole = "NORMAL"
 
 
 @dataclass(frozen=True)
@@ -281,20 +319,6 @@ def _card_meaningful_tags(card: Any) -> set[str]:
         if norm and norm not in _GENERIC_STOP_TAGS and len(norm) > 2:
             tags.add(norm)
     return tags
-
-
-def _card_is_consumed_by_dashboard(
-    card: Any,
-    covered_refs: set[str],
-) -> bool:
-    if getattr(card, "story_kind", "") != "operational_status":
-        return False
-    all_refs_fn = getattr(card, "all_source_refs", None)
-    if callable(all_refs_fn):
-        refs = {ref for ref in all_refs_fn() if ref}
-    else:
-        refs = {ref for ref in getattr(card, "representative_source_refs", []) if ref}
-    return bool(refs) and refs <= covered_refs
 
 
 def _compute_merge_groups(cards: Sequence[Any]) -> dict[str, str]:
@@ -362,28 +386,33 @@ def build_digest_presentation_plan(
         max_details_per_item=max_city_situation_details,
     )
     covered_refs = set(city_plan.covered_source_refs)
-    detail_cards = [
-        card for card in cards if not _card_is_consumed_by_dashboard(card, covered_refs)
-    ]
-    detail_story_ids = tuple(card.id for card in detail_cards)
-
-    merge_groups = _compute_merge_groups(detail_cards)
-
     evidence_map = evidence if isinstance(evidence, Mapping) else {}
 
-    story_hints: list[DigestStoryPresentationHint] = []
-    for card in detail_cards:
-        sid = card.id
-        merge_gid = merge_groups.get(sid, sid)
+    # 1. Classify detail_role and pick detail_support_ids for each card
+    card_roles: dict[str, DigestDetailRole] = {}
+    card_support_ids: dict[str, tuple[str, ...]] = {}
 
-        # Extract numeric story id if applicable
+    for card in cards:
+        sid = card.id
+        all_refs_fn = getattr(card, "all_source_refs", None)
+        if callable(all_refs_fn):
+            card_refs = {ref for ref in all_refs_fn() if ref}
+        else:
+            card_refs = {ref for ref in getattr(card, "representative_source_refs", []) if ref}
+
+        is_operational = getattr(card, "story_kind", "") == "operational_status"
+        overlaps_dashboard = (
+            bool(card_refs)
+            and bool(card_refs & covered_refs)
+            and (is_operational or (card_refs <= covered_refs))
+        )
+
         num_sid: int | None = None
         if sid.startswith("story:"):
             num_part = sid.split(":", 1)[1]
             if num_part.isdigit():
                 num_sid = int(num_part)
 
-        # Find matching evidence
         candidate_evi: list[Any] = []
         for eid, evi in evidence_map.items():
             evi_sid = getattr(evi, "story_id", None)
@@ -398,26 +427,53 @@ def build_digest_presentation_plan(
                 ):
                     candidate_evi.append(evi)
 
-        # Score candidate evidence
         scored_evi = [
-            (score_digest_detail_evidence(evi), getattr(evi, "evidence_id", ""))
+            (score_digest_detail_evidence(evi), getattr(evi, "evidence_id", ""), evi)
             for evi in candidate_evi
         ]
         scored_evi.sort(key=lambda x: (-x[0], x[1]))
 
-        positive_supports = [eid for score, eid in scored_evi if score > 0 and eid][:2]
-        if positive_supports:
-            detail_support_ids = tuple(positive_supports)
-        elif scored_evi and scored_evi[0][1]:
-            detail_support_ids = (scored_evi[0][1],)
-        else:
-            detail_support_ids = ()
+        if overlaps_dashboard:
+            # Distinct evidence items: score > 0 OR source_ref not in covered_refs
+            distinct_supports = []
+            for score, eid, evi in scored_evi:
+                if not eid:
+                    continue
+                evi_ref = getattr(evi, "source_ref", None)
+                if score > 0 or (evi_ref and str(evi_ref) not in covered_refs):
+                    distinct_supports.append(eid)
 
+            if distinct_supports:
+                card_roles[sid] = "DRILL_DOWN"
+                card_support_ids[sid] = tuple(distinct_supports[:2])
+            else:
+                card_roles[sid] = "SUPPRESS"
+                card_support_ids[sid] = ()
+        else:
+            card_roles[sid] = "NORMAL"
+            positive_supports = [eid for score, eid, _ in scored_evi if score > 0 and eid][:2]
+            if positive_supports:
+                card_support_ids[sid] = tuple(positive_supports)
+            elif scored_evi and scored_evi[0][1]:
+                card_support_ids[sid] = (scored_evi[0][1],)
+            else:
+                card_support_ids[sid] = ()
+
+    # 2. Detail cards are those not suppressed
+    detail_cards = [card for card in cards if card_roles[card.id] != "SUPPRESS"]
+    detail_story_ids = tuple(card.id for card in detail_cards)
+    merge_groups = _compute_merge_groups(detail_cards)
+
+    # 3. Build hints for all cards
+    story_hints: list[DigestStoryPresentationHint] = []
+    for card in cards:
+        sid = card.id
         story_hints.append(
             DigestStoryPresentationHint(
                 story_id=sid,
-                detail_support_ids=detail_support_ids,
-                merge_group_id=merge_gid,
+                detail_support_ids=card_support_ids[sid],
+                merge_group_id=merge_groups.get(sid, sid),
+                detail_role=card_roles[sid],
             )
         )
 

@@ -406,3 +406,76 @@ def test_event_analysis_v4_operational_observation_contract_is_service_state_onl
     assert "coping" in prompt
     assert "regional" in prompt
     assert "safety advice" in prompt
+
+
+@pytest.mark.unit
+def test_resident_question_vs_community_report_operational_boundary() -> None:
+    from src.domain.event_payload import (
+        EventPayload,
+        normalize_question_evidence,
+    )
+
+    # 1. Pure resident question must NOT produce operational observation
+    question_payload = EventPayload.from_dict(
+        {
+            "headline": "Вопрос о свете в Центре",
+            "digest_summary": "Жители интересуются, есть ли свет в Центре.",
+            "evidence_items": [
+                {
+                    "text": "Подскажите, есть ли свет в Центре?",
+                    "kind": "resident_question",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [1],
+                }
+            ],
+            "operational_observations": [
+                {
+                    "subject_key": "power_supply",
+                    "subject_label": "Электроснабжение",
+                    "dimension": "availability",
+                    "location": "Центр",
+                    "entity": "электросеть",
+                    "state": "UNKNOWN",
+                    "detail": "Жители интересуются наличием света",
+                    "source_fragment_ids": [1],
+                }
+            ],
+        }
+    )
+    normalized_q = normalize_question_evidence(question_payload)
+    assert normalized_q.evidence_items[0].kind == "resident_question"
+    assert normalized_q.evidence_items[0].publication_use == "CONTEXT"
+    assert len(normalized_q.operational_observations) == 0
+
+    # 2. Community report with observed state is PUBLISH and retains operational observation
+    report_payload = EventPayload.from_dict(
+        {
+            "headline": "Отсутствие света на Горе",
+            "digest_summary": "По сообщениям жителей, на Горе нет света.",
+            "evidence_items": [
+                {
+                    "text": "На Горе света нет",
+                    "kind": "community_report",
+                    "publication_use": "PUBLISH",
+                    "source_fragment_ids": [2],
+                }
+            ],
+            "operational_observations": [
+                {
+                    "subject_key": "power_supply",
+                    "subject_label": "Электроснабжение",
+                    "dimension": "availability",
+                    "location": "Гора",
+                    "entity": "электросеть",
+                    "state": "UNAVAILABLE",
+                    "detail": "Гора: нет света",
+                    "source_fragment_ids": [2],
+                }
+            ],
+        }
+    )
+    normalized_r = normalize_question_evidence(report_payload)
+    assert normalized_r.evidence_items[0].kind == "community_report"
+    assert normalized_r.evidence_items[0].publication_use == "PUBLISH"
+    assert len(normalized_r.operational_observations) == 1
+    assert normalized_r.operational_observations[0].state == "UNAVAILABLE"

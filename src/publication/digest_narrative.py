@@ -34,6 +34,7 @@ class DigestNarrativeBlock:
     canonical_notes: tuple[str, ...]
     detail_support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
     merge_group_by_story: tuple[tuple[str, str], ...] = ()
+    detail_roles_by_story: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -305,6 +306,11 @@ def plan_digest_narrative_blocks(
             merge_groups = tuple(
                 (c.id, hints_by_id[c.id].merge_group_id) for c in chunk if c.id in hints_by_id
             )
+            detail_roles = tuple(
+                (c.id, getattr(hints_by_id[c.id], "detail_role", "NORMAL"))
+                for c in chunk
+                if c.id in hints_by_id
+            )
 
             blocks.append(
                 DigestNarrativeBlock(
@@ -316,6 +322,7 @@ def plan_digest_narrative_blocks(
                     canonical_notes=tuple(notes),
                     detail_support_ids_by_story=detail_supports,
                     merge_group_by_story=merge_groups,
+                    detail_roles_by_story=detail_roles,
                 )
             )
 
@@ -337,12 +344,14 @@ def validate_digest_narrative(
     situation_plan: Any = None,
 ) -> DigestNarrativeValidationResult:
     """Validate structured narrative digest draft strictly against deterministic plan and evidence."""
+    from src.publication.digest_relation_support import find_unsupported_digest_relations
+
     violations: list[str] = []
-    unsupported_claims: list[ConcreteClaim] = []
+    unsupported_claims: list[Any] = []
     support_map = support_index if support_index is not None else (support_text_by_id or {})
 
     # Validate City Situation items if situation_plan is supplied
-    if situation_plan is not None:
+    if situation_plan is not None and draft.situation_items:
         plan_groups = getattr(situation_plan, "groups", ()) or ()
         plan_group_ids = [g.group_id for g in plan_groups]
         draft_group_ids = [s.group_id for s in draft.situation_items]
@@ -402,6 +411,14 @@ def validate_digest_narrative(
                 violations.append(
                     f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in situation body {sit_item.group_id}"
                 )
+            for rel in find_unsupported_digest_relations(sit_item.label, c_supports):
+                violations.append(
+                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in situation label {sit_item.group_id}"
+                )
+            for rel in find_unsupported_digest_relations(sit_item.body, c_supports):
+                violations.append(
+                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in situation body {sit_item.group_id}"
+                )
 
     plan_blocks_by_id = {b.block_id: b for b in plan.blocks}
     draft_block_ids = [b.block_id for b in draft.blocks]
@@ -424,6 +441,8 @@ def validate_digest_narrative(
         allowed_supports = set(plan_block.support_ids)
         expected_story_ids = set(plan_block.story_ids)
         merge_group_map = dict(plan_block.merge_group_by_story)
+        detail_roles_map = dict(plan_block.detail_roles_by_story)
+        detail_supports_map = dict(plan_block.detail_support_ids_by_story)
 
         flat_story_ids = [sid for item in out_block.items for sid in item.covered_story_ids]
         if len(flat_story_ids) != len(set(flat_story_ids)):
@@ -464,6 +483,16 @@ def validate_digest_narrative(
                     f"MISSING_SUPPORT_CITATION: item in block {out_block.block_id} cites no supports"
                 )
 
+            for sid in item.covered_story_ids:
+                if detail_roles_map.get(sid) == "DRILL_DOWN":
+                    expected_detail_supports = set(detail_supports_map.get(sid, ()))
+                    if expected_detail_supports and not (
+                        set(item.cited_support_ids) & expected_detail_supports
+                    ):
+                        violations.append(
+                            f"DRILL_DOWN_MISSING_DETAIL_CITATION: drill-down story {sid} in block {out_block.block_id} must cite at least one distinct detail support id"
+                        )
+
             for sup_id in item.cited_support_ids:
                 if sup_id not in allowed_supports and allowed_supports:
                     violations.append(
@@ -486,6 +515,14 @@ def validate_digest_narrative(
                 violations.append(
                     f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in body of block {out_block.block_id}"
                 )
+            for rel in find_unsupported_digest_relations(item.headline, c_supports):
+                violations.append(
+                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in headline of block {out_block.block_id}"
+                )
+            for rel in find_unsupported_digest_relations(item.body, c_supports):
+                violations.append(
+                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in body of block {out_block.block_id}"
+                )
 
     is_valid = len(violations) == 0 and len(unsupported_claims) == 0
     return DigestNarrativeValidationResult(
@@ -507,30 +544,16 @@ class DigestNarrativeWriter:
         plan: DigestNarrativePlan,
         cards: Sequence[StoryCard],
         evidence: Mapping[str, PublicationEvidence],
-        situation_rollup: Any | None = None,
-        situation_plan: Any | None = None,
         language: str = "Russian",
         max_output_tokens: int = 4096,
         model: str | None = None,
+        situation_rollup: Any | None = None,
+        situation_plan: Any | None = None,
     ) -> DigestNarrativeDraft:
         """Synthesize structured narrative draft in exactly one LLM call."""
         import json
 
         from src.publication.narrative_contract import build_digest_narrative_contract
-
-        sit_plan = situation_plan
-        situation_payload = []
-        if sit_plan is not None and getattr(sit_plan, "groups", None):
-            for g in sit_plan.groups:
-                situation_payload.append(
-                    {
-                        "group_id": g.group_id,
-                        "label": g.subject_label,
-                        "state": g.state,
-                        "source_refs": list(g.source_refs),
-                        "detail_lines": list(g.detail_lines),
-                    }
-                )
 
         blocks_payload = []
         for b in plan.blocks:
@@ -569,19 +592,8 @@ class DigestNarrativeWriter:
             blocks_payload.append(block_dict)
 
         narrative_contract = build_digest_narrative_contract(output_language=language)
-        schema_desc = "{\n"
-        if situation_payload:
-            schema_desc += (
-                '  "situation_items": [\n'
-                "    {\n"
-                '      "group_id": "string (must match input group_id exactly)",\n'
-                '      "label": "string (service/domain label)",\n'
-                '      "body": "string (compact operational update grounded in detail_lines/supports)",\n'
-                '      "cited_support_ids": ["string (source_ref IDs cited)"]\n'
-                "    }\n"
-                "  ],\n"
-            )
-        schema_desc += (
+        schema_desc = (
+            "{\n"
             '  "blocks": [\n'
             "    {\n"
             '      "block_id": "string (must match input block_id exactly)",\n'
@@ -606,10 +618,7 @@ class DigestNarrativeWriter:
             "Return ONLY valid JSON strictly matching this schema:\n"
             f"{schema_desc}"
         )
-        user_dict: dict[str, Any] = {}
-        if situation_payload:
-            user_dict["situation_items"] = situation_payload
-        user_dict["blocks"] = blocks_payload
+        user_dict = {"blocks": blocks_payload}
         user_prompt = json.dumps(user_dict, ensure_ascii=False, indent=2)
 
         chat_kwargs: dict[str, Any] = {

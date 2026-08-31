@@ -23,6 +23,39 @@
         "vpn_workaround",
         "regional_incident_totals"
       ]
+    },
+    {
+      "id": "mixed_bank_status_is_one_dashboard_group",
+      "expected": {
+        "dashboard_group_count_for_subject": 1,
+        "presentation_state": "CONFLICTING",
+        "requires_positive_and_negative_detail": true
+      }
+    },
+    {
+      "id": "dashboard_label_is_deterministic",
+      "expected": {
+        "llm_may_rename_dashboard_group": false
+      }
+    },
+    {
+      "id": "covered_status_with_microdetail_becomes_drill_down",
+      "expected": {
+        "detail_role": "DRILL_DOWN",
+        "requires_detail_support": true
+      }
+    },
+    {
+      "id": "covered_status_without_extra_detail_is_suppressed",
+      "expected": {
+        "detail_role": "SUPPRESS"
+      }
+    },
+    {
+      "id": "unsupported_causal_compression_is_rejected",
+      "expected": {
+        "blocking_code": "UNSUPPORTED_DIGEST_RELATION"
+      }
     }
   ]
 }

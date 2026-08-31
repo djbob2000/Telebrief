@@ -21,7 +21,8 @@ from src.publication.narrative_contract import (
 
 
 def test_narrative_contracts_epistemic_fidelity():
-    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v2"
+    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v3"
+
     article_contract = build_article_narrative_contract(output_language="Russian")
     assert "single-source" in article_contract.lower()
     assert "community" in article_contract.lower()
@@ -724,13 +725,13 @@ async def test_digest_narrative_writer_with_situation_plan(mocker):
     assert len(draft.situation_items) == 1
     assert draft.situation_items[0].group_id == "situation:water:avail"
 
-    # Verify user prompt includes situation_items
+    # Verify user prompt excludes situation_items
     call_args = mock_provider.chat_completion.call_args[1]
     messages = call_args["messages"]
     user_content = next(m["content"] for m in messages if m["role"] == "user")
     user_data = json.loads(user_content)
-    assert "situation_items" in user_data
-    assert user_data["situation_items"][0]["group_id"] == "situation:water:avail"
+    assert "situation_items" not in user_data
+    assert "blocks" in user_data
 
     assert draft.blocks[0].block_id == "block:utilities:0"
     assert len(draft.blocks[0].items) == 1
@@ -1060,3 +1061,226 @@ def test_validate_digest_narrative_checks_unsupported_situation_claims() -> None
     result = validate_digest_narrative(draft, plan, support_index, situation_plan=sit_plan)
     assert not result.is_valid
     assert any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in result.violations)
+
+
+@pytest.mark.asyncio
+async def test_digest_narrative_writer_prompt_excludes_situation_items() -> None:
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativePlan,
+        DigestNarrativeWriter,
+    )
+
+    captured_messages = []
+
+    class FakeProvider:
+        async def chat_completion(self, messages, **kwargs):
+            captured_messages.extend(messages)
+            return '{"blocks": [{"block_id": "block:utilities:0", "items": [{"headline": "H", "body": "B", "covered_story_ids": ["story:1"], "cited_support_ids": ["ref-1"]}]}]}'
+
+    writer = DigestNarrativeWriter(provider=FakeProvider())
+    block = DigestNarrativeBlock(
+        block_id="block:utilities:0",
+        rubric_id="utilities",
+        rubric_title="ЖКХ",
+        story_ids=("story:1",),
+        support_ids=("ref-1",),
+        canonical_notes=(),
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+    evidence = {
+        "ref-1": _make_evidence("ref-1", 1, "Ремонтные работы продолжаются"),
+    }
+    cards = [
+        StoryCard(
+            id="story:1",
+            topic="ЖКХ",
+            importance="high",
+            summary="Ремонт",
+            rubric_id="utilities",
+        )
+    ]
+    await writer.generate_narrative_draft(
+        plan=plan,
+        cards=cards,
+        evidence=evidence,
+    )
+    assert len(captured_messages) == 2
+    user_prompt = captured_messages[1]["content"]
+    assert '"blocks"' in user_prompt
+    assert '"situation_items"' not in user_prompt
+
+
+def test_plan_digest_narrative_blocks_captures_detail_roles() -> None:
+    from src.editorial_models import StoryCard
+    from src.publication.digest_narrative import plan_digest_narrative_blocks
+    from src.publication.digest_presentation import (
+        CitySituationPresentationPlan,
+        DigestPresentationPlan,
+        DigestStoryPresentationHint,
+    )
+
+    card1 = StoryCard(
+        id="story:elec",
+        topic="Свет",
+        importance="high",
+        summary="Генераторы",
+        rubric_id="utilities",
+    )
+    card2 = StoryCard(
+        id="story:road",
+        topic="Дороги",
+        importance="low",
+        summary="Асфальт",
+        rubric_id="utilities",
+    )
+
+    presentation_plan = DigestPresentationPlan(
+        city_situation=CitySituationPresentationPlan(groups=(), covered_source_refs=()),
+        detail_story_ids=("story:elec", "story:road"),
+        story_hints=(
+            DigestStoryPresentationHint(
+                story_id="story:elec",
+                detail_support_ids=("sup:gen",),
+                merge_group_id="story:elec",
+                detail_role="DRILL_DOWN",
+            ),
+            DigestStoryPresentationHint(
+                story_id="story:road",
+                detail_support_ids=("sup:road",),
+                merge_group_id="story:road",
+                detail_role="NORMAL",
+            ),
+        ),
+    )
+
+    plan = plan_digest_narrative_blocks(
+        cards=[card1, card2],
+        evidence={},
+        rubrics=[{"id": "utilities", "name": "ЖКХ"}],
+        max_cards_per_block=6,
+        presentation_plan=presentation_plan,
+    )
+
+    assert len(plan.blocks) == 1
+    block = plan.blocks[0]
+    roles_dict = dict(block.detail_roles_by_story)
+    assert roles_dict.get("story:elec") == "DRILL_DOWN"
+    assert roles_dict.get("story:road") == "NORMAL"
+
+
+def test_validate_digest_narrative_enforces_drill_down_evidence_citation() -> None:
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    block = DigestNarrativeBlock(
+        block_id="block:utilities:0",
+        rubric_id="utilities",
+        rubric_title="ЖКХ",
+        story_ids=("story:elec",),
+        support_ids=("ref-status", "ref-workaround"),
+        canonical_notes=(),
+        detail_support_ids_by_story=(("story:elec", ("ref-workaround",)),),
+        detail_roles_by_story=(("story:elec", "DRILL_DOWN"),),
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+
+    support_index = {
+        "ref-status": "На Горе нет света.",
+        "ref-workaround": "Жильцы дома 12 скинулись по 300 рублей на генератор.",
+    }
+
+    # 1. Reject draft where DRILL_DOWN item only cites dashboard/status support
+    draft_missing_detail = DigestNarrativeDraft.from_dict(
+        {
+            "blocks": [
+                {
+                    "block_id": "block:utilities:0",
+                    "items": [
+                        {
+                            "headline": "Отключение света",
+                            "body": "На Горе отсутствует электроэнергия.",
+                            "covered_story_ids": ["story:elec"],
+                            "cited_support_ids": ["ref-status"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    res_bad = validate_digest_narrative(draft_missing_detail, plan, support_index)
+    assert not res_bad.is_valid
+    assert any("DRILL_DOWN" in v for v in res_bad.violations)
+
+    # 2. Accept draft where DRILL_DOWN item cites the distinct detail support
+    draft_with_detail = DigestNarrativeDraft.from_dict(
+        {
+            "blocks": [
+                {
+                    "block_id": "block:utilities:0",
+                    "items": [
+                        {
+                            "headline": "Домовой генератор на Горе",
+                            "body": "Жильцы дома 12 скинулись по 300 рублей на генератор.",
+                            "covered_story_ids": ["story:elec"],
+                            "cited_support_ids": ["ref-workaround"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    res_good = validate_digest_narrative(draft_with_detail, plan, support_index)
+    assert res_good.is_valid
+
+
+def test_validate_digest_narrative_rejects_unsupported_causal_relations() -> None:
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    block = DigestNarrativeBlock(
+        block_id="block:utilities:0",
+        rubric_id="utilities",
+        rubric_title="ЖКХ",
+        story_ids=("story:elec",),
+        support_ids=("ref-status",),
+        canonical_notes=(),
+        detail_support_ids_by_story=(("story:elec", ("ref-status",)),),
+        detail_roles_by_story=(("story:elec", "NORMAL"),),
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+
+    # Support only mentions outage, NOT the cause
+    support_index = {
+        "ref-status": "По сообщениям жителей, на Горе нет света.",
+    }
+
+    # Draft asserts invented cause "Авария на подстанции оставила Гору без света"
+    draft_unsupported_cause = DigestNarrativeDraft.from_dict(
+        {
+            "blocks": [
+                {
+                    "block_id": "block:utilities:0",
+                    "items": [
+                        {
+                            "headline": "Авария на подстанции оставила Гору без света",
+                            "body": "По сообщениям жителей, на Горе нет света.",
+                            "covered_story_ids": ["story:elec"],
+                            "cited_support_ids": ["ref-status"],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+    res = validate_digest_narrative(draft_unsupported_cause, plan, support_index)
+    assert not res.is_valid
+    assert any("UNSUPPORTED_DIGEST_RELATION" in v for v in res.violations)

@@ -484,3 +484,91 @@ class TestPublicationDigestRenderer:
         assert "<b>⚡️ Коммунальная обстановка</b>" in html
         assert "• <b>Ремонт сетей на востоке города</b>: Бригады завершают замену кабеля." in html
         assert "<i>📊 Статистика: обработано 12 каналов</i>" in html
+
+    def test_render_city_situation_uses_planned_label_and_mixed_state_icon(self):
+        from src.publication.digest_presentation import (
+            CitySituationPresentationGroup,
+            CitySituationPresentationPlan,
+            render_city_situation_presentation,
+        )
+
+        plan = CitySituationPresentationPlan(
+            groups=(
+                CitySituationPresentationGroup(
+                    group_id="situation:banking_cash:availability",
+                    group_kind="subject_status",
+                    subject_key="banking_cash",
+                    subject_label="Банковские услуги и наличные",
+                    state="CONFLICTING",
+                    source_refs=("ref-a", "ref-b"),
+                    detail_lines=("Гора: нет связи", "Залив: банкомат выдает наличные"),
+                ),
+            ),
+            covered_source_refs=("ref-a", "ref-b"),
+        )
+
+        rendered = render_city_situation_presentation(plan, use_emojis=True)
+        assert "🟡 **Банковские услуги и наличные**" in rendered
+        assert "Гора: нет связи" in rendered
+        assert "Залив: банкомат выдает наличные" in rendered
+
+    def test_render_grouped_digest_prefers_presentation_plan_over_llm_situation_items(self):
+        from src.publication.digest_narrative import (
+            DigestNarrativeDraft,
+            DigestSituationItemDraft,
+        )
+        from src.publication.digest_presentation import (
+            CitySituationPresentationGroup,
+            CitySituationPresentationPlan,
+            DigestPresentationPlan,
+        )
+
+        card = StoryCard(
+            id="story:1",
+            topic="Электричество",
+            importance="high",
+            summary="Отключения",
+        )
+        frozen = FrozenEditorialInput(
+            analysis=EditorialAnalysis(cards=[card]),
+            writer_bundle=PreparedBundle(
+                records={}, prompt_text="", total_messages=0, candidate_count=1
+            ),
+        )
+        llm_draft = DigestNarrativeDraft(
+            blocks=(),
+            situation_items=(
+                DigestSituationItemDraft(
+                    group_id="situation:power:avail",
+                    label="LLM Inappropriate Label",
+                    body="LLM body text.",
+                    cited_support_ids=("ref-1",),
+                ),
+            ),
+        )
+        plan = DigestPresentationPlan(
+            city_situation=CitySituationPresentationPlan(
+                groups=(
+                    CitySituationPresentationGroup(
+                        group_id="situation:power:avail",
+                        group_kind="subject_status",
+                        subject_key="power",
+                        subject_label="Электроснабжение (Плановое)",
+                        state="DISRUPTED",
+                        source_refs=("ref-1",),
+                        detail_lines=("Центр: отключение света",),
+                    ),
+                ),
+                covered_source_refs=("ref-1",),
+            ),
+            detail_story_ids=(),
+            story_hints=(),
+        )
+        renderer = PublicationDigestRenderer(use_emojis=True)
+        _, _, body = renderer.render_grouped_digest(
+            frozen,
+            narrative_draft=llm_draft,
+            presentation_plan=plan,
+        )
+        assert "Электроснабжение (Плановое)" in body
+        assert "LLM Inappropriate Label" not in body

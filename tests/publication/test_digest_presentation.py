@@ -14,6 +14,71 @@ def test_city_life_short_read_golden_fixture_has_required_cases() -> None:
     } <= ids
 
 
+def test_city_life_short_read_golden_fixture_has_final_polish_cases() -> None:
+    data = json.loads(
+        (
+            Path(__file__).parents[1] / "fixtures" / "city_life_short_read_digest_golden.json"
+        ).read_text(encoding="utf-8")
+    )
+    ids = {case["id"] for case in data["cases"]}
+    assert {
+        "mixed_bank_status_is_one_dashboard_group",
+        "dashboard_label_is_deterministic",
+        "covered_status_with_microdetail_becomes_drill_down",
+        "covered_status_without_extra_detail_is_suppressed",
+        "unsupported_causal_compression_is_rejected",
+    } <= ids
+
+
+def test_plan_city_situation_consolidates_mixed_availability_into_conflicting_group() -> None:
+    import datetime as dt
+
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import plan_city_situation_presentation
+
+    now = dt.datetime.now(dt.timezone.utc)
+    rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="banking_cash",
+                subject_label="Банковские услуги и наличные",
+                dimension="availability",
+                location="Гора",
+                entity="banking",
+                state="UNAVAILABLE",
+                detail="Нет связи с банком",
+                source_refs=("ref-bank-red",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+            ),
+            CitySituationItem(
+                subject_key="banking_cash",
+                subject_label="Банковские услуги и наличные",
+                dimension="availability",
+                location="Залив",
+                entity="banking",
+                state="AVAILABLE",
+                detail="Банкомат выдает наличные",
+                source_refs=("ref-bank-green",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+            ),
+        )
+    )
+
+    plan = plan_city_situation_presentation(rollup, max_items=7, max_details_per_item=2)
+
+    assert len(plan.groups) == 1
+    group = plan.groups[0]
+    assert group.subject_key == "banking_cash"
+    assert group.state == "CONFLICTING"
+    assert set(group.source_refs) == {"ref-bank-red", "ref-bank-green"}
+    assert any("Гора" in line for line in group.detail_lines)
+    assert any("Залив" in line for line in group.detail_lines)
+
+
 def test_plan_city_situation_presentation_groups_same_subject_and_dimension() -> None:
     import datetime as dt
 
@@ -485,3 +550,169 @@ def test_build_digest_presentation_plan_assigns_merge_groups_by_tags() -> None:
     hints_by_id = {h.story_id: h for h in plan.story_hints}
     assert hints_by_id["story:100"].merge_group_id != hints_by_id["story:101"].merge_group_id
     assert hints_by_id["story:102"].merge_group_id == hints_by_id["story:103"].merge_group_id
+
+
+def test_build_digest_presentation_plan_detail_roles() -> None:
+    import datetime as dt
+
+    from src.editorial_models import StoryCard
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime.now(dt.timezone.utc)
+    rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="water_supply",
+                subject_label="Водоснабжение",
+                dimension="availability",
+                location="Центр",
+                entity="горводоканал",
+                state="UNAVAILABLE",
+                detail="Нет воды",
+                source_refs=("ref-water-1",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+            ),
+            CitySituationItem(
+                subject_key="electricity",
+                subject_label="Электроснабжение",
+                dimension="availability",
+                location="Гора",
+                entity="рэс",
+                state="UNAVAILABLE",
+                detail="Нет света",
+                source_refs=("ref-elec-1",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+            ),
+        )
+    )
+
+    # 1. Pure duplicate of water outage with no extra microdetails -> SUPPRESS
+    card_water = StoryCard(
+        id="story:water",
+        topic="Вода",
+        importance="medium",
+        summary="Воды нет в центре",
+        tags=["вода", "жкх"],
+        rubric_id="utilities",
+        category="utilities",
+        story_kind="operational_status",
+        representative_source_refs=["ref-water-1"],
+    )
+    evi_water_generic = PublicationEvidence(
+        evidence_id="story:water:evi:1",
+        story_id=1,
+        text="В центре нет воды",
+        source_text="В центре нет воды",
+        kind="established_fact",
+        publication_use="PUBLISH",
+        fragment_id=1,
+        source_ref="ref-water-1",
+        source_id=1,
+        source_item_id=1,
+        source_role="official",
+        observed_at=now,
+    )
+
+    # 2. Electricity outage card that HAS distinct microdetail (resident generator workaround) -> DRILL_DOWN
+    card_elec = StoryCard(
+        id="story:elec",
+        topic="Свет",
+        importance="high",
+        summary="Нет света, жильцы запустили генератор",
+        tags=["свет", "генератор"],
+        rubric_id="utilities",
+        category="utilities",
+        story_kind="operational_status",
+        representative_source_refs=["ref-elec-1"],
+    )
+    evi_elec_status = PublicationEvidence(
+        evidence_id="story:elec:evi:status",
+        story_id=2,
+        text="На Горе нет света",
+        source_text="На Горе нет света",
+        kind="established_fact",
+        publication_use="PUBLISH",
+        fragment_id=2,
+        source_ref="ref-elec-1",
+        source_id=2,
+        source_item_id=2,
+        source_role="official",
+        observed_at=now,
+    )
+    evi_elec_workaround = PublicationEvidence(
+        evidence_id="story:elec:evi:workaround",
+        story_id=2,
+        text="Жильцы скинулись по 300 рублей на генератор для подачи воды",
+        source_text="Жильцы дома 12 скинулись по 300 рублей на домовой генератор",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=3,
+        source_ref="ref-elec-2",
+        source_id=2,
+        source_item_id=3,
+        source_role="citizen",
+        observed_at=now,
+    )
+
+    # 3. Non-operational story -> NORMAL
+    card_sport = StoryCard(
+        id="story:sport",
+        topic="Спорт",
+        importance="low",
+        summary="Открыта запись в секции",
+        tags=["спорт", "дети"],
+        rubric_id="society",
+        category="society",
+        story_kind="",
+        representative_source_refs=["ref-sport-1"],
+    )
+    evi_sport = PublicationEvidence(
+        evidence_id="story:sport:evi:1",
+        story_id=3,
+        text="Спортшкола открыла бесплатный набор детей",
+        source_text="Спортивная школа открыла бесплатный набор детей на новый учебный год",
+        kind="established_fact",
+        publication_use="PUBLISH",
+        fragment_id=4,
+        source_ref="ref-sport-1",
+        source_id=3,
+        source_item_id=4,
+        source_role="official",
+        observed_at=now,
+    )
+
+    evidence_dict = {
+        "story:water:evi:1": evi_water_generic,
+        "story:elec:evi:status": evi_elec_status,
+        "story:elec:evi:workaround": evi_elec_workaround,
+        "story:sport:evi:1": evi_sport,
+    }
+
+    plan = build_digest_presentation_plan(
+        cards=[card_water, card_elec, card_sport],
+        city_situation=rollup,
+        evidence=evidence_dict,
+        max_city_situation_items=7,
+        max_city_situation_details=2,
+    )
+
+    hints_by_id = {h.story_id: h for h in plan.story_hints}
+
+    # Verify detail_role on all stories
+    assert hints_by_id["story:water"].detail_role == "SUPPRESS"
+    assert hints_by_id["story:elec"].detail_role == "DRILL_DOWN"
+    assert hints_by_id["story:sport"].detail_role == "NORMAL"
+
+    # Detail story ids only contains DRILL_DOWN and NORMAL
+    assert "story:water" not in plan.detail_story_ids
+    assert "story:elec" in plan.detail_story_ids
+    assert "story:sport" in plan.detail_story_ids
+
+    # DRILL_DOWN story has detail_support_ids focused on the non-dashboard / rich detail
+    assert "story:elec:evi:workaround" in hints_by_id["story:elec"].detail_support_ids
