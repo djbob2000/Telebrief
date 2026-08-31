@@ -14,6 +14,22 @@ def test_city_life_short_read_golden_fixture_has_required_cases() -> None:
     } <= ids
 
 
+def test_city_life_short_read_golden_fixture_has_final_polish_cases() -> None:
+    data = json.loads(
+        (
+            Path(__file__).parents[1] / "fixtures" / "city_life_short_read_digest_golden.json"
+        ).read_text(encoding="utf-8")
+    )
+    ids = {case["id"] for case in data["cases"]}
+    assert {
+        "mixed_bank_status_is_one_dashboard_group",
+        "dashboard_label_is_deterministic",
+        "covered_status_with_microdetail_becomes_drill_down",
+        "covered_status_without_extra_detail_is_suppressed",
+        "unsupported_causal_compression_is_rejected",
+    } <= ids
+
+
 def test_plan_city_situation_presentation_groups_same_subject_and_dimension() -> None:
     import datetime as dt
 
