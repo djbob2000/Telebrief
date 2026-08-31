@@ -87,7 +87,8 @@ Rules:
 - Pure positive statuses render as distinct subject-coherent dashboard groups (e.g. 🟢 **Банки**, 🟢 **Транспорт**) up to `digest_city_situation_max_positive_items` (default 2), reserving at least 1 slot on mixed days. There is no global catch-all `available_services` bucket.
 - Positive stories omitted from the dashboard by the positive budget remain fully eligible for thematic rubric coverage.
 - City Situation rendering is fully deterministic; the LLM does NOT author or rename dashboard groups.
-- Overlapping thematic items use explicit detail roles (`SUPPRESS / DRILL_DOWN / NORMAL`); `DRILL_DOWN` items must cite distinct detail evidence rather than duplicating dashboard status.
+- Overlapping thematic items use canonical presentation modes (`DASHBOARD_ONLY`, `DETAIL_ONLY`, `DASHBOARD_AND_DRILLDOWN`); `DASHBOARD_AND_DRILLDOWN` items must cite distinct detail evidence rather than duplicating dashboard status.
+- Every selected substantive digest Story must be represented in the final digest. Presentation budgets limit placement and detail, not knowledge coverage. Final digest Story coverage must be 100%. Dashboard-only coverage requires exact Story/support provenance.
 - Narrow deterministic causal relation validation rejects unsupported mechanism/cause claims with `UNSUPPORTED_DIGEST_RELATION`.
 - Related stories may be grouped for presentation inside their deterministic rubric/block, but legitimate coverage must not silently disappear.
 - Commercial classifieds, private disputes, personal accusations, phone-number spam, repetitive ad copy, and directory-style payload must not dominate the digest.
@@ -104,6 +105,10 @@ Rules:
 The Event-First article is a **city-life long read**.
 
 It is not limited to 3–4 major stories. It may cover many meaningful parts of city life when the reporting window is rich enough.
+
+Selection controls editorial hierarchy, rank, and presentation intent; it does not have subjective authority to delete a legitimate hard-eligible sealed Story.
+
+`ArticleCoveragePlan.story_ids` is the runtime article coverage denominator. AI story coverage may be incomplete; final article Story coverage must be 100%. Writer omission is a recovery trigger, never an acceptable final loss reason.
 
 The desired transformation is:
 
@@ -250,29 +255,19 @@ Claim Atoms are validation metadata, not sentence templates.
 
 ## 0.7 Article failure semantics
 
-Event-First article generation is **single-call and fail-closed**.
+Event-First article generation uses at most one LLM writer call.
 
-```text
-one writer attempt
-    ↓
-PASS → create publication
-FAIL → reject publication
-```
+Evidence Boundary is fail-closed for the AI draft, not for the publication.
 
-Hard factual/evidence violations remain blockers.
+Unsafe or failed writer output is discarded and replaced by a deterministic Event-First article built from the same frozen publishable knowledge.
 
-Do not reintroduce:
+Safe but incomplete writer output is preserved and completed deterministically.
 
-- second LLM fact-check calls;
-- LLM repair loops;
-- regeneration with another model;
-- "reviewer" LLM stages;
-- deterministic article prose fallback after a failed Event-First writer;
-- automatic retry merely because the writer draft failed evidence validation.
+No second LLM fact-check, repair, reviewer, regeneration, or alternate-model retry is allowed.
 
-Infrastructure/orchestration failures are a different category and may retain ordinary retry semantics where appropriate.
+When substantive PUBLISH material exists, writer failure alone must never prevent publication.
 
-The digest may still have a deterministic fallback because a digest is a coverage product and its fallback semantics are intentionally different from article publication.
+A terminal article-generation failure is reserved for deterministic/system invariant failure after recovery.
 
 ## 0.8 Reader hierarchy, not destructive selection
 
@@ -288,6 +283,8 @@ It should **not** feel like every source item has equal importance.
 
 It should also **not** discard smaller legitimate material merely because it is not dramatic enough for a newspaper front page.
 
+Selection controls presentation priority, editorial depth, and ranking within the coverage plan; it does not discard legitimate sealed candidate stories.
+
 The correct goal is:
 
 > **Not less information — better organized information.**
@@ -297,6 +294,12 @@ The correct goal is:
 Agents must not make changes whose effect is to:
 
 - reduce the city-life long read to only 3–4 selected headlines;
+- allow subjective article selection dropping legitimate sealed Stories;
+- treat writer omission as an accepted information-loss reason;
+- let writer failure/evidence rejection destroy an otherwise publishable Event-First edition;
+- turn digest presentation caps into knowledge-loss caps;
+- use legacy/message-based article generation as production recovery;
+- classify deterministic recovery as a correctness regression by itself;
 - require official confirmation or 2+ sources for legitimate local reports;
 - treat resident questions as established facts or City Situation statuses;
 - flatten supported microdetails into generic summaries;
@@ -342,13 +345,15 @@ EventPayload + exact fragment provenance
         ↓
 Publication snapshot + selection
         ↓
-        ├── Digest: City Situation + scan-first rubric coverage
-        └── Article: city-life coverage plan + single-call writer + Evidence Boundary
+        ├── Digest: coverage-preserving selection -> DigestPresentationPlan -> City Situation + detail rendering -> DigestCoverageTrace -> publication
+        └── Article: coverage-preserving selection -> ArticleCoveragePlan -> one writer attempt -> deterministic finalization/recovery -> final validation -> ArticleClaimTrace -> publication
         ↓
 Delivery
 ```
 
 The canonical design is **Event-First**, not claim-first.
+
+Legacy floor guards offline regressions; Event-First truth drives production. Writer omission is never an acceptable loss reason. Presentation budgets never redefine publishable knowledge.
 
 Legacy/custom/message-based paths may remain for compatibility, comparison, migration, or benchmarking. Do not treat them as the target architecture unless the user explicitly asks to modify a legacy path.
 
@@ -584,19 +589,16 @@ Rules:
 The digest should render compact reader-facing items with strong mini-headlines and short explanatory bodies.
 
 Rules:
-- Thematic items act as drill-downs (`SUPPRESS / DRILL_DOWN / NORMAL`).
-- Stories overlapping the dashboard with distinct microdetails are marked `DRILL_DOWN` and must cite distinct detail evidence rather than duplicating dashboard status.
-- Stories overlapping the dashboard without distinct microdetails are marked `SUPPRESS` and omitted from thematic blocks.
+- Thematic items act according to canonical presentation modes (`DASHBOARD_ONLY`, `DETAIL_ONLY`, `DASHBOARD_AND_DRILLDOWN`).
+- Stories overlapping the dashboard with distinct microdetails are marked `DASHBOARD_AND_DRILLDOWN` and must cite distinct detail evidence rather than duplicating dashboard status.
+- Stories overlapping the dashboard without distinct microdetails are marked `DASHBOARD_ONLY` and omitted from thematic blocks, while fully represented in City Situation.
+- Every selected substantive digest Story must be represented in the final digest (100% final Story coverage).
 - Narrow deterministic relation safety checks (`find_unsupported_digest_relations`) reject unsupported causal claims (e.g. invented causal mechanisms like "Авария на подстанции оставила Гору без света" from pure outage reports) with code `UNSUPPORTED_DIGEST_RELATION`.
 - The LLM may synthesize closely related Stories within a deterministic rubric/block when the current contract permits it, but it may not invent Story membership or move Stories across rubrics.
 
 ## 5.3 Digest failure behavior
 
-Single-call narrative mode may fall back to the deterministic digest when its narrative overlay is invalid.
-
-This is intentionally different from Event-First article failure behavior.
-
-Do not copy article fail-closed semantics onto the digest unless explicitly redesigning the product.
+Single-call narrative mode falls back to the deterministic Event-First digest draft built from `DigestPresentationPlan` when its narrative overlay is invalid or missing, guaranteeing 100% final Story coverage.
 
 ---
 
