@@ -428,6 +428,7 @@ class EventEditorialAdapter:
                 should_emit_card = True
 
             if should_emit_card:
+                story_kind = "operational_status" if inp.story_id in pure_op_story_ids else ""
                 card = StoryCard(
                     id=f"story:{inp.story_id}",
                     topic=headline,
@@ -436,6 +437,7 @@ class EventEditorialAdapter:
                     tags=list(payload.tags) if payload else [],
                     rubric_id="",
                     category=payload.category if payload else "",
+                    story_kind=story_kind,
                     representative_source_refs=card_source_refs,
                     hard_facts=hard_facts,
                     community_observations=community_evidence
@@ -462,18 +464,6 @@ class EventEditorialAdapter:
                 city_rollup = (
                     build_city_situation_rollup(resolved_states) if resolved_states else None
                 )
-
-            # When rollup is active, suppress pure operational cards so they are not duplicated
-            if city_rollup and city_rollup.items:
-                story_cards = [
-                    c
-                    for c in story_cards
-                    if not (
-                        c.id.startswith("story:")
-                        and c.id.split(":")[1].isdigit()
-                        and int(c.id.split(":")[1]) in pure_op_story_ids
-                    )
-                ]
 
         # Build ArticleEditorialContext for article runs
         article_ctx = None

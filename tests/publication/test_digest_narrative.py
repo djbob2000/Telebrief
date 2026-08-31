@@ -14,12 +14,14 @@ from src.publication.digest_narrative import (
 )
 from src.publication.evidence import PublicationEvidence
 from src.publication.narrative_contract import (
+    DIGEST_NARRATIVE_PROMPT_VERSION,
     build_article_narrative_contract,
     build_digest_narrative_contract,
 )
 
 
 def test_narrative_contracts_epistemic_fidelity():
+    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v2"
     article_contract = build_article_narrative_contract(output_language="Russian")
     assert "single-source" in article_contract.lower()
     assert "community" in article_contract.lower()
@@ -35,6 +37,8 @@ def test_narrative_contracts_epistemic_fidelity():
     digest_contract = build_digest_narrative_contract(output_language="Russian")
     assert "single-source" in digest_contract.lower()
     assert "community" in digest_contract.lower()
+    assert "city situation" in digest_contract.lower()
+    assert "microdetail" in digest_contract.lower()
 
 
 _NOW = dt.datetime(2026, 8, 29, 12, 0, tzinfo=dt.timezone.utc)
@@ -633,9 +637,104 @@ async def test_digest_narrative_writer_single_call_success(mocker):
     assert isinstance(draft, DigestNarrativeDraft)
     assert mock_provider.chat_completion.call_count == 1
     assert len(draft.blocks) == 1
+
+
+@pytest.mark.asyncio
+async def test_digest_narrative_writer_with_situation_plan(mocker):
+    import json
+
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        DigestNarrativeWriter,
+    )
+    from src.publication.digest_presentation import (
+        CitySituationPresentationGroup,
+        CitySituationPresentationPlan,
+    )
+
+    sit_plan = CitySituationPresentationPlan(
+        groups=(
+            CitySituationPresentationGroup(
+                group_id="situation:water:avail",
+                group_kind="subject_status",
+                subject_key="water",
+                subject_label="Вода",
+                state="UNAVAILABLE",
+                source_refs=("ref-w-1",),
+                detail_lines=("Центр: нет воды",),
+            ),
+        ),
+        covered_source_refs=("ref-w-1",),
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ",
+                story_ids=("story:1",),
+                support_ids=("sup:1",),
+                canonical_notes=(),
+                detail_support_ids_by_story=(("story:1", ("sup:1",)),),
+                merge_group_by_story=(("story:1", "story:1"),),
+            ),
+        )
+    )
+
+    mock_provider = mocker.AsyncMock()
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "situation_items": [
+                {
+                    "group_id": "situation:water:avail",
+                    "label": "Вода",
+                    "body": "Центр: нет воды.",
+                    "cited_support_ids": ["ref-w-1"],
+                }
+            ],
+            "blocks": [
+                {
+                    "block_id": "block:utilities:0",
+                    "items": [
+                        {
+                            "headline": "Ремонт сетей",
+                            "body": "Бригады работают на сетях.",
+                            "cited_support_ids": ["sup:1"],
+                            "covered_story_ids": ["story:1"],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    writer = DigestNarrativeWriter(provider=mock_provider)
+    draft = await writer.generate_narrative_draft(
+        plan=plan,
+        cards=[],
+        evidence={},
+        situation_plan=sit_plan,
+        language="Russian",
+    )
+
+    assert isinstance(draft, DigestNarrativeDraft)
+    assert len(draft.situation_items) == 1
+    assert draft.situation_items[0].group_id == "situation:water:avail"
+
+    # Verify user prompt includes situation_items
+    call_args = mock_provider.chat_completion.call_args[1]
+    messages = call_args["messages"]
+    user_content = next(m["content"] for m in messages if m["role"] == "user")
+    user_data = json.loads(user_content)
+    assert "situation_items" in user_data
+    assert user_data["situation_items"][0]["group_id"] == "situation:water:avail"
+
     assert draft.blocks[0].block_id == "block:utilities:0"
     assert len(draft.blocks[0].items) == 1
-    assert draft.blocks[0].items[0].headline == "Водоканал завершил ремонтные работы"
+    assert draft.blocks[0].items[0].headline == "Ремонт сетей"
 
 
 def test_build_digest_support_text_index():
@@ -712,3 +811,252 @@ def test_digest_narrative_item_grouping_three_stories():
     result = validate_digest_narrative(draft, plan, support_index)
     assert result.is_valid
     assert draft.blocks[0].items[0].covered_story_ids == block.story_ids
+
+
+def test_validate_digest_narrative_rejects_unrelated_story_grouping():
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    block = DigestNarrativeBlock(
+        block_id="block:utilities:0",
+        rubric_id="utilities",
+        rubric_title="ЖКХ",
+        story_ids=("story:100", "story:101"),
+        support_ids=("sup:100", "sup:101"),
+        canonical_notes=(),
+        merge_group_by_story=(("story:100", "merge:100"), ("story:101", "merge:101")),
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+
+    raw = {
+        "blocks": [
+            {
+                "block_id": "block:utilities:0",
+                "items": [
+                    {
+                        "headline": "Городские новости",
+                        "body": "Назначение нового сотрудника и лаборатория проводит анализы.",
+                        "covered_story_ids": ["story:100", "story:101"],
+                        "cited_support_ids": ["sup:100", "sup:101"],
+                    }
+                ],
+            }
+        ]
+    }
+    draft = DigestNarrativeDraft.from_dict(raw)
+    support_index = {
+        "sup:100": "Назначение нового сотрудника",
+        "sup:101": "Лаборатория проводит анализы",
+    }
+    result = validate_digest_narrative(draft, plan, support_index)
+    assert not result.is_valid
+    assert any("UNRELATED_STORY_GROUPING" in v for v in result.violations)
+
+
+def test_digest_narrative_draft_parser_situation_items() -> None:
+    from src.publication.digest_narrative import DigestNarrativeDraft, DigestSituationItemDraft
+
+    data = {
+        "situation_items": [
+            {
+                "group_id": "situation:water_supply:availability",
+                "label": "Водоснабжение",
+                "body": "Азмол: воды нет третий день; верхние этажи: слабое давление.",
+                "cited_support_ids": ["ref-water-1", "ref-water-2"],
+            }
+        ],
+        "blocks": [
+            {
+                "block_id": "block:utilities:0",
+                "items": [
+                    {
+                        "headline": "Ремонт сетей",
+                        "body": "Бригады работают на объектах.",
+                        "covered_story_ids": ["story:1"],
+                        "cited_support_ids": ["ref-1"],
+                    }
+                ],
+            }
+        ],
+    }
+    draft = DigestNarrativeDraft.from_dict(data)
+    assert len(draft.situation_items) == 1
+    assert isinstance(draft.situation_items[0], DigestSituationItemDraft)
+    assert draft.situation_items[0].group_id == "situation:water_supply:availability"
+    assert draft.situation_items[0].label == "Водоснабжение"
+    assert "ref-water-1" in draft.situation_items[0].cited_support_ids
+
+
+def test_digest_narrative_draft_parser_backward_compatible_no_situation() -> None:
+    from src.publication.digest_narrative import DigestNarrativeDraft
+
+    data = {
+        "blocks": [
+            {
+                "block_id": "block:utilities:0",
+                "items": [
+                    {
+                        "headline": "Ремонт сетей",
+                        "body": "Бригады работают на объектах.",
+                        "covered_story_ids": ["story:1"],
+                        "cited_support_ids": ["ref-1"],
+                    }
+                ],
+            }
+        ]
+    }
+    draft = DigestNarrativeDraft.from_dict(data)
+    assert draft.situation_items == ()
+
+
+def test_validate_digest_narrative_checks_situation_group_set_mismatch() -> None:
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+    from src.publication.digest_presentation import (
+        CitySituationPresentationGroup,
+        CitySituationPresentationPlan,
+    )
+
+    sit_grp_1 = CitySituationPresentationGroup(
+        group_id="situation:water:avail",
+        group_kind="subject_status",
+        subject_key="water",
+        subject_label="Вода",
+        state="UNAVAILABLE",
+        source_refs=("ref-w-1",),
+        detail_lines=("Центр: нет воды",),
+    )
+    sit_grp_2 = CitySituationPresentationGroup(
+        group_id="situation:power:avail",
+        group_kind="subject_status",
+        subject_key="power",
+        subject_label="Свет",
+        state="DEGRADED",
+        source_refs=("ref-p-1",),
+        detail_lines=("АКЗ: скачки напряжения",),
+    )
+    sit_plan = CitySituationPresentationPlan(
+        groups=(sit_grp_1, sit_grp_2),
+        covered_source_refs=("ref-w-1", "ref-p-1"),
+    )
+
+    block = DigestNarrativeBlock(
+        block_id="block:utilities:0",
+        rubric_id="utilities",
+        rubric_title="ЖКХ",
+        story_ids=("story:1",),
+        support_ids=("ref-1",),
+        canonical_notes=(),
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+
+    # Draft omits sit_grp_2
+    raw = {
+        "situation_items": [
+            {
+                "group_id": "situation:water:avail",
+                "label": "Вода",
+                "body": "Центр: нет воды.",
+                "cited_support_ids": ["ref-w-1"],
+            }
+        ],
+        "blocks": [
+            {
+                "block_id": "block:utilities:0",
+                "items": [
+                    {
+                        "headline": "Ремонт сетей",
+                        "body": "Бригады работают на объектах.",
+                        "covered_story_ids": ["story:1"],
+                        "cited_support_ids": ["ref-1"],
+                    }
+                ],
+            }
+        ],
+    }
+    draft = DigestNarrativeDraft.from_dict(raw)
+    support_index = {
+        "ref-w-1": "Центр: нет воды",
+        "ref-p-1": "АКЗ: скачки напряжения",
+        "ref-1": "Бригады работают на объектах.",
+    }
+    result = validate_digest_narrative(draft, plan, support_index, situation_plan=sit_plan)
+    assert not result.is_valid
+    assert any("SITUATION_GROUP_SET_MISMATCH" in v for v in result.violations)
+
+
+def test_validate_digest_narrative_checks_unsupported_situation_claims() -> None:
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+    from src.publication.digest_presentation import (
+        CitySituationPresentationGroup,
+        CitySituationPresentationPlan,
+    )
+
+    sit_grp = CitySituationPresentationGroup(
+        group_id="situation:water:avail",
+        group_kind="subject_status",
+        subject_key="water",
+        subject_label="Вода",
+        state="UNAVAILABLE",
+        source_refs=("ref-w-1",),
+        detail_lines=("Центр: нет воды",),
+    )
+    sit_plan = CitySituationPresentationPlan(
+        groups=(sit_grp,),
+        covered_source_refs=("ref-w-1",),
+    )
+    block = DigestNarrativeBlock(
+        block_id="block:utilities:0",
+        rubric_id="utilities",
+        rubric_title="ЖКХ",
+        story_ids=("story:1",),
+        support_ids=("ref-1",),
+        canonical_notes=(),
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+
+    # Body claims invented deadline 18:30 not in ref-w-1
+    raw = {
+        "situation_items": [
+            {
+                "group_id": "situation:water:avail",
+                "label": "Вода",
+                "body": "Центр: воды не будет до 18:30.",
+                "cited_support_ids": ["ref-w-1"],
+            }
+        ],
+        "blocks": [
+            {
+                "block_id": "block:utilities:0",
+                "items": [
+                    {
+                        "headline": "Ремонт сетей",
+                        "body": "Бригады работают на объектах.",
+                        "covered_story_ids": ["story:1"],
+                        "cited_support_ids": ["ref-1"],
+                    }
+                ],
+            }
+        ],
+    }
+    draft = DigestNarrativeDraft.from_dict(raw)
+    support_index = {
+        "ref-w-1": "Центр: нет воды третий день.",
+        "ref-1": "Бригады работают на объектах.",
+    }
+    result = validate_digest_narrative(draft, plan, support_index, situation_plan=sit_plan)
+    assert not result.is_valid
+    assert any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in result.violations)

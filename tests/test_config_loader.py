@@ -15,6 +15,7 @@ from src.config_loader import (
     ForumTopicConfig,
     McpConfig,
     PromptsConfig,
+    PublicationEditorialConfig,
     SourceRoleResolver,
     StorageConfig,
     effective_source_type,
@@ -2438,3 +2439,24 @@ def test_publication_editorial_config_validation(tmp_path, mock_env_vars, pub_ed
 
     with pytest.raises(ValueError, match=error):
         load_config(str(config_file))
+
+
+@pytest.mark.unit
+def test_publication_editorial_city_situation_defaults() -> None:
+    cfg = PublicationEditorialConfig()
+    assert cfg.digest_city_situation_max_items == 7
+    assert cfg.digest_city_situation_max_details_per_item == 2
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [0, 13])
+def test_city_situation_max_items_bounds(value: int) -> None:
+    with pytest.raises(ValueError):
+        PublicationEditorialConfig(digest_city_situation_max_items=value)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("value", [0, 5])
+def test_city_situation_max_details_bounds(value: int) -> None:
+    with pytest.raises(ValueError):
+        PublicationEditorialConfig(digest_city_situation_max_details_per_item=value)
