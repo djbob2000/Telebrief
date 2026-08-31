@@ -489,3 +489,198 @@ def test_city_life_short_read_digest_golden_scenarios_contract() -> None:
         "headline_body_attribution_is_not_duplicated",
     }
     assert expected_operational_cleanup.issubset(case_ids)
+
+
+def test_operational_semantic_boundaries_end_to_end() -> None:
+    """Verifies that coping behaviors do not leak into dashboard and positive statuses are subject coherent."""
+    from src.domain.event_payload import EventPayload
+    from src.editorial_models import StoryCard
+    from src.processing.operational_semantics import normalize_operational_payload
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+    )
+    from src.publication.digest_presentation import build_digest_presentation_plan
+    from src.publication.digest_quality_diagnostics import audit_digest_prose_quality
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime(2026, 8, 29, 12, 0, tzinfo=dt.timezone.utc)
+
+    # 1. Payload with coping behavior mistakenly marked as operational observation
+    coping_payload = EventPayload.from_dict(
+        {
+            "headline": "Жители используют домовой генератор",
+            "digest_summary": "Жители скинулись по 300 рублей на генератор для воды",
+            "category": "utilities",
+            "operational_observations": [
+                {
+                    "subject_key": "power_supply",
+                    "subject_label": "Электроснабжение",
+                    "dimension": "availability",
+                    "state": "DEGRADED",
+                    "detail": "Жители скинулись по 300 рублей на домовой генератор",
+                    "source_fragment_ids": [101],
+                }
+            ],
+            "evidence_items": [
+                {
+                    "source_fragment_ids": [101],
+                    "text": "Жители скинулись по 300 рублей на домовой генератор",
+                    "kind": "community_report",
+                    "publication_use": "PUBLISH",
+                }
+            ],
+        }
+    )
+    normalized, audit = normalize_operational_payload(coping_payload)
+    # The coping observation is dropped from operational_observations
+    assert len(normalized.operational_observations) == 0
+    assert "power_supply" in audit.dropped_observation_subject_keys
+
+    # 2. Community outage report with service_access
+    service_payload = EventPayload.from_dict(
+        {
+            "headline": "Нет воды на верхних этажах",
+            "digest_summary": "Вода не доходит до верхних этажах на Азмоле",
+            "category": "utilities",
+            "operational_observations": [
+                {
+                    "subject_key": "water_supply",
+                    "subject_label": "Водоснабжение",
+                    "dimension": "availability",
+                    "location": "Азмол",
+                    "state": "DEGRADED",
+                    "detail": "Слабый напор, на верхних этажах воды нет",
+                    "source_fragment_ids": [102],
+                }
+            ],
+            "evidence_items": [
+                {
+                    "source_fragment_ids": [102],
+                    "text": "Слабый напор, на верхних этажах воды нет",
+                    "kind": "service_access",
+                    "publication_use": "PUBLISH",
+                }
+            ],
+        }
+    )
+    norm_service, audit_serv = normalize_operational_payload(service_payload)
+    assert len(norm_service.operational_observations) == 1
+    assert len(audit_serv.dropped_observation_subject_keys) == 0
+
+    # 3. Presentation plan verifies subject-coherent positive status and no global bundle
+    sit_items = (
+        CitySituationItem(
+            subject_key="water_supply",
+            subject_label="Водоснабжение",
+            dimension="availability",
+            location="Азмол",
+            entity="Горводоканал",
+            state="DEGRADED",
+            detail="Слабый напор",
+            source_refs=("ref-water",),
+            first_observed_at=now,
+            last_observed_at=now,
+            observation_count=1,
+        ),
+        CitySituationItem(
+            subject_key="transport",
+            subject_label="Транспорт",
+            dimension="availability",
+            location="Город",
+            entity="Автобусы",
+            state="AVAILABLE",
+            detail="Автобусы ходят по графику",
+            source_refs=("ref-trans",),
+            first_observed_at=now,
+            last_observed_at=now,
+            observation_count=1,
+        ),
+    )
+    rollup = CitySituationRollup(items=sit_items)
+    card_coping = StoryCard(
+        id="story:coping",
+        topic="Генераторы",
+        importance="medium",
+        summary="Жители скинулись по 300 рублей на генератор",
+        tags=["генератор"],
+        rubric_id="utilities",
+        category="utilities",
+        story_kind="community_story",
+        representative_source_refs=["ref-coping"],
+    )
+    card_water = StoryCard(
+        id="story:water",
+        topic="Водоснабжение",
+        importance="high",
+        summary="Вода не доходит до верхних этажей",
+        tags=["вода"],
+        rubric_id="utilities",
+        category="utilities",
+        story_kind="operational_status",
+        representative_source_refs=["ref-water"],
+    )
+
+    evi_coping = PublicationEvidence(
+        evidence_id="evi:coping:1",
+        story_id=1,
+        text="Жители скинулись по 300 рублей на домовой генератор",
+        source_text="Жители скинулись по 300 рублей на домовой генератор",
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=101,
+        source_ref="ref-coping",
+        source_id=1,
+        source_item_id=1,
+        source_role="citizen",
+        observed_at=now,
+    )
+    evi_water = PublicationEvidence(
+        evidence_id="evi:water:1",
+        story_id=2,
+        text="Слабый напор, на верхних этажах воды нет",
+        source_text="Слабый напор, на верхних этажах воды нет",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=102,
+        source_ref="ref-water",
+        source_id=2,
+        source_item_id=2,
+        source_role="citizen",
+        observed_at=now,
+    )
+
+    plan = build_digest_presentation_plan(
+        cards=[card_coping, card_water],
+        city_situation=rollup,
+        evidence={"evi:coping:1": evi_coping, "evi:water:1": evi_water},
+        max_city_situation_items=7,
+        max_city_situation_details=2,
+        max_city_situation_positive_items=2,
+    )
+
+    # Positive group is subject coherent (transport, not available_services)
+    assert len(plan.city_situation.groups) == 2
+    assert all(g.subject_key != "available_services" for g in plan.city_situation.groups)
+    assert {g.subject_key for g in plan.city_situation.groups} == {"water_supply", "transport"}
+
+    # 4. Prose quality diagnostics audit clean draft
+    clean_draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:util",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Жители используют домовой генератор для подачи воды",
+                        body="В многоквартирном доме наладили автономную подачу воды благодаря общему генератору.",
+                        covered_story_ids=("story:coping",),
+                        cited_support_ids=("evi:coping:1",),
+                    ),
+                ),
+            ),
+        )
+    )
+    prose_audit = audit_digest_prose_quality(clean_draft, {"evi:coping:1": evi_coping})
+    assert prose_audit.is_clean is True
