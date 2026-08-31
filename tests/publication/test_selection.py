@@ -150,70 +150,134 @@ class TestEditorialSelection:
         assert len(inputs) == 1
         assert inputs[0].story_id == s1_id
 
-    async def test_omitted_story_can_be_included_in_later_run(
+    async def test_article_subjective_omit_is_coverage_overridden(
         self, conn: psycopg.AsyncConnection, pool, edition
     ):
         uow = DatabaseUnitOfWork(pool)
         snap_service = PublicationSnapshotService(uow=uow)
 
-        # Seed story
         cur = await conn.execute(
-            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) "
+            "VALUES (%s, 'active', %s) RETURNING id",
             (edition.id, _NOW),
         )
         story_id = (await cur.fetchone())[0]
         cur = await conn.execute(
-            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) VALUES (%s, 1, 'open', 'Story A', 'ha', %s) RETURNING id",
+            "INSERT INTO story_revisions "
+            "(story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Небольшая, но полезная городская история', 'article-omit', %s) "
+            "RETURNING id",
             (story_id, _NOW),
         )
         rev_id = (await cur.fetchone())[0]
         await conn.execute(
-            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s",
+            (rev_id, story_id),
         )
         from tests.publication.conftest import seed_claim_for_story
 
         await seed_claim_for_story(conn, edition.id, story_id, _NOW)
 
-        # Run 1: OMIT story
-        run1 = await snap_service.create_run(
+        run = await snap_service.create_run(
             edition_id=edition.id,
             publication_type="article",
             snapshot_at=_NOW,
-            request_key="test-sel-run-1",
+            request_key="test-article-coverage-override",
         )
-        await snap_service.seal_candidates(run1.id)
-        model1 = MockSelectionModel(
-            [
-                SelectionProposal(
-                    story_id=story_id, story_revision_id=rev_id, decision="OMIT", reason="Не влезло"
-                )
-            ]
-        )
-        inputs1 = await EditorialSelectionService(uow=uow, model=model1).select(run1.id)
-        assert len(inputs1) == 0
+        await snap_service.seal_candidates(run.id)
 
-        # Run 2 at later time: INCLUDE story
-        later = _NOW + dt.timedelta(hours=2)
-        run2 = await snap_service.create_run(
-            edition_id=edition.id,
-            publication_type="article",
-            snapshot_at=later,
-            request_key="test-sel-run-2",
-        )
-        await snap_service.seal_candidates(run2.id)
-        model2 = MockSelectionModel(
+        model = MockSelectionModel(
             [
                 SelectionProposal(
                     story_id=story_id,
                     story_revision_id=rev_id,
-                    decision="INCLUDE",
-                    presentation_intent="normal",
+                    decision="OMIT",
+                    reason="Too minor for the article",
                 )
             ]
         )
-        inputs2 = await EditorialSelectionService(uow=uow, model=model2).select(run2.id)
-        assert len(inputs2) == 1
-        assert inputs2[0].story_id == story_id
+        inputs = await EditorialSelectionService(uow=uow, model=model).select(
+            run.id, defer_generation=False
+        )
+
+        assert [inp.story_id for inp in inputs] == [story_id]
+        async with uow.transaction() as tx:
+            row = await (
+                await tx.execute(
+                    "SELECT decision, metadata FROM publication_selection_decisions "
+                    "WHERE publication_run_id = %s AND candidate_id IN "
+                    "(SELECT id FROM publication_candidates WHERE publication_run_id = %s AND story_id = %s)",
+                    (run.id, run.id, story_id),
+                )
+            ).fetchone()
+        assert row[0] == "INCLUDE"
+        assert row[1]["coverage_override"] is True
+        assert row[1]["model_decision"] == "OMIT"
+
+    async def test_article_hard_exclusion_remains_omitted(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) "
+            "VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions "
+            "(story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Чисто коммерческое объявление', 'article-hard-omit', %s) "
+            "RETURNING id",
+            (story_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s",
+            (rev_id, story_id),
+        )
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-article-hard-exclusion",
+        )
+        await snap_service.seal_candidates(run.id)
+
+        model = MockSelectionModel(
+            [
+                SelectionProposal(
+                    story_id=story_id,
+                    story_revision_id=rev_id,
+                    decision="OMIT",
+                    reason="Commercial classified only",
+                    exclusion_reason="commercial_classified",
+                )
+            ]
+        )
+        inputs = await EditorialSelectionService(uow=uow, model=model).select(
+            run.id, defer_generation=False
+        )
+
+        assert len(inputs) == 0
+        async with uow.transaction() as tx:
+            row = await (
+                await tx.execute(
+                    "SELECT decision, metadata FROM publication_selection_decisions "
+                    "WHERE publication_run_id = %s AND candidate_id IN "
+                    "(SELECT id FROM publication_candidates WHERE publication_run_id = %s AND story_id = %s)",
+                    (run.id, run.id, story_id),
+                )
+            ).fetchone()
+        assert row[0] == "OMIT"
+        assert row[1]["coverage_override"] is False
+        assert row[1]["exclusion_reason"] == "commercial_classified"
 
     async def test_ai_selector_strict_json_and_validation(self):
         import json

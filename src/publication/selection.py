@@ -164,47 +164,51 @@ class EditorialSelectionService:
             validated_proposals.append((cand, prop))
 
         is_digest = run.publication_type in DIGEST_PUBLICATION_TYPES
+        coverage_preserving = is_digest or run.publication_type == "article"
+
         normalized_proposals: list[tuple[PublicationCandidate, SelectionProposal]] = []
         for cand, prop in validated_proposals:
-            if is_digest:
-                if prop.decision == "OMIT":
-                    if prop.exclusion_reason in HARD_EXCLUSION_REASONS:
-                        # Hard exclusion survives
-                        meta = dict(prop.metadata or {})
-                        meta["model_decision"] = "OMIT"
-                        meta["exclusion_reason"] = prop.exclusion_reason
-                        meta["coverage_override"] = False
-                        effective_prop = SelectionProposal(
-                            story_id=prop.story_id,
-                            story_revision_id=prop.story_revision_id,
-                            decision="OMIT",
-                            presentation_intent=prop.presentation_intent,
-                            confidence=prop.confidence,
-                            reason=prop.reason,
-                            rank=prop.rank,
-                            exclusion_reason=prop.exclusion_reason,
-                            metadata=meta,
-                        )
-                    else:
-                        # Subjective / low priority / missing reason: override to INCLUDE
-                        meta = dict(prop.metadata or {})
-                        meta["model_decision"] = "OMIT"
-                        meta["exclusion_reason"] = prop.exclusion_reason
-                        meta["coverage_override"] = True
-                        intent = prop.presentation_intent or "normal"
-                        effective_prop = SelectionProposal(
-                            story_id=prop.story_id,
-                            story_revision_id=prop.story_revision_id,
-                            decision="INCLUDE",
-                            presentation_intent=intent,
-                            confidence=prop.confidence,
-                            reason=prop.reason or "Coverage override for digest publication",
-                            rank=prop.rank,
-                            exclusion_reason=None,
-                            metadata=meta,
-                        )
+            if coverage_preserving and prop.decision == "OMIT":
+                if prop.exclusion_reason in HARD_EXCLUSION_REASONS:
+                    meta = dict(prop.metadata or {})
+                    meta.update(
+                        {
+                            "model_decision": "OMIT",
+                            "exclusion_reason": prop.exclusion_reason,
+                            "coverage_override": False,
+                        }
+                    )
+                    effective_prop = SelectionProposal(
+                        story_id=prop.story_id,
+                        story_revision_id=prop.story_revision_id,
+                        decision="OMIT",
+                        presentation_intent=prop.presentation_intent,
+                        confidence=prop.confidence,
+                        reason=prop.reason,
+                        rank=prop.rank,
+                        exclusion_reason=prop.exclusion_reason,
+                        metadata=meta,
+                    )
                 else:
-                    effective_prop = prop
+                    meta = dict(prop.metadata or {})
+                    meta.update(
+                        {
+                            "model_decision": "OMIT",
+                            "exclusion_reason": prop.exclusion_reason,
+                            "coverage_override": True,
+                        }
+                    )
+                    effective_prop = SelectionProposal(
+                        story_id=prop.story_id,
+                        story_revision_id=prop.story_revision_id,
+                        decision="INCLUDE",
+                        presentation_intent=prop.presentation_intent or "normal",
+                        confidence=prop.confidence,
+                        reason=prop.reason or "Coverage override for publication",
+                        rank=prop.rank,
+                        exclusion_reason=None,
+                        metadata=meta,
+                    )
             else:
                 effective_prop = prop
             normalized_proposals.append((cand, effective_prop))

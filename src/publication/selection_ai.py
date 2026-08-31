@@ -150,15 +150,12 @@ class AIPublicationSelectionModel:
             )
         else:
             system_content = (
-                "You are an editorial selection AI for regional publication articles. "
-                "Evaluate candidate stories and select the ones to INCLUDE.\n\n"
-                "CRITICAL RULES:\n"
-                "1. Select legitimate candidate stories to INCLUDE in the article.\n"
-                "2. Single-source, community, or unverified status is NEVER by itself a reason to omit. "
-                "Low-risk useful reports from single channels or community groups should be INCLUDED with "
-                "presentation_intent='unverified_operational', 'normal', or 'brief'.\n"
-                "3. Rank included stories starting at rank 1 for the most important lead item.\n"
-                "4. Respond strictly with a JSON object containing an 'included' list of selected story IDs."
+                "You are an editorial ranking AI for regional city-life articles. "
+                "Every supplied candidate has already passed structural and temporal eligibility.\n\n"
+                "Preserve legitimate local coverage. Do not omit a candidate merely because it is "
+                "minor, single-source, unofficial, repetitive in theme, or less dramatic than the lead.\n\n"
+                "The only selector-level hard exclusion is commercial_classified. "
+                "Rank candidates and choose presentation intent; normal omission is not an admission gate."
             )
 
         messages = [
