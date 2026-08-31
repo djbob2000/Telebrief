@@ -14,8 +14,8 @@ _NOW = dt.datetime.now(dt.timezone.utc)
 
 
 @pytest.mark.postgres
-async def test_run_rescreen_end_to_end(conn, pool, edition, monkeypatch):
-    test_db_url = "postgresql://telebrief:telebrief@localhost:5432/telebrief_test"
+async def test_run_rescreen_end_to_end(conn, pool, edition, database_config, monkeypatch):
+    test_db_url = database_config.url
 
     # Insert test active story and fragments
     cur = await conn.execute(

@@ -1,5 +1,7 @@
 import os
+import urllib.parse
 from datetime import datetime, timezone
+from typing import Iterator
 from unittest.mock import MagicMock
 
 DEFAULT_TEST_ENV = {
@@ -20,23 +22,77 @@ for _key, _val in DEFAULT_TEST_ENV.items():
     if _key not in os.environ:
         os.environ[_key] = _val
 
+import psycopg  # noqa: E402
 import pytest  # noqa: E402
 
 from src.config_loader import ChannelConfig, Config, DatabaseConfig, Settings  # noqa: E402
 
 
-@pytest.fixture
-def database_config() -> DatabaseConfig:
-    """DatabaseConfig pointing at the persistent PostgreSQL test database."""
-    url = os.environ.get(
+@pytest.fixture(scope="session", autouse=True)
+def configure_worker_database(request) -> Iterator[str]:
+    """Provide an isolated test database URL per xdist worker created from the template."""
+    worker_id = "master"
+    if hasattr(request.config, "workerinput"):
+        worker_id = request.config.workerinput["workerid"]
+
+    base_url = os.environ.get(
         "TELEBRIEF_TEST_DATABASE_URL",
         os.environ.get(
             "DATABASE_URL", "postgresql://telebrief:telebrief@localhost:5432/telebrief_test"
         ),
     )
+
+    if worker_id == "master":
+        yield base_url
+        return
+
+    parsed = urllib.parse.urlparse(base_url)
+    base_db_name = parsed.path.lstrip("/") or "telebrief_test"
+    worker_db_name = f"{base_db_name}_{worker_id}"
+    admin_url = urllib.parse.urlunparse(parsed._replace(path="/postgres"))
+    worker_url = urllib.parse.urlunparse(parsed._replace(path=f"/{worker_db_name}"))
+
+    # Provision worker database from the template
+    try:
+        with psycopg.connect(admin_url, autocommit=True) as conn:
+            conn.execute(f"DROP DATABASE IF EXISTS {worker_db_name} (FORCE)")
+            conn.execute(f"CREATE DATABASE {worker_db_name} TEMPLATE {base_db_name}")
+    except Exception as exc:
+        import logging
+
+        logging.getLogger("pytest").warning(
+            "Failed to provision worker database %s: %s", worker_db_name, exc
+        )
+        yield base_url
+        return
+
+    # Point environment to the worker database
+    orig_test_url = os.environ.get("TELEBRIEF_TEST_DATABASE_URL")
+    orig_db_url = os.environ.get("DATABASE_URL")
+    os.environ["TELEBRIEF_TEST_DATABASE_URL"] = worker_url
+    os.environ["DATABASE_URL"] = worker_url
+
+    yield worker_url
+
+    # Teardown
+    if orig_test_url is not None:
+        os.environ["TELEBRIEF_TEST_DATABASE_URL"] = orig_test_url
+    if orig_db_url is not None:
+        os.environ["DATABASE_URL"] = orig_db_url
+
+    try:
+        with psycopg.connect(admin_url, autocommit=True) as conn:
+            conn.execute(f"DROP DATABASE IF EXISTS {worker_db_name} (FORCE)")
+    except Exception:
+        pass
+
+
+@pytest.fixture
+def database_config(configure_worker_database: str) -> DatabaseConfig:
+    """DatabaseConfig pointing at the persistent PostgreSQL test database."""
     return DatabaseConfig(
         enabled=True,
-        url=url,
+        url=configure_worker_database,
         min_pool_size=1,
         max_pool_size=4,
         domain_schema="public",

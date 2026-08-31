@@ -253,6 +253,7 @@ def test_scan_source_task_registered_on_collection_queue() -> None:
 
 @pytest.mark.usefixtures("jobs_import_env")
 def test_dispatcher_periodic_registration() -> None:
+    import src.jobs.ingestion  # noqa: F401
     from src.jobs.app import procrastinate_app
 
     # Procrastinate names tasks by their dotted module path unless an explicit
