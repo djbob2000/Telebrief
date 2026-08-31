@@ -28,3 +28,7 @@ class ArticlePublicationRejected(RuntimeError):
         self.reason = reason
         self.error_kind = _ERROR_KIND_BY_REASON[reason]
         self.metadata = dict(metadata or {})
+
+
+class ArticleFinalizationInvariantError(RuntimeError):
+    """Terminal failure after deterministic Event-First article recovery is exhausted."""

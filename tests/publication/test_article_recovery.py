@@ -274,3 +274,309 @@ def test_deterministic_temporal_and_contact_sanitation() -> None:
     assert "https://" not in full_text
     assert "Ранее" in full_text
     assert "Запланировано:" in full_text
+
+
+class RecordingAttemptObserver:
+    def __init__(self) -> None:
+        self.started_attempts: list[dict] = []
+        self.finished_attempts: dict[int, dict] = {}
+        self.started_kinds: list[str] = []
+        self._next_id = 1
+
+    async def attempt_started(self, kind: str, **kwargs) -> int:
+        att_id = self._next_id
+        self._next_id += 1
+        self.started_attempts.append({"id": att_id, "kind": kind, "kwargs": kwargs})
+        self.started_kinds.append(kind)
+        return att_id
+
+    async def attempt_finished(self, attempt_id: int, status: str, **kwargs) -> None:
+        self.finished_attempts[attempt_id] = {"status": status, "kwargs": kwargs}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_safe_incomplete_writer_supplements() -> None:
+    from src.config_loader import PublicationEditorialConfig
+    from src.publication.article_finalization import ArticleFinalizer
+
+    plan, context = _make_plan_and_context()
+    sup1 = context.support_by_id["story:1:evidence:0:frag:101"]
+
+    writer_draft = StructuredArticleDraft(
+        title="В городе восстанавливают электроснабжение",
+        title_support_ids=(sup1.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="В микрорайоне восстановили подачу электроэнергии",
+                cited_support_ids=(sup1.support_id,),
+            ),
+        ),
+        title_generation_origin="AI",
+        lead="В микрорайоне восстановили подачу электроэнергии.",
+        lead_support_ids=(sup1.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В микрорайоне восстановили подачу электроэнергии",
+                cited_support_ids=(sup1.support_id,),
+            ),
+        ),
+        lead_generation_origin="AI",
+        sections=(
+            ArticleSection(
+                heading="Электроснабжение",
+                heading_support_ids=(sup1.support_id,),
+                heading_claims=(
+                    ArticleClaimAtom(
+                        text="В микрорайоне восстановили подачу электроэнергии",
+                        cited_support_ids=(sup1.support_id,),
+                    ),
+                ),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В микрорайоне восстановили подачу электроэнергии.",
+                        cited_support_ids=(sup1.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В микрорайоне восстановили подачу электроэнергии",
+                                cited_support_ids=(sup1.support_id,),
+                            ),
+                        ),
+                        generation_origin="AI",
+                    ),
+                ),
+                heading_generation_origin="AI",
+            ),
+        ),
+    )
+
+    observer = RecordingAttemptObserver()
+    writer_id = await observer.attempt_started("writer")
+
+    finalizer = ArticleFinalizer()
+    editorial_config = PublicationEditorialConfig(article_min_sections=1, article_min_words=5)
+
+    result = await finalizer.finalize(
+        writer_draft=writer_draft,
+        writer_error=None,
+        writer_attempt_id=writer_id,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=editorial_config,
+        length_profile=None,
+        attempt_observer=observer,
+    )
+
+    assert result.writer_status == "passed"
+    assert result.recovery_mode == "supplement"
+    assert result.ai_covered_story_ids == ("story:1",)
+    assert set(result.supplemented_story_ids) == {"story:2", "story:3"}
+    assert set(result.final_covered_story_ids) == {"story:1", "story:2", "story:3"}
+    assert result.metadata["final_story_coverage"] == 1.0
+    assert observer.started_kinds == ["writer", "deterministic_supplement"]
+    assert observer.finished_attempts[writer_id]["status"] == "succeeded"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_unsafe_writer_uses_full_fallback() -> None:
+    from src.config_loader import PublicationEditorialConfig
+    from src.publication.article_finalization import ArticleFinalizer
+
+    plan, context = _make_plan_and_context()
+
+    # Draft citing unknown support ID or unsupported claim
+    unsafe_draft = StructuredArticleDraft(
+        title="Заголовок",
+        title_support_ids=("story:999:unknown",),
+        lead="Лид",
+        lead_support_ids=("story:999:unknown",),
+        sections=(
+            ArticleSection(
+                heading="Раздел",
+                heading_support_ids=("story:999:unknown",),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Текст с неизвестным саппортом.",
+                        cited_support_ids=("story:999:unknown",),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    observer = RecordingAttemptObserver()
+    writer_id = await observer.attempt_started("writer")
+
+    finalizer = ArticleFinalizer()
+    editorial_config = PublicationEditorialConfig(article_min_sections=1, article_min_words=5)
+
+    result = await finalizer.finalize(
+        writer_draft=unsafe_draft,
+        writer_error=None,
+        writer_attempt_id=writer_id,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=editorial_config,
+        length_profile=None,
+        attempt_observer=observer,
+    )
+
+    assert result.writer_status == "rejected"
+    assert result.recovery_mode == "full_fallback"
+    assert observer.finished_attempts[writer_id]["status"] == "failed"
+    assert observer.started_kinds == ["writer", "deterministic_fallback"]
+    assert result.metadata["final_story_coverage"] == 1.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_writer_error_uses_full_fallback() -> None:
+    from src.config_loader import PublicationEditorialConfig
+    from src.publication.article_finalization import ArticleFinalizer
+
+    plan, context = _make_plan_and_context()
+
+    observer = RecordingAttemptObserver()
+    writer_id = await observer.attempt_started("writer")
+
+    finalizer = ArticleFinalizer()
+    editorial_config = PublicationEditorialConfig(article_min_sections=1, article_min_words=5)
+
+    result = await finalizer.finalize(
+        writer_draft=None,
+        writer_error=TimeoutError("writer timeout"),
+        writer_attempt_id=writer_id,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=editorial_config,
+        length_profile=None,
+        attempt_observer=observer,
+    )
+
+    assert result.writer_status == "failed"
+    assert result.recovery_mode == "full_fallback"
+    assert observer.finished_attempts[writer_id]["status"] == "failed"
+    assert observer.started_kinds == ["writer", "deterministic_fallback"]
+    assert result.metadata["final_story_coverage"] == 1.0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_supplement_escalation_to_fallback() -> None:
+    from src.config_loader import PublicationEditorialConfig
+    from src.publication.article_finalization import ArticleFinalizer
+
+    plan, context = _make_plan_and_context()
+    sup1 = context.support_by_id["story:1:evidence:0:frag:101"]
+
+    writer_draft = StructuredArticleDraft(
+        title="В городе восстанавливают электроснабжение",
+        title_support_ids=(sup1.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="В микрорайоне восстановили подачу электроэнергии",
+                cited_support_ids=(sup1.support_id,),
+            ),
+        ),
+        lead="В микрорайоне восстановили подачу электроэнергии.",
+        lead_support_ids=(sup1.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В микрорайоне восстановили подачу электроэнергии",
+                cited_support_ids=(sup1.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Электроснабжение",
+                heading_support_ids=(sup1.support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В микрорайоне восстановили подачу электроэнергии.",
+                        cited_support_ids=(sup1.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В микрорайоне восстановили подачу электроэнергии",
+                                cited_support_ids=(sup1.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    class BrokenSupplementComposer(ArticleDeterministicComposer):
+        def supplement_safe_draft(self, draft, uncovered_story_ids, context, plan):
+            # Returns an invalid draft
+            return StructuredArticleDraft(
+                title="",
+                title_support_ids=(),
+                lead="",
+                lead_support_ids=(),
+                sections=(),
+            )
+
+    observer = RecordingAttemptObserver()
+    writer_id = await observer.attempt_started("writer")
+
+    finalizer = ArticleFinalizer(composer=BrokenSupplementComposer())
+    editorial_config = PublicationEditorialConfig(article_min_sections=1, article_min_words=5)
+
+    result = await finalizer.finalize(
+        writer_draft=writer_draft,
+        writer_error=None,
+        writer_attempt_id=writer_id,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=editorial_config,
+        length_profile=None,
+        attempt_observer=observer,
+    )
+
+    assert result.recovery_mode == "full_fallback"
+    assert result.metadata["winning_kind"] == "event_article_deterministic_fallback"
+    assert observer.started_kinds == [
+        "writer",
+        "deterministic_supplement",
+        "deterministic_fallback",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_terminal_invariant_error() -> None:
+    from src.config_loader import PublicationEditorialConfig
+    from src.publication.article_finalization import ArticleFinalizer
+    from src.publication.errors import ArticleFinalizationInvariantError
+
+    plan, context = _make_plan_and_context()
+
+    class BrokenComposer(ArticleDeterministicComposer):
+        def render_full_fallback(self, context, plan):
+            return StructuredArticleDraft(
+                title="",
+                title_support_ids=(),
+                lead="",
+                lead_support_ids=(),
+                sections=(),
+            )
+
+    observer = RecordingAttemptObserver()
+    writer_id = await observer.attempt_started("writer")
+
+    finalizer = ArticleFinalizer(composer=BrokenComposer())
+    editorial_config = PublicationEditorialConfig(article_min_sections=1, article_min_words=5)
+
+    with pytest.raises(ArticleFinalizationInvariantError):
+        await finalizer.finalize(
+            writer_draft=None,
+            writer_error=TimeoutError("writer timeout"),
+            writer_attempt_id=writer_id,
+            context=context,
+            coverage_plan=plan,
+            editorial_config=editorial_config,
+            length_profile=None,
+            attempt_observer=observer,
+        )

@@ -132,15 +132,10 @@ class ArticleDeterministicComposer:
 
             if story.prominence == "DEVELOP":
                 heading = _safe_heading_for_story(story, story_sups)
-                heading_claims = (
-                    (ArticleClaimAtom(text=heading, cited_support_ids=para.cited_support_ids),)
-                    if para.cited_support_ids
-                    else ()
-                )
                 sec = ArticleSection(
                     heading=heading,
                     heading_support_ids=para.cited_support_ids,
-                    heading_claims=heading_claims,
+                    heading_claims=(),
                     paragraphs=(para,),
                     heading_generation_origin="SUPPLEMENT",
                 )
@@ -152,15 +147,10 @@ class ArticleDeterministicComposer:
             short_cited = tuple(
                 dict.fromkeys(sid for p in short_paragraphs for sid in p.cited_support_ids)
             )
-            short_claims = (
-                (ArticleClaimAtom(text=_SHORT_SECTION_HEADING, cited_support_ids=short_cited),)
-                if short_cited
-                else ()
-            )
             short_sec = ArticleSection(
                 heading=_SHORT_SECTION_HEADING,
                 heading_support_ids=short_cited,
-                heading_claims=short_claims,
+                heading_claims=(),
                 paragraphs=tuple(short_paragraphs),
                 heading_generation_origin="SUPPLEMENT",
             )
@@ -252,15 +242,10 @@ class ArticleDeterministicComposer:
 
             if story.prominence == "DEVELOP":
                 heading = _safe_heading_for_story(story, story_sups)
-                heading_claims = (
-                    (ArticleClaimAtom(text=heading, cited_support_ids=para.cited_support_ids),)
-                    if para.cited_support_ids
-                    else ()
-                )
                 sec = ArticleSection(
                     heading=heading,
                     heading_support_ids=para.cited_support_ids,
-                    heading_claims=heading_claims,
+                    heading_claims=(),
                     paragraphs=(para,),
                     heading_generation_origin="FALLBACK",
                 )
@@ -272,15 +257,10 @@ class ArticleDeterministicComposer:
             short_cited = tuple(
                 dict.fromkeys(sid for p in short_paragraphs for sid in p.cited_support_ids)
             )
-            short_claims = (
-                (ArticleClaimAtom(text=_SHORT_SECTION_HEADING, cited_support_ids=short_cited),)
-                if short_cited
-                else ()
-            )
             short_sec = ArticleSection(
                 heading=_SHORT_SECTION_HEADING,
                 heading_support_ids=short_cited,
-                heading_claims=short_claims,
+                heading_claims=(),
                 paragraphs=tuple(short_paragraphs),
                 heading_generation_origin="FALLBACK",
             )

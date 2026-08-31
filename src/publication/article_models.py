@@ -91,6 +91,13 @@ class StructuredArticleDraft:
     title_generation_origin: ArticleGenerationOrigin = "AI"
     lead_generation_origin: ArticleGenerationOrigin = "AI"
 
+    def __post_init__(self) -> None:
+        if self.word_count == 0:
+            all_text = " ".join(
+                [self.title, self.lead] + [p.text for s in self.sections for p in s.paragraphs]
+            )
+            object.__setattr__(self, "word_count", len(all_text.split()))
+
     @property
     def cited_support_ids(self) -> tuple[str, ...]:
         """All unique support IDs cited across title, lead, headings, and paragraphs."""
