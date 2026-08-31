@@ -383,3 +383,104 @@ class TestPublicationDigestRenderer:
             "• **Водоснабжение**" not in body
         )  # Canonical card bullets are suppressed when narrative draft is used!
         assert "Статистика:" in body
+
+    def test_render_grouped_digest_with_narrative_situation_items(self):
+        from src.publication.digest_narrative import (
+            DigestEditorialItemDraft,
+            DigestNarrativeBlockDraft,
+            DigestNarrativeDraft,
+            DigestSituationItemDraft,
+        )
+
+        card = StoryCard(
+            id="story:1",
+            topic="Электричество",
+            importance="high",
+            summary="Отключения",
+        )
+        frozen = FrozenEditorialInput(
+            analysis=EditorialAnalysis(cards=[card]),
+            writer_bundle=PreparedBundle(
+                records={}, prompt_text="", total_messages=0, candidate_count=1
+            ),
+        )
+
+        draft = DigestNarrativeDraft(
+            situation_items=(
+                DigestSituationItemDraft(
+                    group_id="situation:power:avail",
+                    label="Электроснабжение",
+                    body="Без света: Центр и Колония.",
+                    cited_support_ids=("ref-1",),
+                ),
+            ),
+            blocks=(
+                DigestNarrativeBlockDraft(
+                    block_id="block:utilities:0",
+                    items=(
+                        DigestEditorialItemDraft(
+                            headline="Ремонт продолжается",
+                            body="Аварийные бригады работают на подстанциях.",
+                            cited_support_ids=("ref-2",),
+                            covered_story_ids=("story:1",),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        renderer = PublicationDigestRenderer(use_emojis=True)
+        title, lead, body = renderer.render_grouped_digest(
+            frozen,
+            edition_name="Бердянск",
+            narrative_draft=draft,
+        )
+
+        assert "Городская обстановка" in body
+        assert "• **Электроснабжение**: Без света: Центр и Колония." in body
+        assert "• **Ремонт продолжается**: Аварийные бригады работают на подстанциях." in body
+
+    def test_render_layered_short_read_telegram_html(self):
+        from src.publication.digest_narrative import (
+            DigestEditorialItemDraft,
+            DigestNarrativeBlockDraft,
+            DigestSituationItemDraft,
+        )
+        from src.publication.renderers import render_layered_short_read_telegram_html
+
+        situation_items = [
+            DigestSituationItemDraft(
+                group_id="situation:water:avail",
+                label="Водоснабжение",
+                body="Азмол: нет воды; верхние этажи: слабое давление.",
+                cited_support_ids=("ref-w-1",),
+            ),
+        ]
+        rubric_blocks = [
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Ремонт сетей на востоке города",
+                        body="Бригады завершают замену кабеля.",
+                        cited_support_ids=("ref-1",),
+                        covered_story_ids=("story:1",),
+                    ),
+                ),
+            ),
+        ]
+
+        html = render_layered_short_read_telegram_html(
+            edition_name="Бердянск",
+            snapshot_at=_NOW,
+            situation_items=situation_items,
+            rubric_blocks=rubric_blocks,
+            statistics_text="📊 Статистика: обработано 12 каналов",
+        )
+
+        assert "<b>Дайджест: Бердянск · 22.08.2026</b>" in html
+        assert "<b>🏙 Городская обстановка</b>" in html
+        assert "• <b>Водоснабжение</b>: Азмол: нет воды; верхние этажи: слабое давление." in html
+        assert "<b>⚡️ Коммунальная обстановка</b>" in html
+        assert "• <b>Ремонт сетей на востоке города</b>: Бригады завершают замену кабеля." in html
+        assert "<i>📊 Статистика: обработано 12 каналов</i>" in html

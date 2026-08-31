@@ -351,7 +351,14 @@ class PublicationDigestRenderer:
 
         sections: list[str] = [f"*{title}*"]
 
-        if frozen_input.analysis.city_situation:
+        if narrative_draft is not None and getattr(narrative_draft, "situation_items", None):
+            emoji = "🏙 " if self.use_emojis else ""
+            sit_lines = [f"*{emoji}Городская обстановка*"]
+            for s_item in narrative_draft.situation_items:
+                sit_lines.append(f"• **{s_item.label.strip()}**: {s_item.body.strip()}")
+            if len(sit_lines) > 1:
+                sections.append("\n".join(sit_lines))
+        elif frozen_input.analysis.city_situation:
             from src.publication.city_situation import render_city_situation_section
 
             sit_text = render_city_situation_section(frozen_input.analysis.city_situation)
@@ -543,3 +550,80 @@ class PublicationDigestRenderer:
         return self.render_grouped_digest(
             frozen_input, edition_name=edition_name, snapshot_at=snapshot_at
         )
+
+
+def render_layered_short_read_telegram_html(
+    *,
+    edition_name: str = "Бердянск",
+    snapshot_at: dt.datetime | None = None,
+    situation_items: Sequence[Any] | None = None,
+    situation_plan: Any | None = None,
+    rubric_blocks: Sequence[Any] | None = None,
+    rubrics_config: Any | None = None,
+    statistics_text: str | None = None,
+    use_emojis: bool = True,
+) -> str:
+    """Render high-density layered short-read digest formatted in Telegram HTML."""
+    date_str = (snapshot_at or dt.datetime.now(dt.timezone.utc)).strftime("%d.%m.%Y")
+    title = f"Дайджест: {edition_name} · {date_str}" if edition_name else f"Дайджест · {date_str}"
+
+    sections: list[str] = [f"<b>{title}</b>"]
+
+    # 1. City Situation Layer
+    if situation_items:
+        emoji = "🏙 " if use_emojis else ""
+        sit_lines = [f"<b>{emoji}Городская обстановка</b>"]
+        for s_item in situation_items:
+            label = getattr(s_item, "label", "").strip()
+            body = getattr(s_item, "body", "").strip()
+            if label and body:
+                sit_lines.append(f"• <b>{label}</b>: {body}")
+        if len(sit_lines) > 1:
+            sections.append("\n".join(sit_lines))
+    elif situation_plan and getattr(situation_plan, "groups", None):
+        emoji = "🏙 " if use_emojis else ""
+        sit_lines = [f"<b>{emoji}Городская обстановка</b>"]
+        for g in situation_plan.groups:
+            label = getattr(g, "subject_label", "").strip()
+            details = "; ".join(getattr(g, "detail_lines", ()))
+            if label and details:
+                sit_lines.append(f"• <b>{label}</b>: {details}")
+        if len(sit_lines) > 1:
+            sections.append("\n".join(sit_lines))
+
+    # 2. Rubric blocks layer
+    if rubric_blocks:
+        rubrics_list = []
+        if rubrics_config is not None and getattr(rubrics_config, "items", None):
+            rubrics_list = [
+                {"id": r.id, "title": r.name, "emoji": r.emoji} for r in rubrics_config.items
+            ]
+        else:
+            rubrics_list = STANDARD_RUBRICS
+
+        for block in rubric_blocks:
+            rid = getattr(block, "rubric_id", "") or (
+                getattr(block, "block_id", "").split(":")[1]
+                if ":" in getattr(block, "block_id", "")
+                else getattr(block, "block_id", "")
+            )
+            rubric = next((r for r in rubrics_list if r.get("id") == rid), None)
+            emoji = f"{rubric['emoji']} " if (use_emojis and rubric and rubric.get("emoji")) else ""
+            title_text = rubric["title"] if rubric else getattr(block, "rubric_title", "Разное")
+            header = f"<b>{emoji}{title_text}</b>"
+
+            items = getattr(block, "items", ()) or ()
+            item_lines = []
+            for it in items:
+                hl = getattr(it, "headline", "").strip()
+                bd = getattr(it, "body", "").strip()
+                if hl and bd:
+                    item_lines.append(f"• <b>{hl}</b>: {bd}")
+            if item_lines:
+                sections.append(f"{header}\n" + "\n".join(item_lines))
+
+    # 3. Statistics footer
+    if statistics_text:
+        sections.append(f"<i>{statistics_text}</i>")
+
+    return "\n\n".join(sections)
