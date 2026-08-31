@@ -315,9 +315,9 @@ async def test_digest_vs_article_city_situation_separation(conn, pool, edition):
     digest_editorial = await adapter.adapt_inputs_on(conn, digest_run.id, inputs=[digest_input])
     assert digest_editorial.analysis.city_situation is not None
     assert len(digest_editorial.analysis.city_situation.items) == 1
-    assert digest_editorial.analysis.city_situation.items[0].subject_key == "power_supply"
-    # Pure operational story is consumed into city_situation, so cards is empty
-    assert len(digest_editorial.analysis.cards) == 0
+    # For digest, cards are retained and pure operational card is marked operational_status
+    assert len(digest_editorial.analysis.cards) == 1
+    assert digest_editorial.analysis.cards[0].story_kind == "operational_status"
 
     # 2. Article publication run
     article_run = await repo.get_or_create_run(
@@ -508,3 +508,4 @@ async def test_hybrid_story_with_general_news_not_suppressed_from_cards(conn, po
     # AND the general news card remains!
     assert len(digest_editorial.analysis.cards) == 1
     assert digest_editorial.analysis.cards[0].topic == "Капитальный ремонт проспекта Труда"
+    assert digest_editorial.analysis.cards[0].story_kind != "operational_status"
