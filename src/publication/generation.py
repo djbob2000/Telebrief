@@ -295,12 +295,16 @@ class PublicationGenerationService:
                         )
                         if val_res.is_valid:
                             narrative_draft = draft_cand
+                            final_digest_draft = draft_cand
 
                             title, lead, body = renderer.render_grouped_digest(
                                 frozen,
                                 snapshot_at=run.snapshot_at,
                                 narrative_draft=narrative_draft,
                                 presentation_plan=presentation_plan,
+                            )
+                            from src.publication.digest_coverage import (
+                                build_digest_coverage_trace,
                             )
                             from src.publication.digest_quality_diagnostics import (
                                 audit_digest_prose_quality,
@@ -309,6 +313,27 @@ class PublicationGenerationService:
                             quality_audit = audit_digest_prose_quality(
                                 draft_cand, evidence=evidence_dict
                             )
+                            coverage_trace = build_digest_coverage_trace(
+                                presentation_plan,
+                                final_digest_draft,
+                            )
+                            presentations = presentation_plan.story_presentations
+                            coverage_meta = {
+                                "planned_story_count": len(presentation_plan.story_ids),
+                                "dashboard_only_count": sum(
+                                    p.mode == "DASHBOARD_ONLY" for p in presentations
+                                ),
+                                "detail_only_count": sum(
+                                    p.mode == "DETAIL_ONLY" for p in presentations
+                                ),
+                                "dashboard_and_drilldown_count": sum(
+                                    p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
+                                ),
+                                "final_covered_story_count": len(coverage_trace.story_ids),
+                                "final_digest_story_coverage": coverage_trace.story_coverage,
+                                "deterministic_digest_fallback_used": False,
+                                "digest_coverage_trace": coverage_trace.to_dict(),
+                            }
                             await observer.attempt_finished(
                                 att_id,
                                 "succeeded",
@@ -317,6 +342,7 @@ class PublicationGenerationService:
                                     "block_count": len(draft_cand.blocks),
                                     "situation_item_count": len(draft_cand.situation_items),
                                     "prose_quality_audit": quality_audit.as_metadata(),
+                                    **coverage_meta,
                                 },
                             )
 
@@ -353,13 +379,84 @@ class PublicationGenerationService:
                         title, lead, body = renderer.render_channel_digest(
                             frozen, snapshot_at=run.snapshot_at
                         )
+                        await observer.attempt_finished(att_id, "succeeded")
                     else:
+                        from src.publication.digest_coverage import (
+                            build_digest_coverage_trace,
+                        )
+                        from src.publication.digest_narrative import (
+                            build_deterministic_digest_draft,
+                            build_digest_support_text_index,
+                            plan_digest_narrative_blocks,
+                            validate_digest_narrative,
+                        )
+                        from src.publication.errors import DigestCoverageInvariantError
+
+                        final_digest_draft = build_deterministic_digest_draft(
+                            cards=frozen.analysis.cards,
+                            evidence=evidence_dict,
+                            rubrics=renderer.rubrics,
+                            presentation_plan=presentation_plan,
+                        )
+
+                        detail_cards = [
+                            c
+                            for c in frozen.analysis.cards
+                            if c.id in presentation_plan.detail_story_ids
+                        ]
+                        max_cards = getattr(pub_edit, "digest_narrative_max_cards_per_block", 6)
+                        det_plan = plan_digest_narrative_blocks(
+                            cards=detail_cards,
+                            evidence=evidence_dict,
+                            rubrics=renderer.rubrics,
+                            max_cards_per_block=max_cards,
+                            presentation_plan=presentation_plan,
+                        )
+                        support_text_index = build_digest_support_text_index(
+                            evidence=evidence_dict,
+                            cards=frozen.analysis.cards,
+                            frozen_input=frozen,
+                        )
+                        det_val = validate_digest_narrative(
+                            final_digest_draft,
+                            det_plan,
+                            support_text_by_id=support_text_index,
+                            situation_plan=None,
+                        )
+                        if not det_val.is_valid:
+                            raise DigestCoverageInvariantError(
+                                f"deterministic digest draft failed validation: {det_val.violations}"
+                            )
+
+                        coverage_trace = build_digest_coverage_trace(
+                            presentation_plan,
+                            final_digest_draft,
+                        )
+                        presentations = presentation_plan.story_presentations
+                        coverage_meta = {
+                            "planned_story_count": len(presentation_plan.story_ids),
+                            "dashboard_only_count": sum(
+                                p.mode == "DASHBOARD_ONLY" for p in presentations
+                            ),
+                            "detail_only_count": sum(
+                                p.mode == "DETAIL_ONLY" for p in presentations
+                            ),
+                            "dashboard_and_drilldown_count": sum(
+                                p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
+                            ),
+                            "final_covered_story_count": len(coverage_trace.story_ids),
+                            "final_digest_story_coverage": coverage_trace.story_coverage,
+                            "deterministic_digest_fallback_used": True,
+                            "digest_coverage_trace": coverage_trace.to_dict(),
+                        }
+
                         title, lead, body = renderer.render_grouped_digest(
                             frozen,
                             snapshot_at=run.snapshot_at,
+                            narrative_draft=final_digest_draft,
                             presentation_plan=presentation_plan,
                         )
-                    await observer.attempt_finished(att_id, "succeeded")
+                        await observer.attempt_finished(att_id, "succeeded", metadata=coverage_meta)
 
             else:
                 title, lead, body = await self.generator.generate_from_frozen_input(

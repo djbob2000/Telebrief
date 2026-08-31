@@ -289,27 +289,53 @@ def plan_digest_narrative_blocks(
             for c in chunk:
                 if c.summary:
                     notes.append(f"{c.topic}: {c.summary}")
+                    if f"{c.id}:summary" not in block_support_ids:
+                        block_support_ids.append(f"{c.id}:summary")
                 elif c.topic:
                     notes.append(c.topic)
                 for hf in c.hard_facts:
                     if hf.text and hf.text not in notes:
                         notes.append(hf.text)
+                    for r in hf.source_refs:
+                        if r not in block_support_ids:
+                            block_support_ids.append(r)
                 for co in c.community_observations:
                     if co.text and co.text not in notes:
                         notes.append(co.text)
+                    for r in co.source_refs:
+                        if r not in block_support_ids:
+                            block_support_ids.append(r)
+                for r in getattr(c, "representative_source_refs", ()):
+                    if r not in block_support_ids:
+                        block_support_ids.append(r)
+                if c.id not in block_support_ids:
+                    block_support_ids.append(c.id)
+
+                if c.id in presentations_by_id:
+                    for supp_id in presentations_by_id[c.id].detail_support_ids:
+                        if supp_id not in block_support_ids:
+                            block_support_ids.append(supp_id)
 
                 # Extract numeric story ID if story:123
+                num_sid: int | None = None
                 if c.id.startswith("story:"):
                     raw_sid = c.id.split(":", 1)[1]
                     if raw_sid.isdigit():
                         num_sid = int(raw_sid)
-                        for eid, evi in evidence.items():
-                            if (
-                                getattr(evi, "story_id", None) == num_sid
-                                and getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
-                                and eid not in block_support_ids
-                            ):
-                                block_support_ids.append(eid)
+
+                for eid, evi in evidence.items():
+                    evi_sid = getattr(evi, "story_id", None)
+                    if (
+                        evi_sid == c.id
+                        or str(evi_sid) == str(c.id)
+                        or (num_sid is not None and evi_sid == num_sid)
+                        or eid.startswith(f"{c.id}:")
+                    ):
+                        if (
+                            getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
+                            and eid not in block_support_ids
+                        ):
+                            block_support_ids.append(eid)
 
             detail_supports = tuple(
                 (c.id, presentations_by_id[c.id].detail_support_ids)
@@ -627,7 +653,7 @@ def build_deterministic_digest_draft(
 
             if pres and pres.detail_support_ids:
                 for supp_id in pres.detail_support_ids:
-                    if supp_id not in dash_supp_ids and supp_id in evidence:
+                    if supp_id not in dash_supp_ids and (supp_id in evidence or supp_id):
                         eligible_supports.append(supp_id)
 
             if not eligible_supports:
@@ -652,27 +678,76 @@ def build_deterministic_digest_draft(
                             eligible_supports.append(eid)
 
             if not eligible_supports:
+                if card.summary and f"{card.id}:summary" not in dash_supp_ids:
+                    eligible_supports.append(f"{card.id}:summary")
+                for r in getattr(card, "representative_source_refs", ()):
+                    if r not in dash_supp_ids and r not in eligible_supports:
+                        eligible_supports.append(r)
+                for hf in getattr(card, "hard_facts", ()):
+                    for r in getattr(hf, "source_refs", ()):
+                        if r not in dash_supp_ids and r not in eligible_supports:
+                            eligible_supports.append(r)
+                for co in getattr(card, "community_observations", ()):
+                    for r in getattr(co, "source_refs", ()):
+                        if r not in dash_supp_ids and r not in eligible_supports:
+                            eligible_supports.append(r)
+                if not eligible_supports and card.id not in dash_supp_ids:
+                    eligible_supports.append(card.id)
+
+            if not eligible_supports:
                 raise ValueError(f"no deterministic detail support for {sid}")
 
             chosen_supports = eligible_supports[:2]
-            support_texts = [
-                evidence[s].text or evidence[s].source_text
-                for s in chosen_supports
-                if s in evidence
-            ]
+            rendered_sentences: list[str] = []
+            support_texts: list[str] = []
+
+            for s in chosen_supports:
+                text = ""
+                kind = "established_fact"
+                if s in evidence:
+                    text = (evidence[s].text or evidence[s].source_text).strip()
+                    kind = getattr(evidence[s], "kind", "established_fact")
+                elif (
+                    s == f"{card.id}:summary"
+                    or s == card.id
+                    or s in getattr(card, "representative_source_refs", ())
+                ):
+                    if card.summary:
+                        text = card.summary.strip()
+                    elif card.topic:
+                        text = card.topic.strip()
+                else:
+                    for hf in getattr(card, "hard_facts", ()):
+                        if s in getattr(hf, "source_refs", ()) or s == getattr(hf, "text", ""):
+                            text = hf.text.strip()
+                            kind = "established_fact"
+                            break
+                    if not text:
+                        for co in getattr(card, "community_observations", ()):
+                            if s in getattr(co, "source_refs", ()) or s == getattr(co, "text", ""):
+                                text = co.text.strip()
+                                kind = "community_report"
+                                break
+                    if not text:
+                        if card.summary:
+                            text = card.summary.strip()
+                        elif card.topic:
+                            text = card.topic.strip()
+
+                if text:
+                    support_texts.append(text)
+                    if kind in {"community_report", "community_observation", "quote_assertion"}:
+                        if not text.casefold().startswith(
+                            ("по сообщениям", "жители сообщают", "по словам")
+                        ):
+                            text = f"По сообщениям жителей, {text[:1].lower() + text[1:]}"
+                    rendered_sentences.append(text.rstrip(". ") + ".")
 
             topic = card.topic.strip()
             if topic and not find_unsupported_claims(topic, support_texts):
                 headline = topic
             else:
-                first_evi = evidence[chosen_supports[0]]
-                headline = _render_deterministic_digest_evidence(first_evi).rstrip(".")
-
-            rendered_sentences = [
-                _render_deterministic_digest_evidence(evidence[s])
-                for s in chosen_supports
-                if s in evidence
-            ]
+                headline = rendered_sentences[0].rstrip(".") if rendered_sentences else topic or sid
 
             item_drafts.append(
                 DigestEditorialItemDraft(
@@ -874,5 +949,7 @@ def build_digest_support_text_index(
 
         if card_texts and c.id not in index:
             index[c.id] = " ".join(card_texts)
+        if c.summary and f"{c.id}:summary" not in index:
+            index[f"{c.id}:summary"] = c.summary
 
     return index
