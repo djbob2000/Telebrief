@@ -199,12 +199,32 @@ class PublicationGenerationService:
                     custom_rubrics=getattr(self.config.settings, "digest_groups", None),
                 )
 
+                from src.publication.digest_presentation import build_digest_presentation_plan
+
                 narrative_draft = None
                 pub_edit = getattr(self.config.settings, "publication_editorial", None)
                 narrative_mode = (
                     getattr(pub_edit, "digest_narrative_mode", "deterministic")
                     if pub_edit
                     else "deterministic"
+                )
+
+                max_sit_items = (
+                    getattr(pub_edit, "digest_city_situation_max_items", 7) if pub_edit else 7
+                )
+                max_sit_details = (
+                    getattr(pub_edit, "digest_city_situation_max_details_per_item", 2)
+                    if pub_edit
+                    else 2
+                )
+                evidence_dict = getattr(frozen.analysis, "evidence", {}) or {}
+
+                presentation_plan = build_digest_presentation_plan(
+                    cards=frozen.analysis.cards,
+                    city_situation=frozen.analysis.city_situation,
+                    evidence=evidence_dict,
+                    max_city_situation_items=max_sit_items,
+                    max_city_situation_details=max_sit_details,
                 )
 
                 if (
@@ -217,21 +237,6 @@ class PublicationGenerationService:
                         build_digest_support_text_index,
                         plan_digest_narrative_blocks,
                         validate_digest_narrative,
-                    )
-                    from src.publication.digest_presentation import build_digest_presentation_plan
-
-                    max_sit_items = getattr(pub_edit, "digest_city_situation_max_items", 7)
-                    max_sit_details = getattr(
-                        pub_edit, "digest_city_situation_max_details_per_item", 2
-                    )
-                    evidence_dict = getattr(frozen.analysis, "evidence", {}) or {}
-
-                    presentation_plan = build_digest_presentation_plan(
-                        cards=frozen.analysis.cards,
-                        city_situation=frozen.analysis.city_situation,
-                        evidence=evidence_dict,
-                        max_city_situation_items=max_sit_items,
-                        max_city_situation_details=max_sit_details,
                     )
 
                     detail_cards = [
@@ -266,7 +271,6 @@ class PublicationGenerationService:
                             plan=plan,
                             cards=detail_cards,
                             evidence=evidence_dict,
-                            situation_plan=presentation_plan.city_situation,
                             language=getattr(self.config.settings, "output_language", "Russian"),
                             max_output_tokens=max_tokens,
                             model=getattr(self.config.settings, "openai_model", None)
@@ -289,6 +293,7 @@ class PublicationGenerationService:
                                 frozen,
                                 snapshot_at=run.snapshot_at,
                                 narrative_draft=narrative_draft,
+                                presentation_plan=presentation_plan,
                             )
                             await observer.attempt_finished(
                                 att_id,
@@ -332,7 +337,9 @@ class PublicationGenerationService:
                         )
                     else:
                         title, lead, body = renderer.render_grouped_digest(
-                            frozen, snapshot_at=run.snapshot_at
+                            frozen,
+                            snapshot_at=run.snapshot_at,
+                            presentation_plan=presentation_plan,
                         )
                     await observer.attempt_finished(att_id, "succeeded")
 

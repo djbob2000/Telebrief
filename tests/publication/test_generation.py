@@ -2214,3 +2214,184 @@ async def test_event_first_digest_narrative_generation_with_city_situation(
     assert "Городская обстановка" in pub.body
     assert "Водоснабжение" in pub.body
     assert "Новое расписание маршрута №4" in pub.body
+
+
+@pytest.mark.postgres
+async def test_event_first_digest_deterministic_mode_uses_digest_presentation_plan(
+    conn: psycopg.AsyncConnection,
+    uow: DatabaseUnitOfWork,
+    edition,
+):
+    import json
+    import logging
+
+    from src.article_generator import ArticleGenerator
+    from src.config_loader import Config, PublicationEditorialConfig, Settings
+    from src.publication.generation import PublicationGenerationService
+    from src.publication.repository import PublicationRepository
+
+    policy_ids = await _seed_policies(conn, edition.id)
+    repo = PublicationRepository()
+
+    now = dt.datetime(2026, 8, 29, 12, 0, tzinfo=dt.timezone.utc)
+    cur = await conn.execute(
+        "INSERT INTO sources (platform, kind, external_id, url, name, role) VALUES ('telegram', 'channel', 'c1-det', 'https://t.me/c1', 'Chan', 'official') RETURNING id"
+    )
+    source_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (source_id, edition.id),
+    )
+
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        request_key="test-key-det-cap",
+        snapshot_at=now,
+        policy_ids=policy_ids,
+    )
+
+    # Create 5 distinct operational stories
+    for i in range(5):
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', %s, %s) RETURNING id",
+            (source_id, f"item-det-{i}", now),
+        )
+        item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, %s, %s) RETURNING id",
+            (item_id, f"h-{i}", f"Проблема {i}"),
+        )
+        sir_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, %s, %s, 'v1', TRUE, %s) RETURNING id",
+            (sir_id, f"Проблема {i}", f"h-frag-{i}", now),
+        )
+        frag_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at) VALUES (%s, 'active', 'event_first', %s) RETURNING id",
+            (edition.id, now),
+        )
+        sid = (await cur.fetchone())[0]
+        payload = {
+            "event_id": f"story:{sid}",
+            "schema_version": "v3",
+            "story_id": sid,
+            "headline": f"Проблема {i}",
+            "digest_summary": f"В городе проблема со службой {i}.",
+            "category": "utilities",
+            "tags": ["жкх", f"служба_{i}"],
+            "evidence_items": [
+                {
+                    "evidence_id": f"story:{sid}:evidence:0:frag:{frag_id}",
+                    "source_fragment_ids": [frag_id],
+                    "kind": "established_fact",
+                    "text": f"Служба {i} не работает",
+                    "source_text": f"Служба {i} не работает",
+                    "publication_use": "PUBLISH",
+                }
+            ],
+            "operational_observations": [
+                {
+                    "subject_key": f"service_{i}",
+                    "subject_label": f"Служба {i}",
+                    "dimension": "availability",
+                    "state": "DEGRADED",
+                    "detail": f"Проблема {i}",
+                    "location": "Город",
+                    "source_fragment_ids": [frag_id],
+                    "observed_at": now.isoformat(),
+                }
+            ],
+        }
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (
+                story_id, revision_no, current_state, semantic_text, content_hash,
+                title, summary, event_payload, created_at
+            ) VALUES (%s, 1, 'open', %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                sid,
+                payload["digest_summary"],
+                f"h-rev-{i}",
+                payload["headline"],
+                payload["digest_summary"],
+                json.dumps(payload),
+                now,
+            ),
+        )
+        rev_id = (await cur.fetchone())[0]
+        cand = await repo.insert_candidate(
+            conn,
+            run.id,
+            story_id=sid,
+            story_revision_id=rev_id,
+            deterministic_rank=i + 1,
+        )
+        dec = await repo.insert_selection_decision(
+            conn,
+            run.id,
+            PublicationSelectionDecision(
+                id=0,
+                publication_run_id=run.id,
+                candidate_id=cand.id,
+                decision="INCLUDE",
+                presentation_intent="normal",
+                confidence=0.95,
+                reason="Operational update",
+                rank=i + 1,
+                metadata={},
+                created_at=now,
+            ),
+        )
+        await repo.freeze_selected_input(
+            conn,
+            run.id,
+            story_id=sid,
+            story_revision_id=rev_id,
+            selection_decision_id=dec.id,
+            presentation_intent="normal",
+            rank=i + 1,
+            fragment_ids=[frag_id],
+        )
+
+    await repo.transition_run(conn, run.id, "selected_inputs_sealed")
+
+    editorial_cfg = PublicationEditorialConfig(
+        digest_narrative_mode="deterministic",
+        digest_city_situation_max_items=3,
+        digest_city_situation_max_details_per_item=2,
+    )
+    settings = Settings(
+        schedule_time="09:00",
+        timezone="UTC",
+        lookback_hours=24,
+        openai_model="gpt-4",
+        openai_temperature=0.7,
+        publication_editorial=editorial_cfg,
+    )
+    config = Config(
+        channels=[],
+        telegram_api_id=1,
+        telegram_api_hash="hash",
+        telegram_bot_token="token",
+        openai_api_key="key",
+        log_level="INFO",
+        settings=settings,
+    )
+    generator = ArticleGenerator(config=config, logger=logging.getLogger("test"))
+    service = PublicationGenerationService(
+        uow=uow,
+        config=config,
+        repo=repo,
+        generator=generator,
+    )
+
+    pub = await service.generate(run.id, defer_delivery=True)
+    assert pub is not None
+    assert "Городская обстановка" in pub.body
+    dashboard_section = [s for s in pub.body.split("\n\n") if "Городская обстановка" in s][0]
+    assert dashboard_section.count("•") == 3
