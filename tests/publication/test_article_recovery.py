@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from typing import Any
 
 import pytest
 
@@ -580,3 +581,291 @@ async def test_finalizer_terminal_invariant_error() -> None:
             length_profile=None,
             attempt_observer=observer,
         )
+
+
+@pytest.fixture
+def article_generator() -> Any:
+    import logging
+    from unittest.mock import AsyncMock
+
+    from src.article_generator import ArticleGenerator
+    from src.config_loader import Config, PublicationEditorialConfig, Settings
+
+    settings = Settings(
+        schedule_time="09:00",
+        timezone="UTC",
+        lookback_hours=24,
+        openai_model="gpt-4",
+        openai_temperature=0.7,
+        ai_provider="openai",
+        publication_editorial=PublicationEditorialConfig(
+            article_min_words=5,
+            article_min_sections=1,
+        ),
+    )
+    config = Config(
+        channels=[],
+        settings=settings,
+        telegram_api_id=1,
+        telegram_api_hash="hash",
+        telegram_bot_token="token",
+        openai_api_key="key",
+        log_level="INFO",
+    )
+    gen = ArticleGenerator(config=config, logger=logging.getLogger("test"))
+    gen.provider = AsyncMock()
+    return gen
+
+
+@pytest.fixture
+def multi_story_context() -> ArticleEditorialContext:
+    _, ctx = _make_plan_and_context()
+    return ctx
+
+
+@pytest.mark.unit
+def test_article_publication_rejected_exposes_stable_reason_and_metadata() -> None:
+    from src.publication.errors import ArticlePublicationRejected
+
+    exc = ArticlePublicationRejected(
+        reason="validation_failed",
+        message="draft failed deterministic validation",
+        metadata={"violations": ["UNSUPPORTED_CLAIM_ATOM:LEAD"]},
+    )
+
+    assert exc.reason == "validation_failed"
+    assert exc.error_kind == "article_validation_rejected"
+    assert exc.metadata == {"violations": ["UNSUPPORTED_CLAIM_ATOM:LEAD"]}
+    assert str(exc) == "draft failed deterministic validation"
+
+
+@pytest.mark.unit
+def test_article_publication_rejected_maps_writer_failure_to_stable_error_kind() -> None:
+    from src.publication.errors import ArticlePublicationRejected
+
+    exc = ArticlePublicationRejected(
+        reason="writer_failed",
+        message="provider failed",
+        metadata={"exception_type": "TimeoutError"},
+    )
+
+    assert exc.error_kind == "article_writer_rejected"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_event_article_writer_error_uses_full_fallback(
+    article_generator,
+    multi_story_context,
+) -> None:
+    article_generator.provider.chat_completion.side_effect = TimeoutError("writer timeout")
+    observer = RecordingAttemptObserver()
+
+    title, lead, body = await article_generator.generate_from_event_article_context(
+        multi_story_context,
+        attempt_observer=observer,
+    )
+
+    assert title
+    assert body
+    assert article_generator.provider.chat_completion.call_count == 1
+    assert observer.started_kinds == ["writer", "deterministic_fallback"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_event_article_validation_failure_uses_full_fallback(
+    article_generator,
+    multi_story_context,
+) -> None:
+    import json
+
+    sup_id = "story:1:evidence:0:frag:101"
+    invalid_json = json.dumps(
+        {
+            "title": "Отключение света в центре",
+            "title_support_ids": [sup_id],
+            "title_claims": [{"text": "Отключение света в центре", "cited_support_ids": [sup_id]}],
+            "lead": "В центре города авария на подстанции.",
+            "lead_support_ids": [sup_id],
+            "lead_claims": [
+                {"text": "В центре города авария на подстанции", "cited_support_ids": [sup_id]}
+            ],
+            "sections": [
+                {
+                    "heading": "Энергоснабжение",
+                    "heading_support_ids": [sup_id],
+                    "heading_claims": [{"text": "Энергоснабжение", "cited_support_ids": [sup_id]}],
+                    "paragraphs": [
+                        {
+                            "text": "Бригады восстановили питание в течение полутора часов.",
+                            "cited_support_ids": [sup_id],
+                            "claims": [
+                                {
+                                    "text": "Бригады восстановили питание в течение полутора часов.",
+                                    "cited_support_ids": [sup_id],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    article_generator.provider.chat_completion.return_value = invalid_json
+    observer = RecordingAttemptObserver()
+
+    title, lead, body = await article_generator.generate_from_event_article_context(
+        multi_story_context,
+        attempt_observer=observer,
+    )
+
+    assert title
+    assert body
+    assert article_generator.provider.chat_completion.call_count == 1
+    assert observer.started_kinds == ["writer", "deterministic_fallback"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_event_article_safe_incomplete_uses_supplement(
+    article_generator,
+    multi_story_context,
+) -> None:
+    import json
+
+    sup_id = "story:1:evidence:0:frag:101"
+    valid_incomplete_json = json.dumps(
+        {
+            "title": "В микрорайоне восстановили подачу электроэнергии",
+            "title_support_ids": [sup_id],
+            "title_claims": [
+                {
+                    "text": "В микрорайоне восстановили подачу электроэнергии",
+                    "cited_support_ids": [sup_id],
+                }
+            ],
+            "lead": "В микрорайоне восстановили подачу электроэнергии.",
+            "lead_support_ids": [sup_id],
+            "lead_claims": [
+                {
+                    "text": "В микрорайоне восстановили подачу электроэнергии",
+                    "cited_support_ids": [sup_id],
+                }
+            ],
+            "sections": [
+                {
+                    "heading": "Электроснабжение",
+                    "heading_support_ids": [sup_id],
+                    "heading_claims": [],
+                    "paragraphs": [
+                        {
+                            "text": "В микрорайоне восстановили подачу электроэнергии.",
+                            "cited_support_ids": [sup_id],
+                            "claims": [
+                                {
+                                    "text": "В микрорайоне восстановили подачу электроэнергии",
+                                    "cited_support_ids": [sup_id],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    article_generator.provider.chat_completion.return_value = valid_incomplete_json
+    observer = RecordingAttemptObserver()
+
+    title, lead, body = await article_generator.generate_from_event_article_context(
+        multi_story_context,
+        attempt_observer=observer,
+    )
+
+    assert title
+    assert body
+    assert article_generator.provider.chat_completion.call_count == 1
+    assert observer.started_kinds == ["writer", "deterministic_supplement"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_event_article_prompt_contains_epistemic_fidelity_and_no_corroboration_gate(
+    article_generator,
+) -> None:
+    import json
+
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    sup = ArticleSupport(
+        support_id="story:1:evidence:0:frag:101",
+        text="На Горе света нет",
+        source_text="На Горе света нет",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(101,),
+        source_item_ids=(1,),
+        observed_at=now,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="community_report",
+        source_roles=("community",),
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Сообщения жителей",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        evidence_index=(sup,),
+        recurring_topics=("utilities",),
+    )
+
+    valid_json = json.dumps(
+        {
+            "title": "На Горе света нет",
+            "title_support_ids": [sup.support_id],
+            "title_claims": [{"text": "На Горе света нет", "cited_support_ids": [sup.support_id]}],
+            "lead": "Жители сообщают о проблемах со светом на Горе.",
+            "lead_support_ids": [sup.support_id],
+            "lead_claims": [{"text": "На Горе света нет", "cited_support_ids": [sup.support_id]}],
+            "sections": [
+                {
+                    "heading": "Обстановка на Горе",
+                    "heading_support_ids": [sup.support_id],
+                    "heading_claims": [],
+                    "paragraphs": [
+                        {
+                            "text": "По сообщениям жителей, на Горе нет света.",
+                            "cited_support_ids": [sup.support_id],
+                            "claims": [
+                                {
+                                    "text": "На Горе света нет",
+                                    "cited_support_ids": [sup.support_id],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    article_generator.provider.chat_completion.return_value = valid_json
+
+    await article_generator.generate_from_event_article_context(context)
+
+    assert article_generator.provider.chat_completion.call_count == 1
+    call_kwargs = article_generator.provider.chat_completion.call_args.kwargs
+    messages = call_kwargs["messages"]
+    system_content = next(m["content"] for m in messages if m["role"] == "system")
+    user_content = next(m["content"] for m in messages if m["role"] == "user")
+
+    # Epistemic instructions present
+    assert "community_report" in user_content
+    assert "framing=attributed_report" in user_content
+    assert "Epistemic Fidelity" in system_content or "epistemic" in system_content.lower()
+    assert "ARTICLE COVERAGE PLAN" in user_content
+    assert "DETAIL SUPPORTS:" in user_content
+
+    # No second-source / corroboration gate
+    assert "two independent sources" not in system_content.lower()
+    assert "must be corroborated" not in system_content.lower()
+    assert "official confirmation required" not in system_content.lower()

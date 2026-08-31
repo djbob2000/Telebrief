@@ -95,6 +95,11 @@ def _build_final_metadata(
             "SUPPLEMENT": origin_counts.get("SUPPLEMENT", 0),
             "FALLBACK": origin_counts.get("FALLBACK", 0),
         },
+        "validation": {
+            "is_valid": True,
+            "unsupported_claim_count": 0,
+            "unit_count": len(trace),
+        },
         "unsupported_final_claim_count": 0,
         "leaked_directory_payload_count": len(final_diag.leaked_contact_payloads),
         "claim_trace": trace_meta,

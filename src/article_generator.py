@@ -38,8 +38,6 @@ from src.publication.article_length import (
     derive_article_length_profile,
 )
 from src.publication.article_models import StructuredArticleDraft
-from src.publication.article_validator import validate_article_draft
-from src.publication.errors import ArticlePublicationRejected
 from src.publication.narrative_contract import build_article_narrative_contract
 
 
@@ -784,6 +782,8 @@ class ArticleGenerator:
         system_prompt = self._build_event_article_system_prompt(length_profile=length_profile)
         user_prompt = f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\n{context_str}"
 
+        from src.publication.article_finalization import ArticleFinalizer
+
         writer_attempt_id = 0
         if attempt_observer is not None:
             writer_attempt_id = await attempt_observer.attempt_started(
@@ -791,6 +791,9 @@ class ArticleGenerator:
                 provider=self.config.settings.ai_provider,
                 model=self.model,
             )
+
+        writer_draft: StructuredArticleDraft | None = None
+        writer_error: Exception | None = None
 
         try:
             article_temp = getattr(
@@ -807,169 +810,51 @@ class ArticleGenerator:
                 reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
                 response_format={"type": "json_object"},
             )
-
-            cleaned = (response or "").strip()
-            if cleaned.startswith("```"):
-                lines = cleaned.splitlines()
-                if lines and lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                cleaned = "\n".join(lines).strip()
-
-            if "{" in cleaned and "}" in cleaned:
-                first_brace = cleaned.find("{")
-                last_brace = cleaned.rfind("}")
-                if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
-                    cleaned = cleaned[first_brace : last_brace + 1]
-
-            parsed = json.loads(cleaned)
-            if not isinstance(parsed, dict):
-                raise ValueError("article writer response is not a JSON object")
-
-            draft = StructuredArticleDraft.from_dict(parsed)
-            val_res = validate_article_draft(
-                draft, article_ctx, editorial_config, length_profile=length_profile
-            )
-
-            if not val_res.is_valid:
-                self.logger.warning(
-                    "Event article draft failed deterministic validation: %s",
-                    val_res.violations,
-                )
-                rejection_meta = {
-                    "status": "rejected",
-                    "reason": "validation_failed",
-                    "violations": list(val_res.violations),
-                    "length_profile": length_profile.richness,
-                    "raw_draft": parsed,
-                    "validation_issues": [
-                        {
-                            "code": iss.code,
-                            "unit_id": iss.unit_id,
-                            "message": iss.message,
-                            "support_ids": list(iss.support_ids),
-                            "severity": iss.severity,
-                            "blocking": iss.blocking,
-                            "unsupported_claims": [
-                                {"kind": c.kind, "raw": c.raw, "excerpt": c.excerpt}
-                                for c in iss.unsupported_claims
-                            ],
-                        }
-                        for iss in val_res.issues
-                    ],
-                    "unsupported_claims": [
-                        {"kind": c.kind, "raw": c.raw, "excerpt": c.excerpt}
-                        for c in val_res.unsupported_claims
-                    ],
-                }
-
-                if attempt_observer is not None and writer_attempt_id > 0:
-                    await attempt_observer.attempt_finished(
-                        writer_attempt_id,
-                        "failed",
-                        error_kind="article_validation_rejected",
-                        metadata=rejection_meta,
-                    )
-                raise ArticlePublicationRejected(
-                    reason="validation_failed",
-                    message="Event-First article draft failed deterministic validation",
-                    metadata=rejection_meta,
-                )
-
-            body = draft.render_markdown()
-            from src.publication.article_coverage_diagnostics import (
-                diagnose_article_coverage,
-            )
-            from src.publication.article_trace import build_article_claim_trace
-
-            coverage_diag = diagnose_article_coverage(draft, coverage_plan)
-            trace = build_article_claim_trace(draft, article_ctx)
-            trace_meta = [
-                {
-                    "unit_id": u.unit_id,
-                    "support_ids": list(u.support_ids),
-                    "source_refs": list(u.source_refs),
-                    "fragment_ids": list(u.fragment_ids),
-                    "source_item_ids": list(u.source_item_ids),
-                    "temporal_roles": list(u.temporal_roles),
-                    "claim_atoms": [
-                        {
-                            "text": atom.text,
-                            "support_ids": list(atom.support_ids),
-                            "temporal_roles": list(atom.temporal_roles),
-                        }
-                        for atom in u.claim_atoms
-                    ],
-                }
-                for u in trace
-            ]
-            success_meta = {
-                "status": "writer_success",
-                "length_profile": length_profile.richness,
-                "target_bounds": {
-                    "min_words": length_profile.target_min_words,
-                    "max_words": length_profile.target_max_words,
-                    "min_sections": length_profile.target_min_sections,
-                    "max_sections": length_profile.target_max_sections,
-                },
-                "validation": {
-                    "is_valid": True,
-                    "word_count": val_res.word_count,
-                    "section_count": val_res.section_count,
-                    "unsupported_claim_count": 0,
-                    "unit_count": len(trace),
-                },
-                "coverage": {
-                    "planned_story_count": coverage_diag.planned_story_count,
-                    "covered_story_count": coverage_diag.covered_story_count,
-                    "uncovered_story_ids": list(coverage_diag.uncovered_story_ids),
-                    "develop_story_coverage": coverage_diag.develop_story_coverage,
-                    "weave_story_coverage": coverage_diag.weave_story_coverage,
-                    "brief_story_coverage": coverage_diag.brief_story_coverage,
-                    "planned_detail_support_count": coverage_diag.planned_detail_support_count,
-                    "covered_detail_support_count": coverage_diag.covered_detail_support_count,
-                    "uncovered_detail_support_ids": list(
-                        coverage_diag.uncovered_detail_support_ids
-                    ),
-                    "detail_support_coverage": coverage_diag.detail_support_coverage,
-                    "leaked_contact_payloads": list(coverage_diag.leaked_contact_payloads),
-                },
-                "claim_trace": trace_meta,
-            }
-
-            if attempt_observer is not None and writer_attempt_id > 0:
-                await attempt_observer.attempt_finished(
-                    writer_attempt_id, "succeeded", metadata=success_meta
-                )
-
-            return (draft.title, draft.lead, body)
-
-        except ArticlePublicationRejected:
-            raise
+            parsed = self._parse_event_article_response_json(response)
+            writer_draft = StructuredArticleDraft.from_dict(parsed)
         except Exception as exc:
             self.logger.warning(
-                "Event article generation failed (%s: %s)",
+                "Event article writer execution failed (%s: %s)",
                 type(exc).__name__,
                 exc,
             )
-            rejection_meta = {
-                "status": "rejected",
-                "reason": "writer_failed",
-                "exception_type": type(exc).__name__,
-            }
-            if attempt_observer is not None and writer_attempt_id > 0:
-                await attempt_observer.attempt_finished(
-                    writer_attempt_id,
-                    "failed",
-                    error_kind="article_writer_rejected",
-                    metadata=rejection_meta,
-                )
-            raise ArticlePublicationRejected(
-                reason="writer_failed",
-                message=f"Event-First article writer failed: {type(exc).__name__}",
-                metadata=rejection_meta,
-            ) from exc
+            writer_error = exc
+
+        finalization_result = await ArticleFinalizer().finalize(
+            writer_draft=writer_draft,
+            writer_error=writer_error,
+            writer_attempt_id=writer_attempt_id,
+            context=article_ctx,
+            coverage_plan=coverage_plan,
+            editorial_config=editorial_config,
+            length_profile=length_profile,
+            attempt_observer=attempt_observer,
+        )
+
+        body = finalization_result.draft.render_markdown()
+        return (finalization_result.draft.title, finalization_result.draft.lead, body)
+
+    def _parse_event_article_response_json(self, response: str) -> dict[str, Any]:
+        """Clean and parse JSON from article writer response string."""
+        cleaned = (response or "").strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+
+        if "{" in cleaned and "}" in cleaned:
+            first_brace = cleaned.find("{")
+            last_brace = cleaned.rfind("}")
+            if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+                cleaned = cleaned[first_brace : last_brace + 1]
+
+        parsed = json.loads(cleaned)
+        if not isinstance(parsed, dict):
+            raise ValueError("article writer response is not a JSON object")
+        return parsed
 
     async def generate_from_analysis_and_bundle(  # noqa: C901
         self,

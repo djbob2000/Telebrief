@@ -412,7 +412,11 @@ class PublicationGenerationService:
         if winning_attempt is None:
             raise RuntimeError(f"no successful generation attempt recorded for run {run_id}")
 
-        meta: dict[str, Any] = {"winning_kind": winning_attempt.kind}
+        winning_meta = dict(winning_attempt.metadata or {})
+        meta: dict[str, Any] = {
+            **winning_meta,
+            "winning_kind": winning_meta.get("winning_kind", winning_attempt.kind),
+        }
         if publication_metadata:
             meta.update(publication_metadata)
 

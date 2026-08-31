@@ -202,14 +202,23 @@ class ArticleDeterministicComposer:
         first_sup = first_sups[0]
         first_sentence = _render_support_sentence(first_sup)
 
+        from src.publication.article_semantic_support import assess_semantic_support
+
         topic = first_story.topic.strip()
         support_texts = [s.text or s.source_text for s in first_sups if (s.text or s.source_text)]
-        if topic and not find_unsupported_claims(topic, support_texts):
+        semantic_res = assess_semantic_support(topic, support_texts) if topic else None
+        if (
+            topic
+            and semantic_res is not None
+            and not semantic_res.blocking_critical_terms
+            and not semantic_res.blocking_proper_names
+            and not find_unsupported_claims(topic, support_texts)
+        ):
             title = topic
         else:
             title = first_sentence.rstrip(".")
 
-        title_support_ids = (first_sup.support_id,)
+        title_support_ids = tuple(s.support_id for s in first_sups)
         title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_support_ids),)
 
         # Lead from first 1-2 supports of first story (or first two stories)

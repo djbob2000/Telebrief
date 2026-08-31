@@ -7,7 +7,6 @@ import psycopg
 import pytest
 
 from src.db.uow import DatabaseUnitOfWork
-from src.publication.errors import ArticlePublicationRejected
 from src.publication.generation import PublicationGenerationService
 from src.publication.models import PublicationSelectionDecision
 from src.publication.repository import (
@@ -1119,10 +1118,11 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
         generator=generator,
     )
 
-    with pytest.raises(ArticlePublicationRejected) as caught:
-        await service.generate(run.id, defer_delivery=False)
-    assert caught.value.reason == "validation_failed"
-    assert caught.value.error_kind == "article_validation_rejected"
+    pub = await service.generate(run.id, defer_delivery=False)
+    assert pub is not None
+    assert pub.metadata["recovery_mode"] == "full_fallback"
+    assert pub.metadata["winning_kind"] == "event_article_deterministic_fallback"
+    assert pub.metadata["final_story_coverage"] == 1.0
 
     # Assert provider was called exactly ONCE
     assert mock_provider.chat_completion.call_count == 1
@@ -1134,18 +1134,18 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
             (run.id,),
         )
     ).fetchone()
-    assert run_row == ("failed", "article_validation_rejected")
+    assert run_row == ("succeeded", None)
 
-    # Check zero publications created
+    # Check publication created
     pub_count = await (
         await conn.execute(
             "SELECT count(*) FROM publications WHERE publication_run_id = %s",
             (run.id,),
         )
     ).fetchone()
-    assert pub_count[0] == 0
+    assert pub_count[0] == 1
 
-    # Check generation attempts in DB: exactly one failed writer attempt, zero fallback
+    # Check generation attempts in DB: writer failed, deterministic_fallback succeeded
     cur = await conn.execute(
         """
         SELECT kind, status, error_kind, metadata
@@ -1156,10 +1156,12 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
         (run.id,),
     )
     attempts = await cur.fetchall()
-    assert len(attempts) == 1
+    assert len(attempts) == 2
     assert attempts[0][0] == "writer"
     assert attempts[0][1] == "failed"
     assert attempts[0][2] == "article_validation_rejected"
+    assert attempts[1][0] == "deterministic_fallback"
+    assert attempts[1][1] == "succeeded"
 
 
 @pytest.mark.postgres
@@ -1332,10 +1334,10 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
         generator=generator,
     )
 
-    with pytest.raises(ArticlePublicationRejected) as caught:
-        await service.generate(run.id, defer_delivery=False)
-    assert caught.value.reason == "writer_failed"
-    assert caught.value.error_kind == "article_writer_rejected"
+    pub = await service.generate(run.id, defer_delivery=False)
+    assert pub is not None
+    assert pub.metadata["recovery_mode"] == "full_fallback"
+    assert pub.metadata["winning_kind"] == "event_article_deterministic_fallback"
 
     run_row = await (
         await conn.execute(
@@ -1343,7 +1345,7 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
             (run.id,),
         )
     ).fetchone()
-    assert run_row == ("failed", "article_writer_rejected")
+    assert run_row == ("succeeded", None)
 
     pub_count = await (
         await conn.execute(
@@ -1351,7 +1353,7 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
             (run.id,),
         )
     ).fetchone()
-    assert pub_count[0] == 0
+    assert pub_count[0] == 1
 
     cur = await conn.execute(
         """
@@ -1363,10 +1365,12 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
         (run.id,),
     )
     attempts = await cur.fetchall()
-    assert len(attempts) == 1
+    assert len(attempts) == 2
     assert attempts[0][0] == "writer"
     assert attempts[0][1] == "failed"
     assert attempts[0][2] == "article_writer_rejected"
+    assert attempts[1][0] == "deterministic_fallback"
+    assert attempts[1][1] == "succeeded"
 
 
 @pytest.mark.postgres
@@ -1755,53 +1759,12 @@ async def test_rejected_event_article_with_defer_delivery_creates_no_delivery_de
 
     generator = ArticleGenerator(config=config, logger=logging.getLogger("test"))
     mock_provider = AsyncMock()
-    mock_provider.chat_completion.return_value = json.dumps(
-        {
-            "title": "Отключение света в центре",
-            "title_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
-            "title_claims": [
-                {
-                    "text": "Отключение света в центре",
-                    "cited_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
-                }
-            ],
-            "lead": "В центре города ликвидируют аварию на подстанции.",
-            "lead_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
-            "lead_claims": [
-                {
-                    "text": "В центре города ликвидируют аварию на подстанции.",
-                    "cited_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
-                }
-            ],
-            "sections": [
-                {
-                    "heading": "Энергоснабжение",
-                    "heading_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
-                    "heading_claims": [
-                        {
-                            "text": "Энергоснабжение",
-                            "cited_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
-                        }
-                    ],
-                    "paragraphs": [
-                        {
-                            "text": "Бригады восстановили питание за полтора часа.",
-                            "cited_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
-                            "claims": [
-                                {
-                                    "text": "Бригады восстановили питание за полтора часа.",
-                                    "cited_support_ids": [
-                                        f"story:{story_id}:evidence:0:frag:{frag_id}"
-                                    ],
-                                }
-                            ],
-                        }
-                    ],
-                }
-            ],
-        }
-    )
+    mock_provider.chat_completion.side_effect = TimeoutError("writer timeout")
     generator.provider = mock_provider
+
+    from unittest.mock import patch
+
+    from src.publication.errors import ArticleFinalizationInvariantError
 
     service = PublicationGenerationService(
         uow=uow,
@@ -1810,8 +1773,12 @@ async def test_rejected_event_article_with_defer_delivery_creates_no_delivery_de
         generator=generator,
     )
 
-    with pytest.raises(ArticlePublicationRejected):
-        await service.generate(run.id, defer_delivery=True)
+    with patch(
+        "src.publication.article_finalization.ArticleFinalizer.finalize",
+        side_effect=ArticleFinalizationInvariantError("terminal fallback failed"),
+    ):
+        with pytest.raises(ArticleFinalizationInvariantError):
+            await service.generate(run.id, defer_delivery=True)
 
     # 1. No publications row
     pub_rows = await (
