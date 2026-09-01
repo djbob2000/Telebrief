@@ -4,7 +4,14 @@ from __future__ import annotations
 
 DIGEST_PUBLICATION_TYPES: frozenset[str] = frozenset({"digest", "digest_grouped", "digest_channel"})
 
-HARD_EXCLUSION_REASONS: frozenset[str] = frozenset({"commercial_classified"})
+HARD_EXCLUSION_REASONS: frozenset[str] = frozenset(
+    {
+        "commercial_classified",
+        "private_classified",
+        "directory_payload",
+        "obvious_noise",
+    }
+)
 
 GENERIC_FALLBACK_TOPICS: frozenset[str] = frozenset(
     {"Городские события", "Новости города", "Новости дня", "События дня", "Главные события"}
