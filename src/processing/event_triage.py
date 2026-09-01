@@ -236,7 +236,8 @@ class StoryTriageService:
         async for row in cursor:
             sid = int(row[0])
             fid = int(row[1])
-            text = str(row[2])[:excerpt_chars]
+            full_text = str(row[2])
+            text = full_text[:excerpt_chars]
             source_id = int(row[3])
             source_name = str(row[4])
             source_role = str(row[5])
@@ -245,6 +246,7 @@ class StoryTriageService:
                 {
                     "fragment_id": fid,
                     "text": text,
+                    "full_text": full_text,
                     "source_id": source_id,
                     "source_name": source_name,
                     "source_role": source_role,
@@ -589,6 +591,34 @@ class StoryTriageService:
                             else:
                                 cleaned_items.append(evi)
                         brief_payload = replace(brief_payload, evidence_items=tuple(cleaned_items))
+
+                    # Invariant: A KEEP story must contain at least 1 legitimate PUBLISH evidence item
+                    if retention == "KEEP" and brief_payload is not None:
+                        has_publish = any(
+                            evi.publication_use == "PUBLISH" for evi in brief_payload.evidence_items
+                        )
+                        if not has_publish:
+                            all_context_or_noise = all(
+                                evi.kind in ("resident_question", "commercial_offer")
+                                or evi.publication_use in ("CONTEXT", "EXCLUDE")
+                                for evi in brief_payload.evidence_items
+                            )
+                            if all_context_or_noise:
+                                self.logger.info(
+                                    "Story %s has 0 PUBLISH items (pure context/questions/noise); normalizing to DROP / obvious_noise",
+                                    s.story_id,
+                                )
+                                retention = "DROP"
+                                enrichment = "NONE"
+                                ex_reason = "obvious_noise"
+                                brief_payload = None
+                            else:
+                                self.logger.warning(
+                                    "Story %s has 0 PUBLISH items unexpectedly; deferring for re-analysis",
+                                    s.story_id,
+                                )
+                                deferred_ids.append(s.story_id)
+                                continue
                 else:
                     deferred_ids.append(s.story_id)
                     continue

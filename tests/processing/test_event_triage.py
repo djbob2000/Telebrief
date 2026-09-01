@@ -1426,12 +1426,115 @@ async def test_gate_v2_normalizes_resident_question_brief_payload(conn, edition,
 
     assert len(batch.results) == 1
     result = batch.results[0]
-    assert result.retention == "KEEP"
-    assert result.enrichment == "BRIEF"
-    assert result.brief_payload is not None
-    assert result.brief_payload.evidence_items[0].kind == "resident_question"
-    assert result.brief_payload.evidence_items[0].publication_use == "CONTEXT"
-    assert result.brief_payload.evidence_items[0].service_state is None
+    # Pure question story: 0 PUBLISH items remain after normalization, drops as obvious_noise
+    assert result.retention == "DROP"
+    assert result.enrichment == "NONE"
+    assert result.exclusion_reason == "obvious_noise"
+
+    # Now test mixed story: resident question + legitimate service_access fact
+    sid_mixed = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES (8889, 'h_q_m', '[1, 0]'::vector, 'm', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES (9889, %s, 1, 'Работает ли пенсионный фонд? Прием по талонам.', 'h_q_m', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES (10889, 9889, 8889)
+        """
+    )
+    aid_mixed = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid_mixed,
+        fragment_id=9889,
+        fragment_embedding_id=10889,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid_mixed,
+        centroid=[1.0, 0.0],
+        model="m",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid_mixed,
+        analysis_dirty=True,
+    )
+    st_mixed = await cluster_repo.get_cluster_state(conn, sid_mixed)
+    assert st_mixed is not None
+
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "story_id": sid_mixed,
+                    "scope": "LOCAL",
+                    "scope_basis_fragment_ids": [9889],
+                    "scope_confidence": 0.95,
+                    "scope_reason": "Resident question + answer in target city",
+                    "retention": "KEEP",
+                    "enrichment": "BRIEF",
+                    "exclusion_reason": None,
+                    "confidence": 0.85,
+                    "reason": "Resident asking about pension fund with status answer",
+                    "brief_payload": {
+                        "topic": "Работа пенсионного фонда",
+                        "publishability": "news",
+                        "headline": "Пенсионный фонд принимает по предварительной записи",
+                        "digest_summary": "Прием ведется по талонам.",
+                        "evidence_items": [
+                            {
+                                "text": "Работает ли пенсионный фонд?",
+                                "kind": "resident_question",
+                                "publication_use": "PUBLISH",
+                                "source_fragment_ids": [9889],
+                            },
+                            {
+                                "text": "Пенсионный фонд принимает по талонам",
+                                "kind": "service_access",
+                                "publication_use": "PUBLISH",
+                                "source_fragment_ids": [9889],
+                            },
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+    batch_mixed = await service.triage_stories_batch(
+        conn,
+        [st_mixed],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+    assert len(batch_mixed.results) == 1
+    res_mixed = batch_mixed.results[0]
+    assert res_mixed.retention == "KEEP"
+    assert res_mixed.enrichment == "BRIEF"
+    assert res_mixed.brief_payload is not None
+    # Question is normalized to CONTEXT
+    assert res_mixed.brief_payload.evidence_items[0].kind == "resident_question"
+    assert res_mixed.brief_payload.evidence_items[0].publication_use == "CONTEXT"
+    # Service access remains PUBLISH
+    assert res_mixed.brief_payload.evidence_items[1].kind == "service_access"
+    assert res_mixed.brief_payload.evidence_items[1].publication_use == "PUBLISH"
 
 
 def test_gate_v8_uses_unified_service_state_contract() -> None:

@@ -61,7 +61,7 @@ def evaluate_story_hard_exclusion(
         except (ValueError, TypeError):
             fid = 0
 
-        text = str(frag.get("text", frag.get("text_content", "")) or "")
+        text = str(frag.get("full_text", frag.get("text", frag.get("text_content", ""))) or "")
         is_ex, reason = classify_text_noise_or_exclusion(text)
 
         if is_ex:
