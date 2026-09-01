@@ -111,11 +111,19 @@ class LegacyCoverageCase:
     window_start: str
     window_end: str
     coverage_units: tuple[LegacyCoverageUnit, ...]
+    edition_slug: str = "berdyansk"
+    publication_type: str = "article"
+    snapshot_at: str = ""
+    lookback_hours: int = 24
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "legacy_commit": self.legacy_commit,
+            "edition_slug": self.edition_slug,
+            "publication_type": self.publication_type,
+            "snapshot_at": self.snapshot_at or self.window_end,
+            "lookback_hours": self.lookback_hours,
             "window_start": self.window_start,
             "window_end": self.window_end,
             "coverage_units": [u.to_dict() for u in self.coverage_units],
@@ -126,11 +134,21 @@ class LegacyCoverageCase:
         case_id = data.get("id")
         if not case_id or not isinstance(case_id, str):
             raise ValueError("LegacyCoverageCase requires non-empty 'id'")
+        w_start = data.get("window_start", "")
+        w_end = data.get("window_end", "")
+        snap_at = data.get("snapshot_at") or w_end
+        pub_type = data.get("publication_type", "article")
+        edition_slug = data.get("edition_slug", "berdyansk")
+        lookback_hours = data.get("lookback_hours", 24)
         return cls(
             id=case_id,
             legacy_commit=data.get("legacy_commit", ""),
-            window_start=data.get("window_start", ""),
-            window_end=data.get("window_end", ""),
+            edition_slug=edition_slug,
+            publication_type=pub_type,
+            snapshot_at=snap_at,
+            lookback_hours=int(lookback_hours),
+            window_start=w_start,
+            window_end=w_end,
             coverage_units=tuple(
                 LegacyCoverageUnit.from_dict(u) for u in data.get("coverage_units", ())
             ),
@@ -231,6 +249,10 @@ def evaluate_case(
     exported_case: dict[str, Any],
 ) -> LegacyRegressionReport:
     """Evaluate an offline legacy floor case against an exported case snapshot and traces."""
+    # Validate that every binding coverage unit has at least one source identity
+    for unit in case.coverage_units:
+        if unit.allowed_loss_reason is None and not unit.acceptable_sources:
+            raise ValueError(f"unbound legacy coverage unit '{unit.id}' (acceptable_sources is empty)")
     # Exported case index structures:
     # sources: set of fingerprints and refs present in the source snapshot
     source_fingerprints: set[str] = set(exported_case.get("source_fingerprints", ()))

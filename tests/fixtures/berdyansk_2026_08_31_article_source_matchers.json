@@ -1,0 +1,48 @@
+{
+  "water_azmol_and_upper_floors": [
+    ["азмол", "верхн", "этаж"]
+  ],
+  "water_pipe_ordzhonikidze": [
+    ["орджоникидзе", "вод"],
+    ["гора", "порыв"]
+  ],
+  "stoves_firewood_and_heating_prep": [
+    ["печ", "дров"],
+    ["дымоход", "дров"]
+  ],
+  "free_charging_gagarina_1": [
+    ["гагарина", "заряд"]
+  ],
+  "combined_energy_heating_bill": [
+    ["квитанц", "теплосет"],
+    ["электроэнерг", "теплосет", "задолж"]
+  ],
+  "disputed_utility_debts": [
+    ["задолж", "1300"],
+    ["задолж", "2360"]
+  ],
+  "mfc_outdoor_consultations": [
+    ["мфц", "улиц"],
+    ["пионерск", "мфц"]
+  ],
+  "rosreestr_service_pause": [
+    ["росреестр", "приост"],
+    ["росреестр", "не работ"]
+  ],
+  "fluorography_generator_room_12": [
+    ["флюор", "кабинет 12"],
+    ["флюор", "генератор"]
+  ],
+  "school_20_generator_fuel_discussion": [
+    ["школ", "20", "генератор"],
+    ["школа №20", "топлив"]
+  ],
+  "dead_traffic_lights": [
+    ["светофор", "вокзал"],
+    ["светофор", "центральн", "рын"]
+  ],
+  "mobile_operator_reliability_difference": [
+    ["миранда", "связ"],
+    ["оператор", "связ"]
+  ]
+}

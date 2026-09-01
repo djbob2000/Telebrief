@@ -582,10 +582,47 @@ async def test_export_publication_case_distinct_evidence_and_candidate_stages(co
     assert exported["candidate_fragment_ids"] == []
 
 
-def test_berdyansk_2026_08_31_legacy_floor_fixture():
+def test_evaluate_case_rejects_unbound_coverage_units():
+    unit = LegacyCoverageUnit(
+        id="unbound_unit",
+        description="Unbound unit without sources",
+        acceptable_sources=(),
+        required_microdetails=("детали",),
+    )
+    case = LegacyCoverageCase(
+        id="test_unbound",
+        legacy_commit="commit1",
+        edition_slug="berdyansk",
+        publication_type="digest",
+        snapshot_at="2026-09-01T09:00:00+03:00",
+        lookback_hours=24,
+        window_start="2026-08-31T09:00:00+03:00",
+        window_end="2026-09-01T09:00:00+03:00",
+        coverage_units=(unit,),
+    )
+    with pytest.raises(ValueError, match="unbound legacy coverage unit 'unbound_unit'"):
+        evaluate_case(case, {})
+
+
+def test_berdyansk_2026_09_01_digest_legacy_floor_fixture():
     from pathlib import Path
 
-    from scripts.publication_regression import LegacyCoverageCase, evaluate_case
+    fixture_path = (
+        Path(__file__).resolve().parent.parent
+        / "fixtures"
+        / "berdyansk_2026_09_01_digest_legacy_floor.json"
+    )
+    assert fixture_path.exists(), f"Missing fixture at {fixture_path}"
+
+    case = LegacyCoverageCase.load_json(fixture_path)
+    assert case.id == "berdyansk_2026_09_01_digest_legacy_floor"
+    assert case.publication_type == "digest"
+    assert len(case.coverage_units) == 8
+    assert all(unit.acceptable_sources for unit in case.coverage_units)
+
+
+def test_berdyansk_2026_08_31_legacy_floor_fixture():
+    from pathlib import Path
 
     fixture_path = (
         Path(__file__).resolve().parent.parent
@@ -596,7 +633,9 @@ def test_berdyansk_2026_08_31_legacy_floor_fixture():
 
     case = LegacyCoverageCase.load_json(fixture_path)
     assert case.id == "berdyansk_2026_08_31_legacy_floor"
+    assert case.publication_type == "article"
     assert len(case.coverage_units) >= 12
+    assert all(unit.acceptable_sources or unit.allowed_loss_reason for unit in case.coverage_units)
 
     required_units = {
         "water_azmol_and_upper_floors",

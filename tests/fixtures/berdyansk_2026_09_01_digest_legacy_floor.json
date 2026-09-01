@@ -1,0 +1,140 @@
+{
+  "id": "berdyansk_2026_09_01_digest_legacy_floor",
+  "legacy_commit": "82beb346ee16f64547c305d1dabda0f52889713f",
+  "edition_slug": "berdyansk",
+  "publication_type": "digest",
+  "snapshot_at": "2026-09-01T09:00:00+03:00",
+  "lookback_hours": 24,
+  "window_start": "2026-08-31T09:00:00+03:00",
+  "window_end": "2026-09-01T09:00:00+03:00",
+  "coverage_units": [
+    {
+      "id": "power_outage_citywide_or_multi_area",
+      "description": "Citywide or multi-area power outages and electricity disruptions",
+      "acceptable_sources": [
+        {
+          "fixture_fragment_id": "frag:8a9b1c2d3e4f5a6b7c8d9e0f",
+          "source_fingerprint": "1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      ],
+      "required_microdetails": [
+        "перебои",
+        "электроэнерг"
+      ]
+    },
+    {
+      "id": "free_charging_gagarina_1",
+      "description": "Free mobile device charging station at Gagarina 1",
+      "acceptable_sources": [
+        {
+          "fixture_fragment_id": "frag:9b1c2d3e4f5a6b7c8d9e0f1a",
+          "source_fingerprint": "2222222222222222222222222222222222222222222222222222222222222222"
+        }
+      ],
+      "required_microdetails": [
+        "Гагарина, 1",
+        "бесплат"
+      ]
+    },
+    {
+      "id": "generator_supply_schools_social",
+      "description": "Supply and installation of generators for schools and social institutions",
+      "acceptable_sources": [
+        {
+          "fixture_fragment_id": "frag:1c2d3e4f5a6b7c8d9e0f1a2b",
+          "source_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333"
+        }
+      ],
+      "required_microdetails": [
+        "генератор",
+        "школ",
+        "социаль"
+      ]
+    },
+    {
+      "id": "combined_energy_heating_bill",
+      "description": "Inclusion of heating network charges and arrears into unified electricity bill",
+      "acceptable_sources": [
+        {
+          "fixture_fragment_id": "frag:2d3e4f5a6b7c8d9e0f1a2b3c",
+          "source_fingerprint": "4444444444444444444444444444444444444444444444444444444444444444"
+        }
+      ],
+      "required_microdetails": [
+        "электроэнерг",
+        "теплосет",
+        "задолж",
+        "един"
+      ]
+    },
+    {
+      "id": "water_low_pressure_upper_floors",
+      "description": "Low water pressure reported on upper floors of residential buildings",
+      "acceptable_sources": [
+        {
+          "fixture_fragment_id": "frag:3e4f5a6b7c8d9e0f1a2b3c4d",
+          "source_fingerprint": "5555555555555555555555555555555555555555555555555555555555555555"
+        }
+      ],
+      "required_microdetails": [
+        "низк",
+        "напор",
+        "верхн",
+        "этаж"
+      ]
+    },
+    {
+      "id": "water_pipeline_damage_outage",
+      "description": "Temporary water outages due to pipeline damage or burst",
+      "acceptable_sources": [
+        {
+          "fixture_fragment_id": "frag:4f5a6b7c8d9e0f1a2b3c4d5e",
+          "source_fingerprint": "6666666666666666666666666666666666666666666666666666666666666666"
+        }
+      ],
+      "required_microdetails": [
+        "поврежд",
+        "трубопровод",
+        "вод"
+      ]
+    },
+    {
+      "id": "humanitarian_aid_sep_2",
+      "description": "Humanitarian aid distribution on September 2 at 11:00 by Vilne Zaporizhzhia foundation",
+      "acceptable_sources": [
+        {
+          "fixture_fragment_id": "frag:5a6b7c8d9e0f1a2b3c4d5e6f",
+          "source_fingerprint": "7777777777777777777777777777777777777777777777777777777777777777"
+        }
+      ],
+      "required_microdetails": [
+        "2 сентября",
+        "11:00",
+        "Вільне Запоріжжя",
+        "регистрац",
+        "подгуз",
+        "гигиен",
+        "одеж",
+        "обув"
+      ]
+    },
+    {
+      "id": "free_football_sections_nazarov",
+      "description": "Free football section enrollment for children at Nazarov sports school",
+      "acceptable_sources": [
+        {
+          "fixture_fragment_id": "frag:6b7c8d9e0f1a2b3c4d5e6f7a",
+          "source_fingerprint": "8888888888888888888888888888888888888888888888888888888888888888"
+        }
+      ],
+      "required_microdetails": [
+        "Назарова",
+        "футбол",
+        "бесплат",
+        "2017",
+        "2018",
+        "2016"
+      ]
+    }
+  ]
+}
