@@ -459,7 +459,14 @@ def find_unsupported_claims(
     for claim in claims:
         norm = claim.normalized
 
-        if claim.kind in ("phone", "money", "percent"):
+        if claim.kind == "phone":
+            phone_digits = claim.normalized
+            if not any(
+                phone_digits in re.sub(r"[\s\-\(\)\+]", "", st) for st in support_texts if st
+            ):
+                unsupported.append(claim)
+
+        elif claim.kind in ("money", "percent"):
             # Direct normalized substring search
             if not any(norm in sup for sup in norm_supports):
                 unsupported.append(claim)
