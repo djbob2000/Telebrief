@@ -415,6 +415,173 @@ async def test_export_publication_case_postgres(conn, edition):
     assert exported["article_claim_trace"][0]["unit_id"] == "P001"
 
 
+@pytest.mark.postgres
+async def test_export_publication_case_source_corpus_independent_of_stories(conn, edition):
+    import datetime as dt
+
+    from scripts.export_publication_regression_case import export_publication_case
+    from src.publication.repository import PublicationPolicyRepository
+
+    now = dt.datetime.now(dt.timezone.utc)
+    policy_repo = PublicationPolicyRepository()
+    elig = await policy_repo.get_or_create_eligibility_policy(
+        conn,
+        edition_id=edition.id,
+        config_hash="h-e-source-test",
+        prompt_version="v1",
+        config={"lookback_hours": 24},
+    )
+    sel = await policy_repo.get_or_create_selection_policy(
+        conn, edition_id=edition.id, config_hash="h-s-source-test", prompt_version="v1"
+    )
+    wri = await policy_repo.get_or_create_writer_policy(
+        conn, edition_id=edition.id, config_hash="h-w-source-test", prompt_version="v1"
+    )
+
+    # Seed source bound to edition
+    cur = await conn.execute(
+        "INSERT INTO sources (platform, kind, external_id, url, name) VALUES ('telegram', 'channel', '-100999', 'https://t.me/charge', 'Charge') RETURNING id"
+    )
+    src_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_id, edition.id),
+    )
+
+    # Seed source item, revision, fragment inside window
+    cur = await conn.execute(
+        "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', 'msg-charge-1', %s) RETURNING id",
+        (src_id, now),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, 'h-ch-1', 'На Гагарина, 1 бесплатно заряжают телефоны') RETURNING id",
+        (item_id,),
+    )
+    sir_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, 'На Гагарина, 1 бесплатно заряжают телефоны', 'h-f-ch-1', 'v1', TRUE, %s)",
+        (sir_id, now),
+    )
+
+    # Seed publication run with no candidates/stories
+    cur = await conn.execute(
+        """
+        INSERT INTO publication_runs (
+            edition_id, publication_type, status, request_key, snapshot_at,
+            eligibility_policy_id, selection_policy_id, writer_policy_id, created_at
+        )
+        VALUES (%s, 'digest', 'succeeded', 'req-source-only-test', %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (edition.id, now, elig.id, sel.id, wri.id, now),
+    )
+    run_id = (await cur.fetchone())[0]
+
+    exported = await export_publication_case(conn, run_id)
+    assert len(exported["source_corpus"]) == 1
+    assert exported["source_corpus"][0]["text"] == "На Гагарина, 1 бесплатно заряжают телефоны"
+    assert exported["evidence_fragment_ids"] == []
+    assert exported["candidate_fragment_ids"] == []
+
+
+@pytest.mark.postgres
+async def test_export_publication_case_distinct_evidence_and_candidate_stages(conn, edition):
+    import datetime as dt
+    import json
+
+    from scripts.export_publication_regression_case import export_publication_case
+    from src.publication.repository import PublicationPolicyRepository
+
+    now = dt.datetime.now(dt.timezone.utc)
+    policy_repo = PublicationPolicyRepository()
+    elig = await policy_repo.get_or_create_eligibility_policy(
+        conn,
+        edition_id=edition.id,
+        config_hash="h-e-distinct-test",
+        prompt_version="v1",
+        config={"lookback_hours": 24},
+    )
+    sel = await policy_repo.get_or_create_selection_policy(
+        conn, edition_id=edition.id, config_hash="h-s-distinct-test", prompt_version="v1"
+    )
+    wri = await policy_repo.get_or_create_writer_policy(
+        conn, edition_id=edition.id, config_hash="h-w-distinct-test", prompt_version="v1"
+    )
+
+    # Seed source and fragment
+    cur = await conn.execute(
+        "INSERT INTO sources (platform, kind, external_id, url, name) VALUES ('telegram', 'channel', '-100888', 'https://t.me/gen', 'Gen') RETURNING id"
+    )
+    src_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (src_id, edition.id),
+    )
+    cur = await conn.execute(
+        "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', 'msg-gen-1', %s) RETURNING id",
+        (src_id, now),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, 'h-g-1', 'Поставки генераторов в школы') RETURNING id",
+        (item_id,),
+    )
+    sir_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, 'Поставки генераторов в школы', 'h-f-g-1', 'v1', TRUE, %s) RETURNING id",
+        (sir_id, now),
+    )
+    frag_id = (await cur.fetchone())[0]
+
+    # Seed story with PUBLISH evidence
+    cur = await conn.execute(
+        "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+        (edition.id, now),
+    )
+    story_id = (await cur.fetchone())[0]
+    ep = {
+        "evidence_items": [
+            {
+                "evidence_id": f"story:{story_id}:evidence:0:frag:{frag_id}",
+                "source_fragment_ids": [frag_id],
+                "text": "Поставки генераторов в школы",
+                "publication_use": "PUBLISH",
+            }
+        ]
+    }
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, event_payload, created_at)
+        VALUES (%s, 1, 'open', 'Генераторы', 'h-sr-g-1', %s, %s) RETURNING id
+        """,
+        (story_id, json.dumps(ep), now),
+    )
+    rev_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+    )
+
+    # Seed publication run without candidates
+    cur = await conn.execute(
+        """
+        INSERT INTO publication_runs (
+            edition_id, publication_type, status, request_key, snapshot_at,
+            eligibility_policy_id, selection_policy_id, writer_policy_id, created_at
+        )
+        VALUES (%s, 'digest', 'succeeded', 'req-distinct-test', %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (edition.id, now, elig.id, sel.id, wri.id, now),
+    )
+    run_id = (await cur.fetchone())[0]
+
+    exported = await export_publication_case(conn, run_id)
+    assert len(exported["source_corpus"]) == 1
+    assert len(exported["evidence_fragment_ids"]) == 1
+    assert exported["candidate_fragment_ids"] == []
+
+
 def test_berdyansk_2026_08_31_legacy_floor_fixture():
     from pathlib import Path
 
