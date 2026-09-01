@@ -700,10 +700,12 @@ def build_deterministic_digest_draft(
             chosen_supports = eligible_supports[:2]
             rendered_sentences: list[str] = []
             support_texts: list[str] = []
+            final_chosen_supports: list[str] = []
 
             for s in chosen_supports:
                 text = ""
                 kind = "established_fact"
+                actual_sup_id = s
                 if s in evidence:
                     text = (evidence[s].text or evidence[s].source_text).strip()
                     kind = getattr(evidence[s], "kind", "established_fact")
@@ -731,10 +733,13 @@ def build_deterministic_digest_draft(
                     if not text:
                         if card.summary:
                             text = card.summary.strip()
+                            actual_sup_id = f"{card.id}:summary"
                         elif card.topic:
                             text = card.topic.strip()
+                            actual_sup_id = card.id
 
                 if text:
+                    final_chosen_supports.append(actual_sup_id)
                     support_texts.append(text)
                     if kind in {"community_report", "community_observation", "quote_assertion"}:
                         if not text.casefold().startswith(
@@ -743,18 +748,46 @@ def build_deterministic_digest_draft(
                             text = f"По сообщениям жителей, {text[:1].lower() + text[1:]}"
                     rendered_sentences.append(text.rstrip(". ") + ".")
 
+            effective_supports = final_chosen_supports or chosen_supports
+
             topic = card.topic.strip()
-            if topic and not find_unsupported_claims(topic, support_texts):
+            topic_claims = find_unsupported_claims(topic, support_texts) if topic else []
+            if topic and not topic_claims and len(topic) <= DIGEST_ITEM_HEADLINE_MAX_CHARS:
                 headline = topic
+            elif rendered_sentences:
+                first_sent = rendered_sentences[0].rstrip(". ")
+                if len(first_sent) <= DIGEST_ITEM_HEADLINE_MAX_CHARS:
+                    headline = first_sent
+                else:
+                    # Truncate to at most 140 chars cleanly at sentence/clause/word boundary
+                    truncated = first_sent[:DIGEST_ITEM_HEADLINE_MAX_CHARS]
+                    for sep in [". ", "! ", "? ", "; ", ", ", " — ", " - "]:
+                        if sep in truncated:
+                            parts = truncated.rsplit(sep, 1)
+                            if len(parts[0].strip()) >= 20:
+                                truncated = parts[0].strip()
+                                break
+                    else:
+                        if " " in truncated:
+                            truncated = truncated.rsplit(" ", 1)[0].strip()
+                    headline = truncated.rstrip(".:;, ")
             else:
-                headline = rendered_sentences[0].rstrip(".") if rendered_sentences else topic or sid
+                headline = (topic[:DIGEST_ITEM_HEADLINE_MAX_CHARS] if topic else sid).rstrip(
+                    ".:;, "
+                )
+
+            body_text = " ".join(rendered_sentences)
+            if len(body_text) > DIGEST_ITEM_BODY_MAX_CHARS:
+                body_text = (
+                    body_text[:DIGEST_ITEM_BODY_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ") + "."
+                )
 
             item_drafts.append(
                 DigestEditorialItemDraft(
                     headline=headline,
-                    body=" ".join(rendered_sentences),
+                    body=body_text,
                     covered_story_ids=(sid,),
-                    cited_support_ids=tuple(chosen_supports),
+                    cited_support_ids=tuple(effective_supports),
                 )
             )
 
