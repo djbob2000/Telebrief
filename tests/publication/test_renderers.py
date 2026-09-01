@@ -744,3 +744,58 @@ class TestPublicationDigestRenderer:
         # Story 2 and 3 appear in thematic sections
         assert "Спорт" in body or "Открыт бесплатный набор детей на футбол" in body
         assert "жильцы дома скинулись по 300 рублей на подвоз воды" in body
+
+    def test_render_grouped_digest_rubric_heading_once_for_chunked_blocks(self):
+        from src.publication.digest_narrative import (
+            DigestEditorialItemDraft,
+            DigestNarrativeBlockDraft,
+            DigestNarrativeDraft,
+        )
+
+        renderer = PublicationDigestRenderer(use_emojis=True)
+        cards = [
+            StoryCard(id="story:1", topic="Утилити 1", importance="high", summary="Утилити 1"),
+            StoryCard(id="story:2", topic="Утилити 2", importance="high", summary="Утилити 2"),
+        ]
+        frozen = FrozenEditorialInput(
+            analysis=EditorialAnalysis(cards=cards),
+            writer_bundle=PreparedBundle(
+                records={}, prompt_text="", total_messages=2, candidate_count=2
+            ),
+        )
+        draft = DigestNarrativeDraft(
+            blocks=(
+                DigestNarrativeBlockDraft(
+                    block_id="block:utilities:0",
+                    items=(
+                        DigestEditorialItemDraft(
+                            headline="First utility item",
+                            body="First utility body.",
+                            covered_story_ids=("story:1",),
+                            cited_support_ids=("sup:1",),
+                        ),
+                    ),
+                ),
+                DigestNarrativeBlockDraft(
+                    block_id="block:utilities:1",
+                    items=(
+                        DigestEditorialItemDraft(
+                            headline="Second utility item",
+                            body="Second utility body.",
+                            covered_story_ids=("story:2",),
+                            cited_support_ids=("sup:2",),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        title, lead, body = renderer.render_grouped_digest(
+            frozen,
+            snapshot_at=_NOW,
+            narrative_draft=draft,
+        )
+
+        assert body.count("Коммунальная обстановка") == 1
+        assert "First utility item" in body
+        assert "Second utility item" in body

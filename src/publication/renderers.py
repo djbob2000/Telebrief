@@ -377,28 +377,45 @@ class PublicationDigestRenderer:
                 sections.append(sit_text)
 
         if narrative_draft is not None and getattr(narrative_draft, "blocks", None):
+            current_rubric_id: str | None = None
+            current_rubric_items: list[str] = []
+
+            def _flush_rubric_section() -> None:
+                if current_rubric_id is not None and current_rubric_items:
+                    rubric = next(
+                        (r for r in self.rubrics if r.get("id") == current_rubric_id), None
+                    )
+                    emoji = (
+                        f"{rubric['emoji']} "
+                        if (rubric and self.use_emojis and rubric.get("emoji"))
+                        else ""
+                    )
+                    heading = rubric["title"] if rubric else "Разное"
+                    header = f"*{emoji}{heading}*"
+                    sections.append(f"{header}\n" + "\n".join(current_rubric_items))
+
             for block_draft in narrative_draft.blocks:
                 rubric_id = (
                     block_draft.block_id.split(":")[1]
                     if ":" in block_draft.block_id
                     else block_draft.block_id
                 )
-                rubric = next((r for r in self.rubrics if r.get("id") == rubric_id), None)
-                emoji = (
-                    f"{rubric['emoji']} "
-                    if (rubric and self.use_emojis and rubric.get("emoji"))
-                    else ""
-                )
-                heading = rubric["title"] if rubric else "Разное"
-                header = f"*{emoji}{heading}*"
-
                 item_lines = [
                     f"• **{item.headline.strip()}**: {item.body.strip()}"
                     for item in block_draft.items
                     if item.headline.strip() and item.body.strip()
                 ]
-                if item_lines:
-                    sections.append(f"{header}\n" + "\n".join(item_lines))
+                if not item_lines:
+                    continue
+
+                if rubric_id != current_rubric_id:
+                    _flush_rubric_section()
+                    current_rubric_id = rubric_id
+                    current_rubric_items = list(item_lines)
+                else:
+                    current_rubric_items.extend(item_lines)
+
+            _flush_rubric_section()
         else:
             # Group cards by classified rubric
             grouped_cards: dict[str, list[StoryCard]] = {}
