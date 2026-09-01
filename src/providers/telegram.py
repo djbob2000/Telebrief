@@ -135,17 +135,20 @@ async def ensure_connected(client: Any, logger: logging.Logger | None) -> None:
 async def sender_display_name(message: Any) -> str:
     """Resolve the human-readable sender name, falling back to 'Unknown'."""
     try:
-        if message.sender:
-            sender = await message.get_sender()
-            if hasattr(sender, "first_name"):
+        sender = getattr(message, "sender", None)
+        if sender is not None:
+            if hasattr(sender, "first_name") and sender.first_name:
                 name = str(sender.first_name)
                 if hasattr(sender, "last_name") and sender.last_name:
                     name += f" {sender.last_name}"
                 return name
-            elif hasattr(sender, "title"):
+            elif hasattr(sender, "title") and sender.title:
                 return str(sender.title)
-            elif hasattr(sender, "username"):
+            elif hasattr(sender, "username") and sender.username:
                 return f"@{sender.username}"
+        post_author = getattr(message, "post_author", None)
+        if post_author:
+            return str(post_author)
         return "Unknown"
     except Exception:
         return "Unknown"

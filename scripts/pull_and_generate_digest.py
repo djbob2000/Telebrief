@@ -77,10 +77,10 @@ async def main():
             """
             SELECT sir.id
             FROM source_item_revisions sir
+            JOIN source_items si ON si.id = sir.source_item_id
             LEFT JOIN source_fragments f ON f.source_item_revision_id = sir.id
-            WHERE f.id IS NULL
+            WHERE f.id IS NULL AND si.published_at >= now() - interval '48 hours'
             ORDER BY sir.id ASC
-            LIMIT 500
             """
         )
         rows = await cur.fetchall()
@@ -88,7 +88,7 @@ async def main():
 
     if rev_ids:
         logger.info("Processing %d new revisions (fragmentation, embeddings, clustering)...", len(rev_ids))
-        batch_size = 32
+        batch_size = 64
         for i in range(0, len(rev_ids), batch_size):
             batch = rev_ids[i : i + batch_size]
             logger.info("Processing revision batch %d-%d of %d...", i + 1, min(i + batch_size, len(rev_ids)), len(rev_ids))

@@ -31,7 +31,7 @@ async def migrate_active_revisions(conn: psycopg.AsyncConnection) -> tuple[int, 
         WHERE sir.id NOT IN (
             SELECT DISTINCT sf.source_item_revision_id
             FROM source_fragments sf
-            JOIN publication_input_fragments pif ON pif.source_fragment_id = sf.id
+            JOIN publication_input_fragments pif ON pif.fragment_id = sf.id
         )
         ORDER BY sir.id ASC
     """

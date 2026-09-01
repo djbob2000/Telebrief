@@ -86,6 +86,8 @@ async def main():
             if "paragraphs" in draft:
                 for p in draft["paragraphs"]:
                     print(f"{p.get('text', '')}\n")
+    finally:
+        await infra.close()
 
 
 if __name__ == "__main__":
