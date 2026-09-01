@@ -118,11 +118,15 @@ def reset_telebrief_runtime():
     not poison other tests; the registry has no unguarded public reset, so
     this fixture resets the module reference directly on both sides.
     """
+    import logging
+
     from src import runtime
 
     runtime._runtime = None
+    logging.getLogger("telebrief").propagate = True
     yield
     runtime._runtime = None
+    logging.getLogger("telebrief").propagate = True
 
 
 @pytest.fixture
