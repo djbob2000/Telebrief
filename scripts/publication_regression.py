@@ -217,6 +217,15 @@ class LegacyRegressionReport:
         }
 
 
+def normalize_microdetail_text(text: str) -> str:
+    normalized = " ".join(str(text).casefold().replace("ё", "е").split())
+    return normalized.strip(" .,:;!?—–-«»\"'()")
+
+
+def text_contains_microdetail(text: str, microdetail: str) -> bool:
+    return normalize_microdetail_text(microdetail) in normalize_microdetail_text(text)
+
+
 def evaluate_case(
     case: LegacyCoverageCase,
     exported_case: dict[str, Any],
@@ -249,6 +258,7 @@ def evaluate_case(
     final_trace_supports: set[str] = set(exported_case.get("final_trace_supports", ()))
     final_trace_refs: set[str] = set(exported_case.get("final_trace_refs", ()))
     final_trace_frag_ids: set[str] = set(exported_case.get("final_trace_fragment_ids", ()))
+    final_trace_units: list[dict[str, Any]] = exported_case.get("final_trace_units", [])
 
     # retained microdetails by unit ID (or globally verified from canonical trace metadata)
     retained_microdetails_map: dict[str, list[str]] = exported_case.get(
@@ -265,6 +275,7 @@ def evaluate_case(
         has_sealed = False
         has_plan = False
         has_final = False
+        matched_final_texts: list[str] = []
 
         for src in unit.acceptable_sources:
             # 1. Source corpus
@@ -302,12 +313,27 @@ def evaluate_case(
                 has_plan = True
 
             # 6. Final trace
-            if (
-                (src.source_ref and src.source_ref in final_trace_supports)
-                or (src.source_ref and src.source_ref in final_trace_refs)
-                or (src.fixture_fragment_id and src.fixture_fragment_id in final_trace_frag_ids)
-            ):
-                has_final = True
+            for unit_trace in final_trace_units:
+                t_frag_ids = set(unit_trace.get("fixture_fragment_ids", ()))
+                t_fps = set(unit_trace.get("source_fingerprints", ()))
+                t_refs = set(unit_trace.get("source_refs", ()))
+                if (
+                    (src.fixture_fragment_id and src.fixture_fragment_id in t_frag_ids)
+                    or (src.source_fingerprint and src.source_fingerprint in t_fps)
+                    or (src.source_ref and src.source_ref in t_refs)
+                ):
+                    has_final = True
+                    text = unit_trace.get("text", "")
+                    if text and text not in matched_final_texts:
+                        matched_final_texts.append(text)
+
+            if not final_trace_units:
+                if (
+                    (src.source_ref and src.source_ref in final_trace_supports)
+                    or (src.source_ref and src.source_ref in final_trace_refs)
+                    or (src.fixture_fragment_id and src.fixture_fragment_id in final_trace_frag_ids)
+                ):
+                    has_final = True
 
         stage_state = CaseStageState(
             source=has_source,
@@ -319,8 +345,16 @@ def evaluate_case(
         )
         loss = attribute_loss(unit, stage_state)
 
+        matched_final_text = " ".join(matched_final_texts)
         retained_list = retained_microdetails_map.get(unit.id, [])
-        retained = tuple(m for m in unit.required_microdetails if m in retained_list or has_final)
+        retained_items: list[str] = []
+        for m in unit.required_microdetails:
+            if m in retained_list:
+                retained_items.append(m)
+            elif matched_final_text and text_contains_microdetail(matched_final_text, m):
+                retained_items.append(m)
+
+        retained = tuple(retained_items)
         missing = tuple(m for m in unit.required_microdetails if m not in retained)
 
         unit_results.append(

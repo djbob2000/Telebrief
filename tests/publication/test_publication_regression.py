@@ -17,6 +17,52 @@ from scripts.publication_regression import (
 )
 
 
+def test_microdetails_measured_from_canonical_trace_text():
+    unit = LegacyCoverageUnit(
+        id="free_charging_gagarina_1",
+        description="Free charging",
+        acceptable_sources=(
+            LegacySourceIdentity(
+                fixture_fragment_id="frag:charge1",
+                source_fingerprint="fp123",
+            ),
+        ),
+        required_microdetails=("Гагарина, 1",),
+    )
+    case = LegacyCoverageCase(
+        id="test_case",
+        legacy_commit="commit1",
+        window_start="2026-08-31T00:00:00Z",
+        window_end="2026-09-01T00:00:00Z",
+        coverage_units=(unit,),
+    )
+    exported_case = {
+        "source_fragment_ids": ["frag:charge1"],
+        "source_fingerprints": ["fp123"],
+        "evidence_fragment_ids": ["frag:charge1"],
+        "evidence_fingerprints": ["fp123"],
+        "candidate_fragment_ids": ["frag:charge1"],
+        "sealed_fragment_ids": ["frag:charge1"],
+        "plan_fragment_ids": ["frag:charge1"],
+        "final_trace_units": [
+            {
+                "text": "В городе работает пункт зарядки.",
+                "fixture_fragment_ids": ["frag:charge1"],
+                "source_fingerprints": ["fp123"],
+                "source_refs": [],
+            }
+        ],
+    }
+
+    report = evaluate_case(case, exported_case)
+    result = report.units[0]
+    assert result.loss == LegacyLoss.COVERED
+    assert result.retained_microdetails == ()
+    assert result.missing_microdetails == ("Гагарина, 1",)
+    assert report.legacy_microdetail_retention == 0.0
+    assert report.regression_unit_ids == ("free_charging_gagarina_1",)
+
+
 def test_loss_attribution_stops_at_first_missing_stage():
     unit = LegacyCoverageUnit(id="free_charging_gagarina_1", description="Free charging")
 
