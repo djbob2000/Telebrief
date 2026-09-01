@@ -13,7 +13,6 @@ from src.publication.article_models import (
     ArticleSection,
     StructuredArticleDraft,
 )
-from src.publication.article_writer_context import sanitize_writer_source_text
 
 _SHORT_SECTION_HEADING = "Коротко о других событиях города"
 _GENERIC_SECTION_HEADING = "Городские события"
@@ -26,7 +25,7 @@ _PROMINENCE_LIMITS: dict[str, int] = {
 
 
 def _render_support_sentence(support: ArticleSupport) -> str:
-    text = sanitize_writer_source_text(support.text or support.source_text).strip()
+    text = (support.text or support.source_text).strip()
     if support.evidence_kind in {"community_report", "community_observation", "quote_assertion"}:
         if not text.casefold().startswith(("по сообщениям", "жители сообщают", "по словам")):
             text = f"По сообщениям жителей, {text[:1].lower() + text[1:] if text else text}"
@@ -180,6 +179,8 @@ class ArticleDeterministicComposer:
         self,
         context: ArticleEditorialContext,
         plan: ArticleCoveragePlan,
+        *,
+        max_sections: int = 8,
     ) -> StructuredArticleDraft:
         """Render a complete deterministic Event-First article from the coverage plan."""
         if not plan.stories:
@@ -239,6 +240,7 @@ class ArticleDeterministicComposer:
         # 2. Sections for all planned stories
         sections: list[ArticleSection] = []
         short_paragraphs: list[ArticleParagraph] = []
+        max_develop_sections = max(1, max_sections - 1)
 
         for story in plan.stories:
             story_sups = _resolve_story_supports(story, context)
@@ -249,7 +251,7 @@ class ArticleDeterministicComposer:
             if not para.text:
                 continue
 
-            if story.prominence == "DEVELOP":
+            if story.prominence == "DEVELOP" and len(sections) < max_develop_sections:
                 heading = _safe_heading_for_story(story, story_sups)
                 sec = ArticleSection(
                     heading=heading,

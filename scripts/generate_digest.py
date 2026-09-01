@@ -57,7 +57,6 @@ async def main():
         snapshot_at=now,
         request_key=f"cli:digest:{now.isoformat()}",
         config=config,
-        lookback_hours_override=48,
     )
     await snapshot_service.seal_candidates(run.id)
     await selection_service.select(run.id, defer_generation=False)

@@ -354,7 +354,9 @@ class ArticleFinalizer:
             fb_attempt_id = await attempt_observer.attempt_started("deterministic_fallback")
 
         try:
-            fallback = self.composer.render_full_fallback(context, coverage_plan)
+            fallback = self.composer.render_full_fallback(
+                context, coverage_plan, max_sections=editorial_config.article_max_sections
+            )
             fb_validation = validate_article_draft(
                 fallback,
                 context,
