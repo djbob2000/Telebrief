@@ -303,3 +303,72 @@ def test_build_digest_coverage_trace_raises_invariant_on_missing_coverage() -> N
 
     with pytest.raises(DigestCoverageInvariantError, match="missing detail coverage for story:1"):
         build_digest_coverage_trace(plan, empty_draft)
+
+
+def test_build_digest_coverage_trace_merged_item_per_story_provenance() -> None:
+    from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+    )
+
+    plan = DigestPresentationPlan(
+        city_situation=CitySituationPresentationPlan(groups=(), covered_source_refs=()),
+        story_presentations=(
+            DigestStoryPresentation(
+                story_id="story:1",
+                mode="DETAIL_ONLY",
+                detail_support_ids=("sup:1",),
+                merge_group_id="merge:1",
+            ),
+            DigestStoryPresentation(
+                story_id="story:2",
+                mode="DETAIL_ONLY",
+                detail_support_ids=("sup:2",),
+                merge_group_id="merge:1",
+            ),
+        ),
+    )
+
+    narrative_plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ",
+                story_ids=("story:1", "story:2"),
+                support_ids=("sup:1", "sup:2"),
+                canonical_notes=(),
+                required_story_groups=(("story:1", "story:2"),),
+                support_ids_by_story=(
+                    ("story:1", ("sup:1",)),
+                    ("story:2", ("sup:2",)),
+                ),
+            ),
+        )
+    )
+
+    # Merged item covering story:1 and story:2 citing both supports
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Merged Headline",
+                        body="Merged Body",
+                        covered_story_ids=("story:1", "story:2"),
+                        cited_support_ids=("sup:1", "sup:2"),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    trace = build_digest_coverage_trace(plan, draft, narrative_plan)
+    trace_by_story = {s.story_id: s for s in trace.stories}
+
+    assert trace_by_story["story:1"].detail_support_ids == ("sup:1",)
+    assert trace_by_story["story:2"].detail_support_ids == ("sup:2",)

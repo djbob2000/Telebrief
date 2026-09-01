@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from src.publication.digest_narrative import DigestNarrativeDraft
+from src.publication.digest_narrative import (
+    DigestNarrativeDraft,
+    DigestNarrativePlan,
+)
 from src.publication.digest_presentation import (
     DigestPresentationMode,
     DigestPresentationPlan,
@@ -69,6 +72,7 @@ class DigestCoverageTrace:
 def build_digest_coverage_trace(
     plan: DigestPresentationPlan,
     final_draft: DigestNarrativeDraft,
+    narrative_plan: DigestNarrativePlan | None = None,
 ) -> DigestCoverageTrace:
     """Build and audit the canonical final digest coverage trace."""
     # Map dashboard coverage
@@ -88,6 +92,13 @@ def build_digest_coverage_trace(
                     if sup_id not in dashboard_supports_by_story.setdefault(sid, []):
                         dashboard_supports_by_story[sid].append(sup_id)
 
+    # Build story-to-allowed-supports mapping from narrative_plan if provided
+    story_to_allowed_supports: dict[str, set[str]] = {}
+    if narrative_plan is not None:
+        for plan_block in narrative_plan.blocks:
+            for sid, sup_ids in getattr(plan_block, "support_ids_by_story", ()):
+                story_to_allowed_supports.setdefault(sid, set()).update(sup_ids)
+
     # Map detail coverage from final_draft
     detail_items_by_story: dict[str, list[str]] = {}
     detail_supports_by_story: dict[str, list[str]] = {}
@@ -102,9 +113,12 @@ def build_digest_coverage_trace(
                     detail_items_by_story[sid].append(item_id)
                 if detail_text not in detail_texts_by_story.setdefault(sid, []):
                     detail_texts_by_story[sid].append(detail_text)
+
+                allowed_for_story = story_to_allowed_supports.get(sid)
                 for sup_id in item.cited_support_ids:
-                    if sup_id not in detail_supports_by_story.setdefault(sid, []):
-                        detail_supports_by_story[sid].append(sup_id)
+                    if allowed_for_story is None or sup_id in allowed_for_story:
+                        if sup_id not in detail_supports_by_story.setdefault(sid, []):
+                            detail_supports_by_story[sid].append(sup_id)
 
     story_traces: list[DigestStoryCoverageTrace] = []
     for pres in plan.story_presentations:

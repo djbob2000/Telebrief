@@ -316,6 +316,7 @@ class PublicationGenerationService:
                             coverage_trace = build_digest_coverage_trace(
                                 presentation_plan,
                                 final_digest_draft,
+                                plan,
                             )
                             presentations = presentation_plan.story_presentations
                             coverage_meta = {
@@ -432,6 +433,7 @@ class PublicationGenerationService:
                         coverage_trace = build_digest_coverage_trace(
                             presentation_plan,
                             final_digest_draft,
+                            det_plan,
                         )
                         presentations = presentation_plan.story_presentations
                         coverage_meta = {
