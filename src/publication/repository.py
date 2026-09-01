@@ -313,9 +313,10 @@ class PublicationRepository:
         """Query stories and their latest revision visible at snapshot_at with recent activity."""
         lookback_hours = 24
         excluded_platforms: list[str] = []
+        triage_version: str | None = None
         if eligibility_policy_id is not None:
             cur = await conn.execute(
-                "SELECT config->>'lookback_hours', config->'excluded_platforms' FROM eligibility_policy_versions WHERE id = %s",
+                "SELECT config->>'lookback_hours', config->'excluded_platforms', config->>'triage_version' FROM eligibility_policy_versions WHERE id = %s",
                 (eligibility_policy_id,),
             )
             pol_row = await cur.fetchone()
@@ -329,6 +330,8 @@ class PublicationRepository:
                     excluded_platforms = [
                         str(p).strip().lower() for p in pol_row[1] if str(p).strip()
                     ]
+                if pol_row[2] is not None:
+                    triage_version = str(pol_row[2]).strip()
 
         window_start = snapshot_at - dt.timedelta(hours=lookback_hours)
 
@@ -564,8 +567,8 @@ class PublicationRepository:
                         AND sesd.scope_version = 'v1'
                         AND (%s::text IS NULL OR sesd.scope_config_hash = %s)
                         AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
-                        AND setd.triage_version IN ('v1', 'v2', 'v3', 'v4', 'v5', 'v6', 'v7', 'v8')
-
+                        AND (%s::text IS NULL OR setd.triage_version = %s)
+                        AND setd.scope_config_hash = sesd.scope_config_hash
                         AND setd.decision IN ('ANALYZE', 'KEEP')
                         AND sesd.created_at <= %s
                   )
@@ -632,6 +635,8 @@ class PublicationRepository:
                 edition_id,
                 scope_config_hash,
                 scope_config_hash,
+                triage_version,
+                triage_version,
                 snapshot_at,
             ),
         )

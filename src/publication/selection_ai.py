@@ -173,7 +173,9 @@ class AIPublicationSelectionModel:
             max_tokens=65536,
         )
 
-        return self._parse_and_validate(raw_output, candidates)
+        return self._parse_and_validate(
+            raw_output, candidates, publication_type=run.publication_type
+        )
 
     def _build_prompt(
         self,
@@ -217,7 +219,11 @@ class AIPublicationSelectionModel:
         return "\n".join(prompt_parts)
 
     def _parse_and_validate(
-        self, raw_output: str, candidates: list[PublicationCandidate]
+        self,
+        raw_output: str,
+        candidates: list[PublicationCandidate],
+        *,
+        publication_type: str | None = None,
     ) -> list[SelectionProposal]:
         text = raw_output.strip()
         if text.startswith("```"):
@@ -332,22 +338,51 @@ class AIPublicationSelectionModel:
             )
 
         if is_compact_included:
-            # For any candidate not in included list, create default OMIT proposal
+            # For coverage-preserving publications, treat compact model selection as an
+            # editorial-priority overlay: unranked candidates remain INCLUDE with default presentation depth
+            # (BRIEF for article, normal for digest), strictly preserving the candidate denominator.
             for cand in candidates:
                 cand_key = (cand.story_id, cand.story_revision_id)
                 if cand_key not in seen_keys:
-                    proposals.append(
-                        SelectionProposal(
-                            story_id=cand.story_id,
-                            story_revision_id=cand.story_revision_id,
-                            decision="OMIT",
-                            presentation_intent=None,
-                            confidence=1.0,
-                            reason="Not selected by editorial model",
-                            rank=None,
-                            exclusion_reason=None,
+                    if publication_type == "article":
+                        proposals.append(
+                            SelectionProposal(
+                                story_id=cand.story_id,
+                                story_revision_id=cand.story_revision_id,
+                                decision="INCLUDE",
+                                presentation_intent="brief",
+                                confidence=1.0,
+                                reason="Editorial priority overlay: brief presentation",
+                                rank=9999,
+                                exclusion_reason=None,
+                            )
                         )
-                    )
+                    elif publication_type in DIGEST_PUBLICATION_TYPES:
+                        proposals.append(
+                            SelectionProposal(
+                                story_id=cand.story_id,
+                                story_revision_id=cand.story_revision_id,
+                                decision="INCLUDE",
+                                presentation_intent="normal",
+                                confidence=1.0,
+                                reason="Editorial priority overlay: normal digest presentation",
+                                rank=9999,
+                                exclusion_reason=None,
+                            )
+                        )
+                    else:
+                        proposals.append(
+                            SelectionProposal(
+                                story_id=cand.story_id,
+                                story_revision_id=cand.story_revision_id,
+                                decision="OMIT",
+                                presentation_intent=None,
+                                confidence=1.0,
+                                reason="Not selected by editorial model",
+                                rank=None,
+                                exclusion_reason=None,
+                            )
+                        )
         else:
             if seen_keys != expected_keys:
                 missing = expected_keys - seen_keys

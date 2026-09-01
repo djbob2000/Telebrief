@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -423,10 +424,14 @@ class OpenAIProvider(AIProvider):
         response_format: Dict[str, Any] | None = None,
     ) -> str:
         is_openrouter = "openrouter" in self.base_url
+        effective_max_tokens = max_tokens
+        if is_openrouter and (max_tokens == 65536 or max_tokens is None):
+            effective_max_tokens = int(os.environ.get("OPENROUTER_MAX_TOKENS", 131072))
+
         create_kwargs: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            ("max_tokens" if is_openrouter else "max_completion_tokens"): max_tokens,
+            ("max_tokens" if is_openrouter else "max_completion_tokens"): effective_max_tokens,
         }
 
         if temperature is not None:

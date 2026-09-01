@@ -114,8 +114,12 @@ settings:
   ai_provider: "openrouter"
   api_timeout: 300
 
-  ai_model: "minimax/minimax-m3:free"
-  max_tokens_per_summary: 65536
+  ai_model: "deepseek/deepseek-v4-flash-0731:floor"
+  max_tokens_per_summary: 131072
+
+  event_pipeline:
+    triage_batch_size: 128
+    live_batch_size: 500
 
 
   digest_mode: "digest"

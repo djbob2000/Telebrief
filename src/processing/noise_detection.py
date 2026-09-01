@@ -11,7 +11,12 @@ import re
 MIN_CANDIDATE_ALNUM_CHARS = 6
 
 _SHORT_REACTION_PATTERN = re.compile(
-    r"^(?:ок|окей|да|нет|ага|угу|понял(?:а)?|понятно|ясно|хорошо|ладно|норм|супер|класс|лол|привет)[!.?]*$",
+    r"^(?:ок|окей|да|нет|ага|угу|понял(?:а)?|понятно|ясно|хорошо|ладно|норм|супер|класс|лол|привет|хз)[!.?]*$",
+    re.IGNORECASE,
+)
+
+_UNCERTAINTY_PATTERN = re.compile(
+    r"^(?:не знаю|хз|без понятия|кто (?:его )?знает|никто не знает|хз[,.]?\s*сам в шоке)[!.?]*$",
     re.IGNORECASE,
 )
 
@@ -91,6 +96,33 @@ NOISE_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+def is_question_only(text: str) -> bool:
+    """Detect if fragment is a standalone question without any factual assertion or answer."""
+    t = text.strip()
+    if not t.endswith("?"):
+        lower = t.lower()
+        if lower.startswith(("подскажите", "кто знает", "где можно", "есть у кого")):
+            return True
+        return False
+
+    # Check if there is text after the final question mark
+    after_last_q = t[t.rfind("?") + 1 :].strip()
+    if after_last_q and any(c.isalnum() for c in after_last_q):
+        return False
+
+    parts = [p.strip() for p in t.split("?") if p.strip()]
+    if not parts:
+        return True
+
+    for part in parts:
+        if ("." in part or "!" in part) and len(part) > 50:
+            sub = [s.strip() for s in part.replace("!", ".").split(".") if len(s.strip()) > 20]
+            if len(sub) > 1:
+                return False
+
+    return True
+
+
 def detect_classified_cues(text: str) -> list[str]:
     """Return all matched classified ad pattern identifiers."""
     cues: list[str] = []
@@ -141,6 +173,9 @@ def is_obvious_noise(text: str) -> tuple[bool, str | None]:
         return True, "empty"
 
     if _SHORT_REACTION_PATTERN.search(trimmed):
+        return True, "obvious_noise"
+
+    if _UNCERTAINTY_PATTERN.search(trimmed):
         return True, "obvious_noise"
 
     for p in NOISE_PATTERNS:

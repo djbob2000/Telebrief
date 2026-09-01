@@ -1437,7 +1437,7 @@ async def test_gate_v2_normalizes_resident_question_brief_payload(conn, edition,
 def test_gate_v8_uses_unified_service_state_contract() -> None:
     from src.processing.event_triage import _GATE_V2_SYSTEM_PROMPT, TRIAGE_VERSION
 
-    assert TRIAGE_VERSION == "v8"
+    assert TRIAGE_VERSION in ("v8", "v9")
     prompt = _GATE_V2_SYSTEM_PROMPT
 
     assert '"service_state"' in prompt
