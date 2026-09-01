@@ -1,0 +1,438 @@
+{
+  "crisis_day": {
+    "edition": "Бердянск",
+    "snapshot_at": "2026-09-01T18:00:00+00:00",
+    "cards": [
+      {
+        "id": "story:power:centre",
+        "topic": "Аварийное отключение электричества в центре",
+        "summary": "Центральная часть города обесточена из-за аварии на подстанции.",
+        "importance": "high",
+        "rubric_id": "utilities",
+        "tags": ["electricity", "blackout"],
+        "operational_observations": [
+          {
+            "subject_key": "power_supply",
+            "subject_label": "Электроснабжение",
+            "dimension": "availability",
+            "state": "UNAVAILABLE",
+            "detail": "Центр обесточен",
+            "source_refs": ["sup:power:1"]
+          }
+        ]
+      },
+      {
+        "id": "story:power:nagornaya",
+        "topic": "Отключение света в Нагорной части",
+        "summary": "На Нагорной нет электричества с утра.",
+        "importance": "high",
+        "rubric_id": "utilities",
+        "tags": ["electricity", "blackout"],
+        "operational_observations": [
+          {
+            "subject_key": "power_supply",
+            "subject_label": "Электроснабжение",
+            "dimension": "availability",
+            "state": "UNAVAILABLE",
+            "detail": "Нагорная часть без света",
+            "source_refs": ["sup:power:2"]
+          }
+        ]
+      },
+      {
+        "id": "story:power:akz",
+        "topic": "Перебои электроэнергии на АКЗ",
+        "summary": "На АКЗ частично отсутствует свет.",
+        "importance": "high",
+        "rubric_id": "utilities",
+        "tags": ["electricity", "blackout"],
+        "operational_observations": [
+          {
+            "subject_key": "power_supply",
+            "subject_label": "Электроснабжение",
+            "dimension": "availability",
+            "state": "UNAVAILABLE",
+            "detail": "АКЗ частично без света",
+            "source_refs": ["sup:power:3"]
+          }
+        ]
+      },
+      {
+        "id": "story:power:koloniya",
+        "topic": "Восстановление энергоснабжения в Колонии",
+        "summary": "В микрорайоне Колония свет подается в штатном режиме.",
+        "importance": "high",
+        "rubric_id": "utilities",
+        "tags": ["electricity", "blackout"],
+        "operational_observations": [
+          {
+            "subject_key": "power_supply",
+            "subject_label": "Электроснабжение",
+            "dimension": "availability",
+            "state": "AVAILABLE",
+            "detail": "Колония со светом",
+            "source_refs": ["sup:power:4"]
+          }
+        ]
+      },
+      {
+        "id": "story:power:repair_timeline",
+        "topic": "Сроки ремонта электросетей",
+        "summary": "Аварийные бригады РЭС планируют завершить восстановительные работы к 22:00.",
+        "importance": "high",
+        "rubric_id": "utilities",
+        "tags": ["electricity", "repairs"]
+      },
+      {
+        "id": "story:power:generator_charging",
+        "topic": "Пункт зарядки гаджетов на Гагарина",
+        "summary": "Жители дома на Гагарина, 10 установили генератор и предлагают бесплатную зарядку телефонов.",
+        "importance": "medium",
+        "rubric_id": "utilities",
+        "tags": ["electricity", "community_workaround"]
+      },
+      {
+        "id": "story:power:wifi_generator",
+        "topic": "Раздача интернета от генератора на Победы",
+        "summary": "В магазине на проспекте Победы запитали роутер от генератора и открыли гостевой Wi-Fi.",
+        "importance": "medium",
+        "rubric_id": "utilities",
+        "tags": ["telecom", "community_workaround"]
+      },
+      {
+        "id": "story:water:lower_outage",
+        "topic": "Отсутствие водоснабжения в нижней части",
+        "summary": "В нижней части города временно остановлена подача воды из-за обесточивания насосной.",
+        "importance": "high",
+        "rubric_id": "utilities",
+        "tags": ["water", "outage"],
+        "operational_observations": [
+          {
+            "subject_key": "water_supply",
+            "subject_label": "Водоснабжение",
+            "dimension": "availability",
+            "state": "UNAVAILABLE",
+            "detail": "Нижняя часть без воды",
+            "source_refs": ["sup:water:1"]
+          }
+        ]
+      },
+      {
+        "id": "story:water:delivery_schedule",
+        "topic": "График подвоза технической воды",
+        "summary": "Цистерны с технической водой будут дежурить у школ №2 и №7 с 14:00 до 19:00.",
+        "importance": "high",
+        "rubric_id": "utilities",
+        "tags": ["water", "delivery"],
+        "operational_observations": [
+          {
+            "subject_key": "water_supply",
+            "subject_label": "Водоснабжение",
+            "dimension": "schedule",
+            "state": "SCHEDULED",
+            "detail": "Подвоз воды к школам №2 и №7 с 14:00",
+            "source_refs": ["sup:water:2"]
+          }
+        ]
+      },
+      {
+        "id": "story:water:pump_coop",
+        "topic": "Складчина жильцов на домовой насос",
+        "summary": "Жильцы дома на Восточном скинулись по 300 рублей на подключение подкачивающего насоса.",
+        "importance": "medium",
+        "rubric_id": "utilities",
+        "tags": ["water", "community_workaround"]
+      },
+      {
+        "id": "story:transport:melitopol_bus",
+        "topic": "Движение междугородних автобусов на Мелитополь",
+        "summary": "Рейсы на Мелитополь отправляются с автовокзала строго по расписанию.",
+        "importance": "high",
+        "rubric_id": "transport",
+        "tags": ["transport", "intercity"],
+        "operational_observations": [
+          {
+            "subject_key": "transport",
+            "subject_label": "Транспорт",
+            "dimension": "availability",
+            "state": "AVAILABLE",
+            "detail": "Междугородние автобусы в Мелитополь по расписанию",
+            "source_refs": ["sup:trans:1"]
+          }
+        ]
+      },
+      {
+        "id": "story:transport:bus4_interval",
+        "topic": "Увеличение интервалов автобуса №4",
+        "summary": "Автобус №4 курсирует с увеличенным интервалом до 45 минут.",
+        "importance": "medium",
+        "rubric_id": "transport",
+        "tags": ["transport", "city_bus"],
+        "operational_observations": [
+          {
+            "subject_key": "transport",
+            "subject_label": "Транспорт",
+            "dimension": "availability",
+            "state": "DEGRADED",
+            "detail": "Автобус №4 ходит с увеличенным интервалом 45 минут",
+            "source_refs": ["sup:trans:2"]
+          }
+        ]
+      },
+      {
+        "id": "story:transport:route17_paused",
+        "topic": "Приостановка маршрута №17",
+        "summary": "Движение маршрутки №17 временно приостановлено.",
+        "importance": "medium",
+        "rubric_id": "transport",
+        "tags": ["transport", "city_bus"],
+        "operational_observations": [
+          {
+            "subject_key": "transport",
+            "subject_label": "Транспорт",
+            "dimension": "availability",
+            "state": "UNAVAILABLE",
+            "detail": "Маршрут №17 временно не работает",
+            "source_refs": ["sup:trans:3"]
+          }
+        ]
+      },
+      {
+        "id": "story:bank:psb_central_open",
+        "topic": "Работа центрального отделения ПСБ",
+        "summary": "Центральное отделение ПСБ на Ленина работает в стандартном режиме с генератором.",
+        "importance": "high",
+        "rubric_id": "utilities",
+        "tags": ["banks", "finance"],
+        "operational_observations": [
+          {
+            "subject_key": "banking",
+            "subject_label": "Банки и банкоматы",
+            "dimension": "availability",
+            "state": "AVAILABLE",
+            "detail": "Центральное отделение ПСБ работает",
+            "source_refs": ["sup:bank:1"]
+          }
+        ]
+      },
+      {
+        "id": "story:bank:atm_vostochny_nocash",
+        "topic": "Отсутствие наличных в банкомате на Восточном",
+        "summary": "Банкомат на проспекте Восточном временно не выдает наличные средства.",
+        "importance": "medium",
+        "rubric_id": "utilities",
+        "tags": ["banks", "finance"],
+        "operational_observations": [
+          {
+            "subject_key": "banking",
+            "subject_label": "Банки и банкоматы",
+            "dimension": "availability",
+            "state": "UNAVAILABLE",
+            "detail": "Банкомат на Восточном без наличных",
+            "source_refs": ["sup:bank:2"]
+          }
+        ]
+      },
+      {
+        "id": "story:bank:cmrbank_open",
+        "topic": "Обслуживание клиентов в ЦМРБанке",
+        "summary": "ЦМРБанк принимает клиентов без ограничений.",
+        "importance": "medium",
+        "rubric_id": "utilities",
+        "tags": ["banks", "finance"],
+        "operational_observations": [
+          {
+            "subject_key": "banking",
+            "subject_label": "Банки и банкоматы",
+            "dimension": "availability",
+            "state": "AVAILABLE",
+            "detail": "Отделение ЦМРБанка принимает клиентов",
+            "source_refs": ["sup:bank:3"]
+          }
+        ]
+      },
+      {
+        "id": "story:social:redcross_food",
+        "topic": "Выдача продуктовых наборов Красным Крестом",
+        "summary": "Пункт Красного Креста на Степной ведет выдачу продуктовых наборов пенсионерам.",
+        "importance": "high",
+        "rubric_id": "social",
+        "tags": ["social_aid", "humanitarian"]
+      },
+      {
+        "id": "story:social:baby_supplies",
+        "topic": "Детское питание и подгузники в волонтерском центре",
+        "summary": "Волонтерский центр на Морской бесплатно выдает подгузники и детское питание семьям с детьми до 3 лет.",
+        "importance": "high",
+        "rubric_id": "social",
+        "tags": ["social_aid", "family"]
+      },
+      {
+        "id": "story:culture:sports_enrollment",
+        "topic": "Бесплатный набор детей в секции ДЮСШ",
+        "summary": "Детско-юношеская спортивная школа открыла бесплатную запись на секции футбола и легкой атлетики.",
+        "importance": "medium",
+        "rubric_id": "culture",
+        "tags": ["sports", "youth"]
+      },
+      {
+        "id": "story:health:mobile_clinic",
+        "topic": "Прием терапевта в мобильном медпункте",
+        "summary": "Мобильный медпункт проводит консультации и вакцинацию у дома культуры с 10:00 до 16:00.",
+        "importance": "high",
+        "rubric_id": "health",
+        "tags": ["medicine", "clinic"]
+      },
+      {
+        "id": "story:culture:library_evening",
+        "topic": "Литературный вечер в центральной библиотеке",
+        "summary": "В пятницу в 17:00 в центральной библиотеке состоится вечер краеведческой поэзии.",
+        "importance": "low",
+        "rubric_id": "culture",
+        "tags": ["culture", "events"]
+      },
+      {
+        "id": "story:contacts:cleanup_saturday",
+        "topic": "Субботник в Приморском парке",
+        "summary": "Инициативная группа горожан организует уборку Приморского парка в субботу в 9:00.",
+        "importance": "low",
+        "rubric_id": "contacts",
+        "tags": ["community", "cleanup"]
+      }
+    ],
+    "evidence": {
+      "sup:power:1": {
+        "text": "В центральной части города нет света из-за аварии на подстанции.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:power:centre"
+      },
+      "sup:power:2": {
+        "text": "Нагорная часть Бердянска полностью обесточена с 9:00.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:power:nagornaya"
+      },
+      "sup:power:3": {
+        "text": "На микрорайоне АКЗ частично пропало электричество.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:power:akz"
+      },
+      "sup:power:4": {
+        "text": "В Колонии электроснабжение работает в штатном режиме без сбоев.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:power:koloniya"
+      },
+      "sup:power:repair": {
+        "text": "Аварийные бригады РЭС ведут переподключение и планируют завершить работы к 22:00.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:power:repair_timeline"
+      },
+      "sup:power:gen": {
+        "text": "Жильцы дома на Гагарина, 10 установили генератор и предлагают бесплатную зарядку гаджетов.",
+        "kind": "community_report",
+        "publication_use": "PUBLISH",
+        "story_id": "story:power:generator_charging"
+      },
+      "sup:power:wifi": {
+        "text": "Магазин на Победы запитал Wi-Fi роутер от генератора для всех желающих.",
+        "kind": "community_report",
+        "publication_use": "PUBLISH",
+        "story_id": "story:power:wifi_generator"
+      },
+      "sup:water:1": {
+        "text": "В нижней части города временно остановлена подача воды из-за обесточивания насосов.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:water:lower_outage"
+      },
+      "sup:water:2": {
+        "text": "Подвоз технической воды организован к школам №2 и №7 с 14:00 до 19:00.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:water:delivery_schedule"
+      },
+      "sup:water:pump": {
+        "text": "Жильцы дома на Восточном скинулись по 300 рублей на насос для забора воды из резервуара.",
+        "kind": "community_report",
+        "publication_use": "PUBLISH",
+        "story_id": "story:water:pump_coop"
+      },
+      "sup:trans:1": {
+        "text": "Междугородние автобусы в Мелитополь курсируют по обычному расписанию с автовокзала.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:transport:melitopol_bus"
+      },
+      "sup:trans:2": {
+        "text": "Автобус №4 ходит с увеличенным интервалом около 45 минут.",
+        "kind": "community_report",
+        "publication_use": "PUBLISH",
+        "story_id": "story:transport:bus4_interval"
+      },
+      "sup:trans:3": {
+        "text": "Маршрут №17 временно не обслуживается до стабилизации дорожной обстановки.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:transport:route17_paused"
+      },
+      "sup:bank:1": {
+        "text": "Центральное отделение ПСБ на Ленина принимает клиентов в штатном режиме от генератора.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:bank:psb_central_open"
+      },
+      "sup:bank:2": {
+        "text": "В банкомате ПСБ на Восточном закончились наличные деньги.",
+        "kind": "community_report",
+        "publication_use": "PUBLISH",
+        "story_id": "story:bank:atm_vostochny_nocash"
+      },
+      "sup:bank:3": {
+        "text": "ЦМРБанк работает в обычном режиме без ограничений.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:bank:cmrbank_open"
+      },
+      "sup:soc:1": {
+        "text": "Пункт Красного Креста на Степной выдает продуктовые наборы пенсионерам и инвалидам.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:social:redcross_food"
+      },
+      "sup:soc:2": {
+        "text": "Волонтерский центр на Морской бесплатно выдает подгузники и детское питание семьям с детьми.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:social:baby_supplies"
+      },
+      "sup:cult:1": {
+        "text": "ДЮСШ открыла бесплатный набор детей в секции футбола и легкой атлетики.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:culture:sports_enrollment"
+      },
+      "sup:health:1": {
+        "text": "Мобильный медпункт принимает пациентов и делает прививки у ДК с 10:00 до 16:00.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:health:mobile_clinic"
+      },
+      "sup:cult:2": {
+        "text": "В пятницу в 17:00 в центральной библиотеке пройдет литературный вечер.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:culture:library_evening"
+      },
+      "sup:cont:1": {
+        "text": "Субботник по уборке Приморского парка начнется в субботу в 9:00.",
+        "kind": "established_fact",
+        "publication_use": "PUBLISH",
+        "story_id": "story:contacts:cleanup_saturday"
+      }
+    }
+  }
+}

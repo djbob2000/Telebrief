@@ -311,7 +311,9 @@ class PublicationGenerationService:
                             )
 
                             quality_audit = audit_digest_prose_quality(
-                                draft_cand, evidence=evidence_dict
+                                draft_cand,
+                                evidence=evidence_dict,
+                                presentation_plan=presentation_plan,
                             )
                             coverage_trace = build_digest_coverage_trace(
                                 presentation_plan,

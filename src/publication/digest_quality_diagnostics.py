@@ -67,6 +67,12 @@ class DigestProseQualityAudit:
 
     version: str = DIGEST_DIAGNOSTICS_VERSION
     warnings: tuple[DigestQualityWarning, ...] = ()
+    compression_ratio: float = 1.0
+    items_per_group: float = 1.0
+    multi_story_item_count: int = 0
+    single_story_item_count: int = 0
+    dashboard_group_count: int = 0
+    detail_item_count: int = 0
 
     @property
     def is_clean(self) -> bool:
@@ -78,6 +84,12 @@ class DigestProseQualityAudit:
             "is_clean": self.is_clean,
             "warning_count": len(self.warnings),
             "warnings": [w.as_dict() for w in self.warnings],
+            "compression_ratio": self.compression_ratio,
+            "items_per_group": self.items_per_group,
+            "multi_story_item_count": self.multi_story_item_count,
+            "single_story_item_count": self.single_story_item_count,
+            "dashboard_group_count": self.dashboard_group_count,
+            "detail_item_count": self.detail_item_count,
         }
 
 
@@ -122,12 +134,26 @@ def _check_redundant_headline_in_body(headline: str, body: str) -> bool:
 def audit_digest_prose_quality(
     draft: DigestNarrativeDraft,
     evidence: Mapping[str, PublicationEvidence],
+    presentation_plan: Any | None = None,
 ) -> DigestProseQualityAudit:
     """Run non-blocking diagnostics on a narrative digest draft."""
     warnings: list[DigestQualityWarning] = []
 
+    detail_item_count = 0
+    multi_story_item_count = 0
+    single_story_item_count = 0
+    covered_stories_detail = 0
+
     for block in draft.blocks:
         for idx, item in enumerate(block.items):
+            detail_item_count += 1
+            num_covered = len(item.covered_story_ids)
+            covered_stories_detail += num_covered
+            if num_covered > 1:
+                multi_story_item_count += 1
+            elif num_covered == 1:
+                single_story_item_count += 1
+
             cited = [evidence[sid] for sid in item.cited_support_ids if sid in evidence]
 
             if _check_duplicated_attribution(item.headline, item.body):
@@ -163,7 +189,27 @@ def audit_digest_prose_quality(
                     )
                 )
 
+    dashboard_group_count = 0
+    covered_stories_dash = 0
+    if presentation_plan is not None:
+        sit_plan = getattr(presentation_plan, "city_situation", presentation_plan)
+        if sit_plan and getattr(sit_plan, "groups", None):
+            groups = getattr(sit_plan, "groups", ())
+            dashboard_group_count = len(groups)
+            covered_stories_dash = sum(len(getattr(g, "covered_story_ids", ())) for g in groups)
+
+    total_stories = covered_stories_detail + covered_stories_dash
+    total_units = detail_item_count + dashboard_group_count
+    compression_ratio = round(total_stories / total_units, 2) if total_units > 0 else 1.0
+    items_per_group = round(detail_item_count / len(draft.blocks), 2) if draft.blocks else 0.0
+
     return DigestProseQualityAudit(
         version=DIGEST_DIAGNOSTICS_VERSION,
         warnings=tuple(warnings),
+        compression_ratio=compression_ratio,
+        items_per_group=items_per_group,
+        multi_story_item_count=multi_story_item_count,
+        single_story_item_count=single_story_item_count,
+        dashboard_group_count=dashboard_group_count,
+        detail_item_count=detail_item_count,
     )
