@@ -309,6 +309,29 @@ class DigestPresentationPlan:
     def story_hints(self) -> tuple[DigestStoryPresentation, ...]:
         return self.story_presentations
 
+    def to_audit_dict(self) -> dict[str, Any]:
+        return {
+            "story_ids": list(self.story_ids),
+            "stories": [
+                {
+                    "story_id": p.story_id,
+                    "mode": p.mode,
+                    "city_situation_group_ids": list(p.city_situation_group_ids),
+                    "detail_support_ids": list(p.detail_support_ids),
+                    "merge_group_id": p.merge_group_id,
+                }
+                for p in self.story_presentations
+            ],
+            "city_situation_groups": [
+                {
+                    "group_id": g.group_id,
+                    "covered_story_ids": list(g.covered_story_ids),
+                    "cited_support_ids": list(g.cited_support_ids),
+                }
+                for g in (self.city_situation.groups if self.city_situation else ())
+            ],
+        }
+
 
 def score_digest_detail_evidence(evi: Any) -> int:
     """Score evidence for microdetail richness (concrete numbers, dates, times, amounts, quotes)."""

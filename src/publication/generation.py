@@ -332,6 +332,7 @@ class PublicationGenerationService:
                                 "final_covered_story_count": len(coverage_trace.story_ids),
                                 "final_digest_story_coverage": coverage_trace.story_coverage,
                                 "deterministic_digest_fallback_used": False,
+                                "digest_presentation_plan": presentation_plan.to_audit_dict(),
                                 "digest_coverage_trace": coverage_trace.to_dict(),
                             }
                             await observer.attempt_finished(
@@ -447,6 +448,7 @@ class PublicationGenerationService:
                             "final_covered_story_count": len(coverage_trace.story_ids),
                             "final_digest_story_coverage": coverage_trace.story_coverage,
                             "deterministic_digest_fallback_used": True,
+                            "digest_presentation_plan": presentation_plan.to_audit_dict(),
                             "digest_coverage_trace": coverage_trace.to_dict(),
                         }
 

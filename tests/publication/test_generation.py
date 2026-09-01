@@ -2190,6 +2190,10 @@ async def test_event_first_digest_narrative_generation_with_city_situation(
     assert pub.metadata["planned_story_count"] == 2
     assert pub.metadata["final_covered_story_count"] == 2
     assert pub.metadata["deterministic_digest_fallback_used"] is False
+    assert pub.metadata["digest_presentation_plan"]["story_ids"] == [
+        f"story:{story_id}",
+        f"story:{story2_id}",
+    ]
     assert "digest_coverage_trace" in pub.metadata
 
     cur = await conn.execute(
@@ -2389,6 +2393,7 @@ async def test_event_first_digest_deterministic_mode_uses_digest_presentation_pl
     assert pub.metadata["planned_story_count"] == 5
     assert pub.metadata["final_covered_story_count"] == 5
     assert pub.metadata["deterministic_digest_fallback_used"] is True
+    assert len(pub.metadata["digest_presentation_plan"]["story_ids"]) == 5
     assert "digest_coverage_trace" in pub.metadata
 
 

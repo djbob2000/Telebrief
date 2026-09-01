@@ -2,6 +2,63 @@ import json
 from pathlib import Path
 
 
+def test_digest_presentation_plan_to_audit_dict() -> None:
+    from src.publication.digest_presentation import (
+        CitySituationPresentationGroup,
+        CitySituationPresentationPlan,
+        DigestPresentationPlan,
+        DigestStoryPresentation,
+    )
+
+    plan = DigestPresentationPlan(
+        city_situation=CitySituationPresentationPlan(
+            groups=(
+                CitySituationPresentationGroup(
+                    group_id="situation:power:availability",
+                    group_kind="subject_status",
+                    subject_key="power",
+                    subject_label="Свет",
+                    state="UNAVAILABLE",
+                    source_refs=("ref-1",),
+                    detail_lines=("Света нет",),
+                    covered_story_ids=("story:1",),
+                    cited_support_ids=("story:1:evidence:0:frag:11",),
+                ),
+            ),
+            covered_source_refs=("ref-1",),
+        ),
+        story_presentations=(
+            DigestStoryPresentation(
+                story_id="story:1",
+                mode="DASHBOARD_AND_DRILLDOWN",
+                city_situation_group_ids=("situation:power:availability",),
+                detail_support_ids=("story:1:evidence:1:frag:12",),
+                merge_group_id="story:1",
+            ),
+        ),
+    )
+
+    assert plan.to_audit_dict() == {
+        "story_ids": ["story:1"],
+        "stories": [
+            {
+                "story_id": "story:1",
+                "mode": "DASHBOARD_AND_DRILLDOWN",
+                "city_situation_group_ids": ["situation:power:availability"],
+                "detail_support_ids": ["story:1:evidence:1:frag:12"],
+                "merge_group_id": "story:1",
+            }
+        ],
+        "city_situation_groups": [
+            {
+                "group_id": "situation:power:availability",
+                "covered_story_ids": ["story:1"],
+                "cited_support_ids": ["story:1:evidence:0:frag:11"],
+            }
+        ],
+    }
+
+
 def test_city_life_short_read_golden_fixture_has_required_cases() -> None:
     path = Path(__file__).parents[1] / "fixtures" / "city_life_short_read_digest_golden.json"
     data = json.loads(path.read_text(encoding="utf-8"))
