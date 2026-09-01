@@ -687,7 +687,7 @@ def test_operational_semantic_boundaries_end_to_end() -> None:
     # Positive group is subject coherent (transport, not available_services)
     assert len(plan.city_situation.groups) == 2
     assert all(g.subject_key != "available_services" for g in plan.city_situation.groups)
-    assert {g.subject_key for g in plan.city_situation.groups} == {"water_supply", "transport"}
+    assert {g.subject_key for g in plan.city_situation.groups} == {"water", "transport"}
 
     # 4. Prose quality diagnostics audit clean draft
     clean_draft = DigestNarrativeDraft(
