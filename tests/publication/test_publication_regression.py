@@ -666,6 +666,114 @@ def test_berdyansk_2026_08_31_legacy_floor_fixture():
         assert u.loss.value in ("SOURCE_CORPUS_LOSS", "COVERED")
 
 
+def test_digest_audit_verification_requires_presentation_plan():
+    unit = LegacyCoverageUnit(
+        id="unit_power",
+        description="Power outage",
+        acceptable_sources=(
+            LegacySourceIdentity(
+                fixture_fragment_id="frag:power1",
+                source_fingerprint="fp_power1",
+            ),
+        ),
+    )
+    case = LegacyCoverageCase(
+        id="test_digest_audit",
+        legacy_commit="c1",
+        edition_slug="berdyansk",
+        publication_type="digest",
+        snapshot_at="2026-09-01T09:00:00+03:00",
+        lookback_hours=24,
+        window_start="2026-08-31T09:00:00+03:00",
+        window_end="2026-09-01T09:00:00+03:00",
+        coverage_units=(unit,),
+    )
+    exported = {
+        "audit_errors": ["MISSING_DIGEST_PRESENTATION_PLAN_METADATA"],
+        "source_fragment_ids": ["frag:power1"],
+        "source_fingerprints": ["fp_power1"],
+    }
+    with pytest.raises(
+        ValueError,
+        match="MISSING_DIGEST_PRESENTATION_PLAN_METADATA: digest evaluation requires frozen presentation plan",
+    ):
+        evaluate_case(case, exported)
+
+
+async def test_benchmark_parity_script_evaluates_export(tmp_path):
+    import json
+    from argparse import Namespace
+
+    from scripts.benchmark_publication_floor_parity import run_benchmark
+
+    case_path = tmp_path / "case.json"
+    export_path = tmp_path / "export.json"
+    report_path = tmp_path / "report.json"
+
+    unit = LegacyCoverageUnit(
+        id="unit_test",
+        description="Test unit",
+        acceptable_sources=(
+            LegacySourceIdentity(
+                fixture_fragment_id="frag:t1",
+                source_fingerprint="fp:t1",
+            ),
+        ),
+        required_microdetails=("деталь",),
+    )
+    case = LegacyCoverageCase(
+        id="bench_test",
+        legacy_commit="c1",
+        edition_slug="berdyansk",
+        publication_type="digest",
+        snapshot_at="2026-09-01T09:00:00+03:00",
+        lookback_hours=24,
+        window_start="2026-08-31T09:00:00+03:00",
+        window_end="2026-09-01T09:00:00+03:00",
+        coverage_units=(unit,),
+    )
+    with open(case_path, "w", encoding="utf-8") as f:
+        json.dump(case.to_dict(), f)
+
+    export_payload = {
+        "source_fragment_ids": ["frag:t1"],
+        "source_fingerprints": ["fp:t1"],
+        "evidence_fragment_ids": ["frag:t1"],
+        "evidence_fingerprints": ["fp:t1"],
+        "candidate_fragment_ids": ["frag:t1"],
+        "candidate_fingerprints": ["fp:t1"],
+        "sealed_fragment_ids": ["frag:t1"],
+        "sealed_fingerprints": ["fp:t1"],
+        "plan_fragment_ids": ["frag:t1"],
+        "final_trace_fragment_ids": ["frag:t1"],
+        "final_trace_units": [
+            {
+                "text": "Сообщение содержит ключевую деталь для проверки",
+                "fixture_fragment_ids": ["frag:t1"],
+                "source_fingerprints": ["fp:t1"],
+                "source_refs": [],
+            }
+        ],
+    }
+    with open(export_path, "w", encoding="utf-8") as f:
+        json.dump(export_payload, f)
+
+    args = Namespace(
+        case=str(case_path),
+        export=str(export_path),
+        run_id=None,
+        database_url=None,
+        output=str(report_path),
+    )
+    exit_code = await run_benchmark(args)
+    assert exit_code == 0
+    assert report_path.exists()
+    with open(report_path, "r", encoding="utf-8") as f:
+        rep = json.load(f)
+    assert rep["legacy_floor_coverage"] == 1.0
+    assert rep["legacy_microdetail_retention"] == 1.0
+
+
 def test_compare_article_approaches_no_fake_legacy_generation():
     import scripts.compare_article_approaches as comp
 

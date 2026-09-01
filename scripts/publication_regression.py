@@ -249,6 +249,14 @@ def evaluate_case(
     exported_case: dict[str, Any],
 ) -> LegacyRegressionReport:
     """Evaluate an offline legacy floor case against an exported case snapshot and traces."""
+    # Audit checks based on publication type
+    audit_errors = list(exported_case.get("audit_errors", []))
+    if case.publication_type in ("digest", "digest_grouped", "digest_channel"):
+        if "MISSING_DIGEST_PRESENTATION_PLAN_METADATA" in audit_errors:
+            raise ValueError(
+                "MISSING_DIGEST_PRESENTATION_PLAN_METADATA: digest evaluation requires frozen presentation plan"
+            )
+
     # Validate that every binding coverage unit has at least one source identity
     for unit in case.coverage_units:
         if unit.allowed_loss_reason is None and not unit.acceptable_sources:
