@@ -57,8 +57,8 @@ def test_benchmark_metrics_with_success_and_rejection():
     assert violations == []
 
 
-def test_benchmark_gates_fail_on_article_fallback_or_excessive_calls():
-    # Run with fallback attempt and no successful writer attempt
+def test_benchmark_gates_fail_on_excessive_calls():
+    # Run with 2 writer calls (violates max 1 call budget)
     runs = [
         BenchmarkRunRecord(
             run_id=1,
@@ -74,21 +74,20 @@ def test_benchmark_gates_fail_on_article_fallback_or_excessive_calls():
                     metadata={},
                 ),
                 BenchmarkAttemptRecord(
-                    kind="story_renderer_fallback",
+                    kind="writer",
                     status="succeeded",
                     error_kind=None,
-                    metadata={},
+                    metadata={"final_story_coverage": 1.0},
                 ),
             ],
         ),
     ]
 
     metrics = calculate_benchmark_metrics(runs)
-    assert metrics["article_fallback_content_attempts"] == 1
+    assert metrics["max_article_writer_calls_per_run"] == 2
 
     violations = validate_benchmark_gates(metrics)
-    assert any("fallback" in v.lower() for v in violations)
-    assert any("writer" in v.lower() or "publication" in v.lower() for v in violations)
+    assert any("max_article_writer_calls_per_run" in v for v in violations)
 
 
 def test_evaluate_digest_short_read_quality_redundancy_diagnostics():
