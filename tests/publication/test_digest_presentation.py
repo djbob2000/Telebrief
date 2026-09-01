@@ -142,6 +142,118 @@ def test_plan_city_situation_consolidates_mixed_availability_into_conflicting_gr
     assert any("Залив" in line for line in group.detail_lines)
 
 
+def test_city_situation_consolidates_same_service_across_dimensions() -> None:
+    import datetime as dt
+
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import plan_city_situation_presentation
+
+    now = dt.datetime(2026, 9, 1, 9, 0, tzinfo=dt.timezone.utc)
+    rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="water_supply",
+                subject_label="Water supply",
+                dimension="availability",
+                location="Center",
+                entity="utility",
+                state="UNAVAILABLE",
+                detail="No water in the center",
+                source_refs=("ref-water-center",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+                current_source_refs=("ref-water-center",),
+            ),
+            CitySituationItem(
+                subject_key="water_supply",
+                subject_label="Water supply",
+                dimension="pressure",
+                location="Pushkina street",
+                entity="utility",
+                state="DEGRADED",
+                detail="Weak pressure on upper floors",
+                source_refs=("ref-water-pressure",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+                current_source_refs=("ref-water-pressure",),
+            ),
+            CitySituationItem(
+                subject_key="electricity",
+                subject_label="Electricity",
+                dimension="availability",
+                location="Azmol",
+                entity="grid",
+                state="UNAVAILABLE",
+                detail="No power",
+                source_refs=("ref-power",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+                current_source_refs=("ref-power",),
+            ),
+        )
+    )
+
+    plan = plan_city_situation_presentation(rollup, max_items=7, max_details_per_item=4)
+
+    assert len(plan.groups) == 2
+    water = next(group for group in plan.groups if group.subject_key == "water")
+    assert set(water.source_refs) == {"ref-water-center", "ref-water-pressure"}
+    assert len(water.detail_lines) == 2
+
+
+def test_city_situation_consolidates_cross_dimension_mixed_states_into_conflicting() -> None:
+    import datetime as dt
+
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import plan_city_situation_presentation
+
+    now = dt.datetime(2026, 9, 1, 9, 0, tzinfo=dt.timezone.utc)
+    rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="water_supply",
+                subject_label="Water supply",
+                dimension="availability",
+                location="Center",
+                entity="utility",
+                state="AVAILABLE",
+                detail="Water restored in center",
+                source_refs=("ref-water-ok",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+                current_source_refs=("ref-water-ok",),
+            ),
+            CitySituationItem(
+                subject_key="water_supply",
+                subject_label="Water supply",
+                dimension="pressure",
+                location="Gora",
+                entity="utility",
+                state="UNAVAILABLE",
+                detail="No water on Gora",
+                source_refs=("ref-water-bad",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+                current_source_refs=("ref-water-bad",),
+            ),
+        )
+    )
+
+    plan = plan_city_situation_presentation(rollup, max_items=7, max_details_per_item=2)
+
+    assert len(plan.groups) == 1
+    water = plan.groups[0]
+    assert water.subject_key == "water"
+    assert water.state == "CONFLICTING"
+    assert set(water.source_refs) == {"ref-water-ok", "ref-water-bad"}
+    assert len(water.detail_lines) == 2
+
+
 def test_plan_city_situation_presentation_groups_same_subject_and_dimension() -> None:
     import datetime as dt
 
@@ -182,7 +294,7 @@ def test_plan_city_situation_presentation_groups_same_subject_and_dimension() ->
     assert len(plan.groups) == 1
     grp = plan.groups[0]
     assert grp.group_kind == "subject_status"
-    assert grp.subject_key == "water_supply"
+    assert grp.subject_key == "water"
     assert grp.state == "UNAVAILABLE"
     assert set(grp.source_refs) == {"ref-water-1", "ref-water-2"}
     assert len(grp.detail_lines) == 2

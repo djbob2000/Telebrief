@@ -64,6 +64,90 @@ def _positive_detail_line(item: CitySituationItem) -> str:
 
 _POSITIVE_STATES = frozenset({"AVAILABLE", "RESOLVED"})
 
+_CITY_SITUATION_SUBJECT_ALIASES: tuple[tuple[str, frozenset[str]], ...] = (
+    (
+        "water",
+        frozenset(
+            {
+                "water",
+                "water_supply",
+                "water_network",
+                "vodоснабжение",
+                "voda",
+                "водоснабжение",
+                "вода",
+            }
+        ),
+    ),
+    (
+        "electricity",
+        frozenset(
+            {
+                "electricity",
+                "power",
+                "power_supply",
+                "electricity_supply",
+                "electrosupply",
+                "электроснабжение",
+                "электричество",
+                "свет",
+            }
+        ),
+    ),
+    (
+        "connectivity",
+        frozenset(
+            {
+                "connectivity",
+                "mobile_connection",
+                "mobile_network",
+                "telecom",
+                "mobile_internet",
+                "связь",
+                "интернет",
+                "мобильная_связь",
+            }
+        ),
+    ),
+    (
+        "transport",
+        frozenset(
+            {
+                "transport",
+                "public_transport",
+                "bus_service",
+                "транспорт",
+                "общественный_транспорт",
+            }
+        ),
+    ),
+    (
+        "heating",
+        frozenset(
+            {
+                "heating",
+                "heat_supply",
+                "district_heating",
+                "отопление",
+                "теплоснабжение",
+            }
+        ),
+    ),
+)
+
+
+def _canonical_city_situation_subject(item: CitySituationItem) -> str:
+    key = _norm_key(item.subject_key).replace(" ", "_")
+    label = _norm_key(item.subject_label).replace(" ", "_")
+    for root, aliases in _CITY_SITUATION_SUBJECT_ALIASES:
+        if key in aliases or label in aliases:
+            return root
+    return key or label or _norm_key(item.entity).replace(" ", "_")
+
+
+def _city_situation_group_id(item: CitySituationItem) -> str:
+    return f"situation:{_canonical_city_situation_subject(item)}"
+
 
 def _presentation_state(items: Sequence[CitySituationItem]) -> str:
     states = {item.state.upper() for item in items}
@@ -111,10 +195,10 @@ def plan_city_situation_presentation(
     if not rollup or not rollup.items:
         return CitySituationPresentationPlan(groups=(), covered_source_refs=())
 
-    # Group all items by (subject_key, dimension)
-    grouped: dict[tuple[str, str], list[CitySituationItem]] = {}
+    # Group all items by canonical subject
+    grouped: dict[str, list[CitySituationItem]] = {}
     for item in rollup.items:
-        key = (_norm_key(item.subject_key), _norm_key(item.dimension))
+        key = _canonical_city_situation_subject(item)
         grouped.setdefault(key, []).append(item)
 
     candidate_groups: list[
@@ -126,7 +210,7 @@ def plan_city_situation_presentation(
         ]
     ] = []
 
-    for (norm_subj, norm_dim), group_items in grouped.items():
+    for canonical_subj, group_items in grouped.items():
         pres_state = _presentation_state(group_items)
 
         first_item = group_items[0]
@@ -149,11 +233,11 @@ def plan_city_situation_presentation(
         latest_ts = max(it.last_observed_at for it in group_items)
         obs_count = sum(it.observation_count for it in group_items)
 
-        group_id = f"situation:{norm_subj}:{norm_dim}"
+        group_id = _city_situation_group_id(first_item)
         presentation_group = CitySituationPresentationGroup(
             group_id=group_id,
             group_kind="subject_status",
-            subject_key=first_item.subject_key,
+            subject_key=canonical_subj,
             subject_label=subject_label,
             state=pres_state,
             source_refs=tuple(merged_refs),
@@ -506,7 +590,7 @@ def build_digest_presentation_plan(
     # Group rollup items by group_id
     items_by_group_id: dict[str, list[CitySituationItem]] = {}
     for item in city_situation.items if city_situation else ():
-        group_id = f"situation:{_norm_key(item.subject_key)}:{_norm_key(item.dimension)}"
+        group_id = _city_situation_group_id(item)
         items_by_group_id.setdefault(group_id, []).append(item)
 
     enriched_groups: list[CitySituationPresentationGroup] = []
