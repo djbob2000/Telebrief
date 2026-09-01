@@ -1,0 +1,103 @@
+{
+  "legacy_floor_coverage": 1.0,
+  "legacy_microdetail_retention": 1.0,
+  "regression_unit_ids": [],
+  "units": [
+    {
+      "unit_id": "power_outage_citywide_or_multi_area",
+      "loss": "COVERED",
+      "allowed_loss_reason": null,
+      "retained_microdetails": [
+        "перебои",
+        "электроэнерг"
+      ],
+      "missing_microdetails": []
+    },
+    {
+      "unit_id": "free_charging_gagarina_1",
+      "loss": "COVERED",
+      "allowed_loss_reason": null,
+      "retained_microdetails": [
+        "Гагарина, 1",
+        "бесплат"
+      ],
+      "missing_microdetails": []
+    },
+    {
+      "unit_id": "generator_supply_schools_social",
+      "loss": "COVERED",
+      "allowed_loss_reason": null,
+      "retained_microdetails": [
+        "генератор",
+        "школ",
+        "социаль"
+      ],
+      "missing_microdetails": []
+    },
+    {
+      "unit_id": "combined_energy_heating_bill",
+      "loss": "COVERED",
+      "allowed_loss_reason": null,
+      "retained_microdetails": [
+        "электроэнерг",
+        "теплосет",
+        "задолж",
+        "един"
+      ],
+      "missing_microdetails": []
+    },
+    {
+      "unit_id": "water_low_pressure_upper_floors",
+      "loss": "COVERED",
+      "allowed_loss_reason": null,
+      "retained_microdetails": [
+        "низк",
+        "напор",
+        "верхн",
+        "этаж"
+      ],
+      "missing_microdetails": []
+    },
+    {
+      "unit_id": "water_pipeline_damage_outage",
+      "loss": "COVERED",
+      "allowed_loss_reason": null,
+      "retained_microdetails": [
+        "поврежд",
+        "трубопровод",
+        "вод"
+      ],
+      "missing_microdetails": []
+    },
+    {
+      "unit_id": "humanitarian_aid_sep_2",
+      "loss": "COVERED",
+      "allowed_loss_reason": null,
+      "retained_microdetails": [
+        "2 сентября",
+        "11:00",
+        "Вільне Запоріжжя",
+        "регистрац",
+        "подгуз",
+        "гигиен",
+        "одеж",
+        "обув"
+      ],
+      "missing_microdetails": []
+    },
+    {
+      "unit_id": "free_football_sections_nazarov",
+      "loss": "COVERED",
+      "allowed_loss_reason": null,
+      "retained_microdetails": [
+        "Назарова",
+        "футбол",
+        "бесплат",
+        "2017",
+        "2018",
+        "2016"
+      ],
+      "missing_microdetails": []
+    }
+  ]
+}

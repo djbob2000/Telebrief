@@ -220,6 +220,8 @@ config.yaml
 data/*
 !data/city_profiles/
 !data/city_profiles/**
+!data/evaluation/
+!data/evaluation/**
 
 # Index file
 PROJECT_INDEX.md
