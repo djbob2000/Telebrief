@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence
 
@@ -439,6 +440,108 @@ def score_digest_detail_evidence(evi: Any) -> int:
     return score
 
 
+_DETAIL_TOKEN_RE = re.compile(r"[\w]+", re.UNICODE)
+_DETAIL_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "of",
+        "with",
+        "from",
+        "that",
+        "this",
+        "these",
+        "those",
+        "have",
+        "has",
+        "had",
+        "been",
+        "still",
+        "also",
+        "were",
+        "will",
+        "would",
+        "there",
+        "their",
+        "they",
+        "about",
+        "which",
+        "city",
+        "resident",
+        "residents",
+        "report",
+        "reports",
+        "reported",
+        "message",
+        "messages",
+        "город",
+        "города",
+        "городе",
+        "житель",
+        "жители",
+        "жителей",
+        "жителям",
+        "сообщают",
+        "сообщает",
+        "сообщению",
+        "сообщения",
+        "также",
+        "тоже",
+        "было",
+        "были",
+        "будет",
+        "будут",
+        "есть",
+        "нет",
+        "информация",
+        "информации",
+    }
+)
+
+
+def _digest_detail_tokens(text: str) -> set[str]:
+    from src.publication.article_claims import normalize_support_text
+
+    normalized = normalize_support_text(text)
+    return {
+        token
+        for token in _DETAIL_TOKEN_RE.findall(normalized)
+        if len(token) >= 4 and token not in _DETAIL_STOPWORDS
+    }
+
+
+def _is_material_digest_detail(evi: Any, dashboard_texts: Sequence[str]) -> bool:
+    from src.publication.article_claims import extract_concrete_claims, normalize_support_text
+
+    text = " ".join(
+        part for part in (getattr(evi, "text", ""), getattr(evi, "source_text", "")) if part
+    ).strip()
+    if not text:
+        return False
+
+    dashboard_text = " ".join(dashboard_texts)
+    dashboard_normalized = normalize_support_text(dashboard_text)
+
+    concrete_claims = [
+        claim
+        for claim in extract_concrete_claims(text)
+        if claim.kind != "phone" and normalize_support_text(claim.raw) not in dashboard_normalized
+    ]
+    if concrete_claims:
+        return True
+
+    detail_tokens = _digest_detail_tokens(text)
+    dashboard_tokens = _digest_detail_tokens(dashboard_text)
+    novel_tokens = detail_tokens - dashboard_tokens
+    return len(novel_tokens) >= 3
+
+
 _GENERIC_STOP_TAGS = {
     "город",
     "города",
@@ -710,7 +813,23 @@ def build_digest_presentation_plan(
             else:
                 card_detail_supports[sid] = ()
         else:
-            drilldown_sups = [eid for score, eid in scored_non_dash if score > 0][:2]
+            story_dashboard_texts = [
+                city_situation_group_reader_text(group)
+                for group in city_plan.groups
+                if sid in group.covered_story_ids
+            ]
+            material_non_dash = [
+                evi
+                for evi in non_dash_evi
+                if _is_material_digest_detail(evi, story_dashboard_texts)
+            ]
+            scored_material_non_dash = [
+                (score_digest_detail_evidence(evi), getattr(evi, "evidence_id", ""))
+                for evi in material_non_dash
+                if getattr(evi, "evidence_id", "")
+            ]
+            scored_material_non_dash.sort(key=lambda x: (-x[0], x[1]))
+            drilldown_sups = [eid for _, eid in scored_material_non_dash][:2]
             if drilldown_sups:
                 card_modes[sid] = "DASHBOARD_AND_DRILLDOWN"
                 card_detail_supports[sid] = tuple(drilldown_sups)

@@ -1479,3 +1479,104 @@ def test_digest_presentation_caps_preserve_all_substantive_stories_as_detail_onl
     modes = {sid: p.mode for sid, p in by_story.items()}
     assert sum(1 for m in modes.values() if m == "DETAIL_ONLY") == 1
     assert sum(1 for m in modes.values() if m == "DASHBOARD_ONLY") == 2
+
+
+def _build_power_novelty_plan(non_dashboard_text: str):
+    import datetime as dt
+
+    from src.editorial_models import StoryCard
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+    from src.publication.evidence import PublicationEvidence
+
+    now = dt.datetime(2026, 9, 1, 9, 0, tzinfo=dt.timezone.utc)
+    rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="electricity",
+                subject_label="Electricity",
+                dimension="availability",
+                location="Azmol",
+                entity="grid",
+                state="UNAVAILABLE",
+                detail="No power in Azmol",
+                source_refs=("ref-status",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+                current_source_refs=("ref-status",),
+            ),
+        )
+    )
+    card = StoryCard(
+        id="story:1",
+        topic="Power outage",
+        importance="high",
+        summary="Power is unavailable in Azmol",
+        tags=["electricity"],
+        rubric_id="utilities",
+        category="utilities",
+        story_kind="operational_status",
+        representative_source_refs=["ref-status", "ref-detail"],
+    )
+    status = PublicationEvidence(
+        evidence_id="story:1:evi:status",
+        story_id=1,
+        text="No power in Azmol",
+        source_text="No power in Azmol",
+        kind="service_access",
+        publication_use="PUBLISH",
+        fragment_id=1,
+        source_ref="ref-status",
+        source_id=1,
+        source_item_id=1,
+        source_role="community",
+        observed_at=now,
+    )
+    detail = PublicationEvidence(
+        evidence_id="story:1:evi:detail",
+        story_id=1,
+        text=non_dashboard_text,
+        source_text=non_dashboard_text,
+        kind="community_report",
+        publication_use="PUBLISH",
+        fragment_id=2,
+        source_ref="ref-detail",
+        source_id=1,
+        source_item_id=2,
+        source_role="community",
+        observed_at=now,
+    )
+    return build_digest_presentation_plan(
+        cards=[card],
+        city_situation=rollup,
+        evidence={status.evidence_id: status, detail.evidence_id: detail},
+    )
+
+
+def test_dashboard_status_repeat_without_new_fact_is_dashboard_only() -> None:
+    plan = _build_power_novelty_plan("Residents report that power is still absent in Azmol")
+    pres = plan.story_presentations[0]
+    assert pres.mode == "DASHBOARD_ONLY"
+    assert pres.detail_support_ids == ()
+
+
+def test_dashboard_story_with_new_duration_is_drilldown() -> None:
+    plan = _build_power_novelty_plan("Power has been absent for 30 days")
+    pres = plan.story_presentations[0]
+    assert pres.mode == "DASHBOARD_AND_DRILLDOWN"
+    assert pres.detail_support_ids == ("story:1:evi:detail",)
+
+
+def test_dashboard_story_with_workaround_is_drilldown() -> None:
+    plan = _build_power_novelty_plan("A 400 kW generator is being used for the boiler house")
+    pres = plan.story_presentations[0]
+    assert pres.mode == "DASHBOARD_AND_DRILLDOWN"
+    assert pres.detail_support_ids == ("story:1:evi:detail",)
+
+
+def test_phone_only_novelty_does_not_force_drilldown() -> None:
+    plan = _build_power_novelty_plan("No power in Azmol. Call +7 999 111 22 33")
+    pres = plan.story_presentations[0]
+    assert pres.mode == "DASHBOARD_ONLY"
+    assert pres.detail_support_ids == ()
