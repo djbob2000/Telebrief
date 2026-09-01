@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any
 
 import psycopg
@@ -14,6 +15,8 @@ from src.publication.models import (
     PublicationPolicySet,
 )
 from src.publication.repository import PublicationPolicyRepository
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_ELIGIBILITY_CONFIG_HASH = "elig-cfg-default"
 DEFAULT_ELIGIBILITY_PROMPT_VERSION = "elig-prompt-v1"
@@ -53,6 +56,9 @@ class PublicationPolicyService:
         selection_prompt_version: str = DEFAULT_SELECTION_PROMPT_VERSION,
         writer_config_hash: str = DEFAULT_WRITER_CONFIG_HASH,
         writer_prompt_version: str = DEFAULT_WRITER_PROMPT_VERSION,
+        triage_version: str | None = None,
+        scope_version: str | None = None,
+        scope_config_hash: str | None = None,
     ) -> PublicationPolicySet:
         lookback_hours = 24
         excluded_platforms: list[str] = []
@@ -103,9 +109,28 @@ class PublicationPolicyService:
                 if isinstance(fb_dict, dict) and not fb_dict.get("editorial_enabled", True):
                     excluded_platforms.append("facebook")
 
+        if triage_version is None:
+            triage_version = "v9"
+        if scope_version is None:
+            scope_version = "v1"
+        if scope_config_hash is None and config is not None:
+            try:
+                from src.processing.edition_scope import resolve_edition_scope
+                from src.processing.edition_scope import scope_config_hash as calc_scope_hash
+
+                _, scope_obj = await resolve_edition_scope(conn, config, edition_id)
+                scope_config_hash = calc_scope_hash(scope_obj)
+            except Exception as exc:
+                logger.debug(
+                    "Could not resolve scope_config_hash for edition %s: %s", edition_id, exc
+                )
+
         eligibility_config = {
             "lookback_hours": lookback_hours,
             "excluded_platforms": sorted(set(excluded_platforms)),
+            "triage_version": triage_version,
+            "scope_version": scope_version,
+            "scope_config_hash": scope_config_hash,
         }
         if eligibility_config_hash == DEFAULT_ELIGIBILITY_CONFIG_HASH:
             eligibility_config_hash = compute_config_hash(eligibility_config)

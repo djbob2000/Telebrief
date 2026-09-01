@@ -314,9 +314,18 @@ class PublicationRepository:
         lookback_hours = 24
         excluded_platforms: list[str] = []
         triage_version: str | None = None
+        scope_version: str | None = None
+        policy_scope_hash: str | None = None
         if eligibility_policy_id is not None:
             cur = await conn.execute(
-                "SELECT config->>'lookback_hours', config->'excluded_platforms', config->>'triage_version' FROM eligibility_policy_versions WHERE id = %s",
+                """
+                SELECT config->>'lookback_hours',
+                       config->'excluded_platforms',
+                       config->>'triage_version',
+                       config->>'scope_version',
+                       config->>'scope_config_hash'
+                FROM eligibility_policy_versions WHERE id = %s
+                """,
                 (eligibility_policy_id,),
             )
             pol_row = await cur.fetchone()
@@ -332,6 +341,12 @@ class PublicationRepository:
                     ]
                 if pol_row[2] is not None:
                     triage_version = str(pol_row[2]).strip()
+                if pol_row[3] is not None:
+                    scope_version = str(pol_row[3]).strip()
+                if pol_row[4] is not None:
+                    policy_scope_hash = str(pol_row[4]).strip()
+
+        effective_scope_hash = scope_config_hash or policy_scope_hash
 
         window_start = snapshot_at - dt.timedelta(hours=lookback_hours)
 
@@ -564,10 +579,11 @@ class PublicationRepository:
                        AND setd.latest_assignment_id = sc.latest_assignment_id
                       WHERE sc.story_id = story_activity.story_id
                         AND sesd.edition_id = %s
-                        AND sesd.scope_version = 'v1'
+                        AND (%s::text IS NULL OR sesd.scope_version = %s)
                         AND (%s::text IS NULL OR sesd.scope_config_hash = %s)
                         AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
                         AND (%s::text IS NULL OR setd.triage_version = %s)
+                        AND (%s::text IS NULL OR setd.scope_config_hash = %s)
                         AND setd.scope_config_hash = sesd.scope_config_hash
                         AND setd.decision IN ('ANALYZE', 'KEEP')
                         AND sesd.created_at <= %s
@@ -633,10 +649,14 @@ class PublicationRepository:
                 window_start,
                 # scope gate
                 edition_id,
-                scope_config_hash,
-                scope_config_hash,
+                scope_version,
+                scope_version,
+                effective_scope_hash,
+                effective_scope_hash,
                 triage_version,
                 triage_version,
+                effective_scope_hash,
+                effective_scope_hash,
                 snapshot_at,
             ),
         )
@@ -747,6 +767,8 @@ class PublicationRepository:
                     "new_claims_count": new_claims_count,
                     "last_activity_at": last_activity_at,
                     "activity_type": activity_type,
+                    "knowledge_source": r[16],
+                    "event_payload": r[17],
                     "snapshot_features": {
                         "claim_count": claim_count,
                         "source_count": source_count,
@@ -756,6 +778,7 @@ class PublicationRepository:
                         ),
                         "activity_type": activity_type,
                         "semantic_text": semantic_text,
+                        "knowledge_source": r[16],
                         "source_published_at": (
                             newest_source_published_at.isoformat()
                             if newest_source_published_at

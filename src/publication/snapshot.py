@@ -102,6 +102,99 @@ class PublicationSnapshotService:
             eligibility_policy_id=run.eligibility_policy_id,
         )
 
+        # Defense-in-depth: audit candidates before sealing
+        policy_triage_version: str | None = None
+        policy_scope_version: str | None = None
+        policy_scope_hash: str | None = None
+        if run.eligibility_policy_id is not None:
+            cur = await conn.execute(
+                """
+                SELECT config->>'triage_version',
+                       config->>'scope_version',
+                       config->>'scope_config_hash'
+                FROM eligibility_policy_versions WHERE id = %s
+                """,
+                (run.eligibility_policy_id,),
+            )
+            p_row = await cur.fetchone()
+            if p_row:
+                policy_triage_version = p_row[0]
+                policy_scope_version = p_row[1]
+                policy_scope_hash = p_row[2]
+
+        ef_story_ids = [
+            r["story_id"] for r in eligible_rows if r.get("knowledge_source") == "event_first"
+        ]
+        if ef_story_ids:
+            cur = await conn.execute(
+                """
+                SELECT sc.story_id,
+                       setd.triage_version,
+                       setd.scope_config_hash,
+                       setd.retention,
+                       sesd.scope_version,
+                       sesd.scope_config_hash
+                FROM story_cluster_state sc
+                JOIN story_edition_scope_decisions sesd
+                  ON sesd.story_id = sc.story_id
+                 AND sesd.latest_assignment_id = sc.latest_assignment_id
+                JOIN story_event_triage_decisions setd
+                  ON setd.story_id = sc.story_id
+                 AND setd.latest_assignment_id = sc.latest_assignment_id
+                WHERE sc.story_id = ANY(%s)
+                """,
+                (ef_story_ids,),
+            )
+            triage_map = {row[0]: row for row in await cur.fetchall()}
+            for row in eligible_rows:
+                if row.get("knowledge_source") != "event_first":
+                    continue
+                sid = row["story_id"]
+                if sid not in triage_map:
+                    raise ValueError(
+                        f"Invariant violation: event_first story {sid} has no scope/triage decisions"
+                    )
+                t_row = triage_map[sid]
+                t_ver, t_shash, ret, s_ver, s_shash = (
+                    t_row[1],
+                    t_row[2],
+                    t_row[3],
+                    t_row[4],
+                    t_row[5],
+                )
+
+                if ret != "KEEP":
+                    raise ValueError(
+                        f"Invariant violation: candidate story {sid} has non-KEEP retention: {ret!r}"
+                    )
+                if policy_triage_version and t_ver != policy_triage_version:
+                    raise ValueError(
+                        f"Invariant violation: candidate story {sid} triage_version {t_ver!r} != policy {policy_triage_version!r}"
+                    )
+                if policy_scope_version and s_ver != policy_scope_version:
+                    raise ValueError(
+                        f"Invariant violation: candidate story {sid} scope_version {s_ver!r} != policy {policy_scope_version!r}"
+                    )
+                if policy_scope_hash and (
+                    t_shash != policy_scope_hash or s_shash != policy_scope_hash
+                ):
+                    raise ValueError(
+                        f"Invariant violation: candidate story {sid} scope hash != policy {policy_scope_hash!r}"
+                    )
+
+                payload = row.get("event_payload")
+                if payload and isinstance(payload, dict):
+                    ev_items = payload.get("evidence_items")
+                    if isinstance(ev_items, list) and ev_items:
+                        has_publish = any(
+                            isinstance(ev, dict) and ev.get("publication_use") == "PUBLISH"
+                            for ev in ev_items
+                        )
+                        if not has_publish:
+                            raise ValueError(
+                                f"Invariant violation: candidate story {sid} has 0 PUBLISH evidence items"
+                            )
+
         created_candidates: list[PublicationCandidate] = []
         for rank, row in enumerate(eligible_rows, start=1):
             cand = await self.repo.insert_candidate(

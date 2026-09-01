@@ -789,3 +789,216 @@ class TestPublicationSnapshotConstraints:
         assert len(candidates) == 1
         assert candidates[0].story_id == story_id
         assert candidates[0].story_revision_id == rev_id
+
+    async def test_frozen_policy_versioning_and_defensive_seal_invariants(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        import json
+
+        from src.db.uow import DatabaseUnitOfWork
+        from src.publication.snapshot import PublicationSnapshotService
+
+        uow = DatabaseUnitOfWork(pool)
+        repo = PublicationRepository()
+        policy_repo = PublicationPolicyRepository()
+
+        # 1. Eligibility policy requiring frozen versions: triage_version='v9', scope_config_hash='hash-v9'
+        elig = await policy_repo.get_or_create_eligibility_policy(
+            conn,
+            edition_id=edition.id,
+            config_hash="cfg-v9-freeze",
+            prompt_version="p-v9",
+            config={
+                "lookback_hours": 24,
+                "triage_version": "v9",
+                "scope_version": "v1",
+                "scope_config_hash": "hash-v9",
+            },
+        )
+        elig_id = elig.id
+        sel = await policy_repo.get_or_create_selection_policy(
+            conn, edition_id=edition.id, config_hash="sel-v9-freeze", prompt_version="p-v9"
+        )
+        wri = await policy_repo.get_or_create_writer_policy(
+            conn, edition_id=edition.id, config_hash="wri-v9-freeze", prompt_version="p-v9"
+        )
+        policy_ids = (elig_id, sel.id, wri.id)
+
+        # 2. Seed a story with stale triage_version='v8'
+        sid_stale, rev_stale = await _seed_story_with_revision(conn, edition.id, _NOW)
+        await conn.execute(
+            "UPDATE stories SET knowledge_source = 'event_first' WHERE id = %s", (sid_stale,)
+        )
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (1, 'message', 'ext-stale', %s) RETURNING id",
+            (_NOW,),
+        )
+        si_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, 'h-sir-stale', 'stale') RETURNING id",
+            (si_id,),
+        )
+        sir_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, 'stale', 'h_f_stale', 'v1', TRUE, %s) RETURNING id",
+            (sir_id, _NOW),
+        )
+        fid_stale = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions) VALUES ('h_stale_1', '[1, 0]'::vector, 'm', 2) RETURNING id"
+        )
+        fe_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_fragment_embeddings (fragment_id, vector_id) VALUES (%s, %s) RETURNING id",
+            (fid_stale, fe_id),
+        )
+        sfe_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind) VALUES (%s, %s, %s, 'new_story') RETURNING id",
+            (sid_stale, fid_stale, sfe_id),
+        )
+        aid_stale = (await cur.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO story_cluster_state (story_id, centroid, model, dimensions, fragment_count, unique_source_count, first_seen_at, last_seen_at, latest_assignment_id, analysis_dirty) VALUES (%s, '[1, 0]'::vector, 'm', 2, 1, 1, %s, %s, %s, FALSE)",
+            (sid_stale, _NOW, _NOW, aid_stale),
+        )
+        cur = await conn.execute(
+            "INSERT INTO story_event_triage_runs (triage_version, provider, model, prompt_hash, story_count, input_chars, status) VALUES ('v1', 'p', 'm', 'h', 1, 100, 'succeeded') RETURNING id"
+        )
+        trun_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO story_edition_scope_decisions (triage_run_id, story_id, edition_id, latest_assignment_id, scope_version, scope_config_hash, scope_class, confidence, reason, created_at) VALUES (%s, %s, %s, %s, 'v1', 'hash-v9', 'LOCAL', 0.99, 'in city', %s)",
+            (trun_id, sid_stale, edition.id, aid_stale, _NOW),
+        )
+        # triage_version='v8' is stale
+        await conn.execute(
+            "INSERT INTO story_event_triage_decisions (run_id, story_id, latest_assignment_id, triage_version, scope_config_hash, decision, retention, enrichment, confidence, reason, created_at) VALUES (%s, %s, %s, 'v8', 'hash-v9', 'ANALYZE', 'KEEP', 'BRIEF', 0.99, 'in city', %s)",
+            (trun_id, sid_stale, aid_stale, _NOW),
+        )
+
+        # 3. Seed a story with triage_version='v9' (authoritative match) with >=1 PUBLISH evidence item
+        sid_v9, rev_v9 = await _seed_story_with_revision(conn, edition.id, _NOW)
+        await conn.execute(
+            "UPDATE stories SET knowledge_source = 'event_first' WHERE id = %s", (sid_v9,)
+        )
+        payload = {
+            "topic": "Водоснабжение",
+            "publishability": "news",
+            "evidence_items": [
+                {
+                    "text": "Воду дали в центре",
+                    "kind": "service_access",
+                    "publication_use": "PUBLISH",
+                }
+            ],
+        }
+        await conn.execute(
+            "UPDATE story_revisions SET event_payload = %s::jsonb WHERE id = %s",
+            (json.dumps(payload), rev_v9),
+        )
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 2, 'h-sir-v9', 'v9 text') RETURNING id",
+            (si_id,),
+        )
+        sir_id_v9 = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, 'v9 text', 'h_f_v9', 'v1', TRUE, %s) RETURNING id",
+            (sir_id_v9, _NOW),
+        )
+        fid_v9 = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_fragment_embeddings (fragment_id, vector_id) VALUES (%s, %s) RETURNING id",
+            (fid_v9, fe_id),
+        )
+        sfe_id_v9 = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind) VALUES (%s, %s, %s, 'new_story') RETURNING id",
+            (sid_v9, fid_v9, sfe_id_v9),
+        )
+        aid_v9 = (await cur.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO story_cluster_state (story_id, centroid, model, dimensions, fragment_count, unique_source_count, first_seen_at, last_seen_at, latest_assignment_id, analysis_dirty) VALUES (%s, '[1, 0]'::vector, 'm', 2, 1, 1, %s, %s, %s, FALSE)",
+            (sid_v9, _NOW, _NOW, aid_v9),
+        )
+        await conn.execute(
+            "INSERT INTO story_edition_scope_decisions (triage_run_id, story_id, edition_id, latest_assignment_id, scope_version, scope_config_hash, scope_class, confidence, reason, created_at) VALUES (%s, %s, %s, %s, 'v1', 'hash-v9', 'LOCAL', 0.99, 'in city', %s)",
+            (trun_id, sid_v9, edition.id, aid_v9, _NOW),
+        )
+        await conn.execute(
+            "INSERT INTO story_event_triage_decisions (run_id, story_id, latest_assignment_id, triage_version, scope_config_hash, decision, retention, enrichment, confidence, reason, created_at) VALUES (%s, %s, %s, 'v9', 'hash-v9', 'ANALYZE', 'KEEP', 'BRIEF', 0.99, 'in city', %s)",
+            (trun_id, sid_v9, aid_v9, _NOW),
+        )
+
+        # 4. Verify eligible_story_revisions filters out stale sid_stale and includes sid_v9
+        eligible = await repo.eligible_story_revisions(
+            conn,
+            edition_id=edition.id,
+            snapshot_at=_NOW,
+            eligibility_policy_id=elig_id,
+        )
+        eligible_sids = [e["story_id"] for e in eligible]
+        assert sid_v9 in eligible_sids
+        assert sid_stale not in eligible_sids
+
+        # 5. Verify snapshot service seals successfully
+        service = PublicationSnapshotService(uow=uow, repo=repo)
+        run = await service.create_run(
+            edition_id=edition.id,
+            publication_type="daily_article",
+            snapshot_at=_NOW,
+            request_key="test-frozen-v9-run",
+            policy_ids=policy_ids,
+        )
+        cands = await service.seal_candidates(run.id)
+        assert len(cands) == 1
+        assert cands[0].story_id == sid_v9
+
+        # 6. Verify defensive seal invariant rejects candidate with 0 PUBLISH evidence items
+        context_only_payload = {
+            "topic": "Вопрос",
+            "publishability": "news",
+            "evidence_items": [
+                {
+                    "text": "Вопрос без ответа?",
+                    "kind": "resident_question",
+                    "publication_use": "CONTEXT",
+                }
+            ],
+        }
+        await conn.execute(
+            "UPDATE story_revisions SET event_payload = %s::jsonb WHERE id = %s",
+            (json.dumps(context_only_payload), rev_v9),
+        )
+        run_no_pub = await service.create_run(
+            edition_id=edition.id,
+            publication_type="daily_article",
+            snapshot_at=_NOW,
+            request_key="test-run-no-pub",
+            policy_ids=policy_ids,
+        )
+        with pytest.raises(ValueError, match="0 PUBLISH evidence items"):
+            await service.seal_candidates(run_no_pub.id)
+
+        # Restore valid payload and verify non-KEEP retention is rejected
+        await conn.execute(
+            "UPDATE story_revisions SET event_payload = %s::jsonb WHERE id = %s",
+            (json.dumps(payload), rev_v9),
+        )
+        await conn.execute(
+            "UPDATE story_event_triage_decisions SET retention = 'DROP', enrichment = 'NONE' WHERE story_id = %s",
+            (sid_v9,),
+        )
+        run_non_keep = await service.create_run(
+            edition_id=edition.id,
+            publication_type="daily_article",
+            snapshot_at=_NOW,
+            request_key="test-run-non-keep",
+            policy_ids=policy_ids,
+        )
+        # Note: repository eligible_story_revisions filters setd.decision IN ('ANALYZE', 'KEEP')
+        # If someone forced a candidate through, _seal_on rejects it
+        # Let's test _seal_on defense-in-depth directly or via a mock row if query already drops it
+        # In this case setd.decision was ANALYZE, but retention was changed to DROP:
+        # The query lets it through because decision='ANALYZE', but _seal_on catches retention != KEEP!
+        with pytest.raises(ValueError, match="non-KEEP retention"):
+            await service.seal_candidates(run_non_keep.id)
