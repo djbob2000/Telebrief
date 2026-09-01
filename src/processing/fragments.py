@@ -6,45 +6,22 @@ import hashlib
 import re
 
 from src.domain.event_pipeline import NewSourceFragment
-
-FRAGMENTER_VERSION = "v1"
-
-MIN_CANDIDATE_ALNUM_CHARS = 6
-
-_SHORT_REACTION_PATTERN = re.compile(
-    r"^(?:ок|окей|да|нет|ага|угу|понял(?:а)?|понятно|ясно|хорошо|ладно|норм|супер|класс|лол|привет)[!.?]*$",
-    re.IGNORECASE,
+from src.processing.noise_detection import (
+    URL_PATTERN as _URL_PATTERN,
+)
+from src.processing.noise_detection import (
+    WHITESPACE_PATTERN as _WHITESPACE_PATTERN,
+)
+from src.processing.noise_detection import (
+    classify_text_noise_or_exclusion,
 )
 
-# Regexes for URL stripping, whitespace normalization, and noise detection
-_URL_PATTERN = re.compile(r"https?://\S+|t\.me/\S+", re.IGNORECASE)
-_WHITESPACE_PATTERN = re.compile(r"\s+")
-_NON_ALPHANUM_PATTERN = re.compile(r"[^\w\s]", re.UNICODE)
+FRAGMENTER_VERSION = "v2"
 
-# Patterns for obvious commercial classified ads
-_CLASSIFIED_PATTERNS = [
-    re.compile(r"\b(продам|куплю|сдам|сдаю|сниму|аренда|продается|продаётся)\b", re.IGNORECASE),
-    re.compile(r"\b(цена|стоимость|руб|рублей|р\.|грн|usd|\$)\b.*\b\d+\b", re.IGNORECASE),
-    re.compile(r"\b\d+\b.*\b(руб|рублей|р\.|грн|usd|\$)\b", re.IGNORECASE),
-    re.compile(r"\b(звонить|обращаться|писать в лс|л\.с\.|самовывоз|доставка)\b", re.IGNORECASE),
-    re.compile(r"(\+7\s?9\d{2}|\+380|\b89\d{2})\s?\d{3}", re.IGNORECASE),
-    re.compile(r"\b(маникюр|педикюр|наращивание|ресниц|брови|эпиляция|стрижка)\b", re.IGNORECASE),
-    re.compile(
-        r"\b(грузоперевозки|грузчики|переезды|ремонт квартир|установка окон)\b", re.IGNORECASE
-    ),
-]
-
-# Patterns for short chatter, greetings, reaction noise
-_NOISE_PATTERNS = [
-    re.compile(
-        r"^(доброе утро|добрый день|добрый вечер|спокойной ночи|всем привет|привет всем)[!.]*$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^(спасибо|благодарю|пожалуйста|не за что|плюсую|согласен|согласна)[!.]*$", re.IGNORECASE
-    ),
-    re.compile(r"^(подскажите пожалуйста|подскажите|кто знает|есть у кого)[?.]*$", re.IGNORECASE),
-]
+_DEPENDENT_PREFIX_PATTERN = re.compile(
+    r"^(?:[📍🏛🏢🛣🕗🕒📞☎️📱🌟📅📆🕖✅❤️❗️❗\s]*)(?:адрес|режим работы|график(?: работы)?|часы работы|время работы|контакты|запись|телефон|тел|стоимость|цена|вход|прием|приём|мы находимся|наш адрес|находимся по адресу)[:\s]",
+    re.IGNORECASE,
+)
 
 
 def normalize_fragment_text(text: str) -> str:
@@ -66,34 +43,25 @@ def hash_normalized_text(norm: str) -> str:
 
 
 def is_noise_or_classified(text: str) -> tuple[bool, str | None]:
-    """Check text against deterministic noise and classified ad rules."""
-    trimmed = text.strip()
-    if not trimmed:
-        return True, "empty"
+    """Check text against deterministic noise and classified ad rules using shared detector."""
+    return classify_text_noise_or_exclusion(text, check_length=True)
 
-    if _SHORT_REACTION_PATTERN.search(trimmed):
-        return True, "obvious_noise"
 
-    # Check greetings / chatter
-    for p in _NOISE_PATTERNS:
-        if p.search(trimmed):
-            return True, "obvious_noise"
+def is_dependent_continuation(text: str) -> bool:
+    """Return True if text begins with an operational/dependent prefix like 'Режим работы:' or 'Адрес:'."""
+    return bool(_DEPENDENT_PREFIX_PATTERN.search(text.strip()))
 
-    # Count alphanumeric characters
-    alnum_chars = sum(1 for c in trimmed if c.isalnum())
-    if alnum_chars < MIN_CANDIDATE_ALNUM_CHARS:
-        return True, "too_short"
 
-    # Check classified ad indicators (require at least 2 distinct cues for confidence)
-    classified_cues = 0
-    for p in _CLASSIFIED_PATTERNS:
-        if p.search(trimmed):
-            classified_cues += 1
-
-    if classified_cues >= 2:
-        return True, "commercial_classified"
-
-    return False, None
+def extract_parent_anchor(text: str, max_len: int = 40) -> str:
+    """Extract a concise identifying prefix from parent text."""
+    line = text.split("\n", 1)[0].strip()
+    line = re.sub(r"^[\[\(«\"]+", "", line).strip()
+    if len(line) <= max_len:
+        return line
+    truncated = line[: max_len - 3]
+    if " " in truncated:
+        truncated = truncated.rsplit(" ", 1)[0]
+    return f"{truncated}..."
 
 
 def split_into_fragments(
@@ -102,7 +70,12 @@ def split_into_fragments(
     max_chars: int = 1200,
     fragmenter_version: str = FRAGMENTER_VERSION,
 ) -> list[NewSourceFragment]:
-    """Deterministically fragment raw post text into structured candidate chunks."""
+    """Deterministically fragment raw post text into structured candidate chunks.
+
+    Uses dependent-continuation packing: standalone paragraphs remain separate,
+    while operational continuation blocks (e.g. 'Режим работы:', 'Адрес:', 'Контакты:')
+    are packed backward into their parent identifying paragraph to prevent orphan fragments.
+    """
     if not raw_text or not raw_text.strip():
         return []
 
@@ -114,6 +87,22 @@ def split_into_fragments(
         p_clean = p.strip()
         if not p_clean:
             continue
+
+        # If this paragraph is a dependent continuation block and we already have a previous chunk
+        if is_dependent_continuation(p_clean) and raw_chunks:
+            prev = raw_chunks[-1]
+            if len(prev) + len(p_clean) + 2 <= max_chars:
+                raw_chunks[-1] = f"{prev}\n\n{p_clean}"
+                continue
+            else:
+                # If packing would exceed max_chars, give this dependent fragment an identifying parent anchor prefix
+                anchor = extract_parent_anchor(prev)
+                anchor_prefix = f"[{anchor}] " if anchor else ""
+                if len(anchor_prefix) + len(p_clean) <= max_chars:
+                    raw_chunks.append(f"{anchor_prefix}{p_clean}")
+                    continue
+                p_clean = f"{anchor_prefix}{p_clean}"
+
         if len(p_clean) <= max_chars:
             raw_chunks.append(p_clean)
         else:

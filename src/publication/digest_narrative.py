@@ -294,13 +294,14 @@ def plan_digest_narrative_blocks(
                 mgid = fallback_merge_groups.get(c.id, c.id)
             groups_by_mgid.setdefault(mgid, []).append(c)
 
-        # Split each merge group into chunks of at most 3 cards
+        # Split each merge group into chunks of at most 6 cards
         required_groups: list[list[StoryCard]] = []
         for _mgid, mg_cards in groups_by_mgid.items():
-            for i in range(0, len(mg_cards), 3):
-                required_groups.append(mg_cards[i : i + 3])
+            for i in range(0, len(mg_cards), 6):
+                required_groups.append(mg_cards[i : i + 6])
 
-        bound = max(1, max_cards_per_block)
+        max_req_grp = max((len(g) for g in required_groups), default=1)
+        bound = max(max_cards_per_block, max_req_grp)
         current_block_groups: list[list[StoryCard]] = []
         current_block_card_count = 0
         block_groups_list: list[list[list[StoryCard]]] = []

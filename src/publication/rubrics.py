@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 from src.config_loader import DigestRubricConfig, DigestRubricsConfig
+from src.domain.service_taxonomy import detect_service_families, map_family_to_rubric
 from src.editorial_models import StoryCard
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ class RubricAssignment:
     story_id: str
     rubric_id: str
     score: float | None
-    method: str  # "semantic" | "legacy_hint" | "fallback"
+    method: str  # "semantic" | "legacy_hint" | "family_fallback" | "fallback"
 
 
 def story_classification_text(card: StoryCard) -> str:
@@ -194,12 +195,31 @@ class DigestRubricClassifier:
                         method="semantic",
                     )
                 else:
-                    assignments_by_card_id[card.id] = RubricAssignment(
-                        story_id=card.id,
-                        rubric_id=fallback_rubric.id,
-                        score=best_score,
-                        method="fallback",
-                    )
+                    # Deterministic family fallback before defaulting to other
+                    card_text = story_classification_text(card)
+                    fams = detect_service_families(card_text)
+                    family_rubric = None
+                    rubric_candidates = {
+                        map_family_to_rubric(f) for f in fams if map_family_to_rubric(f) is not None
+                    }
+                    valid_candidates = {r for r in rubric_candidates if r in known_rubrics_by_id}
+                    if len(valid_candidates) == 1:
+                        family_rubric = next(iter(valid_candidates))
+
+                    if family_rubric is not None:
+                        assignments_by_card_id[card.id] = RubricAssignment(
+                            story_id=card.id,
+                            rubric_id=family_rubric,
+                            score=best_score,
+                            method="family_fallback",
+                        )
+                    else:
+                        assignments_by_card_id[card.id] = RubricAssignment(
+                            story_id=card.id,
+                            rubric_id=fallback_rubric.id,
+                            score=best_score,
+                            method="fallback",
+                        )
 
         except Exception as exc:
             logger.warning(

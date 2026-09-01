@@ -609,8 +609,8 @@ def test_operational_semantic_boundaries_end_to_end() -> None:
             observation_count=1,
         ),
         CitySituationItem(
-            subject_key="transport",
-            subject_label="Транспорт",
+            subject_key="urban_transport",
+            subject_label="Городской транспорт",
             dimension="availability",
             location="Город",
             entity="Автобусы",
@@ -684,10 +684,10 @@ def test_operational_semantic_boundaries_end_to_end() -> None:
         max_city_situation_positive_items=2,
     )
 
-    # Positive group is subject coherent (transport, not available_services)
+    # Positive group is subject coherent (urban_transport, not available_services)
     assert len(plan.city_situation.groups) == 2
     assert all(g.subject_key != "available_services" for g in plan.city_situation.groups)
-    assert {g.subject_key for g in plan.city_situation.groups} == {"water", "transport"}
+    assert {g.subject_key for g in plan.city_situation.groups} == {"water", "urban_transport"}
 
     # 4. Prose quality diagnostics audit clean draft
     clean_draft = DigestNarrativeDraft(

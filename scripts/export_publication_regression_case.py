@@ -301,7 +301,7 @@ async def export_publication_case(conn: AsyncConnection, run_id: int) -> dict[st
 
     needed_fids: list[int] = []
     parsed_story_payloads: list[dict[str, Any]] = []
-    for sid, srid, ep_raw, sem_text in all_story_rev_rows:
+    for _sid, _srid, ep_raw, _sem_text in all_story_rev_rows:
         ep = ep_raw if isinstance(ep_raw, dict) else (json.loads(ep_raw) if ep_raw else {})
         parsed_story_payloads.append(ep)
         for item in ep.get("evidence_items", []):

@@ -495,8 +495,14 @@ def find_unsupported_claims(
                 unsupported.append(claim)
 
         elif claim.kind == "quoted_term":
+            term_stemmed = _stemmed_text(claim.normalized)
             term_stem = _stem(claim.normalized)
-            if not any(term_stem in _stemmed_text(sup) for sup in norm_supports):
+            if not any(
+                norm in sup
+                or (term_stem and term_stem in sup)
+                or (term_stemmed and term_stemmed in _stemmed_text(sup))
+                for sup in norm_supports
+            ):
                 unsupported.append(claim)
 
         elif claim.kind == "number":

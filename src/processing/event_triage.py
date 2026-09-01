@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import psycopg
@@ -24,6 +24,7 @@ from src.processing.edition_scope import (
     broad_region_without_focus_impact,
     build_scope_contract,
 )
+from src.processing.hard_exclusion import evaluate_story_hard_exclusion
 from src.processing.operational_semantics import (
     has_unstructured_publish_service_access,
     normalize_service_state_evidence,
@@ -32,7 +33,16 @@ from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v7"
+TRIAGE_VERSION = "v8"
+
+_ALLOWED_EXCLUSION_REASONS = frozenset(
+    {
+        "commercial_classified",
+        "private_classified",
+        "directory_payload",
+        "obvious_noise",
+    }
+)
 
 _GATE_V2_SYSTEM_PROMPT = """You are a fast geographic, editorial retention, and operational triage classifier for a regional newsroom digest.
 You are evaluating candidate event Stories for ONE configured edition.
@@ -50,7 +60,7 @@ For LOCAL or DIRECT_IMPACT content:
 - Lack of corroboration, a single community source, or lack of official confirmation is NOT by itself a reason to DROP an otherwise legitimate LOCAL or DIRECT_IMPACT report.
 - Represent source uncertainty through evidence kind, wording, and confidence; do not erase the event.
 - For retention=KEEP, brief_payload.publishability must be "news" or "brief". Do not use "internal_only" or "noise" merely because evidence is community, conversational, single-source, or unverified.
-- DROP is only for high-confidence hard noise/commercial-only content and must use enrichment=NONE with exclusion_reason in ('commercial_classified', 'obvious_noise').
+- DROP is only for high-confidence hard noise/commercial-only content and must use enrichment=NONE with exclusion_reason in ('commercial_classified', 'private_classified', 'directory_payload', 'obvious_noise').
 - In-scope KEEP uses BRIEF for simple useful local information, and ANALYZE only when rich synthesis is justified.
 - Publication use is semantic, not topic-based.
 - Evidence kind describes semantic content, not source trust.
@@ -88,7 +98,7 @@ Respond ONLY with a valid JSON object containing a "results" array:
       "scope_reason": "Brief geographic explanation",
       "retention": "KEEP | DROP",
       "enrichment": "NONE | BRIEF | ANALYZE",
-      "exclusion_reason": "commercial_classified | obvious_noise | null",
+      "exclusion_reason": "commercial_classified | private_classified | directory_payload | obvious_noise | null",
       "confidence": 0.98,
       "reason": "Brief explanation",
       "brief_payload": {
@@ -436,7 +446,7 @@ class StoryTriageService:
                 ex_reason_raw = item.get("exclusion_reason")
                 ex_reason = (
                     str(ex_reason_raw).strip()
-                    if ex_reason_raw in ("commercial_classified", "obvious_noise")
+                    if ex_reason_raw in _ALLOWED_EXCLUSION_REASONS
                     else None
                 )
 
@@ -505,6 +515,10 @@ class StoryTriageService:
                         )
                         brief_payload = None
 
+                # Hard exclusion audit on story fragments
+                story_frags = story_fragments_map.get(s.story_id, [])
+                hard_audit = evaluate_story_hard_exclusion(story_frags)
+
                 # Normalization rules
                 if scope in {"OUT_OF_SCOPE", "UNCERTAIN"}:
                     retention: Literal["KEEP", "DROP"] = "DROP"
@@ -512,11 +526,17 @@ class StoryTriageService:
                     ex_reason = None
                     brief_payload = None
                 elif scope in {"LOCAL", "DIRECT_IMPACT"}:
-                    if retention_raw == "DROP":
-                        # High-confidence hard exclusions only
+                    if hard_audit.drop_story:
+                        # Deterministic hard-exclusion override: all substantive fragments are noise/commercial
+                        retention = "DROP"
+                        enrichment = "NONE"
+                        ex_reason = hard_audit.story_exclusion_reason or "commercial_classified"
+                        brief_payload = None
+                    elif retention_raw == "DROP":
+                        # High-confidence LLM hard exclusions
                         if (
                             enrichment_raw == "NONE"
-                            and ex_reason in ("commercial_classified", "obvious_noise")
+                            and ex_reason in _ALLOWED_EXCLUSION_REASONS
                             and confidence >= min_ignore_confidence
                         ):
                             retention = "DROP"
@@ -549,6 +569,26 @@ class StoryTriageService:
                     else:
                         deferred_ids.append(s.story_id)
                         continue
+
+                    # If retention is KEEP and story is mixed (has excluded fragments),
+                    # normalize evidence items deriving from excluded fragments to EXCLUDE
+                    if (
+                        retention == "KEEP"
+                        and brief_payload is not None
+                        and hard_audit.excluded_fragment_ids
+                    ):
+                        excluded_set = set(hard_audit.excluded_fragment_ids)
+                        cleaned_items = []
+                        for evi in brief_payload.evidence_items:
+                            if evi.source_fragment_ids and set(evi.source_fragment_ids).issubset(
+                                excluded_set
+                            ):
+                                cleaned_items.append(
+                                    replace(evi, publication_use="EXCLUDE", service_state=None)
+                                )
+                            else:
+                                cleaned_items.append(evi)
+                        brief_payload = replace(brief_payload, evidence_items=tuple(cleaned_items))
                 else:
                     deferred_ids.append(s.story_id)
                     continue

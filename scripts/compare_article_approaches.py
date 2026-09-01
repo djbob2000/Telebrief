@@ -13,6 +13,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from scripts.publication_regression import LegacyCoverageCase, evaluate_case
 from src.bootstrap import build_infrastructure
 from src.config_loader import Config, load_config
 from src.publication.generation import PublicationGenerationService
@@ -21,7 +22,6 @@ from src.publication.selection import EditorialSelectionService
 from src.publication.snapshot import PublicationSnapshotService
 from src.repositories.editions import EditionRepository
 from src.runtime import install_runtime
-from scripts.publication_regression import LegacyCoverageCase, evaluate_case
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("compare_articles")

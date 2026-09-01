@@ -2247,7 +2247,15 @@ async def test_event_first_digest_deterministic_mode_uses_digest_presentation_pl
     )
 
     # Create 5 distinct operational stories
+    valid_services = [
+        ("water", "Водоснабжение"),
+        ("electricity", "Электроснабжение"),
+        ("gas", "Газоснабжение"),
+        ("heating", "Отопление"),
+        ("connectivity", "Связь"),
+    ]
     for i in range(5):
+        s_key, s_label = valid_services[i]
         cur = await conn.execute(
             "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', %s, %s) RETURNING id",
             (source_id, f"item-det-{i}", now),
@@ -2273,7 +2281,7 @@ async def test_event_first_digest_deterministic_mode_uses_digest_presentation_pl
             "schema_version": "v3",
             "story_id": sid,
             "headline": f"Проблема {i}",
-            "digest_summary": f"В городе проблема со службой {i}.",
+            "digest_summary": f"В городе проблема со службой {s_label}.",
             "category": "utilities",
             "tags": ["жкх", f"служба_{i}"],
             "evidence_items": [
@@ -2281,15 +2289,15 @@ async def test_event_first_digest_deterministic_mode_uses_digest_presentation_pl
                     "evidence_id": f"story:{sid}:evidence:0:frag:{frag_id}",
                     "source_fragment_ids": [frag_id],
                     "kind": "established_fact",
-                    "text": f"Служба {i} не работает",
-                    "source_text": f"Служба {i} не работает",
+                    "text": f"{s_label} не работает",
+                    "source_text": f"{s_label} не работает",
                     "publication_use": "PUBLISH",
                 }
             ],
             "operational_observations": [
                 {
-                    "subject_key": f"service_{i}",
-                    "subject_label": f"Служба {i}",
+                    "subject_key": s_key,
+                    "subject_label": s_label,
                     "dimension": "availability",
                     "state": "DEGRADED",
                     "detail": f"Проблема {i}",

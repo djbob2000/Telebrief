@@ -103,27 +103,27 @@ def test_plan_city_situation_consolidates_mixed_availability_into_conflicting_gr
     rollup = CitySituationRollup(
         items=(
             CitySituationItem(
-                subject_key="banking_cash",
-                subject_label="Банковские услуги и наличные",
+                subject_key="water",
+                subject_label="Водоснабжение",
                 dimension="availability",
                 location="Гора",
-                entity="banking",
+                entity="горводоканал",
                 state="UNAVAILABLE",
-                detail="Нет связи с банком",
-                source_refs=("ref-bank-red",),
+                detail="Нет воды",
+                source_refs=("ref-water-red",),
                 first_observed_at=now,
                 last_observed_at=now,
                 observation_count=1,
             ),
             CitySituationItem(
-                subject_key="banking_cash",
-                subject_label="Банковские услуги и наличные",
+                subject_key="water",
+                subject_label="Водоснабжение",
                 dimension="availability",
                 location="Залив",
-                entity="banking",
+                entity="горводоканал",
                 state="AVAILABLE",
-                detail="Банкомат выдает наличные",
-                source_refs=("ref-bank-green",),
+                detail="Вода подается",
+                source_refs=("ref-water-green",),
                 first_observed_at=now,
                 last_observed_at=now,
                 observation_count=1,
@@ -135,9 +135,9 @@ def test_plan_city_situation_consolidates_mixed_availability_into_conflicting_gr
 
     assert len(plan.groups) == 1
     group = plan.groups[0]
-    assert group.subject_key == "banking_cash"
+    assert group.subject_key == "water"
     assert group.state == "CONFLICTING"
-    assert set(group.source_refs) == {"ref-bank-red", "ref-bank-green"}
+    assert set(group.source_refs) == {"ref-water-red", "ref-water-green"}
     assert any("Гора" in line for line in group.detail_lines)
     assert any("Залив" in line for line in group.detail_lines)
 
@@ -308,10 +308,11 @@ def test_plan_city_situation_presentation_caps_at_max_items_and_tracks_covered_r
     from src.publication.digest_presentation import plan_city_situation_presentation
 
     now = dt.datetime.now(dt.timezone.utc)
+    valid_subjects = ["water", "electricity", "gas", "heating", "connectivity", "urban_transport"]
     items = tuple(
         CitySituationItem(
-            subject_key=f"subject_{i}",
-            subject_label=f"Служба {i}",
+            subject_key=subj,
+            subject_label=subj.replace("_", " ").title(),
             dimension="availability",
             location="Город",
             entity=f"entity_{i}",
@@ -322,17 +323,17 @@ def test_plan_city_situation_presentation_caps_at_max_items_and_tracks_covered_r
             last_observed_at=now - dt.timedelta(minutes=i),
             observation_count=1,
         )
-        for i in range(9)
+        for i, subj in enumerate(valid_subjects)
     )
     rollup = CitySituationRollup(items=items)
-    plan = plan_city_situation_presentation(rollup, max_items=7, max_details_per_item=2)
-    assert len(plan.groups) == 7
-    # Only the 7 selected items' source refs are in covered_source_refs
-    assert len(plan.covered_source_refs) == 7
-    for i in range(7):
+    plan = plan_city_situation_presentation(rollup, max_items=4, max_details_per_item=2)
+    assert len(plan.groups) == 4
+    # Only the 4 selected items' source refs are in covered_source_refs
+    assert len(plan.covered_source_refs) == 4
+    for i in range(4):
         assert f"ref-{i}" in plan.covered_source_refs
-    assert "ref-7" not in plan.covered_source_refs
-    assert "ref-8" not in plan.covered_source_refs
+    assert "ref-4" not in plan.covered_source_refs
+    assert "ref-5" not in plan.covered_source_refs
 
 
 def test_positive_subjects_are_not_collapsed_into_global_bundle() -> None:
@@ -344,21 +345,21 @@ def test_positive_subjects_are_not_collapsed_into_global_bundle() -> None:
     now = dt.datetime.now(dt.timezone.utc)
     items = (
         CitySituationItem(
-            subject_key="banking",
-            subject_label="Банки",
+            subject_key="electricity",
+            subject_label="Электроснабжение",
             dimension="availability",
             location="Центр",
-            entity="Банк",
+            entity="РЭС",
             state="AVAILABLE",
-            detail="Отделения открыты",
-            source_refs=("ref-bank",),
+            detail="Свет есть",
+            source_refs=("ref-elec",),
             first_observed_at=now,
             last_observed_at=now,
             observation_count=1,
         ),
         CitySituationItem(
-            subject_key="transport",
-            subject_label="Транспорт",
+            subject_key="urban_transport",
+            subject_label="Городской транспорт",
             dimension="availability",
             location="Город",
             entity="Автобусы",
@@ -374,7 +375,7 @@ def test_positive_subjects_are_not_collapsed_into_global_bundle() -> None:
     plan = plan_city_situation_presentation(rollup, max_items=7, max_positive_items=2)
     assert len(plan.groups) == 2
     assert all(g.subject_key != "available_services" for g in plan.groups)
-    assert {g.subject_key for g in plan.groups} == {"banking", "transport"}
+    assert {g.subject_key for g in plan.groups} == {"electricity", "urban_transport"}
     assert all(g.group_kind == "subject_status" for g in plan.groups)
 
 
@@ -385,10 +386,12 @@ def test_mixed_day_reserves_at_least_one_positive_subject() -> None:
     from src.publication.digest_presentation import plan_city_situation_presentation
 
     now = dt.datetime.now(dt.timezone.utc)
+    non_pos_subjects = ["water", "electricity", "gas", "heating"]
+    pos_subjects = ["connectivity", "urban_transport"]
     items = [
         CitySituationItem(
-            subject_key=f"degraded_{i}",
-            subject_label=f"Деградировавшая служба {i}",
+            subject_key=subj,
+            subject_label=subj.title(),
             dimension="availability",
             location="Город",
             entity=f"entity_{i}",
@@ -399,48 +402,36 @@ def test_mixed_day_reserves_at_least_one_positive_subject() -> None:
             last_observed_at=now,
             observation_count=1,
         )
-        for i in range(7)
+        for i, subj in enumerate(non_pos_subjects)
     ]
     items.extend(
         [
             CitySituationItem(
-                subject_key="banks",
-                subject_label="Банки",
+                subject_key=subj,
+                subject_label=subj.title(),
                 dimension="availability",
                 location="Центр",
-                entity="Сбербанк",
-                state="AVAILABLE",
-                detail="Отделения работают штатно",
-                source_refs=("ref-avail-1",),
+                entity=f"pos_entity_{i}",
+                state="AVAILABLE" if i == 0 else "RESOLVED",
+                detail=f"Работает штатно {i}",
+                source_refs=(f"ref-avail-{i}",),
                 first_observed_at=now,
                 last_observed_at=now,
                 observation_count=1,
-            ),
-            CitySituationItem(
-                subject_key="transport",
-                subject_label="Транспорт",
-                dimension="availability",
-                location="Город",
-                entity="Автобусы",
-                state="RESOLVED",
-                detail="Движение по расписанию",
-                source_refs=("ref-avail-2",),
-                first_observed_at=now,
-                last_observed_at=now,
-                observation_count=1,
-            ),
+            )
+            for i, subj in enumerate(pos_subjects)
         ]
     )
     rollup = CitySituationRollup(items=tuple(items))
     plan = plan_city_situation_presentation(
-        rollup, max_items=7, max_details_per_item=2, max_positive_items=2
+        rollup, max_items=4, max_details_per_item=2, max_positive_items=2
     )
-    assert len(plan.groups) == 7
+    assert len(plan.groups) == 4
     assert all(g.subject_key != "available_services" for g in plan.groups)
     pos_groups = [g for g in plan.groups if g.state in ("AVAILABLE", "RESOLVED")]
     non_pos_groups = [g for g in plan.groups if g.state not in ("AVAILABLE", "RESOLVED")]
     assert len(pos_groups) == 1
-    assert len(non_pos_groups) == 6
+    assert len(non_pos_groups) == 3
 
 
 def test_positive_subject_budget_is_two_by_default() -> None:
@@ -450,10 +441,11 @@ def test_positive_subject_budget_is_two_by_default() -> None:
     from src.publication.digest_presentation import plan_city_situation_presentation
 
     now = dt.datetime.now(dt.timezone.utc)
+    pos_subjects = ["water", "electricity", "gas", "heating"]
     items = [
         CitySituationItem(
-            subject_key=f"positive_{i}",
-            subject_label=f"Служба {i}",
+            subject_key=subj,
+            subject_label=subj.title(),
             dimension="availability",
             location="Город",
             entity=f"entity_{i}",
@@ -464,7 +456,7 @@ def test_positive_subject_budget_is_two_by_default() -> None:
             last_observed_at=now - dt.timedelta(minutes=i),
             observation_count=1,
         )
-        for i in range(5)
+        for i, subj in enumerate(pos_subjects)
     ]
     rollup = CitySituationRollup(items=tuple(items))
     plan = plan_city_situation_presentation(rollup, max_items=7)
@@ -479,10 +471,11 @@ def test_omitted_positive_refs_are_not_marked_dashboard_covered() -> None:
     from src.publication.digest_presentation import plan_city_situation_presentation
 
     now = dt.datetime.now(dt.timezone.utc)
+    pos_subjects = ["water", "electricity", "gas", "heating"]
     items = [
         CitySituationItem(
-            subject_key=f"positive_{i}",
-            subject_label=f"Служба {i}",
+            subject_key=subj,
+            subject_label=subj.title(),
             dimension="availability",
             location="Город",
             entity=f"entity_{i}",
@@ -493,7 +486,7 @@ def test_omitted_positive_refs_are_not_marked_dashboard_covered() -> None:
             last_observed_at=now - dt.timedelta(minutes=i),
             observation_count=1,
         )
-        for i in range(4)
+        for i, subj in enumerate(pos_subjects)
     ]
     rollup = CitySituationRollup(items=tuple(items))
     plan = plan_city_situation_presentation(rollup, max_items=7, max_positive_items=2)
@@ -512,10 +505,11 @@ def test_build_digest_presentation_plan_preserves_omitted_operational_story() ->
     from src.publication.digest_presentation import build_digest_presentation_plan
 
     now = dt.datetime.now(dt.timezone.utc)
+    valid_subjects = ["water", "electricity", "gas", "heating", "connectivity", "urban_transport"]
     items = tuple(
         CitySituationItem(
-            subject_key=f"subject_{i}",
-            subject_label=f"Служба {i}",
+            subject_key=subj,
+            subject_label=subj.title(),
             dimension="availability",
             location="Город",
             entity=f"entity_{i}",
@@ -526,14 +520,14 @@ def test_build_digest_presentation_plan_preserves_omitted_operational_story() ->
             last_observed_at=now - dt.timedelta(minutes=i),
             observation_count=1,
         )
-        for i in range(8)
+        for i, subj in enumerate(valid_subjects)
     )
     rollup = CitySituationRollup(items=items)
 
     cards = [
         StoryCard(
             id=f"story:{i}",
-            topic=f"Служба {i}",
+            topic=f"Служба {subj}",
             importance="medium",
             summary=f"Проблема {i}",
             tags=[],
@@ -549,20 +543,21 @@ def test_build_digest_presentation_plan_preserves_omitted_operational_story() ->
                 )
             ],
         )
-        for i in range(8)
+        for i, subj in enumerate(valid_subjects)
     ]
 
     plan = build_digest_presentation_plan(
         cards=cards,
         city_situation=rollup,
         evidence={},
-        max_city_situation_items=7,
+        max_city_situation_items=4,
         max_city_situation_details=2,
     )
 
-    assert len(plan.city_situation.groups) == 7
-    assert len(plan.detail_story_ids) == 1
-    assert "story:7" in plan.detail_story_ids
+    assert len(plan.city_situation.groups) == 4
+    assert len(plan.detail_story_ids) == 2
+    assert "story:4" in plan.detail_story_ids
+    assert "story:5" in plan.detail_story_ids
 
 
 def test_build_digest_presentation_plan_suppresses_covered_pure_operational_card() -> None:
@@ -803,7 +798,7 @@ def test_build_digest_presentation_plan_assigns_merge_groups_by_tags() -> None:
         topic="Сети электроснабжения",
         importance="low",
         summary="Ремонт ЛЭП",
-        tags=["электроснабжение", "лэп"],
+        tags=["таврия-энерго", "лэп"],
         rubric_id="utilities",
         category="utilities",
         story_kind="",
@@ -813,7 +808,7 @@ def test_build_digest_presentation_plan_assigns_merge_groups_by_tags() -> None:
         topic="Подстанция",
         importance="low",
         summary="Трансформатор",
-        tags=["электроснабжение", "подстанция"],
+        tags=["таврия-энерго", "подстанция"],
         rubric_id="utilities",
         category="utilities",
         story_kind="",
@@ -1007,24 +1002,11 @@ def test_positive_story_drill_down_and_positive_budget_omitted_coverage() -> Non
 
     now = dt.datetime.now(dt.timezone.utc)
 
-    # 3 positive subjects: banking, transport, documents
+    # 3 positive subjects: urban_transport, connectivity, gas
     items = (
         CitySituationItem(
-            subject_key="banking",
-            subject_label="Банки",
-            dimension="availability",
-            location="Центр",
-            entity="Банк",
-            state="AVAILABLE",
-            detail="Отделения открыты",
-            source_refs=("ref-bank",),
-            first_observed_at=now,
-            last_observed_at=now,
-            observation_count=1,
-        ),
-        CitySituationItem(
-            subject_key="transport",
-            subject_label="Транспорт",
+            subject_key="urban_transport",
+            subject_label="Городской транспорт",
             dimension="availability",
             location="Город",
             entity="Автобусы",
@@ -1032,18 +1014,31 @@ def test_positive_story_drill_down_and_positive_budget_omitted_coverage() -> Non
             detail="Автобусы ходят",
             source_refs=("ref-transport",),
             first_observed_at=now,
+            last_observed_at=now,
+            observation_count=1,
+        ),
+        CitySituationItem(
+            subject_key="connectivity",
+            subject_label="Связь",
+            dimension="availability",
+            location="Город",
+            entity="Оператор",
+            state="AVAILABLE",
+            detail="Связь работает",
+            source_refs=("ref-conn",),
+            first_observed_at=now,
             last_observed_at=now - dt.timedelta(minutes=1),
             observation_count=1,
         ),
         CitySituationItem(
-            subject_key="documents",
-            subject_label="Паспортный стол",
+            subject_key="gas",
+            subject_label="Газоснабжение",
             dimension="availability",
             location="Город",
-            entity="МФЦ",
+            entity="Горгаз",
             state="AVAILABLE",
-            detail="Выдача паспортов",
-            source_refs=("ref-docs",),
+            detail="Газ подается",
+            source_refs=("ref-gas",),
             first_observed_at=now,
             last_observed_at=now - dt.timedelta(minutes=2),
             observation_count=1,
@@ -1051,83 +1046,85 @@ def test_positive_story_drill_down_and_positive_budget_omitted_coverage() -> Non
     )
     rollup = CitySituationRollup(items=items)
 
-    # Card for banking with extra microdetail (terminal battery workaround)
-    card_bank = StoryCard(
-        id="story:bank",
-        topic="Работа отделений банка",
+    # Card for transport with extra microdetail (terminal battery workaround)
+    card_transport = StoryCard(
+        id="story:transport",
+        topic="Работа городского транспорта",
         importance="medium",
-        summary="Отделения открыты, терминалы запитаны от 9V батареек",
-        tags=["банки"],
-        rubric_id="services",
-        category="services",
+        summary="Автобусы ходят, терминалы запитаны от 9V батареек",
+        tags=["транспорт"],
+        rubric_id="transport",
+        category="transport",
         story_kind="operational_status",
-        representative_source_refs=["ref-bank", "ref-bank-battery"],
+        representative_source_refs=["ref-transport", "ref-transport-battery"],
         hard_facts=[
-            StoryElement(text="Отделения открыты", source_refs=["ref-bank"], status="established"),
+            StoryElement(
+                text="Автобусы ходят", source_refs=["ref-transport"], status="established"
+            ),
             StoryElement(
                 text="Терминалы оплаты запитаны от 9V батареек",
-                source_refs=["ref-bank-battery"],
+                source_refs=["ref-transport-battery"],
                 status="established",
             ),
         ],
     )
-    # Card for documents (omitted from dashboard due to max_positive_items=2)
-    card_docs = StoryCard(
-        id="story:docs",
-        topic="Выдача паспортов",
+    # Card for gas (omitted from dashboard due to max_positive_items=2)
+    card_gas = StoryCard(
+        id="story:gas",
+        topic="Подача газа",
         importance="low",
-        summary="Паспортный стол принимает посетителей",
-        tags=["документы"],
-        rubric_id="services",
-        category="services",
+        summary="Газовая сеть работает в штатном режиме",
+        tags=["газ"],
+        rubric_id="utilities",
+        category="utilities",
         story_kind="operational_status",
-        representative_source_refs=["ref-docs"],
+        representative_source_refs=["ref-gas"],
         hard_facts=[
             StoryElement(
-                text="Паспортный стол принимает посетителей",
-                source_refs=["ref-docs"],
+                text="Газовая сеть работает в штатном режиме",
+                source_refs=["ref-gas"],
                 status="established",
             )
         ],
     )
 
-    evi_bank_status = PublicationEvidence(
-        evidence_id="story:bank:evi:status",
+    evi_transport_status = PublicationEvidence(
+        evidence_id="story:transport:evi:status",
         story_id=1,
-        text="Отделения открыты",
-        source_text="Отделения открыты",
+        text="Автобусы ходят",
+        source_text="Автобусы ходят",
         kind="service_access",
         publication_use="PUBLISH",
         fragment_id=101,
-        source_ref="ref-bank",
+        source_ref="ref-transport",
         source_id=1,
         source_item_id=1,
         source_role="community",
         observed_at=now,
     )
-    evi_bank_detail = PublicationEvidence(
-        evidence_id="story:bank:evi:detail",
+    evi_transport_detail = PublicationEvidence(
+        evidence_id="story:transport:evi:detail",
         story_id=1,
         text="Терминалы оплаты запитаны от 9V батареек",
         source_text="Терминалы оплаты запитаны от 9V батареек",
         kind="community_report",
         publication_use="PUBLISH",
         fragment_id=102,
-        source_ref="ref-bank-battery",
+        source_ref="ref-transport-battery",
         source_id=1,
         source_item_id=1,
         source_role="community",
         observed_at=now,
     )
-    evi_docs_status = PublicationEvidence(
-        evidence_id="story:docs:evi:status",
+    evi_gas_status = PublicationEvidence(
+        evidence_id="story:gas:evi:status",
         story_id=2,
-        text="Паспортный стол принимает посетителей",
-        source_text="Паспортный стол принимает посетителей",
+        text="Газовая сеть работает в штатном режиме",
+        source_text="Газовая сеть работает в штатном режиме",
         kind="service_access",
         publication_use="PUBLISH",
         fragment_id=103,
-        source_ref="ref-docs",
+        source_ref="ref-gas",
         source_id=2,
         source_item_id=2,
         source_role="official",
@@ -1135,13 +1132,13 @@ def test_positive_story_drill_down_and_positive_budget_omitted_coverage() -> Non
     )
 
     evidence_dict = {
-        "story:bank:evi:status": evi_bank_status,
-        "story:bank:evi:detail": evi_bank_detail,
-        "story:docs:evi:status": evi_docs_status,
+        "story:transport:evi:status": evi_transport_status,
+        "story:transport:evi:detail": evi_transport_detail,
+        "story:gas:evi:status": evi_gas_status,
     }
 
     plan = build_digest_presentation_plan(
-        cards=[card_bank, card_docs],
+        cards=[card_transport, card_gas],
         city_situation=rollup,
         evidence=evidence_dict,
         max_city_situation_items=7,
@@ -1152,13 +1149,13 @@ def test_positive_story_drill_down_and_positive_budget_omitted_coverage() -> Non
     hints_by_id = {h.story_id: h for h in plan.story_hints}
 
     # Selected positive story with microdetail becomes DRILL_DOWN
-    assert hints_by_id["story:bank"].detail_role == "DRILL_DOWN"
-    assert "story:bank:evi:detail" in hints_by_id["story:bank"].detail_support_ids
-    assert "story:bank" in plan.detail_story_ids
+    assert hints_by_id["story:transport"].detail_role == "DRILL_DOWN"
+    assert "story:transport:evi:detail" in hints_by_id["story:transport"].detail_support_ids
+    assert "story:transport" in plan.detail_story_ids
 
     # Omitted positive story from dashboard budget remains in thematic layer as NORMAL
-    assert hints_by_id["story:docs"].detail_role == "NORMAL"
-    assert "story:docs" in plan.detail_story_ids
+    assert hints_by_id["story:gas"].detail_role == "NORMAL"
+    assert "story:gas" in plan.detail_story_ids
 
 
 def test_digest_presentation_requires_exact_service_access_provenance() -> None:
@@ -1414,9 +1411,9 @@ def test_digest_presentation_caps_preserve_all_substantive_stories_as_detail_onl
     evidence_dict = {}
 
     subjects = [
-        ("bank", "Банки", "ref-bank", 1),
-        ("transport", "Транспорт", "ref-transport", 2),
-        ("docs", "Документы", "ref-docs", 3),
+        ("electricity", "Электроснабжение", "ref-elec", 1),
+        ("urban_transport", "Городской транспорт", "ref-transport", 2),
+        ("connectivity", "Связь", "ref-conn", 3),
     ]
 
     for subj_key, subj_label, ref, sid in subjects:
@@ -1580,3 +1577,77 @@ def test_phone_only_novelty_does_not_force_drilldown() -> None:
     pres = plan.story_presentations[0]
     assert pres.mode == "DASHBOARD_ONLY"
     assert pres.detail_support_ids == ()
+
+
+def test_intercity_transport_excluded_from_city_situation_dashboard() -> None:
+    import datetime as dt
+
+    from src.publication.city_situation import CitySituationItem
+    from src.publication.digest_presentation import _canonical_city_situation_subject
+
+    now = dt.datetime.now(dt.timezone.utc)
+    item = CitySituationItem(
+        subject_key="transport",
+        subject_label="Автобус Бердянск — Ростов",
+        dimension="availability",
+        location="",
+        entity="Автовокзал",
+        state="AVAILABLE",
+        detail="Ежедневные межгород рейсы в Ростов",
+        source_refs=("r1",),
+        first_observed_at=now,
+        last_observed_at=now,
+        observation_count=1,
+    )
+    subject = _canonical_city_situation_subject(item)
+    assert subject is None
+
+
+def test_workaround_plumber_tank_does_not_merge_with_operational_water_status() -> None:
+    from src.editorial_models import StoryCard
+    from src.publication.digest_presentation import _are_cards_merge_compatible
+
+    card_status = StoryCard(
+        id="story:1",
+        topic="Водоснабжение",
+        importance="medium",
+        summary="На Самолёте вода есть со слабым напором",
+        tags=["вода", "самолёт"],
+        rubric_id="utilities",
+        category="utilities",
+    )
+    card_workaround = StoryCard(
+        id="story:2",
+        topic="Услуги сантехника",
+        importance="low",
+        summary="Установка накопительных баков и насосов для воды",
+        tags=["накопительные баки", "насосы", "сантехник"],
+        rubric_id="utilities",
+        category="utilities",
+    )
+    compat = _are_cards_merge_compatible(card_status, card_workaround)
+    assert compat is False
+
+
+def test_homogeneous_power_status_merges_up_to_6() -> None:
+    from src.editorial_models import StoryCard
+    from src.publication.digest_presentation import _compute_merge_groups
+
+    cards = [
+        StoryCard(
+            id=f"story:p{i}",
+            topic=f"Свет на районе {i}",
+            importance="medium",
+            summary=f"В районе {i} дали свет после отключения",
+            tags=["свет"],
+            rubric_id="utilities",
+            category="utilities",
+        )
+        for i in range(1, 8)
+    ]
+    groups = _compute_merge_groups(cards)
+    # The first 6 cards merge into one group; the 7th starts a new group
+    mg1 = groups["story:p1"]
+    for i in range(2, 7):
+        assert groups[f"story:p{i}"] == mg1
+    assert groups["story:p7"] != mg1

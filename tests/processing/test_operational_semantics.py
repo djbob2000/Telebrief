@@ -222,3 +222,20 @@ def test_ambiguous_unrecognized_subject_is_not_guessed():
 
     assert audit.rejected_count == 0
     assert normalized.evidence_items[0].service_state is not None
+
+
+def test_retail_commodity_sale_is_excluded_from_operational_observations():
+    from src.processing.operational_semantics import derive_operational_observations
+
+    item = _service_item(
+        text="Вода на розлив по 3 ₽/литр в киоске на Восточном",
+        fid=7,
+        subject_key="water",
+        subject_label="Вода на розлив",
+        state="AVAILABLE",
+        expected_now=True,
+        basis="normal_operation",
+    )
+    payload = EventPayload(evidence_items=(item,))
+    observations = derive_operational_observations(payload)
+    assert len(observations) == 0

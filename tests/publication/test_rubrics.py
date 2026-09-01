@@ -235,3 +235,56 @@ def test_story_classification_text_includes_facts_and_omits_uncertainties():
     assert "Полезная деталь" in text
     assert "Наблюдение жителей" in text
     assert "Вопрос: работает ли банк?" not in text
+
+
+@pytest.mark.asyncio
+async def test_borderline_telecom_routes_via_family_fallback():
+    """Card with sub-threshold similarity (0.2 < 0.380) and telecom family routes to communications."""
+    rubrics_cfg = DigestRubricsConfig(
+        min_similarity=0.38,
+        items=(
+            DigestRubricConfig(
+                id="infrastructure",
+                name="Инфраструктура",
+                description="жкх свет вода",
+                emoji="⚡️",
+                fallback=False,
+            ),
+            DigestRubricConfig(
+                id="communications",
+                name="Связь",
+                description="интернет связь провайдер",
+                emoji="📱",
+                fallback=False,
+            ),
+            DigestRubricConfig(
+                id="other",
+                name="Другое",
+                description="прочее",
+                emoji="📌",
+                fallback=True,
+            ),
+        ),
+    )
+    # Card vector orthogonal to rubrics so similarity is < 0.38
+    provider = FakeEmbeddingProvider(
+        vectors={
+            "Инфраструктура\nжкх свет вода": [1.0, 0.0],
+            "Связь\nинтернет связь провайдер": [0.95, 0.30],
+        },
+        default_vector=[0.0, 1.0],
+    )
+    classifier = DigestRubricClassifier(provider=provider, dimensions=2)
+
+    card = make_card(
+        "story:854",
+        topic="Связь и интернет",
+        summary="Провайдер Миранда проводит работы на улицах Морозова и Гайдара, интернет временно отключен",
+        tags=["интернет", "миранда", "связь"],
+    )
+
+    result_cards, assignments = await classifier.classify([card], rubrics=rubrics_cfg)
+    assert len(assignments) == 1
+    assert assignments[0].rubric_id == "communications"
+    assert assignments[0].method == "family_fallback"
+    assert result_cards[0].rubric_id == "communications"

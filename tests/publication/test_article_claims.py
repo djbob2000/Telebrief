@@ -129,3 +129,10 @@ def test_supported_paraphrase_passes() -> None:
     draft_gas = "30 августа газ планово отключат с 08:00 до 17:00."
     unsupported_gas = find_unsupported_claims(draft_gas, support_gas)
     assert len(unsupported_gas) == 0
+
+    support_telecom = ["«+7» глючит, вероятно, потому что вышки на генераторах."]
+    draft_telecom = (
+        "По сообщениям жителей, «+7» глючит, вероятно, потому что вышки работают на генераторах."
+    )
+    unsupported_telecom = find_unsupported_claims(draft_telecom, support_telecom)
+    assert len(unsupported_telecom) == 0

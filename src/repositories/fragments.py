@@ -64,24 +64,37 @@ class FragmentRepository:
         conn: psycopg.AsyncConnection,
         revision_ids: Sequence[int],
         *,
-        fragmenter_version: str = "v1",
+        fragmenter_version: str | None = None,
     ) -> list[SourceFragment]:
         """List all candidate fragments for a sequence of revision IDs."""
         unique_revs = sorted(set(revision_ids))
         if not unique_revs:
             return []
-        cursor = await conn.execute(
-            """
-            SELECT id, source_item_revision_id, ordinal, text_content,
-                   normalized_hash, fragmenter_version, is_candidate, drop_reason, created_at
-            FROM source_fragments
-            WHERE source_item_revision_id = ANY(%s)
-              AND is_candidate = TRUE
-              AND fragmenter_version = %s
-            ORDER BY source_item_revision_id ASC, ordinal ASC
-            """,
-            (unique_revs, fragmenter_version),
-        )
+        if fragmenter_version is not None:
+            cursor = await conn.execute(
+                """
+                SELECT id, source_item_revision_id, ordinal, text_content,
+                       normalized_hash, fragmenter_version, is_candidate, drop_reason, created_at
+                FROM source_fragments
+                WHERE source_item_revision_id = ANY(%s)
+                  AND is_candidate = TRUE
+                  AND fragmenter_version = %s
+                ORDER BY source_item_revision_id ASC, ordinal ASC
+                """,
+                (unique_revs, fragmenter_version),
+            )
+        else:
+            cursor = await conn.execute(
+                """
+                SELECT id, source_item_revision_id, ordinal, text_content,
+                       normalized_hash, fragmenter_version, is_candidate, drop_reason, created_at
+                FROM source_fragments
+                WHERE source_item_revision_id = ANY(%s)
+                  AND is_candidate = TRUE
+                ORDER BY source_item_revision_id ASC, ordinal ASC
+                """,
+                (unique_revs,),
+            )
         return [SourceFragment.from_row(row) async for row in cursor]
 
     async def get_by_id(

@@ -1716,7 +1716,7 @@ def test_narrative_plan_turns_merge_group_into_required_story_group() -> None:
     )
 
 
-def test_narrative_plan_chunks_large_merge_group_into_max_3() -> None:
+def test_narrative_plan_chunks_large_merge_group_into_max_6() -> None:
     from src.publication.digest_presentation import (
         CitySituationPresentationPlan,
         DigestPresentationPlan,
@@ -1755,11 +1755,10 @@ def test_narrative_plan_chunks_large_merge_group_into_max_3() -> None:
         presentation_plan=presentation_plan,
     )
 
-    # 7 stories in chunks (3, 3, 1): block 0 gets (1,2,3) + (4,5,6) = 6 cards, block 1 gets (7,) = 1 card
+    # 7 stories in chunks (6, 1): block 0 gets (1..6) = 6 cards, block 1 gets (7,) = 1 card
     assert len(plan.blocks) == 2
     assert plan.blocks[0].required_story_groups == (
-        ("story:1", "story:2", "story:3"),
-        ("story:4", "story:5", "story:6"),
+        ("story:1", "story:2", "story:3", "story:4", "story:5", "story:6"),
     )
     assert plan.blocks[1].required_story_groups == (("story:7",),)
 

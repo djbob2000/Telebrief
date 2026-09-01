@@ -163,3 +163,53 @@ async def test_fragment_repository_persistence_and_queries(conn, revision):
     single = await repo.get_by_id(conn, persisted[0].id)
     assert single is not None
     assert single.text_content == "Water outage on AKZ district"
+
+
+@pytest.mark.unit
+def test_dependent_continuation_packing_preserves_schedule_context():
+    """Operational continuation blocks ('Режим работы:', 'Адрес:', etc.) attach to parent."""
+    text = (
+        "Медицинский Центр «ВИЗАНТ» приглашает на прием к специалистам в Бердянске.\n\n"
+        "Режим работы: с 8:00 до 16:00, Без выходных !\n\n"
+        "Адрес: ул. Дюмина, 55"
+    )
+    fragments = split_into_fragments(text, max_chars=1200)
+
+    # Should pack into 1 coherent fragment, NOT 3 separate fragments
+    assert len(fragments) == 1
+    assert "«ВИЗАНТ»" in fragments[0].text_content
+    assert "Режим работы: с 8:00 до 16:00" in fragments[0].text_content
+    assert "ул. Дюмина, 55" in fragments[0].text_content
+    assert fragments[0].is_candidate is True
+
+
+@pytest.mark.unit
+def test_independent_paragraphs_remain_separate():
+    """Independent civic announcements in one post must not be greedily glued together."""
+    text = (
+        "На АКЗ завершился ремонт водопровода, давление в системе стабилизировалось.\n\n"
+        "В районе автовокзала произошло ДТП с участием двух легковых автомобилей."
+    )
+    fragments = split_into_fragments(text, max_chars=1200)
+
+    # Must remain 2 separate independent fragments
+    assert len(fragments) == 2
+    assert "АКЗ" in fragments[0].text_content
+    assert "ДТП" in fragments[1].text_content
+
+
+@pytest.mark.unit
+def test_dependent_continuation_anchor_prefix_when_exceeding_max_chars():
+    """When packing exceeds max_chars, dependent block is anchored with parent context prefix."""
+    parent = "Городская больница №1 сообщает о графике вакцинации."
+    dependent = "Режим работы: ежедневно с 09:00 до 17:00."
+    text = f"{parent}\n\n{dependent}"
+
+    # Set max_chars so each paragraph fits alone, but not together (53 + 41 + 2 = 96 > 80)
+    fragments = split_into_fragments(text, max_chars=80)
+    assert len(fragments) == 2
+    # The dependent fragment must receive parent context anchor prefix
+    assert any(
+        "Городская больница" in f.text_content and "Режим работы:" in f.text_content
+        for f in fragments
+    )

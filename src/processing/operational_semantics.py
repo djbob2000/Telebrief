@@ -10,6 +10,12 @@ from src.domain.event_payload import (
     EvidenceItemPayload,
     OperationalObservationPayload,
 )
+from src.domain.service_taxonomy import (
+    SERVICE_FAMILY_STEMS,
+    detect_service_families,
+    matches_any_stem,
+    semantic_tokens,
+)
 
 _ALLOWED_BASIS_BY_STATE: dict[str, frozenset[str]] = {
     "AVAILABLE": frozenset({"normal_operation"}),
@@ -133,86 +139,10 @@ _SERVICE_OUTCOME_STEMS: frozenset[str] = frozenset(
     }
 )
 
-# Generic service families for subject conflict detection
-_SERVICE_FAMILY_STEMS: dict[str, frozenset[str]] = {
-    "power": frozenset(
-        {
-            "свет",
-            "электр",
-            "энерг",
-            "лэп",
-            "питани",
-            "power",
-            "electric",
-            "electricity",
-            "blackout",
-            "power_supply",
-        }
-    ),
-    "water": frozenset(
-        {
-            "вод",
-            "водопровод",
-            "водоснабж",
-            "скважин",
-            "water",
-            "aqueduct",
-            "water_supply",
-        }
-    ),
-    "gas": frozenset({"газ", "газоснабж", "газопровод", "gas", "gas_supply"}),
-    "heating": frozenset({"отоплен", "тепл", "котельн", "heat", "heating"}),
-    "lift": frozenset({"лифт", "подъемник", "lift", "elevator"}),
-    "telecom": frozenset(
-        {
-            "интернет",
-            "связ",
-            "провайдер",
-            "сеть",
-            "wi-fi",
-            "wifi",
-            "telecom",
-            "internet",
-            "cellular",
-            "mobile",
-            "internet_connectivity",
-        }
-    ),
-    "banking": frozenset(
-        {"банк", "банкомат", "терминал", "платеж", "bank", "atm", "banking", "payment"}
-    ),
-    "transport": frozenset(
-        {
-            "транспорт",
-            "автобус",
-            "маршрут",
-            "поезд",
-            "трамвай",
-            "троллейбус",
-            "рейс",
-            "проезд",
-            "transport",
-            "bus",
-            "train",
-            "public_transport",
-        }
-    ),
-    "logistics": frozenset({"доставк", "почт", "курьер", "parcel", "postal", "delivery"}),
-    "municipal": frozenset({"жэк", "мусор", "вывоз", "коммунал", "municipal", "waste", "garbage"}),
-}
-
-
-def _semantic_tokens(text: str) -> list[str]:
-    clean = re.sub(r"[^\w\s-]", " ", text.casefold().replace("ё", "е"))
-    return [token for token in clean.split() if token]
-
-
-def _matches_any_stem(tokens: list[str], stems: frozenset[str]) -> bool:
-    for token in tokens:
-        for stem in stems:
-            if stem in token or token.startswith(stem):
-                return True
-    return False
+_SERVICE_FAMILY_STEMS = SERVICE_FAMILY_STEMS
+_semantic_tokens = semantic_tokens
+_matches_any_stem = matches_any_stem
+_detect_service_families = detect_service_families
 
 
 def _is_high_confidence_private_coping(text: str) -> bool:
@@ -223,15 +153,6 @@ def _is_high_confidence_private_coping(text: str) -> bool:
         and _matches_any_stem(tokens, _COPING_RESOURCE_STEMS)
         and not _matches_any_stem(tokens, _SERVICE_OUTCOME_STEMS)
     )
-
-
-def _detect_service_families(text: str) -> frozenset[str]:
-    tokens = _semantic_tokens(text)
-    detected: set[str] = set()
-    for family, stems in _SERVICE_FAMILY_STEMS.items():
-        if _matches_any_stem(tokens, stems):
-            detected.add(family)
-    return frozenset(detected)
 
 
 @dataclass(frozen=True)
@@ -331,6 +252,71 @@ def normalize_service_state_evidence(
     return normalized_payload, audit
 
 
+def sanitize_operational_detail(text: str) -> str:
+    """Strip question clauses, inquiries, and non-status tails from operational observation detail."""
+    if not text:
+        return ""
+    cleaned = text.strip()
+    had_end = cleaned.endswith((".", "!", "…", "?"))
+    # 1. Remove parenthetical questions: (где вода?), (кто знает...?), (спрашивает...)
+    cleaned = re.sub(
+        r"\s*\([^)]*(\?|спрашива|интересу|уточня)[^)]*\)", "", cleaned, flags=re.IGNORECASE
+    )
+    # 2. Remove trailing question/inquiry clauses: " и спрашивает...", ", спрашивает..."
+    cleaned = re.sub(
+        r"(?:,\s*|\s+и\s+)(?:спрашива(?:ет|ют|ем|ется)?|интересу(?:ет|ют|ется|ются)?|уточня(?:ет|ют|ется)?).*$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    # 3. Split into sentences and drop sentences containing questions or question verbs
+    sentences = re.split(r"(?<=[.!?])\s+", cleaned)
+    kept_sentences: list[str] = []
+    for s in sentences:
+        s_clean = s.strip()
+        if not s_clean:
+            continue
+        if "?" in s_clean:
+            continue
+        if re.search(
+            r"\b(?:спрашива(?:ет|ют|ем|ется)?|интересу(?:ет|ют|ется|ются)?|уточня(?:ет|ют|ется)?)\b",
+            s_clean,
+            flags=re.IGNORECASE,
+        ):
+            continue
+        kept_sentences.append(s_clean)
+    result = " ".join(kept_sentences).strip()
+    result = re.sub(r"[,;\s]+$", "", result)
+    if result and had_end and not result.endswith((".", "!", "…")):
+        result += "."
+    # Check if what remains has actual factual substance (not just reporting boilerplate)
+    norm = re.sub(r"[^\w\s]", "", result.casefold())
+    boilerplate_words = {
+        "житель",
+        "жители",
+        "жительница",
+        "сообщает",
+        "сообщают",
+        "сообщил",
+        "сообщили",
+        "пишет",
+        "пишут",
+        "что",
+        "по",
+        "сообщениям",
+    }
+    words = [w for w in norm.split() if w not in boilerplate_words]
+    if len(words) < 2:
+        return ""
+    return result
+
+
+_RETAIL_COMMODITY_SALE_PATTERN = re.compile(
+    r"\b(?:розлив|розничн\w* продаж\w*|продаж\w* питьев\w* вод\w*|\d+\s*(?:[₽р]|руб)/л(?:итр)?)\b",
+    re.IGNORECASE,
+)
+
+
 def derive_operational_observations(
     payload: EventPayload,
 ) -> tuple[OperationalObservationPayload, ...]:
@@ -340,6 +326,14 @@ def derive_operational_observations(
         state = item.service_state
         if item.kind != "service_access" or item.publication_use != "PUBLISH" or state is None:
             continue
+        # Filter retail commodity sales (e.g. bottled water sales, 3 rub/liter)
+        if _RETAIL_COMMODITY_SALE_PATTERN.search(
+            state.subject_label
+        ) or _RETAIL_COMMODITY_SALE_PATTERN.search(item.text):
+            continue
+        clean_detail = sanitize_operational_detail(item.text)
+        if not clean_detail:
+            continue
         observations.append(
             OperationalObservationPayload(
                 subject_key=state.subject_key,
@@ -348,7 +342,7 @@ def derive_operational_observations(
                 location=state.location,
                 entity=state.entity,
                 state=state.state,
-                detail=item.text,
+                detail=clean_detail,
                 source_fragment_ids=item.source_fragment_ids,
                 effective_from=state.effective_from,
                 effective_until=state.effective_until,

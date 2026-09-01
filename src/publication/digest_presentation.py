@@ -46,7 +46,13 @@ def _norm_key(value: str) -> str:
 
 
 def _detail_line(item: CitySituationItem) -> str:
-    detail = item.detail.strip()
+    from src.processing.operational_semantics import sanitize_operational_detail
+
+    clean_detail = sanitize_operational_detail(item.detail)
+    detail = clean_detail if clean_detail else item.detail.strip()
+    if not clean_detail and re.search(r"(\?|спрашива|интересу)", item.detail, flags=re.IGNORECASE):
+        return ""
+
     location = item.location.strip()
     if location and location.casefold() not in detail.casefold():
         return f"{location}: {detail}" if detail else location
@@ -73,7 +79,7 @@ _CITY_SITUATION_SUBJECT_ALIASES: tuple[tuple[str, frozenset[str]], ...] = (
                 "water",
                 "water_supply",
                 "water_network",
-                "vodоснабжение",
+                "vodosnabzhenie",
                 "voda",
                 "водоснабжение",
                 "вода",
@@ -96,29 +102,13 @@ _CITY_SITUATION_SUBJECT_ALIASES: tuple[tuple[str, frozenset[str]], ...] = (
         ),
     ),
     (
-        "connectivity",
+        "gas",
         frozenset(
             {
-                "connectivity",
-                "mobile_connection",
-                "mobile_network",
-                "telecom",
-                "mobile_internet",
-                "связь",
-                "интернет",
-                "мобильная_связь",
-            }
-        ),
-    ),
-    (
-        "transport",
-        frozenset(
-            {
-                "transport",
-                "public_transport",
-                "bus_service",
-                "транспорт",
-                "общественный_транспорт",
+                "gas",
+                "gas_supply",
+                "газоснабжение",
+                "газ",
             }
         ),
     ),
@@ -134,20 +124,66 @@ _CITY_SITUATION_SUBJECT_ALIASES: tuple[tuple[str, frozenset[str]], ...] = (
             }
         ),
     ),
+    (
+        "connectivity",
+        frozenset(
+            {
+                "connectivity",
+                "mobile_connection",
+                "mobile_network",
+                "telecom",
+                "mobile_internet",
+                "связь",
+                "интернет",
+                "мобильная_связь",
+            }
+        ),
+    ),
+    (
+        "urban_transport",
+        frozenset(
+            {
+                "urban_transport",
+                "city_transport",
+                "городской_транспорт",
+                "городской_автобус",
+                "городские_автобусы",
+                "трамвай",
+                "трамваи",
+                "троллейбус",
+                "троллейбусы",
+                "маршрутка",
+                "городская_маршрутка",
+            }
+        ),
+    ),
 )
 
 
-def _canonical_city_situation_subject(item: CitySituationItem) -> str:
+def _canonical_city_situation_subject(item: CitySituationItem) -> str | None:
+    combined_text = f"{item.subject_label} {item.detail}"
+    # Reject retail product sales (e.g. bottled water, 3 rub/l) from City Situation dashboard
+    if re.search(r"\b(?:розлив|розничн|руб/л|₽/л|3\s*₽/литр)\b", combined_text, re.IGNORECASE):
+        return None
+    # Reject long-distance/intercity transport from City Situation dashboard (placed in narrative mobility)
+    if re.search(
+        r"\b(?:междугородн|межгород|ростов|тбилиси|москва|симферополь|донецк|луганск|таганрог)\b",
+        combined_text,
+        re.IGNORECASE,
+    ):
+        return None
+
     key = _norm_key(item.subject_key).replace(" ", "_")
     label = _norm_key(item.subject_label).replace(" ", "_")
     for root, aliases in _CITY_SITUATION_SUBJECT_ALIASES:
         if key in aliases or label in aliases:
             return root
-    return key or label or _norm_key(item.entity).replace(" ", "_")
+    return None
 
 
-def _city_situation_group_id(item: CitySituationItem) -> str:
-    return f"situation:{_canonical_city_situation_subject(item)}"
+def _city_situation_group_id(item: CitySituationItem) -> str | None:
+    root = _canonical_city_situation_subject(item)
+    return f"situation:{root}" if root is not None else None
 
 
 def _presentation_state(items: Sequence[CitySituationItem]) -> str:
@@ -200,6 +236,8 @@ def plan_city_situation_presentation(
     grouped: dict[str, list[CitySituationItem]] = {}
     for item in rollup.items:
         key = _canonical_city_situation_subject(item)
+        if key is None:
+            continue
         grouped.setdefault(key, []).append(item)
 
     candidate_groups: list[
@@ -234,7 +272,7 @@ def plan_city_situation_presentation(
         latest_ts = max(it.last_observed_at for it in group_items)
         obs_count = sum(it.observation_count for it in group_items)
 
-        group_id = _city_situation_group_id(first_item)
+        group_id = f"situation:{canonical_subj}"
         presentation_group = CitySituationPresentationGroup(
             group_id=group_id,
             group_kind="subject_status",
@@ -542,43 +580,312 @@ def _is_material_digest_detail(evi: Any, dashboard_texts: Sequence[str]) -> bool
     return len(novel_tokens) >= 3
 
 
-_GENERIC_STOP_TAGS = {
-    "город",
-    "города",
-    "городской",
-    "городские",
-    "житель",
-    "жители",
-    "жителей",
-    "новость",
-    "новости",
-    "информация",
-    "информации",
-    "местный",
-    "местные",
-    "общество",
-    "происшествия",
-    "события",
-    "news",
-    "city",
-    "resident",
-    "local",
-    "info",
-}
+_GENERIC_STOP_TAGS = frozenset(
+    {
+        "город",
+        "города",
+        "городской",
+        "городские",
+        "житель",
+        "жители",
+        "жителей",
+        "новость",
+        "новости",
+        "информация",
+        "информации",
+        "местный",
+        "местные",
+        "общество",
+        "происшествия",
+        "события",
+        "сообщество",
+        "news",
+        "city",
+        "resident",
+        "local",
+        "info",
+        # Administrative & utility generic terms
+        "жкх",
+        "коммуналка",
+        "коммунальные_услуги",
+        "коммунальные",
+        "коммунальный",
+        "услуги",
+        "служба",
+        "службы",
+        "благоустройство",
+        "отключение",
+        "отключения",
+        "авария",
+        "перебои",
+        "график",
+        "жалоба",
+        "жалобы",
+        "жалоба_жителей",
+        "жалобы_жителей",
+        "обращение",
+        "заявка",
+        "заявки",
+        "сервис",
+        "телефон",
+        "номер",
+        "адрес",
+        "ремонт",
+        "работы",
+        "ситуация",
+        "состояние",
+        # City and service family terms (must never act as specific merge tags)
+        "бердянск",
+        "бердянске",
+        "бердянска",
+        "бердянский",
+        "водоснабжение",
+        "электроснабжение",
+        "электричество",
+        "свет",
+        "вода",
+        "газ",
+        "отопление",
+        "связь",
+        "интернет",
+        "транспорт",
+        "инфраструктура",
+    }
+)
 
 
-def _card_meaningful_tags(card: Any) -> set[str]:
+_EDITION_LEVEL_AREAS = frozenset(
+    {
+        "бердянск",
+        "бердянский",
+        "бердянске",
+        "бердянска",
+        "город",
+        "городской",
+        "в городе",
+        "центр города",
+        "район города",
+    }
+)
+
+
+def _compute_batch_frequent_tags(cards: Sequence[Any], threshold: float = 0.30) -> set[str]:
+    """Detect dataset-wide / city-wide tags dynamically without hardcoding city names."""
+    from collections import Counter
+
+    if len(cards) < 8:
+        return set()
+    tag_rubrics: dict[str, set[str]] = {}
+    tag_counts: Counter[str] = Counter()
+    for c in cards:
+        rid = getattr(c, "rubric_id", "") or ""
+        seen_in_card: set[str] = set()
+        for t in getattr(c, "tags", []) or []:
+            norm = " ".join(str(t).casefold().split())
+            if norm and norm not in seen_in_card:
+                seen_in_card.add(norm)
+                tag_counts[norm] += 1
+                tag_rubrics.setdefault(norm, set()).add(rid)
+
+    cutoff = max(5, int(len(cards) * threshold))
+    # A generic dataset-wide tag appears in at least 3 distinct rubrics AND exceeds frequency threshold
+    return {
+        tag
+        for tag, count in tag_counts.items()
+        if count >= cutoff and len(tag_rubrics.get(tag, set())) >= 3
+    }
+
+
+def _card_specific_tags(card: Any, batch_stop_tags: set[str] | None = None) -> set[str]:
     tags: set[str] = set()
     raw_tags = getattr(card, "tags", []) or []
     for t in raw_tags:
         norm = " ".join(str(t).casefold().split())
-        if norm and norm not in _GENERIC_STOP_TAGS and len(norm) > 2:
+        if (
+            norm
+            and norm not in _GENERIC_STOP_TAGS
+            and (batch_stop_tags is None or norm not in batch_stop_tags)
+            and len(norm) > 2
+        ):
             tags.add(norm)
     return tags
 
 
+def _card_areas(card: Any) -> set[str]:
+    areas: set[str] = set()
+    for elem_list in (
+        getattr(card, "hard_facts", []) or [],
+        getattr(card, "community_observations", []) or [],
+        getattr(card, "useful_details", []) or [],
+    ):
+        for elem in elem_list:
+            for a in getattr(elem, "areas", []) or []:
+                norm = " ".join(str(a).casefold().split())
+                if norm and norm not in _EDITION_LEVEL_AREAS:
+                    areas.add(norm)
+    return areas
+
+
+def _card_source_lineage(card: Any) -> set[str]:
+    refs: set[str] = set()
+    all_refs_fn = getattr(card, "all_source_refs", None)
+    raw_refs: list[Any] = []
+    if callable(all_refs_fn):
+        raw_refs.extend(all_refs_fn())
+    else:
+        raw_refs.extend(getattr(card, "representative_source_refs", []) or [])
+    for elem_list in (
+        getattr(card, "hard_facts", []) or [],
+        getattr(card, "community_observations", []) or [],
+        getattr(card, "useful_details", []) or [],
+    ):
+        for elem in elem_list:
+            raw_refs.extend(getattr(elem, "source_refs", []) or [])
+
+    for r in raw_refs:
+        s = str(r).strip()
+        # Require specific numeric ID or post reference, not coarse channel name
+        if s and any(c.isdigit() for c in s):
+            refs.add(s)
+    return refs
+
+
+def _card_service_families(card: Any) -> frozenset[str]:
+    from src.domain.service_taxonomy import detect_service_families
+
+    text_parts = [
+        getattr(card, "topic", "") or "",
+        getattr(card, "summary", "") or "",
+        " ".join(getattr(card, "tags", []) or []),
+    ]
+    for elem_list in (
+        getattr(card, "hard_facts", []) or [],
+        getattr(card, "community_observations", []) or [],
+        getattr(card, "useful_details", []) or [],
+    ):
+        for elem in elem_list:
+            text_parts.append(getattr(elem, "text", "") or "")
+    return detect_service_families(" ".join(text_parts))
+
+
+def _detect_presentation_kind(card: Any) -> str:
+    """Detect presentation kind: status, schedule, repair, damage, workaround, official_position, incident, other."""
+    text_parts = [
+        getattr(card, "topic", "") or "",
+        getattr(card, "summary", "") or "",
+        " ".join(getattr(card, "tags", []) or []),
+    ]
+    for elem_list in (
+        getattr(card, "hard_facts", []) or [],
+        getattr(card, "community_observations", []) or [],
+        getattr(card, "useful_details", []) or [],
+    ):
+        for elem in elem_list:
+            text_parts.append(getattr(elem, "text", "") or "")
+    text = " ".join(text_parts).casefold()
+
+    if re.search(
+        r"\b(?:накопительн\w* бак|генератор|аккумулятор|павербанк|своими силами|частник|установка бак|альтернативн)\b",
+        text,
+    ):
+        return "workaround"
+    if re.search(r"\b(?:график|расписани|режим работы|по часам|веерн)\b", text):
+        return "schedule"
+    if re.search(
+        r"\b(?:ремонт|восстановлен|бригад|аварийн\w* работ|водоканал проводит|чинят|устраняют)\b",
+        text,
+    ):
+        return "repair"
+    if re.search(
+        r"\b(?:прилет|обстрел|поврежден|разрушен|взрыв|осколк|порыв|прорыв трубы|обрыв)\b",
+        text,
+    ):
+        return "damage"
+    if re.search(
+        r"\b(?:заявил|сообщил|пообещал|администрация|власти|мэр|глава|официальн)\b",
+        text,
+    ):
+        return "official_position"
+    if re.search(r"\b(?:дтп|пожар|чп|несчастный случай)\b", text):
+        return "incident"
+    if re.search(
+        r"\b(?:нет света|нет воды|света нет|воды нет|дали свет|дали воду|включили|отключили|появился|пропал|отсутствует|давление|есть вода|вода есть|свет есть)\b",
+        text,
+    ):
+        return "status"
+    return "other"
+
+
+def _are_cards_merge_compatible(
+    card_a: Any,
+    card_b: Any,
+    batch_stop_tags: set[str] | None = None,
+) -> bool:
+    """Determine if two cards in the same rubric are pairwise compatible for synthesis merging."""
+    fams_a = _card_service_families(card_a)
+    fams_b = _card_service_families(card_b)
+    kind_a = _detect_presentation_kind(card_a)
+    kind_b = _detect_presentation_kind(card_b)
+
+    is_op_a = bool(fams_a) or getattr(card_a, "story_kind", "") == "operational_status"
+    is_op_b = bool(fams_b) or getattr(card_b, "story_kind", "") == "operational_status"
+
+    shared_lineage = bool(_card_source_lineage(card_a) & _card_source_lineage(card_b))
+    areas_a = _card_areas(card_a)
+    areas_b = _card_areas(card_b)
+    shared_areas = bool(areas_a & areas_b)
+    tags_a = _card_specific_tags(card_a, batch_stop_tags)
+    tags_b = _card_specific_tags(card_b, batch_stop_tags)
+    shared_tags = bool(tags_a & tags_b)
+
+    # Workarounds (coping, private plumber ads) cannot merge with operational statuses
+    if (kind_a == "workaround" or kind_b == "workaround") and kind_a != kind_b:
+        return False
+
+    if is_op_a or is_op_b:
+        if not (is_op_a and is_op_b):
+            return False
+
+        # Multi-family stories rule:
+        # Cannot bridge different families. Must have IDENTICAL family set.
+        if len(fams_a) > 1 or len(fams_b) > 1:
+            if fams_a != fams_b:
+                return False
+            # Multi-family stories with same families require shared specific area or lineage or tags
+            return (kind_a == kind_b) and (shared_areas or shared_lineage or shared_tags)
+
+        # Mono-family stories rule:
+        if fams_a != fams_b:
+            return False
+
+        # If both are same kind (e.g. status + status):
+        if kind_a == kind_b:
+            return True
+
+        # Cross-kind merge (e.g. status + repair or status + schedule):
+        # Requires shared specific micro-area or shared entity relation (shared specific tag or lineage)
+        if {kind_a, kind_b} <= {"status", "repair", "schedule", "other"}:
+            return shared_areas or shared_lineage or shared_tags
+
+        return False
+
+    # Non-operational stories:
+    # >= 2 shared specific tags OR shared strong evidence/source lineage OR (1 shared tag AND shared area)
+    shared_specific_count = len(tags_a & tags_b)
+    return (
+        shared_specific_count >= 2
+        or shared_lineage
+        or (shared_specific_count >= 1 and shared_areas)
+    )
+
+
 def _compute_merge_groups(cards: Sequence[Any]) -> dict[str, str]:
-    """Group cards in the same rubric that share at least one non-generic normalized tag."""
+    """Group cards in the same rubric using complete-link (clique) clustering with max group size 6."""
+    if not cards:
+        return {}
+
+    batch_stop_tags = _compute_batch_frequent_tags(cards)
+
     # Group by rubric_id
     by_rubric: dict[str, list[Any]] = {}
     for c in cards:
@@ -587,42 +894,29 @@ def _compute_merge_groups(cards: Sequence[Any]) -> dict[str, str]:
 
     merge_group_by_id: dict[str, str] = {}
     for _rid, r_cards in by_rubric.items():
-        n = len(r_cards)
-        # Adjacency list
-        adj: dict[int, set[int]] = {i: set() for i in range(n)}
-        for i in range(n):
-            tags_i = _card_meaningful_tags(r_cards[i])
-            if not tags_i:
-                continue
-            for j in range(i + 1, n):
-                tags_j = _card_meaningful_tags(r_cards[j])
-                if tags_i & tags_j:
-                    adj[i].add(j)
-                    adj[j].add(i)
+        groups: list[list[Any]] = []
+        for card in r_cards:
+            placed = False
+            for g in groups:
+                # Complete-link: must be compatible with EVERY card in the group
+                # and group size is capped at 6
+                if len(g) < 6 and all(
+                    _are_cards_merge_compatible(card, member, batch_stop_tags) for member in g
+                ):
+                    g.append(card)
+                    placed = True
+                    break
+            if not placed:
+                groups.append([card])
 
-        visited: set[int] = set()
-        for i in range(n):
-            if i in visited:
-                continue
-            component: list[int] = []
-            queue = [i]
-            visited.add(i)
-            while queue:
-                curr = queue.pop()
-                component.append(curr)
-                for neighbor in adj[curr]:
-                    if neighbor not in visited:
-                        visited.add(neighbor)
-                        queue.append(neighbor)
-
-            if len(component) > 1:
-                comp_cards = [r_cards[idx] for idx in component]
-                gid = f"merge:{min(c.id for c in comp_cards)}"
-                for c in comp_cards:
+        for g in groups:
+            if len(g) > 1:
+                gid = f"merge:{min(c.id for c in g)}"
+                for c in g:
                     merge_group_by_id[c.id] = gid
             else:
-                card = r_cards[i]
-                merge_group_by_id[card.id] = card.id
+                c = g[0]
+                merge_group_by_id[c.id] = c.id
 
     return merge_group_by_id
 
@@ -694,7 +988,8 @@ def build_digest_presentation_plan(
     items_by_group_id: dict[str, list[CitySituationItem]] = {}
     for item in city_situation.items if city_situation else ():
         group_id = _city_situation_group_id(item)
-        items_by_group_id.setdefault(group_id, []).append(item)
+        if group_id is not None:
+            items_by_group_id.setdefault(group_id, []).append(item)
 
     enriched_groups: list[CitySituationPresentationGroup] = []
     for group in city_plan.groups:
