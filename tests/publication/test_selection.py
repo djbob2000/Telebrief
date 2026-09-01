@@ -719,7 +719,8 @@ class TestEditorialSelection:
                     decision="OMIT",
                     presentation_intent=None,
                     confidence=0.8,
-                    reason="Not relevant for long-form article",
+                    reason="Commercial advertisement",
+                    exclusion_reason="commercial_classified",
                 ),
             ]
         )
@@ -1063,7 +1064,8 @@ class TestSelectionPublishabilityAndFailOpen:
                     story_id=story_id,
                     story_revision_id=rev_id,
                     decision="OMIT",
-                    reason="Not suitable for long article",
+                    reason="Commercial classified payload",
+                    exclusion_reason="commercial_classified",
                 )
             ]
         )

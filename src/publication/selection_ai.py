@@ -198,12 +198,23 @@ class AIPublicationSelectionModel:
         prompt_parts = []
         if self.scope_contract:
             prompt_parts.append(f"{self.scope_contract}\n")
+        if run.publication_type in ("article", "daily_article"):
+            task_instruction = (
+                "Return the stories that deserve elevated editorial priority.\n"
+                "Stories absent from this compact list remain included as BRIEF.\n"
+            )
+        else:
+            task_instruction = (
+                "Select the stories that deserve elevated editorial priority.\n"
+                "Stories absent from the priority list remain included with normal presentation.\n"
+            )
+
         prompt_parts.append(
             f"Publication Type: {run.publication_type}\n"
             f"Snapshot At: {run.snapshot_at.isoformat()}\n"
             f"Candidate Stories ({len(candidates)} items):\n"
             f"{json.dumps(candidates_data, ensure_ascii=False, indent=2)}\n\n"
-            "Select the most meaningful and relevant stories to INCLUDE in the publication.\n"
+            f"{task_instruction}"
             "Respond strictly with a compact JSON object containing the 'included' list:\n"
             "{\n"
             '  "included": [\n'
@@ -214,7 +225,6 @@ class AIPublicationSelectionModel:
             "    }\n"
             "  ]\n"
             "}\n"
-            "All candidate stories not listed in 'included' will be automatically omitted.\n"
         )
         return "\n".join(prompt_parts)
 
@@ -344,7 +354,7 @@ class AIPublicationSelectionModel:
             for cand in candidates:
                 cand_key = (cand.story_id, cand.story_revision_id)
                 if cand_key not in seen_keys:
-                    if publication_type == "article":
+                    if publication_type in ("article", "daily_article"):
                         proposals.append(
                             SelectionProposal(
                                 story_id=cand.story_id,

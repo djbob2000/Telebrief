@@ -164,7 +164,7 @@ class EditorialSelectionService:
             validated_proposals.append((cand, prop))
 
         is_digest = run.publication_type in DIGEST_PUBLICATION_TYPES
-        coverage_preserving = is_digest or run.publication_type == "article"
+        coverage_preserving = is_digest or run.publication_type in ("article", "daily_article")
 
         normalized_proposals: list[tuple[PublicationCandidate, SelectionProposal]] = []
         for cand, prop in validated_proposals:
@@ -198,11 +198,16 @@ class EditorialSelectionService:
                             "coverage_override": True,
                         }
                     )
+                    default_intent = (
+                        "brief"
+                        if run.publication_type in ("article", "daily_article")
+                        else "normal"
+                    )
                     effective_prop = SelectionProposal(
                         story_id=prop.story_id,
                         story_revision_id=prop.story_revision_id,
                         decision="INCLUDE",
-                        presentation_intent=prop.presentation_intent or "normal",
+                        presentation_intent=prop.presentation_intent or default_intent,
                         confidence=prop.confidence,
                         reason=prop.reason or "Coverage override for publication",
                         rank=prop.rank,
