@@ -206,6 +206,11 @@ def plan_city_situation_presentation(
     )
 
 
+def city_situation_group_reader_text(group: CitySituationPresentationGroup) -> str:
+    body = "; ".join(line.strip() for line in group.detail_lines if line.strip())
+    return f"{group.subject_label}: {body}" if body else group.subject_label
+
+
 def render_city_situation_presentation(
     plan: CitySituationPresentationPlan | None,
     *,
@@ -217,8 +222,11 @@ def render_city_situation_presentation(
     for group in plan.groups:
         icon = city_situation_icon(group.state) if use_emojis else ""
         prefix = f"{icon} " if icon else ""
-        body = "; ".join(group.detail_lines)
-        lines.append(f"• {prefix}**{group.subject_label}**: {body}")
+        body = "; ".join(line.strip() for line in group.detail_lines if line.strip())
+        if body:
+            lines.append(f"• {prefix}**{group.subject_label}**: {body}")
+        else:
+            lines.append(f"• {prefix}**{group.subject_label}**")
     return "\n".join(lines)
 
 

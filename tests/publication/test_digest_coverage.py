@@ -24,6 +24,48 @@ from src.publication.errors import DigestCoverageInvariantError
 from src.publication.evidence import PublicationEvidence
 
 
+def test_digest_coverage_trace_reader_visible_texts() -> None:
+    plan = DigestPresentationPlan(
+        city_situation=CitySituationPresentationPlan(
+            groups=(),
+            covered_source_refs=(),
+        ),
+        story_presentations=(
+            DigestStoryPresentation(
+                story_id="story:charging",
+                mode="DETAIL_ONLY",
+                city_situation_group_ids=(),
+                detail_support_ids=("sup:charging:1",),
+                merge_group_id="story:charging",
+            ),
+        ),
+    )
+    final_draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:society:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Бесплатная зарядка",
+                        body="На Гагарина, 1 жители могут бесплатно зарядить телефоны.",
+                        covered_story_ids=("story:charging",),
+                        cited_support_ids=("sup:charging:1",),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    trace = build_digest_coverage_trace(plan, final_draft)
+    story = trace.stories[0]
+    assert story.detail_texts == (
+        "Бесплатная зарядка: На Гагарина, 1 жители могут бесплатно зарядить телефоны.",
+    )
+    assert trace.to_dict()[0]["detail_texts"] == [
+        "Бесплатная зарядка: На Гагарина, 1 жители могут бесплатно зарядить телефоны.",
+    ]
+
+
 def test_build_digest_coverage_trace_for_ai_draft() -> None:
     sit_group = CitySituationPresentationGroup(
         group_id="sit:1",
