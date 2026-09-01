@@ -1173,6 +1173,16 @@ pytest <focused-test-path> -v --no-cov
 
 for focused development runs.
 
+## 17.8 Legacy Floor Parity and Offline Audit Verification
+
+When auditing Event-First publication parity against historic/legacy floors:
+
+1. **Compare against frozen legacy floors**: Offline legacy floor evaluation compares Event-First runs against frozen legacy floor fixtures (`tests/fixtures/*_legacy_floor.json`), never live legacy pipeline executions.
+2. **Independent raw source corpus**: The source corpus in exported regression cases must represent real raw edition source fragments inside the lookback window, independently of whether stories were formed.
+3. **Canonical reader-visible text for microdetails**: Microdetails are measured strictly from the exact canonical published reader text (`dashboard_texts` and `detail_texts` in `DigestCoverageTrace`, or assertion assertions in `ArticleClaimTrace`). Do not use raw source presence as a shortcut for publication retention.
+4. **Mandatory presentation plans**: `DigestPresentationPlan` is mandatory audit metadata in publication records (`pub.metadata["digest_presentation_plan"]`). Missing presentation plan metadata triggers `MISSING_DIGEST_PRESENTATION_PLAN_METADATA` and fails digest parity audits.
+5. **100% digest final trace Story coverage**: Every story selected into `DigestPresentationPlan` must be represented in `DigestCoverageTrace` (`final_digest_story_coverage = 1.0`).
+
 ---
 
 # 18. Final Agent Checklist
