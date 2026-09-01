@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.bootstrap import build_infrastructure
 from src.config_loader import load_config
+from src.domain.editions import NewEdition
 from src.publication.generation import PublicationGenerationService
 from src.publication.repository import PublicationRepository
 from src.publication.selection import EditorialSelectionService
@@ -36,7 +37,15 @@ async def main():
     async with uow.transaction() as conn:
         edition = await EditionRepository().get_by_slug(conn, edition_slug)
         if edition is None:
-            raise ValueError(f"Edition {edition_slug} not found")
+            edition = await EditionRepository().create(
+                conn,
+                NewEdition(
+                    slug=edition_slug,
+                    name="Бердянск",
+                    timezone="Europe/Zaporozhye",
+                    language="ru",
+                ),
+            )
 
     snapshot_service = PublicationSnapshotService(uow=uow, repo=repo)
     selection_service = EditorialSelectionService(uow=uow, repo=repo, config=config)
