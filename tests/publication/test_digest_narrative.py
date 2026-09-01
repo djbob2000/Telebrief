@@ -21,7 +21,7 @@ from src.publication.narrative_contract import (
 
 
 def test_narrative_contracts_epistemic_fidelity():
-    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v4"
+    assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v5"
 
     article_contract = build_article_narrative_contract(output_language="Russian")
     assert "single-source" in article_contract.lower()
@@ -781,6 +781,7 @@ def test_digest_narrative_item_grouping_three_stories():
             topic=f"Авария на электросетях {i}",
             importance="high",
             summary=f"Отключение {i}",
+            tags=["electricity"],
             rubric_id="utilities",
         )
         for i in (101, 102, 103)
@@ -1650,3 +1651,278 @@ def test_build_deterministic_digest_draft_with_all_modes_and_attribution() -> No
     support_index = {eid: evi.text for eid, evi in evidence_dict.items()}
     val_res = validate_digest_narrative(draft, narr_plan, support_index)
     assert val_res.is_valid, f"Validation failed: {val_res.violations}"
+
+
+def test_narrative_plan_turns_merge_group_into_required_story_group() -> None:
+    from src.publication.digest_presentation import (
+        CitySituationPresentationPlan,
+        DigestPresentationPlan,
+        DigestStoryPresentation,
+    )
+
+    cards = [
+        StoryCard(
+            id=f"story:{i}",
+            topic=f"Ремонт трубы {i}",
+            importance="high",
+            summary=f"Ремонт трубы {i}",
+            rubric_id="utilities",
+        )
+        for i in range(1, 5)
+    ]
+    evidence = {f"sup:{i}": _make_evidence(f"sup:{i}", i, f"Факт {i}") for i in range(1, 5)}
+    presentation_plan = DigestPresentationPlan(
+        city_situation=CitySituationPresentationPlan(groups=(), covered_source_refs=()),
+        story_presentations=(
+            DigestStoryPresentation(
+                story_id="story:1",
+                mode="DETAIL_ONLY",
+                detail_support_ids=("sup:1",),
+                merge_group_id="merge:1",
+            ),
+            DigestStoryPresentation(
+                story_id="story:2",
+                mode="DETAIL_ONLY",
+                detail_support_ids=("sup:2",),
+                merge_group_id="merge:1",
+            ),
+            DigestStoryPresentation(
+                story_id="story:3",
+                mode="DETAIL_ONLY",
+                detail_support_ids=("sup:3",),
+                merge_group_id="merge:1",
+            ),
+            DigestStoryPresentation(
+                story_id="story:4",
+                mode="DETAIL_ONLY",
+                detail_support_ids=("sup:4",),
+                merge_group_id="story:4",
+            ),
+        ),
+    )
+
+    plan = plan_digest_narrative_blocks(
+        cards=cards,
+        evidence=evidence,
+        rubrics=[_RUBRIC_UTIL, _RUBRIC_OTHER],
+        max_cards_per_block=6,
+        presentation_plan=presentation_plan,
+    )
+
+    assert len(plan.blocks) == 1
+    assert plan.blocks[0].required_story_groups == (
+        ("story:1", "story:2", "story:3"),
+        ("story:4",),
+    )
+
+
+def test_narrative_plan_chunks_large_merge_group_into_max_3() -> None:
+    from src.publication.digest_presentation import (
+        CitySituationPresentationPlan,
+        DigestPresentationPlan,
+        DigestStoryPresentation,
+    )
+
+    cards = [
+        StoryCard(
+            id=f"story:{i}",
+            topic=f"Ремонт трубы {i}",
+            importance="high",
+            summary=f"Ремонт трубы {i}",
+            rubric_id="utilities",
+        )
+        for i in range(1, 8)
+    ]
+    evidence = {f"sup:{i}": _make_evidence(f"sup:{i}", i, f"Факт {i}") for i in range(1, 8)}
+    presentation_plan = DigestPresentationPlan(
+        city_situation=CitySituationPresentationPlan(groups=(), covered_source_refs=()),
+        story_presentations=tuple(
+            DigestStoryPresentation(
+                story_id=f"story:{i}",
+                mode="DETAIL_ONLY",
+                detail_support_ids=(f"sup:{i}",),
+                merge_group_id="merge:1",
+            )
+            for i in range(1, 8)
+        ),
+    )
+
+    plan = plan_digest_narrative_blocks(
+        cards=cards,
+        evidence=evidence,
+        rubrics=[_RUBRIC_UTIL, _RUBRIC_OTHER],
+        max_cards_per_block=6,
+        presentation_plan=presentation_plan,
+    )
+
+    # 7 stories in chunks (3, 3, 1): block 0 gets (1,2,3) + (4,5,6) = 6 cards, block 1 gets (7,) = 1 card
+    assert len(plan.blocks) == 2
+    assert plan.blocks[0].required_story_groups == (
+        ("story:1", "story:2", "story:3"),
+        ("story:4", "story:5", "story:6"),
+    )
+    assert plan.blocks[1].required_story_groups == (("story:7",),)
+
+
+def test_validate_digest_narrative_synthesis_group_partition_mismatch() -> None:
+    from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ",
+                story_ids=("story:1", "story:2", "story:3"),
+                support_ids=("sup:1", "sup:2", "sup:3"),
+                canonical_notes=(),
+                required_story_groups=(("story:1", "story:2", "story:3"),),
+                support_ids_by_story=(
+                    ("story:1", ("sup:1",)),
+                    ("story:2", ("sup:2",)),
+                    ("story:3", ("sup:3",)),
+                ),
+            ),
+        )
+    )
+
+    # Writer splits the group of 3 into 3 separate items
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Headline 1",
+                        body="Body 1",
+                        covered_story_ids=("story:1",),
+                        cited_support_ids=("sup:1",),
+                    ),
+                    DigestEditorialItemDraft(
+                        headline="Headline 2",
+                        body="Body 2",
+                        covered_story_ids=("story:2",),
+                        cited_support_ids=("sup:2",),
+                    ),
+                    DigestEditorialItemDraft(
+                        headline="Headline 3",
+                        body="Body 3",
+                        covered_story_ids=("story:3",),
+                        cited_support_ids=("sup:3",),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    support_map = {"sup:1": "Fact 1", "sup:2": "Fact 2", "sup:3": "Fact 3"}
+    res = validate_digest_narrative(draft, plan, support_map)
+    assert not res.is_valid
+    assert any("SYNTHESIS_GROUP_PARTITION_MISMATCH" in v for v in res.violations)
+
+
+def test_validate_digest_narrative_story_support_missing() -> None:
+    from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ",
+                story_ids=("story:1", "story:2"),
+                support_ids=("sup:1", "sup:2"),
+                canonical_notes=(),
+                required_story_groups=(("story:1", "story:2"),),
+                support_ids_by_story=(
+                    ("story:1", ("sup:1",)),
+                    ("story:2", ("sup:2",)),
+                ),
+            ),
+        )
+    )
+
+    # Merged item only cites support belonging to story:1
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Headline 1 and 2",
+                        body="Body 1 and 2",
+                        covered_story_ids=("story:1", "story:2"),
+                        cited_support_ids=("sup:1",),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    support_map = {"sup:1": "Fact 1", "sup:2": "Fact 2"}
+    res = validate_digest_narrative(draft, plan, support_map)
+    assert not res.is_valid
+    assert any("STORY_SUPPORT_MISSING" in v for v in res.violations)
+
+
+def test_validate_digest_narrative_valid_merged_synthesis() -> None:
+    from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ",
+                story_ids=("story:1", "story:2"),
+                support_ids=("sup:1", "sup:2"),
+                canonical_notes=(),
+                required_story_groups=(("story:1", "story:2"),),
+                support_ids_by_story=(
+                    ("story:1", ("sup:1",)),
+                    ("story:2", ("sup:2",)),
+                ),
+            ),
+        )
+    )
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Headline 1 and 2",
+                        body="Body 1 and 2",
+                        covered_story_ids=("story:1", "story:2"),
+                        cited_support_ids=("sup:1", "sup:2"),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    support_map = {"sup:1": "Fact 1", "sup:2": "Fact 2"}
+    res = validate_digest_narrative(draft, plan, support_map)
+    assert res.is_valid

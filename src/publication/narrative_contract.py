@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v5"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v4"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v5"
 
 
 def build_article_narrative_contract(
@@ -142,8 +142,11 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 
 4. Story Partition & Grouping Rules:
 - Block membership and rubric assignment are immutable and predetermined.
-- Multi-Story Grouping Constraint: You may group 2-3 stories into a single editorial item ONLY if they share the same merge group ID (`merge_group_id`) inside that deterministic block.
-- Independent or unrelated stories inside a block must remain separate items.
+- The deterministic plan contains required_story_groups.
+- Emit exactly one editorial item for every required_story_group.
+- Do not split a required group into separate items.
+- Do not merge two different required groups.
+- Every Story in the group must be represented by at least one cited support belonging to that Story.
 - Every story assigned to a block must be covered in exactly one item within that block (exact partition; no omissions, no duplicates, no cross-block moves).
 
 5. Strict Factuality & Evidence Boundary:

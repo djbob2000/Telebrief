@@ -37,6 +37,8 @@ class DigestNarrativeBlock:
     detail_roles_by_story: tuple[tuple[str, str], ...] = ()
     presentation_modes_by_story: tuple[tuple[str, str], ...] = ()
     dashboard_support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    required_story_groups: tuple[tuple[str, ...], ...] = ()
+    support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -243,6 +245,12 @@ def plan_digest_narrative_blocks(
     elif presentation_plan is not None and getattr(presentation_plan, "story_hints", None):
         presentations_by_id = {h.story_id: h for h in presentation_plan.story_hints}
 
+    fallback_merge_groups: dict[str, str] = {}
+    if not presentations_by_id and cards:
+        from src.publication.digest_presentation import _compute_merge_groups
+
+        fallback_merge_groups = _compute_merge_groups(cards)
+
     dashboard_supports_by_story_map: dict[str, set[str]] = {}
     if presentation_plan is not None and getattr(presentation_plan, "city_situation", None):
         groups = getattr(presentation_plan.city_situation, "groups", ()) or ()
@@ -277,44 +285,80 @@ def plan_digest_narrative_blocks(
         if not rubric_cards:
             continue
 
-        bound = max(1, max_cards_per_block)
-        for chunk_idx in range(0, len(rubric_cards), bound):
-            chunk = rubric_cards[chunk_idx : chunk_idx + bound]
-            block_id = f"block:{rid}:{chunk_idx // bound}"
-            story_ids = tuple(c.id for c in chunk)
+        # Partition cards by merge_group_id preserving first appearance order
+        groups_by_mgid: dict[str, list[StoryCard]] = {}
+        for c in rubric_cards:
+            if c.id in presentations_by_id:
+                mgid = presentations_by_id[c.id].merge_group_id
+            else:
+                mgid = fallback_merge_groups.get(c.id, c.id)
+            groups_by_mgid.setdefault(mgid, []).append(c)
 
-            # Collect canonical notes from cards
+        # Split each merge group into chunks of at most 3 cards
+        required_groups: list[list[StoryCard]] = []
+        for _mgid, mg_cards in groups_by_mgid.items():
+            for i in range(0, len(mg_cards), 3):
+                required_groups.append(mg_cards[i : i + 3])
+
+        bound = max(1, max_cards_per_block)
+        current_block_groups: list[list[StoryCard]] = []
+        current_block_card_count = 0
+        block_groups_list: list[list[list[StoryCard]]] = []
+
+        for req_grp in required_groups:
+            req_len = len(req_grp)
+            if current_block_groups and (current_block_card_count + req_len > bound):
+                block_groups_list.append(current_block_groups)
+                current_block_groups = [req_grp]
+                current_block_card_count = req_len
+            else:
+                current_block_groups.append(req_grp)
+                current_block_card_count += req_len
+
+        if current_block_groups:
+            block_groups_list.append(current_block_groups)
+
+        for chunk_idx, block_groups in enumerate(block_groups_list):
+            chunk = [c for grp in block_groups for c in grp]
+            block_id = f"block:{rid}:{chunk_idx}"
+            story_ids = tuple(c.id for c in chunk)
+            req_story_groups = tuple(tuple(c.id for c in grp) for grp in block_groups)
+
+            # Collect canonical notes from cards and track support ownership per story
             notes: list[str] = []
             block_support_ids: list[str] = []
+            story_support_ids_map: list[tuple[str, tuple[str, ...]]] = []
+
             for c in chunk:
+                story_sups: list[str] = []
                 if c.summary:
                     notes.append(f"{c.topic}: {c.summary}")
-                    if f"{c.id}:summary" not in block_support_ids:
-                        block_support_ids.append(f"{c.id}:summary")
+                    if f"{c.id}:summary" not in story_sups:
+                        story_sups.append(f"{c.id}:summary")
                 elif c.topic:
                     notes.append(c.topic)
                 for hf in c.hard_facts:
                     if hf.text and hf.text not in notes:
                         notes.append(hf.text)
                     for r in hf.source_refs:
-                        if r not in block_support_ids:
-                            block_support_ids.append(r)
+                        if r not in story_sups:
+                            story_sups.append(r)
                 for co in c.community_observations:
                     if co.text and co.text not in notes:
                         notes.append(co.text)
                     for r in co.source_refs:
-                        if r not in block_support_ids:
-                            block_support_ids.append(r)
+                        if r not in story_sups:
+                            story_sups.append(r)
                 for r in getattr(c, "representative_source_refs", ()):
-                    if r not in block_support_ids:
-                        block_support_ids.append(r)
-                if c.id not in block_support_ids:
-                    block_support_ids.append(c.id)
+                    if r not in story_sups:
+                        story_sups.append(r)
+                if c.id not in story_sups:
+                    story_sups.append(c.id)
 
                 if c.id in presentations_by_id:
                     for supp_id in presentations_by_id[c.id].detail_support_ids:
-                        if supp_id not in block_support_ids:
-                            block_support_ids.append(supp_id)
+                        if supp_id not in story_sups:
+                            story_sups.append(supp_id)
 
                 # Extract numeric story ID if story:123
                 num_sid: int | None = None
@@ -333,9 +377,14 @@ def plan_digest_narrative_blocks(
                     ):
                         if (
                             getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
-                            and eid not in block_support_ids
+                            and eid not in story_sups
                         ):
-                            block_support_ids.append(eid)
+                            story_sups.append(eid)
+
+                for sup in story_sups:
+                    if sup not in block_support_ids:
+                        block_support_ids.append(sup)
+                story_support_ids_map.append((c.id, tuple(story_sups)))
 
             detail_supports = tuple(
                 (c.id, presentations_by_id[c.id].detail_support_ids)
@@ -376,6 +425,8 @@ def plan_digest_narrative_blocks(
                     detail_roles_by_story=detail_roles,
                     presentation_modes_by_story=pres_modes,
                     dashboard_support_ids_by_story=dash_supports,
+                    required_story_groups=req_story_groups,
+                    support_ids_by_story=tuple(story_support_ids_map),
                 )
             )
 
@@ -510,7 +561,22 @@ def validate_digest_narrative(
         if set(flat_story_ids) != expected_story_ids:
             violations.append(f"STORY_PARTITION_MISMATCH: {out_block.block_id}")
 
+        if plan_block.required_story_groups:
+            expected_groups = [tuple(group) for group in plan_block.required_story_groups]
+            actual_groups = [tuple(item.covered_story_ids) for item in out_block.items]
+            if actual_groups != expected_groups:
+                violations.append(f"SYNTHESIS_GROUP_PARTITION_MISMATCH: {out_block.block_id}")
+
+        allowed_by_story = dict(plan_block.support_ids_by_story)
+
         for item in out_block.items:
+            for sid in item.covered_story_ids:
+                story_allowed = set(allowed_by_story.get(sid, ()))
+                if story_allowed and not (set(item.cited_support_ids) & story_allowed):
+                    violations.append(
+                        f"STORY_SUPPORT_MISSING: story {sid} in block {out_block.block_id}"
+                    )
+
             if len(item.covered_story_ids) > DIGEST_ITEM_MAX_STORIES:
                 violations.append(
                     f"ITEM_TOO_MANY_STORIES: item in block {out_block.block_id} covers {len(item.covered_story_ids)} stories (max {DIGEST_ITEM_MAX_STORIES})"
@@ -642,124 +708,134 @@ def build_deterministic_digest_draft(
     block_drafts: list[DigestNarrativeBlockDraft] = []
     for plan_block in narrative_plan.blocks:
         item_drafts: list[DigestEditorialItemDraft] = []
-        for sid in plan_block.story_ids:
-            pres = presentations_by_id.get(sid)
-            card = cards_by_id.get(sid)
-            if not card:
-                continue
+        groups_to_cover = (
+            plan_block.required_story_groups
+            if plan_block.required_story_groups
+            else tuple((sid,) for sid in plan_block.story_ids)
+        )
+        for story_group in groups_to_cover:
+            group_chosen_supports: list[str] = []
+            group_rendered_sentences: list[str] = []
+            group_support_texts: list[str] = []
+            lead_topic: str = ""
 
-            dash_supp_ids = dashboard_supports_by_story.get(sid, set())
-            eligible_supports: list[str] = []
+            for sid in story_group:
+                pres = presentations_by_id.get(sid)
+                card = cards_by_id.get(sid)
+                if not card:
+                    continue
+                if not lead_topic and card.topic:
+                    lead_topic = card.topic.strip()
 
-            if pres and pres.detail_support_ids:
-                for supp_id in pres.detail_support_ids:
-                    if supp_id not in dash_supp_ids and (supp_id in evidence or supp_id):
-                        eligible_supports.append(supp_id)
+                dash_supp_ids = dashboard_supports_by_story.get(sid, set())
+                eligible_supports: list[str] = []
 
-            if not eligible_supports:
-                num_sid: int | None = None
-                if sid.startswith("story:"):
-                    num_part = sid.split(":", 1)[1]
-                    if num_part.isdigit():
-                        num_sid = int(num_part)
+                if pres and pres.detail_support_ids:
+                    for supp_id in pres.detail_support_ids:
+                        if supp_id not in dash_supp_ids and (supp_id in evidence or supp_id):
+                            eligible_supports.append(supp_id)
 
-                for eid, evi in evidence.items():
-                    evi_sid = getattr(evi, "story_id", None)
-                    if (
-                        (evi_sid is not None and num_sid is not None and evi_sid == num_sid)
-                        or eid.startswith(f"{sid}:")
-                        or getattr(evi, "story_id", None) == sid
-                    ):
+                if not eligible_supports:
+                    num_sid: int | None = None
+                    if sid.startswith("story:"):
+                        num_part = sid.split(":", 1)[1]
+                        if num_part.isdigit():
+                            num_sid = int(num_part)
+
+                    for eid, evi in evidence.items():
+                        evi_sid = getattr(evi, "story_id", None)
                         if (
-                            getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
-                            and getattr(evi, "kind", "") != "resident_question"
-                            and eid not in dash_supp_ids
+                            (evi_sid is not None and num_sid is not None and evi_sid == num_sid)
+                            or eid.startswith(f"{sid}:")
+                            or getattr(evi, "story_id", None) == sid
                         ):
-                            eligible_supports.append(eid)
+                            if (
+                                getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
+                                and getattr(evi, "kind", "") != "resident_question"
+                                and eid not in dash_supp_ids
+                            ):
+                                eligible_supports.append(eid)
 
-            if not eligible_supports:
-                if card.summary and f"{card.id}:summary" not in dash_supp_ids:
-                    eligible_supports.append(f"{card.id}:summary")
-                for r in getattr(card, "representative_source_refs", ()):
-                    if r not in dash_supp_ids and r not in eligible_supports:
-                        eligible_supports.append(r)
-                for hf in getattr(card, "hard_facts", ()):
-                    for r in getattr(hf, "source_refs", ()):
+                if not eligible_supports:
+                    if card.summary and f"{card.id}:summary" not in dash_supp_ids:
+                        eligible_supports.append(f"{card.id}:summary")
+                    for r in getattr(card, "representative_source_refs", ()):
                         if r not in dash_supp_ids and r not in eligible_supports:
                             eligible_supports.append(r)
-                for co in getattr(card, "community_observations", ()):
-                    for r in getattr(co, "source_refs", ()):
-                        if r not in dash_supp_ids and r not in eligible_supports:
-                            eligible_supports.append(r)
-                if not eligible_supports and card.id not in dash_supp_ids:
-                    eligible_supports.append(card.id)
-
-            if not eligible_supports:
-                raise ValueError(f"no deterministic detail support for {sid}")
-
-            chosen_supports = eligible_supports[:2]
-            rendered_sentences: list[str] = []
-            support_texts: list[str] = []
-            final_chosen_supports: list[str] = []
-
-            for s in chosen_supports:
-                text = ""
-                kind = "established_fact"
-                actual_sup_id = s
-                if s in evidence:
-                    text = (evidence[s].text or evidence[s].source_text).strip()
-                    kind = getattr(evidence[s], "kind", "established_fact")
-                elif (
-                    s == f"{card.id}:summary"
-                    or s == card.id
-                    or s in getattr(card, "representative_source_refs", ())
-                ):
-                    if card.summary:
-                        text = card.summary.strip()
-                    elif card.topic:
-                        text = card.topic.strip()
-                else:
                     for hf in getattr(card, "hard_facts", ()):
-                        if s in getattr(hf, "source_refs", ()) or s == getattr(hf, "text", ""):
-                            text = hf.text.strip()
-                            kind = "established_fact"
-                            break
-                    if not text:
-                        for co in getattr(card, "community_observations", ()):
-                            if s in getattr(co, "source_refs", ()) or s == getattr(co, "text", ""):
-                                text = co.text.strip()
-                                kind = "community_report"
-                                break
-                    if not text:
+                        for r in getattr(hf, "source_refs", ()):
+                            if r not in dash_supp_ids and r not in eligible_supports:
+                                eligible_supports.append(r)
+                    for co in getattr(card, "community_observations", ()):
+                        for r in getattr(co, "source_refs", ()):
+                            if r not in dash_supp_ids and r not in eligible_supports:
+                                eligible_supports.append(r)
+                    if not eligible_supports and card.id not in dash_supp_ids:
+                        eligible_supports.append(card.id)
+
+                if not eligible_supports:
+                    raise ValueError(f"no deterministic detail support for {sid}")
+
+                per_story_cap = 2 if len(story_group) == 1 else 1
+                chosen_supports = eligible_supports[:per_story_cap]
+
+                for s in chosen_supports:
+                    text = ""
+                    kind = "established_fact"
+                    actual_sup_id = s
+                    if s in evidence:
+                        text = (evidence[s].text or evidence[s].source_text).strip()
+                        kind = getattr(evidence[s], "kind", "established_fact")
+                    elif (
+                        s == f"{card.id}:summary"
+                        or s == card.id
+                        or s in getattr(card, "representative_source_refs", ())
+                    ):
                         if card.summary:
                             text = card.summary.strip()
-                            actual_sup_id = f"{card.id}:summary"
                         elif card.topic:
                             text = card.topic.strip()
-                            actual_sup_id = card.id
+                    else:
+                        for hf in getattr(card, "hard_facts", ()):
+                            if s in getattr(hf, "source_refs", ()) or s == getattr(hf, "text", ""):
+                                text = hf.text.strip()
+                                kind = "established_fact"
+                                break
+                        if not text:
+                            for co in getattr(card, "community_observations", ()):
+                                if s in getattr(co, "source_refs", ()) or s == getattr(
+                                    co, "text", ""
+                                ):
+                                    text = co.text.strip()
+                                    kind = "community_report"
+                                    break
+                        if not text:
+                            if card.summary:
+                                text = card.summary.strip()
+                                actual_sup_id = f"{card.id}:summary"
+                            elif card.topic:
+                                text = card.topic.strip()
+                                actual_sup_id = card.id
 
-                if text:
-                    final_chosen_supports.append(actual_sup_id)
-                    support_texts.append(text)
-                    if kind in {"community_report", "community_observation", "quote_assertion"}:
-                        if not text.casefold().startswith(
-                            ("по сообщениям", "жители сообщают", "по словам")
-                        ):
-                            text = f"По сообщениям жителей, {text[:1].lower() + text[1:]}"
-                    rendered_sentences.append(text.rstrip(". ") + ".")
+                    if text:
+                        group_chosen_supports.append(actual_sup_id)
+                        group_support_texts.append(text)
+                        if kind in {"community_report", "community_observation", "quote_assertion"}:
+                            if not text.casefold().startswith(
+                                ("по сообщениям", "жители сообщают", "по словам")
+                            ):
+                                text = f"По сообщениям жителей, {text[:1].lower() + text[1:]}"
+                        group_rendered_sentences.append(text.rstrip(". ") + ".")
 
-            effective_supports = final_chosen_supports or chosen_supports
-
-            topic = card.topic.strip()
-            topic_claims = find_unsupported_claims(topic, support_texts) if topic else []
+            topic = lead_topic
+            topic_claims = find_unsupported_claims(topic, group_support_texts) if topic else []
             if topic and not topic_claims and len(topic) <= DIGEST_ITEM_HEADLINE_MAX_CHARS:
                 headline = topic
-            elif rendered_sentences:
-                first_sent = rendered_sentences[0].rstrip(". ")
+            elif group_rendered_sentences:
+                first_sent = group_rendered_sentences[0].rstrip(". ")
                 if len(first_sent) <= DIGEST_ITEM_HEADLINE_MAX_CHARS:
                     headline = first_sent
                 else:
-                    # Truncate to at most 140 chars cleanly at sentence/clause/word boundary
                     truncated = first_sent[:DIGEST_ITEM_HEADLINE_MAX_CHARS]
                     for sep in [". ", "! ", "? ", "; ", ", ", " — ", " - "]:
                         if sep in truncated:
@@ -772,11 +848,11 @@ def build_deterministic_digest_draft(
                             truncated = truncated.rsplit(" ", 1)[0].strip()
                     headline = truncated.rstrip(".:;, ")
             else:
-                headline = (topic[:DIGEST_ITEM_HEADLINE_MAX_CHARS] if topic else sid).rstrip(
-                    ".:;, "
-                )
+                headline = (
+                    topic[:DIGEST_ITEM_HEADLINE_MAX_CHARS] if topic else story_group[0]
+                ).rstrip(".:;, ")
 
-            body_text = " ".join(rendered_sentences)
+            body_text = " ".join(group_rendered_sentences)
             if len(body_text) > DIGEST_ITEM_BODY_MAX_CHARS:
                 body_text = (
                     body_text[:DIGEST_ITEM_BODY_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ") + "."
@@ -786,8 +862,8 @@ def build_deterministic_digest_draft(
                 DigestEditorialItemDraft(
                     headline=headline,
                     body=body_text,
-                    covered_story_ids=(sid,),
-                    cited_support_ids=tuple(effective_supports),
+                    covered_story_ids=tuple(story_group),
+                    cited_support_ids=tuple(group_chosen_supports),
                 )
             )
 
@@ -846,6 +922,7 @@ class DigestNarrativeWriter:
                 "rubric_id": b.rubric_id,
                 "rubric_title": b.rubric_title,
                 "story_ids": list(b.story_ids),
+                "required_story_groups": [list(grp) for grp in b.required_story_groups],
                 "canonical_notes": list(b.canonical_notes),
                 "supports": supports_payload,
             }
