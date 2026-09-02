@@ -476,7 +476,7 @@ class EventEditorialAdapter:
 
         # Build ArticleEditorialContext for article runs
         article_ctx = None
-        if run is not None and run.publication_type == "article":
+        if run is not None and run.publication_type in ("article", "daily_article"):
             eligibility = await self.repo.get_eligibility_policy_by_id(
                 conn, run.eligibility_policy_id
             )
@@ -491,7 +491,20 @@ class EventEditorialAdapter:
                 raise ValueError("frozen lookback_hours must be positive")
 
             from src.domain.operational_state import ResolvedObservation, _parse_iso_ts
-            from src.publication.article_context import build_article_editorial_context
+            from src.publication.article_context import (
+                ArticleSelectionSignal,
+                build_article_editorial_context,
+            )
+
+            sel_signals: dict[str, ArticleSelectionSignal] = {}
+            for inp in inputs:
+                sig = ArticleSelectionSignal(
+                    story_id=f"story:{inp.story_id}",
+                    intent=inp.presentation_intent or "brief",
+                    rank=inp.rank,
+                )
+                sel_signals[f"story:{inp.story_id}"] = sig
+                sel_signals[str(inp.story_id)] = sig
 
             resolved_obs_list: list[ResolvedObservation] = []
             for obs, obs_ts, o_refs in all_observations_with_time:
@@ -528,6 +541,7 @@ class EventEditorialAdapter:
                 snapshot_at=run.snapshot_at,
                 lookback_hours=lookback_hours,
                 edition_name=edition_name,
+                selection_by_story=sel_signals,
             )
 
         analysis = EditorialAnalysis(

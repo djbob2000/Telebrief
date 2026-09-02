@@ -773,11 +773,16 @@ class ArticleGenerator:
             self.config.settings, "publication_editorial", PublicationEditorialConfig()
         )
         length_profile = derive_article_length_profile(article_ctx, editorial_config)
+        develop_story_budget = max(0, min(3, length_profile.target_max_sections - 1))
 
         from src.publication.article_coverage import build_article_coverage_plan
         from src.publication.article_writer_context import render_article_writer_context
 
-        coverage_plan = build_article_coverage_plan(article_ctx.story_cards, article_ctx)
+        coverage_plan = build_article_coverage_plan(
+            article_ctx.story_cards,
+            article_ctx,
+            develop_story_budget=develop_story_budget,
+        )
         context_str = render_article_writer_context(article_ctx, coverage_plan)
         system_prompt = self._build_event_article_system_prompt(length_profile=length_profile)
         user_prompt = f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\n{context_str}"

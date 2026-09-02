@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from src.domain.operational_state import ResolvedObservation
@@ -17,6 +17,15 @@ _FRAG_ID_RE = re.compile(r":frag:(\d+)")
 _ITEM_ID_RE = re.compile(r":item:(\d+)")
 
 TemporalRole = Literal["CURRENT_WINDOW", "HISTORICAL_CONTEXT", "FUTURE_SCHEDULED"]
+
+
+@dataclass(frozen=True)
+class ArticleSelectionSignal:
+    """Editorial priority signal assigned by selector model for an article story."""
+
+    story_id: str
+    intent: str
+    rank: int
 
 
 @dataclass(frozen=True)
@@ -122,6 +131,7 @@ class ArticleEditorialContext:
     edition_name: str = ""
     edition_anchor_terms: tuple[str, ...] = ()
     story_cards: tuple[StoryCard, ...] = ()
+    selection_by_story: dict[str, ArticleSelectionSignal] = field(default_factory=dict)
 
     @property
     def supports(self) -> tuple[ArticleSupport, ...]:
@@ -174,6 +184,7 @@ def build_article_editorial_context(
     lookback_hours: int | None = None,
     publication_window: PublicationWindow | None = None,
     edition_name: str = "",
+    selection_by_story: dict[str, ArticleSelectionSignal] | None = None,
 ) -> ArticleEditorialContext:
     """Build structured ArticleEditorialContext with unified ArticleSupport packets."""
     records = source_records or {}
@@ -366,4 +377,5 @@ def build_article_editorial_context(
         edition_name=edition_name,
         edition_anchor_terms=_edition_anchor_terms(edition_name),
         story_cards=tuple(cards),
+        selection_by_story=selection_by_story or {},
     )

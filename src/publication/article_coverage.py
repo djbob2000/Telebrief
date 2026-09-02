@@ -69,7 +69,7 @@ def _publish_supports_by_story(
     return {story_id: tuple(items) for story_id, items in grouped.items()}
 
 
-def _prominence(card: StoryCard, support_count: int) -> ArticleProminence:
+def _prominence_legacy(card: StoryCard, support_count: int) -> ArticleProminence:
     if card.importance == "high" or support_count >= 4:
         return "DEVELOP"
     if support_count >= 2:
@@ -115,6 +115,7 @@ def _detail_support_ids(
 def build_article_coverage_plan(
     cards: Sequence[StoryCard],
     context: ArticleEditorialContext,
+    develop_story_budget: int = 2,
 ) -> ArticleCoveragePlan:
     support_map = _publish_supports_by_story(context)
     card_list = list(cards)
@@ -123,20 +124,80 @@ def build_article_coverage_plan(
             StoryCard(id=sid, topic=sid, importance="medium", summary=sid)
             for sid in support_map.keys()
         ]
-    stories: list[ArticleStoryCoverage] = []
-    for rank, card in enumerate(card_list, start=1):
-        supports = support_map.get(card.id, ())
-        if not supports:
-            continue
-        prominence = _prominence(card, len(supports))
-        stories.append(
-            ArticleStoryCoverage(
-                story_id=card.id,
-                topic=card.topic or card.summary or card.id,
-                rank=rank,
-                prominence=prominence,
-                support_ids=tuple(s.support_id for s in supports),
-                detail_support_ids=_detail_support_ids(supports, prominence),
+
+    valid_cards = [c for c in card_list if c.id in support_map and support_map[c.id]]
+
+    signals = context.selection_by_story
+    if signals:
+        card_intents: list[tuple[StoryCard, str, int]] = []
+        for c in valid_cards:
+            sig = signals.get(c.id) or signals.get(c.id.removeprefix("story:"))
+            intent = sig.intent if sig is not None else "brief"
+            rank_val = sig.rank if (sig is not None and isinstance(sig.rank, int)) else 9999
+            card_intents.append((c, intent, rank_val))
+
+        lead_assigned = False
+        effective_intents: list[tuple[StoryCard, str, int]] = []
+        for c, intent, r in card_intents:
+            if intent == "lead":
+                if not lead_assigned:
+                    effective_intents.append((c, "lead_develop", r))
+                    lead_assigned = True
+                else:
+                    effective_intents.append((c, "normal", r))
+            else:
+                effective_intents.append((c, intent, r))
+
+        normal_cards = [item for item in effective_intents if item[1] == "normal"]
+        sorted_normals = sorted(normal_cards, key=lambda x: x[2])
+        elevated_normal_ids = {
+            item[0].id for item in sorted_normals[: max(0, develop_story_budget)]
+        }
+
+        prominence_by_card_id: dict[str, ArticleProminence] = {}
+        for c, eff_intent, _ in effective_intents:
+            if eff_intent == "lead_develop":
+                prominence_by_card_id[c.id] = "DEVELOP"
+            elif eff_intent == "normal":
+                if c.id in elevated_normal_ids:
+                    prominence_by_card_id[c.id] = "DEVELOP"
+                else:
+                    prominence_by_card_id[c.id] = "WEAVE"
+            elif eff_intent == "follow_up":
+                prominence_by_card_id[c.id] = "WEAVE"
+            elif eff_intent in ("unverified_operational", "brief"):
+                prominence_by_card_id[c.id] = "BRIEF"
+            else:
+                prominence_by_card_id[c.id] = "BRIEF"
+
+        stories: list[ArticleStoryCoverage] = []
+        for rank, card in enumerate(valid_cards, start=1):
+            supports = support_map[card.id]
+            prominence = prominence_by_card_id.get(card.id, "BRIEF")
+            stories.append(
+                ArticleStoryCoverage(
+                    story_id=card.id,
+                    topic=card.topic or card.summary or card.id,
+                    rank=rank,
+                    prominence=prominence,
+                    support_ids=tuple(s.support_id for s in supports),
+                    detail_support_ids=_detail_support_ids(supports, prominence),
+                )
             )
-        )
+    else:
+        stories = []
+        for rank, card in enumerate(valid_cards, start=1):
+            supports = support_map[card.id]
+            prominence = _prominence_legacy(card, len(supports))
+            stories.append(
+                ArticleStoryCoverage(
+                    story_id=card.id,
+                    topic=card.topic or card.summary or card.id,
+                    rank=rank,
+                    prominence=prominence,
+                    support_ids=tuple(s.support_id for s in supports),
+                    detail_support_ids=_detail_support_ids(supports, prominence),
+                )
+            )
+
     return ArticleCoveragePlan(stories=tuple(stories))
