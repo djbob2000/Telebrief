@@ -166,56 +166,82 @@ class EditorialSelectionService:
         is_digest = run.publication_type in DIGEST_PUBLICATION_TYPES
         coverage_preserving = is_digest or run.publication_type in ("article", "daily_article")
 
+        props_by_cand_key = {
+            (prop.story_id, prop.story_revision_id): (cand, prop)
+            for cand, prop in validated_proposals
+        }
+
         normalized_proposals: list[tuple[PublicationCandidate, SelectionProposal]] = []
-        for cand, prop in validated_proposals:
-            if coverage_preserving and prop.decision == "OMIT":
-                if prop.exclusion_reason in HARD_EXCLUSION_REASONS:
-                    meta = dict(prop.metadata or {})
-                    meta.update(
-                        {
-                            "model_decision": "OMIT",
-                            "exclusion_reason": prop.exclusion_reason,
-                            "coverage_override": False,
-                        }
-                    )
+        for cand in candidates:
+            cand_key = (cand.story_id, cand.story_revision_id)
+            cand_and_prop = props_by_cand_key.get(cand_key)
+            candidate_prop = cand_and_prop[1] if cand_and_prop is not None else None
+
+            if coverage_preserving:
+                default_intent = (
+                    "brief" if run.publication_type in ("article", "daily_article") else "normal"
+                )
+                if candidate_prop is None:
                     effective_prop = SelectionProposal(
-                        story_id=prop.story_id,
-                        story_revision_id=prop.story_revision_id,
-                        decision="OMIT",
-                        presentation_intent=prop.presentation_intent,
-                        confidence=prop.confidence,
-                        reason=prop.reason,
-                        rank=prop.rank,
-                        exclusion_reason=prop.exclusion_reason,
-                        metadata=meta,
-                    )
-                else:
-                    meta = dict(prop.metadata or {})
-                    meta.update(
-                        {
-                            "model_decision": "OMIT",
-                            "exclusion_reason": prop.exclusion_reason,
-                            "coverage_override": True,
-                        }
-                    )
-                    default_intent = (
-                        "brief"
-                        if run.publication_type in ("article", "daily_article")
-                        else "normal"
-                    )
-                    effective_prop = SelectionProposal(
-                        story_id=prop.story_id,
-                        story_revision_id=prop.story_revision_id,
+                        story_id=cand.story_id,
+                        story_revision_id=cand.story_revision_id,
                         decision="INCLUDE",
-                        presentation_intent=prop.presentation_intent or default_intent,
-                        confidence=prop.confidence,
-                        reason=prop.reason or "Coverage override for publication",
-                        rank=prop.rank,
+                        presentation_intent=default_intent,
+                        confidence=1.0,
+                        reason="Zero-omission overlay: unproposed candidate preserved",
+                        rank=cand.deterministic_rank,
+                        exclusion_reason=None,
+                        metadata={
+                            "coverage_override": True,
+                            "disagreement_with_gate": "selector_unproposed_candidate",
+                        },
+                    )
+                elif candidate_prop.decision == "OMIT":
+                    meta = dict(candidate_prop.metadata or {})
+                    is_hard = candidate_prop.exclusion_reason in HARD_EXCLUSION_REASONS
+                    disagreement = (
+                        "selector_hard_exclusion_override"
+                        if is_hard
+                        else "selector_omission_override"
+                    )
+                    meta.update(
+                        {
+                            "model_decision": "OMIT",
+                            "exclusion_reason": candidate_prop.exclusion_reason,
+                            "coverage_override": True,
+                            "disagreement_with_gate": disagreement,
+                        }
+                    )
+                    effective_prop = SelectionProposal(
+                        story_id=candidate_prop.story_id,
+                        story_revision_id=candidate_prop.story_revision_id,
+                        decision="INCLUDE",
+                        presentation_intent=candidate_prop.presentation_intent or default_intent,
+                        confidence=candidate_prop.confidence,
+                        reason=candidate_prop.reason or "Zero-omission overlay for publication",
+                        rank=candidate_prop.rank
+                        if candidate_prop.rank is not None
+                        else cand.deterministic_rank,
                         exclusion_reason=None,
                         metadata=meta,
                     )
+                else:
+                    effective_prop = candidate_prop
             else:
-                effective_prop = prop
+                if candidate_prop is None:
+                    effective_prop = SelectionProposal(
+                        story_id=cand.story_id,
+                        story_revision_id=cand.story_revision_id,
+                        decision="OMIT",
+                        presentation_intent=None,
+                        confidence=1.0,
+                        reason="Unproposed candidate omitted",
+                        rank=cand.deterministic_rank,
+                        exclusion_reason="unproposed",
+                    )
+                else:
+                    effective_prop = candidate_prop
+
             normalized_proposals.append((cand, effective_prop))
 
         def _sort_key(

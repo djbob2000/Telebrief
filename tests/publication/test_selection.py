@@ -214,9 +214,10 @@ class TestEditorialSelection:
         assert row[1]["coverage_override"] is True
         assert row[1]["model_decision"] == "OMIT"
 
-    async def test_article_hard_exclusion_remains_omitted(
+    async def test_article_hard_exclusion_overridden_to_brief_with_disagreement_metadata(
         self, conn: psycopg.AsyncConnection, pool, edition
     ):
+        """Test 4A: For article, selector OMIT with hard exclusion is overridden to INCLUDE + brief."""
         uow = DatabaseUnitOfWork(pool)
         snap_service = PublicationSnapshotService(uow=uow)
 
@@ -265,19 +266,151 @@ class TestEditorialSelection:
             run.id, defer_generation=False
         )
 
-        assert len(inputs) == 0
+        assert len(inputs) == 1
+        assert inputs[0].story_id == story_id
         async with uow.transaction() as tx:
             row = await (
                 await tx.execute(
-                    "SELECT decision, metadata FROM publication_selection_decisions "
+                    "SELECT decision, presentation_intent, metadata FROM publication_selection_decisions "
                     "WHERE publication_run_id = %s AND candidate_id IN "
                     "(SELECT id FROM publication_candidates WHERE publication_run_id = %s AND story_id = %s)",
                     (run.id, run.id, story_id),
                 )
             ).fetchone()
-        assert row[0] == "OMIT"
-        assert row[1]["coverage_override"] is False
-        assert row[1]["exclusion_reason"] == "commercial_classified"
+        assert row[0] == "INCLUDE"
+        assert row[1] == "brief"
+        assert row[2]["coverage_override"] is True
+        assert row[2]["disagreement_with_gate"] == "selector_hard_exclusion_override"
+        assert row[2]["exclusion_reason"] == "commercial_classified"
+
+    async def test_digest_hard_exclusion_overridden_to_normal_with_disagreement_metadata(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Test 4B: For DIGEST_PUBLICATION_TYPES, selector OMIT is overridden to INCLUDE + normal."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) "
+            "VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions "
+            "(story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Слухи и частное объявление', 'digest-hard-omit', %s) "
+            "RETURNING id",
+            (story_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s",
+            (rev_id, story_id),
+        )
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
+
+        for digest_type in ("digest_grouped", "digest", "digest_channel"):
+            run = await snap_service.create_run(
+                edition_id=edition.id,
+                publication_type=digest_type,
+                snapshot_at=_NOW,
+                request_key=f"test-digest-hard-exclusion-{digest_type}",
+            )
+            await snap_service.seal_candidates(run.id)
+
+            model = MockSelectionModel(
+                [
+                    SelectionProposal(
+                        story_id=story_id,
+                        story_revision_id=rev_id,
+                        decision="OMIT",
+                        reason="Private classified",
+                        exclusion_reason="private_classified",
+                    )
+                ]
+            )
+            inputs = await EditorialSelectionService(uow=uow, model=model).select(
+                run.id, defer_generation=False
+            )
+
+            assert len(inputs) == 1
+            assert inputs[0].story_id == story_id
+            async with uow.transaction() as tx:
+                row = await (
+                    await tx.execute(
+                        "SELECT decision, presentation_intent, metadata FROM publication_selection_decisions "
+                        "WHERE publication_run_id = %s AND candidate_id IN "
+                        "(SELECT id FROM publication_candidates WHERE publication_run_id = %s AND story_id = %s)",
+                        (run.id, run.id, story_id),
+                    )
+                ).fetchone()
+            assert row[0] == "INCLUDE"
+            assert row[1] == "normal"
+            assert row[2]["coverage_override"] is True
+            assert row[2]["disagreement_with_gate"] == "selector_hard_exclusion_override"
+
+    async def test_overlay_zero_omission_for_unproposed_candidates(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Test 4C: Candidates completely unmentioned by selector are preserved (selected_input_count == candidate_count)."""
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) "
+            "VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions "
+            "(story_id, revision_no, current_state, semantic_text, content_hash, created_at) "
+            "VALUES (%s, 1, 'open', 'Сюжет не предложенный моделью', 'unproposed-story', %s) "
+            "RETURNING id",
+            (story_id, _NOW),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s",
+            (rev_id, story_id),
+        )
+        from tests.publication.conftest import seed_claim_for_story
+
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_NOW,
+            request_key="test-unproposed-candidate-run",
+        )
+        cands = await snap_service.seal_candidates(run.id)
+        assert len(cands) == 1
+
+        # Model returns empty proposals
+        model = MockSelectionModel([])
+        inputs = await EditorialSelectionService(uow=uow, model=model).select(
+            run.id, defer_generation=False
+        )
+
+        assert len(inputs) == len(cands)
+        assert inputs[0].story_id == story_id
+        async with uow.transaction() as tx:
+            row = await (
+                await tx.execute(
+                    "SELECT decision, presentation_intent, metadata FROM publication_selection_decisions "
+                    "WHERE publication_run_id = %s AND candidate_id IN "
+                    "(SELECT id FROM publication_candidates WHERE publication_run_id = %s AND story_id = %s)",
+                    (run.id, run.id, story_id),
+                )
+            ).fetchone()
+        assert row[0] == "INCLUDE"
+        assert row[1] == "brief"
+        assert row[2]["coverage_override"] is True
+        assert row[2]["disagreement_with_gate"] == "selector_unproposed_candidate"
 
     async def test_ai_selector_strict_json_and_validation(self):
         import json
@@ -653,10 +786,10 @@ class TestEditorialSelection:
         assert row[1].get("coverage_override") is True
         assert row[1].get("model_decision") == "OMIT"
 
-    async def test_article_omit_is_honored_when_not_all_omitted(
+    async def test_article_omit_is_overridden_to_brief_preserving_denominator(
         self, conn: psycopg.AsyncConnection, pool, edition
     ):
-        """For article types, OMIT decision is honored when at least one story is INCLUDED."""
+        """For article types, OMIT decision is overridden to brief preserving sealed candidate denominator."""
         uow = DatabaseUnitOfWork(pool)
         snap_service = PublicationSnapshotService(uow=uow)
         from tests.publication.conftest import seed_claim_for_story
@@ -727,8 +860,11 @@ class TestEditorialSelection:
         sel_service = EditorialSelectionService(uow=uow, model=model)
         inputs = await sel_service.select(run.id, defer_generation=False)
 
-        assert len(inputs) == 1
+        assert len(inputs) == 2
         assert inputs[0].story_id == story1_id
+        assert inputs[0].presentation_intent == "lead"
+        assert inputs[1].story_id == story2_id
+        assert inputs[1].presentation_intent == "brief"
 
     async def test_selection_ranks_order_inputs_correctly(
         self, conn: psycopg.AsyncConnection, pool, edition
@@ -937,7 +1073,7 @@ class TestSelectionAIParserContracts:
 class TestSelectionPublishabilityAndFailOpen:
     """Integration tests for narrow publishability exclusion and fail-open normalization."""
 
-    async def test_digest_commercial_classified_omit_survives(
+    async def test_digest_commercial_classified_omit_overridden_to_normal(
         self, conn: psycopg.AsyncConnection, pool, edition
     ):
         uow = DatabaseUnitOfWork(pool)
@@ -981,7 +1117,9 @@ class TestSelectionPublishabilityAndFailOpen:
         )
         sel_service = EditorialSelectionService(uow=uow, model=model)
         inputs = await sel_service.select(run.id, defer_generation=False)
-        assert len(inputs) == 0
+        assert len(inputs) == 1
+        assert inputs[0].story_id == story_id
+        assert inputs[0].presentation_intent == "normal"
 
     async def test_digest_subjective_omit_is_overridden_to_include(
         self, conn: psycopg.AsyncConnection, pool, edition
@@ -1030,7 +1168,9 @@ class TestSelectionPublishabilityAndFailOpen:
         assert len(inputs) == 1
         assert inputs[0].story_id == story_id
 
-    async def test_article_omit_remains_omit(self, conn: psycopg.AsyncConnection, pool, edition):
+    async def test_article_commercial_omit_is_overridden_to_brief(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
         uow = DatabaseUnitOfWork(pool)
         snap_service = PublicationSnapshotService(uow=uow)
 
@@ -1056,7 +1196,8 @@ class TestSelectionPublishabilityAndFailOpen:
             snapshot_at=_NOW,
             request_key="test-art-omit",
         )
-        await snap_service.seal_candidates(run.id)
+        candidates = await snap_service.seal_candidates(run.id)
+        assert len(candidates) == 1
 
         model = MockSelectionModel(
             [
@@ -1071,7 +1212,9 @@ class TestSelectionPublishabilityAndFailOpen:
         )
         sel_service = EditorialSelectionService(uow=uow, model=model)
         inputs = await sel_service.select(run.id, defer_generation=False)
-        assert len(inputs) == 0
+        assert len(inputs) == 1
+        assert inputs[0].story_id == story_id
+        assert inputs[0].presentation_intent == "brief"
 
     async def test_fail_open_digest_all_commercial_omits_are_valid(self):
         from src.publication.selection_ai import FailOpenSelectionModel
