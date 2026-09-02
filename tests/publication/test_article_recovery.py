@@ -869,3 +869,180 @@ async def test_event_article_prompt_contains_epistemic_fidelity_and_no_corrobora
     assert "two independent sources" not in system_content.lower()
     assert "must be corroborated" not in system_content.lower()
     assert "official confirmation required" not in system_content.lower()
+
+
+def test_theme_first_fallback_packing_and_deduplication():
+    """Tests 9A, 9B, 9C, 9D, 9E: Theme-first fallback packing with conservative dedup and safe title/lead."""
+    from src.config_loader import PublicationEditorialConfig
+    from src.editorial_models import StoryCard
+    from src.publication.article_recovery import resolve_article_theme
+    from src.publication.article_validator import validate_article_draft
+
+    # Test 9A: Canonical mapping
+    card_infra = StoryCard(
+        id="s:1",
+        topic="Свет и вода",
+        importance="high",
+        category="utilities",
+        tags=["жкх", "вода"],
+        summary="Свет и вода",
+    )
+    card_mob = StoryCard(
+        id="s:2",
+        topic="Маршруты автобусов",
+        importance="medium",
+        category="transport",
+        tags=["автобус"],
+        summary="Маршруты автобусов",
+    )
+    card_comm = StoryCard(
+        id="s:3",
+        topic="Связь Юпитер",
+        importance="medium",
+        category="telecom",
+        tags=["интернет"],
+        summary="Связь Юпитер",
+    )
+    card_civic = StoryCard(
+        id="s:4",
+        topic="Выплаты и пенсии",
+        importance="low",
+        category="social",
+        tags=["банк"],
+        summary="Выплаты и пенсии",
+    )
+    card_life = StoryCard(
+        id="s:5",
+        topic="Выставка картин",
+        importance="low",
+        category="culture",
+        tags=["музей"],
+        summary="Выставка картин",
+    )
+
+    assert resolve_article_theme(card_infra, ()) == "infrastructure"
+    assert resolve_article_theme(card_mob, ()) == "mobility"
+    assert resolve_article_theme(card_comm, ()) == "communications"
+    assert resolve_article_theme(card_civic, ()) == "civic_services"
+    assert resolve_article_theme(card_life, ()) == "city_life"
+
+    # Supports setup for fallback run:
+    # Story 1 (infrastructure, rank 1, DEVELOP): two supports
+    sup1_1 = _make_support(
+        "s:1:sup:1",
+        "s:1",
+        "Авария на подстанции: обесточена нагорная часть города.",
+        evidence_kind="established_fact",
+    )
+    sup1_2 = _make_support(
+        "s:1:sup:2",
+        "s:1",
+        "Бригада РЭС ведет восстановительные работы.",
+        evidence_kind="established_fact",
+    )
+
+    # Story 2 (mobility, rank 2, WEAVE): two community reports with identical fact to test dedup (9C) and attribution (9E)
+    sup2_1 = _make_support(
+        "s:2:sup:1",
+        "s:2",
+        "Автобус номер четыре курсирует примерно раз в час.",
+        evidence_kind="community_report",
+    )
+    sup2_2 = _make_support(
+        "s:2:sup:2",
+        "s:2",
+        "Автобус номер четыре курсирует примерно раз в час.",
+        evidence_kind="community_report",
+    )  # duplicate!
+    sup2_3 = _make_support(
+        "s:2:sup:3",
+        "s:2",
+        "Интервал движения маршруток увеличен.",
+        evidence_kind="community_report",
+    )
+
+    # Story 3 (communications, rank 3, BRIEF):
+    sup3_1 = _make_support(
+        "s:3:sup:1",
+        "s:3",
+        "Житель запитал роутер от своего аккумулятора.",
+        evidence_kind="community_report",
+    )
+
+    all_sups = (sup1_1, sup1_2, sup2_1, sup2_2, sup2_3, sup3_1)
+    cards = (card_infra, card_mob, card_comm)
+    context = ArticleEditorialContext(
+        headline_candidates=("Авария на подстанции", "Движение автобусов"),
+        support_index=all_sups,
+        support_by_id={s.support_id: s for s in all_sups},
+        recurring_topics=(),
+        edition_anchor_terms=("Бердянск",),
+        story_cards=cards,
+    )
+
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="s:1",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(sup1_1.support_id, sup1_2.support_id),
+            ),
+            ArticleStoryCoverage(
+                story_id="s:2",
+                topic="Транспорт",
+                rank=2,
+                prominence="WEAVE",
+                support_ids=(sup2_1.support_id, sup2_2.support_id, sup2_3.support_id),
+            ),
+            ArticleStoryCoverage(
+                story_id="s:3",
+                topic="Связь",
+                rank=3,
+                prominence="BRIEF",
+                support_ids=(sup3_1.support_id,),
+            ),
+        )
+    )
+
+    composer = ArticleDeterministicComposer()
+    draft = composer.render_full_fallback(context, plan, max_sections=5)
+
+    # Test 9B: Sections ordered by min selection rank and <= max_sections
+    section_headings = [sec.heading for sec in draft.sections]
+    assert len(draft.sections) <= 5
+    assert any(
+        "инфраструктур" in h.lower() or "коммунал" in h.lower() or "жкх" in h.lower()
+        for h in section_headings[:1]
+    )
+
+    # Test 9C: Exact conservative dedup: duplicate sentence is merged, and support IDs are unioned!
+    mob_sec = next(
+        sec
+        for sec in draft.sections
+        if any(w in sec.heading.lower() for w in ("транспорт", "маршрут", "мобильн"))
+    )
+    combined_mob_text = " ".join(p.text for p in mob_sec.paragraphs)
+    assert combined_mob_text.lower().count("автобус номер четыре курсирует примерно раз в час") == 1
+    mob_cited = {sid for p in mob_sec.paragraphs for sid in p.cited_support_ids}
+    assert sup2_1.support_id in mob_cited
+    assert sup2_2.support_id in mob_cited
+
+    # Test 9D: Title and lead validate cleanly under validate_article_draft
+    val_res = validate_article_draft(
+        draft, context, PublicationEditorialConfig(article_min_words=5, article_min_sections=1)
+    )
+    blocking = [i for i in val_res.issues if i.blocking]
+    assert val_res.is_valid is True, f"Validation failed with blocking issues: {blocking}"
+
+    # Test 9E: No consecutive duplicate attribution phrases
+    for sec in draft.sections:
+        for p in sec.paragraphs:
+            sentences = [s.strip() for s in p.text.split(".") if s.strip()]
+            for i in range(len(sentences) - 1):
+                s1_attr = sentences[i].startswith("По сообщениям жителей")
+                s2_attr = sentences[i + 1].startswith("По сообщениям жителей")
+                assert not (
+                    s1_attr and s2_attr
+                ), f"Consecutive duplicate attribution in paragraph: {p.text}"

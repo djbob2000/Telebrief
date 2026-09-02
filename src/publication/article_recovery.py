@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
+from collections import defaultdict
 from collections.abc import Sequence
+from typing import Literal
 
+from src.editorial_models import StoryCard
 from src.publication.article_claims import find_unsupported_claims
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 from src.publication.article_coverage import ArticleCoveragePlan, ArticleStoryCoverage
@@ -13,6 +18,22 @@ from src.publication.article_models import (
     ArticleSection,
     StructuredArticleDraft,
 )
+
+ArticleTheme = Literal[
+    "infrastructure",
+    "mobility",
+    "communications",
+    "civic_services",
+    "city_life",
+]
+
+THEME_HEADINGS: dict[str, str] = {
+    "infrastructure": "Коммунальная инфраструктура",
+    "mobility": "Городской и междугородний транспорт",
+    "communications": "Связь и интернет",
+    "civic_services": "Социальная сфера и городские службы",
+    "city_life": "Городские события",
+}
 
 _SHORT_SECTION_HEADING = "Коротко о других событиях города"
 _GENERIC_SECTION_HEADING = "Городские события"
@@ -24,16 +45,205 @@ _PROMINENCE_LIMITS: dict[str, int] = {
 }
 
 
-def _render_support_sentence(support: ArticleSupport) -> str:
-    text = (support.text or support.source_text).strip()
-    if support.evidence_kind in {"community_report", "community_observation", "quote_assertion"}:
-        if not text.casefold().startswith(("по сообщениям", "жители сообщают", "по словам")):
-            text = f"По сообщениям жителей, {text[:1].lower() + text[1:] if text else text}"
-    if support.temporal_role == "HISTORICAL_CONTEXT" and text:
+def resolve_article_theme(
+    card: StoryCard,
+    supports: Sequence[ArticleSupport] = (),
+) -> ArticleTheme:
+    """Classify a story into one of five canonical thematic sections.
+
+    Mapping:
+    - electricity/water/gas/heating/ЖКХ -> infrastructure
+    - urban/intercity transport/routes -> mobility
+    - internet/mobile/telecom -> communications
+    - healthcare/social/humanitarian/education/sport/banking -> civic_services
+    - fallback -> city_life
+    """
+    cat = (card.category or "").casefold().strip()
+    tags = [t.casefold().strip() for t in card.tags]
+    topic = (card.topic or "").casefold().strip()
+    summary = (card.summary or "").casefold().strip()
+
+    sup_texts = [s.text.casefold() for s in supports if s.text]
+    sup_ids = [s.support_id.casefold() for s in supports if s.support_id]
+
+    all_tokens = [cat, topic, summary] + tags + sup_texts + sup_ids
+    corpus = " ".join(all_tokens)
+
+    # 1. Infrastructure / ЖКХ
+    if cat in {
+        "utilities",
+        "infrastructure",
+        "power",
+        "water",
+        "gas",
+        "heating",
+        "energy",
+        "жкх",
+    }:
+        return "infrastructure"
+    infra_markers = (
+        "жкх",
+        "электр",
+        "свет",
+        "вод",
+        "газ",
+        "отоплен",
+        "котельн",
+        "энерг",
+        "подстанци",
+        "водоканал",
+        "аварийн",
+        "труб",
+        "порыв",
+        "водовод",
+    )
+    if any(m in corpus for m in infra_markers) or any(
+        "power" in s or "water" in s or "gas" in s or "heating" in s for s in sup_ids
+    ):
+        return "infrastructure"
+
+    # 2. Mobility / Transport
+    if cat in {"transport", "mobility", "traffic"}:
+        return "mobility"
+    mob_markers = (
+        "транспорт",
+        "автобус",
+        "маршрут",
+        "рейс",
+        "проезд",
+        "дорог",
+        "трасс",
+        "такси",
+        "автовокзал",
+        "жд",
+        "поезд",
+    )
+    if any(m in corpus for m in mob_markers):
+        return "mobility"
+
+    # 3. Communications / Telecom
+    if cat in {"telecom", "communications", "internet"}:
+        return "communications"
+    comm_markers = (
+        "связь",
+        "интернет",
+        "провайдер",
+        "мобильн",
+        "роутер",
+        "wi-fi",
+        "wifi",
+        "оператор",
+        "телеком",
+        "сеть",
+    )
+    if any(m in corpus for m in comm_markers):
+        return "communications"
+
+    # 4. Civic services / Municipal / Social / Banking / Healthcare / Education / Sport
+    if cat in {
+        "healthcare",
+        "social",
+        "humanitarian",
+        "education",
+        "sport",
+        "banking",
+        "services",
+    }:
+        return "civic_services"
+    civic_markers = (
+        "банк",
+        "пенсионн",
+        "выплат",
+        "пособи",
+        "соц",
+        "гуманитарн",
+        "больниц",
+        "поликлиник",
+        "врач",
+        "медицин",
+        "школ",
+        "детсад",
+        "спорт",
+        "секци",
+        "мфц",
+        "паспорт",
+        "администраци",
+    )
+    if any(m in corpus for m in civic_markers):
+        return "civic_services"
+
+    # 5. Fallback -> city_life
+    return "city_life"
+
+
+def _normalize_for_dedup(text: str) -> str:
+    """Normalize text for conservative exact deduplication."""
+    t = unicodedata.normalize("NFC", text).strip().casefold()
+    for prefix in (
+        "по сообщениям жителей,",
+        "по сообщениям жителей",
+        "жители сообщают,",
+        "жители сообщают",
+        "по словам жителей,",
+        "по словам жителей",
+        "как сообщили,",
+        "как сообщили",
+        "ранее,",
+        "ранее",
+        "запланировано:",
+        "запланировано",
+    ):
+        if t.startswith(prefix):
+            t = t[len(prefix) :].strip()
+    t = re.sub(r"[^\w\s]", "", t)
+    return " ".join(t.split())
+
+
+def _render_support_sentence(
+    support: ArticleSupport,
+    already_attributed: bool = False,
+) -> tuple[str, bool]:
+    """Render a single support into natural reader prose, preventing duplicate attribution."""
+    from src.publication.article_writer_context import sanitize_writer_source_text
+
+    raw_text = (support.text or support.source_text).strip()
+    text = sanitize_writer_source_text(raw_text).strip()
+    is_community = support.evidence_kind in {
+        "community_report",
+        "community_observation",
+        "quote_assertion",
+    }
+    has_own_attr = text.casefold().startswith(
+        ("по сообщениям", "жители сообщают", "по словам", "как сообщают")
+    )
+
+    if is_community:
+        if not has_own_attr:
+            if not already_attributed:
+                text = f"По сообщениям жителей, {text[:1].lower() + text[1:] if text else text}"
+                new_attributed = True
+            else:
+                text = f"Также {text[:1].lower() + text[1:] if text else text}"
+                new_attributed = True
+        else:
+            new_attributed = True
+    else:
+        new_attributed = False
+
+    if (
+        support.temporal_role == "HISTORICAL_CONTEXT"
+        and text
+        and not text.casefold().startswith("ранее")
+    ):
         text = f"Ранее {text[:1].lower() + text[1:]}"
-    elif support.temporal_role == "FUTURE_SCHEDULED" and text:
+    elif (
+        support.temporal_role == "FUTURE_SCHEDULED"
+        and text
+        and not text.casefold().startswith("запланировано")
+    ):
         text = f"Запланировано: {text}"
-    return text.rstrip(". ") + "."
+
+    return text.rstrip(". ") + ".", new_attributed
 
 
 def _resolve_story_supports(
@@ -55,31 +265,58 @@ def _resolve_story_supports(
     return tuple(support_map[sid] for sid in selected_ids if sid in support_map)
 
 
-def _build_story_paragraph(
+def _build_theme_paragraphs(
     supports: Sequence[ArticleSupport],
     origin: str,
-) -> ArticleParagraph:
-    rendered_pairs: list[tuple[ArticleSupport, str]] = []
+) -> tuple[ArticleParagraph, ...]:
+    if not supports:
+        return ()
+
+    seen_dedup_keys: dict[str, int] = {}
+    rendered_sentences: list[str] = []
+    claim_atoms: list[ArticleClaimAtom] = []
+    para_cited_ids: list[str] = []
+
+    already_attributed = False
     for sup in supports:
-        sent = _render_support_sentence(sup)
-        if sent:
-            rendered_pairs.append((sup, sent))
+        norm_key = _normalize_for_dedup(sup.text or sup.source_text)
+        if not norm_key:
+            continue
 
-    if not rendered_pairs:
-        return ArticleParagraph(text="", cited_support_ids=(), claims=(), generation_origin=origin)  # type: ignore[arg-type]
+        if norm_key in seen_dedup_keys:
+            # Merge support ID into existing claim atom
+            idx = seen_dedup_keys[norm_key]
+            existing = claim_atoms[idx]
+            new_cited = tuple(dict.fromkeys(existing.cited_support_ids + (sup.support_id,)))
+            claim_atoms[idx] = ArticleClaimAtom(text=existing.text, cited_support_ids=new_cited)
+            if sup.support_id not in para_cited_ids:
+                para_cited_ids.append(sup.support_id)
+            continue
 
-    para_text = " ".join(sent for _, sent in rendered_pairs)
-    cited_ids = tuple(dict.fromkeys(sup.support_id for sup, _ in rendered_pairs))
-    claims = tuple(
-        ArticleClaimAtom(text=sent.rstrip("."), cited_support_ids=(sup.support_id,))
-        for sup, sent in rendered_pairs
-    )
-    return ArticleParagraph(
-        text=para_text,
-        cited_support_ids=cited_ids,
-        claims=claims,
+        sent, already_attributed = _render_support_sentence(
+            sup, already_attributed=already_attributed
+        )
+        if not sent:
+            continue
+
+        seen_dedup_keys[norm_key] = len(claim_atoms)
+        rendered_sentences.append(sent)
+        claim_atoms.append(
+            ArticleClaimAtom(text=sent.rstrip("."), cited_support_ids=(sup.support_id,))
+        )
+        if sup.support_id not in para_cited_ids:
+            para_cited_ids.append(sup.support_id)
+
+    if not rendered_sentences:
+        return ()
+
+    para = ArticleParagraph(
+        text=" ".join(rendered_sentences),
+        cited_support_ids=tuple(dict.fromkeys(para_cited_ids)),
+        claims=tuple(claim_atoms),
         generation_origin=origin,  # type: ignore[arg-type]
     )
+    return (para,)
 
 
 def _safe_heading_for_story(
@@ -125,22 +362,23 @@ class ArticleDeterministicComposer:
             if not story_sups:
                 continue
 
-            para = _build_story_paragraph(story_sups, origin="SUPPLEMENT")
-            if not para.text:
+            paras = _build_theme_paragraphs(story_sups, origin="SUPPLEMENT")
+            if not paras:
                 continue
 
             if story.prominence == "DEVELOP":
                 heading = _safe_heading_for_story(story, story_sups)
+                sec_cited = tuple(dict.fromkeys(sid for p in paras for sid in p.cited_support_ids))
                 sec = ArticleSection(
                     heading=heading,
-                    heading_support_ids=para.cited_support_ids,
+                    heading_support_ids=sec_cited,
                     heading_claims=(),
-                    paragraphs=(para,),
+                    paragraphs=paras,
                     heading_generation_origin="SUPPLEMENT",
                 )
                 new_sections.append(sec)
             else:
-                short_paragraphs.append(para)
+                short_paragraphs.extend(paras)
 
         if short_paragraphs:
             short_cited = tuple(
@@ -186,96 +424,103 @@ class ArticleDeterministicComposer:
         if not plan.stories:
             raise ValueError("cannot render fallback from empty article coverage plan")
 
-        # 1. Title and lead from the first planned story
-        first_story = plan.stories[0]
-        first_sups = _resolve_story_supports(first_story, context)
-        if not first_sups:
-            # Try any story with valid supports
+        card_by_id = {c.id: c for c in context.story_cards}
+        stories_by_theme: dict[str, list[ArticleStoryCoverage]] = defaultdict(list)
+        for story in plan.stories:
+            card = card_by_id.get(story.story_id) or StoryCard(
+                id=story.story_id, topic=story.topic, importance="medium", summary=story.topic
+            )
+            sups = _resolve_story_supports(story, context)
+            theme = resolve_article_theme(card, sups)
+            stories_by_theme[theme].append(story)
+
+        sorted_themes = sorted(
+            stories_by_theme.keys(),
+            key=lambda t: min(s.rank for s in stories_by_theme[t]),
+        )
+
+        if len(sorted_themes) > max_sections:
+            kept_themes = sorted_themes[: max(1, max_sections - 1)]
+            extra_stories: list[ArticleStoryCoverage] = []
+            for t in sorted_themes[max(1, max_sections - 1) :]:
+                extra_stories.extend(stories_by_theme[t])
+            stories_by_theme["city_life"].extend(extra_stories)
+            if "city_life" not in kept_themes:
+                kept_themes.append("city_life")
+            sorted_themes = kept_themes
+
+        # 1. Title and lead from top stories / thematic axes
+        top_story = plan.stories[0]
+        top_sups = _resolve_story_supports(top_story, context)
+        if not top_sups:
             for s in plan.stories:
                 sups = _resolve_story_supports(s, context)
                 if sups:
-                    first_story = s
-                    first_sups = sups
+                    top_story = s
+                    top_sups = sups
                     break
-        if not first_sups:
+        if not top_sups:
             raise ValueError("cannot render fallback: no planned story supports found in context")
 
-        first_sup = first_sups[0]
-        first_sentence = _render_support_sentence(first_sup)
-
-        from src.publication.article_semantic_support import assess_semantic_support
-
-        topic = first_story.topic.strip()
-        support_texts = [s.text or s.source_text for s in first_sups if (s.text or s.source_text)]
-        semantic_res = assess_semantic_support(topic, support_texts) if topic else None
-        if (
-            topic
-            and semantic_res is not None
-            and not semantic_res.blocking_critical_terms
-            and not semantic_res.blocking_proper_names
-            and not find_unsupported_claims(topic, support_texts)
+        top_sup = top_sups[0]
+        clean_title = top_sup.text.strip().rstrip(".")
+        for prefix in (
+            "По сообщениям жителей, ",
+            "Жители сообщают, ",
+            "По словам жителей, ",
         ):
-            title = topic
-        else:
-            title = first_sentence.rstrip(".")
-
-        title_support_ids = tuple(s.support_id for s in first_sups)
+            if clean_title.startswith(prefix):
+                clean_title = clean_title[len(prefix) :]
+        title = clean_title
+        title_support_ids = (top_sup.support_id,)
         title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_support_ids),)
 
-        # Lead from first 1-2 supports of first story (or first two stories)
-        lead_sups = list(first_sups[:2])
-        if len(lead_sups) < 2 and len(plan.stories) > 1:
-            second_sups = _resolve_story_supports(plan.stories[1], context)
-            if second_sups:
-                lead_sups.append(second_sups[0])
+        lead_sups: list[ArticleSupport] = []
+        for t in sorted_themes[: min(3, len(sorted_themes))]:
+            t_story = stories_by_theme[t][0]
+            t_sups = _resolve_story_supports(t_story, context)
+            if t_sups:
+                lead_sups.append(t_sups[0])
 
-        lead_sentences = [_render_support_sentence(s) for s in lead_sups]
+        if len(lead_sups) < 2 and len(top_sups) > 1:
+            lead_sups.append(top_sups[1])
+
+        lead_sentences: list[str] = []
+        lead_claims: list[ArticleClaimAtom] = []
+        lead_attr = False
+        for lead_sup in lead_sups:
+            sent, lead_attr = _render_support_sentence(lead_sup, already_attributed=lead_attr)
+            lead_sentences.append(sent)
+            lead_claims.append(
+                ArticleClaimAtom(text=sent.rstrip("."), cited_support_ids=(lead_sup.support_id,))
+            )
+
         lead = " ".join(lead_sentences)
-        lead_support_ids = tuple(dict.fromkeys(s.support_id for s in lead_sups))
-        lead_claims = tuple(
-            ArticleClaimAtom(text=sent.rstrip("."), cited_support_ids=(s.support_id,))
-            for s, sent in zip(lead_sups, lead_sentences)
-        )
+        lead_support_ids = tuple(dict.fromkeys(ls.support_id for ls in lead_sups))
 
-        # 2. Sections for all planned stories
+        # 2. Build theme sections
         sections: list[ArticleSection] = []
-        short_paragraphs: list[ArticleParagraph] = []
-        max_develop_sections = max(1, max_sections - 1)
+        for th_key in sorted_themes:
+            theme_stories = stories_by_theme[th_key]
+            theme_sups: list[ArticleSupport] = []
+            for st in theme_stories:
+                theme_sups.extend(_resolve_story_supports(st, context))
 
-        for story in plan.stories:
-            story_sups = _resolve_story_supports(story, context)
-            if not story_sups:
+            paras = _build_theme_paragraphs(theme_sups, origin="FALLBACK")
+            if not paras:
                 continue
 
-            para = _build_story_paragraph(story_sups, origin="FALLBACK")
-            if not para.text:
-                continue
-
-            if story.prominence == "DEVELOP" and len(sections) < max_develop_sections:
-                heading = _safe_heading_for_story(story, story_sups)
-                sec = ArticleSection(
+            sec_cited = tuple(dict.fromkeys(sid for p in paras for sid in p.cited_support_ids))
+            heading = THEME_HEADINGS.get(th_key, _GENERIC_SECTION_HEADING)
+            sections.append(
+                ArticleSection(
                     heading=heading,
-                    heading_support_ids=para.cited_support_ids,
+                    heading_support_ids=sec_cited,
                     heading_claims=(),
-                    paragraphs=(para,),
+                    paragraphs=paras,
                     heading_generation_origin="FALLBACK",
                 )
-                sections.append(sec)
-            else:
-                short_paragraphs.append(para)
-
-        if short_paragraphs:
-            short_cited = tuple(
-                dict.fromkeys(sid for p in short_paragraphs for sid in p.cited_support_ids)
             )
-            short_sec = ArticleSection(
-                heading=_SHORT_SECTION_HEADING,
-                heading_support_ids=short_cited,
-                heading_claims=(),
-                paragraphs=tuple(short_paragraphs),
-                heading_generation_origin="FALLBACK",
-            )
-            sections.append(short_sec)
 
         all_text = " ".join([title, lead] + [p.text for s in sections for p in s.paragraphs])
         word_count = len(all_text.split())
@@ -286,7 +531,7 @@ class ArticleDeterministicComposer:
             title_claims=title_claims,
             lead=lead,
             lead_support_ids=lead_support_ids,
-            lead_claims=lead_claims,
+            lead_claims=tuple(lead_claims),
             sections=tuple(sections),
             cited_evidence_ids=(),
             word_count=word_count,
