@@ -522,3 +522,86 @@ def test_article_support_preserves_story_id_for_operational():
     )
     op_support = next(s for s in ctx.support_index if s.support_kind == "operational")
     assert op_support.story_id == "story:77"
+
+
+def test_render_operational_state_fact():
+    """Test 7A & 7B: Exhaustive mapping for all 6 states, fail-closed on unknown state."""
+    from src.publication.article_context import render_operational_state_fact
+
+    states_expected = {
+        "UNAVAILABLE": "отсутствует",
+        "AVAILABLE": "работает",
+        "DEGRADED": "работает с ограничениями",
+        "RESTRICTED": "ограничено",
+        "SCHEDULED": "запланировано: ремонт водовода",
+        "UNKNOWN": "ситуация уточняется",
+    }
+
+    for state, exp_substr in states_expected.items():
+        obs = OperationalObservationPayload(
+            subject_key="water_supply",
+            subject_label="Водоснабжение",
+            dimension="availability",
+            location="АКЗ",
+            entity="водовод",
+            state=state,
+            detail="ремонт водовода"
+            if state == "SCHEDULED"
+            else ("ситуация уточняется" if state == "UNKNOWN" else ""),
+            source_fragment_ids=(1,),
+        )
+        rendered = render_operational_state_fact(obs)
+        assert exp_substr in rendered
+        # Must not leak technical enum
+        assert state not in rendered
+        # Must not contain brackets
+        assert "[" not in rendered and "]" not in rendered
+
+    # Test 7B: Unknown state fails closed
+    class BadObs:
+        state = "CORRUPTED"
+        subject_label = "Тест"
+        location = ""
+        entity = ""
+        detail = ""
+
+    with pytest.raises(ValueError, match="Unknown operational state"):
+        render_operational_state_fact(BadObs())
+
+
+def test_article_support_text_has_no_technical_leaks():
+    """Test 7C: ArticleSupport.text for operational observations contains 0 brackets and 0 raw enums."""
+    card = StoryCard(
+        id="story:1",
+        topic="Электроснабжение",
+        importance="high",
+        summary="Сводка по свету",
+        representative_source_refs=["telegram:source:1:item:1:rev:1:frag:1"],
+    )
+    obs = OperationalObservationPayload(
+        subject_key="power_outage",
+        subject_label="Электроснабжение",
+        dimension="availability",
+        location="Бердянск",
+        entity="подстанция",
+        state="UNAVAILABLE",
+        detail="вообще нигде нет электроснабжения",
+        source_fragment_ids=(1,),
+    )
+    obs_res = ResolvedObservation(
+        observation=obs,
+        observed_at=_T0,
+        source_refs=("telegram:source:1:item:1:rev:1:frag:1",),
+    )
+    ctx = build_article_editorial_context(
+        cards=[card],
+        evidence_items=[],
+        operational_observations=[obs_res],
+    )
+    op_sup = next(s for s in ctx.support_index if s.support_kind == "operational")
+
+    assert "[" not in op_sup.text
+    assert "]" not in op_sup.text
+    assert "UNAVAILABLE" not in op_sup.text
+    assert "AVAILABLE" not in op_sup.text
+    assert "отсутствует" in op_sup.text

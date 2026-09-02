@@ -114,6 +114,60 @@ def _support_framing(support: ArticleSupport) -> str:
     return "factual_support"
 
 
+def render_operational_state_fact(obs: object) -> str:
+    """Render a reader-safe Russian factual sentence from an operational observation without technical leaks."""
+    if hasattr(obs, "observation"):
+        obs = obs.observation
+    state_raw = getattr(obs, "state", None) or ""
+    state_upper = state_raw.strip().upper()
+    if state_upper not in {
+        "AVAILABLE",
+        "UNAVAILABLE",
+        "DEGRADED",
+        "RESTRICTED",
+        "UNKNOWN",
+        "SCHEDULED",
+    }:
+        raise ValueError(f"Unknown operational state: {state_raw!r}")
+
+    subject = getattr(obs, "subject_label", "") or getattr(obs, "subject_key", "")
+    location = getattr(obs, "location", "")
+    entity = getattr(obs, "entity", "")
+    detail = (getattr(obs, "detail", "") or "").strip()
+
+    loc_ent_parts = [p for p in (location, entity) if p]
+    loc_ent = ": ".join(loc_ent_parts) if loc_ent_parts else ""
+
+    parts: list[str] = []
+    if subject:
+        parts.append(subject)
+    if loc_ent:
+        parts.append(loc_ent)
+
+    header = " — ".join(parts) if parts else ""
+
+    if state_upper == "SCHEDULED":
+        state_desc = f"запланировано: {detail}" if detail else "запланировано"
+    elif state_upper == "UNKNOWN":
+        state_desc = detail or "ситуация уточняется"
+    elif state_upper == "UNAVAILABLE":
+        state_desc = f"отсутствует — {detail}" if detail else "отсутствует"
+    elif state_upper == "AVAILABLE":
+        state_desc = f"работает — {detail}" if detail else "работает"
+    elif state_upper == "DEGRADED":
+        state_desc = (
+            f"работает с ограничениями — {detail}" if detail else "работает с ограничениями"
+        )
+    elif state_upper == "RESTRICTED":
+        state_desc = f"ограничено — {detail}" if detail else "ограничено"
+    else:
+        raise ValueError(f"Unhandled operational state: {state_upper}")
+
+    if header:
+        return f"{header}: {state_desc}"
+    return state_desc
+
+
 @dataclass(frozen=True)
 class ArticleEditorialContext:
     """Rich, structured editorial context for long-form article generation."""
@@ -298,16 +352,7 @@ def build_article_editorial_context(
                 if m_item:
                     item_ids.append(int(m_item.group(1)))
 
-            fact_parts: list[str] = []
-            if obs.subject_label:
-                fact_parts.append(f"[{obs.subject_label}]")
-            if obs.location or obs.entity:
-                loc_ent = ": ".join([p for p in (obs.location, obs.entity) if p])
-                fact_parts.append(loc_ent)
-            if obs.state or obs.detail:
-                st_det = " — ".join([p for p in (obs.state, obs.detail) if p])
-                fact_parts.append(st_det)
-            fact_text = " ".join(fact_parts) if fact_parts else obs.detail
+            fact_text = render_operational_state_fact(obs)
 
             op_role: TemporalRole = "CURRENT_WINDOW"
             if pub_win is not None:
