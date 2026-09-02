@@ -2,11 +2,36 @@
 
 from __future__ import annotations
 
+import re
+import unicodedata
+from collections import Counter
 from dataclasses import dataclass
+from typing import Any, Literal
 
 from src.publication.article_length import ArticleLengthProfile
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.digest_narrative import DigestNarrativeDraft, DigestNarrativePlan
+
+_TECHNICAL_TOKENS_RE = re.compile(
+    r"\b(?:AVAILABLE|UNAVAILABLE|DEGRADED|RESTRICTED|SCHEDULED|CONFLICTING)\b|\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]",
+    re.IGNORECASE,
+)
+_INTERNAL_HANDLES_RE = re.compile(
+    r"(?:\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]|\b(?:story:\d+|evidence:\d+:frag:\d+)\b)",
+    re.IGNORECASE,
+)
+_ATTRIBUTION_RE = re.compile(
+    r"\b(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+жителей|жители\s+отмечают|отмечают\s+жители|как\s+сообщают\s+жители|сообщают\s+жители|сообщают\s+горожане|по\s+информации\s+жителей|по\s+данным\s+жителей)\b",
+    re.IGNORECASE,
+)
+_TEMPORAL_CHAIN_RE = re.compile(
+    r"(?:ранее\s+также|также\s+ранее|(?:^|\.\s+)также\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
+_UKRAINIAN_PROSE_RE = re.compile(
+    r"\b(?:та|що|як|це|але|після|було|буде|немає|року|році|місті|вулиці|людей|вони|який|яка|яке|які)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -39,6 +64,181 @@ class ArticleReaderMetrics:
     is_within_target: bool
     is_above_hard_floor: bool
     unsupported_claim_count: int
+
+
+@dataclass(frozen=True)
+class ReaderTextMetrics:
+    """Deterministic quantitative reader text quality metrics."""
+
+    word_count: int
+    sentence_count: int
+    paragraph_count: int
+    bullet_count: int
+    heading_count: int
+    max_paragraph_words: int
+    duplicate_sentence_count: int
+    attribution_count: int
+    attribution_density: float
+    temporal_chain_marker_count: int
+    raw_technical_token_count: int
+    internal_handle_count: int
+    non_output_language_outside_quotes_count: int
+    title_word_count: int
+    lead_word_count: int
+    title_lead_overlap: float
+
+
+@dataclass(frozen=True)
+class DigestReaderProfile:
+    """Adaptive reader budget profile for digests depending on reporting richness."""
+
+    richness: Literal["thin", "standard", "rich"]
+    target_max_words: int
+    hard_max_words: int
+    target_max_detail_items: int
+    hard_max_detail_items: int
+    max_item_body_words: int
+
+
+@dataclass(frozen=True)
+class ReaderQualityViolation:
+    """Specific reader-facing quality failure."""
+
+    code: str
+    message: str
+    metric_value: Any
+    threshold: Any
+
+
+def derive_digest_reader_profile(story_count: int) -> DigestReaderProfile:
+    """Derive adaptive digest presentation budgets from story volume."""
+    if story_count <= 12:
+        return DigestReaderProfile("thin", 450, 650, 10, 12, 80)
+    if story_count <= 50:
+        return DigestReaderProfile("standard", 800, 1050, 16, 20, 90)
+    return DigestReaderProfile("rich", 1200, 1500, 24, 30, 100)
+
+
+def measure_reader_text_metrics(
+    text: str,
+    publication_type: str = "article",
+) -> ReaderTextMetrics:
+    """Extract deterministic presentation quality metrics from rendered markdown text."""
+    norm_text = unicodedata.normalize("NFC", text or "")
+    lines = norm_text.splitlines()
+
+    total_words = len(norm_text.split())
+    bullet_count = sum(1 for line in lines if line.strip().startswith(("•", "-", "* ")))
+    heading_count = sum(
+        1
+        for line in lines
+        if line.strip().startswith(("#", "##", "###", "####"))
+        or (
+            line.strip().startswith("*")
+            and line.strip().endswith("*")
+            and len(line.strip()) < 80
+            and not line.strip().startswith("* ")
+        )
+    )
+
+    # Paragraph extraction
+    raw_blocks = [b.strip() for b in norm_text.split("\n\n") if b.strip()]
+    paragraphs: list[str] = []
+    title_text = ""
+    lead_text = ""
+
+    for idx, block in enumerate(raw_blocks):
+        clean_block = block.strip()
+        if idx == 0 and (clean_block.startswith("#") or clean_block.startswith("*")):
+            title_text = re.sub(r"^[#*•\s\-_]+|[#*•\s\-_]+$", "", clean_block).strip()
+            continue
+        if idx == 1 and not clean_block.startswith(("#", "•", "-")):
+            lead_text = clean_block
+            paragraphs.append(clean_block)
+            continue
+        if not clean_block.startswith(("#", "•", "-")):
+            paragraphs.append(clean_block)
+
+    paragraph_count = len(paragraphs)
+    paragraph_word_counts = [len(p.split()) for p in paragraphs]
+    max_para_words = max(paragraph_word_counts) if paragraph_word_counts else 0
+
+    # Sentences and duplicate sentence detection
+    # Split sentences by ., !, ?
+    raw_sents = re.split(r"(?<=[.!?])\s+", norm_text)
+    cleaned_sents: list[str] = []
+    for s in raw_sents:
+        s_clean = re.sub(r"^[#*•\s\-_]+", "", s).strip()
+        s_clean = re.sub(r"[«»“”\"\'`]", "", s_clean).lower()
+        s_clean = re.sub(r"\s+", " ", s_clean).strip()
+        if len(s_clean) > 20:
+            cleaned_sents.append(s_clean)
+
+    sent_counts = Counter(cleaned_sents)
+    duplicate_sentence_count = sum(cnt - 1 for cnt in sent_counts.values() if cnt > 1)
+    sentence_count = len(raw_sents) if raw_sents and raw_sents[0] else 0
+
+    # Attributions
+    attr_matches = _ATTRIBUTION_RE.findall(norm_text)
+    attribution_count = len(attr_matches)
+    attribution_density = (
+        round(attribution_count / sentence_count, 4) if sentence_count > 0 else 0.0
+    )
+
+    # Temporal chains
+    chain_matches = _TEMPORAL_CHAIN_RE.findall(norm_text)
+    temporal_chain_marker_count = len(chain_matches)
+
+    # Technical tokens and internal handles
+    technical_token_matches = _TECHNICAL_TOKENS_RE.findall(norm_text)
+    raw_technical_token_count = len(technical_token_matches)
+
+    internal_handle_matches = _INTERNAL_HANDLES_RE.findall(norm_text)
+    internal_handle_count = len(internal_handle_matches)
+
+    # Non-output language outside quotes (masking quotes)
+    text_outside_quotes = re.sub(r"[«\"][^»\"]+[»\"]", "", norm_text)
+    ukr_words = _UKRAINIAN_PROSE_RE.findall(text_outside_quotes)
+    non_output_language_count = len(ukr_words)
+
+    title_word_count = len(title_text.split())
+    lead_word_count = len(lead_text.split())
+
+    overlap = 0.0
+    if title_word_count and lead_word_count:
+        title_words = set(re.findall(r"[a-zа-яё0-9]+", title_text.lower()))
+        lead_words = set(re.findall(r"[a-zа-яё0-9]+", lead_text.lower()))
+        if title_words:
+            overlap = round(len(title_words & lead_words) / len(title_words), 4)
+
+    return ReaderTextMetrics(
+        word_count=total_words,
+        sentence_count=sentence_count,
+        paragraph_count=paragraph_count,
+        bullet_count=bullet_count,
+        heading_count=heading_count,
+        max_paragraph_words=max_para_words,
+        duplicate_sentence_count=duplicate_sentence_count,
+        attribution_count=attribution_count,
+        attribution_density=attribution_density,
+        temporal_chain_marker_count=temporal_chain_marker_count,
+        raw_technical_token_count=raw_technical_token_count,
+        internal_handle_count=internal_handle_count,
+        non_output_language_outside_quotes_count=non_output_language_count,
+        title_word_count=title_word_count,
+        lead_word_count=lead_word_count,
+        title_lead_overlap=overlap,
+    )
+
+
+def evaluate_article_markdown_quality(text: str) -> ReaderTextMetrics:
+    """Evaluate reader quality metrics for article markdown text."""
+    return measure_reader_text_metrics(text, publication_type="article")
+
+
+def evaluate_digest_markdown_quality(text: str) -> ReaderTextMetrics:
+    """Evaluate reader quality metrics for digest markdown text."""
+    return measure_reader_text_metrics(text, publication_type="digest_grouped")
 
 
 def measure_digest_reader_metrics(

@@ -1,0 +1,19 @@
+{
+  "baseline_id": "berdyansk_2026_09_02_reader_floor_v1",
+  "article_custom": {
+    "path": "tests/fixtures/reader_quality/berdyansk_2026_09_02_article_custom.md",
+    "sha256": "4536e1b12de6337c316ef309ba25de77b1fca390d72b3d3673c27fd0f622ddea"
+  },
+  "article_known_bad": {
+    "path": "tests/fixtures/reader_quality/berdyansk_2026_09_02_article_event_first_bad.md",
+    "sha256": "f9ab66450db1dbdc1efd078a1ead4d0dee1dead89a79c2351730168e462b9483"
+  },
+  "digest_custom": {
+    "path": "tests/fixtures/reader_quality/berdyansk_2026_09_02_digest_custom.md",
+    "sha256": "a1134b53f1f0f992560605e81daa9ae7d83b15270581e3d48d8a928d1f7edabe"
+  },
+  "digest_known_bad": {
+    "path": "tests/fixtures/reader_quality/berdyansk_2026_09_02_digest_event_first_bad.md",
+    "sha256": "d93d382acd72341f618fe2af482f96e3b0443b6e5efef1b50b6e6639376e5aca"
+  }
+}

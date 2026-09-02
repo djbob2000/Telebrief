@@ -129,3 +129,34 @@ def test_measure_article_reader_metrics():
     assert metrics.is_within_target is True
     assert metrics.is_above_hard_floor is True
     assert metrics.unsupported_claim_count == 0
+
+
+def test_2026_09_02_custom_article_beats_known_bad_on_reader_structure():
+    from pathlib import Path
+
+    from src.publication.narrative_quality import evaluate_article_markdown_quality
+
+    good_path = Path("tests/fixtures/reader_quality/berdyansk_2026_09_02_article_custom.md")
+    bad_path = Path("tests/fixtures/reader_quality/berdyansk_2026_09_02_article_event_first_bad.md")
+    good = evaluate_article_markdown_quality(good_path.read_text(encoding="utf-8"))
+    bad = evaluate_article_markdown_quality(bad_path.read_text(encoding="utf-8"))
+
+    assert good.duplicate_sentence_count == 0
+    assert good.max_paragraph_words < bad.max_paragraph_words
+    assert good.temporal_chain_marker_count < bad.temporal_chain_marker_count
+    assert good.attribution_density < bad.attribution_density
+
+
+def test_2026_09_02_custom_digest_beats_known_bad_on_scanability():
+    from pathlib import Path
+
+    from src.publication.narrative_quality import evaluate_digest_markdown_quality
+
+    good_path = Path("tests/fixtures/reader_quality/berdyansk_2026_09_02_digest_custom.md")
+    bad_path = Path("tests/fixtures/reader_quality/berdyansk_2026_09_02_digest_event_first_bad.md")
+    good = evaluate_digest_markdown_quality(good_path.read_text(encoding="utf-8"))
+    bad = evaluate_digest_markdown_quality(bad_path.read_text(encoding="utf-8"))
+
+    assert good.word_count < bad.word_count
+    assert good.bullet_count < bad.bullet_count
+    assert good.duplicate_sentence_count <= bad.duplicate_sentence_count
