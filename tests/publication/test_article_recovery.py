@@ -1046,3 +1046,152 @@ def test_theme_first_fallback_packing_and_deduplication():
                 assert not (
                     s1_attr and s2_attr
                 ), f"Consecutive duplicate attribution in paragraph: {p.text}"
+
+
+@pytest.mark.unit
+def test_render_full_fallback_sectioned_readable_chronicle() -> None:
+    from src.publication.article_coverage import (
+        ArticleStoryAssignment,
+        ArticleThematicSection,
+    )
+
+    # Create 5 stories across 2 sections with DEVELOP, WEAVE, and BRIEF
+    sup_dev1 = _make_support(
+        "s:1:sup:1", "s:1", "В микрорайоне восстановили подачу электроэнергии."
+    )
+    sup_dev2 = _make_support("s:2:sup:1", "s:2", "Автобус №4 курсирует с интервалом в 30 минут.")
+    sup_weave = _make_support(
+        "s:3:sup:1", "s:3", "Провайдер провел технические работы на узле связи."
+    )
+    sup_brief1 = _make_support(
+        "s:4:sup:1", "s:4", "В спорткомплексе открылся набор в секцию плавания."
+    )
+    sup_brief2 = _make_support(
+        "s:5:sup:1", "s:5", "В художественном музее открылась новая экспозиция."
+    )
+
+    all_sups = (sup_dev1, sup_dev2, sup_weave, sup_brief1, sup_brief2)
+    context = ArticleEditorialContext(
+        headline_candidates=("Энергетика", "Транспорт"),
+        support_index=all_sups,
+        support_by_id={s.support_id: s for s in all_sups},
+        recurring_topics=(),
+        edition_anchor_terms=("Бердянск",),
+    )
+
+    sec1 = ArticleThematicSection(
+        section_id="infrastructure",
+        title="Жизнеобеспечение и коммунальная обстановка",
+        lead_story_id="s:1",
+        story_assignments=(
+            ArticleStoryAssignment(
+                story_id="s:1",
+                section_id="infrastructure",
+                depth="DEVELOP",
+                rank=1,
+                primary_evidence_ids=(sup_dev1.support_id,),
+            ),
+            ArticleStoryAssignment(
+                story_id="s:2",
+                section_id="infrastructure",
+                depth="DEVELOP",
+                rank=2,
+                primary_evidence_ids=(sup_dev2.support_id,),
+            ),
+        ),
+        narrative_intent="Коммунальная обстановка",
+    )
+    sec2 = ArticleThematicSection(
+        section_id="culture_education",
+        title="Культура и городская жизнь",
+        lead_story_id="s:3",
+        story_assignments=(
+            ArticleStoryAssignment(
+                story_id="s:3",
+                section_id="culture_education",
+                depth="WEAVE",
+                rank=3,
+                primary_evidence_ids=(sup_weave.support_id,),
+            ),
+            ArticleStoryAssignment(
+                story_id="s:4",
+                section_id="culture_education",
+                depth="BRIEF",
+                rank=4,
+                primary_evidence_ids=(sup_brief1.support_id,),
+            ),
+            ArticleStoryAssignment(
+                story_id="s:5",
+                section_id="culture_education",
+                depth="BRIEF",
+                rank=5,
+                primary_evidence_ids=(sup_brief2.support_id,),
+            ),
+        ),
+        narrative_intent="Городская жизнь",
+    )
+
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="s:1",
+                topic="Энергетика",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(sup_dev1.support_id,),
+                detail_support_ids=(sup_dev1.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="s:2",
+                topic="Транспорт",
+                rank=2,
+                prominence="DEVELOP",
+                support_ids=(sup_dev2.support_id,),
+                detail_support_ids=(sup_dev2.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="s:3",
+                topic="Связь",
+                rank=3,
+                prominence="WEAVE",
+                support_ids=(sup_weave.support_id,),
+                detail_support_ids=(sup_weave.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="s:4",
+                topic="Спорт",
+                rank=4,
+                prominence="BRIEF",
+                support_ids=(sup_brief1.support_id,),
+                detail_support_ids=(sup_brief1.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="s:5",
+                topic="Музей",
+                rank=5,
+                prominence="BRIEF",
+                support_ids=(sup_brief2.support_id,),
+                detail_support_ids=(sup_brief2.support_id,),
+            ),
+        ),
+        sections=(sec1, sec2),
+    )
+
+    composer = ArticleDeterministicComposer()
+    draft = composer.render_full_fallback(context, plan)
+
+    # 1. Section headings match plan.sections
+    assert len(draft.sections) == 2
+    assert draft.sections[0].heading == "Жизнеобеспечение и коммунальная обстановка"
+    assert draft.sections[1].heading == "Культура и городская жизнь"
+
+    # 2. First section has distinct paragraphs for DEVELOP stories (not 1 giant blob)
+    assert len(draft.sections[0].paragraphs) == 2
+
+    # 3. Second section has distinct paragraphs for WEAVE and BRIEF
+    assert len(draft.sections[1].paragraphs) >= 2
+
+    # 4. 100% story coverage
+    all_cited = {sid for s in draft.sections for p in s.paragraphs for sid in p.cited_support_ids}
+    for s in plan.stories:
+        assert any(sid in all_cited for sid in s.support_ids)

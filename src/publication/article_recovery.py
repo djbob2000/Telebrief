@@ -18,6 +18,7 @@ from src.publication.article_models import (
     ArticleSection,
     StructuredArticleDraft,
 )
+from src.publication.article_writer_context import sanitize_writer_source_text
 
 ArticleTheme = Literal[
     "infrastructure",
@@ -199,31 +200,54 @@ def _normalize_for_dedup(text: str) -> str:
     return " ".join(t.split())
 
 
+_COMMUNITY_OPENERS = (
+    "По сообщениям жителей, ",
+    "Жители сообщают, что ",
+    "По информации горожан, ",
+    "Как отмечают в местных сообществах, ",
+    "Горожане обращают внимание: ",
+)
+
+_TRANSITION_OPENERS = (
+    "В то же время, ",
+    "Параллельно ",
+    "Наряду с этим, ",
+    "Кроме того, ",
+    "В свою очередь, ",
+    "Также ",
+)
+
+
 def _render_support_sentence(
     support: ArticleSupport,
     already_attributed: bool = False,
+    opener_index: int = 0,
 ) -> tuple[str, bool]:
-    """Render a single support into natural reader prose, preventing duplicate attribution."""
-    from src.publication.article_writer_context import sanitize_writer_source_text
-
     raw_text = (support.text or support.source_text).strip()
     text = sanitize_writer_source_text(raw_text).strip()
+
+    # Direct quotation marks in deterministic prose require verbatim match against source text.
+    # When transforming into reader prose, use indirect speech and strip quotation marks.
+    text = re.sub(r"[«»“”\"]", "", text)
+    text = text.replace("[contact omitted]", "").replace("[url omitted]", "").strip()
     is_community = support.evidence_kind in {
         "community_report",
         "community_observation",
         "quote_assertion",
     }
     has_own_attr = text.casefold().startswith(
-        ("по сообщениям", "жители сообщают", "по словам", "как сообщают")
+        ("по сообщениям", "жители сообщают", "по словам", "как сообщают", "как отмечают")
     )
 
     if is_community:
         if not has_own_attr:
             if not already_attributed:
-                text = f"По сообщениям жителей, {text[:1].lower() + text[1:] if text else text}"
+                opener = _COMMUNITY_OPENERS[opener_index % len(_COMMUNITY_OPENERS)]
+                text = f"{opener}{text[:1].lower() + text[1:] if text else text}"
                 new_attributed = True
             else:
-                text = f"Также {text[:1].lower() + text[1:] if text else text}"
+                opener = _TRANSITION_OPENERS[opener_index % len(_TRANSITION_OPENERS)]
+                text = f"{opener}{text[:1].lower() + text[1:] if text else text}"
                 new_attributed = True
         else:
             new_attributed = True
@@ -265,19 +289,21 @@ def _resolve_story_supports(
     return tuple(support_map[sid] for sid in selected_ids if sid in support_map)
 
 
-def _build_theme_paragraphs(
+def _build_story_paragraph(
     supports: Sequence[ArticleSupport],
     origin: str,
-) -> tuple[ArticleParagraph, ...]:
+    seen_dedup_keys: dict[str, int],
+    shared_claim_atoms: list[ArticleClaimAtom],
+    opener_offset: int = 0,
+) -> ArticleParagraph | None:
     if not supports:
-        return ()
+        return None
 
-    seen_dedup_keys: dict[str, int] = {}
     rendered_sentences: list[str] = []
     claim_atoms: list[ArticleClaimAtom] = []
     para_cited_ids: list[str] = []
-
     already_attributed = False
+
     for sup in supports:
         norm_key = _normalize_for_dedup(sup.text or sup.source_text)
         if not norm_key:
@@ -286,37 +312,122 @@ def _build_theme_paragraphs(
         if norm_key in seen_dedup_keys:
             # Merge support ID into existing claim atom
             idx = seen_dedup_keys[norm_key]
-            existing = claim_atoms[idx]
+            existing = shared_claim_atoms[idx]
             new_cited = tuple(dict.fromkeys(existing.cited_support_ids + (sup.support_id,)))
-            claim_atoms[idx] = ArticleClaimAtom(text=existing.text, cited_support_ids=new_cited)
+            shared_claim_atoms[idx] = ArticleClaimAtom(
+                text=existing.text, cited_support_ids=new_cited
+            )
             if sup.support_id not in para_cited_ids:
                 para_cited_ids.append(sup.support_id)
             continue
 
         sent, already_attributed = _render_support_sentence(
-            sup, already_attributed=already_attributed
+            sup,
+            already_attributed=already_attributed,
+            opener_index=opener_offset + len(rendered_sentences),
         )
         if not sent:
             continue
 
-        seen_dedup_keys[norm_key] = len(claim_atoms)
-        rendered_sentences.append(sent)
-        claim_atoms.append(
-            ArticleClaimAtom(text=sent.rstrip("."), cited_support_ids=(sup.support_id,))
+        clean_sup_text = sanitize_writer_source_text((sup.text or sup.source_text).strip()).strip()
+        clean_sup_text = re.sub(r"[«»“”\"]", "", clean_sup_text)
+        clean_sup_text = (
+            clean_sup_text.replace("[contact omitted]", "").replace("[url omitted]", "").strip()
         )
+
+        atom = ArticleClaimAtom(
+            text=clean_sup_text.rstrip("."), cited_support_ids=(sup.support_id,)
+        )
+        seen_dedup_keys[norm_key] = len(shared_claim_atoms)
+        shared_claim_atoms.append(atom)
+        rendered_sentences.append(sent)
+        claim_atoms.append(atom)
         if sup.support_id not in para_cited_ids:
             para_cited_ids.append(sup.support_id)
 
     if not rendered_sentences:
-        return ()
+        return None
 
-    para = ArticleParagraph(
+    return ArticleParagraph(
         text=" ".join(rendered_sentences),
         cited_support_ids=tuple(dict.fromkeys(para_cited_ids)),
         claims=tuple(claim_atoms),
         generation_origin=origin,  # type: ignore[arg-type]
     )
-    return (para,)
+
+
+def _build_section_paragraphs(
+    stories: Sequence[ArticleStoryCoverage],
+    context: ArticleEditorialContext,
+    origin: str,
+    seen_dedup_keys: dict[str, int],
+    shared_claim_atoms: list[ArticleClaimAtom],
+) -> tuple[ArticleParagraph, ...]:
+    if not stories:
+        return ()
+
+    develop_stories = [s for s in stories if s.prominence == "DEVELOP"]
+    weave_stories = [s for s in stories if s.prominence == "WEAVE"]
+    brief_stories = [s for s in stories if s.prominence == "BRIEF"]
+
+    paragraphs: list[ArticleParagraph] = []
+
+    # 1. DEVELOP stories get dedicated paragraphs
+    for s in develop_stories:
+        sups = _resolve_story_supports(s, context)
+        p = _build_story_paragraph(
+            sups, origin, seen_dedup_keys, shared_claim_atoms, opener_offset=len(paragraphs)
+        )
+        if p:
+            paragraphs.append(p)
+
+    # 2. WEAVE stories grouped in pairs
+    for i in range(0, len(weave_stories), 2):
+        chunk = weave_stories[i : i + 2]
+        chunk_sups: list[ArticleSupport] = []
+        for ws in chunk:
+            chunk_sups.extend(_resolve_story_supports(ws, context))
+        p = _build_story_paragraph(
+            chunk_sups, origin, seen_dedup_keys, shared_claim_atoms, opener_offset=len(paragraphs)
+        )
+        if p:
+            paragraphs.append(p)
+
+    # 3. BRIEF stories grouped together
+    if brief_stories:
+        brief_sups: list[ArticleSupport] = []
+        for bs in brief_stories:
+            bs_sups = _resolve_story_supports(bs, context)
+            if bs_sups:
+                brief_sups.append(bs_sups[0])
+        p = _build_story_paragraph(
+            brief_sups, origin, seen_dedup_keys, shared_claim_atoms, opener_offset=len(paragraphs)
+        )
+        if p:
+            paragraphs.append(p)
+
+    # Fallback if no stories matched prominence categories or none produced paragraphs
+    if not paragraphs:
+        all_sups: list[ArticleSupport] = []
+        for s in stories:
+            all_sups.extend(_resolve_story_supports(s, context))
+        p = _build_story_paragraph(
+            all_sups, origin, seen_dedup_keys, shared_claim_atoms, opener_offset=0
+        )
+        if p:
+            paragraphs.append(p)
+
+    return tuple(paragraphs)
+
+
+def _build_theme_paragraphs(
+    supports: Sequence[ArticleSupport],
+    origin: str,
+) -> tuple[ArticleParagraph, ...]:
+    seen: dict[str, int] = {}
+    atoms: list[ArticleClaimAtom] = []
+    p = _build_story_paragraph(supports, origin, seen, atoms, opener_offset=0)
+    return (p,) if p else ()
 
 
 def _safe_heading_for_story(
@@ -450,77 +561,192 @@ class ArticleDeterministicComposer:
             sorted_themes = kept_themes
 
         # 1. Title and lead from top stories / thematic axes
-        top_story = plan.stories[0]
-        top_sups = _resolve_story_supports(top_story, context)
-        if not top_sups:
+        # Title requires at least one PUBLISH support with CURRENT_WINDOW temporal role
+        top_sup: ArticleSupport | None = None
+        for s in plan.stories:
+            sups = _resolve_story_supports(s, context)
+            for sup in sups:
+                if (
+                    sup.publication_use == "PUBLISH"
+                    and sup.temporal_role == "CURRENT_WINDOW"
+                    and sup.evidence_kind != "resident_question"
+                ):
+                    top_sup = sup
+                    break
+            if top_sup:
+                break
+
+        if not top_sup:
+            for s in plan.stories:
+                sups = _resolve_story_supports(s, context)
+                for sup in sups:
+                    if (
+                        sup.publication_use == "PUBLISH"
+                        and sup.evidence_kind != "resident_question"
+                    ):
+                        top_sup = sup
+                        break
+                if top_sup:
+                    break
+
+        if not top_sup:
             for s in plan.stories:
                 sups = _resolve_story_supports(s, context)
                 if sups:
-                    top_story = s
-                    top_sups = sups
+                    top_sup = sups[0]
                     break
-        if not top_sups:
+
+        if not top_sup:
             raise ValueError("cannot render fallback: no planned story supports found in context")
 
-        top_sup = top_sups[0]
         clean_title = top_sup.text.strip().rstrip(".")
+        clean_title = re.sub(r"[«»“”\"]", "", clean_title)
         for prefix in (
             "По сообщениям жителей, ",
+            "По сообщениям жителей: ",
+            "Жители сообщают, что ",
             "Жители сообщают, ",
             "По словам жителей, ",
+            "Как сообщают в местных сообществах, ",
         ):
             if clean_title.startswith(prefix):
                 clean_title = clean_title[len(prefix) :]
+        clean_title = (
+            clean_title[:1].upper() + clean_title[1:] if clean_title else "Городская хроника"
+        )
         title = clean_title
         title_support_ids = (top_sup.support_id,)
         title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_support_ids),)
 
         lead_sups: list[ArticleSupport] = []
-        for t in sorted_themes[: min(3, len(sorted_themes))]:
-            t_story = stories_by_theme[t][0]
-            t_sups = _resolve_story_supports(t_story, context)
-            if t_sups:
-                lead_sups.append(t_sups[0])
+        if plan.sections:
+            plan_by_id = plan.by_story_id
+            for thematic_sec in plan.sections[: min(3, len(plan.sections))]:
+                lead_story = plan_by_id.get(thematic_sec.lead_story_id)
+                if lead_story:
+                    t_sups = _resolve_story_supports(lead_story, context)
+                    curr_sups = [
+                        s
+                        for s in t_sups
+                        if s.publication_use == "PUBLISH"
+                        and s.temporal_role == "CURRENT_WINDOW"
+                        and s.evidence_kind != "resident_question"
+                    ]
+                    if curr_sups:
+                        lead_sups.append(curr_sups[0])
+                    elif t_sups:
+                        lead_sups.append(t_sups[0])
+        else:
+            for t in sorted_themes[: min(3, len(sorted_themes))]:
+                t_story = stories_by_theme[t][0]
+                t_sups = _resolve_story_supports(t_story, context)
+                curr_t_sups = [
+                    s
+                    for s in t_sups
+                    if s.publication_use == "PUBLISH"
+                    and s.temporal_role == "CURRENT_WINDOW"
+                    and s.evidence_kind != "resident_question"
+                ]
+                if curr_t_sups:
+                    lead_sups.append(curr_t_sups[0])
+                elif t_sups:
+                    lead_sups.append(t_sups[0])
 
-        if len(lead_sups) < 2 and len(top_sups) > 1:
-            lead_sups.append(top_sups[1])
+        # Ensure lead contains at least one PUBLISH CURRENT_WINDOW support
+        if not any(
+            s.publication_use == "PUBLISH" and s.temporal_role == "CURRENT_WINDOW"
+            for s in lead_sups
+        ):
+            if top_sup.publication_use == "PUBLISH" and top_sup.temporal_role == "CURRENT_WINDOW":
+                lead_sups.insert(0, top_sup)
+
+        if len(lead_sups) < 2 and top_sup not in lead_sups:
+            lead_sups.append(top_sup)
 
         lead_sentences: list[str] = []
         lead_claims: list[ArticleClaimAtom] = []
         lead_attr = False
-        for lead_sup in lead_sups:
-            sent, lead_attr = _render_support_sentence(lead_sup, already_attributed=lead_attr)
+        for idx, lead_sup in enumerate(lead_sups):
+            sent, lead_attr = _render_support_sentence(
+                lead_sup, already_attributed=lead_attr, opener_index=idx
+            )
             lead_sentences.append(sent)
+            clean_lead_text = sanitize_writer_source_text(
+                (lead_sup.text or lead_sup.source_text).strip()
+            ).strip()
+            clean_lead_text = re.sub(r"[«»“”\"]", "", clean_lead_text)
+            clean_lead_text = (
+                clean_lead_text.replace("[contact omitted]", "")
+                .replace("[url omitted]", "")
+                .strip()
+            )
             lead_claims.append(
-                ArticleClaimAtom(text=sent.rstrip("."), cited_support_ids=(lead_sup.support_id,))
+                ArticleClaimAtom(
+                    text=clean_lead_text.rstrip("."), cited_support_ids=(lead_sup.support_id,)
+                )
             )
 
         lead = " ".join(lead_sentences)
         lead_support_ids = tuple(dict.fromkeys(ls.support_id for ls in lead_sups))
 
-        # 2. Build theme sections
+        # 2. Build theme sections with multi-paragraph layout and rich transitions
         sections: list[ArticleSection] = []
-        for th_key in sorted_themes:
-            theme_stories = stories_by_theme[th_key]
-            theme_sups: list[ArticleSupport] = []
-            for st in theme_stories:
-                theme_sups.extend(_resolve_story_supports(st, context))
+        seen_dedup_keys: dict[str, int] = {}
+        shared_claim_atoms: list[ArticleClaimAtom] = []
 
-            paras = _build_theme_paragraphs(theme_sups, origin="FALLBACK")
-            if not paras:
-                continue
-
-            sec_cited = tuple(dict.fromkeys(sid for p in paras for sid in p.cited_support_ids))
-            heading = THEME_HEADINGS.get(th_key, _GENERIC_SECTION_HEADING)
-            sections.append(
-                ArticleSection(
-                    heading=heading,
-                    heading_support_ids=sec_cited,
-                    heading_claims=(),
-                    paragraphs=paras,
-                    heading_generation_origin="FALLBACK",
+        if plan.sections:
+            plan_by_id = plan.by_story_id
+            for thematic_sec in plan.sections:
+                sec_stories = [
+                    plan_by_id[a.story_id]
+                    for a in thematic_sec.story_assignments
+                    if a.story_id in plan_by_id
+                ]
+                if not sec_stories:
+                    continue
+                paras = _build_section_paragraphs(
+                    sec_stories,
+                    context,
+                    origin="FALLBACK",
+                    seen_dedup_keys=seen_dedup_keys,
+                    shared_claim_atoms=shared_claim_atoms,
                 )
-            )
+                if not paras:
+                    continue
+                sec_cited = tuple(dict.fromkeys(sid for p in paras for sid in p.cited_support_ids))
+                sections.append(
+                    ArticleSection(
+                        heading=thematic_sec.title,
+                        heading_support_ids=sec_cited,
+                        heading_claims=(),
+                        paragraphs=paras,
+                        heading_generation_origin="FALLBACK",
+                    )
+                )
+        else:
+            for th_key in sorted_themes:
+                theme_stories = stories_by_theme[th_key]
+                paras = _build_section_paragraphs(
+                    theme_stories,
+                    context,
+                    origin="FALLBACK",
+                    seen_dedup_keys=seen_dedup_keys,
+                    shared_claim_atoms=shared_claim_atoms,
+                )
+                if not paras:
+                    continue
+
+                sec_cited = tuple(dict.fromkeys(sid for p in paras for sid in p.cited_support_ids))
+                heading = THEME_HEADINGS.get(th_key, _GENERIC_SECTION_HEADING)
+                sections.append(
+                    ArticleSection(
+                        heading=heading,
+                        heading_support_ids=sec_cited,
+                        heading_claims=(),
+                        paragraphs=paras,
+                        heading_generation_origin="FALLBACK",
+                    )
+                )
 
         all_text = " ".join([title, lead] + [p.text for s in sections for p in s.paragraphs])
         word_count = len(all_text.split())
