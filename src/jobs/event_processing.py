@@ -123,7 +123,10 @@ async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int
 
 
 @procrastinate_app.task(queue="processing", name="coalesce_dirty_stories")
-async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str, int]:
+async def coalesce_dirty_stories_task(
+    edition_id: int | None = None,
+    force_settled: bool = False,
+) -> dict[str, int]:
     """Coalesce dirty story clusters, triage/scope them in batches, and route to brief or rich analysis."""
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
@@ -312,9 +315,12 @@ async def coalesce_dirty_stories_task(edition_id: int | None = None) -> dict[str
         if not dirty_stories:
             continue
 
-        # Filter settled stories: quiet window has passed since last fragment arrived
-        quiet_delta = dt.timedelta(seconds=cfg.analysis_quiet_seconds)
-        settled = [s for s in dirty_stories if (now - s.last_seen_at) >= quiet_delta]
+        # Filter settled stories: quiet window has passed since last fragment arrived (unless force_settled)
+        if force_settled:
+            settled = dirty_stories
+        else:
+            quiet_delta = dt.timedelta(seconds=cfg.analysis_quiet_seconds)
+            settled = [s for s in dirty_stories if (now - s.last_seen_at) >= quiet_delta]
 
         stats["settled"] += len(settled)
         if not settled:
