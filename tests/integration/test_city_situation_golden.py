@@ -389,10 +389,19 @@ async def test_berdyansk_city_situation_golden_oracle_pipeline(
     )
 
     # 4. Publication Run & Eligibility Check
+    from src.processing.edition_scope import SCOPE_VERSION
     from src.processing.event_triage import TRIAGE_VERSION
 
     elig = await policy_repo.get_or_create_eligibility_policy(
-        conn, edition_id=edition.id, config_hash=sc_hash, prompt_version=TRIAGE_VERSION
+        conn,
+        edition_id=edition.id,
+        config_hash=sc_hash,
+        prompt_version=TRIAGE_VERSION,
+        config={
+            "triage_version": TRIAGE_VERSION,
+            "scope_version": SCOPE_VERSION,
+            "scope_config_hash": sc_hash,
+        },
     )
     sel = await policy_repo.get_or_create_selection_policy(
         conn, edition_id=edition.id, config_hash="h-s-oracle", prompt_version="v1"
