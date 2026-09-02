@@ -23,26 +23,29 @@ async def main():
     config = load_config()
     infra = await build_infrastructure(config.database)
     async with infra.uow.transaction() as conn:
-        cur = await conn.execute('SELECT pr.id FROM publications p JOIN publication_runs pr ON pr.id = p.publication_run_id ORDER BY p.created_at DESC LIMIT 1')
+        cur = await conn.execute(
+            "SELECT pr.id FROM publications p JOIN publication_runs pr ON pr.id = p.publication_run_id ORDER BY p.created_at DESC LIMIT 1"
+        )
         run_id = (await cur.fetchone())[0]
-        cur2 = await conn.execute('SELECT id, metadata FROM publication_generation_attempts WHERE metadata::text ILIKE \'%assignments%\' ORDER BY started_at DESC LIMIT 1')
-        assignments = (await cur2.fetchone())[1].get('assignments', [])
-        assign_map = {a['story_id']: a['rubric_id'] for a in assignments}
+        cur2 = await conn.execute(
+            "SELECT id, metadata FROM publication_generation_attempts WHERE metadata::text ILIKE '%assignments%' ORDER BY started_at DESC LIMIT 1"
+        )
+        assignments = (await cur2.fetchone())[1].get("assignments", [])
+        assign_map = {a["story_id"]: a["rubric_id"] for a in assignments}
 
         adapter = EventEditorialAdapter(uow=infra.uow, repo=PublicationRepository())
         frozen = await adapter.adapt_inputs_on(conn, run_id)
         cards_by_id = {
-            c.id: replace(c, rubric_id=assign_map.get(c.id, ''))
-            for c in frozen.analysis.cards
+            c.id: replace(c, rubric_id=assign_map.get(c.id, "")) for c in frozen.analysis.cards
         }
 
         target_ids = [
             "story:1305",  # Второй месяц без электричества
             "story:1307",  # Точки возле горисполкома / зарядка
             "story:1385",  # Вырубили 1-го числа в 2 ночи
-            "story:826",   # Перебои воды и света с ударами дронов
+            "story:826",  # Перебои воды и света с ударами дронов
             "story:1231",  # Угроза перебоев с электричеством и газом зимой
-            "story:815",   # Света и воды нет
+            "story:815",  # Света и воды нет
         ]
 
         batch_stop_tags = _compute_batch_frequent_tags(list(cards_by_id.values()))
@@ -91,19 +94,28 @@ async def main():
                     if len(fams_b) != 1:
                         fail_reasons.append(f"AMBIGUOUS_SERVICE_FAMILY_B: {set(fams_b)} (len != 1)")
                     if fams_a != fams_b:
-                        fail_reasons.append(f"SERVICE_FAMILY_MISMATCH: {set(fams_a)} != {set(fams_b)}")
+                        fail_reasons.append(
+                            f"SERVICE_FAMILY_MISMATCH: {set(fams_a)} != {set(fams_b)}"
+                        )
                     if not (shared_tags or shared_areas or shared_lineage):
-                        fail_reasons.append("NO_SHARED_EVIDENCE (no shared tags, areas, or lineage)")
+                        fail_reasons.append(
+                            "NO_SHARED_EVIDENCE (no shared tags, areas, or lineage)"
+                        )
                 else:
                     if len(shared_tags) < 2 and not shared_lineage:
-                        fail_reasons.append(f"NON_OP_INSUFFICIENT_TAGS: shared={len(shared_tags)} < 2")
+                        fail_reasons.append(
+                            f"NON_OP_INSUFFICIENT_TAGS: shared={len(shared_tags)} < 2"
+                        )
 
-                outcome = "✅ MERGE COMPATIBLE" if compat else f"❌ REJECTED: {'; '.join(fail_reasons)}"
+                outcome = (
+                    "✅ MERGE COMPATIBLE" if compat else f"❌ REJECTED: {'; '.join(fail_reasons)}"
+                )
                 print(f"[{s_a}] vs [{s_b}]: {outcome}")
                 print(f"    Shared tags: {shared_tags}, Shared areas: {shared_areas}")
                 print()
 
     await infra.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

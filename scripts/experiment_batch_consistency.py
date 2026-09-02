@@ -22,7 +22,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("batch_consistency")
 
 
-async def run_consistency_experiment(edition_slug: str = "berdyansk", sample_size: int = 60) -> None:
+async def run_consistency_experiment(
+    edition_slug: str = "berdyansk", sample_size: int = 60
+) -> None:
     db_config = load_database_config(require_enabled=True)
     full_config = load_config()
     infrastructure = await build_infrastructure(db_config)
@@ -48,7 +50,9 @@ async def run_consistency_experiment(edition_slug: str = "berdyansk", sample_siz
         )
 
         async with infrastructure.uow.transaction() as conn:
-            cur = await conn.execute("SELECT id, name FROM editions WHERE slug = %s", (edition_slug,))
+            cur = await conn.execute(
+                "SELECT id, name FROM editions WHERE slug = %s", (edition_slug,)
+            )
             row = await cur.fetchone()
             if not row:
                 print(f"Edition {edition_slug} not found")
@@ -104,7 +108,9 @@ async def run_consistency_experiment(edition_slug: str = "berdyansk", sample_siz
 
         all_ids = [s.story_id for s in pool_states]
         print("\n" + "=" * 90)
-        print(f"{'Story ID':<10} | {'Scope (Batch 30)':<18} | {'Scope (2x15)':<18} | {'Retention (30)':<15} | {'Retention (2x15)':<15} | {'Match?':<8}")
+        print(
+            f"{'Story ID':<10} | {'Scope (Batch 30)':<18} | {'Scope (2x15)':<18} | {'Retention (30)':<15} | {'Retention (2x15)':<15} | {'Match?':<8}"
+        )
         print("=" * 90)
 
         scope_matches = 0
@@ -127,15 +133,25 @@ async def run_consistency_experiment(edition_slug: str = "berdyansk", sample_siz
                 retention_matches += 1
             total_compared += 1
 
-            match_sym = "✅ YES" if is_match else ("⚠️ DIFF" if scope_a != "MISSING" and scope_b != "MISSING" else "❌ MISS")
-            print(f"{sid:<10} | {scope_a:<18} | {scope_b:<18} | {ret_a:<15} | {ret_b:<15} | {match_sym:<8}")
+            match_sym = (
+                "✅ YES"
+                if is_match
+                else ("⚠️ DIFF" if scope_a != "MISSING" and scope_b != "MISSING" else "❌ MISS")
+            )
+            print(
+                f"{sid:<10} | {scope_a:<18} | {scope_b:<18} | {ret_a:<15} | {ret_b:<15} | {match_sym:<8}"
+            )
 
         print("=" * 90)
         print(f"Summary Comparison on {total_compared} stories:")
         print(f"  - Mode A returned: {len(map_a)}/{len(pool_states)} stories")
         print(f"  - Mode B returned: {len(map_b)}/{len(pool_states)} stories")
-        print(f"  - Scope classification agreement: {scope_matches}/{total_compared} ({scope_matches/total_compared*100:.1f}%)")
-        print(f"  - Retention decision agreement: {retention_matches}/{total_compared} ({retention_matches/total_compared*100:.1f}%)\n")
+        print(
+            f"  - Scope classification agreement: {scope_matches}/{total_compared} ({scope_matches / total_compared * 100:.1f}%)"
+        )
+        print(
+            f"  - Retention decision agreement: {retention_matches}/{total_compared} ({retention_matches / total_compared * 100:.1f}%)\n"
+        )
 
     finally:
         await infrastructure.close()

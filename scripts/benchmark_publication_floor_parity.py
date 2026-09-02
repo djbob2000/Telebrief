@@ -34,7 +34,15 @@ def format_report_summary(report: LegacyRegressionReport, case: LegacyCoverageCa
         "UNIT BREAKDOWN:",
     ]
     for u in report.units:
-        status = "PASSED" if u.loss.value == "COVERED" else (f"ALLOWED_LOSS ({u.allowed_loss_reason.value})" if u.allowed_loss_reason else f"FAILED ({u.loss.value})")
+        status = (
+            "PASSED"
+            if u.loss.value == "COVERED"
+            else (
+                f"ALLOWED_LOSS ({u.allowed_loss_reason.value})"
+                if u.allowed_loss_reason
+                else f"FAILED ({u.loss.value})"
+            )
+        )
         lines.append(f"  • [{status}] {u.unit_id}")
         if u.retained_microdetails:
             lines.append(f"      Retained: {', '.join(u.retained_microdetails)}")
@@ -78,15 +86,23 @@ async def run_benchmark(args: argparse.Namespace) -> int:
             json.dump(report.to_dict(), f, ensure_ascii=False, indent=2)
         print(f"Saved parity report to {out_path}")
 
-    if report.legacy_floor_coverage < 1.0 or report.legacy_microdetail_retention < 1.0 or report.regression_unit_ids:
+    if (
+        report.legacy_floor_coverage < 1.0
+        or report.legacy_microdetail_retention < 1.0
+        or report.regression_unit_ids
+    ):
         return 1
     return 0
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate Event-First publications against legacy floor fixtures")
+    parser = argparse.ArgumentParser(
+        description="Evaluate Event-First publications against legacy floor fixtures"
+    )
     parser.add_argument("--case", type=str, required=True, help="Legacy floor case JSON path")
-    parser.add_argument("--export", type=str, default=None, help="Exported publication case JSON path")
+    parser.add_argument(
+        "--export", type=str, default=None, help="Exported publication case JSON path"
+    )
     parser.add_argument("--run-id", type=int, default=None, help="Database publication run ID")
     parser.add_argument("--database-url", type=str, default=None, help="Database connection URL")
     parser.add_argument("--output", type=str, default=None, help="Output report JSON path")

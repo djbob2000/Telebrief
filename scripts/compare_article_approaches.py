@@ -90,7 +90,9 @@ async def run_comparison(
     print("\n" + "=" * 80, flush=True)
     print("🚀 EVENT-FIRST PUBLICATION VS FROZEN LEGACY SEMANTIC FLOOR", flush=True)
     print(f"Edition: {edition_slug} | Hours: {lookback_hours} | Fixture: {fixture.id}", flush=True)
-    print(f"Provider: {config.settings.ai_provider} | Model: {config.settings.ai_model}", flush=True)
+    print(
+        f"Provider: {config.settings.ai_provider} | Model: {config.settings.ai_model}", flush=True
+    )
     print("=" * 80 + "\n", flush=True)
 
     infra = await build_infrastructure(config.database)
@@ -105,7 +107,11 @@ async def run_comparison(
     print(f"✅ Generated in {dur:.2f}s\n", flush=True)
 
     # Extract trace from publication metadata
-    pub_meta = pub.metadata if isinstance(pub.metadata, dict) else (json.loads(pub.metadata) if pub.metadata else {})
+    pub_meta = (
+        pub.metadata
+        if isinstance(pub.metadata, dict)
+        else (json.loads(pub.metadata) if pub.metadata else {})
+    )
     claim_trace = pub_meta.get("article_claim_trace", {})
     trace_supports: list[str] = []
     if isinstance(claim_trace, dict):
@@ -133,7 +139,9 @@ async def run_comparison(
     print(f"Legacy floor coverage:        {report.legacy_floor_coverage * 100:.1f}%")
     print(f"Microdetail retention:        {report.legacy_microdetail_retention * 100:.1f}%")
     print(f"Winning generation kind:      {pub_meta.get('winning_kind', 'N/A')}")
-    print(f"Deterministic fallback used:  {pub_meta.get('deterministic_article_fallback_used', False)}")
+    print(
+        f"Deterministic fallback used:  {pub_meta.get('deterministic_article_fallback_used', False)}"
+    )
 
     losses_by_stage: dict[str, list[str]] = {}
     for u in report.units:
@@ -141,12 +149,16 @@ async def run_comparison(
 
     print("\nUnits by pipeline stage:")
     for stage, uids in losses_by_stage.items():
-        print(f"  [{stage}]: {len(uids)} units ({', '.join(uids[:4])}{'...' if len(uids) > 4 else ''})")
+        print(
+            f"  [{stage}]: {len(uids)} units ({', '.join(uids[:4])}{'...' if len(uids) > 4 else ''})"
+        )
     print("=" * 80 + "\n", flush=True)
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Compare Event-First article against frozen legacy floor")
+    parser = argparse.ArgumentParser(
+        description="Compare Event-First article against frozen legacy floor"
+    )
     parser.add_argument(
         "--legacy-fixture",
         type=str,

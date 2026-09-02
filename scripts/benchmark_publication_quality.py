@@ -288,7 +288,10 @@ def validate_benchmark_gates(metrics: dict[str, Any]) -> list[str]:
 
     for r in metrics.get("runs", []):
         if r.status == "failed":
-            if r.error_kind in ("ArticleFinalizationInvariantError", "DigestCoverageInvariantError"):
+            if r.error_kind in (
+                "ArticleFinalizationInvariantError",
+                "DigestCoverageInvariantError",
+            ):
                 violations.append(f"hard invariant failure in run {r.run_id}: {r.error_kind}")
 
     return violations

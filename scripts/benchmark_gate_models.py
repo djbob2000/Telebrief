@@ -11,7 +11,7 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -36,33 +36,125 @@ class BenchmarkStory:
 # 64 curated representative stories across all key categories
 BENCHMARK_STORIES: list[BenchmarkStory] = [
     # 1. Standard civic / infrastructure / emergency (12 stories)
-    BenchmarkStory(1, "Бердянскводоканал: в связи с аварией на водоводе по ул. Горького отключена подача воды в центре до 18:00.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(2, "В Бердянске на подстанции 35 кВ начались восстановительные работы, свет обещают к вечеру.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(3, "МЧС сообщает о локализации возгорания сухой травы в районе АКЗ, угрозы жилым домам нет.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(4, "Внимание! В районе косы обнаружен неразорвавшийся боеприпас. Территория оцеплена.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(5, "С 1 сентября городские автобусы №4 и №17 переходят на осенний график движения.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(6, "Городская больница Бердянска: прием узких специалистов временно перенесен в здание поликлиники на Коммунаров.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(7, "Бердянское отделение ПСБ возобновило выдачу пенсий и социальных пособий наличными.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(8, "В селе Осипенко Бердянского района завершен ремонт трансформатора, энергоснабжение восстановлено.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(9, "В Бердянске на перекрестке Восточного и Пролетарского включили светофор после череды аварий.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(10, "Газовая служба Бердянска информирует о плановой опрессовке сетей в микрорайоне Колония.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(11, "Власти Запорожской области объявили о выплатах 10 000 рублей школьникам Бердянска к учебному году.", "civic_standard", "LOCAL", "KEEP"),
-    BenchmarkStory(12, "Школы Бердянска с 1 сентября будут работать в дистанционном формате из соображений безопасности.", "civic_standard", "LOCAL", "KEEP"),
-
+    BenchmarkStory(
+        1,
+        "Бердянскводоканал: в связи с аварией на водоводе по ул. Горького отключена подача воды в центре до 18:00.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        2,
+        "В Бердянске на подстанции 35 кВ начались восстановительные работы, свет обещают к вечеру.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        3,
+        "МЧС сообщает о локализации возгорания сухой травы в районе АКЗ, угрозы жилым домам нет.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        4,
+        "Внимание! В районе косы обнаружен неразорвавшийся боеприпас. Территория оцеплена.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        5,
+        "С 1 сентября городские автобусы №4 и №17 переходят на осенний график движения.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        6,
+        "Городская больница Бердянска: прием узких специалистов временно перенесен в здание поликлиники на Коммунаров.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        7,
+        "Бердянское отделение ПСБ возобновило выдачу пенсий и социальных пособий наличными.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        8,
+        "В селе Осипенко Бердянского района завершен ремонт трансформатора, энергоснабжение восстановлено.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        9,
+        "В Бердянске на перекрестке Восточного и Пролетарского включили светофор после череды аварий.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        10,
+        "Газовая служба Бердянска информирует о плановой опрессовке сетей в микрорайоне Колония.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        11,
+        "Власти Запорожской области объявили о выплатах 10 000 рублей школьникам Бердянска к учебному году.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        12,
+        "Школы Бердянска с 1 сентября будут работать в дистанционном формате из соображений безопасности.",
+        "civic_standard",
+        "LOCAL",
+        "KEEP",
+    ),
     # 2. Short genuine micro-facts (12 stories) - MUST SURVIVE (KEEP)
     BenchmarkStory(13, "Центр воду дали", "short_real_facts", "LOCAL", "KEEP"),
-    BenchmarkStory(14, "Азмол — нет", "short_real_facts", "LOCAL", "KEEP", "Outage report: no power"),
-    BenchmarkStory(15, "в нас дощ", "short_real_facts", "LOCAL", "KEEP", "Weather observation in city"),
+    BenchmarkStory(
+        14, "Азмол — нет", "short_real_facts", "LOCAL", "KEEP", "Outage report: no power"
+    ),
+    BenchmarkStory(
+        15, "в нас дощ", "short_real_facts", "LOCAL", "KEEP", "Weather observation in city"
+    ),
     BenchmarkStory(16, "Слободка есть вода", "short_real_facts", "LOCAL", "KEEP"),
     BenchmarkStory(17, "На Пионерской электричества нет", "short_real_facts", "LOCAL", "KEEP"),
-    BenchmarkStory(18, "В центре только в 9 утра связь воскресла 😁", "short_real_facts", "LOCAL", "KEEP"),
-    BenchmarkStory(19, "На Гагарина 1 действует пункт зарядки телефонов (Бесплатно)", "short_real_facts", "LOCAL", "KEEP"),
+    BenchmarkStory(
+        18, "В центре только в 9 утра связь воскресла 😁", "short_real_facts", "LOCAL", "KEEP"
+    ),
+    BenchmarkStory(
+        19,
+        "На Гагарина 1 действует пункт зарядки телефонов (Бесплатно)",
+        "short_real_facts",
+        "LOCAL",
+        "KEEP",
+    ),
     BenchmarkStory(20, "Маршрутка 4 ходит примерно раз в час", "short_real_facts", "LOCAL", "KEEP"),
-    BenchmarkStory(21, "У порта медуз вчера не было, сегодня нанесло", "short_real_facts", "LOCAL", "KEEP"),
+    BenchmarkStory(
+        21, "У порта медуз вчера не было, сегодня нанесло", "short_real_facts", "LOCAL", "KEEP"
+    ),
     BenchmarkStory(22, "На Шмидта третий день нет воды", "short_real_facts", "LOCAL", "KEEP"),
-    BenchmarkStory(23, "На стадионе Энергия открыли бесплатный набор детей в секцию футбола", "short_real_facts", "LOCAL", "KEEP"),
-    BenchmarkStory(24, "В районе Самолёта SMS-сообщения снова доходят", "short_real_facts", "LOCAL", "KEEP"),
-
+    BenchmarkStory(
+        23,
+        "На стадионе Энергия открыли бесплатный набор детей в секцию футбола",
+        "short_real_facts",
+        "LOCAL",
+        "KEEP",
+    ),
+    BenchmarkStory(
+        24, "В районе Самолёта SMS-сообщения снова доходят", "short_real_facts", "LOCAL", "KEEP"
+    ),
     # 3. Pure chatter noise & uncertainty (10 stories) - MUST DROP
     BenchmarkStory(25, "Не знаю.", "chatter_noise", "LOCAL", "DROP"),
     BenchmarkStory(26, "хз, сам в шоке", "chatter_noise", "LOCAL", "DROP"),
@@ -74,42 +166,175 @@ BENCHMARK_STORIES: list[BenchmarkStory] = [
     BenchmarkStory(32, "Без понятия, спроси в группе", "chatter_noise", "LOCAL", "DROP"),
     BenchmarkStory(33, "Кто его знает, поживем увидим", "chatter_noise", "LOCAL", "DROP"),
     BenchmarkStory(34, "Сам понял что написал?", "chatter_noise", "LOCAL", "DROP"),
-
     # 4. Classifieds, sales & directory payload (10 stories) - MUST DROP
-    BenchmarkStory(35, "Продам айфон 16 про Макс 35к, писать в лс", "classifieds_ads", "LOCAL", "DROP"),
-    BenchmarkStory(36, "‼️Сниму 3-х комнатную квартиру или частный дом на длительный срок. Варианты в ЛС", "classifieds_ads", "LOCAL", "DROP"),
-    BenchmarkStory(37, "Питьевая вода на розлив — 3 ₽/литр. Вниманию предпринимателей, доставка от 1 тонны. +79900235890", "classifieds_ads", "LOCAL", "DROP"),
-    BenchmarkStory(38, "💅 ИЩЕМ МОДЕЛЕК НА МАНИКЮР. Оплата 1500 руб, покрытие гель-лак. Запись в лс", "classifieds_ads", "LOCAL", "DROP"),
-    BenchmarkStory(39, "Пассажирские перевозки Бердянск - Ростов - Москва. Через КПП Мокраны. Без предоплат. +79781948808", "classifieds_ads", "LOCAL", "DROP"),
-    BenchmarkStory(40, "🔥 ПОКУПАЕМ МЕТАЛЛОЛОМ 🔥 Черные и цветные металлы, самовывоз, высокие цены. Звоните прямо сейчас", "classifieds_ads", "LOCAL", "DROP"),
-    BenchmarkStory(41, "🐶 В продаже щенки Мальтипу F1, привиты по возрасту, ветпаспорт, чип. Цена в личку", "classifieds_ads", "LOCAL", "DROP"),
-    BenchmarkStory(42, "Магазин «Ресурс» на Коммунаров, 49 — стройматериалы по хорошим ценам, в наличии и под заказ", "classifieds_ads", "LOCAL", "DROP"),
-    BenchmarkStory(43, "Купим дом. Район Самолета и близлежащие. Предложения в лс. +79900256141", "classifieds_ads", "LOCAL", "DROP"),
-    BenchmarkStory(44, "Заправлю ваш газовый баллон б/у, недорого. Обращаться в лс", "classifieds_ads", "LOCAL", "DROP"),
-
+    BenchmarkStory(
+        35, "Продам айфон 16 про Макс 35к, писать в лс", "classifieds_ads", "LOCAL", "DROP"
+    ),
+    BenchmarkStory(
+        36,
+        "‼️Сниму 3-х комнатную квартиру или частный дом на длительный срок. Варианты в ЛС",
+        "classifieds_ads",
+        "LOCAL",
+        "DROP",
+    ),
+    BenchmarkStory(
+        37,
+        "Питьевая вода на розлив — 3 ₽/литр. Вниманию предпринимателей, доставка от 1 тонны. +79900235890",
+        "classifieds_ads",
+        "LOCAL",
+        "DROP",
+    ),
+    BenchmarkStory(
+        38,
+        "💅 ИЩЕМ МОДЕЛЕК НА МАНИКЮР. Оплата 1500 руб, покрытие гель-лак. Запись в лс",
+        "classifieds_ads",
+        "LOCAL",
+        "DROP",
+    ),
+    BenchmarkStory(
+        39,
+        "Пассажирские перевозки Бердянск - Ростов - Москва. Через КПП Мокраны. Без предоплат. +79781948808",
+        "classifieds_ads",
+        "LOCAL",
+        "DROP",
+    ),
+    BenchmarkStory(
+        40,
+        "🔥 ПОКУПАЕМ МЕТАЛЛОЛОМ 🔥 Черные и цветные металлы, самовывоз, высокие цены. Звоните прямо сейчас",
+        "classifieds_ads",
+        "LOCAL",
+        "DROP",
+    ),
+    BenchmarkStory(
+        41,
+        "🐶 В продаже щенки Мальтипу F1, привиты по возрасту, ветпаспорт, чип. Цена в личку",
+        "classifieds_ads",
+        "LOCAL",
+        "DROP",
+    ),
+    BenchmarkStory(
+        42,
+        "Магазин «Ресурс» на Коммунаров, 49 — стройматериалы по хорошим ценам, в наличии и под заказ",
+        "classifieds_ads",
+        "LOCAL",
+        "DROP",
+    ),
+    BenchmarkStory(
+        43,
+        "Купим дом. Район Самолета и близлежащие. Предложения в лс. +79900256141",
+        "classifieds_ads",
+        "LOCAL",
+        "DROP",
+    ),
+    BenchmarkStory(
+        44,
+        "Заправлю ваш газовый баллон б/у, недорого. Обращаться в лс",
+        "classifieds_ads",
+        "LOCAL",
+        "DROP",
+    ),
     # 5. Pure questions without answers (10 stories) - MUST DROP or CONTEXT (not PUBLISH)
     BenchmarkStory(45, "А возле Грации?", "pure_questions", "LOCAL", "DROP"),
     BenchmarkStory(46, "А интернет как?", "pure_questions", "LOCAL", "DROP"),
     BenchmarkStory(47, "до скольки работает кож-вен?", "pure_questions", "LOCAL", "DROP"),
-    BenchmarkStory(48, "Кто знает, где можно перевести документы с нотариальным заверением?", "pure_questions", "LOCAL", "DROP"),
-    BenchmarkStory(49, "Что со светом есть какие то новости? Хоть какие-то ?", "pure_questions", "LOCAL", "DROP"),
-    BenchmarkStory(50, "А дроны чьи? Или кто то видел откуда они взлетают, что бы утверждать?", "pure_questions", "LOCAL", "DROP"),
+    BenchmarkStory(
+        48,
+        "Кто знает, где можно перевести документы с нотариальным заверением?",
+        "pure_questions",
+        "LOCAL",
+        "DROP",
+    ),
+    BenchmarkStory(
+        49,
+        "Что со светом есть какие то новости? Хоть какие-то ?",
+        "pure_questions",
+        "LOCAL",
+        "DROP",
+    ),
+    BenchmarkStory(
+        50,
+        "А дроны чьи? Или кто то видел откуда они взлетают, что бы утверждать?",
+        "pure_questions",
+        "LOCAL",
+        "DROP",
+    ),
     BenchmarkStory(51, "Выросли цены?", "pure_questions", "LOCAL", "DROP"),
     BenchmarkStory(52, "Куйбышево было название раньше?", "pure_questions", "LOCAL", "DROP"),
-    BenchmarkStory(53, "Подскажите где купить детский электросамокат", "pure_questions", "LOCAL", "DROP"),
+    BenchmarkStory(
+        53, "Подскажите где купить детский электросамокат", "pure_questions", "LOCAL", "DROP"
+    ),
     BenchmarkStory(54, "Вам сообщение в личку не отсылается?", "pure_questions", "LOCAL", "DROP"),
-
     # 6. Distant / Out of Scope (10 stories) - MUST OUT_OF_SCOPE / DROP
-    BenchmarkStory(55, "В Киеве прогремели взрывы в районе правого берега, работает ПВО.", "out_of_scope", "OUT_OF_SCOPE", "DROP"),
-    BenchmarkStory(56, "Мэр Одессы сообщил о последствиях ракетного удара по портовой инфраструктуре.", "out_of_scope", "OUT_OF_SCOPE", "DROP"),
-    BenchmarkStory(57, "В Харькове вводятся аварийные графики отключения света на 4 часа.", "out_of_scope", "OUT_OF_SCOPE", "DROP"),
-    BenchmarkStory(58, "ДТП с тремя автомобилями произошло на трассе Симферополь - Севастополь.", "out_of_scope", "OUT_OF_SCOPE", "DROP"),
-    BenchmarkStory(59, "В Кривом Роге спасатели ликвидировали пожар на промышленном объекте.", "out_of_scope", "OUT_OF_SCOPE", "DROP"),
-    BenchmarkStory(60, "На Купянском направлении продолжаются позиционные бои.", "out_of_scope", "OUT_OF_SCOPE", "DROP"),
-    BenchmarkStory(61, "В Москве открылась новая станция метро Большой кольцевой линии.", "out_of_scope", "OUT_OF_SCOPE", "DROP"),
-    BenchmarkStory(62, "Губернатор Краснодарского края сообщил об отражении атаки БПЛА.", "out_of_scope", "OUT_OF_SCOPE", "DROP"),
-    BenchmarkStory(63, "В Запорожье частично перекрыто движение по плотине Днепрогэса.", "out_of_scope", "OUT_OF_SCOPE", "DROP"),
-    BenchmarkStory(64, "Погода в Донецке: завтра ожидается гроза и шквалистый ветер.", "out_of_scope", "OUT_OF_SCOPE", "DROP"),
+    BenchmarkStory(
+        55,
+        "В Киеве прогремели взрывы в районе правого берега, работает ПВО.",
+        "out_of_scope",
+        "OUT_OF_SCOPE",
+        "DROP",
+    ),
+    BenchmarkStory(
+        56,
+        "Мэр Одессы сообщил о последствиях ракетного удара по портовой инфраструктуре.",
+        "out_of_scope",
+        "OUT_OF_SCOPE",
+        "DROP",
+    ),
+    BenchmarkStory(
+        57,
+        "В Харькове вводятся аварийные графики отключения света на 4 часа.",
+        "out_of_scope",
+        "OUT_OF_SCOPE",
+        "DROP",
+    ),
+    BenchmarkStory(
+        58,
+        "ДТП с тремя автомобилями произошло на трассе Симферополь - Севастополь.",
+        "out_of_scope",
+        "OUT_OF_SCOPE",
+        "DROP",
+    ),
+    BenchmarkStory(
+        59,
+        "В Кривом Роге спасатели ликвидировали пожар на промышленном объекте.",
+        "out_of_scope",
+        "OUT_OF_SCOPE",
+        "DROP",
+    ),
+    BenchmarkStory(
+        60,
+        "На Купянском направлении продолжаются позиционные бои.",
+        "out_of_scope",
+        "OUT_OF_SCOPE",
+        "DROP",
+    ),
+    BenchmarkStory(
+        61,
+        "В Москве открылась новая станция метро Большой кольцевой линии.",
+        "out_of_scope",
+        "OUT_OF_SCOPE",
+        "DROP",
+    ),
+    BenchmarkStory(
+        62,
+        "Губернатор Краснодарского края сообщил об отражении атаки БПЛА.",
+        "out_of_scope",
+        "OUT_OF_SCOPE",
+        "DROP",
+    ),
+    BenchmarkStory(
+        63,
+        "В Запорожье частично перекрыто движение по плотине Днепрогэса.",
+        "out_of_scope",
+        "OUT_OF_SCOPE",
+        "DROP",
+    ),
+    BenchmarkStory(
+        64,
+        "Погода в Донецке: завтра ожидается гроза и шквалистый ветер.",
+        "out_of_scope",
+        "OUT_OF_SCOPE",
+        "DROP",
+    ),
 ]
 
 # 20 Conversation-dependent QA pairs
@@ -146,7 +371,9 @@ def build_gate_prompt(stories: list[tuple[int, str]]) -> str:
         "Stories for Gate V2 triage and brief synthesis:",
     ]
     for sid, text in stories:
-        lines.append(f"Story #{sid} (fragments=1, sources=1):\n- [frag={sid} time=2026-09-01T12:00:00 source=telegram] {text}\n")
+        lines.append(
+            f"Story #{sid} (fragments=1, sources=1):\n- [frag={sid} time=2026-09-01T12:00:00 source=telegram] {text}\n"
+        )
     return "\n".join(lines)
 
 
@@ -199,7 +426,12 @@ async def run_benchmark_matrix():
     )
 
     import os
-    target_model = os.environ.get("OPENROUTER_MODEL") or getattr(cfg.settings, "ai_model", None) or "deepseek/deepseek-v4-flash-0731:floor"
+
+    target_model = (
+        os.environ.get("OPENROUTER_MODEL")
+        or getattr(cfg.settings, "ai_model", None)
+        or "deepseek/deepseek-v4-flash-0731:floor"
+    )
     logger.info("Using target model from .env/config: %s", target_model)
 
     models_and_batches = [
@@ -312,7 +544,9 @@ async def run_benchmark_matrix():
             "false_keeps_questions": false_keep_questions,
         }
         all_runs_metrics[run_name] = metrics
-        print(f"  ✓ Finished {run_name}: Latency={metrics['total_latency_sec']}s, Accuracy={metrics['retention_accuracy']}, FalseDrops={metrics['false_drops_short_facts_count']}, FalseKeeps(Ads={metrics['false_keeps_ads_count']}, Chatter={metrics['false_keeps_chatter_count']})")
+        print(
+            f"  ✓ Finished {run_name}: Latency={metrics['total_latency_sec']}s, Accuracy={metrics['retention_accuracy']}, FalseDrops={metrics['false_drops_short_facts_count']}, FalseKeeps(Ads={metrics['false_keeps_ads_count']}, Chatter={metrics['false_keeps_chatter_count']})"
+        )
 
     # =========================================================================
     # PART 2: CONTEXTUAL ENVELOPE EXPERIMENT (20 PAIRS)
@@ -352,7 +586,9 @@ async def run_benchmark_matrix():
         m2_scope = m2.get("scope", "ERR")
         m2_topic = (m2.get("brief_payload") or {}).get("topic", "")
 
-        gained_civic_value = (m1_ret != "KEEP" and m2_ret == "KEEP") or (not m1_topic and bool(m2_topic))
+        gained_civic_value = (m1_ret != "KEEP" and m2_ret == "KEEP") or (
+            not m1_topic and bool(m2_topic)
+        )
         if gained_civic_value:
             flipped_to_useful += 1
 
@@ -376,7 +612,9 @@ async def run_benchmark_matrix():
     }
 
     # Save artifact
-    output_dir = Path("/Users/air/.gemini/antigravity-ide/brain/a331c9d6-a80c-4911-ae2b-d379e7ab4cf4")
+    output_dir = Path(
+        "/Users/air/.gemini/antigravity-ide/brain/a331c9d6-a80c-4911-ae2b-d379e7ab4cf4"
+    )
     artifact_path = output_dir / "gate_benchmark_results.json"
     full_report = {
         "benchmark_matrix": all_runs_metrics,

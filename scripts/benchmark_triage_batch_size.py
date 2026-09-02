@@ -54,7 +54,9 @@ async def benchmark_batch_sizes(
 
         total_needed = sum(batch_sizes) + 50
         async with infrastructure.uow.transaction() as conn:
-            cur = await conn.execute("SELECT id, name FROM editions WHERE slug = %s", (edition_slug,))
+            cur = await conn.execute(
+                "SELECT id, name FROM editions WHERE slug = %s", (edition_slug,)
+            )
             row = await cur.fetchone()
             if not row:
                 print(f"Edition {edition_slug} not found")
@@ -85,9 +87,13 @@ async def benchmark_batch_sizes(
             rows = await cur.fetchall()
             pool_states = [StoryClusterState.from_row(r, []) for r in rows]
 
-        print(f"\nLoaded pool of {len(pool_states)} uncached stories for stress-testing batch sizes: {batch_sizes}\n")
+        print(
+            f"\nLoaded pool of {len(pool_states)} uncached stories for stress-testing batch sizes: {batch_sizes}\n"
+        )
         print("=" * 100)
-        print(f"{'Batch Size':<12} | {'Time (s)':<10} | {'Throughput':<14} | {'Returned / Requested':<22} | {'Status / Diagnostics':<25}")
+        print(
+            f"{'Batch Size':<12} | {'Time (s)':<10} | {'Throughput':<14} | {'Returned / Requested':<22} | {'Status / Diagnostics':<25}"
+        )
         print("=" * 100)
 
         offset = 0
@@ -119,7 +125,7 @@ async def benchmark_batch_sizes(
 
             duration = time.perf_counter() - t0
             throughput = success_count / duration if duration > 0 else 0
-            ret_str = f"{success_count}/{b_size} ({(success_count/b_size)*100:.0f}%)"
+            ret_str = f"{success_count}/{b_size} ({(success_count / b_size) * 100:.0f}%)"
 
             if not error and deferred_count == 0:
                 diag = "🟢 100% OK"
@@ -128,7 +134,9 @@ async def benchmark_batch_sizes(
             else:
                 diag = f"🔴 FAILED: {error or 'All deferred'}"
 
-            print(f"{b_size:<12} | {duration:<10.2f} | {throughput:<14.2f} st/s | {ret_str:<22} | {diag:<25}")
+            print(
+                f"{b_size:<12} | {duration:<10.2f} | {throughput:<14.2f} st/s | {ret_str:<22} | {diag:<25}"
+            )
 
         print("=" * 100 + "\n")
 

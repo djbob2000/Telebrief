@@ -247,7 +247,9 @@ async def export_publication_case(conn: AsyncConnection, run_id: int) -> dict[st
         "writer_policy_id": row[7],
         "status": row[8],
         "error_kind": row[9],
-        "metadata": row[10] if isinstance(row[10], dict) else (json.loads(row[10]) if row[10] else {}),
+        "metadata": row[10]
+        if isinstance(row[10], dict)
+        else (json.loads(row[10]) if row[10] else {}),
         "created_at": row[11].isoformat() if row[11] else None,
     }
 
@@ -355,7 +357,9 @@ async def export_publication_case(conn: AsyncConnection, run_id: int) -> dict[st
             "numeric_story_id": sid,
             "story_revision_id": srid,
             "deterministic_rank": drank,
-            "snapshot_features": sfeat if isinstance(sfeat, dict) else (json.loads(sfeat) if sfeat else {}),
+            "snapshot_features": sfeat
+            if isinstance(sfeat, dict)
+            else (json.loads(sfeat) if sfeat else {}),
         }
         candidates.append(cand_dict)
         for item in ep.get("evidence_items", []):
@@ -418,7 +422,10 @@ async def export_publication_case(conn: AsyncConnection, run_id: int) -> dict[st
             ep_raw = r[2]
             ep = ep_raw if isinstance(ep_raw, dict) else (json.loads(ep_raw) if ep_raw else {})
             for item in ep.get("evidence_items", []):
-                if item.get("publication_use") == "PUBLISH" and item.get("kind") != "resident_question":
+                if (
+                    item.get("publication_use") == "PUBLISH"
+                    and item.get("kind") != "resident_question"
+                ):
                     if item.get("evidence_id"):
                         sealed_refs.add(item["evidence_id"])
                     for fid in item.get("source_fragment_ids", []):
@@ -451,7 +458,11 @@ async def export_publication_case(conn: AsyncConnection, run_id: int) -> dict[st
     final_trace_units: list[dict[str, Any]] = []
 
     if pub_row is not None:
-        meta = pub_row[5] if isinstance(pub_row[5], dict) else (json.loads(pub_row[5]) if pub_row[5] else {})
+        meta = (
+            pub_row[5]
+            if isinstance(pub_row[5], dict)
+            else (json.loads(pub_row[5]) if pub_row[5] else {})
+        )
 
         # Plan stage
         if pub_type in ("digest", "digest_grouped", "digest_channel"):
@@ -488,12 +499,18 @@ async def export_publication_case(conn: AsyncConnection, run_id: int) -> dict[st
         # Final trace stage
         if "digest_coverage_trace" in meta:
             dct = meta["digest_coverage_trace"]
-            trace_stories = dct.get("stories", []) if isinstance(dct, dict) else (dct if isinstance(dct, list) else [])
+            trace_stories = (
+                dct.get("stories", [])
+                if isinstance(dct, dict)
+                else (dct if isinstance(dct, list) else [])
+            )
             digest_coverage_trace = trace_stories
 
             trace_fids: list[int] = []
             for ts in trace_stories:
-                for sup_id in list(ts.get("dashboard_support_ids", [])) + list(ts.get("detail_support_ids", [])):
+                for sup_id in list(ts.get("dashboard_support_ids", [])) + list(
+                    ts.get("detail_support_ids", [])
+                ):
                     fid = _extract_frag_id_from_support_id(sup_id)
                     if fid is not None:
                         trace_fids.append(fid)
@@ -550,7 +567,11 @@ async def export_publication_case(conn: AsyncConnection, run_id: int) -> dict[st
 
         if "article_claim_trace" in meta:
             act = meta["article_claim_trace"]
-            units = act.get("units", []) if isinstance(act, dict) else (act if isinstance(act, list) else [])
+            units = (
+                act.get("units", [])
+                if isinstance(act, dict)
+                else (act if isinstance(act, list) else [])
+            )
             article_claim_trace = units
             trace_fids = []
             for u in units:
@@ -654,7 +675,9 @@ async def main_async(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export frozen publication regression case snapshot")
+    parser = argparse.ArgumentParser(
+        description="Export frozen publication regression case snapshot"
+    )
     parser.add_argument("--run-id", type=int, default=None, help="Publication run ID")
     parser.add_argument("--source-only", action="store_true", help="Export source corpus only")
     parser.add_argument("--edition", type=str, default=None, help="Edition slug")

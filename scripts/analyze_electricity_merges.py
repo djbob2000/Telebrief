@@ -51,10 +51,7 @@ async def main():
 
         adapter = EventEditorialAdapter(uow=uow, repo=repo)
         frozen = await adapter.adapt_inputs_on(conn, run_id)
-        cards = [
-            replace(c, rubric_id=assign_map.get(c.id, ""))
-            for c in frozen.analysis.cards
-        ]
+        cards = [replace(c, rubric_id=assign_map.get(c.id, "")) for c in frozen.analysis.cards]
         print(f"Loaded {len(cards)} classified story cards")
 
         # Filter infrastructure cards
@@ -70,7 +67,7 @@ async def main():
         for c in infra_cards:
             fams = _card_service_families(c)
             text = f"{c.topic} {c.summary} {' '.join(c.tags)}"
-            if 'электр' in text.lower() or 'свет' in text.lower() or 'electricity' in fams:
+            if "электр" in text.lower() or "свет" in text.lower() or "electricity" in fams:
                 elec_cards.append(c)
 
         print(f"\nFound {len(elec_cards)} electricity-related cards in infrastructure:")
@@ -108,9 +105,11 @@ async def main():
                 is_op_a = bool(fams_a) or getattr(c_a, "story_kind", "") == "operational_status"
                 is_op_b = bool(fams_b) or getattr(c_b, "story_kind", "") == "operational_status"
                 if not compat:
-                    if (is_op_a or is_op_b):
+                    if is_op_a or is_op_b:
                         if not (is_op_a and is_op_b):
-                            reason = f"one is op, other is not: is_op_a={is_op_a}, is_op_b={is_op_b}"
+                            reason = (
+                                f"one is op, other is not: is_op_a={is_op_a}, is_op_b={is_op_b}"
+                            )
                         elif len(fams_a) != 1 or len(fams_b) != 1:
                             reason = f"family len != 1: fams_a={set(fams_a)}, fams_b={set(fams_b)}"
                         elif fams_a != fams_b:
@@ -125,6 +124,7 @@ async def main():
                 print(f"    Tags B: {tags_b}")
 
     await infra.close()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

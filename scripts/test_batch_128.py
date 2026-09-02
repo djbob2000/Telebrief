@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
+
 from src.ai_providers import create_provider
 from src.config_loader import load_config
 from src.processing.event_triage import _GATE_V2_SYSTEM_PROMPT
@@ -28,7 +29,9 @@ def build_gate_prompt(stories: list[tuple[int, str]]) -> str:
     ]
     for sid, text in stories:
         clean_txt = " ".join(text.split())[:350]
-        lines.append(f"Story #{sid} (fragments=1, sources=1):\n- [frag={sid} time=2026-09-01T12:00:00 source=telegram] {clean_txt}\n")
+        lines.append(
+            f"Story #{sid} (fragments=1, sources=1):\n- [frag={sid} time=2026-09-01T12:00:00 source=telegram] {clean_txt}\n"
+        )
     return "\n".join(lines)
 
 
@@ -62,6 +65,7 @@ async def main():
     if len(stories) < 128:
         print(f"Warning: Only found {len(stories)} stories in DB, topping up from benchmark...")
         from scripts.benchmark_gate_models import BENCHMARK_STORIES
+
         for b in BENCHMARK_STORIES:
             if len(stories) >= 128:
                 break
@@ -89,7 +93,9 @@ async def main():
             response_format={"type": "json_object"},
         )
         elapsed = time.perf_counter() - t0
-        print(f"✅ Response received in {elapsed:.2f} seconds ({elapsed / len(stories):.2f}s per story)!")
+        print(
+            f"✅ Response received in {elapsed:.2f} seconds ({elapsed / len(stories):.2f}s per story)!"
+        )
 
         # Parse JSON
         parsed = json.loads(raw_res)
@@ -119,21 +125,25 @@ async def main():
                 exclusion_counts[excl] = exclusion_counts.get(excl, 0) + 1
 
             if ret == "KEEP" and len(kept_samples) < 5:
-                kept_samples.append({
-                    "id": sid,
-                    "text": txt[:80],
-                    "scope": sc,
-                    "topic": (res.get("brief_payload") or {}).get("topic"),
-                    "headline": (res.get("brief_payload") or {}).get("headline"),
-                })
+                kept_samples.append(
+                    {
+                        "id": sid,
+                        "text": txt[:80],
+                        "scope": sc,
+                        "topic": (res.get("brief_payload") or {}).get("topic"),
+                        "headline": (res.get("brief_payload") or {}).get("headline"),
+                    }
+                )
             elif ret == "DROP" and len(dropped_samples) < 5:
-                dropped_samples.append({
-                    "id": sid,
-                    "text": txt[:80],
-                    "scope": sc,
-                    "exclusion_reason": excl,
-                    "reason": res.get("reason"),
-                })
+                dropped_samples.append(
+                    {
+                        "id": sid,
+                        "text": txt[:80],
+                        "scope": sc,
+                        "exclusion_reason": excl,
+                        "reason": res.get("reason"),
+                    }
+                )
 
         print("\n" + "─" * 80)
         print("📈 BATCH 128 SUMMARY STATISTICS:")
@@ -141,7 +151,9 @@ async def main():
         print(f"Scope Distribution:     {scope_counts}")
         print(f"Retention Distribution: {retention_counts}")
         print(f"Exclusion Reasons:      {exclusion_counts}")
-        print(f"Coverage completeness:  {len(results_by_id)}/{len(stories)} ({len(results_by_id) / len(stories) * 100:.1f}%)")
+        print(
+            f"Coverage completeness:  {len(results_by_id)}/{len(stories)} ({len(results_by_id) / len(stories) * 100:.1f}%)"
+        )
 
         print("\n🟢 Sample KEEP Stories:")
         for k in kept_samples:
@@ -154,17 +166,24 @@ async def main():
             print(f"    Text: {d['text']!r}")
 
         # Save to artifact
-        artifact_path = Path("/Users/air/.gemini/antigravity-ide/brain/a331c9d6-a80c-4911-ae2b-d379e7ab4cf4/batch_128_live_results.json")
+        artifact_path = Path(
+            "/Users/air/.gemini/antigravity-ide/brain/a331c9d6-a80c-4911-ae2b-d379e7ab4cf4/batch_128_live_results.json"
+        )
         with open(artifact_path, "w", encoding="utf-8") as f:
-            json.dump({
-                "elapsed_seconds": elapsed,
-                "stories_count": len(stories),
-                "parsed_count": len(results),
-                "scope_counts": scope_counts,
-                "retention_counts": retention_counts,
-                "exclusion_counts": exclusion_counts,
-                "results": results,
-            }, f, ensure_ascii=False, indent=2)
+            json.dump(
+                {
+                    "elapsed_seconds": elapsed,
+                    "stories_count": len(stories),
+                    "parsed_count": len(results),
+                    "scope_counts": scope_counts,
+                    "retention_counts": retention_counts,
+                    "exclusion_counts": exclusion_counts,
+                    "results": results,
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
         print(f"\n💾 Full results saved to {artifact_path}")
 
     except Exception as exc:

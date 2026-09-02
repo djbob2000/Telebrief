@@ -87,11 +87,18 @@ async def main():
         rev_ids = [r[0] for r in rows]
 
     if rev_ids:
-        logger.info("Processing %d new revisions (fragmentation, embeddings, clustering)...", len(rev_ids))
+        logger.info(
+            "Processing %d new revisions (fragmentation, embeddings, clustering)...", len(rev_ids)
+        )
         batch_size = 64
         for i in range(0, len(rev_ids), batch_size):
             batch = rev_ids[i : i + batch_size]
-            logger.info("Processing revision batch %d-%d of %d...", i + 1, min(i + batch_size, len(rev_ids)), len(rev_ids))
+            logger.info(
+                "Processing revision batch %d-%d of %d...",
+                i + 1,
+                min(i + batch_size, len(rev_ids)),
+                len(rev_ids),
+            )
             await process_event_revisions_task(batch)
 
     # 4. Coalesce dirty story clusters (Gate triage and analysis)

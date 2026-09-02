@@ -167,14 +167,25 @@ async def main_async(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Bind legacy coverage floor units to real source fragments")
+    parser = argparse.ArgumentParser(
+        description="Bind legacy coverage floor units to real source fragments"
+    )
     parser.add_argument("--case", type=str, required=True, help="Input legacy floor JSON")
     parser.add_argument("--matchers", type=str, required=True, help="Input source matchers JSON")
-    parser.add_argument("--source-export", type=str, default=None, help="Input exported source corpus JSON")
-    parser.add_argument("--use-case-window", action="store_true", help="Fetch corpus from DB using case window")
+    parser.add_argument(
+        "--source-export", type=str, default=None, help="Input exported source corpus JSON"
+    )
+    parser.add_argument(
+        "--use-case-window", action="store_true", help="Fetch corpus from DB using case window"
+    )
     parser.add_argument("--edition", type=str, default=None, help="Edition slug override")
     parser.add_argument("--database-url", type=str, default=None, help="Database connection URL")
-    parser.add_argument("--output", type=str, default=None, help="Output bound case JSON (defaults to overwriting --case)")
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output bound case JSON (defaults to overwriting --case)",
+    )
     parser.add_argument("--report", type=str, default=None, help="Output review report JSON")
     args = parser.parse_args()
     asyncio.run(main_async(args))

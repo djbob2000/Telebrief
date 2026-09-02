@@ -94,9 +94,7 @@ async def run_rescreen(
                     "SELECT id, slug, name FROM editions WHERE slug = %s", (edition_slug,)
                 )
             else:
-                cur = await conn.execute(
-                    "SELECT id, slug, name FROM editions ORDER BY id ASC"
-                )
+                cur = await conn.execute("SELECT id, slug, name FROM editions ORDER BY id ASC")
             editions = await cur.fetchall()
 
         if not editions:

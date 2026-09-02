@@ -260,7 +260,9 @@ def evaluate_case(
     # Validate that every binding coverage unit has at least one source identity
     for unit in case.coverage_units:
         if unit.allowed_loss_reason is None and not unit.acceptable_sources:
-            raise ValueError(f"unbound legacy coverage unit '{unit.id}' (acceptable_sources is empty)")
+            raise ValueError(
+                f"unbound legacy coverage unit '{unit.id}' (acceptable_sources is empty)"
+            )
     # Exported case index structures:
     # sources: set of fingerprints and refs present in the source snapshot
     source_fingerprints: set[str] = set(exported_case.get("source_fingerprints", ()))
@@ -399,9 +401,7 @@ def evaluate_case(
 
     binding_results = [r for r in unit_results if r.allowed_loss_reason is None]
     covered_binding = [r for r in binding_results if r.loss == LegacyLoss.COVERED]
-    legacy_floor_coverage = (
-        len(covered_binding) / len(binding_results) if binding_results else 1.0
-    )
+    legacy_floor_coverage = len(covered_binding) / len(binding_results) if binding_results else 1.0
 
     total_required_microdetails = sum(
         len(unit.required_microdetails)

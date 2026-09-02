@@ -32,14 +32,16 @@ async def main():
             print(f"Story ID: {r['story_id']}")
             print(f"Title: {r['title']}")
             print(f"Summary: {r['summary']}")
-            print(f"Triage Decision: {r['triage_decision']}, Retention: {r['retention']}, Enrichment: {r['enrichment']}")
+            print(
+                f"Triage Decision: {r['triage_decision']}, Retention: {r['retention']}, Enrichment: {r['enrichment']}"
+            )
             print(f"Triage Reason: {r['triage_reason']}")
-            payload = r['event_payload'] or {}
+            payload = r["event_payload"] or {}
             print(f"Topic: {payload.get('topic')}")
             print(f"Tags: {payload.get('tags')}")
             print(f"Evidence items count: {len(payload.get('evidence_items', []))}")
-            for evi in payload.get('evidence_items', []):
-                if '3' in str(evi) or 'вод' in str(evi).lower():
+            for evi in payload.get("evidence_items", []):
+                if "3" in str(evi) or "вод" in str(evi).lower():
                     print(f"  - Kind: {evi.get('kind')}, PubUse: {evi.get('publication_use')}")
                     print(f"    Text: {evi.get('text')}")
                     print(f"    Service state: {evi.get('service_state')}")
@@ -52,7 +54,7 @@ async def main():
                 JOIN story_fragments stf ON stf.fragment_id = sf.id
                 WHERE stf.story_id = %s
                 """,
-                (r['story_id'],)
+                (r["story_id"],),
             )
             print("  Story Fragments:")
             for f in await cur_frags.fetchall():
@@ -80,12 +82,14 @@ async def main():
             print(f"Triage: {r['triage_decision']} / {r['retention']} / {r['enrichment']}")
             print(f"Exclusion Reason: {r['exclusion_reason']}")
             print(f"Triage Reason: {r['triage_reason']}")
-            payload = r['event_payload'] or {}
+            payload = r["event_payload"] or {}
             print(f"Topic: {payload.get('topic')}")
             print(f"Tags: {payload.get('tags')}")
             print("Evidence items:")
-            for evi in payload.get('evidence_items', []):
-                print(f"  - Kind: {evi.get('kind')}, PubUse: {evi.get('publication_use')}: {evi.get('text')[:100]}")
+            for evi in payload.get("evidence_items", []):
+                print(
+                    f"  - Kind: {evi.get('kind')}, PubUse: {evi.get('publication_use')}: {evi.get('text')[:100]}"
+                )
 
         print("\n" + "=" * 80)
         print("EXEMPLAR 4: Учреждение 8:00–16:00 (потеря названия)")
@@ -103,12 +107,14 @@ async def main():
             print(f"\n--- Story {r['story_id']} ---")
             print(f"Title: {r['title']}")
             print(f"Summary: {r['summary']}")
-            payload = r['event_payload'] or {}
+            payload = r["event_payload"] or {}
             print(f"Topic: {payload.get('topic')}")
             print(f"Tags: {payload.get('tags')}")
             print("Evidence items:")
-            for evi in payload.get('evidence_items', []):
-                print(f"  - Kind: {evi.get('kind')}, PubUse: {evi.get('publication_use')}: {evi.get('text')}")
+            for evi in payload.get("evidence_items", []):
+                print(
+                    f"  - Kind: {evi.get('kind')}, PubUse: {evi.get('publication_use')}: {evi.get('text')}"
+                )
             cur_frags = await conn.execute(
                 """
                 SELECT sf.id, sf.text_content
@@ -116,7 +122,7 @@ async def main():
                 JOIN story_fragments stf ON stf.fragment_id = sf.id
                 WHERE stf.story_id = %s
                 """,
-                (r['story_id'],)
+                (r["story_id"],),
             )
             print("  Raw Fragments:")
             for f in await cur_frags.fetchall():
@@ -136,13 +142,15 @@ async def main():
         r = await cur.fetchone()
         if r:
             print(f"Story {r['story_id']}: {r['title']}")
-            payload = r['event_payload'] or {}
+            payload = r["event_payload"] or {}
             print(f"Topic: {payload.get('topic')}")
             print(f"Tags: {payload.get('tags')}")
             print(f"Category: {payload.get('category')}")
             print("Evidence items:")
-            for evi in payload.get('evidence_items', []):
-                print(f"  - Kind: {evi.get('kind')}, PubUse: {evi.get('publication_use')}: {evi.get('text')}")
+            for evi in payload.get("evidence_items", []):
+                print(
+                    f"  - Kind: {evi.get('kind')}, PubUse: {evi.get('publication_use')}: {evi.get('text')}"
+                )
 
         print("\n" + "=" * 80)
         print("EXEMPLAR 6 (BONUS): 'В районе Самолёта вода есть' + 'накопительные баки'")
@@ -158,12 +166,15 @@ async def main():
         )
         for r in await cur.fetchall():
             print(f"\nStory {r['story_id']}: {r['title']}")
-            payload = r['event_payload'] or {}
+            payload = r["event_payload"] or {}
             print(f"Topic: {payload.get('topic')}")
             print(f"Tags: {payload.get('tags')}")
             print("Evidence items:")
-            for evi in payload.get('evidence_items', []):
-                print(f"  - Kind: {evi.get('kind')}, PubUse: {evi.get('publication_use')}: {evi.get('text')}")
+            for evi in payload.get("evidence_items", []):
+                print(
+                    f"  - Kind: {evi.get('kind')}, PubUse: {evi.get('publication_use')}: {evi.get('text')}"
+                )
+
 
 if __name__ == "__main__":
     asyncio.run(main())
