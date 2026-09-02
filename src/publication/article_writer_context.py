@@ -23,11 +23,30 @@ def sanitize_writer_source_text(text: str) -> str:
 
 def _render_coverage_plan(plan: ArticleCoveragePlan) -> str:
     lines = ["ARTICLE COVERAGE PLAN"]
-    for item in plan.stories:
-        lines.append(f"- {item.prominence} {item.story_id}: {item.topic}")
-        lines.append(f"  SUPPORTS: {', '.join(item.support_ids)}")
-        if item.detail_support_ids:
-            lines.append(f"  DETAIL SUPPORTS: {', '.join(item.detail_support_ids)}")
+    if plan.sections:
+        lines.append(f"THEMATIC SECTIONS COUNT: {len(plan.sections)}")
+        plan_by_id = plan.by_story_id
+        for sec in plan.sections:
+            lines.append(f"\nSECTION: {sec.title}")
+            lines.append(f"NARRATIVE INTENT: {sec.narrative_intent}")
+            lines.append(f"LEAD STORY: {sec.lead_story_id}")
+            for a in sec.story_assignments:
+                item = plan_by_id.get(a.story_id)
+                topic = item.topic if item else a.story_id
+                sups = item.support_ids if item else a.primary_evidence_ids
+                det_sups = item.detail_support_ids if item else ()
+                lines.append(f"- {a.depth} {a.story_id}: {topic}")
+                lines.append(f"  SUPPORTS: {', '.join(sups)}")
+                if det_sups:
+                    lines.append(f"  DETAIL SUPPORTS: {', '.join(det_sups)}")
+                if a.concrete_details:
+                    lines.append(f"  MICRODETAILS: {'; '.join(a.concrete_details)}")
+    else:
+        for item in plan.stories:
+            lines.append(f"- {item.prominence} {item.story_id}: {item.topic}")
+            lines.append(f"  SUPPORTS: {', '.join(item.support_ids)}")
+            if item.detail_support_ids:
+                lines.append(f"  DETAIL SUPPORTS: {', '.join(item.detail_support_ids)}")
     return "\n".join(lines)
 
 

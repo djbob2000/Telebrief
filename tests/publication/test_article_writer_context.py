@@ -109,6 +109,8 @@ def test_render_article_writer_context_includes_plan_and_sanitizes_sources():
     rendered = render_article_writer_context(ctx, plan)
 
     assert "ARTICLE COVERAGE PLAN" in rendered
+    assert "SECTION:" in rendered
+    assert "NARRATIVE INTENT:" in rendered
     assert "DEVELOP story:power: Энергетика" in rendered
     assert "WEAVE story:telecom: Связь" in rendered
     assert "BRIEF story:sport: Спорт" in rendered
