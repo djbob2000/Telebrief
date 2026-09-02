@@ -437,17 +437,24 @@ def normalize_question_evidence(payload: EventPayload) -> EventPayload:
         else item
         for item in payload.evidence_items
     )
-    question_fragment_ids = {
+    non_question_fragment_ids = {
+        fid
+        for item in canonical_items
+        if item.kind != "resident_question" and item.publication_use == "PUBLISH"
+        for fid in item.source_fragment_ids
+    }
+    question_only_fragment_ids = {
         fid
         for item in canonical_items
         if item.kind == "resident_question"
         for fid in item.source_fragment_ids
+        if fid not in non_question_fragment_ids
     }
-    if question_fragment_ids:
+    if question_only_fragment_ids:
         kept_observations = tuple(
             obs
             for obs in payload.operational_observations
-            if any(fid not in question_fragment_ids for fid in obs.source_fragment_ids)
+            if any(fid not in question_only_fragment_ids for fid in obs.source_fragment_ids)
         )
     else:
         kept_observations = payload.operational_observations

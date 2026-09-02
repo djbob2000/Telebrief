@@ -1540,7 +1540,7 @@ async def test_gate_v2_normalizes_resident_question_brief_payload(conn, edition,
 def test_gate_v8_uses_unified_service_state_contract() -> None:
     from src.processing.event_triage import _GATE_V2_SYSTEM_PROMPT, TRIAGE_VERSION
 
-    assert TRIAGE_VERSION in ("v8", "v9")
+    assert TRIAGE_VERSION in ("v8", "v9", "v10")
     prompt = _GATE_V2_SYSTEM_PROMPT
 
     assert '"service_state"' in prompt
@@ -2198,3 +2198,93 @@ async def test_load_recent_subject_hints_reads_service_state(conn, edition, revi
 
     assert len(hints) == 1
     assert hints[0] == ("power_supply", "Электроснабжение")
+
+
+def test_gate_v10_version():
+    from src.processing.event_triage import TRIAGE_VERSION
+
+    assert TRIAGE_VERSION == "v10"
+
+
+def test_mixed_question_factual_outage_decomposition():
+    from src.domain.event_payload import EventPayload, EvidenceItemPayload
+    from src.processing.event_triage import decompose_mixed_outage_evidence
+
+    # Mock AI produced only a single community_report for the mixed text
+    text = "Воду дали в районі Обжори? У нас немає 3-й день і порів ще на перехресті."
+    payload = EventPayload(
+        topic="Водоснабжение",
+        evidence_items=(
+            EvidenceItemPayload(
+                text=text,
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(9001,),
+            ),
+        ),
+    )
+    fragment_texts = {9001: text}
+
+    decomposed = decompose_mixed_outage_evidence(payload, fragment_texts)
+    kinds = [e.kind for e in decomposed.evidence_items]
+    pub_uses = [e.publication_use for e in decomposed.evidence_items]
+    assert "CONTEXT" in pub_uses
+    assert "PUBLISH" in pub_uses
+
+    assert "resident_question" in kinds
+    assert "service_access" in kinds
+    q_item = next(e for e in decomposed.evidence_items if e.kind == "resident_question")
+    s_item = next(e for e in decomposed.evidence_items if e.kind == "service_access")
+
+    assert q_item.publication_use == "CONTEXT"
+    assert s_item.publication_use == "PUBLISH"
+    assert s_item.service_state is not None
+    assert s_item.service_state.state == "UNAVAILABLE"
+    assert s_item.service_state.expected_now is True
+    # Ensure location is not synthesized without explicit ground
+    assert s_item.service_state.location in ("", "Бердянськ", "Бердянск")
+
+
+def test_normalize_question_evidence_shared_fragment():
+    from src.domain.event_payload import (
+        EventPayload,
+        EvidenceItemPayload,
+        OperationalObservationPayload,
+        normalize_question_evidence,
+    )
+
+    # Fragment 9001 is shared between resident_question and service_access
+    payload = EventPayload(
+        topic="Водоснабжение",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Воду дали?",
+                kind="resident_question",
+                publication_use="CONTEXT",
+                source_fragment_ids=(9001,),
+            ),
+            EvidenceItemPayload(
+                text="У нас нет воды 3-й день",
+                kind="service_access",
+                publication_use="PUBLISH",
+                source_fragment_ids=(9001,),
+            ),
+        ),
+        operational_observations=(
+            OperationalObservationPayload(
+                subject_key="water_supply",
+                subject_label="Водоснабжение",
+                dimension="availability",
+                location="",
+                entity="",
+                state="UNAVAILABLE",
+                detail="Нет воды 3-й день",
+                source_fragment_ids=(9001,),
+            ),
+        ),
+    )
+
+    normalized = normalize_question_evidence(payload)
+    # The operational observation MUST be preserved because fragment 9001 also supports service_access!
+    assert len(normalized.operational_observations) == 1
+    assert normalized.operational_observations[0].subject_key == "water_supply"

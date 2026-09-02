@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 
 import psycopg
 
@@ -14,10 +15,12 @@ from src.config_loader import EditionScopeConfig
 from src.domain.event_clusters import StoryClusterState
 from src.domain.event_payload import (
     EventPayload,
+    EvidenceItemPayload,
     ensure_keep_publishability,
     normalize_question_evidence,
     parse_event_payload,
 )
+from src.domain.service_state import ServiceStatePayload
 from src.processing.edition_scope import (
     SCOPE_VERSION,
     EditionScopeClass,
@@ -33,7 +36,134 @@ from src.repositories.event_clusters import EventClusterRepository
 
 logger = logging.getLogger(__name__)
 
-TRIAGE_VERSION = "v9"
+TRIAGE_VERSION = "v10"
+
+_SERVICE_KEYWORDS: tuple[tuple[tuple[str, ...], str, str], ...] = (
+    (("вод", "водопостач", "водоснабж"), "water_supply", "Водоснабжение"),
+    (("свет", "электр", "електр", "струм", "питани"), "power_supply", "Электроснабжение"),
+    (("газ",), "gas_supply", "Газоснабжение"),
+    (("отоплен", "опален", "тепло"), "heating", "Отопление"),
+    (("интернет", "інтернет", "связь", "зв'язок"), "connectivity", "Связь"),
+)
+
+_OUTAGE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:нет|нету|немає|нема|відсутн[яєій]|отсутствует|не\s+работает|не\s+працює)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:\d+[-—]?й?\s+день\s+без|без\s+(?:света|води|воды|газа|тепла))\b", re.IGNORECASE
+    ),
+    re.compile(r"\b(?:порыв|порив|авария|аварія|отключ[еи]н)\b", re.IGNORECASE),
+)
+
+
+def _extract_mixed_question_and_outage(text: str) -> tuple[str, str, str, str] | None:
+    """Detect if text contains both a question and a grounded factual outage clause."""
+    if "?" not in text:
+        return None
+
+    clauses = re.split(r"([?])", text)
+    if len(clauses) < 3:
+        return None
+
+    q_parts: list[str] = []
+    statement_parts: list[str] = []
+
+    i = 0
+    while i < len(clauses):
+        part = clauses[i].strip()
+        if i + 1 < len(clauses) and clauses[i + 1] == "?":
+            q_text = f"{part}?".strip()
+            if q_text and q_text != "?":
+                q_parts.append(q_text)
+            i += 2
+        else:
+            if part and part != "?":
+                statement_parts.append(part)
+            i += 1
+
+    if not q_parts or not statement_parts:
+        return None
+
+    statement_combined = " ".join(statement_parts).strip()
+    has_outage = any(p.search(statement_combined) for p in _OUTAGE_PATTERNS)
+    if not has_outage:
+        return None
+
+    full_lower = text.lower()
+    subject_key = None
+    subject_label = None
+    for kw_tuple, s_key, s_label in _SERVICE_KEYWORDS:
+        if any(kw in full_lower for kw in kw_tuple):
+            subject_key = s_key
+            subject_label = s_label
+            break
+
+    if not subject_key or not subject_label:
+        return None
+
+    q_combined = " ".join(q_parts).strip()
+    return q_combined, statement_combined, subject_key, subject_label
+
+
+def decompose_mixed_outage_evidence(
+    payload: EventPayload,
+    fragment_texts: Mapping[int, str] | None = None,
+) -> EventPayload:
+    """Deterministic decomposition of mixed question + factual outage evidence."""
+    new_evidence: list[EvidenceItemPayload] = []
+    mutated = False
+
+    for item in payload.evidence_items:
+        candidates_to_check = [item.text]
+        if fragment_texts:
+            for fid in item.source_fragment_ids:
+                if fid in fragment_texts:
+                    candidates_to_check.append(fragment_texts[fid])
+
+        extracted = None
+        for cand in candidates_to_check:
+            extracted = _extract_mixed_question_and_outage(cand)
+            if extracted:
+                break
+
+        if extracted and item.kind in ("community_report", "resident_question", "service_access"):
+            q_clause, outage_clause, sub_key, sub_label = extracted
+            new_evidence.append(
+                EvidenceItemPayload(
+                    text=q_clause,
+                    kind="resident_question",
+                    publication_use="CONTEXT",
+                    source_fragment_ids=item.source_fragment_ids,
+                )
+            )
+            new_evidence.append(
+                EvidenceItemPayload(
+                    text=outage_clause,
+                    kind="service_access",
+                    publication_use="PUBLISH",
+                    source_fragment_ids=item.source_fragment_ids,
+                    service_state=ServiceStatePayload(
+                        subject_key=sub_key,
+                        subject_label=sub_label,
+                        dimension="availability",
+                        state="UNAVAILABLE",
+                        location="",
+                        expected_now=True,
+                        basis="direct_failure",
+                    ),
+                )
+            )
+            mutated = True
+        else:
+            new_evidence.append(item)
+
+    if not mutated:
+        return payload
+
+    return replace(payload, evidence_items=tuple(new_evidence))
+
 
 _ALLOWED_EXCLUSION_REASONS = frozenset(
     {
@@ -488,14 +618,28 @@ class StoryTriageService:
                         "Broad regional summary without explicit configured focus-area consequence"
                     )
 
+                # Hard exclusion audit on story fragments
+                story_frags = story_fragments_map.get(s.story_id, [])
+                story_frag_texts = {
+                    int(sf.get("fragment_id") or sf.get("id", 0)): str(
+                        sf.get("text") or sf.get("text_content", "")
+                    )
+                    for sf in story_frags
+                }
+                hard_audit = evaluate_story_hard_exclusion(story_frags)
+
                 # Parse brief_payload if present
                 raw_brief = item.get("brief_payload")
                 brief_payload: EventPayload | None = None
                 if isinstance(raw_brief, dict):
                     try:
-                        brief_payload = normalize_question_evidence(
-                            parse_event_payload(raw_brief, allowed_fragment_ids=allowed_fids)
+                        parsed_payload = parse_event_payload(
+                            raw_brief, allowed_fragment_ids=allowed_fids
                         )
+                        decomposed = decompose_mixed_outage_evidence(
+                            parsed_payload, story_frag_texts
+                        )
+                        brief_payload = normalize_question_evidence(decomposed)
                         brief_payload, service_audit = normalize_service_state_evidence(
                             brief_payload
                         )
@@ -516,10 +660,6 @@ class StoryTriageService:
                             "Brief payload parsing error for story %s: %s", s.story_id, e
                         )
                         brief_payload = None
-
-                # Hard exclusion audit on story fragments
-                story_frags = story_fragments_map.get(s.story_id, [])
-                hard_audit = evaluate_story_hard_exclusion(story_frags)
 
                 # Normalization rules
                 if scope in {"OUT_OF_SCOPE", "UNCERTAIN"}:
@@ -549,8 +689,11 @@ class StoryTriageService:
                             retention = "KEEP"
                             enrichment = "BRIEF"
                             ex_reason = None
+                            decomposed = decompose_mixed_outage_evidence(
+                                brief_payload, story_frag_texts
+                            )
                             brief_payload = ensure_keep_publishability(
-                                normalize_question_evidence(brief_payload), default="brief"
+                                normalize_question_evidence(decomposed), default="brief"
                             )
                             brief_payload, _ = normalize_service_state_evidence(brief_payload)
                         else:
@@ -564,8 +707,11 @@ class StoryTriageService:
                         retention = "KEEP"
                         enrichment = enrichment_raw  # type: ignore[assignment]
                         ex_reason = None
+                        decomposed = decompose_mixed_outage_evidence(
+                            brief_payload, story_frag_texts
+                        )
                         brief_payload = ensure_keep_publishability(
-                            normalize_question_evidence(brief_payload), default="brief"
+                            normalize_question_evidence(decomposed), default="brief"
                         )
                         brief_payload, _ = normalize_service_state_evidence(brief_payload)
                     else:
