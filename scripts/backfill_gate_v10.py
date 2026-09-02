@@ -37,7 +37,7 @@ async def run_gate_v10_backfill(
         db_config = load_database_config(require_enabled=True)
         full_config = load_config()
         infra = await build_infrastructure(db_config)
-        setattr(infra, "config", full_config)
+        object.__setattr__(infra, "config", full_config)
         install_runtime(infra)
     else:
         infra = infrastructure
