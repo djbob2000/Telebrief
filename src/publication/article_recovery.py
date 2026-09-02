@@ -393,10 +393,11 @@ def _build_section_paragraphs(
         if p:
             paragraphs.append(p)
 
-    # 3. BRIEF stories grouped together
-    if brief_stories:
+    # 3. BRIEF stories grouped in chunks of up to 3 per paragraph
+    for i in range(0, len(brief_stories), 3):
+        chunk = brief_stories[i : i + 3]
         brief_sups: list[ArticleSupport] = []
-        for bs in brief_stories:
+        for bs in chunk:
             bs_sups = _resolve_story_supports(bs, context)
             if bs_sups:
                 brief_sups.append(bs_sups[0])

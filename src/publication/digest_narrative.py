@@ -1102,6 +1102,26 @@ class DigestNarrativeWriter:
                 f"Failed to decode LLM response as JSON: {err}. Raw was: {raw_response[:200]!r}"
             ) from err
 
+        # Consolidate any duplicate block_ids produced by LLM before strict schema instantiation
+        if isinstance(parsed, dict) and isinstance(parsed.get("blocks"), list):
+            merged_blocks: list[Any] = []
+            block_by_id: dict[str, dict[str, Any]] = {}
+
+            for b in parsed["blocks"]:
+                if isinstance(b, dict) and b.get("block_id"):
+                    bid = str(b["block_id"]).strip()
+                    if bid in block_by_id:
+                        existing_items = block_by_id[bid].setdefault("items", [])
+                        new_items = b.get("items", [])
+                        if isinstance(existing_items, list) and isinstance(new_items, list):
+                            existing_items.extend(new_items)
+                    else:
+                        block_by_id[bid] = b
+                        merged_blocks.append(b)
+                else:
+                    merged_blocks.append(b)
+            parsed["blocks"] = merged_blocks
+
         return DigestNarrativeDraft.from_dict(parsed)
 
 
