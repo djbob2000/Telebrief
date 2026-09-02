@@ -32,8 +32,28 @@ class ArticleStoryCoverage:
 
 
 @dataclass(frozen=True)
+class ArticleStoryAssignment:
+    story_id: str
+    section_id: str
+    depth: ArticleProminence
+    rank: int
+    primary_evidence_ids: tuple[str, ...]
+    concrete_details: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ArticleThematicSection:
+    section_id: str
+    title: str
+    lead_story_id: str
+    story_assignments: tuple[ArticleStoryAssignment, ...]
+    narrative_intent: str
+
+
+@dataclass(frozen=True)
 class ArticleCoveragePlan:
     stories: tuple[ArticleStoryCoverage, ...]
+    sections: tuple[ArticleThematicSection, ...] = ()
 
     @property
     def story_ids(self) -> tuple[str, ...]:
@@ -46,6 +66,16 @@ class ArticleCoveragePlan:
     @property
     def support_ids_by_story(self) -> dict[str, tuple[str, ...]]:
         return {item.story_id: item.support_ids for item in self.stories}
+
+    @property
+    def by_section_id(self) -> dict[str, ArticleThematicSection]:
+        return {sec.section_id: sec for sec in self.sections}
+
+    def section_for_story(self, story_id: str) -> ArticleThematicSection | None:
+        for sec in self.sections:
+            if any(a.story_id == story_id for a in sec.story_assignments):
+                return sec
+        return None
 
 
 def _story_id_from_support_id(support_id: str) -> str:
@@ -200,4 +230,134 @@ def build_article_coverage_plan(
                 )
             )
 
-    return ArticleCoveragePlan(stories=tuple(stories))
+    card_map = {c.id: c for c in valid_cards}
+    stories_by_section: dict[str, list[ArticleStoryCoverage]] = defaultdict(list)
+    for s in stories:
+        c_item = card_map.get(s.story_id)
+        sec_id = _thematic_section_id(c_item) if c_item else "city_life"
+        stories_by_section[sec_id].append(s)
+
+    sec_defs = list(_THEMATIC_SECTIONS_DEF)
+    active_sec_ids = [sdef[0] for sdef in sec_defs if stories_by_section.get(sdef[0])]
+    if len(active_sec_ids) < 3 and len(stories) >= 3:
+        for sdef in sec_defs:
+            sid = sdef[0]
+            if sid not in stories_by_section or not stories_by_section[sid]:
+                donor_sid = max(stories_by_section.keys(), key=lambda k: len(stories_by_section[k]))
+                if len(stories_by_section[donor_sid]) >= 2:
+                    moved = stories_by_section[donor_sid].pop()
+                    stories_by_section[sid].append(moved)
+            if len([k for k, v in stories_by_section.items() if v]) >= 3:
+                break
+
+    sections: list[ArticleThematicSection] = []
+    for sec_id, sec_title, sec_intent in _THEMATIC_SECTIONS_DEF:
+        sec_stories = stories_by_section.get(sec_id)
+        if not sec_stories:
+            continue
+        sorted_sec_stories = sorted(sec_stories, key=lambda s: s.rank)
+        lead_story_id = sorted_sec_stories[0].story_id
+        assignments = tuple(
+            ArticleStoryAssignment(
+                story_id=s.story_id,
+                section_id=sec_id,
+                depth=s.prominence,
+                rank=s.rank,
+                primary_evidence_ids=s.support_ids[:3],
+                concrete_details=s.detail_support_ids,
+            )
+            for s in sorted_sec_stories
+        )
+        sections.append(
+            ArticleThematicSection(
+                section_id=sec_id,
+                title=sec_title,
+                lead_story_id=lead_story_id,
+                story_assignments=assignments,
+                narrative_intent=sec_intent,
+            )
+        )
+
+    return ArticleCoveragePlan(stories=tuple(stories), sections=tuple(sections))
+
+
+_THEMATIC_SECTIONS_DEF: tuple[tuple[str, str, str], ...] = (
+    (
+        "infrastructure",
+        "Жизнеобеспечение и коммунальная обстановка",
+        "Комплексная картина работы коммунальных сетей, подачи электричества, воды и устранения аварийных ситуаций.",
+    ),
+    (
+        "city_life",
+        "Городская среда, транспорт и быт",
+        "Повседневная жизнь города, транспортное сообщение, связь и бытовые решения горожан.",
+    ),
+    (
+        "society",
+        "Социальная сфера, гуманитарная обстановка и медицина",
+        "Работа медицинских учреждений, социальные выплаты, гуманитарная помощь и поддержка жителей.",
+    ),
+    (
+        "culture_education",
+        "Образование, дети и городские события",
+        "Учебный процесс в школах, детские секции, спортивные и культурные мероприятия в городе.",
+    ),
+)
+
+
+def _thematic_section_id(card: StoryCard) -> str:
+    rid = (getattr(card, "rubric_id", "") or "").casefold()
+    cat = (getattr(card, "category", "") or "").casefold()
+    topic = (getattr(card, "topic", "") or "").casefold()
+    tags = {str(t).casefold() for t in getattr(card, "tags", []) or []}
+    tokens = set(re.findall(r"[a-zа-яё0-9]+", f"{rid} {cat} {topic} {' '.join(tags)}"))
+
+    if {
+        "electricity",
+        "power",
+        "water",
+        "gas",
+        "heating",
+        "utilities",
+        "жкх",
+        "свет",
+        "вода",
+        "газ",
+        "отопление",
+        "рэс",
+        "водоканал",
+        "подстанция",
+        "авария",
+    } & tokens:
+        return "infrastructure"
+    if {
+        "education",
+        "school",
+        "kindergarten",
+        "спорт",
+        "дети",
+        "школа",
+        "садик",
+        "культура",
+        "музей",
+        "youth",
+        "culture",
+        "sport",
+    } & tokens:
+        return "culture_education"
+    if {
+        "medicine",
+        "hospital",
+        "health",
+        "social",
+        "пенсионный",
+        "пособия",
+        "больница",
+        "поликлиника",
+        "врач",
+        "медицина",
+        "гуманитарная",
+        "question",
+    } & tokens:
+        return "society"
+    return "city_life"

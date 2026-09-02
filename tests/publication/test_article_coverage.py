@@ -243,3 +243,28 @@ def test_prominence_from_selection_signals():
     assert by_id["story:7"].prominence == "BRIEF"
     assert by_id["story:8"].prominence == "BRIEF"
     assert by_id["story:9"].prominence == "BRIEF"
+
+
+def test_article_coverage_plan_hierarchical_thematic_sections() -> None:
+    from src.publication.article_coverage import (
+        ArticleThematicSection,
+        build_article_coverage_plan,
+    )
+
+    data = _load_cases()
+    cards, ctx = _build_test_context(data)
+    plan = build_article_coverage_plan(cards, ctx)
+
+    assert hasattr(plan, "sections")
+    assert 3 <= len(plan.sections) <= 6
+    assert all(isinstance(sec, ArticleThematicSection) for sec in plan.sections)
+    all_assigned_stories = [
+        assign.story_id for sec in plan.sections for assign in sec.story_assignments
+    ]
+    assert set(all_assigned_stories) == set(plan.story_ids)
+    assert len(all_assigned_stories) == len(plan.story_ids)
+    # Check that lead story in section has DEVELOP or WEAVE depth
+    for sec in plan.sections:
+        assert sec.lead_story_id in [a.story_id for a in sec.story_assignments]
+        assert sec.title
+        assert sec.narrative_intent
