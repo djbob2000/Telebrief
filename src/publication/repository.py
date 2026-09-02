@@ -175,6 +175,209 @@ class PublicationPolicyRepository:
         raise RuntimeError(f"could not resolve current policy in {table} after race retries")
 
 
+def _candidate_universe_sql() -> str:
+    return """
+    WITH latest_revs AS (
+        SELECT DISTINCT ON (sr.story_id)
+            sr.story_id,
+            sr.id AS story_revision_id,
+            sr.revision_no,
+            sr.current_state,
+            sr.semantic_text,
+            sr.created_at AS revision_created_at,
+            sr.event_payload
+        FROM story_revisions sr
+        JOIN stories s ON s.id = sr.story_id
+        WHERE s.edition_id = %(edition_id)s
+          AND sr.created_at <= %(snapshot_at)s
+        ORDER BY sr.story_id, sr.revision_no DESC, sr.created_at DESC
+    ),
+    story_activity AS (
+        SELECT
+            lr.story_id,
+            lr.story_revision_id,
+            lr.revision_no,
+            lr.current_state,
+            lr.semantic_text,
+            lr.revision_created_at,
+            lr.event_payload,
+            s.created_at AS story_created_at,
+            s.knowledge_source,
+            COALESCE(
+                (
+                    SELECT count(DISTINCT sc.claim_id)
+                    FROM story_claims sc
+                    JOIN claims c ON c.id = sc.claim_id
+                    JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources src ON src.id = si.source_id
+                    WHERE sc.story_id = lr.story_id
+                      AND sc.attached_at <= %(snapshot_at)s
+                      AND c.created_at <= %(snapshot_at)s
+                      AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
+                ),
+                (
+                    SELECT scst.fragment_count
+                    FROM story_cluster_state scst
+                    WHERE scst.story_id = lr.story_id
+                ),
+                0
+            ) AS claim_count,
+            COALESCE(
+                (
+                    SELECT count(DISTINCT sc.claim_id)
+                    FROM story_claims sc
+                    JOIN claims c ON c.id = sc.claim_id
+                    JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources src ON src.id = si.source_id
+                    WHERE sc.story_id = lr.story_id
+                      AND sc.attached_at >= %(window_start)s
+                      AND sc.attached_at <= %(snapshot_at)s
+                      AND c.created_at <= %(snapshot_at)s
+                      AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
+                ),
+                (
+                    SELECT scst.fragment_count
+                    FROM story_cluster_state scst
+                    WHERE scst.story_id = lr.story_id
+                ),
+                0
+            ) AS new_claims_count,
+            COALESCE(
+                (
+                    SELECT count(DISTINCT sir.source_item_id)
+                    FROM story_claims sc
+                    JOIN claims c ON c.id = sc.claim_id
+                    JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources src ON src.id = si.source_id
+                    WHERE sc.story_id = lr.story_id
+                      AND sc.attached_at <= %(snapshot_at)s
+                      AND c.created_at <= %(snapshot_at)s
+                      AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
+                ),
+                (
+                    SELECT scst.unique_source_count
+                    FROM story_cluster_state scst
+                    WHERE scst.story_id = lr.story_id
+                ),
+                0
+            ) AS source_count,
+            COALESCE(
+                (
+                    SELECT MAX(COALESCE(si.published_at, si.first_collected_at))
+                    FROM story_claims sc
+                    JOIN claims c ON c.id = sc.claim_id
+                    JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources src ON src.id = si.source_id
+                    WHERE sc.story_id = lr.story_id
+                      AND sc.attached_at <= %(snapshot_at)s
+                      AND c.created_at <= %(snapshot_at)s
+                      AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
+                ),
+                (
+                    SELECT scst.last_seen_at
+                    FROM story_cluster_state scst
+                    WHERE scst.story_id = lr.story_id
+                )
+            ) AS newest_source_published_at,
+            (
+                SELECT si.metadata->>'temporal_fidelity'
+                FROM story_claims sc
+                JOIN claims c ON c.id = sc.claim_id
+                JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                JOIN source_items si ON si.id = sir.source_item_id
+                JOIN sources src ON src.id = si.source_id
+                WHERE sc.story_id = lr.story_id
+                  AND sc.attached_at <= %(snapshot_at)s
+                  AND c.created_at <= %(snapshot_at)s
+                  AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
+                ORDER BY COALESCE(si.published_at, si.first_collected_at) DESC NULLS LAST
+                LIMIT 1
+            ) AS newest_source_temporal_fidelity,
+            (
+                SELECT MAX(event_time)
+                FROM (
+                    SELECT lr.revision_created_at AS event_time
+                    WHERE cardinality(%(excluded_platforms)s::text[]) = 0
+                    UNION ALL
+                    SELECT MAX(sc.attached_at) AS event_time
+                    FROM story_claims sc
+                    JOIN claims c ON c.id = sc.claim_id
+                    JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources src ON src.id = si.source_id
+                    WHERE sc.story_id = lr.story_id
+                      AND sc.attached_at <= %(snapshot_at)s
+                      AND c.created_at <= %(snapshot_at)s
+                      AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
+                    UNION ALL
+                    SELECT MAX(sse.observed_at) AS event_time
+                    FROM story_state_events sse
+                    WHERE sse.story_id = lr.story_id
+                      AND sse.observed_at <= %(snapshot_at)s
+                ) t
+            ) AS last_activity_at,
+            (
+                cardinality(%(excluded_platforms)s::text[]) = 0
+                AND EXISTS (
+                    SELECT 1
+                    FROM story_revisions sr2
+                    WHERE sr2.story_id = lr.story_id
+                      AND sr2.created_at >= %(window_start)s
+                      AND sr2.created_at <= %(snapshot_at)s
+                )
+            ) AS has_recent_revision,
+            EXISTS (
+                SELECT 1
+                FROM story_claims sc2
+                JOIN claims c2 ON c2.id = sc2.claim_id
+                JOIN source_item_revisions sir2 ON sir2.id = c2.source_item_revision_id
+                JOIN source_items si2 ON si2.id = sir2.source_item_id
+                JOIN sources src2 ON src2.id = si2.source_id
+                WHERE sc2.story_id = lr.story_id
+                  AND sc2.attached_at >= %(window_start)s
+                  AND sc2.attached_at <= %(snapshot_at)s
+                  AND c2.created_at <= %(snapshot_at)s
+                  AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src2.platform <> ALL(%(excluded_platforms)s::text[]))
+            ) AS has_recent_claim,
+            EXISTS (
+                SELECT 1
+                FROM story_state_events sse2
+                WHERE sse2.story_id = lr.story_id
+                  AND sse2.observed_at >= %(window_start)s
+                  AND sse2.observed_at <= %(snapshot_at)s
+            ) AS has_recent_event
+        FROM latest_revs lr
+        JOIN stories s ON s.id = lr.story_id
+        WHERE lr.current_state NOT IN ('invalid', 'archived', 'rejected')
+          AND COALESCE(
+              (
+                  SELECT sse.type
+                  FROM story_state_events sse
+                  WHERE sse.story_id = lr.story_id
+                    AND sse.observed_at <= %(snapshot_at)s
+                  ORDER BY sse.observed_at DESC, sse.id DESC
+                  LIMIT 1
+              ), 'active'
+          ) <> 'archived'
+    ),
+    candidate_universe AS (
+        SELECT *
+        FROM story_activity
+        WHERE (claim_count > 0 OR knowledge_source = 'event_first')
+          AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %(window_start)s)
+          AND (
+              event_payload IS NULL
+              OR event_payload->>'publishability' IS NULL
+              OR event_payload->>'publishability' IN ('news', 'brief')
+          )
+    )
+    """
+
+
 class PublicationRepository:
     """Repository for publication runs, candidates, inputs, attempts, and publications."""
 
@@ -346,320 +549,77 @@ class PublicationRepository:
                 if pol_row[4] is not None:
                     policy_scope_hash = str(pol_row[4]).strip()
 
-        effective_scope_hash = scope_config_hash or policy_scope_hash
+            effective_scope_hash = scope_config_hash or policy_scope_hash
+            if not triage_version or not scope_version or not effective_scope_hash:
+                raise ValueError(
+                    f"Eligibility policy {eligibility_policy_id} must have non-null "
+                    f"triage_version ({triage_version}), scope_version ({scope_version}), "
+                    f"and scope_config_hash ({effective_scope_hash})"
+                )
+        else:
+            effective_scope_hash = scope_config_hash or policy_scope_hash
+            triage_version = triage_version or "v10"
+            scope_version = scope_version or "v1"
 
         window_start = snapshot_at - dt.timedelta(hours=lookback_hours)
 
-        cursor = await conn.execute(
-            """
-            WITH latest_revs AS (
-                SELECT DISTINCT ON (sr.story_id)
-                    sr.story_id,
-                    sr.id AS story_revision_id,
-                    sr.revision_no,
-                    sr.current_state,
-                    sr.semantic_text,
-                    sr.created_at AS revision_created_at,
-                    sr.event_payload
-                FROM story_revisions sr
-                JOIN stories s ON s.id = sr.story_id
-                WHERE s.edition_id = %s
-                  AND sr.created_at <= %s
-                ORDER BY sr.story_id, sr.revision_no DESC, sr.created_at DESC
-            ),
-            story_activity AS (
-                SELECT
-                    lr.story_id,
-                    lr.story_revision_id,
-                    lr.revision_no,
-                    lr.current_state,
-                    lr.semantic_text,
-                    lr.revision_created_at,
-                    lr.event_payload,
-                    s.created_at AS story_created_at,
-                    s.knowledge_source,
-                    COALESCE(
-                        (
-                            SELECT count(DISTINCT sc.claim_id)
-                            FROM story_claims sc
-                            JOIN claims c ON c.id = sc.claim_id
-                            JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
-                            JOIN source_items si ON si.id = sir.source_item_id
-                            JOIN sources src ON src.id = si.source_id
-                            WHERE sc.story_id = lr.story_id
-                              AND sc.attached_at <= %s
-                              AND c.created_at <= %s
-                              AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
-                        ),
-                        (
-                            SELECT scst.fragment_count
-                            FROM story_cluster_state scst
-                            WHERE scst.story_id = lr.story_id
-                        ),
-                        0
-                    ) AS claim_count,
-                    COALESCE(
-                        (
-                            SELECT count(DISTINCT sc.claim_id)
-                            FROM story_claims sc
-                            JOIN claims c ON c.id = sc.claim_id
-                            JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
-                            JOIN source_items si ON si.id = sir.source_item_id
-                            JOIN sources src ON src.id = si.source_id
-                            WHERE sc.story_id = lr.story_id
-                              AND sc.attached_at >= %s
-                              AND sc.attached_at <= %s
-                              AND c.created_at <= %s
-                              AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
-                        ),
-                        (
-                            SELECT scst.fragment_count
-                            FROM story_cluster_state scst
-                            WHERE scst.story_id = lr.story_id
-                        ),
-                        0
-                    ) AS new_claims_count,
-                    COALESCE(
-                        (
-                            SELECT count(DISTINCT sir.source_item_id)
-                            FROM story_claims sc
-                            JOIN claims c ON c.id = sc.claim_id
-                            JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
-                            JOIN source_items si ON si.id = sir.source_item_id
-                            JOIN sources src ON src.id = si.source_id
-                            WHERE sc.story_id = lr.story_id
-                              AND sc.attached_at <= %s
-                              AND c.created_at <= %s
-                              AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
-                        ),
-                        (
-                            SELECT scst.unique_source_count
-                            FROM story_cluster_state scst
-                            WHERE scst.story_id = lr.story_id
-                        ),
-                        0
-                    ) AS source_count,
-                    COALESCE(
-                        (
-                            SELECT MAX(COALESCE(si.published_at, si.first_collected_at))
-                            FROM story_claims sc
-                            JOIN claims c ON c.id = sc.claim_id
-                            JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
-                            JOIN source_items si ON si.id = sir.source_item_id
-                            JOIN sources src ON src.id = si.source_id
-                            WHERE sc.story_id = lr.story_id
-                              AND sc.attached_at <= %s
-                              AND c.created_at <= %s
-                              AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
-                        ),
-                        (
-                            SELECT scst.last_seen_at
-                            FROM story_cluster_state scst
-                            WHERE scst.story_id = lr.story_id
-                        )
-                    ) AS newest_source_published_at,
-                    (
-                        SELECT si.metadata->>'temporal_fidelity'
-                        FROM story_claims sc
-                        JOIN claims c ON c.id = sc.claim_id
-                        JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
-                        JOIN source_items si ON si.id = sir.source_item_id
-                        JOIN sources src ON src.id = si.source_id
-                        WHERE sc.story_id = lr.story_id
-                          AND sc.attached_at <= %s
-                          AND c.created_at <= %s
-                          AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
-                        ORDER BY COALESCE(si.published_at, si.first_collected_at) DESC NULLS LAST
-                        LIMIT 1
-                    ) AS newest_source_temporal_fidelity,
-                    (
-                        SELECT MAX(event_time)
-                        FROM (
-                            SELECT lr.revision_created_at AS event_time
-                            WHERE cardinality(%s::text[]) = 0
-                            UNION ALL
-                            SELECT MAX(sc.attached_at) AS event_time
-                            FROM story_claims sc
-                            JOIN claims c ON c.id = sc.claim_id
-                            JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
-                            JOIN source_items si ON si.id = sir.source_item_id
-                            JOIN sources src ON src.id = si.source_id
-                            WHERE sc.story_id = lr.story_id
-                              AND sc.attached_at <= %s
-                              AND c.created_at <= %s
-                              AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
-                            UNION ALL
-                            SELECT MAX(sse.observed_at) AS event_time
-                            FROM story_state_events sse
-                            WHERE sse.story_id = lr.story_id
-                              AND sse.observed_at <= %s
-                        ) t
-                    ) AS last_activity_at,
-                    (
-                        cardinality(%s::text[]) = 0
-                        AND EXISTS (
-                            SELECT 1
-                            FROM story_revisions sr2
-                            WHERE sr2.story_id = lr.story_id
-                              AND sr2.created_at >= %s
-                              AND sr2.created_at <= %s
-                        )
-                    ) AS has_recent_revision,
-                    EXISTS (
-                        SELECT 1
-                        FROM story_claims sc2
-                        JOIN claims c2 ON c2.id = sc2.claim_id
-                        JOIN source_item_revisions sir2 ON sir2.id = c2.source_item_revision_id
-                        JOIN source_items si2 ON si2.id = sir2.source_item_id
-                        JOIN sources src2 ON src2.id = si2.source_id
-                        WHERE sc2.story_id = lr.story_id
-                          AND sc2.attached_at >= %s
-                          AND sc2.attached_at <= %s
-                          AND c2.created_at <= %s
-                          AND (cardinality(%s::text[]) = 0 OR src2.platform <> ALL(%s::text[]))
-                    ) AS has_recent_claim,
-                    EXISTS (
-                        SELECT 1
-                        FROM story_state_events sse2
-                        WHERE sse2.story_id = lr.story_id
-                          AND sse2.observed_at >= %s
-                          AND sse2.observed_at <= %s
-                    ) AS has_recent_event
-                FROM latest_revs lr
-                JOIN stories s ON s.id = lr.story_id
-                WHERE lr.current_state NOT IN ('invalid', 'archived', 'rejected')
-                  AND COALESCE(
-                      (
-                          SELECT sse.type
-                          FROM story_state_events sse
-                          WHERE sse.story_id = lr.story_id
-                            AND sse.observed_at <= %s
-                          ORDER BY sse.observed_at DESC, sse.id DESC
-                          LIMIT 1
-                      ), 'active'
-                  ) <> 'archived'
+        query = f"""{_candidate_universe_sql()}
+        SELECT
+            story_id,
+            story_revision_id,
+            revision_no,
+            current_state,
+            semantic_text,
+            revision_created_at,
+            claim_count,
+            source_count,
+            new_claims_count,
+            last_activity_at,
+            story_created_at,
+            has_recent_revision,
+            has_recent_claim,
+            has_recent_event,
+            newest_source_published_at,
+            newest_source_temporal_fidelity,
+            knowledge_source,
+            event_payload
+        FROM candidate_universe cu
+        WHERE (
+            knowledge_source <> 'event_first'
+            OR EXISTS (
+                SELECT 1
+                FROM story_cluster_state sc
+                JOIN story_edition_scope_decisions sesd
+                  ON sesd.story_id = sc.story_id
+                 AND sesd.latest_assignment_id = sc.latest_assignment_id
+                JOIN story_event_triage_decisions setd
+                  ON setd.story_id = sc.story_id
+                 AND setd.latest_assignment_id = sc.latest_assignment_id
+                WHERE sc.story_id = cu.story_id
+                  AND sesd.edition_id = %(edition_id)s
+                  AND (%(scope_version)s::text IS NULL OR sesd.scope_version = %(scope_version)s)
+                  AND (%(scope_config_hash)s::text IS NULL OR sesd.scope_config_hash = %(scope_config_hash)s)
+                  AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
+                  AND (%(triage_version)s::text IS NULL OR setd.triage_version = %(triage_version)s)
+                  AND (%(scope_config_hash)s::text IS NULL OR setd.scope_config_hash = %(scope_config_hash)s)
+                  AND setd.scope_config_hash = sesd.scope_config_hash
+                  AND setd.retention = 'KEEP'
+                  AND sesd.created_at <= %(snapshot_at)s
             )
-            SELECT
-                story_id,
-                story_revision_id,
-                revision_no,
-                current_state,
-                semantic_text,
-                revision_created_at,
-                claim_count,
-                source_count,
-                new_claims_count,
-                last_activity_at,
-                story_created_at,
-                has_recent_revision,
-                has_recent_claim,
-                has_recent_event,
-                newest_source_published_at,
-                newest_source_temporal_fidelity,
-                knowledge_source,
-                event_payload
-            FROM story_activity
-            WHERE (claim_count > 0 OR knowledge_source = 'event_first')
-              AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %s)
-              AND (
-                  event_payload IS NULL
-                  OR event_payload->>'publishability' IS NULL
-                  OR event_payload->>'publishability' IN ('news', 'brief')
-              )
-              AND (
-                  knowledge_source <> 'event_first'
-                  OR EXISTS (
-                      SELECT 1
-                      FROM story_cluster_state sc
-                      JOIN story_edition_scope_decisions sesd
-                        ON sesd.story_id = sc.story_id
-                       AND sesd.latest_assignment_id = sc.latest_assignment_id
-                      JOIN story_event_triage_decisions setd
-                        ON setd.story_id = sc.story_id
-                       AND setd.latest_assignment_id = sc.latest_assignment_id
-                      WHERE sc.story_id = story_activity.story_id
-                        AND sesd.edition_id = %s
-                        AND (%s::text IS NULL OR sesd.scope_version = %s)
-                        AND (%s::text IS NULL OR sesd.scope_config_hash = %s)
-                        AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
-                        AND (%s::text IS NULL OR setd.triage_version = %s)
-                        AND (%s::text IS NULL OR setd.scope_config_hash = %s)
-                        AND setd.scope_config_hash = sesd.scope_config_hash
-                        AND setd.decision IN ('ANALYZE', 'KEEP')
-                        AND sesd.created_at <= %s
-                  )
-              )
-            ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
-
-            """,
-            (
-                edition_id,
-                snapshot_at,
-                # claim_count
-                snapshot_at,
-                snapshot_at,
-                excluded_platforms,
-                excluded_platforms,
-                # new_claims_count
-                window_start,
-                snapshot_at,
-                snapshot_at,
-                excluded_platforms,
-                excluded_platforms,
-                # source_count
-                snapshot_at,
-                snapshot_at,
-                excluded_platforms,
-                excluded_platforms,
-                # newest_source_published_at
-                snapshot_at,
-                snapshot_at,
-                excluded_platforms,
-                excluded_platforms,
-                # newest_source_temporal_fidelity
-                snapshot_at,
-                snapshot_at,
-                excluded_platforms,
-                excluded_platforms,
-                # last_activity_at revision_created_at check
-                excluded_platforms,
-                # last_activity_at claims
-                snapshot_at,
-                snapshot_at,
-                excluded_platforms,
-                excluded_platforms,
-                # last_activity_at state_events
-                snapshot_at,
-                # has_recent_revision check
-                excluded_platforms,
-                window_start,
-                snapshot_at,
-                # has_recent_claim
-                window_start,
-                snapshot_at,
-                snapshot_at,
-                excluded_platforms,
-                excluded_platforms,
-                # has_recent_event
-                window_start,
-                snapshot_at,
-                # historical lifecycle_state
-                snapshot_at,
-                # outer WHERE story_created_at
-                window_start,
-                # scope gate
-                edition_id,
-                scope_version,
-                scope_version,
-                effective_scope_hash,
-                effective_scope_hash,
-                triage_version,
-                triage_version,
-                effective_scope_hash,
-                effective_scope_hash,
-                snapshot_at,
-            ),
         )
+        ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
+        """  # noqa: S608 — static CTE template; values are bound params
+        params = {
+            "edition_id": edition_id,
+            "snapshot_at": snapshot_at,
+            "window_start": window_start,
+            "excluded_platforms": excluded_platforms,
+            "scope_version": scope_version,
+            "scope_config_hash": effective_scope_hash,
+            "triage_version": triage_version,
+        }
+
+        cursor = await conn.execute(query, params)
         rows = await cursor.fetchall()
 
         # Single knowledge source isolation: if event_first stories with rich analysis exist, prioritize them
@@ -795,6 +755,104 @@ class PublicationRepository:
                 }
             )
         return candidates
+
+    async def find_authority_gap_story_ids(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        snapshot_at: dt.datetime,
+        eligibility_policy_id: int,
+    ) -> list[int]:
+        """Find story IDs in candidate_universe that lack authoritative triage decision for latest assignment."""
+        cur = await conn.execute(
+            """
+            SELECT config->>'lookback_hours',
+                   config->'excluded_platforms',
+                   config->>'triage_version',
+                   config->>'scope_version',
+                   config->>'scope_config_hash'
+            FROM eligibility_policy_versions WHERE id = %s
+            """,
+            (eligibility_policy_id,),
+        )
+        pol_row = await cur.fetchone()
+        if pol_row is None:
+            raise ValueError(f"Eligibility policy {eligibility_policy_id} not found")
+
+        lookback_hours = 24
+        excluded_platforms: list[str] = []
+        if pol_row[0] is not None:
+            try:
+                lookback_hours = int(pol_row[0])
+            except (ValueError, TypeError):
+                lookback_hours = 24
+        if pol_row[1] is not None and isinstance(pol_row[1], list):
+            excluded_platforms = [str(p).strip().lower() for p in pol_row[1] if str(p).strip()]
+        triage_version = str(pol_row[2]).strip() if pol_row[2] is not None else ""
+        scope_version = str(pol_row[3]).strip() if pol_row[3] is not None else ""
+        scope_config_hash = str(pol_row[4]).strip() if pol_row[4] is not None else ""
+
+        if not triage_version or not scope_version or not scope_config_hash:
+            raise ValueError(
+                f"Eligibility policy {eligibility_policy_id} must have non-null "
+                f"triage_version ({triage_version}), scope_version ({scope_version}), "
+                f"and scope_config_hash ({scope_config_hash})"
+            )
+
+        window_start = snapshot_at - dt.timedelta(hours=lookback_hours)
+        query = f"""{_candidate_universe_sql()}
+        SELECT cu.story_id
+        FROM candidate_universe cu
+        WHERE cu.knowledge_source = 'event_first'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM story_cluster_state sc
+              JOIN story_edition_scope_decisions sesd
+                ON sesd.story_id = sc.story_id
+               AND sesd.latest_assignment_id = sc.latest_assignment_id
+              JOIN story_event_triage_decisions setd
+                ON setd.story_id = sc.story_id
+               AND setd.latest_assignment_id = sc.latest_assignment_id
+              WHERE sc.story_id = cu.story_id
+                AND sesd.edition_id = %(edition_id)s
+                AND sesd.scope_version = %(scope_version)s
+                AND sesd.scope_config_hash = %(scope_config_hash)s
+                AND setd.triage_version = %(triage_version)s
+                AND setd.scope_config_hash = %(scope_config_hash)s
+                AND setd.scope_config_hash = sesd.scope_config_hash
+                AND sesd.created_at <= %(snapshot_at)s
+          )
+        ORDER BY cu.story_id ASC
+        """  # noqa: S608 — static CTE template; values are bound params
+        params = {
+            "edition_id": edition_id,
+            "snapshot_at": snapshot_at,
+            "window_start": window_start,
+            "excluded_platforms": excluded_platforms,
+            "triage_version": triage_version,
+            "scope_version": scope_version,
+            "scope_config_hash": scope_config_hash,
+        }
+        cursor = await conn.execute(query, params)
+        rows = await cursor.fetchall()
+        return [int(r[0]) for r in rows]
+
+    async def count_authority_gap(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        snapshot_at: dt.datetime,
+        eligibility_policy_id: int,
+    ) -> int:
+        gap_ids = await self.find_authority_gap_story_ids(
+            conn,
+            edition_id=edition_id,
+            snapshot_at=snapshot_at,
+            eligibility_policy_id=eligibility_policy_id,
+        )
+        return len(gap_ids)
 
     async def insert_candidate(
         self,

@@ -233,6 +233,32 @@ class StructuredArticleDraft:
             word_count=word_count,
         )
 
+    def to_dict(self) -> dict[str, Any]:
+        """Convert structured article draft to JSON dictionary."""
+        return {
+            "title": self.title,
+            "title_support_ids": list(self.title_support_ids),
+            "lead": self.lead,
+            "lead_support_ids": list(self.lead_support_ids),
+            "sections": [
+                {
+                    "heading": s.heading,
+                    "heading_support_ids": list(s.heading_support_ids),
+                    "paragraphs": [
+                        {
+                            "text": p.text,
+                            "cited_support_ids": list(p.cited_support_ids),
+                        }
+                        for p in s.paragraphs
+                    ],
+                }
+                for s in self.sections
+            ],
+            "word_count": self.word_count,
+            "title_generation_origin": self.title_generation_origin,
+            "lead_generation_origin": self.lead_generation_origin,
+        }
+
     def render_markdown(self) -> str:
         """Render clean user-facing markdown WITHOUT internal evidence IDs."""
         lines: list[str] = []

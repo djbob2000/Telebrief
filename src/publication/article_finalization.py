@@ -191,6 +191,7 @@ class ArticleFinalizer:
                     metadata={
                         "writer_status": "rejected",
                         "violations": list(writer_validation.violations),
+                        "draft": writer_draft.to_dict(),
                     },
                 )
             return await self._run_full_fallback(

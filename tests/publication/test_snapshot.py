@@ -9,6 +9,7 @@ from src.publication.repository import (
     PublicationPolicyRepository,
     PublicationRepository,
 )
+from src.publication.snapshot import IncompleteTriageError
 
 _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
 
@@ -16,7 +17,16 @@ _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
 async def _seed_policies(conn: psycopg.AsyncConnection, edition_id: int) -> tuple[int, int, int]:
     policy_repo = PublicationPolicyRepository()
     elig = await policy_repo.get_or_create_eligibility_policy(
-        conn, edition_id=edition_id, config_hash="elig-hash-1", prompt_version="elig-v1"
+        conn,
+        edition_id=edition_id,
+        config_hash="elig-hash-1",
+        prompt_version="elig-v1",
+        config={
+            "lookback_hours": 24,
+            "triage_version": "v10",
+            "scope_version": "v1",
+            "scope_config_hash": "hash-default",
+        },
     )
     sel = await policy_repo.get_or_create_selection_policy(
         conn, edition_id=edition_id, config_hash="sel-hash-1", prompt_version="sel-v1"
@@ -282,7 +292,7 @@ class TestPublicationSnapshotConstraints:
             INSERT INTO story_event_triage_decisions (
                 run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
                 decision, retention, enrichment, confidence, reason, created_at
-            ) VALUES (%s, %s, %s, 'v2', 'hash-1', 'ANALYZE', 'KEEP', 'ANALYZE', 0.99, 'in city', %s)
+            ) VALUES (%s, %s, %s, 'v10', 'hash-1', 'ANALYZE', 'KEEP', 'ANALYZE', 0.99, 'in city', %s)
             """,
             (trun_id, story_id, aid, _NOW),
         )
@@ -537,9 +547,9 @@ class TestPublicationSnapshotConstraints:
                 run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
                 decision, retention, enrichment, confidence, reason, created_at
             ) VALUES
-            (%s, %s, %s, 'v2', 'hash-abc', 'ANALYZE', 'KEEP', 'ANALYZE', 0.99, 'in city', %s),
-            (%s, %s, %s, 'v2', 'hash-abc', 'ANALYZE', 'KEEP', 'ANALYZE', 0.95, 'impact', %s),
-            (%s, %s, %s, 'v2', 'hash-abc', 'IGNORE', 'DROP', 'NONE', 0.99, 'external', %s)
+            (%s, %s, %s, 'v10', 'hash-abc', 'ANALYZE', 'KEEP', 'ANALYZE', 0.99, 'in city', %s),
+            (%s, %s, %s, 'v10', 'hash-abc', 'ANALYZE', 'KEEP', 'ANALYZE', 0.95, 'impact', %s),
+            (%s, %s, %s, 'v10', 'hash-abc', 'IGNORE', 'DROP', 'NONE', 0.99, 'external', %s)
             """,
             (
                 trun_id,
@@ -761,7 +771,7 @@ class TestPublicationSnapshotConstraints:
         await conn.execute(
             """
             INSERT INTO story_edition_scope_decisions (triage_run_id, story_id, edition_id, latest_assignment_id, scope_version, scope_config_hash, scope_class, confidence, reason, created_at)
-            VALUES (%s, %s, %s, %s, 'v1', 'elig-hash-1', 'LOCAL', 0.99, 'in city', %s)
+            VALUES (%s, %s, %s, %s, 'v1', 'hash-default', 'LOCAL', 0.99, 'in city', %s)
             """,
             (trun_id, story_id, edition.id, aid, _NOW),
         )
@@ -771,7 +781,7 @@ class TestPublicationSnapshotConstraints:
                 run_id, story_id, latest_assignment_id, triage_version, scope_config_hash,
                 decision, retention, enrichment, confidence, reason, created_at
             ) VALUES
-            (%s, %s, %s, 'v2', 'elig-hash-1', 'ANALYZE', 'KEEP', 'BRIEF', 0.99, 'in city', %s)
+            (%s, %s, %s, 'v10', 'hash-default', 'ANALYZE', 'KEEP', 'BRIEF', 0.99, 'in city', %s)
             """,
             (trun_id, story_id, aid, _NOW),
         )
@@ -940,7 +950,7 @@ class TestPublicationSnapshotConstraints:
         assert sid_v9 in eligible_sids
         assert sid_stale not in eligible_sids
 
-        # 5. Verify snapshot service seals successfully
+        # 5. Verify snapshot service raises IncompleteTriageError because sid_stale lacks authoritative triage
         service = PublicationSnapshotService(uow=uow, repo=repo)
         run = await service.create_run(
             edition_id=edition.id,
@@ -948,6 +958,18 @@ class TestPublicationSnapshotConstraints:
             snapshot_at=_NOW,
             request_key="test-frozen-v9-run",
             policy_ids=policy_ids,
+        )
+        with pytest.raises(IncompleteTriageError, match="lacking authoritative triage"):
+            await service.seal_candidates(run.id)
+
+        # 6. Once sid_stale receives an authoritative v9 decision (retention='DROP'), authority gap is resolved
+        await conn.execute(
+            "UPDATE story_event_triage_decisions SET triage_version = 'v9', retention = 'DROP', enrichment = 'NONE' WHERE story_id = %s",
+            (sid_stale,),
+        )
+        await conn.execute(
+            "UPDATE story_edition_scope_decisions SET scope_class = 'OUT_OF_SCOPE' WHERE story_id = %s",
+            (sid_stale,),
         )
         cands = await service.seal_candidates(run.id)
         assert len(cands) == 1
@@ -995,10 +1017,95 @@ class TestPublicationSnapshotConstraints:
             request_key="test-run-non-keep",
             policy_ids=policy_ids,
         )
-        # Note: repository eligible_story_revisions filters setd.decision IN ('ANALYZE', 'KEEP')
-        # If someone forced a candidate through, _seal_on rejects it
-        # Let's test _seal_on defense-in-depth directly or via a mock row if query already drops it
-        # In this case setd.decision was ANALYZE, but retention was changed to DROP:
-        # The query lets it through because decision='ANALYZE', but _seal_on catches retention != KEEP!
-        with pytest.raises(ValueError, match="non-KEEP retention"):
-            await service.seal_candidates(run_non_keep.id)
+        # In Task 2, repository eligible_story_revisions directly requires setd.retention = 'KEEP',
+        # so stories with retention = 'DROP' are excluded directly by the repository query.
+        cands_non_keep = await service.seal_candidates(run_non_keep.id)
+        assert len(cands_non_keep) == 0
+
+    async def test_fail_closed_eligibility_and_authority_gap(
+        self, conn: psycopg.AsyncConnection, edition, pool
+    ):
+        from src.db.uow import DatabaseUnitOfWork
+        from src.publication.snapshot import IncompleteTriageError, PublicationSnapshotService
+
+        repo = PublicationRepository()
+        policy_repo = PublicationPolicyRepository()
+        uow = DatabaseUnitOfWork(pool)
+        service = PublicationSnapshotService(uow=uow, repo=repo)
+
+        # 1. Create eligibility policy with missing triage_version -> fails closed
+        pol_invalid = await policy_repo.get_or_create_eligibility_policy(
+            conn,
+            edition_id=edition.id,
+            config_hash="elig-no-triage",
+            prompt_version="elig-v1",
+            config={
+                "lookback_hours": 24,
+                "triage_version": None,
+                "scope_version": "v1",
+                "scope_config_hash": "hash-1",
+            },
+        )
+        with pytest.raises(ValueError, match="Eligibility policy .* must have non-null"):
+            await repo.eligible_story_revisions(
+                conn,
+                edition_id=edition.id,
+                snapshot_at=_NOW,
+                eligibility_policy_id=pol_invalid.id,
+            )
+
+        # 2. Create valid v10 policy
+        pol_valid = await policy_repo.get_or_create_eligibility_policy(
+            conn,
+            edition_id=edition.id,
+            config_hash="elig-v10-valid",
+            prompt_version="elig-v1",
+            config={
+                "lookback_hours": 24,
+                "triage_version": "v10",
+                "scope_version": "v1",
+                "scope_config_hash": "hash-1",
+            },
+        )
+
+        # 3. Create an active event_first story without v10 triage
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, knowledge_source, lifecycle_state, created_at) VALUES (%s, 'event_first', 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        ef_sid = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) VALUES (%s, 1, 'open', 'EF news', 'h-ef', %s) RETURNING id",
+            (ef_sid, _NOW),
+        )
+        ef_rev = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (ef_rev, ef_sid)
+        )
+
+        # Authority gap MUST count this story
+        gap_count = await repo.count_authority_gap(
+            conn, edition_id=edition.id, snapshot_at=_NOW, eligibility_policy_id=pol_valid.id
+        )
+        assert gap_count >= 1
+        gap_ids = await repo.find_authority_gap_story_ids(
+            conn, edition_id=edition.id, snapshot_at=_NOW, eligibility_policy_id=pol_valid.id
+        )
+        assert ef_sid in gap_ids
+
+        # Attempting to seal candidates while gap > 0 raises IncompleteTriageError
+        sel = await policy_repo.get_or_create_selection_policy(
+            conn, edition_id=edition.id, config_hash="s-1", prompt_version="s-1"
+        )
+        wri = await policy_repo.get_or_create_writer_policy(
+            conn, edition_id=edition.id, config_hash="w-1", prompt_version="w-1"
+        )
+        run_with_gap = await service.create_run(
+            edition_id=edition.id,
+            publication_type="daily_article",
+            snapshot_at=_NOW,
+            request_key="test-run-with-gap",
+            policy_ids=(pol_valid.id, sel.id, wri.id),
+        )
+        with pytest.raises(IncompleteTriageError, match="lacking authoritative triage"):
+            await service.seal_candidates(run_with_gap.id)

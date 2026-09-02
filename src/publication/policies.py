@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_ELIGIBILITY_CONFIG_HASH = "elig-cfg-default"
 DEFAULT_ELIGIBILITY_PROMPT_VERSION = "elig-prompt-v1"
+DEFAULT_SCOPE_CONFIG_HASH = "scope-cfg-default"
 
 DEFAULT_SELECTION_CONFIG_HASH = "selection-cfg-default"
 DEFAULT_SELECTION_PROMPT_VERSION = "selection-prompt-v1"
@@ -110,7 +111,7 @@ class PublicationPolicyService:
                     excluded_platforms.append("facebook")
 
         if triage_version is None:
-            triage_version = "v9"
+            triage_version = "v10"
         if scope_version is None:
             scope_version = "v1"
         if scope_config_hash is None and config is not None:
@@ -124,6 +125,9 @@ class PublicationPolicyService:
                 logger.debug(
                     "Could not resolve scope_config_hash for edition %s: %s", edition_id, exc
                 )
+
+        if scope_config_hash is None:
+            scope_config_hash = DEFAULT_SCOPE_CONFIG_HASH
 
         eligibility_config = {
             "lookback_hours": lookback_hours,
