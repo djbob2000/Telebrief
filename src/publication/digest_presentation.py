@@ -63,13 +63,13 @@ def _detail_line(item: CitySituationItem) -> str:
     from src.processing.operational_semantics import sanitize_operational_detail
 
     clean_detail = sanitize_operational_detail(item.detail)
-    detail = clean_detail if clean_detail else item.detail.strip()
-    if not clean_detail and re.search(r"(\?|спрашива|интересу)", item.detail, flags=re.IGNORECASE):
+    if not clean_detail:
         return ""
+    detail = clean_detail
 
     location = item.location.strip()
     if location and location.casefold() not in detail.casefold():
-        return f"{location}: {detail}" if detail else location
+        return f"{location}: {detail}"
     return detail or item.subject_label or item.subject_key
 
 

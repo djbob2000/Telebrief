@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from typing import Any, Sequence
 
 from src.config_loader import DigestGroupConfig, DigestRubricsConfig
@@ -477,6 +478,23 @@ class PublicationDigestRenderer:
                     details_parts = [p for p in (extra_facts[:2] + extra_details[:2]) if p]
                     combined_details = ". ".join(details_parts).strip()
 
+                    topic_has_attribution = bool(
+                        re.search(
+                            r"\b(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+жителей)\b",
+                            topic,
+                            re.IGNORECASE,
+                        )
+                    )
+                    if topic_has_attribution:
+                        clean_summary = re.sub(
+                            r"^(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+жителей)[,:\s]+",
+                            "",
+                            summary,
+                            flags=re.IGNORECASE,
+                        ).strip()
+                        if clean_summary:
+                            summary = clean_summary[:1].upper() + clean_summary[1:]
+
                     if has_generic_topic:
                         if not is_tautological_summary:
                             body_text = (
@@ -504,14 +522,24 @@ class PublicationDigestRenderer:
 
                     # If there are resident observations / quotes, add as a subtle sub-point
                     if card.community_observations and len(card.community_observations) <= 2:
-                        obs_items = [
-                            o.text.strip()
-                            for o in card.community_observations
-                            if o.text.strip()
-                            and o.text.strip().lower() not in summary.lower()
-                            and o.text.strip().lower() not in combined_details.lower()
-                        ]
-                        if obs_items:
+                        obs_items = []
+                        for o in card.community_observations:
+                            txt = o.text.strip()
+                            if not txt:
+                                continue
+                            clean_obs = re.sub(
+                                r"^(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+жителей)[,:\s]+",
+                                "",
+                                txt,
+                                flags=re.IGNORECASE,
+                            ).strip()
+                            if (
+                                clean_obs
+                                and clean_obs.lower() not in summary.lower()
+                                and clean_obs.lower() not in combined_details.lower()
+                            ):
+                                obs_items.append(clean_obs)
+                        if obs_items and not topic_has_attribution:
                             obs_text = "; ".join(obs_items)
                             bullet_lines.append(f"  _По сообщениям жителей: {obs_text}_")
 

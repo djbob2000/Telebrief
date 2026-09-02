@@ -1033,7 +1033,14 @@ class DigestNarrativeWriter:
             '          "headline": "string (bold mini-summary answer to what happened)",\n'
             '          "body": "string (compact 2-4 sentences adding context/chronology/status/microdetails)",\n'
             '          "covered_story_ids": ["string (story IDs covered)"],\n'
-            '          "cited_support_ids": ["string (support IDs cited)"]\n'
+            '          "cited_support_ids": ["string (support IDs cited)"],\n'
+            '          "claims": [\n'
+            "            {\n"
+            '              "text": "string (atomic factual claim in Russian)",\n'
+            '              "covered_story_ids": ["string (story IDs this claim covers)"],\n'
+            '              "cited_support_ids": ["string (support IDs supporting this claim)"]\n'
+            "            }\n"
+            "          ]\n"
             "        }\n"
             "      ]\n"
             "    }\n"
@@ -1043,12 +1050,21 @@ class DigestNarrativeWriter:
 
         system_prompt = (
             "You are a professional regional newsroom editor and journalist.\n"
-            "Your task is to write a cohesive, engaging, and strictly factual daily news digest.\n\n"
+            "Your task is to write a cohesive, scan-first, and strictly factual daily news digest in Russian.\n\n"
+            "EDITORIAL AND LANGUAGE RULES:\n"
+            "- Write in professional Russian regional news style.\n"
+            "- If source facts or notes are in Ukrainian, accurately translate and paraphrase them into Russian.\n"
+            "- Never repeat the headline in the first sentence of the body text.\n"
+            "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
+            "- Attribute source role naturally ('По сообщениям жителей', 'По данным коммунальных служб') at most once per item.\n"
+            "- For each item, provide atomic claims in 'claims'. Every story in the item's covered_story_ids must be covered by at least one claim atom.\n"
+            "- Claims must be short atomic factual statements supported by cited_support_ids.\n\n"
             f"{narrative_contract}\n\n"
             "OUTPUT FORMAT REQUIREMENTS:\n"
             "Return ONLY valid JSON strictly matching this schema:\n"
             f"{schema_desc}"
         )
+
         user_dict = {"blocks": blocks_payload}
         user_prompt = json.dumps(user_dict, ensure_ascii=False, indent=2)
 

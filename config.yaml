@@ -121,8 +121,16 @@ settings:
     triage_batch_size: 128
     live_batch_size: 500
 
+  publication_editorial:
+    digest_narrative_mode: "single_call"
+    digest_narrative_max_cards_per_block: 6
+    digest_narrative_max_output_tokens: 4096
+    digest_city_situation_max_items: 7
+    digest_city_situation_max_details_per_item: 2
+    digest_city_situation_max_positive_items: 2
 
   digest_mode: "digest"
+
   dedup_topics: true
   digest_rubrics:
     min_similarity: 0.38

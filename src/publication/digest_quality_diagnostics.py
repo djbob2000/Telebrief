@@ -36,6 +36,15 @@ _QUESTION_META_PATTERNS = [
     re.compile(r"\bпоступают\s+вопросы\b", re.IGNORECASE),
 ]
 
+_TECHNICAL_TOKEN_RE = re.compile(
+    r"\b(?:story:\w+|frag:\w+|evidence:\w+|situation:\w+|block:\w+)\b",
+    re.IGNORECASE,
+)
+_TEMPORAL_CHAIN_RE = re.compile(
+    r"(?:ранее\s+также|также\s+ранее|также\s+сообщается,\s+что\s+ранее)",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class DigestQualityWarning:
@@ -183,6 +192,29 @@ def audit_digest_prose_quality(
                     DigestQualityWarning(
                         code="REDUNDANT_HEADLINE_IN_BODY",
                         message="Body begins by repeating the headline verbatim.",
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
+            item_full_text = f"{item.headline} {item.body}"
+            if _TECHNICAL_TOKEN_RE.search(item_full_text):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="RAW_TECHNICAL_TOKEN",
+                        message="Headline or body contains raw internal identifier/token.",
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
+            if _TEMPORAL_CHAIN_RE.search(item_full_text):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="TEMPORAL_REPLAY_CHAIN",
+                        message="Headline or body contains repetitive temporal replay chain (e.g. 'ранее также').",
                         block_id=block.block_id,
                         item_index=idx,
                         headline=item.headline,

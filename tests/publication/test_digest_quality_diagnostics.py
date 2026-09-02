@@ -363,3 +363,35 @@ def test_crisis_day_digest_compression_and_readability_regression():
     )
     chunks = split_into_telegram_chunks(body)
     assert len(chunks) <= 2
+
+
+def test_detects_raw_technical_tokens():
+    evi = _make_evidence("evi:1", 1, "Свет дали")
+    item = DigestEditorialItemDraft(
+        headline="Электроснабжение восстановлено",
+        body="Как указано в story:123 и frag:45, подача возобновлена.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:util", items=(item,)),)
+    )
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+    codes = [w.code for w in audit.warnings]
+    assert "RAW_TECHNICAL_TOKEN" in codes
+
+
+def test_detects_temporal_replay_chain():
+    evi = _make_evidence("evi:1", 1, "Свет дали")
+    item = DigestEditorialItemDraft(
+        headline="Электроснабжение восстановлено",
+        body="Ранее также сообщалось об аварии, а также ранее фиксировались отключения.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:util", items=(item,)),)
+    )
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+    codes = [w.code for w in audit.warnings]
+    assert "TEMPORAL_REPLAY_CHAIN" in codes

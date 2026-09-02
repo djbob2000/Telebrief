@@ -293,8 +293,9 @@ class PublicationEditorialConfig:
     article_max_direct_quotes: int = 4
 
     article_claim_min_content_coverage: float = 0.70
-    digest_narrative_mode: str = "deterministic"
+    digest_narrative_mode: str = "single_call"
     digest_narrative_max_cards_per_block: int = 6
+
     digest_narrative_max_output_tokens: int = 4096
     digest_city_situation_max_items: int = 7
     digest_city_situation_max_details_per_item: int = 2

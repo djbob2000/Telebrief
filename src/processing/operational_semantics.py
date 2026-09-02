@@ -252,8 +252,18 @@ def normalize_service_state_evidence(
     return normalized_payload, audit
 
 
+_PROFANITY_RE = re.compile(
+    r"\b(?:г[іие]вн\w*|хер\w*|ху[йяе]\w*|пизд\w*|бл[яя]т\w*|еба\w*|ёба\w*|сук[аи]\w*|жоп\w*|дерьм\w*|нах[уе]\w*)\b",
+    re.IGNORECASE,
+)
+_CHAT_CHATTER_RE = re.compile(
+    r"\b(?:гуляти|читати\s+книжки|перечитати|не\s+очікувал\w*|займати\s+голову|спілкуватися)\b",
+    re.IGNORECASE,
+)
+
+
 def sanitize_operational_detail(text: str) -> str:
-    """Strip question clauses, inquiries, and non-status tails from operational observation detail."""
+    """Strip question clauses, inquiries, profanities, and non-status tails from operational observation detail."""
     if not text:
         return ""
     cleaned = text.strip()
@@ -269,7 +279,7 @@ def sanitize_operational_detail(text: str) -> str:
         cleaned,
         flags=re.IGNORECASE,
     )
-    # 3. Split into sentences and drop sentences containing questions or question verbs
+    # 3. Split into sentences and drop sentences containing questions, question verbs, profanities, or chat chatter
     sentences = re.split(r"(?<=[.!?])\s+", cleaned)
     kept_sentences: list[str] = []
     for s in sentences:
@@ -277,6 +287,8 @@ def sanitize_operational_detail(text: str) -> str:
         if not s_clean:
             continue
         if "?" in s_clean:
+            continue
+        if _PROFANITY_RE.search(s_clean) or _CHAT_CHATTER_RE.search(s_clean):
             continue
         if re.search(
             r"\b(?:спрашива(?:ет|ют|ем|ется)?|интересу(?:ет|ют|ется|ются)?|уточня(?:ет|ют|ется)?)\b",
@@ -286,6 +298,7 @@ def sanitize_operational_detail(text: str) -> str:
             continue
         kept_sentences.append(s_clean)
     result = " ".join(kept_sentences).strip()
+
     result = re.sub(r"[,;\s]+$", "", result)
     if result and had_end and not result.endswith((".", "!", "…")):
         result += "."
