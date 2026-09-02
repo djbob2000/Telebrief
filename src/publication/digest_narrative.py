@@ -87,6 +87,57 @@ class DigestSituationItemDraft:
 
 
 @dataclass(frozen=True)
+class DigestClaimAtom:
+    """A single supported claim atom within a digest editorial item."""
+
+    text: str
+    covered_story_ids: tuple[str, ...]
+    cited_support_ids: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> DigestClaimAtom:
+        if not isinstance(raw, Mapping):
+            raise ValueError("claim atom must be a mapping")
+        text = str(raw.get("text", "")).strip()
+        raw_stories = raw.get("covered_story_ids", [])
+        if isinstance(raw_stories, (str, int)):
+            raw_stories = [raw_stories]
+        if not isinstance(raw_stories, list):
+            raise ValueError("covered_story_ids must be a list")
+        story_ids = tuple(
+            dict.fromkeys(
+                str(x).strip()
+                for x in raw_stories
+                if x and isinstance(x, (str, int)) and str(x).strip()
+            )
+        )
+        raw_supports = raw.get("cited_support_ids", [])
+        if isinstance(raw_supports, (str, int)):
+            raw_supports = [raw_supports]
+        if not isinstance(raw_supports, list):
+            raise ValueError("cited_support_ids must be a list")
+        support_ids = tuple(
+            dict.fromkeys(
+                str(x).strip()
+                for x in raw_supports
+                if x and isinstance(x, (str, int)) and str(x).strip()
+            )
+        )
+        return cls(
+            text=text,
+            covered_story_ids=story_ids,
+            cited_support_ids=support_ids,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "covered_story_ids": list(self.covered_story_ids),
+            "cited_support_ids": list(self.cited_support_ids),
+        }
+
+
+@dataclass(frozen=True)
 class DigestEditorialItemDraft:
     """A single scan-first editorial item within a narrative digest block."""
 
@@ -94,6 +145,7 @@ class DigestEditorialItemDraft:
     body: str
     covered_story_ids: tuple[str, ...]
     cited_support_ids: tuple[str, ...]
+    claims: tuple[DigestClaimAtom, ...] = ()
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> DigestEditorialItemDraft:
@@ -130,6 +182,13 @@ class DigestEditorialItemDraft:
                 if x and isinstance(x, (str, int)) and str(x).strip()
             )
         )
+        raw_claims = raw.get("claims", [])
+        claims: list[DigestClaimAtom] = []
+        if isinstance(raw_claims, list):
+            for rc in raw_claims:
+                if isinstance(rc, Mapping):
+                    claims.append(DigestClaimAtom.from_dict(rc))
+
         if not headline or not body or not story_ids or not support_ids:
             raise ValueError("digest editorial item requires headline, body, stories and supports")
         return cls(
@@ -137,7 +196,17 @@ class DigestEditorialItemDraft:
             body=body,
             covered_story_ids=story_ids,
             cited_support_ids=support_ids,
+            claims=tuple(claims),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "headline": self.headline,
+            "body": self.body,
+            "covered_story_ids": list(self.covered_story_ids),
+            "cited_support_ids": list(self.cited_support_ids),
+            "claims": [c.to_dict() for c in self.claims],
+        }
 
 
 @dataclass(frozen=True)
@@ -577,6 +646,28 @@ def validate_digest_narrative(
                     violations.append(
                         f"STORY_SUPPORT_MISSING: story {sid} in block {out_block.block_id}"
                     )
+
+            if item.claims:
+                claimed_story_ids = {sid for c in item.claims for sid in c.covered_story_ids}
+                for sid in item.covered_story_ids:
+                    if sid not in claimed_story_ids:
+                        violations.append(f"STORY_CLAIM_COVERAGE_MISSING:{sid}")
+                for claim in item.claims:
+                    for sid in claim.covered_story_ids:
+                        if sid not in item.covered_story_ids:
+                            violations.append(
+                                f"UNKNOWN_STORY_ID: {sid} in claim of block {out_block.block_id}"
+                            )
+                        story_allowed = set(allowed_by_story.get(sid, ()))
+                        if story_allowed and not (set(claim.cited_support_ids) & story_allowed):
+                            violations.append(
+                                f"STORY_SUPPORT_MISSING: story {sid} in claim of block {out_block.block_id}"
+                            )
+                    for sup_id in claim.cited_support_ids:
+                        if sup_id not in item.cited_support_ids:
+                            violations.append(
+                                f"CLAIM_SUPPORT_OUTSIDE_ITEM: {sup_id} in block {out_block.block_id}"
+                            )
 
             if len(item.covered_story_ids) > DIGEST_ITEM_MAX_STORIES:
                 violations.append(

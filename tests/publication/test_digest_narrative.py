@@ -1925,3 +1925,122 @@ def test_validate_digest_narrative_valid_merged_synthesis() -> None:
     support_map = {"sup:1": "Fact 1", "sup:2": "Fact 2"}
     res = validate_digest_narrative(draft, plan, support_map)
     assert res.is_valid
+
+
+def test_multi_story_digest_item_requires_claim_coverage_for_each_story() -> None:
+    from src.publication.digest_narrative import (
+        DigestClaimAtom,
+        DigestEditorialItemDraft,
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ",
+                story_ids=("story:1", "story:2"),
+                support_ids=("sup:1", "sup:2"),
+                canonical_notes=(),
+                required_story_groups=(("story:1", "story:2"),),
+                support_ids_by_story=(
+                    ("story:1", ("sup:1",)),
+                    ("story:2", ("sup:2",)),
+                ),
+            ),
+        )
+    )
+
+    # Item claims to cover story:1 and story:2, but its only claim atom belongs to story:1
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Headline 1 and 2",
+                        body="Body 1 and 2",
+                        covered_story_ids=("story:1", "story:2"),
+                        cited_support_ids=("sup:1", "sup:2"),
+                        claims=(
+                            DigestClaimAtom(
+                                text="Claim for story 1",
+                                covered_story_ids=("story:1",),
+                                cited_support_ids=("sup:1",),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    support_map = {"sup:1": "Claim for story 1", "sup:2": "Fact 2"}
+    res = validate_digest_narrative(draft, plan, support_map)
+    assert res.is_valid is False
+    assert any("STORY_CLAIM_COVERAGE_MISSING:story:2" in v for v in res.violations)
+
+
+def test_one_claim_can_cover_multiple_equivalent_stories_with_union_supports() -> None:
+    from src.publication.digest_narrative import (
+        DigestClaimAtom,
+        DigestEditorialItemDraft,
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        validate_digest_narrative,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=(
+            DigestNarrativeBlock(
+                block_id="block:utilities:0",
+                rubric_id="utilities",
+                rubric_title="ЖКХ",
+                story_ids=("story:1", "story:2"),
+                support_ids=("sup:1", "sup:2"),
+                canonical_notes=(),
+                required_story_groups=(("story:1", "story:2"),),
+                support_ids_by_story=(
+                    ("story:1", ("sup:1",)),
+                    ("story:2", ("sup:2",)),
+                ),
+            ),
+        )
+    )
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:utilities:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Headline 1 and 2",
+                        body="Body 1 and 2",
+                        covered_story_ids=("story:1", "story:2"),
+                        cited_support_ids=("sup:1", "sup:2"),
+                        claims=(
+                            DigestClaimAtom(
+                                text="Claim for both story 1 and story 2",
+                                covered_story_ids=("story:1", "story:2"),
+                                cited_support_ids=("sup:1", "sup:2"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    support_map = {
+        "sup:1": "Claim for both story 1 and story 2",
+        "sup:2": "Claim for both story 1 and story 2",
+    }
+    res = validate_digest_narrative(draft, plan, support_map)
+    assert res.is_valid is True

@@ -108,17 +108,33 @@ def build_digest_coverage_trace(
         for idx, item in enumerate(block.items):
             item_id = f"{block.block_id}:item:{idx}"
             detail_text = f"{item.headline.strip()}: {item.body.strip()}"
-            for sid in item.covered_story_ids:
-                if item_id not in detail_items_by_story.setdefault(sid, []):
-                    detail_items_by_story[sid].append(item_id)
-                if detail_text not in detail_texts_by_story.setdefault(sid, []):
-                    detail_texts_by_story[sid].append(detail_text)
+            if getattr(item, "claims", None):
+                for claim in item.claims:
+                    claim_text = claim.text.strip()
+                    for sid in claim.covered_story_ids:
+                        if item_id not in detail_items_by_story.setdefault(sid, []):
+                            detail_items_by_story[sid].append(item_id)
+                        if claim_text and claim_text not in detail_texts_by_story.setdefault(
+                            sid, []
+                        ):
+                            detail_texts_by_story[sid].append(claim_text)
+                        allowed_for_story = story_to_allowed_supports.get(sid)
+                        for sup_id in claim.cited_support_ids:
+                            if allowed_for_story is None or sup_id in allowed_for_story:
+                                if sup_id not in detail_supports_by_story.setdefault(sid, []):
+                                    detail_supports_by_story[sid].append(sup_id)
+            else:
+                for sid in item.covered_story_ids:
+                    if item_id not in detail_items_by_story.setdefault(sid, []):
+                        detail_items_by_story[sid].append(item_id)
+                    if detail_text not in detail_texts_by_story.setdefault(sid, []):
+                        detail_texts_by_story[sid].append(detail_text)
 
-                allowed_for_story = story_to_allowed_supports.get(sid)
-                for sup_id in item.cited_support_ids:
-                    if allowed_for_story is None or sup_id in allowed_for_story:
-                        if sup_id not in detail_supports_by_story.setdefault(sid, []):
-                            detail_supports_by_story[sid].append(sup_id)
+                    allowed_for_story = story_to_allowed_supports.get(sid)
+                    for sup_id in item.cited_support_ids:
+                        if allowed_for_story is None or sup_id in allowed_for_story:
+                            if sup_id not in detail_supports_by_story.setdefault(sid, []):
+                                detail_supports_by_story[sid].append(sup_id)
 
     story_traces: list[DigestStoryCoverageTrace] = []
     for pres in plan.story_presentations:
