@@ -48,7 +48,9 @@ def derive_article_length_profile(
     is_standard = not is_thin and (publish_story_count <= 10 or publish_support_count <= 24)
 
     hard_min = min(180, config.article_min_words)
-    hard_max = config.article_max_words
+    # Scale hard_max if publish_story_count requires more capacity to honor 100% story coverage
+    min_needed_words = publish_story_count * 22
+    hard_max = max(config.article_max_words, min_needed_words)
 
     if is_thin:
         return ArticleLengthProfile(
