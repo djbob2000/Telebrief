@@ -20,6 +20,20 @@ DigestPresentationMode = Literal[
     "DETAIL_ONLY",
     "DASHBOARD_AND_DRILLDOWN",
 ]
+DigestPresentationUnitKind = Literal["SYNTHESIS", "NORMAL", "BRIEF_ROLLUP"]
+
+
+@dataclass(frozen=True)
+class DigestPresentationUnit:
+    """Deterministic presentation compression unit grouping related stories into scan-first items."""
+
+    unit_id: str
+    rubric_id: str
+    kind: DigestPresentationUnitKind
+    story_ids: tuple[str, ...]
+    support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...]
+    min_rank: int
+    compression_key: str
 
 
 @dataclass(frozen=True)
@@ -919,6 +933,129 @@ def _compute_merge_groups(cards: Sequence[Any]) -> dict[str, str]:
                 merge_group_by_id[c.id] = c.id
 
     return merge_group_by_id
+
+
+def _card_allowed_supports(card: Any) -> tuple[str, ...]:
+    sups: list[str] = []
+    if getattr(card, "summary", ""):
+        sups.append(f"{card.id}:summary")
+    for hf in getattr(card, "hard_facts", []) or []:
+        for r in getattr(hf, "source_refs", []) or []:
+            if r not in sups:
+                sups.append(r)
+    for co in getattr(card, "community_observations", []) or []:
+        for r in getattr(co, "source_refs", []) or []:
+            if r not in sups:
+                sups.append(r)
+    for ud in getattr(card, "useful_details", []) or []:
+        for r in getattr(ud, "source_refs", []) or []:
+            if r not in sups:
+                sups.append(r)
+    for obs in getattr(card, "operational_observations", []) or []:
+        for r in getattr(obs, "source_refs", []) or []:
+            if r not in sups:
+                sups.append(r)
+    return tuple(sups)
+
+
+def _canonical_service_family(card: Any) -> str | None:
+    cat = (getattr(card, "category", "") or "").casefold()
+    topic = (getattr(card, "topic", "") or "").casefold()
+    tags = {str(t).casefold() for t in getattr(card, "tags", []) or []}
+    tokens = set(re.findall(r"[a-zа-яё0-9]+", f"{cat} {topic} {' '.join(tags)}"))
+
+    if {
+        "electricity",
+        "power",
+        "blackout",
+        "свет",
+        "электроснабжение",
+        "электроэнергия",
+        "подстанция",
+        "рэс",
+    } & tokens:
+        if not any(w in topic for w in ("услуги электрика", "электрик на дом", "частный электрик")):
+            return "electricity"
+    if {"water", "водоснабжение", "вода", "водоканал", "порыв"} & tokens:
+        if not any(w in topic for w in ("услуги сантехника", "сантехник", "баки")):
+            return "water"
+    if {"gas", "газ", "газоснабжение", "горгаз"} & tokens:
+        return "gas"
+    if {"heating", "отопление", "теплосеть"} & tokens:
+        return "heating"
+    if {"telecom", "connectivity", "связь", "интернет", "провайдер", "мобильная связь"} & tokens:
+        return "connectivity"
+    if {"transport", "транспорт", "автобус", "маршрутка", "перевозки"} & tokens:
+        return "transport"
+    return None
+
+
+def build_digest_presentation_units(
+    cards: Sequence[Any],
+    presentation_plan: Any = None,
+    *,
+    max_synthesis_size: int = 24,
+    max_normal_size: int = 8,
+    max_brief_size: int = 6,
+) -> tuple[DigestPresentationUnit, ...]:
+    """Partition all detail story cards into deterministic presentation compression units."""
+    if not cards:
+        return ()
+
+    presentations_by_id = {}
+    if presentation_plan is not None and getattr(presentation_plan, "story_presentations", None):
+        presentations_by_id = {p.story_id: p for p in presentation_plan.story_presentations}
+    elif presentation_plan is not None and getattr(presentation_plan, "story_hints", None):
+        presentations_by_id = {h.story_id: h for h in presentation_plan.story_hints}
+
+    fallback_merge_groups: dict[str, str] = {}
+    if not presentations_by_id and cards:
+        fallback_merge_groups = _compute_merge_groups(cards)
+
+    by_rubric: dict[str, list[Any]] = {}
+    for c in cards:
+        rid = getattr(c, "rubric_id", "") or "other"
+        by_rubric.setdefault(rid, []).append(c)
+
+    units: list[DigestPresentationUnit] = []
+    unit_counter = 0
+
+    for rid, r_cards in by_rubric.items():
+        # Partition cards by group key preserving first appearance order
+        groups_by_key: dict[str, list[Any]] = {}
+        for c in r_cards:
+            if c.id in presentations_by_id:
+                gid = presentations_by_id[c.id].merge_group_id
+            else:
+                fam = _canonical_service_family(c)
+                if fam:
+                    gid = f"service:{fam}"
+                else:
+                    gid = fallback_merge_groups.get(c.id, c.id)
+            groups_by_key.setdefault(gid, []).append(c)
+
+        for gid, g_cards in groups_by_key.items():
+            is_service = gid.startswith("service:")
+            max_size = max_synthesis_size if is_service else 6
+            kind: DigestPresentationUnitKind = "SYNTHESIS" if is_service else "NORMAL"
+
+            for i in range(0, len(g_cards), max_size):
+                chunk = g_cards[i : i + max_size]
+                unit_counter += 1
+                sups_by_story = tuple((c.id, _card_allowed_supports(c)) for c in chunk)
+                units.append(
+                    DigestPresentationUnit(
+                        unit_id=f"unit:{rid}:{unit_counter}",
+                        rubric_id=rid,
+                        kind=kind,
+                        story_ids=tuple(c.id for c in chunk),
+                        support_ids_by_story=sups_by_story,
+                        min_rank=1,
+                        compression_key=f"{rid}:{gid}",
+                    )
+                )
+
+    return tuple(units)
 
 
 def _dashboard_supports_for_items(

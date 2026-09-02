@@ -1651,3 +1651,33 @@ def test_homogeneous_power_status_merges_up_to_6() -> None:
     for i in range(2, 7):
         assert groups[f"story:p{i}"] == mg1
     assert groups["story:p7"] != mg1
+
+
+def test_digest_compression_units_power_cluster_becomes_synthesis_unit() -> None:
+    from src.editorial_models import StoryCard
+    from src.publication.digest_presentation import (
+        DigestPresentationUnit,
+        build_digest_presentation_units,
+    )
+
+    cards = [
+        StoryCard(
+            id=f"story:power:{i}",
+            topic=f"Отключение света в районе {i}",
+            importance="high",
+            summary=f"В районе {i} электричество отсутствует более суток",
+            tags=["electricity", "power", "blackout"],
+            rubric_id="utilities",
+            category="utilities",
+        )
+        for i in range(1, 18)
+    ]
+
+    units = build_digest_presentation_units(cards)
+    assert len(units) <= 2
+    assert all(isinstance(u, DigestPresentationUnit) for u in units)
+    assert all(u.kind == "SYNTHESIS" for u in units)
+    assert all(u.rubric_id == "utilities" for u in units)
+    all_story_ids = [sid for u in units for sid in u.story_ids]
+    assert set(all_story_ids) == {c.id for c in cards}
+    assert len(all_story_ids) == len(cards)

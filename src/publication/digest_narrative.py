@@ -314,13 +314,8 @@ def plan_digest_narrative_blocks(
     elif presentation_plan is not None and getattr(presentation_plan, "story_hints", None):
         presentations_by_id = {h.story_id: h for h in presentation_plan.story_hints}
 
-    fallback_merge_groups: dict[str, str] = {}
-    if not presentations_by_id and cards:
-        from src.publication.digest_presentation import _compute_merge_groups
-
-        fallback_merge_groups = _compute_merge_groups(cards)
-
     dashboard_supports_by_story_map: dict[str, set[str]] = {}
+
     if presentation_plan is not None and getattr(presentation_plan, "city_situation", None):
         groups = getattr(presentation_plan.city_situation, "groups", ()) or ()
         for g in groups:
@@ -354,45 +349,42 @@ def plan_digest_narrative_blocks(
         if not rubric_cards:
             continue
 
-        # Partition cards by merge_group_id preserving first appearance order
-        groups_by_mgid: dict[str, list[StoryCard]] = {}
-        for c in rubric_cards:
-            if c.id in presentations_by_id:
-                mgid = presentations_by_id[c.id].merge_group_id
+        # Partition cards using deterministic presentation compression units
+        from src.publication.digest_presentation import build_digest_presentation_units
+
+        units = build_digest_presentation_units(
+            rubric_cards,
+            presentation_plan=presentation_plan,
+            max_synthesis_size=24,
+            max_normal_size=8,
+            max_brief_size=6,
+        )
+        card_by_id = {c.id: c for c in rubric_cards}
+
+        # Pack units into blocks
+        current_block_units: list[Any] = []
+        current_card_count = 0
+        block_units_list: list[list[Any]] = []
+
+        for unit in units:
+            unit_len = len(unit.story_ids)
+            bound = max(max_cards_per_block, unit_len)
+            if current_block_units and (current_card_count + unit_len > bound):
+                block_units_list.append(current_block_units)
+                current_block_units = [unit]
+                current_card_count = unit_len
             else:
-                mgid = fallback_merge_groups.get(c.id, c.id)
-            groups_by_mgid.setdefault(mgid, []).append(c)
+                current_block_units.append(unit)
+                current_card_count += unit_len
 
-        # Split each merge group into chunks of at most 6 cards
-        required_groups: list[list[StoryCard]] = []
-        for _mgid, mg_cards in groups_by_mgid.items():
-            for i in range(0, len(mg_cards), 6):
-                required_groups.append(mg_cards[i : i + 6])
+        if current_block_units:
+            block_units_list.append(current_block_units)
 
-        max_req_grp = max((len(g) for g in required_groups), default=1)
-        bound = max(max_cards_per_block, max_req_grp)
-        current_block_groups: list[list[StoryCard]] = []
-        current_block_card_count = 0
-        block_groups_list: list[list[list[StoryCard]]] = []
-
-        for req_grp in required_groups:
-            req_len = len(req_grp)
-            if current_block_groups and (current_block_card_count + req_len > bound):
-                block_groups_list.append(current_block_groups)
-                current_block_groups = [req_grp]
-                current_block_card_count = req_len
-            else:
-                current_block_groups.append(req_grp)
-                current_block_card_count += req_len
-
-        if current_block_groups:
-            block_groups_list.append(current_block_groups)
-
-        for chunk_idx, block_groups in enumerate(block_groups_list):
-            chunk = [c for grp in block_groups for c in grp]
+        for chunk_idx, block_units in enumerate(block_units_list):
+            chunk = [card_by_id[sid] for u in block_units for sid in u.story_ids]
             block_id = f"block:{rid}:{chunk_idx}"
             story_ids = tuple(c.id for c in chunk)
-            req_story_groups = tuple(tuple(c.id for c in grp) for grp in block_groups)
+            req_story_groups = tuple(tuple(u.story_ids) for u in block_units)
 
             # Collect canonical notes from cards and track support ownership per story
             notes: list[str] = []
