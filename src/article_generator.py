@@ -720,8 +720,13 @@ class ArticleGenerator:
     - DEVELOP / WEAVE / BRIEF are not factual status labels.
     - Cover BRIEF stories compactly instead of dropping them solely for being minor.
     - Do not mechanically create one section per Story; group related WEAVE/BRIEF stories naturally.
+15. ПРАВИЛО ПРЯМЫХ ЦИТАТ (Quote Allowlist):
+    - Кавычки «...» или "..." СТРОГО ЗАПРЕЩЕНЫ, за единственным исключением: точное дословное совпадение с фразой из блока QUOTE ALLOWLIST.
+    - Если фразы нет в QUOTE ALLOWLIST, оформлять её в кавычках КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО — передавайте смысл только косвенной речью («по словам жителей...», «как сообщили в ведомстве...»).
+    - Любое использование кавычек вне QUOTE ALLOWLIST приведет к немедленной браковке статьи.
 
 Формат ответа — строго валидный JSON:
+
 
 {{
   "title": "Заголовок статьи",

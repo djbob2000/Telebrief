@@ -91,6 +91,10 @@ def validate_article_draft(
     if config is None:
         config = PublicationEditorialConfig()
 
+    from src.publication.article_quote_allowlist import build_article_quote_allowlist
+
+    quote_allowlist = build_article_quote_allowlist(context)
+
     issues: list[ArticleValidationIssue] = []
     unknown_evidence_ids: list[str] = []
 
@@ -407,6 +411,7 @@ def validate_article_draft(
                     c_supports,
                     min_content_coverage=config.article_claim_min_content_coverage,
                     allowed_context_terms=allowed_context_terms,
+                    direct_quote_allowlist=quote_allowlist,
                 )
 
                 if not assessment.supported:
@@ -476,6 +481,7 @@ def validate_article_draft(
             unit_text,
             support_texts,
             direct_quote_source_texts=primary_source_texts,
+            direct_quote_allowlist=quote_allowlist,
         )
         if unsupported:
             if unit_type == "paragraph" and not any(

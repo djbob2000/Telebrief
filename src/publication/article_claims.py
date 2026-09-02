@@ -442,6 +442,7 @@ def find_unsupported_claims(
     support_texts: Sequence[str],
     *,
     direct_quote_source_texts: Sequence[str] | None = None,
+    direct_quote_allowlist: Sequence[str] | None = None,
 ) -> tuple[ConcreteClaim, ...]:
     """Identify concrete claims in text that are not substantiated by cited support texts."""
     if not text:
@@ -485,14 +486,24 @@ def find_unsupported_claims(
                     unsupported.append(claim)
 
         elif claim.kind == "direct_quote":
-            quote_sources = (
-                direct_quote_source_texts
-                if direct_quote_source_texts is not None
-                else support_texts
-            )
-            normalized_sources = [normalize_direct_quote(st) for st in quote_sources if st]
-            if not any(claim.normalized in source for source in normalized_sources):
-                unsupported.append(claim)
+            if direct_quote_allowlist is not None:
+                normalized_allowlist = [
+                    normalize_direct_quote(st) for st in direct_quote_allowlist if st
+                ]
+                if not any(
+                    claim.normalized == source or claim.normalized in source
+                    for source in normalized_allowlist
+                ):
+                    unsupported.append(claim)
+            else:
+                quote_sources = (
+                    direct_quote_source_texts
+                    if direct_quote_source_texts is not None
+                    else support_texts
+                )
+                normalized_sources = [normalize_direct_quote(st) for st in quote_sources if st]
+                if not any(claim.normalized in source for source in normalized_sources):
+                    unsupported.append(claim)
 
         elif claim.kind == "quoted_term":
             term_stemmed = _stemmed_text(claim.normalized)

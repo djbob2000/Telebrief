@@ -53,6 +53,7 @@ def assess_claim_against_supports(
     *,
     min_content_coverage: float = 0.70,
     allowed_context_terms: Sequence[str] = (),
+    direct_quote_allowlist: Sequence[str] | None = None,
 ) -> ClaimSupportAssessment:
     """Conservatively assess whether claim_text is substantiated by cited supports."""
     support_texts: list[str] = []
@@ -68,6 +69,7 @@ def assess_claim_against_supports(
         claim_text,
         support_texts,
         direct_quote_source_texts=primary_source_texts,
+        direct_quote_allowlist=direct_quote_allowlist,
     )
 
     # 2. Risk-based semantic novelty and proper name matching

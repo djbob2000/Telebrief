@@ -46,6 +46,21 @@ def render_article_writer_context(
     if coverage_plan is not None:
         blocks.append(_render_coverage_plan(coverage_plan))
 
+    from src.publication.article_quote_allowlist import build_article_quote_allowlist
+
+    allowlist = build_article_quote_allowlist(context)
+    if allowlist:
+        quote_lines = [
+            'QUOTE ALLOWLIST (ONLY these exact primary-source phrases may be in quotation marks «...» / "..."):'
+        ]
+        for q in allowlist:
+            quote_lines.append(f"- «{q}»")
+        blocks.append("\n".join(quote_lines))
+    else:
+        blocks.append(
+            "QUOTE ALLOWLIST: (NONE — quotation marks are strictly forbidden; use indirect speech only)"
+        )
+
     for sup in context.support_index:
         if sup.publication_use == "EXCLUDE":
             continue

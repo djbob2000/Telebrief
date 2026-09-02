@@ -1899,3 +1899,88 @@ def test_attempt74_full_draft_validation() -> None:
     assert result.is_valid is True, f"Expected valid draft, got blocking issues: {blocking_issues}"
     assert blocking_issues == []
     assert all(i.severity == "warning" and not i.blocking for i in result.issues)
+
+
+def test_validator_rejects_direct_quote_outside_allowlist():
+    """Test 8C: Direct quote from primary source text not in Quote Allowlist triggers UNSUPPORTED_DIRECT_QUOTE."""
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    # Context-only support: source_text has verbatim phrase, but publication_use is CONTEXT
+    s_ctx = ArticleSupport(
+        support_id="story:1:evidence:0:frag:1",
+        text="Света нет нигде",
+        source_text="Света нет нигде с самого утра",
+        support_kind="evidence",
+        publication_use="CONTEXT",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=now,
+        evidence_kind="community_report",
+        story_id="story:1",
+    )
+    s_pub = ArticleSupport(
+        support_id="story:1:evidence:1:frag:2",
+        text="Авария на линии электропередач",
+        source_text="Авария на линии электропередач",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-2",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=now,
+        evidence_kind="established_fact",
+        story_id="story:1",
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Энергетика",),
+        support_index=(s_ctx, s_pub),
+        support_by_id={s.support_id: s for s in (s_ctx, s_pub)},
+        recurring_topics=(),
+    )
+
+    draft = StructuredArticleDraft(
+        title="Энергетическая ситуация",
+        title_support_ids=("story:1:evidence:1:frag:2",),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Энергетическая ситуация",
+                cited_support_ids=("story:1:evidence:1:frag:2",),
+            ),
+        ),
+        lead="В городе устраняют аварию.",
+        lead_support_ids=("story:1:evidence:1:frag:2",),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В городе устраняют аварию",
+                cited_support_ids=("story:1:evidence:1:frag:2",),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Обстановка со светом",
+                heading_support_ids=("story:1:evidence:1:frag:2",),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Жители жалуются: «Света нет нигде с самого утра».",
+                        cited_support_ids=(
+                            "story:1:evidence:0:frag:1",
+                            "story:1:evidence:1:frag:2",
+                        ),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Жители сообщают что света нет",
+                                cited_support_ids=("story:1:evidence:0:frag:1",),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=40,
+    )
+
+    result = validate_article_draft(draft, ctx, PublicationEditorialConfig())
+    quote_issues = [i for i in result.issues if i.code == "UNSUPPORTED_DIRECT_QUOTE"]
+    assert len(quote_issues) >= 1
+    assert result.is_valid is False
