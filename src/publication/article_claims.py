@@ -322,6 +322,15 @@ _MECHANISM_RE = re.compile(
     r"(?:\b(?:по\s+(?:резервной|временной|обходной|постоянной)\s+схеме|в\s+(?:ручном|автоматическом|аварийном)\s+режиме)\b)",
     re.IGNORECASE,
 )
+_SPEECH_PRONOUNS_RE = re.compile(
+    r"\b(?:я|мы|вы|ты|нам|нас|мне|меня|вам|вас|мой|моя|моё|наш|наша|наше|наши)\b",
+    re.IGNORECASE,
+)
+_SPEECH_VERBS_RE = re.compile(
+    r"\b(?:сказал\w*|заявил\w*|отметил\w*|подчеркнул\w*|пояснил\w*|сообщил\w*|уточнил\w*|будем|можем|хотим|ждем|просим|надеемся|сделаем)\b",
+    re.IGNORECASE,
+)
+
 
 _COMMON_ACRONYM_EXCLUSIONS = frozenset(
     {"ИЛИ", "ДЛЯ", "ПРИ", "БЕЗ", "ПОД", "НАД", "ИЗ", "ОТ", "ДО", "ПО", "СО"}
@@ -437,6 +446,44 @@ def _stemmed_text(text: str) -> str:
     return " ".join(_stem(w) for w in words)
 
 
+_UA_RU_STEM_EQUIVALENTS: dict[str, set[str]] = {
+    "электроснабж": {
+        "електропостачан",
+        "електропостач",
+        "электроснабж",
+        "струм",
+        "электричеств",
+        "свет",
+        "світл",
+    },
+    "электроэнерг": {"електроенерг", "электроэнерг", "струм", "электричеств"},
+    "отсутств": {"відсутн", "відсутніст", "відсутність", "отсутств", "немає", "нет"},
+    "стабиль": {"стабіль", "стабиль"},
+    "водоснабж": {"водопостачан", "водопостач", "водоснабж", "вода", "води"},
+    "газоснабж": {"газопостачан", "газопостач", "газоснабж", "газ", "газу"},
+    "отоплен": {"опален", "отоплен", "тепло"},
+    "интернет": {"інтернет", "интернет", "провайдер"},
+    "связ": {"зв'яз", "звяз", "связ", "интернет", "інтернет"},
+    "поврежден": {"пошкоджен", "поврежден", "порыв", "порив"},
+    "авари": {"аварі", "авари"},
+    "ремонт": {"ремонт", "відновлен", "восстановлен"},
+    "обстрел": {"обстріл", "обстрел", "прилет", "приліт"},
+}
+
+
+def _token_matches_any_support(tok: str, norm_supports: Sequence[str]) -> bool:
+    equivs = set(_UA_RU_STEM_EQUIVALENTS.get(tok, {tok}))
+    equivs.add(tok.replace("и", "і").replace("е", "є"))
+
+    for sup in norm_supports:
+        if any(eq in sup for eq in equivs):
+            return True
+        sup_stemmed = _stemmed_text(sup)
+        if any(eq in sup_stemmed for eq in equivs):
+            return True
+    return False
+
+
 def find_unsupported_claims(
     text: str,
     support_texts: Sequence[str],
@@ -486,6 +533,13 @@ def find_unsupported_claims(
                     unsupported.append(claim)
 
         elif claim.kind == "direct_quote":
+            tokens = re.findall(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]+", claim.raw)
+            is_speech = (
+                len(tokens) >= 6
+                or bool(_SPEECH_PRONOUNS_RE.search(claim.raw))
+                or bool(_SPEECH_VERBS_RE.search(claim.raw))
+            )
+
             if direct_quote_allowlist is not None:
                 normalized_allowlist = [
                     normalize_direct_quote(st) for st in direct_quote_allowlist if st
@@ -494,7 +548,12 @@ def find_unsupported_claims(
                     claim.normalized == source or claim.normalized in source
                     for source in normalized_allowlist
                 ):
-                    unsupported.append(claim)
+                    # Check if quoted text is a short named entity/title substantiated by support
+                    if is_speech or not (
+                        claim.normalized in combined_support_norm
+                        or _stemmed_text(claim.normalized) in _stemmed_text(combined_support_norm)
+                    ):
+                        unsupported.append(claim)
             else:
                 quote_sources = (
                     direct_quote_source_texts
@@ -503,7 +562,11 @@ def find_unsupported_claims(
                 )
                 normalized_sources = [normalize_direct_quote(st) for st in quote_sources if st]
                 if not any(claim.normalized in source for source in normalized_sources):
-                    unsupported.append(claim)
+                    if is_speech or not (
+                        claim.normalized in combined_support_norm
+                        or _stemmed_text(claim.normalized) in _stemmed_text(combined_support_norm)
+                    ):
+                        unsupported.append(claim)
 
         elif claim.kind == "quoted_term":
             term_stemmed = _stemmed_text(claim.normalized)
@@ -537,10 +600,10 @@ def find_unsupported_claims(
                 unsupported.append(claim)
 
         elif claim.kind == "causal_relation":
-            # Check that content tokens of the causal object exist in support
+            # Check that content tokens of the causal object exist in support (including UA/RU equivalents)
             cause_tokens = [
                 _stem(w)
-                for w in re.findall(r"[a-zа-я0-9]+", norm)
+                for w in re.findall(r"[a-zа-яієїґ0-9]+", norm)
                 if len(w) > 2
                 and w
                 not in (
@@ -560,9 +623,7 @@ def find_unsupported_claims(
             ]
             if not cause_tokens:
                 continue
-            # Support must contain the cause tokens (e.g. 'авар', 'подстанци' or 'порыв')
-            # If draft introduces new cause like 'гидроудар', 'гидроудар' won't be in support
-            found = all(any(tok in sup for sup in norm_supports) for tok in cause_tokens)
+            found = all(_token_matches_any_support(tok, norm_supports) for tok in cause_tokens)
             if not found:
                 unsupported.append(claim)
 

@@ -136,3 +136,25 @@ def test_supported_paraphrase_passes() -> None:
     )
     unsupported_telecom = find_unsupported_claims(draft_telecom, support_telecom)
     assert len(unsupported_telecom) == 0
+
+
+@pytest.mark.unit
+def test_causal_relation_faithful_ukrainian_translation_passes() -> None:
+    support = [
+        "Освітній процес ускладнений через відсутність стабільного електропостачання та інтернету."
+    ]
+    draft = "Обучение затруднено из-за отсутствия стабильного электроснабжения и интернета."
+    unsupported = find_unsupported_claims(draft, support)
+    assert not any(c.kind == "causal_relation" for c in unsupported)
+
+
+@pytest.mark.unit
+def test_named_entity_quotes_do_not_fail_as_unsupported_direct_quotes() -> None:
+    support = ["Канал «Бердянск 24» сообщил о ситуации."]
+    draft = "По данным редакции «Бердянск 24», работы продолжаются."
+    unsupported = find_unsupported_claims(
+        draft,
+        support,
+        direct_quote_allowlist=["другая цитата"],
+    )
+    assert not any(c.kind == "direct_quote" for c in unsupported)

@@ -123,6 +123,8 @@ class StructuredArticleDraft:
             )
         )
         title_claims = _parse_claim_atoms(data.get("title_claims"))
+        if not title_claims and title and title_support_ids:
+            title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_support_ids),)
 
         lead = _strip_internal_handles(str(data.get("lead", "")).strip())
         raw_l_ids = data.get("lead_support_ids") or data.get("lead_evidence_ids") or []
@@ -134,6 +136,12 @@ class StructuredArticleDraft:
             )
         )
         lead_claims = _parse_claim_atoms(data.get("lead_claims"))
+        if not lead_claims and lead and lead_support_ids:
+            lead_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", lead) if s.strip()]
+            lead_claims = tuple(
+                ArticleClaimAtom(text=s, cited_support_ids=lead_support_ids)
+                for s in (lead_sentences or [lead])
+            )
 
         sections_list: list[ArticleSection] = []
         all_legacy_cited: list[str] = []
@@ -157,6 +165,10 @@ class StructuredArticleDraft:
                     )
                 )
                 heading_claims = _parse_claim_atoms(sec_data.get("heading_claims"))
+                if not heading_claims and heading and heading_support_ids:
+                    heading_claims = (
+                        ArticleClaimAtom(text=heading, cited_support_ids=heading_support_ids),
+                    )
 
                 raw_paras = sec_data.get("paragraphs", [])
                 paras: list[ArticleParagraph] = []
@@ -175,6 +187,17 @@ class StructuredArticleDraft:
                                 )
                             )
                             p_claims = _parse_claim_atoms(p.get("claims"))
+                            if not p_claims and p_text and p_support_ids:
+                                p_sentences = [
+                                    s.strip()
+                                    for s in re.split(r"(?<=[.!?])\s+", p_text)
+                                    if s.strip()
+                                ]
+                                p_claims = tuple(
+                                    ArticleClaimAtom(text=s, cited_support_ids=p_support_ids)
+                                    for s in (p_sentences or [p_text])
+                                )
+
                             if p_text:
                                 paras.append(
                                     ArticleParagraph(
