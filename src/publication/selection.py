@@ -21,6 +21,10 @@ from src.publication.models import (
     PublicationRun,
     PublicationSelectionDecision,
 )
+from src.publication.policies import (
+    SUPPORTED_SELECTION_SEMANTICS_VERSIONS,
+    UnsupportedFrozenSemanticVersion,
+)
 from src.publication.repository import PublicationRepository
 
 logger = logging.getLogger(__name__)
@@ -119,6 +123,15 @@ class EditorialSelectionService:
                 raise RuntimeError(
                     f"cannot select for publication run {run_id} in status '{run.status}' (expected 'candidates_sealed')"
                 )
+
+            # Validate frozen selection policy semantics
+            sel_policy = await self.repo.get_selection_policy_by_id(conn, run.selection_policy_id)
+            if sel_policy is not None and sel_policy.config:
+                sem_ver = sel_policy.config.get("selection_semantics_version")
+                if sem_ver is not None and sem_ver not in SUPPORTED_SELECTION_SEMANTICS_VERSIONS:
+                    raise UnsupportedFrozenSemanticVersion(
+                        f"Unsupported frozen selection_semantics_version: {sem_ver} (supported: {SUPPORTED_SELECTION_SEMANTICS_VERSIONS})"
+                    )
 
             candidates = await self.repo.load_sealed_candidates(conn, run_id)
             if not candidates:

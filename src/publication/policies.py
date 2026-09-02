@@ -11,6 +11,7 @@ import psycopg
 
 from src.publication.digest_contracts import DIGEST_PUBLICATION_TYPES
 from src.publication.editorializer import DIGEST_EDITORIALIZER_PROMPT_VERSION
+from src.publication.errors import UnsupportedFrozenSemanticVersion
 from src.publication.models import (
     PublicationPolicySet,
 )
@@ -27,6 +28,40 @@ DEFAULT_SELECTION_PROMPT_VERSION = "selection-prompt-v1"
 
 DEFAULT_WRITER_CONFIG_HASH = "writer-cfg-default"
 DEFAULT_WRITER_PROMPT_VERSION = "writer-prompt-v1"
+
+SELECTION_SEMANTICS_VERSION = "v2"
+SELECTION_PROMPT_VERSION = "v2"
+
+ARTICLE_WRITER_VERSION = "v2"
+ARTICLE_COVERAGE_PLAN_VERSION = "v2"
+ARTICLE_RECOVERY_VERSION = "v2"
+
+SUPPORTED_SELECTION_SEMANTICS_VERSIONS = {SELECTION_SEMANTICS_VERSION}
+SUPPORTED_ARTICLE_WRITER_VERSIONS = {ARTICLE_WRITER_VERSION}
+SUPPORTED_ARTICLE_COVERAGE_PLAN_VERSIONS = {ARTICLE_COVERAGE_PLAN_VERSION}
+SUPPORTED_ARTICLE_RECOVERY_VERSIONS = {ARTICLE_RECOVERY_VERSION}
+
+__all__ = [
+    "DEFAULT_ELIGIBILITY_CONFIG_HASH",
+    "DEFAULT_ELIGIBILITY_PROMPT_VERSION",
+    "DEFAULT_SCOPE_CONFIG_HASH",
+    "DEFAULT_SELECTION_CONFIG_HASH",
+    "DEFAULT_SELECTION_PROMPT_VERSION",
+    "DEFAULT_WRITER_CONFIG_HASH",
+    "DEFAULT_WRITER_PROMPT_VERSION",
+    "SELECTION_SEMANTICS_VERSION",
+    "SELECTION_PROMPT_VERSION",
+    "ARTICLE_WRITER_VERSION",
+    "ARTICLE_COVERAGE_PLAN_VERSION",
+    "ARTICLE_RECOVERY_VERSION",
+    "SUPPORTED_SELECTION_SEMANTICS_VERSIONS",
+    "SUPPORTED_ARTICLE_WRITER_VERSIONS",
+    "SUPPORTED_ARTICLE_COVERAGE_PLAN_VERSIONS",
+    "SUPPORTED_ARTICLE_RECOVERY_VERSIONS",
+    "UnsupportedFrozenSemanticVersion",
+    "PublicationPolicyService",
+    "compute_config_hash",
+]
 
 
 def compute_config_hash(payload: dict[str, Any] | str) -> str:
@@ -139,7 +174,15 @@ class PublicationPolicyService:
         if eligibility_config_hash == DEFAULT_ELIGIBILITY_CONFIG_HASH:
             eligibility_config_hash = compute_config_hash(eligibility_config)
 
-        selection_config: dict[str, Any] = {}
+        effective_sel_prompt_ver = (
+            selection_prompt_version
+            if selection_prompt_version != DEFAULT_SELECTION_PROMPT_VERSION
+            else SELECTION_PROMPT_VERSION
+        )
+        selection_config: dict[str, Any] = {
+            "selection_semantics_version": SELECTION_SEMANTICS_VERSION,
+            "selection_prompt_version": effective_sel_prompt_ver,
+        }
         if selection_config_hash == DEFAULT_SELECTION_CONFIG_HASH:
             selection_config_hash = compute_config_hash(selection_config)
 
@@ -163,6 +206,12 @@ class PublicationPolicyService:
             }
             if writer_prompt_version == DEFAULT_WRITER_PROMPT_VERSION:
                 writer_prompt_version = DIGEST_EDITORIALIZER_PROMPT_VERSION
+        else:
+            writer_config = {
+                "article_writer_version": ARTICLE_WRITER_VERSION,
+                "article_coverage_plan_version": ARTICLE_COVERAGE_PLAN_VERSION,
+                "article_recovery_version": ARTICLE_RECOVERY_VERSION,
+            }
 
         if writer_config_hash == DEFAULT_WRITER_CONFIG_HASH:
             writer_config_hash = compute_config_hash(writer_config)

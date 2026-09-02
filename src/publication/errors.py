@@ -36,3 +36,7 @@ class ArticleFinalizationInvariantError(RuntimeError):
 
 class DigestCoverageInvariantError(RuntimeError):
     """Terminal failure when digest coverage requirements or invariants are violated."""
+
+
+class UnsupportedFrozenSemanticVersion(ValueError):
+    """Raised when frozen publication policy specifies an unsupported semantic version."""

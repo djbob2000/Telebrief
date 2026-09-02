@@ -68,3 +68,91 @@ async def test_article_writer_policy_preserves_default_article_prompt(
     )
 
     assert policy_set.writer.prompt_version == DEFAULT_WRITER_PROMPT_VERSION
+
+
+@pytest.mark.postgres
+async def test_publication_policy_service_stores_explicit_semantic_versions(
+    conn: psycopg.AsyncConnection, edition
+):
+    """Test 5A: PublicationPolicyService stores explicit versions for selection and article writer."""
+    service = PublicationPolicyService()
+    policy_set = await service.ensure_current(
+        conn,
+        edition_id=edition.id,
+        publication_type="daily_article",
+    )
+
+    # Selection versions
+    assert policy_set.selection.config.get("selection_semantics_version") == "v2"
+    assert policy_set.selection.config.get("selection_prompt_version") == "v2"
+
+    # Writer versions
+    assert policy_set.writer.config.get("article_writer_version") == "v2"
+    assert policy_set.writer.config.get("article_coverage_plan_version") == "v2"
+    assert policy_set.writer.config.get("article_recovery_version") == "v2"
+
+
+@pytest.mark.postgres
+async def test_editorial_selection_service_rejects_unsupported_semantic_version(
+    conn: psycopg.AsyncConnection, pool, edition
+):
+    """Test 5B: EditorialSelectionService raises UnsupportedFrozenSemanticVersion for unknown semantics."""
+    from src.db.uow import DatabaseUnitOfWork
+    from src.publication.errors import UnsupportedFrozenSemanticVersion
+    from src.publication.selection import EditorialSelectionService
+    from src.publication.snapshot import PublicationSnapshotService
+
+    uow = DatabaseUnitOfWork(pool)
+    snap_service = PublicationSnapshotService(uow=uow)
+
+    run = await snap_service.create_run(
+        edition_id=edition.id,
+        publication_type="daily_article",
+        snapshot_at=_NOW,
+        request_key="test-unsupported-sel-version",
+    )
+    await snap_service.seal_candidates(run.id)
+
+    # Tamper selection policy with unsupported version
+    await conn.execute(
+        "UPDATE editorial_selection_policy_versions SET config = jsonb_set(config, '{selection_semantics_version}', '\"v999\"') WHERE id = %s",
+        (run.selection_policy_id,),
+    )
+
+    service = EditorialSelectionService(uow=uow)
+    with pytest.raises(UnsupportedFrozenSemanticVersion, match="v999"):
+        await service.select(run.id)
+
+
+@pytest.mark.postgres
+async def test_publication_generation_service_rejects_unsupported_article_writer_version(
+    conn: psycopg.AsyncConnection, pool, edition
+):
+    """Test 5C: PublicationGenerationService raises UnsupportedFrozenSemanticVersion for unknown writer versions."""
+    from src.db.uow import DatabaseUnitOfWork
+    from src.publication.errors import UnsupportedFrozenSemanticVersion
+    from src.publication.generation import PublicationGenerationService
+    from src.publication.selection import EditorialSelectionService
+    from src.publication.snapshot import PublicationSnapshotService
+
+    uow = DatabaseUnitOfWork(pool)
+    snap_service = PublicationSnapshotService(uow=uow)
+
+    run = await snap_service.create_run(
+        edition_id=edition.id,
+        publication_type="daily_article",
+        snapshot_at=_NOW,
+        request_key="test-unsupported-writer-version",
+    )
+    await snap_service.seal_candidates(run.id)
+    await EditorialSelectionService(uow=uow).select(run.id)
+
+    # Tamper writer policy with unsupported version
+    await conn.execute(
+        "UPDATE writer_policy_versions SET config = jsonb_set(config, '{article_writer_version}', '\"v999\"') WHERE id = %s",
+        (run.writer_policy_id,),
+    )
+
+    gen_service = PublicationGenerationService(uow=uow)
+    with pytest.raises(UnsupportedFrozenSemanticVersion, match="v999"):
+        await gen_service.generate(run.id)

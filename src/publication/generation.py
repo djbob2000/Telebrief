@@ -21,6 +21,12 @@ from src.publication.editorial_adapter import (
 from src.publication.editorializer import DigestEditorializer
 from src.publication.errors import ArticlePublicationRejected
 from src.publication.models import Publication
+from src.publication.policies import (
+    SUPPORTED_ARTICLE_COVERAGE_PLAN_VERSIONS,
+    SUPPORTED_ARTICLE_RECOVERY_VERSIONS,
+    SUPPORTED_ARTICLE_WRITER_VERSIONS,
+    UnsupportedFrozenSemanticVersion,
+)
 from src.publication.repository import PublicationRepository
 from src.publication.rubrics import (
     RUBRIC_CLASSIFIER_VERSION,
@@ -95,6 +101,29 @@ class PublicationGenerationService:
                 raise RuntimeError(
                     f"cannot generate for publication run {run_id} in status '{run.status}'"
                 )
+
+            # Validate frozen writer policy semantics for article publications
+            if run.publication_type in ("daily_article", "article"):
+                writer_policy = await self.repo.get_writer_policy_by_id(conn, run.writer_policy_id)
+                if writer_policy is not None and writer_policy.config:
+                    w_ver = writer_policy.config.get("article_writer_version")
+                    if w_ver is not None and w_ver not in SUPPORTED_ARTICLE_WRITER_VERSIONS:
+                        raise UnsupportedFrozenSemanticVersion(
+                            f"Unsupported frozen article_writer_version: {w_ver} (supported: {SUPPORTED_ARTICLE_WRITER_VERSIONS})"
+                        )
+                    plan_ver = writer_policy.config.get("article_coverage_plan_version")
+                    if (
+                        plan_ver is not None
+                        and plan_ver not in SUPPORTED_ARTICLE_COVERAGE_PLAN_VERSIONS
+                    ):
+                        raise UnsupportedFrozenSemanticVersion(
+                            f"Unsupported frozen article_coverage_plan_version: {plan_ver} (supported: {SUPPORTED_ARTICLE_COVERAGE_PLAN_VERSIONS})"
+                        )
+                    rec_ver = writer_policy.config.get("article_recovery_version")
+                    if rec_ver is not None and rec_ver not in SUPPORTED_ARTICLE_RECOVERY_VERSIONS:
+                        raise UnsupportedFrozenSemanticVersion(
+                            f"Unsupported frozen article_recovery_version: {rec_ver} (supported: {SUPPORTED_ARTICLE_RECOVERY_VERSIONS})"
+                        )
 
             await self.repo.transition_run(conn, run_id, "generating")
 
