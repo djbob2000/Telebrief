@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -161,6 +162,45 @@ def _classify_provider_failure(exc: BaseException) -> str:
     return "other"
 
 
+def extract_retry_after(exc: BaseException) -> float | None:
+    """Extract retry-after in seconds from HTTP headers, response body, or error message."""
+    resp = getattr(exc, "response", None)
+    if resp is not None and hasattr(resp, "headers"):
+        val = resp.headers.get("retry-after")
+        if val:
+            try:
+                return float(val)
+            except ValueError:
+                pass
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        err = body.get("error")
+        if isinstance(err, dict):
+            msg = str(err.get("message", ""))
+            m = re.search(
+                r"(?:retry[- ]after|try again in|retry in|wait)[\s:]+(\d+(?:\.\d+)?)",
+                msg,
+                re.IGNORECASE,
+            )
+            if m:
+                try:
+                    return float(m.group(1))
+                except ValueError:
+                    pass
+    text = str(exc)
+    m = re.search(
+        r"(?:retry[- ]after|try again in|retry in|wait)[\s:]+(\d+(?:\.\d+)?)",
+        text,
+        re.IGNORECASE,
+    )
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    return None
+
+
 class AIProvider(ABC):
     """Abstract base class for AI providers."""
 
@@ -307,11 +347,40 @@ class ProviderCascade(AIProvider):
                 ProviderCascade._global_slot_cooldowns.pop(label, None)
                 return response
             except Exception as exc:  # every provider error is eligible for failover
-                # Do not propagate provider exception text: SDK errors can contain request
-                # metadata or credentials. Slot names and exception classes are sufficient
-                # for diagnostics while keeping the aggregate error safe to log.
                 exc_type = type(exc).__name__
                 kind = _classify_provider_failure(exc)
+
+                # If rate-limited (quota), check Retry-After header/message.
+                # If wait time is <= 15 minutes (900s), wait and retry the current slot.
+                # If wait time is > 15 minutes, fail over immediately to the next slot.
+                if kind == "quota":
+                    retry_after = extract_retry_after(exc)
+                    max_retry_wait = 900.0  # 15 minutes
+                    if retry_after is not None and 0 < retry_after <= max_retry_wait:
+                        self.logger.info(
+                            "AI provider slot %s received rate limit (quota); waiting %s seconds as specified by Retry-After before retrying...",
+                            label,
+                            round(retry_after, 2),
+                        )
+                        await asyncio.sleep(retry_after)
+                        try:
+                            retry_response = await provider.chat_completion(
+                                messages=messages,
+                                model=selected_model,
+                                temperature=temperature,
+                                max_tokens=max_tokens,
+                                reasoning_effort=reasoning_effort,
+                                thinking=thinking,
+                                response_format=response_format,
+                            )
+                            if isinstance(retry_response, str) and retry_response.strip():
+                                ProviderCascade._global_slot_cooldowns.pop(label, None)
+                                return retry_response
+                        except Exception as retry_exc:
+                            exc = retry_exc
+                            exc_type = type(exc).__name__
+                            kind = _classify_provider_failure(exc)
+
                 if kind in ("quota", "server", "auth", "timeout"):
                     cooldown = (
                         self.cooldown_seconds

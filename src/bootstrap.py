@@ -86,6 +86,10 @@ async def build_infrastructure(database_config: DatabaseConfig) -> ApplicationIn
     missing or outside [SCHEMA_VERSION_MINIMUM, SCHEMA_VERSION_MAXIMUM]; a
     partially opened pool is closed before the error propagates.
     """
+    from src.utils import setup_logging
+
+    setup_logging()
+
     pool = await open_pool(database_config)
     try:
         async with pool.connection() as conn:

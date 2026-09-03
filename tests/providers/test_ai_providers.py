@@ -1809,3 +1809,80 @@ async def test_provider_cascade_secondary_never_called_if_primary_works(mock_log
 
     assert primary.chat_completion.call_count == 5
     assert secondary.chat_completion.call_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_retry_after_under_limit_retries_primary(mock_logger):
+    """When primary hits 429 with Retry-After <= 15m, it sleeps and retries primary."""
+    import httpx
+    from openai import RateLimitError
+
+    from src.ai_providers import ProviderCascade
+
+    ProviderCascade._global_slot_cooldowns.clear()
+
+    resp = httpx.Response(
+        429,
+        headers={"retry-after": "0.01"},
+        request=httpx.Request("POST", "https://openrouter.ai"),
+    )
+    rate_err = RateLimitError("rate limit", response=resp, body=None)
+
+    primary = MagicMock()
+    primary.chat_completion = AsyncMock(side_effect=[rate_err, "primary-retry-success"])
+    secondary = MagicMock()
+    secondary.chat_completion = AsyncMock(return_value="secondary-success")
+
+    cascade = ProviderCascade(
+        [
+            ("openrouter-primary", primary, "model-1"),
+            ("openrouter-secondary", secondary, "model-2"),
+        ],
+        mock_logger,
+        cooldown_seconds=60,
+    )
+
+    res = await cascade.chat_completion(messages=[], model="default")
+    assert res == "primary-retry-success"
+    assert primary.chat_completion.call_count == 2
+    assert secondary.chat_completion.call_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_retry_after_over_limit_fails_over_to_secondary(mock_logger):
+    """When primary hits 429 with Retry-After > 15m (900s), it immediately fails over without waiting."""
+    import httpx
+    from openai import RateLimitError
+
+    from src.ai_providers import ProviderCascade
+
+    ProviderCascade._global_slot_cooldowns.clear()
+
+    resp = httpx.Response(
+        429,
+        headers={"retry-after": "1200"},  # 20 minutes (> 15 min limit)
+        request=httpx.Request("POST", "https://openrouter.ai"),
+    )
+    rate_err = RateLimitError("rate limit", response=resp, body=None)
+
+    primary = MagicMock()
+    primary.chat_completion = AsyncMock(side_effect=rate_err)
+    secondary = MagicMock()
+    secondary.chat_completion = AsyncMock(return_value="secondary-success")
+
+    cascade = ProviderCascade(
+        [
+            ("openrouter-primary", primary, "model-1"),
+            ("openrouter-secondary", secondary, "model-2"),
+        ],
+        mock_logger,
+        cooldown_seconds=60,
+    )
+
+    res = await cascade.chat_completion(messages=[], model="default")
+    assert res == "secondary-success"
+    # Primary called once, rejected because >15m, secondary called immediately
+    assert primary.chat_completion.call_count == 1
+    assert secondary.chat_completion.call_count == 1
