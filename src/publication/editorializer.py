@@ -65,8 +65,11 @@ class DigestEditorializer:
                         self.config.settings, "openrouter_base_url", "https://openrouter.ai/api/v1"
                     ),
                     openrouter_model=getattr(
-                        self.config.settings, "openrouter_model", "openrouter/free"
+                        self.config,
+                        "openrouter_model",
+                        getattr(self.config.settings, "openrouter_model", "openrouter/free"),
                     ),
+                    openrouter_model_2=getattr(self.config, "openrouter_model_2", ""),
                     ollama_base_url=self.config.settings.ollama_base_url,
                     api_timeout=self.config.settings.api_timeout,
                     reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),

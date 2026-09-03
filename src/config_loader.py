@@ -300,6 +300,7 @@ class PublicationEditorialConfig:
     digest_city_situation_max_items: int = 7
     digest_city_situation_max_details_per_item: int = 2
     digest_city_situation_max_positive_items: int = 2
+    article_allow_deterministic_fallback: bool = False
 
     def __post_init__(self) -> None:
         if self.conflict_window_minutes <= 0:
@@ -402,6 +403,7 @@ class Config:
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     openrouter_model: str = "openrouter/free"
+    openrouter_model_2: str = ""
     openrouter_image_model: str = "google/gemini-3.1-flash-lite-image"
     openai_base_url: str = ""
     anthropic_api_key: str = ""
@@ -1644,7 +1646,7 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
     return PublicationEditorialConfig(
         conflict_window_minutes=_val_pos_int("conflict_window_minutes", 90),
         article_min_words=_val_pos_int("article_min_words", 800),
-        article_max_words=_val_pos_int("article_max_words", 1400),
+        article_max_words=_val_pos_int("article_max_words", 2200),
         article_min_sections=_val_pos_int("article_min_sections", 3),
         article_max_sections=_val_pos_int("article_max_sections", 6),
         article_max_direct_quotes=_val_nonneg_int("article_max_direct_quotes", 4),
@@ -1659,6 +1661,9 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
         ),
         digest_city_situation_max_positive_items=_val_nonneg_int(
             "digest_city_situation_max_positive_items", 2
+        ),
+        article_allow_deterministic_fallback=bool(
+            raw.get("article_allow_deterministic_fallback", False)
         ),
     )
 
@@ -1733,6 +1738,7 @@ def _load_and_validate_env_vars(
     openrouter_model = os.getenv("OPENROUTER_MODEL") or (
         ai_model if ai_provider == "openrouter" and ai_model else "openrouter/free"
     )
+    openrouter_model_2 = os.getenv("OPENROUTER_MODEL_2", "")
     openrouter_image_model = (
         os.getenv("OPENROUTER_IMAGE_MODEL") or "google/gemini-3.1-flash-lite-image"
     )
@@ -1791,6 +1797,7 @@ def _load_and_validate_env_vars(
         "openrouter_api_key": openrouter_api_key,
         "openrouter_base_url": openrouter_base_url,
         "openrouter_model": openrouter_model,
+        "openrouter_model_2": openrouter_model_2,
         "openrouter_image_model": openrouter_image_model,
         "log_level": log_level,
     }

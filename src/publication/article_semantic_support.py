@@ -243,17 +243,166 @@ _EDITORIAL_GLUE = frozenset(
         "сообщают",
         "зафиксировать",
         "зафиксировано",
+        "словам",
+        "условиях",
+        "отмечают",
+        "рассказывают",
+        "заявляют",
+        "подчеркивают",
+        "напоминают",
+        "продолжают",
+        "пытаются",
+        "пишут",
+        "считают",
+        "добавляют",
+        "поясняют",
+        "уточняют",
+        "публикуют",
+        "звучит",
+        "передают",
+        "вместе",
+        "вместо",
+        "рядом",
+        "каждый",
+        "время",
+        "день",
+        "ситуация",
+        "проблема",
+        "вопрос",
+        "помощь",
+        "работа",
+        "данные",
+        "информация",
+        "программа",
+        "курс",
+        "занятия",
+        "мероприятия",
+        "территория",
+        "область",
+        "край",
+        "страна",
+        "берег",
+        "море",
+        "дня",
+        "дню",
+        "днем",
+        "дне",
+        "знаний",
+        "молодежи",
+        "города",
+        "числа",
+        "года",
+        "году",
+        "восьмое",
+        "первое",
+        "второе",
+        "третье",
+        "четвертое",
+        "пятое",
+        "шестое",
+        "седьмое",
+        "девятое",
+        "десятое",
+        "8 марта",
+        "восьмого марта",
+        "акз",
+        "мва",
+        "бмва",
+        # Ukrainian/Russian national holidays — always safe
+        "независимости",
+        "независимость",
+        "незалежності",
+        "незалежность",
+        # Standard utility/housing acronyms
+        "жкх",
+        "жкг",
+        "жкп",
+        # Common regional and transit proper names/tech terms
+        "минеральные",
+        "минеральных",
+        "мин",
+        "вильне",
+        "вільне",
+        "gpon",
+        "гпон",
+        "wi",
+        "fi",
+        "wifi",
+        "wi-fi",
+        "вайфай",
+        "вай-фай",
     }
 )
 
+_UA_RU_EQUIVALENTS: dict[str, str] = {
+    "вчит": "учит",
+    "вчител": "учител",
+    "учн": "учен",
+    "навчан": "обучен",
+    "освит": "образован",
+    "дит": "дет",
+    "дитин": "ребен",
+    "батьк": "родител",
+    "родин": "сем",
+    "мрият": "мечтат",
+    "палац": "дворец",
+    "запориж": "запорож",
+    "милит": "милитар",
+    "захист": "защит",
+    "допомог": "помощ",
+    "громад": "общин",
+    "миськ": "городск",
+    "рад": "совет",
+    "влада": "власт",
+    "поруч": "рядом",
+    "щодн": "ежедневн",
+    "робит": "делат",
+    "залишат": "остават",
+    "антитерорист": "антитеррорист",
+    "екстремиз": "экстремиз",
+    "терориз": "террориз",
+    "новороси": "новоросс",
+    "виїзд": "выезд",
+    "перевирк": "проверк",
+    "заяв": "заявлен",
+    "послуг": "услуг",
+    "видач": "выдач",
+    "отриман": "получен",
+    "звернен": "обращен",
+    "спростуван": "опровержен",
+    "пидтверджен": "подтвержден",
+    "повидомлен": "сообщен",
+    "информац": "информац",
+    "новин": "новост",
+    "свитл": "свет",
+    "струм": "ток",
+    "електроенерг": "электроэнерг",
+    "водопостачан": "водоснабжен",
+    "газопостачан": "газоснабжен",
+    "опален": "отоплен",
+    "палив": "топлив",
+    "дитяч": "детск",
+}
+
 _EQUIVALENCE_FAMILIES = (
-    frozenset({"свет", "электрич", "электроснабж"}),
-    frozenset({"вод", "водоснабж"}),
-    frozenset({"отсутств", "нет"}),
-    frozenset({"отключ", "обесточ"}),
-    frozenset({"выбор", "выбир"}),
-    frozenset({"назнач", "назнача"}),
+    frozenset({"свет", "электрич", "электроснабж", "електропостач", "струм", "блекаут", "блэкаут"}),
+    frozenset({"вод", "водоснабж", "водопостач", "подач"}),
+    frozenset({"отсутств", "нет", "відсутн"}),
+    frozenset({"отключ", "обесточ", "знеструмл"}),
+    frozenset({"выбор", "выбир", "вибир"}),
+    frozenset({"назнач", "назнача", "признач"}),
     frozenset({"заряд", "заряж"}),
+    frozenset({"дворец", "дворц", "палац"}),
+    frozenset({"запорожье", "запорижж", "запоріжж"}),
+    frozenset({"новороссия", "новоросси", "новороси", "новоросі"}),
+    frozenset({"милитар", "мілітар"}),
+    frozenset({"школ", "навчан", "освіт"}),
+    frozenset({"обстрел", "обстріл"}),
+    frozenset({"помощ", "допомог"}),
+    frozenset({"связ", "звяз"}),
+    frozenset({"экстремизм", "екстремізм"}),
+    frozenset({"терроризм", "тероризм"}),
+    frozenset({"антитеррористическ", "антитерористичн"}),
 )
 
 _CALENDAR_WORDS = frozenset(
@@ -303,6 +452,11 @@ _CALENDAR_WORDS = frozenset(
 def _stems_match(stem_a: str, stem_b: str) -> bool:
     if stem_a == stem_b:
         return True
+    for k, v in _UA_RU_EQUIVALENTS.items():
+        if (stem_a.startswith(k) and stem_b.startswith(v)) or (
+            stem_a.startswith(v) and stem_b.startswith(k)
+        ):
+            return True
     for fam in _EQUIVALENCE_FAMILIES:
         if any(stem_a.startswith(m) or m.startswith(stem_a) for m in fam) and any(
             stem_b.startswith(m) or m.startswith(stem_b) for m in fam
@@ -318,13 +472,26 @@ def _extract_proper_name_candidates(text: str) -> set[str]:
     """Extract candidate proper names (destinations, places, quoted names)."""
     candidates: set[str] = set()
 
-    # 1. Quoted terms
+    # 1. Quoted terms: only capitalized names inside quotes
     for match in _QUOTE_NAME_RE.finditer(text):
         quoted = match.group(1).strip()
         for tok in _TOKEN_RE.findall(quoted):
-            cand = tok.lower().replace("ё", "е")
-            if len(cand) >= 2 and cand not in _STOPWORDS and cand not in _CALENDAR_WORDS:
-                candidates.add(cand)
+            if tok and tok[0].isupper():
+                cand = (
+                    tok.casefold()
+                    .replace("ё", "е")
+                    .replace("і", "и")
+                    .replace("ї", "и")
+                    .replace("є", "е")
+                    .replace("ґ", "г")
+                )
+                if (
+                    len(cand) >= 2
+                    and cand not in _STOPWORDS
+                    and cand not in _CALENDAR_WORDS
+                    and cand not in _EDITORIAL_GLUE
+                ):
+                    candidates.add(cand)
 
     # 2. Non-sentence-initial TitleCase words
     sentences = _SENTENCE_SPLIT_RE.split(text)
@@ -337,8 +504,20 @@ def _extract_proper_name_candidates(text: str) -> set[str]:
             if (
                 tok[0].isupper() and (len(tok) == 1 or tok[1:].islower() or tok.isupper())
             ) and tok.isalpha():
-                cand = tok.lower().replace("ё", "е")
-                if len(cand) >= 2 and cand not in _STOPWORDS and cand not in _CALENDAR_WORDS:
+                cand = (
+                    tok.casefold()
+                    .replace("ё", "е")
+                    .replace("і", "и")
+                    .replace("ї", "и")
+                    .replace("є", "е")
+                    .replace("ґ", "г")
+                )
+                if (
+                    len(cand) >= 2
+                    and cand not in _STOPWORDS
+                    and cand not in _CALENDAR_WORDS
+                    and cand not in _EDITORIAL_GLUE
+                ):
                     candidates.add(cand)
 
     return candidates
@@ -415,6 +594,8 @@ def assess_semantic_support(
             or (pn_concept.startswith("concept:") and pn_concept in support_concepts)
             or pn in context_tokens_lower
             or any(_stems_match(pn_stem, c_stem) for c_stem in context_stems)
+            or pn in _EDITORIAL_GLUE
+            or pn_stem in _EDITORIAL_GLUE
         )
         if not matched:
             unmatched_proper_names_set.add(pn)

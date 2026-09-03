@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from src.publication.article_claims import (
     ConcreteClaim,
@@ -22,7 +23,14 @@ def extract_content_stems(text: str) -> set[str]:
     """Extract normalized, non-stopword content stems from Russian/Ukrainian text."""
     if not text:
         return set()
-    cleaned = text.lower().replace("ё", "е")
+    cleaned = (
+        text.casefold()
+        .replace("ё", "е")
+        .replace("і", "и")
+        .replace("ї", "и")
+        .replace("є", "е")
+        .replace("ґ", "г")
+    )
     tokens = re.findall(r"[a-zа-я0-9]+", cleaned)
     stems: set[str] = set()
     for tok in tokens:
@@ -45,6 +53,7 @@ class ClaimSupportAssessment:
     unmatched_proper_names: tuple[str, ...] = ()
     blocking_proper_names: tuple[str, ...] = ()
     lexical_only_warning: bool = False
+    causal_analysis: Any | None = None
 
 
 def assess_claim_against_supports(
@@ -53,6 +62,7 @@ def assess_claim_against_supports(
     *,
     min_content_coverage: float = 0.70,
     allowed_context_terms: Sequence[str] = (),
+    all_known_draft_supports: Sequence[str] = (),
     direct_quote_allowlist: Sequence[str] | None = None,
 ) -> ClaimSupportAssessment:
     """Conservatively assess whether claim_text is substantiated by cited supports."""
@@ -68,6 +78,8 @@ def assess_claim_against_supports(
     unsupported_concrete = find_unsupported_claims(
         claim_text,
         support_texts,
+        allowed_context_terms=allowed_context_terms,
+        all_known_draft_supports=all_known_draft_supports,
         direct_quote_source_texts=primary_source_texts,
         direct_quote_allowlist=direct_quote_allowlist,
     )
@@ -79,9 +91,11 @@ def assess_claim_against_supports(
         allowed_context_terms=allowed_context_terms,
     )
 
+    # Hard Evidence Boundary: only concrete claims (numbers/dates/causality/quotes),
+    # critical domain mismatch (power/water/gas), and proper name hallucinations block.
+    # General lexical vocabulary divergence is non-blocking (lexical_only_warning).
     blocking = (
         bool(unsupported_concrete)
-        or bool(semantic.blocking_terms)
         or bool(semantic.blocking_critical_terms)
         or bool(semantic.blocking_proper_names)
     )

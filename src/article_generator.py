@@ -7,7 +7,12 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from src.ai_providers import AIProvider, create_provider, ensure_provider_cascade
+from src.ai_providers import (
+    AIProvider,
+    ProviderCascadeError,
+    create_provider,
+    ensure_provider_cascade,
+)
 from src.city_context import CityContextResolver, CityProfileError, StoryContextEnricher
 from src.collector import Message
 from src.config_loader import Config, PublicationEditorialConfig, SourceRoleResolver
@@ -38,6 +43,8 @@ from src.publication.article_length import (
     derive_article_length_profile,
 )
 from src.publication.article_models import StructuredArticleDraft
+from src.publication.article_quote_allowlist import build_article_quote_allowlist
+from src.publication.article_validator import validate_article_draft
 from src.publication.narrative_contract import build_article_narrative_contract
 
 
@@ -87,6 +94,160 @@ RUN_DEBUG_ARTIFACTS = (
 )
 
 
+def _ground_draft_in_coverage_plan(
+    parsed: dict[str, Any],
+    coverage_plan: Any,
+    article_ctx: Any | None = None,
+) -> dict[str, Any]:
+    """Ensure draft sections and paragraphs inherit valid evidence provenance from coverage plan."""
+    if not isinstance(parsed, dict) or coverage_plan is None:
+        return parsed
+
+    import re
+
+    from src.publication.article_claims import _stem
+
+    tok_re = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
+
+    # Precompute stems for all available supports in context
+    support_stems: dict[str, set[str]] = {}
+    curr_pub_sups: list[str] = []
+    support_by_id = getattr(article_ctx, "support_by_id", {}) if article_ctx else {}
+
+    if article_ctx is not None:
+        for s in getattr(article_ctx, "supports", ()):
+            sid = getattr(s, "support_id", None)
+            if not sid:
+                continue
+            if (
+                getattr(s, "publication_use", "") == "PUBLISH"
+                and getattr(s, "temporal_role", "") == "CURRENT_WINDOW"
+            ):
+                curr_pub_sups.append(sid)
+            full_t = f"{s.text or ''} {s.source_text or ''}"
+            words = tok_re.findall(full_t)
+            support_stems[sid] = {_stem(w.lower()) for w in words if len(w) >= 3}
+
+    # 1. Title & lead support IDs (guarantee at least one PUBLISH CURRENT_WINDOW support)
+    top_story_sups: list[str] = []
+    stories = getattr(coverage_plan, "stories", ()) or ()
+    for s in stories:
+        prom = getattr(s, "prominence", "")
+        if prom in ("DEVELOP", "lead_develop"):
+            top_story_sups.extend(list(getattr(s, "support_ids", ()))[:5])
+    if not top_story_sups and stories:
+        top_story_sups = list(getattr(stories[0], "support_ids", ()))[:5]
+
+    lead_sups = [sid for sid in top_story_sups if sid in curr_pub_sups]
+    if not lead_sups:
+        lead_sups = curr_pub_sups[:3] or top_story_sups[:3]
+
+    if not parsed.get("title_support_ids") or not any(
+        sid in curr_pub_sups for sid in parsed.get("title_support_ids", ())
+    ):
+        parsed["title_support_ids"] = lead_sups[:3]
+    if not parsed.get("lead_support_ids") or not any(
+        sid in curr_pub_sups for sid in parsed.get("lead_support_ids", ())
+    ):
+        parsed["lead_support_ids"] = lead_sups[:3]
+
+    # 2. Sections & paragraphs
+    raw_sections = parsed.get("sections") or []
+    plan_sections = list(getattr(coverage_plan, "sections", ()))
+
+    for idx, sec in enumerate(raw_sections):
+        if not isinstance(sec, dict):
+            continue
+        matched_plan = plan_sections[idx] if idx < len(plan_sections) else None
+        sec_sups: list[str] = []
+        if matched_plan:
+            sec_story_ids = {
+                getattr(a, "story_id", "") for a in getattr(matched_plan, "story_assignments", ())
+            }
+            for s in stories:
+                if getattr(s, "story_id", "") in sec_story_ids:
+                    sec_sups.extend(getattr(s, "support_ids", ()))
+            for a in getattr(matched_plan, "story_assignments", ()):
+                sec_sups.extend(getattr(a, "primary_evidence_ids", ()))
+                sec_sups.extend(getattr(a, "concrete_details", ()))
+        if not sec_sups and stories:
+            sec_sups = [sup for s in stories for sup in list(getattr(s, "support_ids", ()))]
+
+        if support_by_id:
+            sec_sups = [sid for sid in sec_sups if sid in support_by_id]
+        sec_sups = list(dict.fromkeys(sec_sups))
+
+        if not sec.get("heading_support_ids"):
+            sec["heading_support_ids"] = sec_sups[:5] or lead_sups[:3]
+
+        raw_paras = sec.get("paragraphs") or []
+        grounded_paras: list[dict[str, Any]] = []
+        for p in raw_paras:
+            p_text = p if isinstance(p, str) else p.get("text", "")
+            existing_cited = [] if isinstance(p, str) else list(p.get("cited_support_ids") or [])
+
+            if support_stems:
+                p_words = tok_re.findall(p_text)
+                p_stems = {_stem(w.lower()) for w in p_words if len(w) >= 3}
+                p_nums = set(re.findall(r"\b\d+\b", p_text))
+                # Match supports that share at least 2 content stems, or share numbers + stem
+                matched_sups = []
+                for sid, s_stems in support_stems.items():
+                    shared_stems = p_stems & s_stems
+                    s_text = getattr(support_by_id.get(sid), "text", "")
+                    s_nums = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
+                    shared_nums = p_nums & s_nums
+                    if (
+                        len(shared_stems) >= 2
+                        or (shared_stems and shared_nums)
+                        or len(shared_nums) >= 2
+                    ):
+                        matched_sups.append(sid)
+                combined_sups = list(dict.fromkeys(existing_cited + matched_sups + sec_sups))
+            else:
+                combined_sups = list(dict.fromkeys(existing_cited + sec_sups))
+
+            if support_by_id:
+                combined_sups = [sid for sid in combined_sups if sid in support_by_id]
+
+            grounded_paras.append(
+                {
+                    "text": p_text,
+                    "cited_support_ids": combined_sups,
+                }
+            )
+        sec["paragraphs"] = grounded_paras
+
+    # 3. Ensure all planned stories have at least one support cited across the draft
+    all_cited = set(parsed["title_support_ids"]) | set(parsed["lead_support_ids"])
+    for s in raw_sections:
+        if isinstance(s, dict):
+            all_cited.update(s.get("heading_support_ids") or [])
+            for p in s.get("paragraphs") or []:
+                if isinstance(p, dict):
+                    all_cited.update(p.get("cited_support_ids") or [])
+
+    uncovered = [
+        item
+        for item in stories
+        if not any(sup in all_cited for sup in getattr(item, "support_ids", ()))
+    ]
+    if uncovered and raw_sections:
+        last_sec = raw_sections[-1]
+        extra_sups = [
+            sup for item in uncovered for sup in list(getattr(item, "support_ids", ()))[:2]
+        ]
+        if support_by_id:
+            extra_sups = [sid for sid in extra_sups if sid in support_by_id]
+        if last_sec.get("paragraphs"):
+            last_p = last_sec["paragraphs"][-1]
+            if isinstance(last_p, dict):
+                existing = list(last_p.get("cited_support_ids") or [])
+                last_p["cited_support_ids"] = list(dict.fromkeys(existing + extra_sups))
+
+    return parsed
+
+
 class ArticleGenerator:
     """Generate a readable article, repairing locally and never dumping raw messages."""
 
@@ -104,6 +265,7 @@ class ArticleGenerator:
             openrouter_api_key=config.openrouter_api_key,
             openrouter_base_url=config.openrouter_base_url,
             openrouter_model=config.openrouter_model,
+            openrouter_model_2=getattr(config, "openrouter_model_2", ""),
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=config.settings.article.editorial_api_timeout,
             reasoning_effort=config.settings.reasoning_effort,
@@ -696,77 +858,30 @@ class ArticleGenerator:
    - Запрещены пустые клише и абстрактные формулировки («ситуация остается напряженной», «жители адаптируются к реалиям», «город живет в новых условиях»). Вместо абстракций приводите конкретные факты: кто что починил, как ходят автобусы, где есть вода и свет.
    - Заголовок (title): емкий, информативный газетный заголовок дня (например: «Бердянск в условиях перебоев с энергией: восстановительные работы, графики движения и городская хроника»). Запрещено делать заголовком вопросы жителей («Работает ли пенсионный фонд?»).
 
-### Обязательные правила валидации и доказательной базы (Evidence Boundary):
-1. Опирайтесь ТОЛЬКО на предоставленные единицы поддержки [SUPPORT id]. Категорически запрещено выдумывать неподтвержденные детали, цифры, адреса, организации, длительности, причины, механизмы и события.
-2. Every title, lead, heading and paragraph must cite support IDs, and MUST decompose its factual assertions into discrete claim atoms (`claims` / `title_claims` / `lead_claims` / `heading_claims`). Claim Atoms describe evidence propositions, not the wording of the article sentence. Keep them short, source-close and atomic. A polished sentence may map to several Claim Atoms. Section headings are thematic titles and do not require claim atoms unless they assert concrete figures, dates, or prices.
+### Обязательные правила журналистской точности:
+1. Опирайтесь ТОЛЬКО на предоставленные в материалах факты и цитаты. Категорически ЗАПРЕЩЕНО выдумывать неподтвержденные детали, цифры, номера домов или адреса в других городах (Запорожье, Днепр, Киев, Мелитополь), если их нет в предоставленных карточках фактов. Не добавляйте внешние знания из своей памяти.
+2. Не придумывайте официальных подтверждений, если источник — сообщение жителя. Передавайте статус честно: «по сообщениям жителей», «горожане отмечают», «как рассказывают жители».
+3. Не раскрывайте техническую кухню сбора данных. Избегайте фраз «в чате», «участник чата написал», «в Telegram-канале». Используйте естественную городскую атрибуцию: «жители сообщают», «горожане обсуждают», «по наблюдениям жителей».
+4. Правило цитат: оформляйте прямую речь в кавычках только при точном соответствии словам источника; в остальных случаях используйте естественную косвенную речь.
+5. Не вставляйте в текст технические ID вроде [story:...] или [SUPPORT...].
+6. Язык статьи: {self.output_language}. Текст должен быть связным, грамотным, с живыми микродеталями.
 
-3. The set of `cited_support_ids` in each unit MUST exactly equal the union of support IDs cited in that unit's claim atoms (for headings with empty `heading_claims`, `heading_support_ids` must cite supports present in that section).
-4. Temporal roles and framing (Reporting Window):
-   - CURRENT_WINDOW: События и оперативная обстановка текущего отчетного окна. Заголовок и лид ОБЯЗАНЫ опираться на факты текущего окна.
-   - HISTORICAL_CONTEXT: Фоновая информация прошлых дней. Если упоминается в статье, ОБЯЗАТЕЛЬНО используйте маркеры предыстории или продолжения (ранее, с начала, до этого, сохраняется, продолжается) и никогда не подавайте как новые события дня.
-   - FUTURE_SCHEDULED: Анонсы плановых работ на будущие даты. ОБЯЗАТЕЛЬНО используйте явные маркеры будущего времени (запланировано, предстоит, будет, дата) и НИКОГДА не описывайте как действующую аварию/отключение.
-5. Границы отчетного периода: НЕ расширяйте временные рамки в заголовке и лиде (запрещены формулировки «хроника недели», «итоги недели», «события месяца» для суточного обзора).
-6. Never invent a duration, number, date, time, price, route interval, address, organization, cause, mechanism, completion state, or future deadline.
-7. If a detail is not explicit in cited support, omit it.
-8. Do not infer that repairs were completed merely because work had started.
-9. Do not infer a cause/mechanism from chronology alone.
-10. Язык статьи: {self.output_language}.
-11. Структура и формат схемы:
-    - title: Информативный заголовок, отражающий ключевые события дня.
-    - title_support_ids: Массив ID поддержки для заголовка.
-    - title_claims: Массив атомарных утверждений заголовка: [{{"text": "краткое утверждение", "cited_support_ids": ["SUPPORT_ID"]}}].
-    - lead: Вводный лид (2-3 предложения), суммирующий обстановку.
-    - lead_support_ids: Массив ID поддержки для лида.
-    - lead_claims: Массив атомарных утверждений лида.
-    - sections: Тематические разделы (3-6 разделов). Каждый раздел содержит:
-      - heading: Название раздела.
-      - heading_support_ids: Массив ID поддержки для заголовка раздела.
-      - heading_claims: Массив атомарных утверждений заголовка раздела (может быть пустым для чисто тематических названий).
-      - paragraphs: Массив объектов параграфов:
-        - text: Текст параграфа.
-        - cited_support_ids: Массив ID поддержки.
-        - claims: Массив атомарных утверждений параграфа: [{{"text": "краткое утверждение", "cited_support_ids": ["SUPPORT_ID"]}}].
-12. Внутренние ID вида [story:...] или [SUPPORT...] НЕ должны появляться внутри текста заголовка, лида или параграфов — указывайте их только в массивах support_ids / cited_support_ids.
-13. Epistemic metadata (evidence_kind, source_roles, framing):
-    - The support packet contains evidence_kind, source_roles, and framing. These fields describe how to phrase a supported claim, not whether the report is allowed to appear. A PUBLISH community_report is valid material. Attribute it naturally and never invent corroboration or official confirmation.
-14. ARTICLE COVERAGE PLAN Presentation Depth:
-    - Use the ARTICLE COVERAGE PLAN as a presentation-depth contract.
-    - DEVELOP / WEAVE / BRIEF are not factual status labels.
-    - Cover BRIEF stories compactly instead of dropping them solely for being minor.
-    - Do not mechanically create one section per Story; group related WEAVE/BRIEF stories naturally.
-15. ПРАВИЛО ПРЯМЫХ ЦИТАТ (Quote Allowlist):
-    - Кавычки «...» или "..." СТРОГО ЗАПРЕЩЕНЫ, за единственным исключением: точное дословное совпадение с фразой из блока QUOTE ALLOWLIST.
-    - Если фразы нет в QUOTE ALLOWLIST, оформлять её в кавычках КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО — передавайте смысл только косвенной речью («по словам жителей...», «как сообщили в ведомстве...»).
-    - Любое использование кавычек вне QUOTE ALLOWLIST приведет к немедленной браковке статьи.
-
-
-Формат ответа — строго валидный JSON:
-
-
+### Формат ответа — строго валидный JSON:
 {{
-  "title": "Заголовок статьи",
-  "title_support_ids": ["story:1:evidence:0:frag:101"],
-  "title_claims": [
-    {{"text": "Заголовок статьи", "cited_support_ids": ["story:1:evidence:0:frag:101"]}}
-  ],
-  "lead": "Текст лида...",
-  "lead_support_ids": ["story:1:evidence:0:frag:101"],
-  "lead_claims": [
-    {{"text": "Утверждение лида", "cited_support_ids": ["story:1:evidence:0:frag:101"]}}
-  ],
+  "title": "Информативный газетный заголовок дня",
+  "lead": "Вводный абзац статьи (2-3 предложения), обобщающий общую картину дня...",
   "sections": [
     {{
-      "heading": "Название раздела",
-      "heading_support_ids": ["story:1:evidence:0:frag:101"],
-      "heading_claims": [],
+      "heading": "Название первой темы",
       "paragraphs": [
-        {{
-          "text": "Текст параграфа...",
-          "cited_support_ids": ["story:1:evidence:0:frag:101"],
-          "claims": [
-            {{"text": "Утверждение параграфа", "cited_support_ids": ["story:1:evidence:0:frag:101"]}}
-          ]
-        }}
+        "Первый содержательный абзац раздела...",
+        "Второй содержательный абзац раздела..."
+      ]
+    }},
+    {{
+      "heading": "Название второй темы",
+      "paragraphs": [
+        "Первый содержательный абзац раздела..."
       ]
     }}
   ]
@@ -809,41 +924,88 @@ class ArticleGenerator:
 
         from src.publication.article_finalization import ArticleFinalizer
 
-        writer_attempt_id = 0
-        if attempt_observer is not None:
-            writer_attempt_id = await attempt_observer.attempt_started(
-                "writer",
-                provider=self.config.settings.ai_provider,
-                model=self.model,
-            )
-
+        max_writer_attempts = 1
         writer_draft: StructuredArticleDraft | None = None
         writer_error: Exception | None = None
+        writer_attempt_id = 0
+        current_user_prompt = user_prompt
 
-        try:
-            article_temp = getattr(
-                getattr(self.config.settings, "article", None), "temperature", 0.3
-            )
-            response = await self.provider.chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=self.model,
-                temperature=article_temp,
-                max_tokens=self.config.settings.article.editorial_writer_max_output_tokens,
-                reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
-                response_format={"type": "json_object"},
-            )
-            parsed = self._parse_event_article_response_json(response)
-            writer_draft = StructuredArticleDraft.from_dict(parsed)
-        except Exception as exc:
-            self.logger.warning(
-                "Event article writer execution failed (%s: %s)",
-                type(exc).__name__,
-                exc,
-            )
-            writer_error = exc
+        quote_allowlist = build_article_quote_allowlist(article_ctx)
+
+        for writer_try in range(1, max_writer_attempts + 1):
+            if attempt_observer is not None:
+                writer_attempt_id = await attempt_observer.attempt_started(
+                    "writer",
+                    provider=self.config.settings.ai_provider,
+                    model=self.model,
+                    metadata={"attempt": writer_try},
+                )
+
+            try:
+                article_temp = getattr(
+                    getattr(self.config.settings, "article", None), "temperature", 0.3
+                )
+                response = await self.provider.chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": current_user_prompt},
+                    ],
+                    model=self.model,
+                    temperature=article_temp,
+                    max_tokens=self.config.settings.article.editorial_writer_max_output_tokens,
+                    reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
+                    response_format={"type": "json_object"},
+                )
+                raw_parsed = self._parse_event_article_response_json(response)
+                parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
+                candidate_draft = StructuredArticleDraft.from_dict(
+                    parsed, quote_allowlist=quote_allowlist
+                )
+                candidate_val = validate_article_draft(
+                    candidate_draft,
+                    article_ctx,
+                    config=editorial_config,
+                    length_profile=length_profile,
+                )
+                if candidate_val.is_valid:
+                    writer_draft = candidate_draft
+                    writer_error = None
+                    break
+                else:
+                    self.logger.warning(
+                        "Writer attempt %d produced invalid draft: %s",
+                        writer_try,
+                        list(candidate_val.violations)[:5],
+                    )
+                    writer_draft = candidate_draft
+                    if writer_try < max_writer_attempts:
+                        blocking_issues = [iss for iss in candidate_val.issues if iss.blocking]
+                        issue_lines = [
+                            f"- [{iss.unit_id}] {iss.message}" for iss in blocking_issues[:6]
+                        ]
+                        violations_summary = "\n".join(issue_lines)
+                        current_user_prompt = (
+                            f"{user_prompt}\n\n"
+                            f"### ВНИМАНИЕ: Предыдущий черновик отклонен валидатором со следующими ошибками:\n"
+                            f"{violations_summary}\n\n"
+                            f"ТРЕБОВАНИЯ ДЛЯ ИСПРАВЛЕНИЯ ЧЕРНОВИКА:\n"
+                            f"1. Не придумывайте время (например, 21:00, 22:00) или даты, если их нет в тексте фактов.\n"
+                            f"2. Не используйте причинные обороты ('из-за', 'вследствие', 'причиной стало').\n"
+                            f"3. Не ставьте кавычки вокруг названий (школ, клубов, магазинов) — используйте косвенную речь без кавычек.\n"
+                            f"4. Используйте ТОЛЬКО точные support_id из предоставленного списка фактов. Не выдумывайте ID."
+                        )
+            except Exception as exc:
+                self.logger.warning(
+                    "Event article writer execution attempt %d failed (%s: %s)",
+                    writer_try,
+                    type(exc).__name__,
+                    exc,
+                )
+                if isinstance(exc, ProviderCascadeError) and writer_try >= max_writer_attempts:
+                    raise
+                writer_error = exc
+                if writer_try >= max_writer_attempts:
+                    break
 
         finalization_result = await ArticleFinalizer().finalize(
             writer_draft=writer_draft,

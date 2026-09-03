@@ -1708,3 +1708,104 @@ async def test_provider_cascade_openrouter_called_only_when_all_google_fail(mock
     assert slot1.chat_completion.call_count == 1
     assert slot2.chat_completion.call_count == 1
     assert slot_or.chat_completion.call_count == 1
+
+
+@pytest.mark.unit
+def test_create_provider_openrouter_single_model(mock_logger):
+    """OpenRouter with a single model returns an OpenAIProvider instance."""
+    from src.ai_providers import OpenAIProvider, create_provider
+
+    provider = create_provider(
+        "openrouter",
+        mock_logger,
+        openrouter_api_key="sk-test-key",
+        openrouter_model="test/primary-model",
+    )
+    assert isinstance(provider, OpenAIProvider)
+
+
+@pytest.mark.unit
+def test_create_provider_openrouter_dual_model_cascade(mock_logger):
+    """OpenRouter with model_2 returns a ProviderCascade with primary and secondary slots."""
+    from src.ai_providers import ProviderCascade, create_provider
+
+    provider = create_provider(
+        "openrouter",
+        mock_logger,
+        openrouter_api_key="sk-test-key",
+        openrouter_model="test/primary-model",
+        openrouter_model_2="test/secondary-model",
+    )
+    assert isinstance(provider, ProviderCascade)
+    assert len(provider.providers) == 2
+    assert provider.providers[0][0] == "openrouter-primary"
+    assert provider.providers[0][2] == "test/primary-model"
+    assert provider.providers[1][0] == "openrouter-secondary"
+    assert provider.providers[1][2] == "test/secondary-model"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_openrouter_failover_to_secondary(mock_logger):
+    """When primary OpenRouter model hits 429 quota, cascade immediately fails over to secondary."""
+    from src.ai_providers import ProviderCascade
+
+    ProviderCascade._global_slot_cooldowns.clear()
+
+    primary = MagicMock()
+    primary.chat_completion = AsyncMock(
+        side_effect=RuntimeError("429 Resource Exhausted: rate limit reached")
+    )
+    secondary = MagicMock()
+    secondary.chat_completion = AsyncMock(return_value="response-from-secondary")
+
+    cascade = ProviderCascade(
+        [
+            ("openrouter-primary", primary, "model-1"),
+            ("openrouter-secondary", secondary, "model-2"),
+        ],
+        mock_logger,
+        cooldown_seconds=60,
+    )
+
+    res = await cascade.chat_completion(messages=[], model="fallback-model")
+    assert res == "response-from-secondary"
+    assert primary.chat_completion.call_count == 1
+    assert secondary.chat_completion.call_count == 1
+    # Check that model-2 was passed as the override
+    assert secondary.chat_completion.call_args.kwargs["model"] == "model-2"
+
+    # Subsequent call skips primary due to cooldown and goes directly to secondary
+    res2 = await cascade.chat_completion(messages=[], model="fallback-model")
+    assert res2 == "response-from-secondary"
+    assert primary.chat_completion.call_count == 1
+    assert secondary.chat_completion.call_count == 2
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_provider_cascade_secondary_never_called_if_primary_works(mock_logger):
+    """Secondary model is never rotated into primary position or called if primary succeeds."""
+    from src.ai_providers import ProviderCascade
+
+    ProviderCascade._global_slot_cooldowns.clear()
+
+    primary = MagicMock()
+    primary.chat_completion = AsyncMock(return_value="primary-success")
+    secondary = MagicMock()
+    secondary.chat_completion = AsyncMock(side_effect=AssertionError("Should never be called"))
+
+    cascade = ProviderCascade(
+        [
+            ("openrouter-primary", primary, "model-1"),
+            ("openrouter-secondary", secondary, "model-2"),
+        ],
+        mock_logger,
+    )
+
+    for _ in range(5):
+        res = await cascade.chat_completion(messages=[], model="default")
+        assert res == "primary-success"
+
+    assert primary.chat_completion.call_count == 5
+    assert secondary.chat_completion.call_count == 0

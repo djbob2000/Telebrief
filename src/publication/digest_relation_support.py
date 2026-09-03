@@ -71,9 +71,64 @@ _STOPWORDS = frozenset(
 )
 
 
+_RU_UK_LETTER_FOLD = str.maketrans(
+    {
+        "э": "е",
+        "ё": "е",
+        "і": "и",
+        "ї": "и",
+        "ы": "и",
+        "ґ": "г",
+    }
+)
+
+_GENERIC_CAUSE_WORDS = frozenset(
+    {
+        "проблема",
+        "проблемы",
+        "проблем",
+        "проблемами",
+        "проблемах",
+        "отсутствие",
+        "отсутствия",
+        "отсутствием",
+        "перебои",
+        "перебоев",
+        "перебоями",
+        "перебоях",
+        "трудности",
+        "трудностей",
+        "сложности",
+        "сложностей",
+        "ситуация",
+        "ситуации",
+        "ситуацией",
+        "вопрос",
+        "вопросы",
+    }
+)
+
+
+def _stem_bilingual(w: str) -> str:
+    folded = w.translate(_RU_UK_LETTER_FOLD)
+    if folded.startswith("електр"):
+        return "електр"
+    if folded.startswith("интернет"):
+        return "интернет"
+    if folded.startswith("звяз") or folded.startswith("связ"):
+        return "связ"
+    if folded.startswith("свитл") or folded.startswith("свет"):
+        return "свет"
+    return _stem(folded)
+
+
 def _extract_content_stems(phrase: str) -> list[str]:
-    words = re.findall(r"[a-zа-я0-9]+", phrase.casefold())
-    return [_stem(w) for w in words if len(w) > 2 and w not in _STOPWORDS]
+    words = re.findall(r"[a-zа-я0-9']+", phrase.casefold())
+    return [
+        _stem_bilingual(w)
+        for w in words
+        if len(w) > 2 and w not in _STOPWORDS and w not in _GENERIC_CAUSE_WORDS
+    ]
 
 
 def find_unsupported_digest_relations(
@@ -87,6 +142,20 @@ def find_unsupported_digest_relations(
     norm_supports = [normalize_support_text(st) for st in support_texts if st]
     if not norm_supports:
         return []
+
+    norm_supports_stems = [
+        [_stem_bilingual(w) for w in re.findall(r"[a-zа-я0-9']+", st.casefold())]
+        for st in support_texts
+        if st
+    ]
+
+    def _is_stem_supported(stem: str) -> bool:
+        for sup, sup_stems in zip(norm_supports, norm_supports_stems, strict=False):
+            if stem in sup:
+                return True
+            if any(stem in sw or sw in stem for sw in sup_stems):
+                return True
+        return False
 
     violations: list[DigestRelationViolation] = []
 
@@ -102,7 +171,7 @@ def find_unsupported_digest_relations(
             continue
 
         # Check if the cause content stems are supported in any support text
-        cause_supported = all(any(stem in sup for sup in norm_supports) for stem in cause_stems)
+        cause_supported = all(_is_stem_supported(stem) for stem in cause_stems)
         if not cause_supported:
             violations.append(
                 DigestRelationViolation(
@@ -122,7 +191,7 @@ def find_unsupported_digest_relations(
         if not cause_stems:
             continue
 
-        cause_supported = all(any(stem in sup for sup in norm_supports) for stem in cause_stems)
+        cause_supported = all(_is_stem_supported(stem) for stem in cause_stems)
         if not cause_supported:
             violations.append(
                 DigestRelationViolation(

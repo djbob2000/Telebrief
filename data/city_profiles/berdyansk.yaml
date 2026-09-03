@@ -369,7 +369,10 @@ stable_context:
       - entity_id: street:17 Вересня
         canonical_name: 17 Вересня
         object_type: street
-        aliases: []
+        aliases:
+        - text: 17 Сентября
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
           area_id: sklovolokno
@@ -381,7 +384,10 @@ stable_context:
       - entity_id: street:8 Березня
         canonical_name: 8 Березня
         object_type: street
-        aliases: []
+        aliases:
+        - text: 8 Марта
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
           area_id: eight_march

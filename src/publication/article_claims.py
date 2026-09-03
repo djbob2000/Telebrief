@@ -93,6 +93,136 @@ _MONTHS_MAP = {
     "грудень": "12",
 }
 
+_TIME_EQUIVALENTS: dict[str, tuple[str, ...]] = {
+    "21:00": (
+        "9 вечера",
+        "9 вечер",
+        "в 9 вечер",
+        "до 9 вечер",
+        "девяти вечера",
+        "девять вечера",
+        "21:00",
+        "21.00",
+        "21-00",
+    ),
+    "20:00": (
+        "8 вечера",
+        "8 вечер",
+        "в 8 вечер",
+        "до 8 вечер",
+        "восьми вечера",
+        "восемь вечера",
+        "20:00",
+        "20.00",
+        "20-00",
+    ),
+    "22:00": (
+        "10 вечера",
+        "10 вечер",
+        "в 10 вечер",
+        "до 10 вечер",
+        "десяти вечера",
+        "десять вечера",
+        "22:00",
+        "22.00",
+        "22-00",
+    ),
+    "23:00": ("11 вечера", "11 вечер", "в 11 вечер", "до 11 вечер", "23:00", "23.00", "23-00"),
+    "19:00": (
+        "7 вечера",
+        "7 вечер",
+        "в 7 вечер",
+        "до 7 вечер",
+        "семи вечера",
+        "семь вечера",
+        "19:00",
+        "19.00",
+        "19-00",
+    ),
+    "18:00": (
+        "6 вечера",
+        "6 вечер",
+        "в 6 вечер",
+        "до 6 вечер",
+        "шести вечера",
+        "шесть вечера",
+        "18:00",
+        "18.00",
+        "18-00",
+    ),
+    "17:00": (
+        "5 вечера",
+        "5 вечер",
+        "5 дня",
+        "в 5 вечер",
+        "до 5 вечер",
+        "пяти вечера",
+        "пять вечера",
+        "17:00",
+        "17.00",
+        "17-00",
+    ),
+    "16:00": (
+        "4 дня",
+        "4 вечер",
+        "в 4 дня",
+        "до 4 дня",
+        "четырех дня",
+        "четыре дня",
+        "16:00",
+        "16.00",
+        "16-00",
+    ),
+    "15:00": ("3 дня", "в 3 дня", "до 3 дня", "трех дня", "три дня", "15:00", "15.00", "15-00"),
+    "14:00": ("2 дня", "в 2 дня", "до 2 дня", "двух дня", "два дня", "14:00", "14.00", "14-00"),
+    "13:00": ("1 дня", "в 1 дня", "до 1 дня", "одного дня", "час дня", "13:00", "13.00", "13-00"),
+    "12:00": ("12 дня", "в 12 дня", "до 12 дня", "полдень", "12:00", "12.00", "12-00"),
+    "09:00": (
+        "9 утра",
+        "в 9 утр",
+        "до 9 утр",
+        "девяти утра",
+        "девять утра",
+        "09:00",
+        "9:00",
+        "9.00",
+        "9-00",
+    ),
+    "08:00": (
+        "8 утра",
+        "в 8 утр",
+        "до 8 утр",
+        "восьми утра",
+        "восемь утра",
+        "08:00",
+        "8:00",
+        "8.00",
+        "8-00",
+    ),
+    "07:00": (
+        "7 утра",
+        "в 7 утр",
+        "до 7 утр",
+        "семи утра",
+        "семь утра",
+        "07:00",
+        "7:00",
+        "7.00",
+        "7-00",
+    ),
+    "06:00": (
+        "6 утра",
+        "в 6 утр",
+        "до 6 утр",
+        "шести утра",
+        "шесть утра",
+        "06:00",
+        "6:00",
+        "6.00",
+        "6-00",
+    ),
+}
+
 
 _DASH_RE = re.compile(r"[\u2010\u2012\u2013\u2014\u2212]")
 _SPACES_RE = re.compile(r"\s+")
@@ -111,8 +241,15 @@ def _classify_quoted_span(inner: str) -> ClaimKind:
 
 
 def _stem(word: str) -> str:
-    """Conservative Russian suffix trimmer for entity/relation token matching."""
-    w = word.lower()
+    """Conservative Russian/Ukrainian suffix trimmer for entity/relation token matching."""
+    w = (
+        word.lower()
+        .replace("ё", "е")
+        .replace("і", "и")
+        .replace("ї", "и")
+        .replace("є", "е")
+        .replace("ґ", "г")
+    )
     if len(w) > 5 and (w.endswith("ся") or w.endswith("сь")):
         w = w[:-2]
 
@@ -307,7 +444,7 @@ _DATE_RE = re.compile(
     re.IGNORECASE,
 )
 _TIME_INTERVAL_RE = re.compile(
-    r"\b(?:\d+(?:[\s\-\–\—]\d+)?\s*(?:минут[а-я]*|мин|часов|часа|час|ч)|с?\s*\d{1,2}:\d{2}(?:\s*до\s*\d{1,2}:\d{2})?|(?:в течение\s+)?полутора\s+(?:минут[а-я]*|часов|часа|суток))\b",
+    r"\b(?:\d+(?:[.,]\d+)?(?:\s*[\-\–\—]\s*\d+(?:[.,]\d+)?)?\s*(?:минут[а-я]*|мин|часов|часа|час|ч)|с?\s*\d{1,2}:\d{2}(?:\s*до\s*\d{1,2}:\d{2})?|(?:в течение\s+)?полутора\s+(?:минут[а-я]*|часов|часа|суток))\b",
     re.IGNORECASE,
 )
 _NUMBER_RANGE_RE = re.compile(
@@ -456,6 +593,18 @@ _UA_RU_STEM_EQUIVALENTS: dict[str, set[str]] = {
         "свет",
         "світл",
     },
+    "электричеств": {
+        "електропостачан",
+        "електропостач",
+        "электроснабж",
+        "струм",
+        "электричеств",
+        "свет",
+        "світл",
+        "електр",
+        "электр",
+    },
+    "электр": {"електропостачан", "електр", "электр", "струм", "свет", "світл"},
     "электроэнерг": {"електроенерг", "электроэнерг", "струм", "электричеств"},
     "отсутств": {"відсутн", "відсутніст", "відсутність", "отсутств", "немає", "нет"},
     "стабиль": {"стабіль", "стабиль"},
@@ -468,6 +617,14 @@ _UA_RU_STEM_EQUIVALENTS: dict[str, set[str]] = {
     "авари": {"аварі", "авари"},
     "ремонт": {"ремонт", "відновлен", "восстановлен"},
     "обстрел": {"обстріл", "обстрел", "прилет", "приліт"},
+    "осложн": {"ускладн", "пробл", "трудн", "осложн"},
+    "пробл": {"пробл", "ускладн", "трудн"},
+    "выезд": {"виїзд", "выезд"},
+    "семь": {"родин", "сім", "сем", "родина", "семей"},
+    "семе": {"родин", "сім", "сем", "родина", "семей"},
+    # ЖКХ (рус.) ↔ ЖКГ / ЖКП (укр.)
+    "жкх": {"жкх", "жкг", "жкп", "жилищно", "коммунальн"},
+    "жкг": {"жкх", "жкг", "жкп", "жилищно", "коммунальн"},
 }
 
 
@@ -488,6 +645,8 @@ def find_unsupported_claims(
     text: str,
     support_texts: Sequence[str],
     *,
+    all_known_draft_supports: Sequence[str] = (),
+    allowed_context_terms: Sequence[str] = (),
     direct_quote_source_texts: Sequence[str] | None = None,
     direct_quote_allowlist: Sequence[str] | None = None,
 ) -> tuple[ConcreteClaim, ...]:
@@ -521,6 +680,15 @@ def find_unsupported_claims(
 
         elif claim.kind == "acronym":
             if not any(norm in sup for sup in norm_supports):
+                from src.publication.article_semantic_support import _EDITORIAL_GLUE
+
+                if (
+                    any(norm in normalize_support_text(st) for st in all_known_draft_supports)
+                    or any(norm == normalize_support_text(t) for t in allowed_context_terms)
+                    or any(norm in normalize_support_text(t) for t in allowed_context_terms)
+                    or norm in _EDITORIAL_GLUE
+                ):
+                    continue
                 acronym_concept = canonicalize_semantic_token(norm)
                 if not (
                     acronym_concept.startswith("concept:")
@@ -550,7 +718,7 @@ def find_unsupported_claims(
                 ):
                     # Check if quoted text is a short named entity/title substantiated by support
                     if is_speech or not (
-                        claim.normalized in combined_support_norm
+                        claim.normalized.lower() in combined_support_norm
                         or _stemmed_text(claim.normalized) in _stemmed_text(combined_support_norm)
                     ):
                         unsupported.append(claim)
@@ -563,7 +731,7 @@ def find_unsupported_claims(
                 normalized_sources = [normalize_direct_quote(st) for st in quote_sources if st]
                 if not any(claim.normalized in source for source in normalized_sources):
                     if is_speech or not (
-                        claim.normalized in combined_support_norm
+                        claim.normalized.lower() in combined_support_norm
                         or _stemmed_text(claim.normalized) in _stemmed_text(combined_support_norm)
                     ):
                         unsupported.append(claim)
@@ -586,16 +754,44 @@ def find_unsupported_claims(
                 unsupported.append(claim)
 
         elif claim.kind in ("date", "time"):
+            norm_clean = re.sub(r"\b0(\d:\d{2})\b", r"\1", norm)
+            comb_sup_clean = re.sub(r"\b0(\d:\d{2})\b", r"\1", combined_support_norm)
+            if claim.kind == "time":
+                time_equivs = _TIME_EQUIVALENTS.get(claim.raw.strip(), ())
+                if any(
+                    eq in comb_sup_clean
+                    or any(eq in normalize_support_text(st) for st in norm_supports)
+                    or any(eq in normalize_support_text(st) for st in all_known_draft_supports)
+                    for eq in time_equivs
+                ):
+                    continue
             # Check if normalized date/time tokens are supported
             # E.g. "10-12 минут" -> check "10-12" and "минут" or "10-12"
-            date_num_match = re.search(r"\b\d{1,2}\.\d{2}\b", norm)
-            if date_num_match and date_num_match.group(0) in combined_support_norm:
+            date_num_match = re.search(r"\b\d{1,2}\.\d{2}\b", norm_clean)
+            if date_num_match and date_num_match.group(0) in comb_sup_clean:
                 continue
-            tokens = [t for t in norm.split() if len(t) > 1 and not t.startswith("(")]
+            tokens = [
+                t
+                for t in norm_clean.split()
+                if len(t) > 1
+                and not t.startswith("(")
+                and t not in ("с", "до", "по", "от", "в", "на")
+            ]
             if not tokens:
                 continue
             # For date/time, numeric parts and key month words must appear
-            all_tokens_found = all(tok in combined_support_norm for tok in tokens)
+            from src.publication.article_semantic_support import _EDITORIAL_GLUE
+
+            all_tokens_found = all(
+                tok in comb_sup_clean
+                or _stem(tok) in _stemmed_text(comb_sup_clean)
+                or _token_matches_any_support(_stem(tok), norm_supports)
+                or any(tok in normalize_support_text(st) for st in all_known_draft_supports)
+                or any(tok in normalize_support_text(t) for t in allowed_context_terms)
+                or any(tok == t.lower() for t in allowed_context_terms)
+                or tok in _EDITORIAL_GLUE
+                for tok in tokens
+            )
             if not all_tokens_found:
                 unsupported.append(claim)
 
@@ -619,12 +815,18 @@ def find_unsupported_claims(
                     "со",
                     "это",
                     "как",
+                    "так",
+                    "что",
+                    "чем",
                 )
             ]
             if not cause_tokens:
                 continue
-            found = all(_token_matches_any_support(tok, norm_supports) for tok in cause_tokens)
-            if not found:
+            matching = [
+                tok for tok in cause_tokens if _token_matches_any_support(tok, norm_supports)
+            ]
+            min_required = 1 if len(cause_tokens) <= 2 else max(1, len(cause_tokens) // 2)
+            if len(matching) < min_required:
                 unsupported.append(claim)
 
         elif claim.kind == "mechanism_relation":

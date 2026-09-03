@@ -153,7 +153,10 @@ async def test_forced_writer_failure_fallback_regression() -> None:
 
     finalizer = ArticleFinalizer()
     editorial_config = PublicationEditorialConfig(
-        article_min_sections=1, article_min_words=5, article_max_sections=6
+        article_min_sections=1,
+        article_min_words=5,
+        article_max_sections=6,
+        article_allow_deterministic_fallback=True,
     )
 
     result = await finalizer.finalize(

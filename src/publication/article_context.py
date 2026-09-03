@@ -6,7 +6,7 @@ import datetime as dt
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from src.domain.operational_state import ResolvedObservation
 from src.editorial_models import SourceRecord, StoryCard
@@ -225,7 +225,61 @@ class ArticleEditorialContext:
 
 def _edition_anchor_terms(edition_name: str) -> tuple[str, ...]:
     clean = edition_name.strip()
-    return (clean,) if clean else ()
+    if not clean:
+        return ()
+    try:
+        from pathlib import Path
+
+        import yaml
+
+        from src.domain.edition_geography import resolve_edition_geography
+
+        slug = clean.lower()
+        if "бердян" in slug:
+            slug = "berdyansk"
+        geo = resolve_edition_geography(slug, clean)
+        terms = {clean}
+        terms.update(geo.target_locations)
+        terms.update(geo.district_locations)
+
+        profile_path = Path(f"data/city_profiles/{slug}.yaml")
+        if profile_path.exists():
+            with open(profile_path, "r", encoding="utf-8") as f:
+                pdata = yaml.safe_load(f) or {}
+            c_geo = pdata.get("stable_context", {}).get("geography", {})
+
+            def add_name_or_alias(item: Any) -> None:
+                if isinstance(item, str) and item.strip():
+                    terms.add(item.strip())
+                elif isinstance(item, dict):
+                    for k in ("name", "canonical_name", "alias", "area_name", "text"):
+                        val = item.get(k)
+                        if isinstance(val, str) and val.strip():
+                            terms.add(val.strip())
+
+            for area in c_geo.get("editorial_scale_area_set", ()):
+                add_name_or_alias(area)
+                for alias in area.get("aliases", ()) if isinstance(area, dict) else ():
+                    add_name_or_alias(alias)
+            for aset in c_geo.get("area_sets", ()):
+                for area in aset.get("areas", ()) if isinstance(aset, dict) else ():
+                    add_name_or_alias(area)
+                    for alias in area.get("aliases", ()) if isinstance(area, dict) else ():
+                        add_name_or_alias(alias)
+            for landmark in c_geo.get("landmarks", ()):
+                add_name_or_alias(landmark)
+                for alias in landmark.get("aliases", ()) if isinstance(landmark, dict) else ():
+                    add_name_or_alias(alias)
+            sg = c_geo.get("street_gazetteer", {})
+            if isinstance(sg, dict):
+                for entry in sg.get("entries", ()):
+                    add_name_or_alias(entry)
+                    for alias in entry.get("aliases", ()) if isinstance(entry, dict) else ():
+                        add_name_or_alias(alias)
+
+        return tuple(sorted(terms))
+    except Exception:
+        return (clean,)
 
 
 def build_article_editorial_context(

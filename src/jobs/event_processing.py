@@ -144,6 +144,7 @@ async def coalesce_dirty_stories_task(
         google_api_key=config.gemini_api_key,
         openrouter_api_key=config.openrouter_api_key,
         openrouter_model=config.openrouter_model,
+        openrouter_model_2=getattr(config, "openrouter_model_2", ""),
     )
 
     triage_service = StoryTriageService(

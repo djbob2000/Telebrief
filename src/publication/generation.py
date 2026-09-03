@@ -316,11 +316,49 @@ class PublicationGenerationService:
                             cards=frozen.analysis.cards,
                             frozen_input=frozen,
                         )
+                        all_draft_support_texts = list(support_text_index.values())
+                        import datetime as _dt
+                        import re as _re
+
+                        edition_tokens: set[str] = {
+                            tok.lower()
+                            for st in all_draft_support_texts
+                            for tok in _re.findall(r"[\w-]+", st)
+                            if len(tok) >= 2
+                        }
+                        window_terms: set[str] = set()
+                        if getattr(run, "snapshot_at", None):
+                            s_at = run.snapshot_at
+                            months_ru = [
+                                "января",
+                                "февраля",
+                                "марта",
+                                "апреля",
+                                "мая",
+                                "июня",
+                                "июля",
+                                "августа",
+                                "сентября",
+                                "октября",
+                                "ноября",
+                                "декабря",
+                            ]
+                            for offset in range(3):
+                                cur_d = (s_at - _dt.timedelta(days=offset)).date()
+                                window_terms.add(cur_d.strftime("%d.%m"))
+                                window_terms.add(str(cur_d.day))
+                                m_name = months_ru[cur_d.month - 1]
+                                window_terms.add(m_name)
+                                window_terms.add(f"{cur_d.day} {m_name}")
+                        allowed_digest_terms = tuple(edition_tokens | window_terms)
+
                         val_res = validate_digest_narrative(
                             draft_cand,
                             plan,
                             support_text_by_id=support_text_index,
                             situation_plan=presentation_plan.city_situation,
+                            allowed_context_terms=allowed_digest_terms,
+                            all_known_draft_supports=all_draft_support_texts,
                         )
                         if val_res.is_valid:
                             narrative_draft = draft_cand
@@ -425,11 +463,54 @@ class PublicationGenerationService:
                         )
                         from src.publication.errors import DigestCoverageInvariantError
 
+                        support_text_index = build_digest_support_text_index(
+                            evidence=evidence_dict,
+                            cards=frozen.analysis.cards,
+                            frozen_input=frozen,
+                        )
+                        all_draft_support_texts = list(support_text_index.values())
+                        import datetime as _dt
+                        import re as _re
+
+                        det_edition_tokens: set[str] = {
+                            tok.lower()
+                            for st in all_draft_support_texts
+                            for tok in _re.findall(r"[\w-]+", st)
+                            if len(tok) >= 2
+                        }
+                        det_window_terms: set[str] = set()
+                        if getattr(run, "snapshot_at", None):
+                            s_at = run.snapshot_at
+                            months_ru = [
+                                "января",
+                                "февраля",
+                                "марта",
+                                "апреля",
+                                "мая",
+                                "июня",
+                                "июля",
+                                "августа",
+                                "сентября",
+                                "октября",
+                                "ноября",
+                                "декабря",
+                            ]
+                            for offset in range(3):
+                                cur_d = (s_at - _dt.timedelta(days=offset)).date()
+                                det_window_terms.add(cur_d.strftime("%d.%m"))
+                                det_window_terms.add(str(cur_d.day))
+                                m_name = months_ru[cur_d.month - 1]
+                                det_window_terms.add(m_name)
+                                det_window_terms.add(f"{cur_d.day} {m_name}")
+                        allowed_digest_terms = tuple(det_edition_tokens | det_window_terms)
+
                         final_digest_draft = build_deterministic_digest_draft(
                             cards=frozen.analysis.cards,
                             evidence=evidence_dict,
                             rubrics=renderer.rubrics,
                             presentation_plan=presentation_plan,
+                            allowed_context_terms=allowed_digest_terms,
+                            all_known_draft_supports=all_draft_support_texts,
                         )
 
                         detail_cards = [
@@ -445,16 +526,13 @@ class PublicationGenerationService:
                             max_cards_per_block=max_cards,
                             presentation_plan=presentation_plan,
                         )
-                        support_text_index = build_digest_support_text_index(
-                            evidence=evidence_dict,
-                            cards=frozen.analysis.cards,
-                            frozen_input=frozen,
-                        )
                         det_val = validate_digest_narrative(
                             final_digest_draft,
                             det_plan,
                             support_text_by_id=support_text_index,
                             situation_plan=None,
+                            allowed_context_terms=allowed_digest_terms,
+                            all_known_draft_supports=all_draft_support_texts,
                         )
                         if not det_val.is_valid:
                             raise DigestCoverageInvariantError(

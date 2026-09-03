@@ -1072,6 +1072,7 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
         publication_editorial=PublicationEditorialConfig(
             article_min_words=5,
             article_min_sections=1,
+            article_allow_deterministic_fallback=True,
         ),
     )
     config = Config(
@@ -1310,6 +1311,7 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
         publication_editorial=PublicationEditorialConfig(
             article_min_words=5,
             article_min_sections=1,
+            article_allow_deterministic_fallback=True,
         ),
     )
     config = Config(

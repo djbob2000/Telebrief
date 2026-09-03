@@ -4,12 +4,22 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, Sequence
 
 _INTERNAL_EVIDENCE_ID_RE = re.compile(
     r"\[(?:story:\d+:evidence:\d+:frag:\d+|story:\d+|evidence:\d+:frag:\d+|op:[^\]]+)\]",
     re.IGNORECASE,
 )
+
+
+_ABBR_SAFE_SENTENCE_SPLIT = re.compile(
+    r"(?<!\bул)(?<!\bг)(?<!\bд)(?<!\bпр)(?<!\bпер)(?<!\bруб)(?<!\bкоп)(?<!\bпросп)(?<=[.!?])\s+",
+    re.IGNORECASE,
+)
+
+
+def _split_sentences_safe(text: str) -> list[str]:
+    return [s.strip() for s in _ABBR_SAFE_SENTENCE_SPLIT.split(text) if s.strip()]
 
 
 ArticleGenerationOrigin = Literal["AI", "SUPPLEMENT", "FALLBACK"]
@@ -75,6 +85,34 @@ class ArticleSection:
     heading_generation_origin: ArticleGenerationOrigin = "AI"
 
 
+_QUOTE_RE = re.compile(r"[«\"“]([^»\"”]{2,80})[»\"”]")
+
+
+def _strip_non_allowlisted_quotes(text: str, quote_allowlist: Sequence[str] | None = None) -> str:
+    """Normalize non-allowlisted quotation marks around names into indirect speech without quotes.
+
+    E.g. «Бердянск 24» -> Бердянск 24, «Альменда» -> Альменда, «Территория заботы» -> Территория заботы.
+    Quotes matching allowlisted exact phrases are preserved.
+    """
+    if not text or ("«" not in text and '"' not in text and "“" not in text):
+        return text
+
+    allowlist_norm = {
+        re.sub(r"\s+", " ", q.lower().replace("ё", "е")).strip()
+        for q in (quote_allowlist or ())
+        if q
+    }
+
+    def _repl(m: re.Match[str]) -> str:
+        inner = m.group(1).strip()
+        norm_inner = re.sub(r"\s+", " ", inner.lower().replace("ё", "е")).strip()
+        if allowlist_norm and any(norm_inner == a or norm_inner in a for a in allowlist_norm):
+            return m.group(0)
+        return inner
+
+    return _QUOTE_RE.sub(_repl, text)
+
+
 @dataclass(frozen=True)
 class StructuredArticleDraft:
     """Structured editorial article draft with unit-level support provenance."""
@@ -111,9 +149,13 @@ class StructuredArticleDraft:
         return tuple(dict.fromkeys(ids))
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> StructuredArticleDraft:
+    def from_dict(
+        cls, data: Mapping[str, Any], quote_allowlist: Sequence[str] | None = None
+    ) -> StructuredArticleDraft:
         """Parse structured article draft from model JSON dictionary."""
-        title = _strip_internal_handles(str(data.get("title", "")).strip())
+        title = _strip_non_allowlisted_quotes(
+            _strip_internal_handles(str(data.get("title", "")).strip()), quote_allowlist
+        )
         raw_t_ids = data.get("title_support_ids") or data.get("title_evidence_ids") or []
         title_support_ids = tuple(
             dict.fromkeys(
@@ -126,7 +168,9 @@ class StructuredArticleDraft:
         if not title_claims and title and title_support_ids:
             title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_support_ids),)
 
-        lead = _strip_internal_handles(str(data.get("lead", "")).strip())
+        lead = _strip_non_allowlisted_quotes(
+            _strip_internal_handles(str(data.get("lead", "")).strip()), quote_allowlist
+        )
         raw_l_ids = data.get("lead_support_ids") or data.get("lead_evidence_ids") or []
         lead_support_ids = tuple(
             dict.fromkeys(
@@ -137,7 +181,7 @@ class StructuredArticleDraft:
         )
         lead_claims = _parse_claim_atoms(data.get("lead_claims"))
         if not lead_claims and lead and lead_support_ids:
-            lead_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", lead) if s.strip()]
+            lead_sentences = _split_sentences_safe(lead)
             lead_claims = tuple(
                 ArticleClaimAtom(text=s, cited_support_ids=lead_support_ids)
                 for s in (lead_sentences or [lead])
@@ -151,7 +195,10 @@ class StructuredArticleDraft:
             for sec_data in raw_sections:
                 if not isinstance(sec_data, dict):
                     continue
-                heading = _strip_internal_handles(str(sec_data.get("heading", "")).strip())
+                heading = _strip_non_allowlisted_quotes(
+                    _strip_internal_handles(str(sec_data.get("heading", "")).strip()),
+                    quote_allowlist,
+                )
                 raw_h_ids = (
                     sec_data.get("heading_support_ids")
                     or sec_data.get("heading_evidence_ids")
@@ -165,17 +212,16 @@ class StructuredArticleDraft:
                     )
                 )
                 heading_claims = _parse_claim_atoms(sec_data.get("heading_claims"))
-                if not heading_claims and heading and heading_support_ids:
-                    heading_claims = (
-                        ArticleClaimAtom(text=heading, cited_support_ids=heading_support_ids),
-                    )
 
                 raw_paras = sec_data.get("paragraphs", [])
                 paras: list[ArticleParagraph] = []
                 if isinstance(raw_paras, list):
                     for p in raw_paras:
                         if isinstance(p, dict):
-                            p_text = _strip_internal_handles(str(p.get("text", "")).strip())
+                            p_text = _strip_non_allowlisted_quotes(
+                                _strip_internal_handles(str(p.get("text", "")).strip()),
+                                quote_allowlist,
+                            )
                             raw_p_ids = (
                                 p.get("cited_support_ids") or p.get("cited_evidence_ids") or []
                             )
@@ -188,11 +234,7 @@ class StructuredArticleDraft:
                             )
                             p_claims = _parse_claim_atoms(p.get("claims"))
                             if not p_claims and p_text and p_support_ids:
-                                p_sentences = [
-                                    s.strip()
-                                    for s in re.split(r"(?<=[.!?])\s+", p_text)
-                                    if s.strip()
-                                ]
+                                p_sentences = _split_sentences_safe(p_text)
                                 p_claims = tuple(
                                     ArticleClaimAtom(text=s, cited_support_ids=p_support_ids)
                                     for s in (p_sentences or [p_text])

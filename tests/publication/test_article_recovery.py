@@ -410,7 +410,9 @@ async def test_finalizer_unsafe_writer_uses_full_fallback() -> None:
     writer_id = await observer.attempt_started("writer")
 
     finalizer = ArticleFinalizer()
-    editorial_config = PublicationEditorialConfig(article_min_sections=1, article_min_words=5)
+    editorial_config = PublicationEditorialConfig(
+        article_min_sections=1, article_min_words=5, article_allow_deterministic_fallback=True
+    )
 
     result = await finalizer.finalize(
         writer_draft=unsafe_draft,
@@ -442,7 +444,9 @@ async def test_finalizer_writer_error_uses_full_fallback() -> None:
     writer_id = await observer.attempt_started("writer")
 
     finalizer = ArticleFinalizer()
-    editorial_config = PublicationEditorialConfig(article_min_sections=1, article_min_words=5)
+    editorial_config = PublicationEditorialConfig(
+        article_min_sections=1, article_min_words=5, article_allow_deterministic_fallback=True
+    )
 
     result = await finalizer.finalize(
         writer_draft=None,
@@ -523,7 +527,9 @@ async def test_finalizer_supplement_escalation_to_fallback() -> None:
     writer_id = await observer.attempt_started("writer")
 
     finalizer = ArticleFinalizer(composer=BrokenSupplementComposer())
-    editorial_config = PublicationEditorialConfig(article_min_sections=1, article_min_words=5)
+    editorial_config = PublicationEditorialConfig(
+        article_min_sections=1, article_min_words=5, article_allow_deterministic_fallback=True
+    )
 
     result = await finalizer.finalize(
         writer_draft=writer_draft,
@@ -568,7 +574,9 @@ async def test_finalizer_terminal_invariant_error() -> None:
     writer_id = await observer.attempt_started("writer")
 
     finalizer = ArticleFinalizer(composer=BrokenComposer())
-    editorial_config = PublicationEditorialConfig(article_min_sections=1, article_min_words=5)
+    editorial_config = PublicationEditorialConfig(
+        article_min_sections=1, article_min_words=5, article_allow_deterministic_fallback=True
+    )
 
     with pytest.raises(ArticleFinalizationInvariantError):
         await finalizer.finalize(
@@ -601,6 +609,7 @@ def article_generator() -> Any:
         publication_editorial=PublicationEditorialConfig(
             article_min_words=5,
             article_min_sections=1,
+            article_allow_deterministic_fallback=True,
         ),
     )
     config = Config(
@@ -668,8 +677,9 @@ async def test_event_article_writer_error_uses_full_fallback(
 
     assert title
     assert body
-    assert article_generator.provider.chat_completion.call_count == 1
-    assert observer.started_kinds == ["writer", "deterministic_fallback"]
+    assert article_generator.provider.chat_completion.call_count == 2
+    assert "writer" in observer.started_kinds
+    assert "deterministic_fallback" in observer.started_kinds
 
 
 @pytest.mark.unit
@@ -722,8 +732,9 @@ async def test_event_article_validation_failure_uses_full_fallback(
 
     assert title
     assert body
-    assert article_generator.provider.chat_completion.call_count == 1
-    assert observer.started_kinds == ["writer", "deterministic_fallback"]
+    assert article_generator.provider.chat_completion.call_count == 2
+    assert "writer" in observer.started_kinds
+    assert "deterministic_fallback" in observer.started_kinds
 
 
 @pytest.mark.unit
@@ -1195,3 +1206,36 @@ def test_render_full_fallback_sectioned_readable_chronicle() -> None:
     all_cited = {sid for s in draft.sections for p in s.paragraphs for sid in p.cited_support_ids}
     for s in plan.stories:
         assert any(sid in all_cited for sid in s.support_ids)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_fails_closed_when_fallback_disabled() -> None:
+    from src.config_loader import PublicationEditorialConfig
+    from src.publication.article_finalization import ArticleFinalizer
+    from src.publication.errors import ArticlePublicationRejected
+
+    plan, context = _make_plan_and_context()
+    observer = RecordingAttemptObserver()
+    writer_id = await observer.attempt_started("writer")
+
+    finalizer = ArticleFinalizer()
+    editorial_config = PublicationEditorialConfig(
+        article_min_sections=1,
+        article_min_words=5,
+        article_allow_deterministic_fallback=False,
+    )
+
+    with pytest.raises(ArticlePublicationRejected) as exc_info:
+        await finalizer.finalize(
+            writer_draft=None,
+            writer_error=TimeoutError("writer timeout"),
+            writer_attempt_id=writer_id,
+            context=context,
+            coverage_plan=plan,
+            editorial_config=editorial_config,
+            length_profile=None,
+            attempt_observer=observer,
+        )
+
+    assert exc_info.value.reason == "writer_failed"

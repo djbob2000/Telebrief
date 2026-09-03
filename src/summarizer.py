@@ -64,6 +64,7 @@ class Summarizer:
             openrouter_api_key=config.openrouter_api_key,
             openrouter_base_url=config.openrouter_base_url,
             openrouter_model=config.openrouter_model,
+            openrouter_model_2=getattr(config, "openrouter_model_2", ""),
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=config.settings.api_timeout,
             reasoning_effort=config.settings.reasoning_effort,

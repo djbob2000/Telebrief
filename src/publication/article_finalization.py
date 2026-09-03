@@ -23,7 +23,10 @@ from src.publication.article_trace import (
     build_article_claim_trace,
 )
 from src.publication.article_validator import validate_article_draft
-from src.publication.errors import ArticleFinalizationInvariantError
+from src.publication.errors import (
+    ArticleFinalizationInvariantError,
+    ArticlePublicationRejected,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +162,14 @@ class ArticleFinalizer:
                         "error": str(writer_error) if writer_error else "empty writer response",
                     },
                 )
+            if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
+                raise ArticlePublicationRejected(
+                    reason="writer_failed",
+                    message=f"Article writer failed: {writer_error}",
+                    metadata={
+                        "error": str(writer_error) if writer_error else "empty writer response"
+                    },
+                )
             return await self._run_full_fallback(
                 writer_status="failed",
                 ai_diag=None,
@@ -193,6 +204,12 @@ class ArticleFinalizer:
                         "violations": list(writer_validation.violations),
                         "draft": writer_draft.to_dict(),
                     },
+                )
+            if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
+                raise ArticlePublicationRejected(
+                    reason="validation_failed",
+                    message=f"Article writer draft failed validation: {list(writer_validation.violations)}",
+                    metadata={"violations": list(writer_validation.violations)},
                 )
             return await self._run_full_fallback(
                 writer_status="rejected",
@@ -327,6 +344,12 @@ class ArticleFinalizer:
                     status="failed",
                     metadata={"error": str(exc)},
                 )
+            if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
+                raise ArticlePublicationRejected(
+                    reason="validation_failed",
+                    message=f"Deterministic supplement failed: {exc}",
+                    metadata={"error": str(exc)},
+                ) from exc
             return await self._run_full_fallback(
                 writer_status="passed",
                 ai_diag=ai_diag,

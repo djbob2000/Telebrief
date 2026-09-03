@@ -508,10 +508,16 @@ def validate_digest_narrative(
     *,
     support_text_by_id: Mapping[str, str] | None = None,
     situation_plan: Any = None,
+    allowed_context_terms: Sequence[str] = (),
+    all_known_draft_supports: Sequence[str] = (),
 ) -> DigestNarrativeValidationResult:
     """Validate structured narrative digest draft strictly against deterministic plan and evidence."""
     from src.publication.digest_relation_support import find_unsupported_digest_relations
 
+    ctx_terms: Sequence[str] = tuple(allowed_context_terms) if allowed_context_terms else ()
+    known_supports: Sequence[str] = (
+        tuple(all_known_draft_supports) if all_known_draft_supports else ()
+    )
     violations: list[str] = []
     unsupported_claims: list[Any] = []
     support_map = support_index if support_index is not None else (support_text_by_id or {})
@@ -567,12 +573,22 @@ def validate_digest_narrative(
                     )
 
             c_supports = [support_map[s] for s in sit_item.cited_support_ids if s in support_map]
-            for unc in find_unsupported_claims(sit_item.label, c_supports):
+            for unc in find_unsupported_claims(
+                sit_item.label,
+                c_supports,
+                allowed_context_terms=ctx_terms,
+                all_known_draft_supports=known_supports,
+            ):
                 unsupported_claims.append(unc)
                 violations.append(
                     f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in situation label {sit_item.group_id}"
                 )
-            for unc in find_unsupported_claims(sit_item.body, c_supports):
+            for unc in find_unsupported_claims(
+                sit_item.body,
+                c_supports,
+                allowed_context_terms=ctx_terms,
+                all_known_draft_supports=known_supports,
+            ):
                 unsupported_claims.append(unc)
                 violations.append(
                     f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in situation body {sit_item.group_id}"
@@ -720,12 +736,22 @@ def validate_digest_narrative(
 
             # Validate concrete claims against cited support texts
             c_supports = [support_map[s] for s in item.cited_support_ids if s in support_map]
-            for unc in find_unsupported_claims(item.headline, c_supports):
+            for unc in find_unsupported_claims(
+                item.headline,
+                c_supports,
+                allowed_context_terms=ctx_terms,
+                all_known_draft_supports=known_supports,
+            ):
                 unsupported_claims.append(unc)
                 violations.append(
                     f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in headline of block {out_block.block_id}"
                 )
-            for unc in find_unsupported_claims(item.body, c_supports):
+            for unc in find_unsupported_claims(
+                item.body,
+                c_supports,
+                allowed_context_terms=ctx_terms,
+                all_known_draft_supports=known_supports,
+            ):
                 unsupported_claims.append(unc)
                 violations.append(
                     f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in body of block {out_block.block_id}"
@@ -762,10 +788,17 @@ def build_deterministic_digest_draft(
     evidence: Mapping[str, PublicationEvidence],
     rubrics: Sequence[Any],
     presentation_plan: Any,
+    allowed_context_terms: Sequence[str] = (),
+    all_known_draft_supports: Sequence[str] = (),
 ) -> DigestNarrativeDraft:
     """Build a deterministic, provenance-bearing DigestNarrativeDraft from the presentation plan."""
     from src.publication.article_claims import find_unsupported_claims
+    from src.publication.digest_relation_support import find_unsupported_digest_relations
 
+    ctx_terms: Sequence[str] = tuple(allowed_context_terms) if allowed_context_terms else ()
+    known_supports: Sequence[str] = (
+        tuple(all_known_draft_supports) if all_known_draft_supports else ()
+    )
     detail_story_ids = set(getattr(presentation_plan, "detail_story_ids", ()))
     detail_cards = [c for c in cards if c.id in detail_story_ids]
 
@@ -912,25 +945,59 @@ def build_deterministic_digest_draft(
                         group_rendered_sentences.append(text.rstrip(". ") + ".")
 
             topic = lead_topic
-            topic_claims = find_unsupported_claims(topic, group_support_texts) if topic else []
-            if topic and not topic_claims and len(topic) <= DIGEST_ITEM_HEADLINE_MAX_CHARS:
+            topic_claims = (
+                find_unsupported_claims(
+                    topic,
+                    group_support_texts,
+                    allowed_context_terms=ctx_terms,
+                    all_known_draft_supports=known_supports,
+                )
+                if topic
+                else []
+            )
+            topic_relations = (
+                find_unsupported_digest_relations(topic, group_support_texts) if topic else []
+            )
+            if (
+                topic
+                and not topic_claims
+                and not topic_relations
+                and len(topic) <= DIGEST_ITEM_HEADLINE_MAX_CHARS
+            ):
                 headline = topic
             elif group_rendered_sentences:
-                first_sent = group_rendered_sentences[0].rstrip(". ")
-                if len(first_sent) <= DIGEST_ITEM_HEADLINE_MAX_CHARS:
-                    headline = first_sent
-                else:
-                    truncated = first_sent[:DIGEST_ITEM_HEADLINE_MAX_CHARS]
-                    for sep in [". ", "! ", "? ", "; ", ", ", " — ", " - "]:
-                        if sep in truncated:
-                            parts = truncated.rsplit(sep, 1)
-                            if len(parts[0].strip()) >= 20:
-                                truncated = parts[0].strip()
-                                break
-                    else:
-                        if " " in truncated:
-                            truncated = truncated.rsplit(" ", 1)[0].strip()
-                    headline = truncated.rstrip(".:;, ")
+                chosen_sent = None
+                for sent in group_rendered_sentences:
+                    cand = sent.rstrip(". ")
+                    if len(cand) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
+                        truncated = cand[:DIGEST_ITEM_HEADLINE_MAX_CHARS]
+                        for sep in [". ", "! ", "? ", "; ", ", ", " — ", " - "]:
+                            if sep in truncated:
+                                parts = truncated.rsplit(sep, 1)
+                                if len(parts[0].strip()) >= 20:
+                                    truncated = parts[0].strip()
+                                    break
+                        else:
+                            if " " in truncated:
+                                truncated = truncated.rsplit(" ", 1)[0].strip()
+                        cand = truncated.rstrip(".:;, ")
+                    c_claims = find_unsupported_claims(
+                        cand,
+                        group_support_texts,
+                        allowed_context_terms=ctx_terms,
+                        all_known_draft_supports=known_supports,
+                    )
+                    c_rels = find_unsupported_digest_relations(cand, group_support_texts)
+                    if not c_claims and not c_rels:
+                        chosen_sent = cand
+                        break
+                if not chosen_sent:
+                    chosen_sent = (
+                        group_rendered_sentences[0]
+                        .rstrip(". ")[:DIGEST_ITEM_HEADLINE_MAX_CHARS]
+                        .rstrip(".:;, ")
+                    )
+                headline = chosen_sent
             else:
                 headline = (
                     topic[:DIGEST_ITEM_HEADLINE_MAX_CHARS] if topic else story_group[0]

@@ -230,17 +230,19 @@ class ProviderCascade(AIProvider):
         if not self.providers:
             raise ProviderCascadeError("AI provider cascade has no configured slots")
 
-        # Separate primary rotating slots (e.g. google-1..N) from fallback slots (e.g. openrouter)
-        primary_slots = [
-            s
-            for s in self.providers
-            if not s[0].lower().startswith("openrouter") and not s[0].lower().startswith("fallback")
-        ]
-        fallback_slots = [
-            s
-            for s in self.providers
-            if s[0].lower().startswith("openrouter") or s[0].lower().startswith("fallback")
-        ]
+        # Separate primary rotating slots (e.g. google-1..N, openrouter-primary)
+        # from secondary/fallback slots (e.g. openrouter-secondary, fallback, backup)
+        def _is_fallback_slot(slot_name: str) -> bool:
+            name_lower = slot_name.lower()
+            if "secondary" in name_lower or "fallback" in name_lower or "backup" in name_lower:
+                return True
+            # For multi-provider cascades where Google is primary, standalone "openrouter" is fallback
+            if name_lower == "openrouter" and any("google" in s[0].lower() for s in self.providers):
+                return True
+            return False
+
+        primary_slots = [s for s in self.providers if not _is_fallback_slot(s[0])]
+        fallback_slots = [s for s in self.providers if _is_fallback_slot(s[0])]
         if not primary_slots:
             primary_slots = list(self.providers)
             fallback_slots = []
@@ -253,7 +255,7 @@ class ProviderCascade(AIProvider):
         else:
             ordered_primary = primary_slots
 
-        # OpenRouter / Fallback slots are strictly placed at the end (only called if all primary slots fail)
+        # Secondary / Fallback slots are strictly placed at the end (only called if all primary slots fail)
         candidates = ordered_primary + fallback_slots
 
         # Filter out slots in active cooldown (using global cross-component cooldown state)
@@ -737,6 +739,7 @@ def create_provider(  # noqa: C901
     openrouter_api_key: str = "",
     openrouter_base_url: str = OPENROUTER_BASE_URL,
     openrouter_model: str = "openrouter/free",
+    openrouter_model_2: str = "",
     ollama_base_url: str = "http://localhost:11434",
     api_timeout: int = 300,
     reasoning_effort: str | None = None,
@@ -827,6 +830,30 @@ def create_provider(  # noqa: C901
     if name == "openrouter":
         if not openrouter_api_key:
             raise ValueError("OPENROUTER_API_KEY is required for OpenRouter provider")
+        if openrouter_model_2:
+            slots = [
+                (
+                    "openrouter-primary",
+                    OpenAIProvider(
+                        api_key=openrouter_api_key,
+                        logger=logger,
+                        timeout=api_timeout,
+                        base_url=openrouter_base_url,
+                    ),
+                    openrouter_model,
+                ),
+                (
+                    "openrouter-secondary",
+                    OpenAIProvider(
+                        api_key=openrouter_api_key,
+                        logger=logger,
+                        timeout=api_timeout,
+                        base_url=openrouter_base_url,
+                    ),
+                    openrouter_model_2,
+                ),
+            ]
+            return ProviderCascade(slots, logger)
         return OpenAIProvider(
             api_key=openrouter_api_key,
             logger=logger,

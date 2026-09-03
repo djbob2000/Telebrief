@@ -66,19 +66,19 @@ def derive_article_length_profile(
         return ArticleLengthProfile(
             richness="standard",
             target_min_words=700,
-            target_max_words=min(1400, hard_max),
+            target_max_words=min(1400, max(hard_max, 1600)),
             target_min_sections=3,
             target_max_sections=min(6, config.article_max_sections),
             hard_min_words=hard_min,
-            hard_max_words=hard_max,
+            hard_max_words=max(hard_max, 1600),
         )
     else:
         return ArticleLengthProfile(
             richness="rich",
             target_min_words=1200,
-            target_max_words=min(2000, hard_max),
+            target_max_words=2000,
             target_min_sections=4,
             target_max_sections=min(8, config.article_max_sections),
             hard_min_words=hard_min,
-            hard_max_words=hard_max,
+            hard_max_words=max(hard_max, 2200),
         )

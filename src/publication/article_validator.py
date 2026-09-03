@@ -13,6 +13,7 @@ from src.publication.article_claims import ConcreteClaim, find_unsupported_claim
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 from src.publication.article_length import ArticleLengthProfile
 from src.publication.article_models import ArticleClaimAtom, StructuredArticleDraft
+from src.publication.article_semantic_lexicon import canonical_semantic_concepts
 from src.publication.article_semantic_support import assess_semantic_support
 
 _INTERNAL_HANDLE_PATTERN = re.compile(
@@ -26,7 +27,7 @@ _EXPANSION_RE = re.compile(
 )
 
 _CONTINUATION_RE = re.compile(
-    r"\b(?:продолжа[а-я]+|сохраня[а-я]+|по-прежнему|ранее|с начала|до этого|прежде)\b",
+    r"\b(?:продолжа[а-я]+|сохраня[а-я]+|оста[её]т[а-я]*|длительн[а-я]*|на\s+фоне|по-прежнему|ранее|с начала|до этого|прежде)\b",
     re.IGNORECASE,
 )
 
@@ -39,6 +40,8 @@ _CURRENT_STATE_OUTAGE_RE = re.compile(
     r"\b(?:отключен[оаыи]|отключен|не\s+работа[а-я]+|отсутству[а-я]+|прекращен[оаыи]|прекращен|обесточен[оаыи]|обесточен)\b",
     re.IGNORECASE,
 )
+
+_TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -196,6 +199,68 @@ def validate_article_draft(
     units.append(("LEAD", "lead", draft.lead, draft.lead_support_ids, draft.lead_claims))
 
     p_idx = 1
+    all_cited_ids = set(draft.title_support_ids) | set(draft.lead_support_ids)
+    for sec in draft.sections:
+        all_cited_ids.update(sec.heading_support_ids)
+        for para in sec.paragraphs:
+            all_cited_ids.update(para.cited_support_ids)
+
+    # Support map from context
+    support_map = context.support_by_id
+
+    all_known_draft_supports: list[ArticleSupport] = [
+        support_map[sid] for sid in all_cited_ids if sid in support_map
+    ]
+    all_draft_support_texts: list[str] = [s.text for s in all_known_draft_supports if s.text] + [
+        s.source_text for s in all_known_draft_supports if s.source_text
+    ]
+    all_draft_concepts: set[str] = set()
+    for st in all_draft_support_texts:
+        all_draft_concepts.update(canonical_semantic_concepts(st))
+
+    all_edition_support_texts = [s.text for s in context.supports if s.text] + [
+        s.source_text for s in context.supports if s.source_text
+    ]
+    all_edition_tokens: set[str] = {
+        tok.lower()
+        for st in all_edition_support_texts
+        for tok in _TOKEN_RE.findall(st)
+        if len(tok) >= 2
+    }
+    window_terms: set[str] = set()
+    pub_window = getattr(context, "publication_window", None)
+    if pub_window is not None:
+        import datetime as _dt
+
+        w_start = pub_window.lookback_start
+        w_end = pub_window.snapshot_at
+        cur_d = w_start.date()
+        months_ru = [
+            "января",
+            "февраля",
+            "марта",
+            "апреля",
+            "мая",
+            "июня",
+            "июля",
+            "августа",
+            "сентября",
+            "октября",
+            "ноября",
+            "декабря",
+        ]
+        while cur_d <= w_end.date():
+            window_terms.add(cur_d.strftime("%d.%m"))
+            window_terms.add(str(cur_d.day))
+            m_name = months_ru[cur_d.month - 1]
+            window_terms.add(m_name)
+            window_terms.add(f"{cur_d.day} {m_name}")
+            cur_d += _dt.timedelta(days=1)
+
+    allowed_edition_terms = tuple(
+        set(context.edition_anchor_terms) | all_edition_tokens | window_terms
+    )
+
     for s_idx, sec in enumerate(draft.sections, start=1):
         h_id = f"H{s_idx:03d}"
         units.append((h_id, "heading", sec.heading, sec.heading_support_ids, sec.heading_claims))
@@ -371,7 +436,11 @@ def validate_article_draft(
 
         # Check claim atoms against their cited supports
         for claim in claim_atoms:
-            c_supports = [support_map[sid] for sid in claim.cited_support_ids if sid in support_map]
+            c_supports = (
+                all_known_draft_supports
+                if unit_type in ("title", "lead")
+                else [support_map[sid] for sid in claim.cited_support_ids if sid in support_map]
+            )
             if c_supports:
                 if all(
                     s.evidence_kind == "resident_question" or s.publication_use == "CONTEXT"
@@ -404,13 +473,14 @@ def validate_article_draft(
                             )
                         )
 
-                allowed_context_terms = context.edition_anchor_terms
+                allowed_context_terms = allowed_edition_terms
 
                 assessment = assess_claim_against_supports(
                     claim.text,
                     c_supports,
                     min_content_coverage=config.article_claim_min_content_coverage,
                     allowed_context_terms=allowed_context_terms,
+                    all_known_draft_supports=all_edition_support_texts,
                     direct_quote_allowlist=quote_allowlist,
                 )
 
@@ -438,13 +508,44 @@ def validate_article_draft(
                             )
                         )
                     elif assessment.blocking_critical_terms:
+                        novel_critical = [
+                            c
+                            for c in assessment.blocking_critical_terms
+                            if c not in all_draft_concepts
+                        ]
+                        if novel_critical:
+                            issues.append(
+                                ArticleValidationIssue(
+                                    code="UNSUPPORTED_CRITICAL_TERM",
+                                    unit_id=unit_id,
+                                    message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported critical concepts {tuple(novel_critical)}",
+                                    support_ids=claim.cited_support_ids,
+                                    unsupported_claims=assessment.unsupported_concrete_claims,
+                                )
+                            )
+                    elif assessment.unsupported_concrete_claims:
                         issues.append(
                             ArticleValidationIssue(
-                                code="UNSUPPORTED_CRITICAL_TERM",
+                                code="UNSUPPORTED_CONCRETE_CLAIM",
                                 unit_id=unit_id,
-                                message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported critical concepts {assessment.blocking_critical_terms}",
+                                message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported concrete details",
                                 support_ids=claim.cited_support_ids,
                                 unsupported_claims=assessment.unsupported_concrete_claims,
+                            )
+                        )
+                    elif (
+                        assessment.causal_analysis is not None
+                        and getattr(assessment.causal_analysis, "has_causal_relation", False)
+                        and not getattr(assessment.causal_analysis, "supported", True)
+                    ):
+                        causal = assessment.causal_analysis
+                        verb = getattr(causal, "causal_verb", "")
+                        issues.append(
+                            ArticleValidationIssue(
+                                code="UNSUPPORTED_CAUSAL_RELATION",
+                                unit_id=unit_id,
+                                message=f"Unit {unit_id} claim atom '{claim.text}' asserts unsupported causal relation '{verb}'",
+                                support_ids=claim.cited_support_ids,
                             )
                         )
                     else:
@@ -463,8 +564,8 @@ def validate_article_draft(
                             code="CLAIM_LEXICAL_DIVERGENCE",
                             unit_id=unit_id,
                             message=(
-                                f"Unit {unit_id} claim atom '{claim.text}' has low lexical overlap "
-                                f"but no blocking semantic or concrete addition"
+                                f"Unit {unit_id} claim atom '{claim.text}' has low lexical overlap with cited supports "
+                                f"(coverage={assessment.content_coverage:.2f}, unmatched={assessment.unsupported_content_stems})"
                             ),
                             support_ids=claim.cited_support_ids,
                             severity="warning",
@@ -475,12 +576,23 @@ def validate_article_draft(
         # Defense in depth: Check unsupported concrete claims against cited support texts
         support_texts = [t for s in valid_supports for t in (s.text, s.source_text) if t]
         primary_source_texts = [s.source_text for s in valid_supports if s.source_text]
-        unit_context_terms = context.edition_anchor_terms if unit_type in ("title", "lead") else ()
+        unit_context_terms = allowed_edition_terms
+
+        claims_support_texts = (
+            all_draft_support_texts if unit_type in ("title", "lead") else support_texts
+        )
+        claims_primary_sources = (
+            [s.source_text for s in all_known_draft_supports if s.source_text]
+            if unit_type in ("title", "lead")
+            else primary_source_texts
+        )
 
         unsupported = find_unsupported_claims(
             unit_text,
-            support_texts,
-            direct_quote_source_texts=primary_source_texts,
+            claims_support_texts,
+            all_known_draft_supports=all_edition_support_texts,
+            allowed_context_terms=unit_context_terms,
+            direct_quote_source_texts=claims_primary_sources,
             direct_quote_allowlist=quote_allowlist,
         )
         if unsupported:
@@ -518,9 +630,12 @@ def validate_article_draft(
 
         # Defense in depth: Check reader-facing unit text for unsupported proper names or critical concepts
         if unit_type != "heading" or claim_atoms:
+            semantic_supports = (
+                all_draft_support_texts if unit_type in ("title", "lead") else support_texts
+            )
             unit_semantic = assess_semantic_support(
                 unit_text,
-                support_texts,
+                semantic_supports,
                 allowed_context_terms=unit_context_terms,
             )
             if unit_semantic.blocking_proper_names:
@@ -536,17 +651,21 @@ def validate_article_draft(
                     )
                 )
             if unit_semantic.blocking_critical_terms:
-                issues.append(
-                    ArticleValidationIssue(
-                        code="UNSUPPORTED_CRITICAL_TERM",
-                        unit_id=unit_id,
-                        message=(
-                            f"Unit {unit_id} reader-facing text contains unsupported critical concepts "
-                            f"{unit_semantic.blocking_critical_terms}"
-                        ),
-                        support_ids=cited_ids,
+                novel_critical = [
+                    c for c in unit_semantic.blocking_critical_terms if c not in all_draft_concepts
+                ]
+                if novel_critical:
+                    issues.append(
+                        ArticleValidationIssue(
+                            code="UNSUPPORTED_CRITICAL_TERM",
+                            unit_id=unit_id,
+                            message=(
+                                f"Unit {unit_id} reader-facing text contains unsupported critical concepts "
+                                f"{tuple(novel_critical)}"
+                            ),
+                            support_ids=cited_ids,
+                        )
                     )
-                )
 
     is_valid = not any(iss.blocking for iss in issues)
 

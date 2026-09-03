@@ -4,17 +4,29 @@ import re
 
 _TOKEN_RE = re.compile(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]+")
 
+
+def _norm(token: str) -> str:
+    return (
+        token.casefold()
+        .replace("ё", "е")
+        .replace("і", "и")
+        .replace("ї", "и")
+        .replace("є", "е")
+        .replace("ґ", "г")
+    )
+
+
 _CONCEPT_PREFIXES: dict[str, tuple[str, ...]] = {
-    "uav": ("бпла", "беспилот", "безпілот", "дрон"),
-    "internet": ("интернет", "інтернет", "wifi", "вайфай"),
-    "report": ("сообщ", "повідом"),
-    "apply_use": ("примен", "застос", "поступ", "надійш"),
-    "power": ("свет", "электр", "електр"),
-    "water": ("вод", "водопостач", "водоснабж"),
-    "gas": ("газ", "газопостач", "газоснабж"),
-    "heating": ("отоплен", "тепло", "опален"),
-    "transport": ("транспорт", "автобус", "маршрутк"),
-    "fuel": ("топлив", "бензин", "дизел", "палив"),
+    "uav": tuple(_norm(p) for p in ("бпла", "беспилот", "безпілот", "дрон")),
+    "internet": tuple(_norm(p) for p in ("интернет", "інтернет", "wifi", "вайфай")),
+    "report": tuple(_norm(p) for p in ("сообщ", "повідом")),
+    "apply_use": tuple(_norm(p) for p in ("примен", "застос", "поступ", "надійш")),
+    "power": tuple(_norm(p) for p in ("свет", "электр", "електр", "струм", "блэкаут", "блекаут")),
+    "water": tuple(_norm(p) for p in ("вод", "водопостач", "водоснабж", "подач")),
+    "gas": tuple(_norm(p) for p in ("газопостач", "газоснабж", "газопровод", "горгаз")),
+    "heating": tuple(_norm(p) for p in ("отоплен", "тепло", "опален")),
+    "transport": tuple(_norm(p) for p in ("транспорт", "автобус", "маршрутк")),
+    "fuel": tuple(_norm(p) for p in ("топлив", "бензин", "дизел", "палив")),
 }
 
 _CRITICAL_CONCEPTS = frozenset(
@@ -35,10 +47,6 @@ def is_critical_semantic_concept(value: str) -> bool:
     return value in _CRITICAL_CONCEPTS
 
 
-def _norm(token: str) -> str:
-    return token.casefold().replace("ё", "е")
-
-
 def _normalize_phrases(text: str) -> str:
     t = _norm(text)
     t = re.sub(r"\b(?:wi[ -]?fi|вай[ -]?фай)\b", " wifi ", t)
@@ -47,6 +55,12 @@ def _normalize_phrases(text: str) -> str:
 
 def canonicalize_semantic_token(token: str) -> str:
     norm = _norm(token)
+    # Exclude false-positive water matches like "водитель" (driver) or "проводной" (wired)
+    if norm.startswith("водител") or norm.startswith("водят") or norm.startswith("проводн"):
+        return norm
+    # Exclude false-positive gas matches like "выхлопные газы" (generator exhaust) or "газовая колонка"
+    if norm == "газ" or norm.startswith("газов") or norm.startswith("газовик"):
+        return norm
     for concept, prefixes in _CONCEPT_PREFIXES.items():
         if any(norm == prefix or norm.startswith(prefix) for prefix in prefixes):
             return f"concept:{concept}"
