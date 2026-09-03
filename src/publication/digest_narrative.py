@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
@@ -9,6 +10,8 @@ from typing import Any, Mapping, Sequence
 from src.editorial_models import StoryCard
 from src.publication.article_claims import ConcreteClaim, find_unsupported_claims
 from src.publication.evidence import PublicationEvidence
+
+logger = logging.getLogger(__name__)
 
 _INTERNAL_LEAKAGE_RE = re.compile(r"\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]", re.IGNORECASE)
 
@@ -1029,11 +1032,289 @@ def build_deterministic_digest_draft(
     return DigestNarrativeDraft(blocks=tuple(block_drafts), situation_items=())
 
 
+DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регионального издания, готовящий ежедневный вечерний Telegram-дайджест города {city} за {date}.
+
+ВАША ЦЕЛЬ:
+Сформировать живой, связный, информативный и легко сканируемый Telegram-дайджест на русском языке на основе проверенных городских сообщений за последние 24 часа.
+
+СТРУКТУРА ДАЙДЖЕСТА:
+Дайджест · {date}
+
+[3-4 ключевые тематические рубрики, например:
+⚡️ Коммунальная обстановка и ЖКХ
+🚌 Транспорт, связь и сервисы
+🎓 Образование и школьная жизнь
+📌 Городские события и быт]
+
+Внутри каждой рубрики:
+• **Краткий заголовок факта**: плотное информативное раскрытие сути события в 1-2 предложениях с сохранением ключевой конкретики (улицы, номера домов, графики, цены, решения жителей).
+
+ПРАВИЛА И СТИЛЬ:
+1. Журналистский стиль: чистый, энергичный русский язык. Если исходное сообщение на украинском языке — точно и грамотно переведите его на русский.
+2. Синтез и объединение: не пишите 10 отдельных пунктов про одно и то же отключение света. Объедините их в один цельный пункт, указав затронутые районы, улицы и характер проблемы.
+3. Микродетали: сохраняйте конкретные улицы, номера маршрутов, цены, технические подробности (генераторы, оптоволокно, врезки в подвалах).
+4. Очистка от мусора: полностью исключайте флуд в чатах, пустые ссылки, спам телефонов и частные объявления.
+5. Никаких шаблонных повторов («По сообщениям жителей... По сообщениям жителей...»). Вводные конструкции используйте естественно и разнообразно («По словам горожан...», «В местных чатах отмечают...», «Как рассказали жители...»).
+6. СТРОГОЕ ОГРАНИЧЕНИЕ ДЛИНЫ (ОДНО СООБЩЕНИЕ TELEGRAM):
+   - Дайджест ДОЛЖЕН целиком помещаться в ОДНО сообщение Telegram (жесткий лимит Telegram — 4096 символов).
+   - Общий объём текста должен быть строго в диапазоне 2500–3500 знаков.
+   - Сформируйте ровно 3–4 рубрики, в каждой — строго по 2–3 самых важных пункта.
+
+МАТЕРИАЛЫ ДНЯ ДЛЯ ДАЙДЖЕСТА:
+{content}
+"""
+
+DIGEST_CONDENSE_PROMPT_TEMPLATE = """Вы — выпускающий редактор регионального Telegram-канала города {city}.
+Перед вами черновик вечернего дайджеста за {date}, который превышает допустимый лимит одного сообщения Telegram ({current_len} знаков при лимите {max_chars} знаков).
+
+ВАША ЗАДАЧА:
+Отредактировать и уплотнить текст так, чтобы его итоговая длина составила строго от 2800 до {target_chars} знаков, сохранив абсолютно ВСЕ факты, темы и рубрики.
+
+ПРАВИЛА РЕДАКТУРЫ И КОМПРЕССИИ:
+1. НЕ УДАЛЯЙТЕ события, рубрики или пункты. Все новости и темы должны остаться!
+2. Уплотняйте синтаксис: убирайте многословие, вводные конструкции («следует отметить, что», «как стало известно из сообщений»), пространные рассуждения и повторы.
+3. Сохраняйте ВСЕ микродетали: названия улиц, номера домов, время, цены, имена, учреждения, номера статей КоАП, марки генераторов.
+4. Объединяйте сложноподчиненные предложения в краткие, энергичные фразы.
+5. Сохраните формат Telegram Markdown (заголовок, рубрики, эмодзи, маркеры • **Заголовок**: суть).
+6. Верните ТОЛЬКО готовый отредактированный текст без вступительных или заключительных реплик.
+
+ЧЕРНОВИК ДАЙДЖЕСТА ДЛЯ КОМПРЕССИИ:
+{draft_text}
+"""
+
+
+def _clean_markdown_fence(text: str | None) -> str:
+    if not text:
+        return ""
+    clean = text.strip()
+    if clean.startswith("```markdown"):
+        clean = clean[len("```markdown") :].strip()
+    elif clean.startswith("```"):
+        clean = clean[3:].strip()
+    if clean.endswith("```"):
+        clean = clean[:-3].strip()
+    return clean
+
+
+def enforce_telegram_single_message_limit(text: str, max_chars: int = 3900) -> str:
+    """Deterministic fallback: trims text along structural paragraph boundaries if still over limit."""
+    if len(text) <= max_chars:
+        return text
+    lines = text.splitlines(keepends=True)
+    acc: list[str] = []
+    cur_len = 0
+    for line in lines:
+        if cur_len + len(line) <= max_chars:
+            acc.append(line)
+            cur_len += len(line)
+        else:
+            break
+    return "".join(acc).strip()
+
+
+def parse_journalistic_markdown_to_draft(
+    markdown_text: str,
+    cards: Sequence[StoryCard],
+    evidence: Mapping[str, PublicationEvidence] | None = None,
+) -> DigestNarrativeDraft:
+    """Parse raw journalistic Telegram Markdown text into a structured DigestNarrativeDraft."""
+    lines = markdown_text.splitlines()
+    blocks: list[DigestNarrativeBlockDraft] = []
+    current_items: list[DigestEditorialItemDraft] = []
+    current_rubric_id = "general"
+    block_counter = 0
+
+    card_tokens: dict[str, set[str]] = {}
+    for c in cards:
+        toks = set(re.findall(r"[\w-]+", (c.topic or "").lower()))
+        for f in getattr(c, "hard_facts", ()):
+            toks |= set(re.findall(r"[\w-]+", (f.text or "").lower()))
+        for o in getattr(c, "community_observations", ()):
+            toks |= set(re.findall(r"[\w-]+", (o.text or "").lower()))
+        card_tokens[c.id] = {t for t in toks if len(t) >= 3}
+
+    story_supports: dict[str, list[str]] = {}
+    if evidence:
+        for evid, ev in evidence.items():
+            sid = (
+                f"story:{ev.story_id}"
+                if not str(ev.story_id).startswith("story:")
+                else str(ev.story_id)
+            )
+            story_supports.setdefault(sid, []).append(evid)
+
+    def _flush() -> None:
+        nonlocal block_counter, current_items
+        if current_items:
+            blocks.append(
+                DigestNarrativeBlockDraft(
+                    block_id=f"block:{current_rubric_id}:{block_counter}",
+                    items=tuple(current_items),
+                )
+            )
+            block_counter += 1
+            current_items = []
+
+    item_re = re.compile(r"^•\s+\*\*([^*]+)\*\*[:.]?\s*(.*)$")
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        is_header = not stripped.startswith(("•", "-", "*•")) and (
+            any(
+                stripped.startswith(p)
+                for p in (
+                    "*⚡️",
+                    "*🚌",
+                    "*🎓",
+                    "*📌",
+                    "*💼",
+                    "*🏙",
+                    "⚡️",
+                    "🚌",
+                    "🎓",
+                    "📌",
+                    "💼",
+                    "🏙",
+                    "🔌",
+                    "💧",
+                    "🏠",
+                    "🏫",
+                    "🛩",
+                    "✈️",
+                    "🏢",
+                    "⚠️",
+                    "🚨",
+                    "📱",
+                    "🚜",
+                    "☀️",
+                    "🏖",
+                    "🚧",
+                    "##",
+                    "###",
+                )
+            )
+        )
+        if is_header:
+            _flush()
+            clean_hdr = stripped.strip("*_ #").lower()
+            if any(k in clean_hdr for k in ("жкх", "коммун", "электр", "вода", "энерг")):
+                current_rubric_id = "infrastructure"
+            elif any(k in clean_hdr for k in ("транспорт", "дорог", "связь", "сервис")):
+                current_rubric_id = "transport"
+            elif any(k in clean_hdr for k in ("образов", "школ", "культур", "социальн", "дет")):
+                current_rubric_id = "education"
+            elif any(
+                k in clean_hdr for k in ("безопасн", "тревог", "чп", "обстрел", "пво", "сирен")
+            ):
+                current_rubric_id = "safety"
+            elif any(k in clean_hdr for k in ("город", "сред", "благоустрой")):
+                current_rubric_id = "urban_life"
+            else:
+                current_rubric_id = "general"
+            continue
+        m = item_re.match(stripped)
+        if m:
+            headline = m.group(1).strip().rstrip(".:;, ")
+            body = m.group(2).strip()
+            item_toks = {
+                t for t in re.findall(r"[\w-]+", (headline + " " + body).lower()) if len(t) >= 3
+            }
+            scored = sorted(
+                [
+                    (len(item_toks & ctoks), cid)
+                    for cid, ctoks in card_tokens.items()
+                    if (item_toks & ctoks)
+                ],
+                reverse=True,
+            )
+            covered_sids = [cid for _, cid in scored[:4]] or ([cards[0].id] if cards else [])
+            cited_sups: list[str] = []
+            for cid in covered_sids:
+                cited_sups.extend(story_supports.get(cid, []))
+            current_items.append(
+                DigestEditorialItemDraft(
+                    headline=headline,
+                    body=body,
+                    covered_story_ids=tuple(covered_sids),
+                    cited_support_ids=tuple(cited_sups[:5]),
+                )
+            )
+    _flush()
+    return DigestNarrativeDraft(blocks=tuple(blocks), situation_items=())
+
+
 class DigestNarrativeWriter:
     """Single-call narrative digest writer synthesizing flowing prose across rubric blocks."""
 
     def __init__(self, provider: Any) -> None:
         self._provider = provider
+
+    async def generate_journalistic_digest(
+        self,
+        *,
+        city: str,
+        date_str: str,
+        cards: Sequence[StoryCard],
+        evidence: Mapping[str, PublicationEvidence] | None = None,
+        model: str | None = None,
+        max_chars: int = 3900,
+        target_chars: int = 3500,
+    ) -> tuple[str, DigestNarrativeDraft]:
+        """Synthesize journalistic digest in two passes: full draft, then conditional AI condensation if > max_chars."""
+        cards_text_blocks = []
+        for c in cards:
+            if not c.topic:
+                continue
+            facts = [f.text for f in getattr(c, "hard_facts", ()) if f.text]
+            obs = [o.text for o in getattr(c, "community_observations", ()) if o.text]
+            all_details = facts + obs
+            details_str = "; ".join(all_details[:3]) if all_details else (c.summary or "")
+            block = f"- [{c.topic}] {details_str}"
+            cards_text_blocks.append(block)
+
+        content_for_llm = "\n".join(cards_text_blocks[:45])
+
+        prompt = DIGEST_PROMPT_TEMPLATE.format(
+            city=city,
+            date=date_str,
+            content=content_for_llm,
+        )
+
+        logger.info("Digest Pass 1: Generating full-text journalistic draft...")
+        raw_response = await self._provider.chat_completion(
+            messages=[{"role": "user", "content": prompt}],
+            model=model or "minimax/minimax-m3:free:floor",
+        )
+        clean_draft = _clean_markdown_fence(raw_response)
+
+        # Pass 2: Conditional AI Editorial Condensation
+        if len(clean_draft) > max_chars:
+            logger.info(
+                "Digest draft (%d chars) exceeds limit (%d chars). Running Pass 2: AI Editorial Condenser...",
+                len(clean_draft),
+                max_chars,
+            )
+            condense_prompt = DIGEST_CONDENSE_PROMPT_TEMPLATE.format(
+                city=city,
+                date=date_str,
+                current_len=len(clean_draft),
+                max_chars=max_chars,
+                target_chars=target_chars,
+                draft_text=clean_draft,
+            )
+            raw_condensed = await self._provider.chat_completion(
+                messages=[{"role": "user", "content": condense_prompt}],
+                model=model or "minimax/minimax-m3:free:floor",
+            )
+            clean_draft = _clean_markdown_fence(raw_condensed)
+
+        # Final deterministic safety net
+        if len(clean_draft) > max_chars:
+            clean_draft = enforce_telegram_single_message_limit(clean_draft, max_chars=max_chars)
+
+        draft = parse_journalistic_markdown_to_draft(clean_draft, cards=cards, evidence=evidence)
+        return clean_draft, draft
 
     async def generate_narrative_draft(
         self,

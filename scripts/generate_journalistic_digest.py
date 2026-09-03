@@ -56,6 +56,93 @@ DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регио�
 """
 
 
+DIGEST_CONDENSE_PROMPT_TEMPLATE = """Вы — выпускающий редактор регионального Telegram-канала города {city}.
+Перед вами черновик вечернего дайджеста за {date}, который превышает допустимый лимит одного сообщения Telegram ({current_len} знаков при лимите {max_chars} знаков).
+
+ВАША ЗАДАЧА:
+Отредактировать и уплотнить текст так, чтобы его итоговая длина составила строго от 2800 до {target_chars} знаков, сохранив абсолютно ВСЕ факты, темы и рубрики.
+
+ПРАВИЛА РЕДАКТУРЫ И КОМПРЕССИИ:
+1. НЕ УДАЛЯЙТЕ события, рубрики или пункты. Все новости и темы должны остаться!
+2. Уплотняйте синтаксис: убирайте многословие, вводные конструкции («следует отметить, что», «как стало известно из сообщений»), пространные рассуждения и повторы.
+3. Сохраняйте ВСЕ микродетали: названия улиц, номера домов, время, цены, имена, учреждения, номера статей КоАП, марки генераторов.
+4. Объединяйте сложноподчиненные предложения в краткие, энергичные фразы.
+5. Сохраните формат Telegram Markdown (заголовок, рубрики, эмодзи, маркеры • **Заголовок**: суть).
+6. Верните ТОЛЬКО готовый отредактированный текст без вступительных или заключительных реплик.
+
+ЧЕРНОВИК ДАЙДЖЕСТА ДЛЯ КОМПРЕССИИ:
+{draft_text}
+"""
+
+
+def enforce_telegram_single_message_limit(text: str, max_chars: int = 3900) -> str:
+    """Deterministic fallback: trims text along structural paragraph boundaries if still over limit."""
+    if len(text) <= max_chars:
+        return text
+    lines = text.splitlines(keepends=True)
+    acc: list[str] = []
+    cur_len = 0
+    for line in lines:
+        if cur_len + len(line) <= max_chars:
+            acc.append(line)
+            cur_len += len(line)
+        else:
+            break
+    return "".join(acc).strip()
+
+
+async def condense_journalistic_digest(
+    provider: Any,
+    draft_text: str,
+    *,
+    city: str,
+    date_str: str,
+    model: str = "minimax/minimax-m3:free:floor",
+    max_chars: int = 3900,
+    target_chars: int = 3500,
+) -> str:
+    current_len = len(draft_text)
+    if current_len <= max_chars:
+        logger.info("Draft length (%d chars) is within Telegram limit (%d chars). Skipping condensation.", current_len, max_chars)
+        return draft_text
+
+    logger.info(
+        "Draft length (%d chars) exceeds Telegram limit (%d chars). Triggering AI Editorial Condenser...",
+        current_len,
+        max_chars,
+    )
+    prompt = DIGEST_CONDENSE_PROMPT_TEMPLATE.format(
+        city=city,
+        date=date_str,
+        current_len=current_len,
+        max_chars=max_chars,
+        target_chars=target_chars,
+        draft_text=draft_text,
+    )
+    t0 = time.time()
+    raw_condensed = await provider.chat_completion(
+        messages=[{"role": "user", "content": prompt}],
+        model=model,
+    )
+    elapsed = time.time() - t0
+    logger.info("AI Editorial Condenser completed in %.2f seconds! Output length: %d chars", elapsed, len(raw_condensed or ""))
+
+    clean = (raw_condensed or "").strip()
+    if clean.startswith("```markdown"):
+        clean = clean[len("```markdown"):].strip()
+    elif clean.startswith("```"):
+        clean = clean[3:].strip()
+    if clean.endswith("```"):
+        clean = clean[:-3].strip()
+
+    # Final deterministic safety net (just in case model condensation still exceeds max_chars)
+    if len(clean) > max_chars:
+        logger.warning("Condensed text (%d chars) still exceeds limit; applying deterministic safety net.", len(clean))
+        clean = enforce_telegram_single_message_limit(clean, max_chars=max_chars)
+
+    return clean
+
+
 async def main():
     config = load_config("config.yaml")
     infra = await build_infrastructure(config.database)
@@ -94,7 +181,7 @@ async def main():
         content=content_for_llm,
     )
 
-    logger.info("Generating journalistic digest via OpenRouter/MiniMax...")
+    logger.info("Pass 1: Generating full-text journalistic digest draft via OpenRouter/MiniMax...")
     t0 = time.time()
 
     gen_service = PublicationGenerationService(uow=uow, config=config, repo=PublicationRepository())
@@ -106,43 +193,36 @@ async def main():
         "model": "minimax/minimax-m3:free:floor",
     }
     raw_response = await provider.chat_completion(**chat_kwargs)
-    elapsed = time.time() - t0
+    elapsed_draft = time.time() - t0
 
-    logger.info("Generation completed in %.2f seconds! Output length: %d chars", elapsed, len(raw_response or ""))
+    logger.info("Pass 1 completed in %.2f seconds! Draft length: %d chars", elapsed_draft, len(raw_response or ""))
 
-    clean_text = raw_response.strip()
-    if clean_text.startswith("```markdown"):
-        clean_text = clean_text[len("```markdown"):].strip()
-    elif clean_text.startswith("```"):
-        clean_text = clean_text[3:].strip()
-    if clean_text.endswith("```"):
-        clean_text = clean_text[:-3].strip()
+    clean_draft = raw_response.strip()
+    if clean_draft.startswith("```markdown"):
+        clean_draft = clean_draft[len("```markdown"):].strip()
+    elif clean_draft.startswith("```"):
+        clean_draft = clean_draft[3:].strip()
+    if clean_draft.endswith("```"):
+        clean_draft = clean_draft[:-3].strip()
 
-    def enforce_telegram_single_message_limit(text: str, max_chars: int = 3950) -> str:
-        if len(text) <= max_chars:
-            return text
-        # Truncate lowest-priority lines/paragraphs until within limit
-        lines = text.splitlines(keepends=True)
-        acc = []
-        cur_len = 0
-        for line in lines:
-            if cur_len + len(line) <= max_chars:
-                acc.append(line)
-                cur_len += len(line)
-            else:
-                break
-        res = "".join(acc).strip()
-        return res
+    # Pass 2 (Conditional): If draft exceeds 3900 chars, condense with AI Editor
+    final_text = await condense_journalistic_digest(
+        provider=provider,
+        draft_text=clean_draft,
+        city=city,
+        date_str=date_str,
+        max_chars=3900,
+        target_chars=3500,
+    )
 
-    final_text = enforce_telegram_single_message_limit(clean_text, max_chars=3950)
     out_file = Path("digest_journalistic_2026-09-03.md")
     out_file.write_text(final_text, encoding="utf-8")
-    logger.info("Saved journalistic digest to %s (%d chars)", out_file, len(final_text))
+    logger.info("Saved final journalistic digest to %s (%d chars)", out_file, len(final_text))
 
     print("\n" + "═" * 70)
-    print("📌 ЖУРНАЛИСТСКИЙ ВАРИАНТ ДАЙДЖЕСТА (время генерации: %.2f сек)" % elapsed)
+    print("📌 ИТОГОВЫЙ ЖУРНАЛИСТСКИЙ ДАЙДЖЕСТ (Длина: %d знаков)" % len(final_text))
     print("═" * 70)
-    print(clean_text)
+    print(final_text)
     print("═" * 70)
 
 

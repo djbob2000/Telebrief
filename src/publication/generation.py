@@ -263,7 +263,7 @@ class PublicationGenerationService:
                 )
 
                 if (
-                    narrative_mode == "single_call"
+                    narrative_mode in ("single_call", "journalistic")
                     and run.publication_type != "digest_channel"
                     and frozen.analysis.cards
                 ):
@@ -295,93 +295,44 @@ class PublicationGenerationService:
                     att_id = await observer.attempt_started(
                         "writer",
                         metadata={
-                            "subkind": "digest_narrative",
+                            "subkind": f"digest_narrative_{narrative_mode}",
                             "block_count": len(plan.blocks),
                             "card_count": len(detail_cards),
                             "situation_group_count": len(presentation_plan.city_situation.groups),
                         },
                     )
                     try:
-                        draft_cand = await writer.generate_narrative_draft(
-                            plan=plan,
-                            cards=detail_cards,
-                            evidence=evidence_dict,
-                            language=getattr(self.config.settings, "output_language", "Russian"),
-                            max_output_tokens=max_tokens,
-                            model=getattr(self.config.settings, "openai_model", None)
-                            or getattr(self.config.settings, "ai_model", None),
-                        )
-                        support_text_index = build_digest_support_text_index(
-                            evidence=evidence_dict,
-                            cards=frozen.analysis.cards,
-                            frozen_input=frozen,
-                        )
-                        all_draft_support_texts = list(support_text_index.values())
-                        import datetime as _dt
-                        import re as _re
-
-                        edition_tokens: set[str] = {
-                            tok.lower()
-                            for st in all_draft_support_texts
-                            for tok in _re.findall(r"[\w-]+", st)
-                            if len(tok) >= 2
-                        }
-                        window_terms: set[str] = set()
-                        if getattr(run, "snapshot_at", None):
-                            s_at = run.snapshot_at
-                            months_ru = [
-                                "января",
-                                "февраля",
-                                "марта",
-                                "апреля",
-                                "мая",
-                                "июня",
-                                "июля",
-                                "августа",
-                                "сентября",
-                                "октября",
-                                "ноября",
-                                "декабря",
-                            ]
-                            for offset in range(3):
-                                cur_d = (s_at - _dt.timedelta(days=offset)).date()
-                                window_terms.add(cur_d.strftime("%d.%m"))
-                                window_terms.add(str(cur_d.day))
-                                m_name = months_ru[cur_d.month - 1]
-                                window_terms.add(m_name)
-                                window_terms.add(f"{cur_d.day} {m_name}")
-                        allowed_digest_terms = tuple(edition_tokens | window_terms)
-
-                        val_res = validate_digest_narrative(
-                            draft_cand,
-                            plan,
-                            support_text_by_id=support_text_index,
-                            situation_plan=presentation_plan.city_situation,
-                            allowed_context_terms=allowed_digest_terms,
-                            all_known_draft_supports=all_draft_support_texts,
-                        )
-                        if val_res.is_valid:
+                        if narrative_mode == "journalistic":
+                            city_name = (
+                                getattr(self.config.settings, "edition_name", None)
+                                or getattr(frozen, "edition_name", None)
+                                or "Бердянск"
+                            )
+                            date_str = (
+                                run.snapshot_at or dt.datetime.now(dt.timezone.utc)
+                            ).strftime("%d.%m.%Y")
+                            (
+                                journalistic_text,
+                                draft_cand,
+                            ) = await writer.generate_journalistic_digest(
+                                city=city_name,
+                                date_str=date_str,
+                                cards=detail_cards or frozen.analysis.cards,
+                                evidence=evidence_dict,
+                                model=getattr(self.config.settings, "openai_model", None)
+                                or getattr(self.config.settings, "ai_model", None),
+                                max_chars=3900,
+                                target_chars=3500,
+                            )
+                            title = f"Дайджест: {city_name} · {date_str}"
+                            lead = ""
+                            body = journalistic_text
                             narrative_draft = draft_cand
                             final_digest_draft = draft_cand
-
-                            title, lead, body = renderer.render_grouped_digest(
-                                frozen,
-                                snapshot_at=run.snapshot_at,
-                                narrative_draft=narrative_draft,
-                                presentation_plan=presentation_plan,
-                            )
                             from src.publication.digest_coverage import (
                                 build_digest_coverage_trace,
                             )
-                            from src.publication.digest_quality_diagnostics import (
-                                audit_digest_prose_quality,
-                            )
 
-                            quality_audit = audit_digest_prose_quality(
-                                draft_cand,
-                                evidence=evidence_dict,
-                                presentation_plan=presentation_plan,
-                            )
                             coverage_trace = build_digest_coverage_trace(
                                 presentation_plan,
                                 final_digest_draft,
@@ -409,24 +360,140 @@ class PublicationGenerationService:
                                 att_id,
                                 "succeeded",
                                 metadata={
-                                    "validation": {"is_valid": True},
-                                    "block_count": len(draft_cand.blocks),
-                                    "situation_item_count": len(draft_cand.situation_items),
-                                    "prose_quality_audit": quality_audit.as_metadata(),
+                                    "mode": "journalistic",
+                                    "final_length": len(body),
+                                    "single_message_safe": len(body) <= 4096,
                                     **coverage_meta,
                                 },
                             )
-
                         else:
-                            await observer.attempt_finished(
-                                att_id,
-                                "failed",
-                                error_kind="digest_narrative_validation_failed",
-                                metadata={
-                                    "error_message": "; ".join(val_res.violations[:5]),
-                                    "violations": list(val_res.violations),
-                                },
+                            draft_cand = await writer.generate_narrative_draft(
+                                plan=plan,
+                                cards=detail_cards,
+                                evidence=evidence_dict,
+                                language=getattr(
+                                    self.config.settings, "output_language", "Russian"
+                                ),
+                                max_output_tokens=max_tokens,
+                                model=getattr(self.config.settings, "openai_model", None)
+                                or getattr(self.config.settings, "ai_model", None),
                             )
+                            support_text_index = build_digest_support_text_index(
+                                evidence=evidence_dict,
+                                cards=frozen.analysis.cards,
+                                frozen_input=frozen,
+                            )
+                            all_draft_support_texts = list(support_text_index.values())
+                            import datetime as _dt
+                            import re as _re
+
+                            edition_tokens: set[str] = {
+                                tok.lower()
+                                for st in all_draft_support_texts
+                                for tok in _re.findall(r"[\w-]+", st)
+                                if len(tok) >= 2
+                            }
+                            window_terms: set[str] = set()
+                            if getattr(run, "snapshot_at", None):
+                                s_at = run.snapshot_at
+                                months_ru = [
+                                    "января",
+                                    "февраля",
+                                    "марта",
+                                    "апреля",
+                                    "мая",
+                                    "июня",
+                                    "июля",
+                                    "августа",
+                                    "сентября",
+                                    "октября",
+                                    "ноября",
+                                    "декабря",
+                                ]
+                                for offset in range(3):
+                                    cur_d = (s_at - _dt.timedelta(days=offset)).date()
+                                    window_terms.add(cur_d.strftime("%d.%m"))
+                                    window_terms.add(str(cur_d.day))
+                                    m_name = months_ru[cur_d.month - 1]
+                                    window_terms.add(m_name)
+                                    window_terms.add(f"{cur_d.day} {m_name}")
+                            allowed_digest_terms = tuple(edition_tokens | window_terms)
+
+                            val_res = validate_digest_narrative(
+                                draft_cand,
+                                plan,
+                                support_text_by_id=support_text_index,
+                                situation_plan=presentation_plan.city_situation,
+                                allowed_context_terms=allowed_digest_terms,
+                                all_known_draft_supports=all_draft_support_texts,
+                            )
+                            if val_res.is_valid:
+                                narrative_draft = draft_cand
+                                final_digest_draft = draft_cand
+
+                                title, lead, body = renderer.render_grouped_digest(
+                                    frozen,
+                                    snapshot_at=run.snapshot_at,
+                                    narrative_draft=narrative_draft,
+                                    presentation_plan=presentation_plan,
+                                )
+                                from src.publication.digest_coverage import (
+                                    build_digest_coverage_trace,
+                                )
+                                from src.publication.digest_quality_diagnostics import (
+                                    audit_digest_prose_quality,
+                                )
+
+                                quality_audit = audit_digest_prose_quality(
+                                    draft_cand,
+                                    evidence=evidence_dict,
+                                    presentation_plan=presentation_plan,
+                                )
+                                coverage_trace = build_digest_coverage_trace(
+                                    presentation_plan,
+                                    final_digest_draft,
+                                    plan,
+                                )
+                                presentations = presentation_plan.story_presentations
+                                coverage_meta = {
+                                    "planned_story_count": len(presentation_plan.story_ids),
+                                    "dashboard_only_count": sum(
+                                        p.mode == "DASHBOARD_ONLY" for p in presentations
+                                    ),
+                                    "detail_only_count": sum(
+                                        p.mode == "DETAIL_ONLY" for p in presentations
+                                    ),
+                                    "dashboard_and_drilldown_count": sum(
+                                        p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
+                                    ),
+                                    "final_covered_story_count": len(coverage_trace.story_ids),
+                                    "final_digest_story_coverage": coverage_trace.story_coverage,
+                                    "deterministic_digest_fallback_used": False,
+                                    "digest_presentation_plan": presentation_plan.to_audit_dict(),
+                                    "digest_coverage_trace": coverage_trace.to_dict(),
+                                }
+                                await observer.attempt_finished(
+                                    att_id,
+                                    "succeeded",
+                                    metadata={
+                                        "validation": {"is_valid": True},
+                                        "block_count": len(draft_cand.blocks),
+                                        "situation_item_count": len(draft_cand.situation_items),
+                                        "prose_quality_audit": quality_audit.as_metadata(),
+                                        **coverage_meta,
+                                    },
+                                )
+
+                            else:
+                                await observer.attempt_finished(
+                                    att_id,
+                                    "failed",
+                                    error_kind="digest_narrative_validation_failed",
+                                    metadata={
+                                        "error_message": "; ".join(val_res.violations[:5]),
+                                        "violations": list(val_res.violations),
+                                    },
+                                )
 
                     except Exception as exc:
                         logger.warning(

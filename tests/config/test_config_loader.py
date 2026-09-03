@@ -2416,7 +2416,7 @@ def test_publication_editorial_config_single_call_mode(tmp_path, mock_env_vars):
         ({"article_max_direct_quotes": -1}, "must be a non-negative integer"),
         (
             {"digest_narrative_mode": "invalid_mode"},
-            "digest_narrative_mode must be 'deterministic' or 'single_call'",
+            "digest_narrative_mode must be 'deterministic', 'single_call', or 'journalistic'",
         ),
         ({"digest_narrative_max_cards_per_block": 0}, "must be a positive integer"),
         ({"digest_narrative_max_output_tokens": -100}, "must be a positive integer"),
