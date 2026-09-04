@@ -40,3 +40,7 @@ class DigestCoverageInvariantError(RuntimeError):
 
 class UnsupportedFrozenSemanticVersion(ValueError):
     """Raised when frozen publication policy specifies an unsupported semantic version."""
+
+
+class PublicationGenerationError(RuntimeError):
+    """Raised when publication generation fails (e.g. fail-closed digest generation)."""

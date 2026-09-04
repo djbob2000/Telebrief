@@ -19,7 +19,7 @@ from src.publication.editorial_adapter import (
     KnowledgeEditorialAdapter,
 )
 from src.publication.editorializer import DigestEditorializer
-from src.publication.errors import ArticlePublicationRejected
+from src.publication.errors import ArticlePublicationRejected, PublicationGenerationError
 from src.publication.models import Publication
 from src.publication.policies import (
     SUPPORTED_ARTICLE_COVERAGE_PLAN_VERSIONS,
@@ -308,23 +308,35 @@ class PublicationGenerationService:
                                 or getattr(frozen, "edition_name", None)
                                 or "Бердянск"
                             )
-                            date_str = (
-                                run.snapshot_at or dt.datetime.now(dt.timezone.utc)
-                            ).strftime("%d.%m.%Y")
+                            from src.publication.digest_chokepoint import (
+                                filter_digest_candidate_cards,
+                            )
+                            from src.publication.digest_narrative import format_digest_date_ru
+
+                            snap_date = run.snapshot_at or dt.datetime.now(dt.timezone.utc)
+                            date_str_ru = format_digest_date_ru(snap_date)
+                            cards_to_synthesize = filter_digest_candidate_cards(
+                                frozen.analysis.cards
+                            )
                             (
                                 journalistic_text,
                                 draft_cand,
                             ) = await writer.generate_journalistic_digest(
                                 city=city_name,
-                                date_str=date_str,
-                                cards=detail_cards or frozen.analysis.cards,
+                                date_str=date_str_ru,
+                                cards=cards_to_synthesize,
                                 evidence=evidence_dict,
                                 model=getattr(self.config.settings, "openai_model", None)
                                 or getattr(self.config.settings, "ai_model", None),
                                 max_chars=3900,
                                 target_chars=3500,
                             )
-                            title = f"Дайджест: {city_name} · {date_str}"
+                            if not journalistic_text or draft_cand is None:
+                                raise PublicationGenerationError(
+                                    "Journalistic digest generation failed: AI writer was unable to produce a valid draft"
+                                )
+
+                            title = f"Дайджест · {date_str_ru}"
                             lead = ""
                             body = journalistic_text
                             narrative_draft = draft_cand
@@ -508,8 +520,16 @@ class PublicationGenerationService:
                             error_kind="digest_narrative_synthesis_failed",
                             metadata={"error_message": str(exc)},
                         )
+                        if narrative_mode == "journalistic":
+                            raise PublicationGenerationError(
+                                f"Journalistic digest generation failed: {exc}"
+                            ) from exc
 
                 if narrative_draft is None:
+                    if narrative_mode == "journalistic":
+                        raise PublicationGenerationError(
+                            "Journalistic digest generation failed: AI writer was unable to produce a valid draft"
+                        )
                     att_id = await observer.attempt_started(
                         "story_renderer_fallback", metadata={"renderer": run.publication_type}
                     )
