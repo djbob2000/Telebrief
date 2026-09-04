@@ -31,6 +31,8 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     gate = Path(__file__).parent.resolve()
     for item in items:
         if item.path.resolve().is_relative_to(gate):
+            if item.get_closest_marker("unit") is not None:
+                continue
             item.add_marker(
                 pytest.mark.skipif(
                     "TELEBRIEF_TEST_DATABASE_URL" not in os.environ,
