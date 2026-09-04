@@ -341,42 +341,26 @@ class PublicationGenerationService:
                             body = journalistic_text
                             narrative_draft = draft_cand
                             final_digest_draft = draft_cand
-                            from src.publication.digest_coverage import (
-                                build_digest_coverage_trace,
-                            )
 
-                            coverage_trace = build_digest_coverage_trace(
-                                presentation_plan,
-                                final_digest_draft,
-                                plan,
-                            )
-                            presentations = presentation_plan.story_presentations
+                            covered_sids = [
+                                sid
+                                for b in draft_cand.blocks
+                                for it in b.items
+                                for sid in it.covered_story_ids
+                            ]
                             coverage_meta = {
-                                "planned_story_count": len(presentation_plan.story_ids),
-                                "dashboard_only_count": sum(
-                                    p.mode == "DASHBOARD_ONLY" for p in presentations
-                                ),
-                                "detail_only_count": sum(
-                                    p.mode == "DETAIL_ONLY" for p in presentations
-                                ),
-                                "dashboard_and_drilldown_count": sum(
-                                    p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
-                                ),
-                                "final_covered_story_count": len(coverage_trace.story_ids),
-                                "final_digest_story_coverage": coverage_trace.story_coverage,
-                                "deterministic_digest_fallback_used": False,
-                                "digest_presentation_plan": presentation_plan.to_audit_dict(),
-                                "digest_coverage_trace": coverage_trace.to_dict(),
+                                "mode": "journalistic",
+                                "candidate_cards_count": len(cards_to_synthesize),
+                                "total_raw_cards_count": len(frozen.analysis.cards),
+                                "block_count": len(draft_cand.blocks),
+                                "covered_story_count": len(set(covered_sids)),
+                                "final_length": len(body),
+                                "single_message_safe": len(body) <= 4096,
                             }
                             await observer.attempt_finished(
                                 att_id,
                                 "succeeded",
-                                metadata={
-                                    "mode": "journalistic",
-                                    "final_length": len(body),
-                                    "single_message_safe": len(body) <= 4096,
-                                    **coverage_meta,
-                                },
+                                metadata=coverage_meta,
                             )
                         else:
                             draft_cand = await writer.generate_narrative_draft(

@@ -56,7 +56,13 @@ async def test_generate_journalistic_digest_single_pass_when_under_limit():
     )
 
     assert len(provider.calls) == 1
-    assert result_text == short_text.strip()
+    expected_body = (
+        "🔌 Электроснабжение\n"
+        "• **Свет на Нагорной**: электроснабжение восстановлено к 14:00.\n\n"
+        "💧 Водоснабжение\n"
+        "• **Ремонт на Восточном**: подвоз воды организован у школы №3."
+    )
+    assert result_text == expected_body
     assert len(draft.blocks) >= 2
 
 
@@ -104,7 +110,13 @@ async def test_generate_journalistic_digest_two_pass_when_over_limit():
 
     # Must have performed Pass 1 (generation) and Pass 2 (condensation)
     assert len(provider.calls) == 2
-    assert result_text == condensed_text.strip()
+    expected_condensed_body = (
+        "🔌 Электроснабжение\n"
+        "• **Подстанция**: ремонт завершен, напряжение подано.\n\n"
+        "💧 Водоснабжение\n"
+        "• **Восточный**: вода подается в штатном режиме."
+    )
+    assert result_text == expected_condensed_body
     assert len(result_text) <= 3900
     assert len(draft.blocks) >= 1
 

@@ -1243,8 +1243,8 @@ def parse_journalistic_markdown_to_draft(
         if not stripped:
             continue
 
-        clean_hdr = stripped.strip("*_ #").lower()
-        if clean_hdr.startswith("дайджест"):
+        clean_hdr = re.sub(r"[^\w\s-]", "", stripped).lower()
+        if clean_hdr.startswith(("дайджест", "дайдджест")):
             continue
 
         is_bullet = stripped.startswith(_ITEM_BULLET_PREFIXES)
@@ -1415,6 +1415,14 @@ class DigestNarrativeWriter:
         # Final deterministic safety net
         if len(clean_draft) > max_chars:
             clean_draft = enforce_telegram_single_message_limit(clean_draft, max_chars=max_chars)
+
+        # Strip redundant leading title header if generated in body
+        clean_draft = re.sub(
+            r"^\s*[*_#\s]*дайд[жд]*ест[^\n]*[*_#\s]*\n+",
+            "",
+            clean_draft,
+            flags=re.IGNORECASE,
+        ).strip()
 
         draft = parse_journalistic_markdown_to_draft(
             clean_draft, cards=filtered_cards, evidence=evidence
