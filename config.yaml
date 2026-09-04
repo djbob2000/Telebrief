@@ -122,7 +122,7 @@ settings:
     live_batch_size: 500
 
   publication_editorial:
-    digest_narrative_mode: "single_call"
+    digest_narrative_mode: "journalistic"
     digest_narrative_max_cards_per_block: 6
     digest_narrative_max_output_tokens: 4096
     digest_city_situation_max_items: 7

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import re
 from dataclasses import dataclass
@@ -1032,6 +1033,25 @@ def build_deterministic_digest_draft(
     return DigestNarrativeDraft(blocks=tuple(block_drafts), situation_items=())
 
 
+def format_digest_date_ru(snapshot_at: dt.datetime) -> str:
+    """Format date in Russian: e.g. 04 сентября 2026."""
+    months_ru = (
+        "января",
+        "февраля",
+        "марта",
+        "апреля",
+        "мая",
+        "июня",
+        "июля",
+        "августа",
+        "сентября",
+        "октября",
+        "ноября",
+        "декабря",
+    )
+    return f"{snapshot_at.day:02d} {months_ru[snapshot_at.month - 1]} {snapshot_at.year}"
+
+
 DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регионального издания, готовящий ежедневный вечерний Telegram-дайджест города {city} за {date}.
 
 ВАША ЦЕЛЬ:
@@ -1040,25 +1060,32 @@ DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регио�
 СТРУКТУРА ДАЙДЖЕСТА:
 Дайджест · {date}
 
-[3-4 ключевые тематические рубрики, например:
-⚡️ Коммунальная обстановка и ЖКХ
-🚌 Транспорт, связь и сервисы
-🎓 Образование и школьная жизнь
-📌 Городские события и быт]
+[Выберите 3-4 наиболее активные тематические рубрики дня из доступных:
+Коммунальная обстановка
+Безопасность и чрезвычайные ситуации
+Социальная помощь
+Связь и интернет
+Транспорт и дороги
+Медицина и здоровье
+Городские события и быт]
 
-Внутри каждой рубрики:
-• **Краткий заголовок факта**: плотное информативное раскрытие сути события в 1-2 предложениях с сохранением ключевой конкретики (улицы, номера домов, графики, цены, решения жителей).
+ВЫВОДИТЕ ТОЛЬКО те рубрики, по которым сегодня есть реальные новости. Пустые рубрики НЕ выводить!
+
+Внутри каждой рубрики — 1-3 содержательных пункта. Каждый пункт начинается с подходящего тематического эмодзи (⚡, 💧, 📄, 💥, 💳, 🚌, 📱, 🏥, 🎓, 🏠):
+⚡ В городе продолжаются масштабные перебои с центральным электроснабжением: в ряде районов воду подают с помощью генераторов по графику с 17:00 до 21:00, а днём на отдельных участках фиксировались кратковременные скачки напряжения.
+💥 Сообщения о взрывах в городе и районе: Поздним вечером 3 сентября (в промежутке между 21:00 и 22:20) жители Бердянска и населённых пунктов района сообщили о серии громких звуков взрывов, шуме беспилотников и вспышках в небе.
+💳 Зачисление детских выплат: Начиная с 3 сентября жители города начали получать регулярные начисления единого ежемесячного пособия и детских выплат на карты банков.
 
 ПРАВИЛА И СТИЛЬ:
-1. Журналистский стиль: чистый, энергичный русский язык. Если исходное сообщение на украинском языке — точно и грамотно переведите его на русский.
-2. Синтез и объединение: не пишите 10 отдельных пунктов про одно и то же отключение света. Объедините их в один цельный пункт, указав затронутые районы, улицы и характер проблемы.
-3. Микродетали: сохраняйте конкретные улицы, номера маршрутов, цены, технические подробности (генераторы, оптоволокно, врезки в подвалах).
-4. Очистка от мусора: полностью исключайте флуд в чатах, пустые ссылки, спам телефонов и частные объявления.
-5. Никаких шаблонных повторов («По сообщениям жителей... По сообщениям жителей...»). Вводные конструкции используйте естественно и разнообразно («По словам горожан...», «В местных чатах отмечают...», «Как рассказали жители...»).
+1. Журналистский стиль: чистый, энергичный русский язык региональной хроники. Точный перевод украинских сообщений на русский.
+2. Синтез и объединение: объединяйте все разрозненные сообщения об одной теме (жалобы на отключение света, насосы, напряжение, графики воды) в один цельный, насыщенный фактами абзац. Не делайте отдельные пункты на каждый похожий комментарий.
+3. Сохраняйте микродетали: точные улицы, районы, графики подачи, номера маршрутов, цены, важные решения жителей.
+4. Очистка от рекламы и спама: категорически исключайте коммерческие перевозки за границу ($450), разблокировку карт и счетов, прайс-листы клиник/процедур, рекламу общепита и бытовой чат-флуд («все живые», пустые реплики).
+5. КАТЕГОРИЧЕСКИЙ ЗАПРЕТ НА ШАБЛОННЫЕ ПОВТОРЫ: запрещено начинать каждое предложение с «По сообщениям жителей...». Используйте естественные и разнообразные обороты («По словам горожан...», «В местных чатах отмечают...», «Как рассказали жители...») либо пишите сразу от сути события.
 6. СТРОГОЕ ОГРАНИЧЕНИЕ ДЛИНЫ (ОДНО СООБЩЕНИЕ TELEGRAM):
    - Дайджест ДОЛЖЕН целиком помещаться в ОДНО сообщение Telegram (жесткий лимит Telegram — 4096 символов).
    - Общий объём текста должен быть строго в диапазоне 2500–3500 знаков.
-   - Сформируйте ровно 3–4 рубрики, в каждой — строго по 2–3 самых важных пункта.
+   - Сформируйте ровно 3–4 рубрики, в каждой — строго по 1–3 самых важных пункта.
 
 МАТЕРИАЛЫ ДНЯ ДЛЯ ДАЙДЖЕСТА:
 {content}
@@ -1155,68 +1182,141 @@ def parse_journalistic_markdown_to_draft(
             block_counter += 1
             current_items = []
 
-    item_re = re.compile(r"^•\s+\*\*([^*]+)\*\*[:.]?\s*(.*)$")
+    _ITEM_BULLET_PREFIXES = ("•", "-", "*•", "* -")
+    _ITEM_EMOJIS = (
+        "⚡️",
+        "⚡",
+        "💧",
+        "📄",
+        "💥",
+        "💳",
+        "🚌",
+        "📱",
+        "🏥",
+        "🏫",
+        "🏠",
+        "🚨",
+        "⚠️",
+        "🛩",
+        "✈️",
+        "🏢",
+        "🚜",
+        "☀️",
+        "🏖",
+        "🚧",
+        "🔌",
+    )
+
+    re_bullet_bold = re.compile(
+        r"^(?:[•\-\*]\s*)?(?:[⚡️⚡💧📄💥💳🚌📱🏥🏫🏠🚨⚠️🛩✈️🏢🚜☀️🏖🚧🔌]\s*)?\*\*([^*]+)\*\*[:.]?\s*(.*)$"
+    )
+    re_emoji_colon = re.compile(
+        r"^(?:[•\-\*]\s*)?[⚡️⚡💧📄💥💳🚌📱🏥🏫🏠🚨⚠️🛩✈️🏢🚜☀️🏖🚧🔌]\s*([^:\n]{3,80})[:]\s*(.*)$"
+    )
+    re_emoji_body = re.compile(r"^(?:[•\-\*]\s*)?[⚡️⚡💧📄💥💳🚌📱🏥🏫🏠🚨⚠️🛩✈️🏢🚜☀️🏖🚧🔌]\s*(.*)$")
+    re_plain_bullet = re.compile(r"^[•\-\*]\s*([^:\n]{3,80})[:]\s*(.*)$")
+
+    rubric_keywords = (
+        "коммунальн",
+        "инфраструктур",
+        "жкх",
+        "электроснабжен",
+        "водоснабжен",
+        "безопасн",
+        "чрезвычайн",
+        "социальн",
+        "связь",
+        "интернет",
+        "транспорт",
+        "дорог",
+        "медицин",
+        "здоровь",
+        "образован",
+        "городск",
+        "быт",
+        "другое",
+        "в фокусе",
+    )
+
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-        is_header = not stripped.startswith(("•", "-", "*•")) and (
-            any(
-                stripped.startswith(p)
-                for p in (
-                    "*⚡️",
-                    "*🚌",
-                    "*🎓",
-                    "*📌",
-                    "*💼",
-                    "*🏙",
-                    "⚡️",
-                    "🚌",
-                    "🎓",
-                    "📌",
-                    "💼",
-                    "🏙",
-                    "🔌",
-                    "💧",
-                    "🏠",
-                    "🏫",
-                    "🛩",
-                    "✈️",
-                    "🏢",
-                    "⚠️",
-                    "🚨",
-                    "📱",
-                    "🚜",
-                    "☀️",
-                    "🏖",
-                    "🚧",
-                    "##",
-                    "###",
-                )
+
+        clean_hdr = stripped.strip("*_ #").lower()
+        if clean_hdr.startswith("дайджест"):
+            continue
+
+        is_bullet = stripped.startswith(_ITEM_BULLET_PREFIXES)
+        is_header = not is_bullet and (
+            stripped.startswith(("##", "###"))
+            or (
+                any(k in clean_hdr for k in rubric_keywords)
+                and len(stripped) <= 60
+                and not (":" in stripped and len(stripped) > 35)
             )
         )
+
         if is_header:
             _flush()
-            clean_hdr = stripped.strip("*_ #").lower()
             if any(k in clean_hdr for k in ("жкх", "коммун", "электр", "вода", "энерг")):
                 current_rubric_id = "infrastructure"
-            elif any(k in clean_hdr for k in ("транспорт", "дорог", "связь", "сервис")):
-                current_rubric_id = "transport"
-            elif any(k in clean_hdr for k in ("образов", "школ", "культур", "социальн", "дет")):
-                current_rubric_id = "education"
             elif any(
-                k in clean_hdr for k in ("безопасн", "тревог", "чп", "обстрел", "пво", "сирен")
+                k in clean_hdr
+                for k in ("безопасн", "тревог", "чп", "обстрел", "пво", "сирен", "взрыв")
             ):
                 current_rubric_id = "safety"
-            elif any(k in clean_hdr for k in ("город", "сред", "благоустрой")):
+            elif any(k in clean_hdr for k in ("социальн", "выплат", "пенси", "пособи")):
+                current_rubric_id = "social"
+            elif any(k in clean_hdr for k in ("транспорт", "дорог")):
+                current_rubric_id = "transport"
+            elif any(k in clean_hdr for k in ("связь", "интернет")):
+                current_rubric_id = "communications"
+            elif any(k in clean_hdr for k in ("медицин", "здоров", "больниц", "аптек")):
+                current_rubric_id = "health"
+            elif any(k in clean_hdr for k in ("образов", "школ", "культур")):
+                current_rubric_id = "education"
+            elif any(k in clean_hdr for k in ("город", "сред", "благоустрой", "быт")):
                 current_rubric_id = "urban_life"
             else:
                 current_rubric_id = "general"
             continue
-        m = item_re.match(stripped)
-        if m:
-            headline = m.group(1).strip().rstrip(".:;, ")
-            body = m.group(2).strip()
+
+        headline = ""
+        body = ""
+        m_bold = re_bullet_bold.match(stripped)
+        if m_bold:
+            headline = m_bold.group(1).strip().rstrip(".:;, ")
+            body = m_bold.group(2).strip()
+        else:
+            m_colon = re_emoji_colon.match(stripped)
+            if m_colon:
+                headline = m_colon.group(1).strip().rstrip(".:;, ")
+                body = m_colon.group(2).strip()
+            else:
+                m_body = re_emoji_body.match(stripped)
+                if m_body:
+                    full_body = m_body.group(1).strip()
+                    if ":" in full_body and len(full_body.split(":", 1)[0]) <= 80:
+                        h, b = full_body.split(":", 1)
+                        headline = h.strip().rstrip(".:;, ")
+                        body = b.strip()
+                    else:
+                        parts = re.split(r"[.!?]\s+", full_body, maxsplit=1)
+                        headline = parts[0][:60].strip().rstrip(".:;, ")
+                        body = full_body
+                else:
+                    m_plain = re_plain_bullet.match(stripped)
+                    if m_plain:
+                        headline = m_plain.group(1).strip().rstrip(".:;, ")
+                        body = m_plain.group(2).strip()
+
+        if headline or body:
+            if not headline:
+                headline = body[:50].strip()
+            if not body:
+                body = headline
+
             item_toks = {
                 t for t in re.findall(r"[\w-]+", (headline + " " + body).lower()) if len(t) >= 3
             }
@@ -1262,8 +1362,11 @@ class DigestNarrativeWriter:
         target_chars: int = 3500,
     ) -> tuple[str, DigestNarrativeDraft]:
         """Synthesize journalistic digest in two passes: full draft, then conditional AI condensation if > max_chars."""
+        from src.publication.digest_chokepoint import filter_digest_candidate_cards
+
+        filtered_cards = filter_digest_candidate_cards(cards)
         cards_text_blocks = []
-        for c in cards:
+        for c in filtered_cards:
             if not c.topic:
                 continue
             facts = [f.text for f in getattr(c, "hard_facts", ()) if f.text]
@@ -1273,7 +1376,7 @@ class DigestNarrativeWriter:
             block = f"- [{c.topic}] {details_str}"
             cards_text_blocks.append(block)
 
-        content_for_llm = "\n".join(cards_text_blocks[:45])
+        content_for_llm = "\n".join(cards_text_blocks[:35])
 
         prompt = DIGEST_PROMPT_TEMPLATE.format(
             city=city,
@@ -1284,7 +1387,7 @@ class DigestNarrativeWriter:
         logger.info("Digest Pass 1: Generating full-text journalistic draft...")
         raw_response = await self._provider.chat_completion(
             messages=[{"role": "user", "content": prompt}],
-            model=model or "minimax/minimax-m3:free:floor",
+            model=model,
         )
         clean_draft = _clean_markdown_fence(raw_response)
 
@@ -1305,7 +1408,7 @@ class DigestNarrativeWriter:
             )
             raw_condensed = await self._provider.chat_completion(
                 messages=[{"role": "user", "content": condense_prompt}],
-                model=model or "minimax/minimax-m3:free:floor",
+                model=model,
             )
             clean_draft = _clean_markdown_fence(raw_condensed)
 
@@ -1313,7 +1416,9 @@ class DigestNarrativeWriter:
         if len(clean_draft) > max_chars:
             clean_draft = enforce_telegram_single_message_limit(clean_draft, max_chars=max_chars)
 
-        draft = parse_journalistic_markdown_to_draft(clean_draft, cards=cards, evidence=evidence)
+        draft = parse_journalistic_markdown_to_draft(
+            clean_draft, cards=filtered_cards, evidence=evidence
+        )
         return clean_draft, draft
 
     async def generate_narrative_draft(

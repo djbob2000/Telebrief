@@ -160,3 +160,27 @@ def test_parse_journalistic_markdown_to_draft():
     # Check that story IDs were mapped
     found_sids = [sid for b in draft.blocks for it in b.items for sid in it.covered_story_ids]
     assert "s1" in found_sids or "s2" in found_sids or "s3" in found_sids
+
+
+@pytest.mark.unit
+def test_parse_journalistic_markdown_custom_branch_format():
+    custom_text = (
+        "Дайджест · 04 сентября 2026\n\n"
+        "Коммунальная обстановка\n\n"
+        "⚡ В городе продолжаются масштабные перебои с центральным электроснабжением: в ряде районов воду подают с помощью генераторов по графику с 17:00 до 21:00, а днём на отдельных участках фиксировались кратковременные скачки напряжения.\n\n"
+        "📄 Горожане обратили внимание на получение квитанций за август с объединёнными счетами за коммунальные услуги, включая корректировки и начисления за свет и отопление.\n\n"
+        "Безопасность и чрезвычайные ситуации\n\n"
+        "💥 Сообщения о взрывах в городе и районе: Поздним вечером 3 сентября (в промежутке между 21:00 и 22:20) жители Бердянска и населённых пунктов района сообщили о серии громких звуков взрывов, шуме беспилотников и вспышках в небе.\n\n"
+        "Социальная помощь\n\n"
+        "💳 Зачисление детских выплат: Начиная с 3 сентября жители города начали получать регулярные начисления единого ежемесячного пособия и детских выплат на карты банков.\n"
+    )
+    draft = parse_journalistic_markdown_to_draft(custom_text, cards=[])
+    assert len(draft.blocks) == 3
+    assert draft.blocks[0].block_id.startswith("block:infrastructure:")
+    assert len(draft.blocks[0].items) == 2
+    assert draft.blocks[1].block_id.startswith("block:safety:")
+    assert len(draft.blocks[1].items) == 1
+    assert draft.blocks[2].block_id.startswith("block:social:") or draft.blocks[
+        2
+    ].block_id.startswith("block:education:")
+    assert len(draft.blocks[2].items) == 1
