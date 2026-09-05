@@ -461,32 +461,11 @@ class StoryTriageService:
             f"{_GATE_V2_SYSTEM_PROMPT}\n{user_prompt}".encode("utf-8")
         ).hexdigest()
 
-        # 5. Record batch audit run start
+        # 5. Prepare audit run info (written to DB after LLM call to avoid holding locks)
         provider_name = getattr(self.ai, "primary_provider_name", None) or getattr(
             self.ai, "provider_name", "ai_cascade"
         )
         model_name = getattr(self.ai, "model_name", None) or self.model or "default"
-
-        cursor = await conn.execute(
-            """
-            INSERT INTO story_event_triage_runs (
-                triage_version, provider, model, prompt_hash, story_count, input_chars, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, 'running')
-            RETURNING id
-            """,
-            (
-                TRIAGE_VERSION,
-                str(provider_name),
-                str(model_name),
-                prompt_hash,
-                len(uncached_stories),
-                len(user_prompt),
-            ),
-        )
-        run_row = await cursor.fetchone()
-        if run_row is None:
-            raise RuntimeError("Failed to insert story_event_triage_runs")
-        run_id = int(run_row[0])
 
         # 6. Call LLM
         try:
@@ -784,23 +763,47 @@ class StoryTriageService:
                 )
                 new_valid_results.append(gate_res)
 
-            await conn.execute(
+            cursor = await conn.execute(
                 """
-                UPDATE story_event_triage_runs
-                SET status = 'succeeded', output_chars = %s, completed_at = now()
-                WHERE id = %s
+                INSERT INTO story_event_triage_runs (
+                    triage_version, provider, model, prompt_hash, story_count, input_chars, output_chars, status, completed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'succeeded', now())
+                RETURNING id
                 """,
-                (len(raw_response), run_id),
+                (
+                    TRIAGE_VERSION,
+                    str(provider_name),
+                    str(model_name),
+                    prompt_hash,
+                    len(uncached_stories),
+                    len(user_prompt),
+                    len(raw_response),
+                ),
             )
+            run_row = await cursor.fetchone()
+            if run_row is None:
+                raise RuntimeError("Failed to insert story_event_triage_runs")
+            run_id = int(run_row[0])
         except Exception as exc:
-            await conn.execute(
-                """
-                UPDATE story_event_triage_runs
-                SET status = 'failed', error_kind = %s, completed_at = now()
-                WHERE id = %s
-                """,
-                (type(exc).__name__, run_id),
-            )
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO story_event_triage_runs (
+                        triage_version, provider, model, prompt_hash, story_count, input_chars, status, error_kind, completed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, 'failed', %s, now())
+                    """,
+                    (
+                        TRIAGE_VERSION,
+                        str(provider_name),
+                        str(model_name),
+                        prompt_hash,
+                        len(uncached_stories),
+                        len(user_prompt),
+                        type(exc).__name__,
+                    ),
+                )
+            except Exception as log_exc:
+                self.logger.warning("Failed to record failed triage run: %s", log_exc)
             self.logger.warning("Story triage batch failed: %s; deferring stories", exc)
             return StoryGateBatchResult(
                 results=tuple(valid_results),

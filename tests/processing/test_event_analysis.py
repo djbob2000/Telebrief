@@ -216,7 +216,7 @@ async def test_event_analysis_service_workflow(conn, edition, revision):
         """
         INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
         OVERRIDING SYSTEM VALUE VALUES
-        (5001, 'hash_ea', '[1, 0, 0, 0]'::vector, 'test-model', 4)
+        (985001, 'hash_ea', '[1, 0, 0, 0]'::vector, 'test-model', 4)
         """
     )
     await conn.execute(
@@ -225,7 +225,7 @@ async def test_event_analysis_service_workflow(conn, edition, revision):
             id, source_item_revision_id, ordinal, text_content, normalized_hash,
             fragmenter_version, is_candidate, drop_reason, created_at
         ) OVERRIDING SYSTEM VALUE VALUES
-        (6001, %s, 0, 'Outage on AKZ district', 'hash_ea', 'v1', TRUE, NULL, %s)
+        (986001, %s, 0, 'Outage on AKZ district', 'hash_ea', 'v1', TRUE, NULL, %s)
         """,
         (revision.id, now),
     )
@@ -233,15 +233,15 @@ async def test_event_analysis_service_workflow(conn, edition, revision):
         """
         INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
         OVERRIDING SYSTEM VALUE VALUES
-        (7001, 6001, 5001)
+        (987001, 986001, 985001)
         """
     )
 
     assignment_id = await cluster_repo.assign_fragment_to_story(
         conn,
         story_id=story_id,
-        fragment_id=6001,
-        fragment_embedding_id=7001,
+        fragment_id=986001,
+        fragment_embedding_id=987001,
         assignment_kind="new_story",
     )
     await cluster_repo.upsert_cluster_state(
@@ -321,7 +321,7 @@ async def test_event_analysis_preserves_kept_community_story_publishability(
         """
         INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
         OVERRIDING SYSTEM VALUE VALUES
-        (5002, 'hash_comm', '[1, 0, 0, 0]'::vector, 'test-model', 4)
+        (985002, 'hash_comm', '[1, 0, 0, 0]'::vector, 'test-model', 4)
         """
     )
     await conn.execute(
@@ -330,7 +330,7 @@ async def test_event_analysis_preserves_kept_community_story_publishability(
             id, source_item_revision_id, ordinal, text_content, normalized_hash,
             fragmenter_version, is_candidate, drop_reason, created_at
         ) OVERRIDING SYSTEM VALUE VALUES
-        (6002, %s, 0, 'На Горе света нет', 'hash_comm', 'v1', TRUE, NULL, %s)
+        (986002, %s, 0, 'На Горе света нет', 'hash_comm', 'v1', TRUE, NULL, %s)
         """,
         (revision.id, now),
     )
@@ -338,15 +338,15 @@ async def test_event_analysis_preserves_kept_community_story_publishability(
         """
         INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
         OVERRIDING SYSTEM VALUE VALUES
-        (7002, 6002, 5002)
+        (987002, 986002, 985002)
         """
     )
 
     assignment_id = await cluster_repo.assign_fragment_to_story(
         conn,
         story_id=story_id,
-        fragment_id=6002,
-        fragment_embedding_id=7002,
+        fragment_id=986002,
+        fragment_embedding_id=987002,
         assignment_kind="new_story",
     )
     await cluster_repo.upsert_cluster_state(
@@ -377,7 +377,7 @@ async def test_event_analysis_preserves_kept_community_story_publishability(
                 "text": "На Горе света нет",
                 "kind": "community_report",
                 "publication_use": "PUBLISH",
-                "source_fragment_ids": [6002],
+                "source_fragment_ids": [986002],
             }
         ],
         "community_observations": ["На Горе света нет"],

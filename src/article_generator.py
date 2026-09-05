@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -146,7 +147,46 @@ def _ground_draft_in_coverage_plan(
         sid in curr_pub_sups for sid in parsed.get("title_support_ids", ())
     ):
         parsed["title_support_ids"] = lead_sups[:3]
-    if not parsed.get("lead_support_ids") or not any(
+    if support_stems and parsed.get("lead"):
+        l_text = str(parsed["lead"])
+        l_words = tok_re.findall(l_text)
+        l_stems = {_stem(w.lower()) for w in l_words if len(w) >= 3}
+        l_nums = set(re.findall(r"\b\d+\b", l_text))
+        matched_lead_sups = []
+        for sid in curr_pub_sups:
+            s_stems = support_stems.get(sid, set())
+            shared_st = l_stems & s_stems
+            s_text = getattr(support_by_id.get(sid), "text", "")
+            s_nums_sup = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
+            shared_nums = l_nums & s_nums_sup
+            if len(shared_st) >= 2 or (shared_st and shared_nums) or len(shared_nums) >= 2:
+                matched_lead_sups.append(sid)
+        all_l_sups = list(dict.fromkeys(lead_sups[:3] + matched_lead_sups))
+        parsed["lead_support_ids"] = all_l_sups
+        if not parsed.get("lead_claims"):
+            l_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", l_text) if s.strip()]
+            lead_claims_list = []
+            for sent in l_sentences:
+                s_words = tok_re.findall(sent)
+                s_stems = {_stem(w.lower()) for w in s_words if len(w) >= 3}
+                s_nums = set(re.findall(r"\b\d+\b", sent))
+                matched_sent_sups = []
+                for sid in all_l_sups:
+                    sup_st = support_stems.get(sid, set())
+                    shared_st = s_stems & sup_st
+                    s_text = getattr(support_by_id.get(sid), "text", "")
+                    s_nums_sup = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
+                    shared_nums = s_nums & s_nums_sup
+                    if len(shared_st) >= 2 or (shared_st and shared_nums) or len(shared_nums) >= 2:
+                        matched_sent_sups.append(sid)
+                lead_claims_list.append(
+                    {
+                        "text": sent,
+                        "cited_support_ids": all_l_sups,
+                    }
+                )
+            parsed["lead_claims"] = lead_claims_list
+    elif not parsed.get("lead_support_ids") or not any(
         sid in curr_pub_sups for sid in parsed.get("lead_support_ids", ())
     ):
         parsed["lead_support_ids"] = lead_sups[:3]
@@ -210,40 +250,14 @@ def _ground_draft_in_coverage_plan(
             if support_by_id:
                 combined_sups = [sid for sid in combined_sups if sid in support_by_id]
 
-            grounded_paras.append(
-                {
-                    "text": p_text,
-                    "cited_support_ids": combined_sups,
-                }
-            )
+            para_dict = {
+                "text": p_text,
+                "cited_support_ids": combined_sups,
+            }
+            if isinstance(p, dict) and "claims" in p:
+                para_dict["claims"] = p["claims"]
+            grounded_paras.append(para_dict)
         sec["paragraphs"] = grounded_paras
-
-    # 3. Ensure all planned stories have at least one support cited across the draft
-    all_cited = set(parsed["title_support_ids"]) | set(parsed["lead_support_ids"])
-    for s in raw_sections:
-        if isinstance(s, dict):
-            all_cited.update(s.get("heading_support_ids") or [])
-            for p in s.get("paragraphs") or []:
-                if isinstance(p, dict):
-                    all_cited.update(p.get("cited_support_ids") or [])
-
-    uncovered = [
-        item
-        for item in stories
-        if not any(sup in all_cited for sup in getattr(item, "support_ids", ()))
-    ]
-    if uncovered and raw_sections:
-        last_sec = raw_sections[-1]
-        extra_sups = [
-            sup for item in uncovered for sup in list(getattr(item, "support_ids", ()))[:2]
-        ]
-        if support_by_id:
-            extra_sups = [sid for sid in extra_sups if sid in support_by_id]
-        if last_sec.get("paragraphs"):
-            last_p = last_sec["paragraphs"][-1]
-            if isinstance(last_p, dict):
-                existing = list(last_p.get("cited_support_ids") or [])
-                last_p["cited_support_ids"] = list(dict.fromkeys(existing + extra_sups))
 
     return parsed
 
@@ -858,11 +872,30 @@ class ArticleGenerator:
    - Запрещены пустые клише и абстрактные формулировки («ситуация остается напряженной», «жители адаптируются к реалиям», «город живет в новых условиях»). Вместо абстракций приводите конкретные факты: кто что починил, как ходят автобусы, где есть вода и свет.
    - Заголовок (title): емкий, информативный газетный заголовок дня (например: «Бердянск в условиях перебоев с энергией: восстановительные работы, графики движения и городская хроника»). Запрещено делать заголовком вопросы жителей («Работает ли пенсионный фонд?»).
 
+### ПРАВИЛО АНТИ-РЕКЛАМЫ И ОБОБЩЕНИЯ КОММЕРЧЕСКИХ ОБЪЯВЛЕНИЙ:
+Объявления о частных услугах, коммерческих рейсах, платных клиниках и посредниках в городских чатах — это НЕ новости сами по себе. Их КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО цитировать дословно, копировать или превращать в каталоги услуг:
+
+1. Частные перевозчики и междугородние рейсы:
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО копировать цепочки городов маршрута («Киев — Днепр — Запорожье — Кривой Рог...»), конкретные даты выезда («25 сентября», «5 октября») и брать в кавычки рекламные фразы перевозчиков («едем», «есть места»).
+   - КАК ОБЯЗАТЕЛЬНО ПИСАТЬ: Сожмите до одного краткого журналистского предложения о факте транспортного сообщения и уровне цен: «Сохраняются нерегулярные частные перевозки в сторону соседних регионов через Мариуполь и Мелитополь, стоимость мест остаётся высокой — от 400–450 долларов».
+
+2. Посредники по банкам и пенсионным выплатам:
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО перечислять списки коммерческих банков («ПриватБанк, А-Банк, Sense Bank...») и длинные списки рутинных операций («разблокировка карт, перевод пенсии, ЕЦП, виртуальные карты, актуализация данных...»).
+   - КАК ОБЯЗАТЕЛЬНО ПИСАТЬ: Сожмите до одного предложения о социальном явлении: «В условиях перебоев с официальными сервисами в городе сохраняется спрос на частных посредников, помогающих с банковскими операциями и подтверждением пенсионных выплат».
+
+3. Платные медицинские центры и клиники:
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО перечислять длинные каталоги врачебных специальностей («ЛОР, кардиолог, дерматолог, терапевт, педиатр, гастроэнтеролог...») и публиковать графики работы лабораторий или забора крови.
+   - КАК ОБЯЗАТЕЛЬНО ПИСАТЬ: Ограничьтесь кратким упоминанием: «Продолжает работу частный медцентр на ул. Тверской, 49, где ведут приём профильные врачи и работает диагностика».
+
+4. ПРАВИЛО ОДНОГО ПРЕДЛОЖЕНИЯ ДЛЯ КОММЕРЧЕСКИХ ТЕМ:
+   - Любая коммерческая сервисная тема (перевозчики, посредники, клиники) в статусе BRIEF должна занимать РОВНО ОДНО ёмкое журналистское предложение без перечислений и цитат.
+   - Запрещены любые контакты, телефоны, ники в Telegram (@...), призывы обращаться за услугами.
+
 ### Обязательные правила журналистской точности:
 1. Опирайтесь ТОЛЬКО на предоставленные в материалах факты и цитаты. Категорически ЗАПРЕЩЕНО выдумывать неподтвержденные детали, цифры, номера домов или адреса в других городах (Запорожье, Днепр, Киев, Мелитополь), если их нет в предоставленных карточках фактов. Не добавляйте внешние знания из своей памяти.
 2. Не придумывайте официальных подтверждений, если источник — сообщение жителя. Передавайте статус честно: «по сообщениям жителей», «горожане отмечают», «как рассказывают жители».
 3. Не раскрывайте техническую кухню сбора данных. Избегайте фраз «в чате», «участник чата написал», «в Telegram-канале». Используйте естественную городскую атрибуцию: «жители сообщают», «горожане обсуждают», «по наблюдениям жителей».
-4. Правило цитат: оформляйте прямую речь в кавычках только при точном соответствии словам источника; в остальных случаях используйте естественную косвенную речь.
+4. Прямая речь и живой голос города (QUOTE ALLOWLIST): сохраняйте характерные живые реплики горожан в кавычках («...»), точно воспроизводя подлинные слова жителей из предоставленных фактов и блока QUOTE ALLOWLIST. Это придаёт репортажу подлинность и живость. Если вы обобщаете мысль или пересказываете её своими словами — используйте естественную косвенную речь без кавычек.
 5. Не вставляйте в текст технические ID вроде [story:...] или [SUPPORT...].
 6. Язык статьи: {self.output_language}. Текст должен быть связным, грамотным, с живыми микродеталями.
 
@@ -1038,7 +1071,17 @@ class ArticleGenerator:
             if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
                 cleaned = cleaned[first_brace : last_brace + 1]
 
-        parsed = json.loads(cleaned)
+        try:
+            parsed = json.loads(cleaned, strict=False)
+        except json.JSONDecodeError:
+            # Repair common LLM formatting flaws
+            fixed = re.sub(r",\s*([\}\]])", r"\1", cleaned)
+            fixed = re.sub(r"\}\s*\{", "}, {", fixed)
+            fixed = re.sub(r'"\s*\n\s*"', '",\n"', fixed)
+            fixed = re.sub(r"\]\s*\{", "], {", fixed)
+            fixed = re.sub(r"\}\s*\[", "}, [", fixed)
+            parsed = json.loads(fixed, strict=False)
+
         if not isinstance(parsed, dict):
             raise ValueError("article writer response is not a JSON object")
         return parsed

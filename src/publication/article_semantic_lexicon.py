@@ -25,7 +25,20 @@ _CONCEPT_PREFIXES: dict[str, tuple[str, ...]] = {
     "water": tuple(_norm(p) for p in ("вод", "водопостач", "водоснабж", "подач")),
     "gas": tuple(_norm(p) for p in ("газопостач", "газоснабж", "газопровод", "горгаз")),
     "heating": tuple(_norm(p) for p in ("отоплен", "тепло", "опален")),
-    "transport": tuple(_norm(p) for p in ("транспорт", "автобус", "маршрутк")),
+    "transport": tuple(
+        _norm(p)
+        for p in (
+            "транспорт",
+            "автобус",
+            "маршрут",
+            "водител",
+            "поездк",
+            "проезд",
+            "рейс",
+            "пассажир",
+            "едем",
+        )
+    ),
     "fuel": tuple(_norm(p) for p in ("топлив", "бензин", "дизел", "палив")),
 }
 
@@ -55,9 +68,12 @@ def _normalize_phrases(text: str) -> str:
 
 def canonicalize_semantic_token(token: str) -> str:
     norm = _norm(token)
-    # Exclude false-positive water matches like "водитель" (driver) or "проводной" (wired)
-    if norm.startswith("водител") or norm.startswith("водят") or norm.startswith("проводн"):
+    # Exclude false-positive water matches like "проводной" (wired)
+    if norm.startswith("проводн"):
         return norm
+    # Handle "водитель" (driver) explicitly as transport, avoiding false-positive water ("вод")
+    if norm.startswith("водител") or norm.startswith("водят"):
+        return "concept:transport"
     # Exclude false-positive gas matches like "выхлопные газы" (generator exhaust) or "газовая колонка"
     if norm == "газ" or norm.startswith("газов") or norm.startswith("газовик"):
         return norm

@@ -310,7 +310,9 @@ Agents must not make changes whose effect is to:
 - weaken hard Evidence Boundary checks merely to make an article pass;
 - strengthen verification so aggressively that legitimate community news disappears;
 - reintroduce claim-first per-message LLM explosion as the default processing architecture;
-- hardcode one city's geography or examples into generic production prompt logic.
+- hardcode one city's geography or examples into generic production prompt logic;
+- fall back to deterministic concatenation or fragment dumping when article generation or validation fails (`article_allow_deterministic_fallback: false` — fail closed: either a verified quality article or `ArticlePublicationRejected`);
+- configure or run forbidden AI models such as `deepseek/deepseek-chat` (models are configured solely in `.env`: primary `minimax/minimax-m3:free:floor`, secondary `deepseek/deepseek-v4-flash-0731:floor`).
 
 ## 0.10 Target reader experience
 
@@ -1027,6 +1029,18 @@ Analyzer → Writer → FactChecker → Repair → Polish
 for the canonical Event-First article path.
 
 Use deterministic validation and traceable evidence instead.
+ 
+## 13.1 Model Configuration & Forbidden Models
+
+Model declarations are configured exclusively via `.env`, NEVER in `config.yaml`.
+`config.yaml` must not declare `ai_model`.
+
+- **Primary Model**: `OPENROUTER_MODEL=minimax/minimax-m3:free:floor`
+- **Secondary Model**: `OPENROUTER_MODEL_2=deepseek/deepseek-v4-flash-0731:floor`
+
+**FORBIDDEN MODELS**:
+- Under no circumstances should `deepseek/deepseek-chat` ever be configured or run. It is strictly blacklisted in `src/ai_providers.py` (`FORBIDDEN_AI_MODELS`) and `src/config_loader.py`.
+- Any attempt to configure or call `deepseek/deepseek-chat` fails immediately with a `ValueError`.
 
 ---
 

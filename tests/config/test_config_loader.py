@@ -667,6 +667,57 @@ settings:
 
 
 @pytest.mark.unit
+def test_load_config_rejects_forbidden_model_in_openrouter_model(tmp_path, monkeypatch):
+    """Setting OPENROUTER_MODEL to deepseek/deepseek-chat raises ValueError."""
+    monkeypatch.setenv("TELEGRAM_API_ID", "12345678")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "test_hash")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:ABC-DEF")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "deepseek/deepseek-chat")
+
+    config_content = """
+channels:
+  - id: "@test"
+    name: "Test"
+settings:
+  target_user_id: 123456789
+  ai_provider: "openrouter"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="strictly forbidden"):
+            load_config(str(config_file))
+
+
+@pytest.mark.unit
+def test_load_config_rejects_forbidden_model_in_openrouter_model_2(tmp_path, monkeypatch):
+    """Setting OPENROUTER_MODEL_2 to deepseek/deepseek-chat raises ValueError."""
+    monkeypatch.setenv("TELEGRAM_API_ID", "12345678")
+    monkeypatch.setenv("TELEGRAM_API_HASH", "test_hash")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456789:ABC-DEF")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "openrouter-test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "minimax/minimax-m3:free:floor")
+    monkeypatch.setenv("OPENROUTER_MODEL_2", "deepseek/deepseek-chat")
+
+    config_content = """
+channels:
+  - id: "@test"
+    name: "Test"
+settings:
+  target_user_id: 123456789
+  ai_provider: "openrouter"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    with patch("src.config_loader.load_dotenv"):
+        with pytest.raises(ValueError, match="strictly forbidden"):
+            load_config(str(config_file))
+
+
+@pytest.mark.unit
 def test_load_config_temperature_fallback(tmp_path, mock_env_vars):
     """Test that temperature falls back to openai_temperature when not set."""
     config_content = """

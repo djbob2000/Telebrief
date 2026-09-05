@@ -46,7 +46,7 @@ settings:
   ai_provider: "openrouter"
 
   # AI Model (provider-specific, can be overridden by OPENROUTER_MODEL or AI_MODEL in .env)
-  # OpenRouter: "minimax/minimax-m3:free", "deepseek/deepseek-chat", etc.
+  # OpenRouter: "minimax/minimax-m3:free", etc.
   # OpenAI: "gpt-5-nano", "gpt-4o-mini", etc.
   # Ollama: "llama3", "mistral", "gemma2", etc.
   # Anthropic: "claude-sonnet-4-5-20250929", etc.

@@ -43,6 +43,21 @@ _CURRENT_STATE_OUTAGE_RE = re.compile(
 
 _TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
 
+_MONTHS_RU = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
 
 @dataclass(frozen=True)
 class ArticleValidationIssue:
@@ -214,6 +229,13 @@ def validate_article_draft(
     all_draft_support_texts: list[str] = [s.text for s in all_known_draft_supports if s.text] + [
         s.source_text for s in all_known_draft_supports if s.source_text
     ]
+    for s in all_known_draft_supports:
+        if (obs := getattr(s, "observed_at", None)) is not None:
+            all_draft_support_texts.append(obs.strftime("%H:%M"))
+            all_draft_support_texts.append(obs.strftime("%-H:%M"))
+            all_draft_support_texts.append(obs.strftime("%d.%m"))
+            all_draft_support_texts.append(f"{obs.day} {_MONTHS_RU[obs.month - 1]}")
+
     all_draft_concepts: set[str] = set()
     for st in all_draft_support_texts:
         all_draft_concepts.update(canonical_semantic_concepts(st))
@@ -221,6 +243,12 @@ def validate_article_draft(
     all_edition_support_texts = [s.text for s in context.supports if s.text] + [
         s.source_text for s in context.supports if s.source_text
     ]
+    for s in context.supports:
+        if (obs := getattr(s, "observed_at", None)) is not None:
+            all_edition_support_texts.append(obs.strftime("%H:%M"))
+            all_edition_support_texts.append(obs.strftime("%-H:%M"))
+            all_edition_support_texts.append(obs.strftime("%d.%m"))
+            all_edition_support_texts.append(f"{obs.day} {_MONTHS_RU[obs.month - 1]}")
     all_edition_tokens: set[str] = {
         tok.lower()
         for st in all_edition_support_texts
@@ -235,24 +263,10 @@ def validate_article_draft(
         w_start = pub_window.lookback_start
         w_end = pub_window.snapshot_at
         cur_d = w_start.date()
-        months_ru = [
-            "января",
-            "февраля",
-            "марта",
-            "апреля",
-            "мая",
-            "июня",
-            "июля",
-            "августа",
-            "сентября",
-            "октября",
-            "ноября",
-            "декабря",
-        ]
         while cur_d <= w_end.date():
             window_terms.add(cur_d.strftime("%d.%m"))
             window_terms.add(str(cur_d.day))
-            m_name = months_ru[cur_d.month - 1]
+            m_name = _MONTHS_RU[cur_d.month - 1]
             window_terms.add(m_name)
             window_terms.add(f"{cur_d.day} {m_name}")
             cur_d += _dt.timedelta(days=1)
@@ -549,6 +563,12 @@ def validate_article_draft(
                             )
                         )
                     else:
+                        is_blocking = bool(
+                            assessment.unsupported_concrete_claims
+                            or assessment.blocking_proper_names
+                            or assessment.blocking_critical_terms
+                            or assessment.blocking_semantic_terms
+                        )
                         issues.append(
                             ArticleValidationIssue(
                                 code="UNSUPPORTED_CLAIM_ATOM",
@@ -556,6 +576,8 @@ def validate_article_draft(
                                 message=f"Unit {unit_id} claim atom '{claim.text}' is not supported: missing stems {assessment.unsupported_content_stems}",
                                 support_ids=claim.cited_support_ids,
                                 unsupported_claims=assessment.unsupported_concrete_claims,
+                                severity="error" if is_blocking else "warning",
+                                blocking=is_blocking,
                             )
                         )
                 elif assessment.lexical_only_warning:
@@ -573,8 +595,13 @@ def validate_article_draft(
                         )
                     )
 
-        # Defense in depth: Check unsupported concrete claims against cited support texts
         support_texts = [t for s in valid_supports for t in (s.text, s.source_text) if t]
+        for s in valid_supports:
+            if (obs := getattr(s, "observed_at", None)) is not None:
+                support_texts.append(obs.strftime("%H:%M"))
+                support_texts.append(obs.strftime("%-H:%M"))
+                support_texts.append(obs.strftime("%d.%m"))
+                support_texts.append(f"{obs.day} {_MONTHS_RU[obs.month - 1]}")
         primary_source_texts = [s.source_text for s in valid_supports if s.source_text]
         unit_context_terms = allowed_edition_terms
 

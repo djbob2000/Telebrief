@@ -89,24 +89,30 @@ _QUOTE_RE = re.compile(r"[«\"“]([^»\"”]{2,80})[»\"”]")
 
 
 def _strip_non_allowlisted_quotes(text: str, quote_allowlist: Sequence[str] | None = None) -> str:
-    """Normalize non-allowlisted quotation marks around names into indirect speech without quotes.
+    """Normalize non-allowlisted quotation marks into indirect speech without quotes.
 
-    E.g. «Бердянск 24» -> Бердянск 24, «Альменда» -> Альменда, «Территория заботы» -> Территория заботы.
-    Quotes matching allowlisted exact phrases are preserved.
+    Quotes matching allowlisted exact phrases or word subsequences are preserved.
     """
     if not text or ("«" not in text and '"' not in text and "“" not in text):
         return text
+
+    from src.publication.article_claims import _quote_tokens_match
 
     allowlist_norm = {
         re.sub(r"\s+", " ", q.lower().replace("ё", "е")).strip()
         for q in (quote_allowlist or ())
         if q
     }
+    raw_allowlist = [q for q in (quote_allowlist or ()) if q]
 
     def _repl(m: re.Match[str]) -> str:
         inner = m.group(1).strip()
         norm_inner = re.sub(r"\s+", " ", inner.lower().replace("ё", "е")).strip()
-        if allowlist_norm and any(norm_inner == a or norm_inner in a for a in allowlist_norm):
+        if allowlist_norm and any(
+            norm_inner == a or norm_inner in a or a in norm_inner for a in allowlist_norm
+        ):
+            return m.group(0)
+        if raw_allowlist and any(_quote_tokens_match(inner, a) for a in raw_allowlist):
             return m.group(0)
         return inner
 
@@ -234,10 +240,8 @@ class StructuredArticleDraft:
                             )
                             p_claims = _parse_claim_atoms(p.get("claims"))
                             if not p_claims and p_text and p_support_ids:
-                                p_sentences = _split_sentences_safe(p_text)
-                                p_claims = tuple(
-                                    ArticleClaimAtom(text=s, cited_support_ids=p_support_ids)
-                                    for s in (p_sentences or [p_text])
+                                p_claims = (
+                                    ArticleClaimAtom(text=p_text, cited_support_ids=p_support_ids),
                                 )
 
                             if p_text:

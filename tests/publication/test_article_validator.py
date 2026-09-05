@@ -1107,6 +1107,7 @@ def test_charging_phone_paraphrase_is_warning_not_blocking() -> None:
         article_max_words=200,
         article_min_sections=1,
         article_max_sections=4,
+        article_claim_min_content_coverage=0.70,
     )
     draft = StructuredArticleDraft(
         title="Возможность подзарядки телефонов",

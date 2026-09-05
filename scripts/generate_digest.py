@@ -77,6 +77,15 @@ async def main():
     print(f"\n{pub.body}")
     print("\n" + "═" * 70)
 
+    date_str = now.strftime("%Y-%m-%d")
+    out_file = Path(__file__).resolve().parent.parent / f"digest_{date_str}.md"
+    digest_text = f"# {pub.title}\n\n"
+    if pub.lead and pub.lead.strip():
+        digest_text += f"{pub.lead.strip()}\n\n"
+    digest_text += pub.body.strip() + "\n"
+    out_file.write_text(digest_text, encoding="utf-8")
+    print(f"\n[💾 Сохранено в файл: {out_file.name}]")
+
     if attempts:
         last_attempt = attempts[-1]
         kind, status, meta = last_attempt

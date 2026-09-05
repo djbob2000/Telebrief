@@ -158,3 +158,31 @@ def test_named_entity_quotes_do_not_fail_as_unsupported_direct_quotes() -> None:
         direct_quote_allowlist=["другая цитата"],
     )
     assert not any(c.kind == "direct_quote" for c in unsupported)
+
+
+@pytest.mark.unit
+def test_direct_quote_subsequence_and_yo_matching() -> None:
+    """Direct quote in quotation marks matches despite ё/е, capitalization, and internal commas."""
+    support = [
+        "Да там не отпускают в канистры, только в одну если методом заправки через приложение.",
+        "Здравствуйте, столовая Чили открыта, ждем вас",
+    ]
+    draft1 = (
+        "Бензин в канистры не отпускают: «Только в одну если методом заправки через приложение»."
+    )
+    draft2 = "Столовая открыта: «Здравствуйте, столовая Чили открыта, ждём вас»."
+
+    unsupported1 = find_unsupported_claims(draft1, support)
+    assert not any(c.kind == "direct_quote" for c in unsupported1)
+
+    unsupported2 = find_unsupported_claims(draft2, support)
+    assert not any(c.kind == "direct_quote" for c in unsupported2)
+
+
+@pytest.mark.unit
+def test_time_interval_zero_minute_normalization() -> None:
+    """Time interval 'с 17:00 до 21:00' matches source 'с 17 до 21'."""
+    support = ["В Бердянске вода подается дизель-генераторами по графику с 17 до 21."]
+    draft = "Вода подаётся по графику с 17:00 до 21:00."
+    unsupported = find_unsupported_claims(draft, support)
+    assert not any(c.kind == "time" for c in unsupported)

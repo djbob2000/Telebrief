@@ -16,6 +16,7 @@ from src.publication.article_context import (
     build_article_editorial_context,
 )
 from src.publication.editorial_adapter import FrozenEditorialInput
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.evidence import PublicationEvidence
 
 _NOW = dt.datetime(2026, 8, 29, 20, 0, tzinfo=dt.timezone.utc)
@@ -243,10 +244,10 @@ async def test_event_first_article_generation_rejects_on_writer_failure_without_
     mock_provider.chat_completion.side_effect = RuntimeError("AI server error")
     generator.provider = mock_provider
 
-    title, lead, body = await generator.generate_from_frozen_input(frozen_input)
+    with pytest.raises(ArticlePublicationRejected) as caught:
+        await generator.generate_from_frozen_input(frozen_input)
 
-    assert title
-    assert lead
-    assert body
+    assert caught.value.reason == "writer_failed"
+    assert caught.value.error_kind == "article_writer_rejected"
     # Assert exactly 1 attempt was made (no retries)
     assert mock_provider.chat_completion.call_count == 1

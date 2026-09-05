@@ -223,35 +223,11 @@ class EventAnalysisService:
             f"{_EVENT_ANALYSIS_SYSTEM_PROMPT}\n{user_prompt}".encode("utf-8")
         ).hexdigest()
 
-        # 4. Audit start
+        # 4. Prepare audit run info (written to DB after LLM call to avoid holding locks)
         provider_name = getattr(self.ai, "primary_provider_name", None) or getattr(
             self.ai, "provider_name", "ai_cascade"
         )
         model_name = getattr(self.ai, "model_name", None) or self.model or "default"
-
-        cursor = await conn.execute(
-            """
-            INSERT INTO story_event_analysis_runs (
-                story_id, latest_assignment_id, analysis_version, provider, model, prompt_hash,
-                input_fragment_count, input_chars, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'running')
-            RETURNING id
-            """,
-            (
-                story_id,
-                cluster_state.latest_assignment_id,
-                ANALYSIS_VERSION,
-                str(provider_name),
-                str(model_name),
-                prompt_hash,
-                len(sampled),
-                len(user_prompt),
-            ),
-        )
-        run_row = await cursor.fetchone()
-        if run_row is None:
-            raise RuntimeError("Failed to insert story_event_analysis_runs")
-        run_id = int(run_row[0])
 
         # 5. Call LLM
         now = dt.datetime.now(dt.timezone.utc)
@@ -310,21 +286,46 @@ class EventAnalysisService:
 
             await conn.execute(
                 """
-                UPDATE story_event_analysis_runs
-                SET status = 'succeeded', output_chars = %s, completed_at = now()
-                WHERE id = %s
+                INSERT INTO story_event_analysis_runs (
+                    story_id, latest_assignment_id, analysis_version, provider, model, prompt_hash,
+                    input_fragment_count, input_chars, output_chars, status, completed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'succeeded', now())
                 """,
-                (len(raw_response), run_id),
+                (
+                    story_id,
+                    cluster_state.latest_assignment_id,
+                    ANALYSIS_VERSION,
+                    str(provider_name),
+                    str(model_name),
+                    prompt_hash,
+                    len(sampled),
+                    len(user_prompt),
+                    len(raw_response),
+                ),
             )
         except Exception as exc:
-            await conn.execute(
-                """
-                UPDATE story_event_analysis_runs
-                SET status = 'failed', error_kind = %s, completed_at = now()
-                WHERE id = %s
-                """,
-                (type(exc).__name__, run_id),
-            )
+            try:
+                await conn.execute(
+                    """
+                    INSERT INTO story_event_analysis_runs (
+                        story_id, latest_assignment_id, analysis_version, provider, model, prompt_hash,
+                        input_fragment_count, input_chars, status, error_kind, completed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'failed', %s, now())
+                    """,
+                    (
+                        story_id,
+                        cluster_state.latest_assignment_id,
+                        ANALYSIS_VERSION,
+                        str(provider_name),
+                        str(model_name),
+                        prompt_hash,
+                        len(sampled),
+                        len(user_prompt),
+                        type(exc).__name__,
+                    ),
+                )
+            except Exception as log_exc:
+                self.logger.warning("Failed to record failed analysis run: %s", log_exc)
             self.logger.warning("Event analysis failed for story %s: %s", story_id, exc)
             return None
 

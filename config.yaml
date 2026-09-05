@@ -114,7 +114,6 @@ settings:
   ai_provider: "openrouter"
   api_timeout: 300
 
-  ai_model: "deepseek/deepseek-v4-flash-0731:floor"
   max_tokens_per_summary: 131072
 
   event_pipeline:
@@ -128,7 +127,7 @@ settings:
     digest_city_situation_max_items: 7
     digest_city_situation_max_details_per_item: 2
     digest_city_situation_max_positive_items: 2
-    article_allow_deterministic_fallback: true
+    article_allow_deterministic_fallback: false
 
   digest_mode: "digest"
 

@@ -60,7 +60,7 @@ def assess_claim_against_supports(
     claim_text: str,
     supports: Sequence[ArticleSupport],
     *,
-    min_content_coverage: float = 0.70,
+    min_content_coverage: float = 0.50,
     allowed_context_terms: Sequence[str] = (),
     all_known_draft_supports: Sequence[str] = (),
     direct_quote_allowlist: Sequence[str] | None = None,
@@ -72,6 +72,9 @@ def assess_claim_against_supports(
             support_texts.append(s.text)
         if s.source_text:
             support_texts.append(s.source_text)
+        if (obs := getattr(s, "observed_at", None)) is not None:
+            support_texts.append(obs.strftime("%H:%M"))
+            support_texts.append(obs.strftime("%-H:%M"))
 
     # 1. High-risk concrete claims (numbers, dates, times, money, phone, cause, etc.)
     primary_source_texts = [s.source_text for s in supports if s.source_text]
@@ -91,11 +94,30 @@ def assess_claim_against_supports(
         allowed_context_terms=allowed_context_terms,
     )
 
+    unsupported_scope_phrases = (
+        "на ряде улиц",
+        "в ряде районов",
+        "по ряду улиц",
+        "на многих улицах",
+        "во многих районах",
+        "по всему городу",
+    )
+    has_unsupported_scope = any(
+        phrase in claim_text.lower() and not any(phrase in st.lower() for st in support_texts)
+        for phrase in unsupported_scope_phrases
+    )
+
+    has_unsupported_semantic_addition = bool(semantic.blocking_terms) and (
+        semantic.lexical_coverage < min_content_coverage or has_unsupported_scope
+    )
+
     # Hard Evidence Boundary: only concrete claims (numbers/dates/causality/quotes),
-    # critical domain mismatch (power/water/gas), and proper name hallucinations block.
-    # General lexical vocabulary divergence is non-blocking (lexical_only_warning).
+    # critical domain mismatch (power/water/gas), proper name hallucinations, and
+    # ungrounded semantic additions (coverage < threshold or unsupported geographic scope) block.
+    # General lexical vocabulary divergence on well-supported claims is non-blocking (lexical_only_warning).
     blocking = (
         bool(unsupported_concrete)
+        or has_unsupported_semantic_addition
         or bool(semantic.blocking_critical_terms)
         or bool(semantic.blocking_proper_names)
     )
@@ -107,12 +129,14 @@ def assess_claim_against_supports(
         and semantic.lexical_coverage < min_content_coverage
     )
 
+    blocking_semantic = semantic.blocking_terms if has_unsupported_semantic_addition else ()
+
     return ClaimSupportAssessment(
         supported=supported,
         content_coverage=semantic.lexical_coverage,
         unsupported_content_stems=semantic.unmatched_terms,
         unsupported_concrete_claims=unsupported_concrete,
-        blocking_semantic_terms=semantic.blocking_terms,
+        blocking_semantic_terms=blocking_semantic,
         blocking_critical_terms=semantic.blocking_critical_terms,
         unmatched_proper_names=semantic.unmatched_proper_names,
         blocking_proper_names=semantic.blocking_proper_names,

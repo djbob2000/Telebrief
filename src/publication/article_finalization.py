@@ -16,13 +16,17 @@ from src.publication.article_coverage_diagnostics import (
     diagnose_article_coverage,
 )
 from src.publication.article_length import ArticleLengthProfile
-from src.publication.article_models import StructuredArticleDraft
+from src.publication.article_models import (
+    ArticleParagraph,
+    ArticleSection,
+    StructuredArticleDraft,
+)
 from src.publication.article_recovery import ArticleDeterministicComposer
 from src.publication.article_trace import (
     ArticleClaimTraceUnit,
     build_article_claim_trace,
 )
-from src.publication.article_validator import validate_article_draft
+from src.publication.article_validator import ArticleValidationIssue, validate_article_draft
 from src.publication.errors import (
     ArticleFinalizationInvariantError,
     ArticlePublicationRejected,
@@ -131,6 +135,62 @@ def _build_final_metadata(
     }
 
 
+def _sanitize_unsupported_quotes(
+    draft: StructuredArticleDraft,
+    quote_violations: Sequence[ArticleValidationIssue],
+    context: ArticleEditorialContext,
+) -> StructuredArticleDraft:
+    """Deterministically convert unsupported direct quote marks into indirect speech without quotes."""
+    bad_spans = {c.raw for iss in quote_violations for c in iss.unsupported_claims if c.raw}
+    if not bad_spans:
+        return draft
+
+    def _strip_spans(text: str) -> str:
+        res = text
+        for span in bad_spans:
+            inner = span.strip(' «»"“”')
+            res = res.replace(span, inner)
+        return res
+
+    new_sections = []
+    for sec in draft.sections:
+        new_heading = _strip_spans(sec.heading)
+        new_paras = []
+        for p in sec.paragraphs:
+            new_p_text = _strip_spans(p.text)
+            new_paras.append(
+                ArticleParagraph(
+                    text=new_p_text,
+                    cited_support_ids=p.cited_support_ids,
+                    claims=p.claims,
+                    generation_origin=p.generation_origin,
+                )
+            )
+        new_sections.append(
+            ArticleSection(
+                heading=new_heading,
+                heading_support_ids=sec.heading_support_ids,
+                heading_claims=sec.heading_claims,
+                paragraphs=tuple(new_paras),
+                heading_generation_origin=sec.heading_generation_origin,
+            )
+        )
+
+    return StructuredArticleDraft(
+        title=_strip_spans(draft.title),
+        title_support_ids=draft.title_support_ids,
+        lead=_strip_spans(draft.lead),
+        lead_support_ids=draft.lead_support_ids,
+        sections=tuple(new_sections),
+        title_claims=draft.title_claims,
+        lead_claims=draft.lead_claims,
+        cited_evidence_ids=draft.cited_evidence_ids,
+        word_count=draft.word_count,
+        title_generation_origin=draft.title_generation_origin,
+        lead_generation_origin=draft.lead_generation_origin,
+    )
+
+
 class ArticleFinalizer:
     """State machine that finalizes the single writer output and performs deterministic recovery."""
 
@@ -190,6 +250,31 @@ class ArticleFinalizer:
         )
 
         if not writer_validation.is_valid:
+            # Deterministic quote repair: convert unverified quotes to indirect speech without quotes
+            quote_violations = [
+                iss
+                for iss in writer_validation.issues
+                if iss.blocking and iss.code == "UNSUPPORTED_DIRECT_QUOTE"
+            ]
+            if quote_violations:
+                repaired_draft = _sanitize_unsupported_quotes(
+                    writer_draft, quote_violations, context
+                )
+                repaired_val = validate_article_draft(
+                    repaired_draft,
+                    context,
+                    config=editorial_config,
+                    length_profile=length_profile,
+                )
+                if repaired_val.is_valid:
+                    logger.info(
+                        "Article writer draft repaired by converting %d unverified quote(s) to indirect speech",
+                        len(quote_violations),
+                    )
+                    writer_draft = repaired_draft
+                    writer_validation = repaired_val
+
+        if not writer_validation.is_valid:
             logger.info(
                 "Article writer draft failed validation: %s",
                 list(writer_validation.violations),
@@ -209,7 +294,10 @@ class ArticleFinalizer:
                 raise ArticlePublicationRejected(
                     reason="validation_failed",
                     message=f"Article writer draft failed validation: {list(writer_validation.violations)}",
-                    metadata={"violations": list(writer_validation.violations)},
+                    metadata={
+                        "violations": list(writer_validation.violations),
+                        "draft": writer_draft.to_dict(),
+                    },
                 )
             return await self._run_full_fallback(
                 writer_status="rejected",

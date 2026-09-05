@@ -231,8 +231,31 @@ _QUOTES_RE = re.compile(r"[«»“”\"]")
 
 def normalize_direct_quote(text: str) -> str:
     t = _DASH_RE.sub("-", text)
-    t = _SPACES_RE.sub(" ", t).strip()
+    t = _QUOTES_RE.sub("", t)
+    t = t.lower().replace("ё", "е")
+    t = _SPACES_RE.sub(" ", t).strip(" .,!?;:-—\t\n\r")
     return t
+
+
+def quote_words(text: str) -> list[str]:
+    """Tokenize words for sequence quote comparison."""
+    words = re.findall(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ0-9]+", text)
+    return [w.lower().replace("ё", "е") for w in words]
+
+
+def _quote_tokens_match(quote_text: str, source_text: str) -> bool:
+    """Check if words in quote_text form a contiguous subsequence of words in source_text."""
+    q_words = quote_words(quote_text)
+    if not q_words:
+        return False
+    s_words = quote_words(source_text)
+    if len(s_words) < len(q_words):
+        return False
+    q_len = len(q_words)
+    for i in range(len(s_words) - q_len + 1):
+        if s_words[i : i + q_len] == q_words:
+            return True
+    return False
 
 
 def _classify_quoted_span(inner: str) -> ClaimKind:
@@ -387,6 +410,18 @@ def normalize_support_text(text: str) -> str:
     # Normalize number words
     t = re.sub(r"\b(?:полутора|полтора|полторы)\b", "1.5", t)
 
+    # Normalize '3к' / '3k' -> '3к 3000' and '3 тыс' -> '3 тыс 3000'
+    t = re.sub(
+        r"(\d+)\s*[кk](?=[^\w]|$)",
+        lambda m: f"{m.group(0)} {int(m.group(1))*1000}",
+        t,
+    )
+    t = re.sub(
+        r"(\d+)\s*(?:тыс(?:яч[а-я]*)?|тис(?:яч[а-я]*)?)\.?",
+        lambda m: f"{m.group(0)} {int(m.group(1))*1000}",
+        t,
+    )
+
     # Normalize ranges like "10 - 12" -> "10-12"
     t = re.sub(r"(\d+)\s*-\s*(\d+)", r"\1-\2", t)
 
@@ -433,7 +468,7 @@ class ConcreteClaim:
 # Regexes for claim extraction
 _PHONE_RE = re.compile(r"(?:\+7|8)[\s\-\(]*\d{3}[\s\-\)]*\d{3}[\s\-]*\d{2}[\s\-]*\d{2}")
 _MONEY_RE = re.compile(
-    r"\b\d+(?:[\s.,]\d+)*\s*(?:руб(?:л[яей]|ль|\.)?|₽|usd|\$|eur|€|грн|грив(?:ен|на|ны|\.))\b",
+    r"\b\d+(?:[\s.,]\d+)*\s*(?:руб(?:л(?:ей|я|е)|ь|\.)?|₽|usd|\$|eur|€|грн|грив(?:ен|на|ны|\.))\b",
     re.IGNORECASE,
 )
 _PERCENT_RE = re.compile(r"\b\d+(?:[\.,]\d+)?\s*(?:%|процент(?:а|ов|ами|ах)?)\b", re.IGNORECASE)
@@ -480,12 +515,12 @@ def extract_concrete_claims(text: str) -> tuple[ConcreteClaim, ...]:
         return ()
 
     claims: list[ConcreteClaim] = []
-    phone_spans: list[tuple[int, int]] = []
+    structured_spans: list[tuple[int, int]] = []
 
     # 1. Phone
     for m in _PHONE_RE.finditer(text):
         raw = m.group(0)
-        phone_spans.append((m.start(), m.end()))
+        structured_spans.append((m.start(), m.end()))
         norm = re.sub(r"[\s\-\(\)\+]", "", raw)
         claims.append(
             ConcreteClaim(
@@ -499,12 +534,14 @@ def extract_concrete_claims(text: str) -> tuple[ConcreteClaim, ...]:
     # 2. Money
     for m in _MONEY_RE.finditer(text):
         raw = m.group(0)
+        structured_spans.append((m.start(), m.end()))
         norm = normalize_support_text(raw)
         claims.append(ConcreteClaim(kind="money", raw=raw, normalized=norm, excerpt=raw))
 
     # 3. Percent
     for m in _PERCENT_RE.finditer(text):
         raw = m.group(0)
+        structured_spans.append((m.start(), m.end()))
         norm = normalize_support_text(raw)
         claims.append(ConcreteClaim(kind="percent", raw=raw, normalized=norm, excerpt=raw))
 
@@ -539,19 +576,21 @@ def extract_concrete_claims(text: str) -> tuple[ConcreteClaim, ...]:
     # 6. Date
     for m in _DATE_RE.finditer(text):
         raw = m.group(0)
+        structured_spans.append((m.start(), m.end()))
         norm = normalize_support_text(raw)
         claims.append(ConcreteClaim(kind="date", raw=raw, normalized=norm, excerpt=raw))
 
     # 7. Time & intervals
     for m in _TIME_INTERVAL_RE.finditer(text):
         raw = m.group(0)
+        structured_spans.append((m.start(), m.end()))
         norm = normalize_support_text(raw)
         claims.append(ConcreteClaim(kind="time", raw=raw, normalized=norm, excerpt=raw))
 
-    # 8. Numbers & ranges (exclude numbers that are inside phone numbers)
+    # 8. Numbers & ranges (exclude numbers that are inside structured spans: phones, dates, times, money, percent)
     for m in _NUMBER_RANGE_RE.finditer(text):
         start, end = m.start(), m.end()
-        if any(p_start <= start and end <= p_end for p_start, p_end in phone_spans):
+        if any(s_start <= start and end <= s_end for s_start, s_end in structured_spans):
             continue
         raw = m.group(0)
         norm = normalize_support_text(raw)
@@ -675,7 +714,16 @@ def find_unsupported_claims(
 
         elif claim.kind in ("money", "percent"):
             # Direct normalized substring search
-            if not any(norm in sup for sup in norm_supports):
+            matched = any(norm in sup for sup in norm_supports)
+            if not matched and claim.kind == "money":
+                amt_match = re.search(r"\b(\d+(?:[\s.,]\d+)?)\b", norm)
+                if amt_match and any(cur in norm for cur in ("руб", "₽", "р")):
+                    amt_str = amt_match.group(1).replace(" ", "")
+                    matched = any(
+                        bool(re.search(r"(?<!\d)" + re.escape(amt_str) + r"(?!\d)", sup))
+                        for sup in norm_supports
+                    )
+            if not matched:
                 unsupported.append(claim)
 
         elif claim.kind == "acronym":
@@ -708,31 +756,51 @@ def find_unsupported_claims(
                 or bool(_SPEECH_VERBS_RE.search(claim.raw))
             )
 
+            raw_inner = claim.raw.strip(' «»"“”')
+            claim_norm = claim.normalized
+
             if direct_quote_allowlist is not None:
                 normalized_allowlist = [
                     normalize_direct_quote(st) for st in direct_quote_allowlist if st
                 ]
-                if not any(
-                    claim.normalized == source or claim.normalized in source
-                    for source in normalized_allowlist
-                ):
+                matched = any(
+                    claim_norm == source
+                    or claim_norm in source
+                    or (claim_norm and source in claim_norm)
+                    or _quote_tokens_match(raw_inner, st)
+                    for source, st in zip(
+                        normalized_allowlist,
+                        [st for st in direct_quote_allowlist if st],
+                    )
+                )
+                if not matched:
                     # Check if quoted text is a short named entity/title substantiated by support
                     if is_speech or not (
-                        claim.normalized.lower() in combined_support_norm
-                        or _stemmed_text(claim.normalized) in _stemmed_text(combined_support_norm)
+                        claim_norm.lower() in combined_support_norm
+                        or _stemmed_text(claim_norm) in _stemmed_text(combined_support_norm)
                     ):
                         unsupported.append(claim)
             else:
-                quote_sources = (
-                    direct_quote_source_texts
-                    if direct_quote_source_texts is not None
-                    else support_texts
+                quote_sources = [
+                    st
+                    for st in (
+                        direct_quote_source_texts
+                        if direct_quote_source_texts is not None
+                        else support_texts
+                    )
+                    if st
+                ]
+                normalized_sources = [normalize_direct_quote(st) for st in quote_sources]
+                matched = any(
+                    claim_norm in source
+                    or (claim_norm and source in claim_norm)
+                    or _quote_tokens_match(raw_inner, st)
+                    for source, st in zip(normalized_sources, quote_sources)
                 )
-                normalized_sources = [normalize_direct_quote(st) for st in quote_sources if st]
-                if not any(claim.normalized in source for source in normalized_sources):
+                if not matched:
                     if is_speech or not (
-                        claim.normalized.lower() in combined_support_norm
-                        or _stemmed_text(claim.normalized) in _stemmed_text(combined_support_norm)
+                        claim_norm.lower() in combined_support_norm
+                        or _stemmed_text(claim_norm) in _stemmed_text(combined_support_norm)
                     ):
                         unsupported.append(claim)
 
@@ -751,12 +819,42 @@ def find_unsupported_claims(
             # Check if numeric literal or range is in support
             # E.g. "10-12" or "1.5" or "500"
             if norm not in combined_support_norm:
+                range_match = re.match(r"^(\d+)[-–—](\d+)$", norm)
+                if range_match:
+                    n1, n2 = range_match.group(1), range_match.group(2)
+                    if re.search(rf"\b{n1}\b", combined_support_norm) and re.search(
+                        rf"\b{n2}\b", combined_support_norm
+                    ):
+                        continue
                 unsupported.append(claim)
 
         elif claim.kind in ("date", "time"):
             norm_clean = re.sub(r"\b0(\d:\d{2})\b", r"\1", norm)
             comb_sup_clean = re.sub(r"\b0(\d:\d{2})\b", r"\1", combined_support_norm)
             if claim.kind == "time":
+                # Normalize zero-minutes: e.g. "17:00" -> "17", "с 17:00 до 21:00" -> "с 17 до 21"
+                norm_no_zero_min = re.sub(r"(\b\d{1,2}):00\b", r"\1", norm_clean)
+                comb_no_zero_min = re.sub(r"(\b\d{1,2}):00\b", r"\1", comb_sup_clean)
+                if (
+                    norm_no_zero_min in comb_no_zero_min
+                    or any(norm_no_zero_min in normalize_support_text(st) for st in norm_supports)
+                    or any(
+                        norm_no_zero_min in normalize_support_text(st)
+                        for st in all_known_draft_supports
+                    )
+                ):
+                    continue
+
+                time_range_match = re.match(
+                    r"^(\d{1,2})[-–—](\d{1,2})(?:\s*часов|\s*ч)?$", norm_no_zero_min
+                )
+                if time_range_match:
+                    t1, t2 = time_range_match.group(1), time_range_match.group(2)
+                    if re.search(rf"\b{t1}\b", comb_no_zero_min) and re.search(
+                        rf"\b{t2}\b", comb_no_zero_min
+                    ):
+                        continue
+
                 time_equivs = _TIME_EQUIVALENTS.get(claim.raw.strip(), ())
                 if any(
                     eq in comb_sup_clean

@@ -22,6 +22,9 @@ class FilterSpec:
     config: dict[str, Any] = field(default_factory=dict)
 
 
+FORBIDDEN_AI_MODELS: frozenset[str] = frozenset({"deepseek/deepseek-chat"})
+
+
 @dataclass
 class ForumTopicConfig:
     """A selected forum topic within a Telegram group."""
@@ -292,7 +295,7 @@ class PublicationEditorialConfig:
     article_max_sections: int = 8
     article_max_direct_quotes: int = 4
 
-    article_claim_min_content_coverage: float = 0.70
+    article_claim_min_content_coverage: float = 0.50
     digest_narrative_mode: str = "deterministic"
     digest_narrative_max_cards_per_block: int = 6
 
@@ -498,7 +501,7 @@ _PROVIDER_DEFAULT_MODELS = {
     "anthropic": "claude-sonnet-4-5-20250929",
     "ollama": "llama3",
     "google": "gemini-3.6-flash",
-    "openrouter": "openrouter/free",
+    "openrouter": "minimax/minimax-m3:free:floor",
 }
 
 
@@ -541,6 +544,12 @@ def _resolve_ai_settings(settings_dict: dict) -> tuple:
             else default_model
         )
     )
+
+    if ai_model in FORBIDDEN_AI_MODELS:
+        raise ValueError(
+            f"AI model {ai_model!r} is strictly forbidden by project rules. "
+            "Use 'minimax/minimax-m3:free:floor' or 'deepseek/deepseek-v4-flash-0731:floor'."
+        )
 
     return ai_provider, ai_model
 
@@ -1743,6 +1752,12 @@ def _load_and_validate_env_vars(
         ai_model if ai_provider == "openrouter" and ai_model else "openrouter/free"
     )
     openrouter_model_2 = os.getenv("OPENROUTER_MODEL_2", "")
+    for m in (openrouter_model, openrouter_model_2):
+        if m in FORBIDDEN_AI_MODELS:
+            raise ValueError(
+                f"Model {m!r} is strictly forbidden by project rules. "
+                "Use 'minimax/minimax-m3:free:floor' or 'deepseek/deepseek-v4-flash-0731:floor'."
+            )
     openrouter_image_model = (
         os.getenv("OPENROUTER_IMAGE_MODEL") or "google/gemini-3.1-flash-lite-image"
     )

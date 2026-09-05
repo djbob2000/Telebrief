@@ -35,6 +35,9 @@ OUTPUT_DIR = Path(__file__).resolve().parent.parent
 
 
 async def main() -> None:
+    from src.ai_providers import ProviderCascade
+    ProviderCascade.reset_global_state()
+
     config = load_config()
     infra = await build_infrastructure(config.database)
     infra.config = config

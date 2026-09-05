@@ -61,10 +61,13 @@ def build_article_narrative_contract(
 - Prefer "residents pooled 300 units for a shared generator" over "residents are adapting" when the amount and action are supported.
 - Prefer one or two strong specifics over a raw inventory of every source sentence.
 
-5. Directory / Promotion Hygiene:
+5. Directory / Promotion Hygiene & Anti-Advertising:
 - Do not print phone numbers, booking URLs, handles, or call-to-action copy in the long read.
-- Do not turn a service-access Story into an advertisement.
-- Organization names, locations, prices, schedules, or addresses may appear when the detail itself is editorially relevant and supported.
+- Do not turn a service-access Story into an advertisement or commercial directory.
+- Avoid laundry lists: Never enumerate lists of multiple commercial bank names, exhaustive rosters of medical clinic specialties, or granular price catalogs copied from advertisements.
+- Avoid booking announcements: Do not publish specific commercial carrier departure dates, booking schedules, or private transit ads.
+- Editorial distillation: Transform commercial/service advertisements into concise journalistic facts about service availability, price levels, or resident reliance on intermediary services.
+- Organization names, locations, prices, schedules, or addresses may appear only when the detail itself is editorially relevant, supported, and presented concisely without promotional tone.
 
 6. Claim Atom discipline:
 - Claim Atoms are validation metadata, not polished article prose.
@@ -88,8 +91,10 @@ def build_article_narrative_contract(
 
 - Proper names & Places:
   * Do NOT introduce external city names, persons, or organizations that are not explicitly mentioned in that paragraph's cited support.
-- Title and Lead constraints:
+- Temporal role constraints:
   * Title and Lead MUST cite only supports marked `CURRENT_WINDOW (VALID FOR TITLE/LEAD)`.
+  * Do not present `HISTORICAL_CONTEXT` as current breaking news.
+  * Frame `FUTURE_SCHEDULED` events as upcoming or planned.
 
 - Preserve source date granularity: If a support says only a bare day number like "31" or "31-го", do not expand it and do not infer a missing month or year (e.g. do not expand to "31 августа" or add a year) unless that month/year is explicitly present in the cited support. Prefer the source's own granularity over inferred precision.
 - Proportion & length: Do not pad a thin day to reach an arbitrary length. State supported facts concisely without fluff. On rich days, develop major storylines thoroughly across sections without repeating facts.{target_str}
