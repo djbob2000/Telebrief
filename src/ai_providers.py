@@ -386,9 +386,11 @@ class ProviderCascade(AIProvider):
 
                 if kind in ("quota", "server", "auth", "timeout"):
                     if kind == "quota":
-                        # Use Retry-After from the provider when available and sane (<= 900s).
-                        # This prevents locking out a slot for 900s when it will recover in ~60s.
-                        if quota_retry_after is not None and 0 < quota_retry_after <= 900.0:
+                        # Always trust the provider's Retry-After when present —
+                        # even if it's larger than our default cooldown_seconds.
+                        # Ignoring it would cause us to retry too early and get a
+                        # fresh rate-limit cycle immediately.
+                        if quota_retry_after is not None and quota_retry_after > 0:
                             cooldown = quota_retry_after
                         else:
                             cooldown = self.cooldown_seconds
@@ -404,7 +406,7 @@ class ProviderCascade(AIProvider):
                         " (from Retry-After)"
                         if kind == "quota"
                         and quota_retry_after is not None
-                        and 0 < quota_retry_after <= 900.0
+                        and quota_retry_after > 0
                         else "",
                     )
                 slot_failures.append(
