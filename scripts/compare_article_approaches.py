@@ -31,7 +31,7 @@ async def generate_event_first_article(
     infra: Any,
     config: Config,
     edition_slug: str = "berdyansk",
-    lookback_hours: int = 48,
+    lookback_hours: int = 24,
 ) -> tuple[Any, dict[str, Any]]:
     """Generate long-form article using current Event-First publication pipeline."""
     from src.ai_providers import ProviderCascade
@@ -82,7 +82,7 @@ async def generate_event_first_article(
 async def run_comparison(
     legacy_fixture_path: str | Path,
     edition_slug: str = "berdyansk",
-    lookback_hours: int = 48,
+    lookback_hours: int = 24,
 ) -> None:
     config = load_config()
     fixture = LegacyCoverageCase.load_json(legacy_fixture_path)
@@ -166,7 +166,7 @@ def main() -> None:
         help="Path to legacy floor JSON fixture",
     )
     parser.add_argument("--edition", type=str, default="berdyansk", help="Edition slug")
-    parser.add_argument("--hours", type=int, default=48, help="Lookback hours")
+    parser.add_argument("--hours", type=int, default=24, help="Lookback hours")
     args = parser.parse_args()
 
     asyncio.run(

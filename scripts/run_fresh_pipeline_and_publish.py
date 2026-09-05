@@ -93,7 +93,7 @@ async def main() -> None:
             JOIN source_items si ON si.id = sir.source_item_id
             LEFT JOIN source_fragments f ON f.source_item_revision_id = sir.id
             WHERE f.id IS NULL
-              AND si.published_at >= now() - interval '48 hours'
+              AND si.published_at >= now() - interval '24 hours'
               AND length(trim(coalesce(sir.text_content, ''))) > 0
             ORDER BY sir.id ASC
             """

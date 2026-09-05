@@ -79,7 +79,7 @@ async def main():
             FROM source_item_revisions sir
             JOIN source_items si ON si.id = sir.source_item_id
             LEFT JOIN source_fragments f ON f.source_item_revision_id = sir.id
-            WHERE f.id IS NULL AND si.published_at >= now() - interval '48 hours'
+            WHERE f.id IS NULL AND si.published_at >= now() - interval '24 hours'
             ORDER BY sir.id ASC
             """
         )
@@ -130,7 +130,7 @@ async def main():
         snapshot_at=now,
         request_key=f"cli:digest:fresh:{now.isoformat()}",
         config=config,
-        lookback_hours_override=48,
+        lookback_hours_override=24,
     )
     await snapshot_service.seal_candidates(run.id)
     await selection_service.select(run.id, defer_generation=False)
