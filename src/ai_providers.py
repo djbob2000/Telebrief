@@ -18,6 +18,7 @@ from openai import BadRequestError as OpenAIBadRequestError
 GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GOOGLE_MAX_OUTPUT_TOKENS = 65_536
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+FORBIDDEN_AI_MODELS = frozenset({"deepseek/deepseek-chat"})
 
 
 def _redact_url(url: str) -> str:
@@ -355,7 +356,8 @@ class ProviderCascade(AIProvider):
                 # If wait time is > 15 minutes, fail over immediately to the next slot.
                 if kind == "quota":
                     retry_after = extract_retry_after(exc)
-                    max_retry_wait = 900.0  # 15 minutes
+                    has_more_slots = slot_index + 1 < len(available_slots)
+                    max_retry_wait = 5.0 if has_more_slots else 900.0
                     if retry_after is not None and 0 < retry_after <= max_retry_wait:
                         self.logger.info(
                             "AI provider slot %s received rate limit (quota); waiting %s seconds as specified by Retry-After before retrying...",
@@ -498,6 +500,8 @@ class OpenAIProvider(AIProvider):
         effective_max_tokens = max_tokens
         if is_openrouter and (max_tokens == 65536 or max_tokens is None):
             effective_max_tokens = int(os.environ.get("OPENROUTER_MAX_TOKENS", 131072))
+        elif is_openrouter and "OPENROUTER_MAX_TOKENS" in os.environ:
+            effective_max_tokens = int(os.environ["OPENROUTER_MAX_TOKENS"])
 
         create_kwargs: Dict[str, Any] = {
             "model": model,
@@ -516,13 +520,34 @@ class OpenAIProvider(AIProvider):
         if response_format is not None:
             create_kwargs["response_format"] = response_format
 
+        provider_label = "OpenRouter" if is_openrouter else "OpenAI"
+        prompt_chars = sum(len(m.get("content") or "") for m in messages)
+        self.logger.info(
+            "→ %s request: model=%s max_tokens=%s prompt_chars=%s",
+            provider_label,
+            model,
+            effective_max_tokens,
+            prompt_chars,
+        )
+        _t0 = time.monotonic()
         async with self._semaphore:
             try:
                 response = await self.client.chat.completions.create(**create_kwargs)
             except OpenAIBadRequestError as exc:
                 response = await self._handle_bad_request(create_kwargs, exc, reasoning_effort)
+        _elapsed = time.monotonic() - _t0
 
-        return _extract_chat_completion_text(response, self.logger, "OpenAI")
+        result = _extract_chat_completion_text(response, self.logger, provider_label)
+        usage = response.usage
+        self.logger.info(
+            "← %s response: elapsed=%.1fs finish_reason=%s prompt_tokens=%s completion_tokens=%s",
+            provider_label,
+            _elapsed,
+            response.choices[0].finish_reason if response.choices else "?",
+            usage.prompt_tokens if usage else None,
+            usage.completion_tokens if usage else None,
+        )
+        return result
 
     async def _handle_bad_request(
         self,
@@ -623,8 +648,26 @@ class GoogleProvider(AIProvider):
         if response_format is not None:
             create_kwargs["response_format"] = response_format
 
+        prompt_chars = sum(len(m.get("content") or "") for m in messages)
+        self.logger.info(
+            "→ Google request: model=%s max_tokens=%s prompt_chars=%s",
+            normalized_model,
+            output_tokens,
+            prompt_chars,
+        )
+        _t0 = time.monotonic()
         response = await self.client.chat.completions.create(**create_kwargs)
-        return _extract_chat_completion_text(response, self.logger, "Google Gemini")
+        _elapsed = time.monotonic() - _t0
+        result = _extract_chat_completion_text(response, self.logger, "Google Gemini")
+        usage = response.usage
+        self.logger.info(
+            "← Google response: elapsed=%.1fs finish_reason=%s prompt_tokens=%s completion_tokens=%s",
+            _elapsed,
+            response.choices[0].finish_reason if response.choices else "?",
+            usage.prompt_tokens if usage else None,
+            usage.completion_tokens if usage else None,
+        )
+        return result
 
 
 class OllamaProvider(AIProvider):
@@ -899,6 +942,12 @@ def create_provider(  # noqa: C901
     if name == "openrouter":
         if not openrouter_api_key:
             raise ValueError("OPENROUTER_API_KEY is required for OpenRouter provider")
+        for m in (openrouter_model, openrouter_model_2):
+            if m in FORBIDDEN_AI_MODELS:
+                raise ValueError(
+                    f"Model {m!r} is strictly forbidden by project rules. "
+                    "Use 'minimax/minimax-m3:free:floor' or 'deepseek/deepseek-v4-flash-0731:floor'."
+                )
         if openrouter_model_2:
             slots = [
                 (
