@@ -17,6 +17,49 @@ _ABBR_SAFE_SENTENCE_SPLIT = re.compile(
     re.IGNORECASE,
 )
 
+_LATIN_TO_CYRILLIC_HOMOGLYPHS = str.maketrans(
+    {
+        "e": "е",
+        "E": "Е",
+        "a": "а",
+        "A": "А",
+        "o": "о",
+        "O": "О",
+        "p": "р",
+        "P": "Р",
+        "c": "с",
+        "C": "С",
+        "x": "х",
+        "X": "Х",
+        "y": "у",
+        "Y": "У",
+        "i": "і",
+        "I": "І",
+        "T": "Т",
+        "H": "Н",
+        "B": "В",
+        "M": "М",
+        "K": "К",
+    }
+)
+
+_MIXED_CYRILLIC_WORD_RE = re.compile(
+    r"\b(?=[a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ]*[а-яА-ЯёЁіІїЇєЄґҐ])[a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ]+\b"
+)
+
+
+def _normalize_homoglyphs(text: str) -> str:
+    """Replace accidental Latin homoglyph letters inside predominantly Cyrillic words."""
+    if not text:
+        return ""
+
+    def _repl(m: re.Match[str]) -> str:
+        w = m.group(0)
+        # If word has both cyrillic and latin, map latin homoglyphs to cyrillic
+        return w.translate(_LATIN_TO_CYRILLIC_HOMOGLYPHS)
+
+    return _MIXED_CYRILLIC_WORD_RE.sub(_repl, text)
+
 
 def _split_sentences_safe(text: str) -> list[str]:
     return [s.strip() for s in _ABBR_SAFE_SENTENCE_SPLIT.split(text) if s.strip()]
@@ -353,10 +396,11 @@ class StructuredArticleDraft:
 
 
 def _strip_internal_handles(text: str) -> str:
-    """Strip any lingering internal [story:...] or [op:...] evidence handles from user-visible text."""
+    """Strip any lingering internal [story:...] or [op:...] evidence handles and normalize homoglyphs."""
     if not text:
         return ""
     cleaned = _INTERNAL_EVIDENCE_ID_RE.sub("", text)
+    cleaned = _normalize_homoglyphs(cleaned)
     cleaned = re.sub(r" {2,}", " ", cleaned)
     cleaned = re.sub(r" \.", ".", cleaned)
     cleaned = re.sub(r" ,", ",", cleaned)

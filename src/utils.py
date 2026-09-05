@@ -58,6 +58,12 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
     logger.addHandler(file_handler)
     logger.propagate = False
 
+    # Suppress verbose third-party loggers that spam repetitive low-value messages
+    logging.getLogger("procrastinate").setLevel(logging.WARNING)
+    logging.getLogger("telethon").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     # Suppress noisy Telethon MTProto push notifications ("Got difference for channel ...")
     # These are normal server-push updates that arrive while the connection is open;
     # they are not actionable and clutter the log during long processing runs.

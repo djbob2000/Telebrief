@@ -16,10 +16,11 @@ def test_extract_concrete_claims_kinds() -> None:
     def kinds(text: str) -> set[str]:
         return {c.kind for c in extract_concrete_claims(text)}
 
-    assert "number" in kinds("в течение полутора часов")
-    assert kinds("до 10–12 минут") >= {"number", "time"}
+    assert kinds("в течение полутора часов") == {"time"}
+    assert kinds("до 10–12 минут") == {"time"}
+    assert kinds("около 50 человек") == {"number"}
     assert kinds("до конца сентября") == {"date"}
-    assert kinds("за 27 000 руб.") >= {"number", "money"}
+    assert kinds("за 27 000 руб.") == {"money"}
     assert kinds("+7 (990) 024-06-35") == {"phone"}
     assert kinds("провайдер «Юпитер»") == {"quoted_term"}
     assert kinds("выставка «Морские горизонты»") == {"direct_quote"}

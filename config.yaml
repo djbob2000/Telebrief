@@ -235,14 +235,14 @@ settings:
     # Legacy digest budget above is independent from the long-form article path.
     # Long-form stages have separate completion budgets because their response
     # shapes and failure modes are different.
-    editorial_max_output_tokens: 65536
-    editorial_analysis_max_output_tokens: 65536
-    editorial_analysis_compact_max_output_tokens: 65536
-    editorial_writer_max_output_tokens: 65536
-    editorial_audit_max_output_tokens: 65536
-    editorial_repair_max_output_tokens: 65536
+    editorial_max_output_tokens: 131072
+    editorial_analysis_max_output_tokens: 131072
+    editorial_analysis_compact_max_output_tokens: 131072
+    editorial_writer_max_output_tokens: 131072
+    editorial_audit_max_output_tokens: 131072
+    editorial_repair_max_output_tokens: 131072
 
-    editorial_api_timeout: 300
+    editorial_api_timeout: 900
     save_debug_artifacts: true
 
 database:
@@ -250,9 +250,9 @@ database:
 
 embedding:
   provider: "openrouter"
-  model: "qwen/qwen3-embedding-8b"
+  model: "qwen/qwen3-embedding-8b:floor"
   dimensions: 1536
-  timeout: 45
+  timeout: 300
 
 facebook:
   enabled: false

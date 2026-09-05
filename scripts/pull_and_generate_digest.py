@@ -23,8 +23,9 @@ from src.publication.snapshot import PublicationSnapshotService
 from src.repositories.editions import EditionRepository
 from src.repositories.sources import SourceRepository
 from src.runtime import install_runtime
+from src.utils import setup_logging
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+setup_logging("INFO")
 logger = logging.getLogger("pull_and_generate")
 
 

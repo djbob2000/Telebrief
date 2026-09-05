@@ -430,21 +430,30 @@ class TelegramCollector:
                 error_kind=error_kind,
             )
 
+    _connect_lock: asyncio.Lock | None = None
+
+    @classmethod
+    def _get_connect_lock(cls) -> asyncio.Lock:
+        if cls._connect_lock is None:
+            cls._connect_lock = asyncio.Lock()
+        return cls._connect_lock
+
     async def _ensure_ready(self) -> None:
         """Connect (once per collector lifetime) and reconnect if socket dropped."""
-        if self._connected:
-            is_conn = getattr(self.client, "is_connected", None)
-            if callable(is_conn):
-                with suppress(Exception):
-                    res = is_conn()
-                    if inspect.isawaitable(res):
-                        res = await res
-                    if res:
-                        return
-            elif is_conn is True:
-                return
-        await ensure_connected(self.client, self.logger)
-        self._connected = True
+        async with self._get_connect_lock():
+            if self._connected:
+                is_conn = getattr(self.client, "is_connected", None)
+                if callable(is_conn):
+                    with suppress(Exception):
+                        res = is_conn()
+                        if inspect.isawaitable(res):
+                            res = await res
+                        if res:
+                            return
+                elif is_conn is True:
+                    return
+            await ensure_connected(self.client, self.logger)
+            self._connected = True
 
     async def _resolve_entity(self, source: Source) -> Any:
         """Resolve the channel entity once per source; fallback to URL if external_id fails."""

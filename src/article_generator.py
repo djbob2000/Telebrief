@@ -217,8 +217,28 @@ def _ground_draft_in_coverage_plan(
             sec_sups = [sid for sid in sec_sups if sid in support_by_id]
         sec_sups = list(dict.fromkeys(sec_sups))
 
-        if not sec.get("heading_support_ids"):
-            sec["heading_support_ids"] = sec_sups[:5] or lead_sups[:3]
+        # Match heading supports based on heading text stems and numbers
+        h_text = str(sec.get("heading") or "")
+        matched_h_sups = []
+        if support_stems and h_text:
+            h_words = tok_re.findall(h_text)
+            h_stems = {_stem(w.lower()) for w in h_words if len(w) >= 3}
+            h_nums = set(re.findall(r"\b\d+\b", h_text))
+            for sid, s_stems in support_stems.items():
+                shared_st = h_stems & s_stems
+                s_text = getattr(support_by_id.get(sid), "text", "")
+                s_nums = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
+                shared_nums = h_nums & s_nums
+                if len(shared_st) >= 2 or (shared_st and shared_nums) or (h_nums and shared_nums):
+                    matched_h_sups.append(sid)
+
+        existing_h_sups = list(sec.get("heading_support_ids") or [])
+        combined_h_sups = list(
+            dict.fromkeys(existing_h_sups + matched_h_sups + sec_sups[:5] or lead_sups[:3])
+        )
+        if support_by_id:
+            combined_h_sups = [sid for sid in combined_h_sups if sid in support_by_id]
+        sec["heading_support_ids"] = combined_h_sups
 
         raw_paras = sec.get("paragraphs") or []
         grounded_paras: list[dict[str, Any]] = []
