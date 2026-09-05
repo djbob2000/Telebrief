@@ -90,22 +90,28 @@ class MessageCollector:
             f"(default lookback: {hours}h; individual channels may override)"
         )
 
-        all_messages = {}
+        all_messages: Dict[str, List[Message]] = {}
         now = datetime.now(timezone.utc)
+        sem = asyncio.Semaphore(10)
 
-        for channel_config in self.config.channels:
-            channel_hours = (
-                hours if channel_config.lookback_hours is None else channel_config.lookback_hours
-            )
-            lookback_time = now - timedelta(hours=channel_hours)
-
-            if channel_config.topics:
-                topic_messages = await self._fetch_topics_for_channel(channel_config, lookback_time)
-                all_messages.update(topic_messages)
-            else:
-                all_messages[channel_config.name] = await self._fetch_channel_with_retries(
-                    channel_config, lookback_time
+        async def _fetch_one(channel_config: ChannelConfig) -> Dict[str, List[Message]]:
+            async with sem:
+                channel_hours = (
+                    hours
+                    if channel_config.lookback_hours is None
+                    else channel_config.lookback_hours
                 )
+                lookback_time = now - timedelta(hours=channel_hours)
+
+                if channel_config.topics:
+                    return await self._fetch_topics_for_channel(channel_config, lookback_time)
+                else:
+                    msgs = await self._fetch_channel_with_retries(channel_config, lookback_time)
+                    return {channel_config.name: msgs}
+
+        results = await asyncio.gather(*[_fetch_one(c) for c in self.config.channels])
+        for res in results:
+            all_messages.update(res)
 
         total_messages = sum(len(msgs) for msgs in all_messages.values())
         self.logger.info(f"Total messages collected: {total_messages}")

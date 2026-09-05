@@ -339,7 +339,8 @@ class TelegramCollector:
     @classmethod
     def _get_semaphore(cls) -> asyncio.Semaphore:
         if cls._scan_semaphore is None:
-            cls._scan_semaphore = asyncio.Semaphore(1)
+            concurrency = int(os.getenv("TELEGRAM_COLLECTOR_CONCURRENCY", "10"))
+            cls._scan_semaphore = asyncio.Semaphore(concurrency)
         return cls._scan_semaphore
 
     def __init__(

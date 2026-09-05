@@ -75,13 +75,18 @@ async def main() -> None:
         logger.info("Enabled sources: %d", len(sources))
 
     # ── 2. Scan all sources ──────────────────────────────────────────────────
-    logger.info("=== STEP 2: Scanning Telegram sources ===")
-    for s in sources:
-        try:
-            logger.info("  Scanning %s (%s)...", s.name, s.external_id)
-            await scan_source(s.id, "manual")
-        except Exception as exc:
-            logger.warning("  Failed to scan %s: %s", s.name, exc)
+    logger.info("=== STEP 2: Scanning Telegram sources (concurrency 10) ===")
+    scan_sem = asyncio.Semaphore(10)
+
+    async def _scan_one(s):
+        async with scan_sem:
+            try:
+                logger.info("  Scanning %s (%s)...", s.name, s.external_id)
+                await scan_source(s.id, "manual")
+            except Exception as exc:
+                logger.warning("  Failed to scan %s: %s", s.name, exc)
+
+    await asyncio.gather(*[_scan_one(s) for s in sources])
 
     # ── 3. Fragment + cluster all unfragmented revisions ─────────────────────
     logger.info("=== STEP 3: Fragmenting + clustering new revisions ===")

@@ -62,13 +62,18 @@ async def main():
         sources = await SourceRepository().list_enabled(conn)
         logger.info("Found %d enabled sources for collection", len(sources))
 
-    logger.info("2. Scanning sources via Telegram collector...")
-    for s in sources:
-        try:
-            logger.info("Scanning source %s (%s)...", s.name, s.external_id)
-            await scan_source(s.id, "manual")
-        except Exception as e:
-            logger.warning("Failed to scan source %s: %s", s.name, e)
+    logger.info("2. Scanning sources via Telegram collector (concurrency 10)...")
+    scan_sem = asyncio.Semaphore(10)
+
+    async def _scan_one(s):
+        async with scan_sem:
+            try:
+                logger.info("Scanning source %s (%s)...", s.name, s.external_id)
+                await scan_source(s.id, "manual")
+            except Exception as e:
+                logger.warning("Failed to scan source %s: %s", s.name, e)
+
+    await asyncio.gather(*[_scan_one(s) for s in sources])
 
     # 3. Find unfragmented revisions
     logger.info("3. Finding new revisions to process...")
