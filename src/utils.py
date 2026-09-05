@@ -58,6 +58,11 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
     logger.addHandler(file_handler)
     logger.propagate = False
 
+    # Suppress noisy Telethon MTProto push notifications ("Got difference for channel ...")
+    # These are normal server-push updates that arrive while the connection is open;
+    # they are not actionable and clutter the log during long processing runs.
+    logging.getLogger("telethon.client.updates").setLevel(logging.WARNING)
+
     return logger
 
 
