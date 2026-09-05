@@ -961,7 +961,7 @@ class ArticleGenerator:
             self.config.settings, "publication_editorial", PublicationEditorialConfig()
         )
         length_profile = derive_article_length_profile(article_ctx, editorial_config)
-        develop_story_budget = max(0, min(3, length_profile.target_max_sections - 1))
+        develop_story_budget = max(0, min(4, length_profile.target_max_sections - 1))
 
         from src.publication.article_coverage import build_article_coverage_plan
         from src.publication.article_writer_context import render_article_writer_context
@@ -1031,6 +1031,45 @@ class ArticleGenerator:
                         list(candidate_val.violations)[:5],
                     )
                     writer_draft = candidate_draft
+
+                    # Targeted copy-editor / fact-checker pass
+                    if getattr(editorial_config, "article_editor_enabled", False):
+                        from src.publication.article_editor import ArticleEditor
+
+                        editor_max_tokens = getattr(
+                            getattr(self.config.settings, "article", None),
+                            "editorial_repair_max_output_tokens",
+                            8192,
+                        )
+                        editor = ArticleEditor(
+                            provider=self.provider,
+                            model=self.model,
+                            max_output_tokens=editor_max_tokens,
+                        )
+                        editor_attempts = getattr(
+                            editorial_config, "article_editor_max_attempts", 2
+                        )
+                        edited_draft, edited_val = await editor.edit_draft(
+                            candidate_draft,
+                            candidate_val,
+                            article_ctx,
+                            config=editorial_config,
+                            length_profile=length_profile,
+                            attempt_observer=attempt_observer,
+                            max_attempts=editor_attempts,
+                        )
+                        if edited_val.is_valid:
+                            self.logger.info(
+                                "ArticleEditor successfully resolved validation issues; draft accepted"
+                            )
+                            writer_draft = edited_draft
+                            candidate_val = edited_val
+                            writer_error = None
+                            break
+                        else:
+                            writer_draft = edited_draft
+                            candidate_val = edited_val
+
                     if writer_try < max_writer_attempts:
                         blocking_issues = [iss for iss in candidate_val.issues if iss.blocking]
                         issue_lines = [

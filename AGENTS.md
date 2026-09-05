@@ -253,21 +253,17 @@ Claim Atoms are validation metadata, not sentence templates.
 - Do not force the article prose to mimic raw source syntax.
 - Do not hide unsupported reader-facing facts by omitting them from Claim Atoms; high-risk novelty in the published text must still be validated.
 
-## 0.7 Article failure semantics
+## 0.7 Article failure semantics and targeted editorial editing
 
-Event-First article generation uses at most one LLM writer call.
+Event-First article generation uses one main LLM writer call followed by deterministic Evidence Boundary validation.
 
-Evidence Boundary is fail-closed for the AI draft, not for the publication.
+When the writer draft contains isolated factual or stylistic validation issues (such as non-allowlisted quotes, unverified proper names, or over-specified causes), a targeted copy-editor (`ArticleEditor`, enabled via `article_editor_enabled: true`) performs precise unit-level patching (`Targeted Patching` on units such as `LEAD` or specific paragraphs) without rewriting the entire draft. The patched draft is re-validated strictly against the Evidence Boundary.
 
-Unsafe or failed writer output is discarded and replaced by a deterministic Event-First article built from the same frozen publishable knowledge.
+Evidence Boundary is fail-closed for unverified assertions: the published article must never contain ungrounded facts.
 
 Safe but incomplete writer output is preserved and completed deterministically.
 
-No second LLM fact-check, repair, reviewer, regeneration, or alternate-model retry is allowed.
-
-When substantive PUBLISH material exists, writer failure alone must never prevent publication.
-
-A terminal article-generation failure is reserved for deterministic/system invariant failure after recovery.
+When substantive PUBLISH material exists, minor validation issues on specific paragraphs must be resolved through targeted editing and deterministic recovery rather than discarding the entire publication. A terminal article-generation failure is reserved for system invariant failure after all recovery steps.
 
 ## 0.8 Reader hierarchy, not destructive selection
 

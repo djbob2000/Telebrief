@@ -63,7 +63,12 @@ For the daily city article («Чем жил Бердянск за последн
    - Exact building addresses and street locations;
    - Operating hours and intake schedules (e.g. `с понедельника по пятницу с 07:00 до 13:00`);
    - Required documents (e.g. `паспорт и СНИЛС`).
-6. **Dual Street Naming in Berdyansk:** For renamed or historically dual-named streets in Berdyansk, use familiar, natural dual naming for clarity (e.g. `улица Тверская (бывшая Карла Маркса)` or `улица Карла Маркса (Тверская)`).
+6. **Dual Street Naming and Topography in Berdyansk:**
+   - For renamed or historically dual-named streets in Berdyansk, use familiar, natural dual naming for clarity (e.g. `улица Тверская (бывшая Карла Маркса)` or `улица Карла Маркса (Тверская)`).
+   - **Topography & Districts (Нижняя часть vs Нагорная часть / Гора):** The city is fundamentally divided into the lower part (*нижняя часть города*) and the elevated plateau (*нагорная часть города*). Locally, residents colloquially call the elevated area simply **«Гора»** (*«на Горе»*).
+     - NEVER write unnatural hybrid forms like *«в районе Нагорной»* or *«на Нагорной»* (unless specifically referring to *улица Нагорная*).
+     - In general editorial narrative, overviews, and contrast with the lower part, use **«в нагорной части города»** (e.g. *«...в центре, на Слободке, в нагорной части города и в нижней части города»*).
+     - In resident observations, quotes, and conversational district listings, use the natural colloquial form **«на Горе»** (e.g. *«...в центре, на Слободке, на Горе и в Военном городке»*). Both forms are valid depending on context.
 7. **Resident Observation Synthesis:** synthesize resident observations across districts into coherent narrative paragraphs with natural journalistic attribution (`по сообщениям жителей`, `по словам горожан`, `как отмечают жители`). Do not reveal Telegram ingestion mechanics (`в чате`, `участники чата`). Resident comments are valuable editorial material reflecting the lived reality of the city.
 8. **Contextual Grouping without Causal Leaps:** cover related same-day developments (e.g. power outages, residents searching for power, local venues offering free charging) within the same chapter without manufacturing unsupported causal bridges (`из-за`, `вследствие` require direct evidence).
 9. **Adaptive Dominance:** when one major event or condition clearly dominates the day's reporting, give it proportionally more space as the primary chapter without enforcing a rigid percentage.

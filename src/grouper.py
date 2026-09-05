@@ -932,7 +932,7 @@ class DigestGrouper:
             "numbers, dates, times, addresses, schedules, status, attribution, citizen context, and uncertainty.\n"
             "- PRESERVE all actionable and specific details: preserve exact hours (e.g. '1–3 часа в сутки'), "
             "times (e.g. 'к 14:15'), exact addresses (e.g. 'ул. Пионерская, 51-а'), streets (e.g. 'ул. Морозова', 'ул. Гайдара', 'ул. Карла Маркса'), "
-            "districts ('АКЗ', 'Нагорная часть', 'Военный городок', 'Колония', 'Слободка', 'Лиски', 'Центр', 'Коса'), "
+            "districts ('АКЗ', 'Нагорная часть' / 'Гора', 'Военный городок', 'Колония', 'Слободка', 'Лиски', 'Центр', 'Коса'), "
             "organizations (e.g. 'Єдина Міць Народу'), mobile network operators ('+7', 'МТС', 'Миранда'), contractor names, "
             "ATM locations, upper-floor water pressure issues, and complete lists of bus route numbers.\n"
             "- NEVER replace specific district or street names with vague generalizations (e.g. 'в ряде районов' or 'в городе'). Always retain the exact local geography.\n"

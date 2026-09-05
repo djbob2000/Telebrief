@@ -15,7 +15,7 @@ _STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 ArticleProminence = Literal["DEVELOP", "WEAVE", "BRIEF"]
 
 _DETAIL_LIMIT: dict[ArticleProminence, int] = {
-    "DEVELOP": 3,
+    "DEVELOP": 4,
     "WEAVE": 2,
     "BRIEF": 1,
 }

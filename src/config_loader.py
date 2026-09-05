@@ -304,6 +304,8 @@ class PublicationEditorialConfig:
     digest_city_situation_max_details_per_item: int = 2
     digest_city_situation_max_positive_items: int = 2
     article_allow_deterministic_fallback: bool = False
+    article_editor_enabled: bool = False
+    article_editor_max_attempts: int = 2
 
     def __post_init__(self) -> None:
         if self.conflict_window_minutes <= 0:
@@ -1678,6 +1680,8 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
         article_allow_deterministic_fallback=bool(
             raw.get("article_allow_deterministic_fallback", False)
         ),
+        article_editor_enabled=bool(raw.get("article_editor_enabled", True)),
+        article_editor_max_attempts=_val_pos_int("article_editor_max_attempts", 2),
     )
 
 
