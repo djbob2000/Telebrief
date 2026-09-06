@@ -41,7 +41,23 @@ def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
     title_text = (pub.title or "").strip()
     lead_text = (pub.lead or "").strip()
 
+    pub_type = getattr(pub, "publication_type", "")
     if platform == "telegram_channel":
+        if pub_type in ("weekly_article", "monthly_article"):
+            from src.publication.renderers import render_longitudinal_telegram_teaser
+
+            telegraph_url = ""
+            if hasattr(pub, "metadata") and isinstance(pub.metadata, dict):
+                telegraph_url = str(pub.metadata.get("telegraph_url", ""))
+            raw_text = render_longitudinal_telegram_teaser(
+                publication_type=pub_type,
+                title=title_text,
+                lead=lead_text,
+                body=body_text,
+                telegraph_url=telegraph_url,
+            )
+            return "telegram_html", {"text": raw_text}
+
         if body_text.startswith(f"# {title_text}") or body_text.startswith(title_text):
             raw_text = body_text
         elif title_text:
@@ -167,7 +183,16 @@ class PublicationDeliveryService:
                     platform="telegram_channel",
                     destination_key=destination_key,
                 )
-                dests = [default_dest]
+                if run.publication_type in ("weekly_article", "monthly_article"):
+                    telegraph_dest = await self.delivery_repo.get_or_create_destination(
+                        conn,
+                        edition_id=run.edition_id,
+                        platform="telegraph",
+                        destination_key="default",
+                    )
+                    dests = [telegraph_dest, default_dest]
+                else:
+                    dests = [default_dest]
 
             created_deliveries: list[PublicationDelivery] = []
             for dest in dests:

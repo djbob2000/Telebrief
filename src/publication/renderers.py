@@ -683,3 +683,91 @@ def render_layered_short_read_telegram_html(
         sections.append(f"<i>{statistics_text}</i>")
 
     return "\n\n".join(sections)
+
+
+def _extract_sections(markdown_text: str) -> list[tuple[str, str]]:
+    """Extract (heading, first_paragraph) pairs for level-2 headings."""
+    sections: list[tuple[str, str]] = []
+    lines = markdown_text.splitlines()
+    cur_heading: str | None = None
+    cur_lines: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            if cur_heading is not None:
+                sections.append((cur_heading, "\n".join(cur_lines).strip()))
+                cur_lines = []
+            cur_heading = stripped[3:].strip()
+        elif cur_heading is not None and stripped:
+            if not cur_lines:
+                cur_lines.append(stripped)
+
+    if cur_heading is not None:
+        sections.append((cur_heading, "\n".join(cur_lines).strip()))
+
+    return sections
+
+
+def _first_sentence(text: str) -> str:
+    """Extract first sentence from text, trimmed to reasonable teaser length."""
+    if not text:
+        return ""
+    m = re.split(r"(?<=[.!?])\s+", text.strip(), maxsplit=1)
+    s = m[0].strip() if m else text.strip()
+    if len(s) > 160:
+        s = s[:157].rstrip() + "..."
+    return s
+
+
+def render_longitudinal_telegram_teaser(
+    *,
+    publication_type: str,
+    title: str,
+    lead: str,
+    body: str,
+    telegraph_url: str = "",
+) -> str:
+    """Render compact executive teaser card for Telegram linking to full Telegraph long-read."""
+    lines: list[str] = []
+
+    # 1. Header with emoji badge
+    if publication_type == "monthly_article":
+        badge = "🏛 <b>ПАНОРАМА МЕСЯЦА"
+        themes_header = "Ключевые процессы месяца:"
+        read_prompt = "Читать полную панораму месяца на Telegraph"
+    else:
+        badge = "📰 <b>ИТОГИ НЕДЕЛИ"
+        themes_header = "Главные темы выпуска:"
+        read_prompt = "Читать полный лонгрид на Telegraph"
+
+    clean_title = title.strip()
+    lines.append(f"{badge}: {clean_title}</b>\n")
+
+    # 2. Executive lead
+    if lead:
+        lines.append(f"{lead.strip()}\n")
+
+    # 3. Chapter previews from body markdown
+    sections = _extract_sections(body)
+    if sections:
+        lines.append(f"<b>{themes_header}</b>")
+        for heading, text in sections:
+            first_sentence = _first_sentence(text)
+            if first_sentence:
+                lines.append(f"🔹 <b>{heading}</b>: {first_sentence}")
+            else:
+                lines.append(f"🔹 <b>{heading}</b>")
+        lines.append("")
+
+    # 4. Telegraph read link
+    word_count = len(body.split())
+    reading_min = max(3, round(word_count / 200)) if word_count else 5
+    if telegraph_url:
+        lines.append(
+            f'👉 <a href="{telegraph_url}">{read_prompt} (~{reading_min} мин)</a>\n{telegraph_url}'
+        )
+    else:
+        lines.append(f"👉 {read_prompt} (~{reading_min} мин)")
+
+    return "\n".join(lines).strip()
