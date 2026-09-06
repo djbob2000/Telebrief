@@ -69,7 +69,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-telebrief}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-password}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql
     command:
       - "postgres"
       - "-c"
