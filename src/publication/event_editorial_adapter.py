@@ -25,6 +25,7 @@ from src.processing.event_analysis import EventAnalysisPayload
 from src.processing.operational_semantics import derive_operational_observations
 from src.publication.editorial_adapter import FrozenEditorialInput
 from src.publication.models import PublicationInput
+from src.publication.policies import ARTICLE_PUBLICATION_TYPES
 from src.publication.repository import PublicationRepository
 
 logger = logging.getLogger(__name__)
@@ -476,7 +477,7 @@ class EventEditorialAdapter:
 
         # Build ArticleEditorialContext for article runs
         article_ctx = None
-        if run is not None and run.publication_type in ("article", "daily_article"):
+        if run is not None and run.publication_type in ARTICLE_PUBLICATION_TYPES:
             eligibility = await self.repo.get_eligibility_policy_by_id(
                 conn, run.eligibility_policy_id
             )
@@ -543,6 +544,50 @@ class EventEditorialAdapter:
                 edition_name=edition_name,
                 selection_by_story=sel_signals,
             )
+
+            if run.publication_type in ("weekly_article", "monthly_article") and story_cards:
+                import re
+                from collections import defaultdict
+                from dataclasses import replace
+
+                from src.publication.story_threads import (
+                    build_longitudinal_coverage_plan,
+                    cluster_stories_into_threads,
+                )
+
+                story_dates_map: dict[str, list[dt.datetime | dt.date]] = defaultdict(list)
+                story_sups_map: dict[str, list[str]] = defaultdict(list)
+                for sup in article_ctx.support_index:
+                    sid = getattr(sup, "story_id", "") or ""
+                    if not sid:
+                        m = re.search(r"story:\d+", sup.support_id)
+                        if m:
+                            sid = m.group(0)
+                    if sid:
+                        story_sups_map[sid].append(sup.support_id)
+                        if sup.observed_at:
+                            story_dates_map[sid].append(sup.observed_at)
+
+                threads = cluster_stories_into_threads(
+                    cards=story_cards,
+                    story_dates=story_dates_map,
+                    story_support_ids=story_sups_map,
+                )
+                since = run.snapshot_at - dt.timedelta(hours=lookback_hours)
+                try:
+                    anchor_pubs = await self.repo.query_anchor_publications(
+                        conn,
+                        edition_id=run.edition_id,
+                        since=since,
+                        until=run.snapshot_at,
+                    )
+                except Exception:
+                    anchor_pubs = []
+
+                longitudinal_plan = build_longitudinal_coverage_plan(
+                    threads, anchor_pubs=anchor_pubs
+                )
+                article_ctx = replace(article_ctx, coverage_plan=longitudinal_plan)
 
         analysis = EditorialAnalysis(
             cards=story_cards,

@@ -193,6 +193,7 @@ class ArticleEditorialContext:
     edition_anchor_terms: tuple[str, ...] = ()
     story_cards: tuple[StoryCard, ...] = ()
     selection_by_story: dict[str, ArticleSelectionSignal] = field(default_factory=dict)
+    coverage_plan: Any | None = None
 
     @property
     def supports(self) -> tuple[ArticleSupport, ...]:

@@ -19,6 +19,10 @@ from src.publication.repository import PublicationPolicyRepository
 
 logger = logging.getLogger(__name__)
 
+ARTICLE_PUBLICATION_TYPES: frozenset[str] = frozenset(
+    {"daily_article", "article", "weekly_article", "monthly_article"}
+)
+
 DEFAULT_ELIGIBILITY_CONFIG_HASH = "elig-cfg-default"
 DEFAULT_ELIGIBILITY_PROMPT_VERSION = "elig-prompt-v1"
 DEFAULT_SCOPE_CONFIG_HASH = "scope-cfg-default"

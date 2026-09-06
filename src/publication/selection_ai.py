@@ -15,6 +15,7 @@ from src.publication.digest_contracts import (
     HARD_EXCLUSION_REASONS,
 )
 from src.publication.models import PublicationCandidate, PublicationRun
+from src.publication.policies import ARTICLE_PUBLICATION_TYPES
 from src.publication.selection import (
     HeuristicSelectionModel,
     SelectionModel,
@@ -201,7 +202,7 @@ class AIPublicationSelectionModel:
         prompt_parts = []
         if self.scope_contract:
             prompt_parts.append(f"{self.scope_contract}\n")
-        if run.publication_type in ("article", "daily_article"):
+        if run.publication_type in ARTICLE_PUBLICATION_TYPES:
             task_instruction = (
                 "Return the stories that deserve elevated editorial priority.\n"
                 "Stories absent from this compact list remain included as BRIEF.\n"
@@ -357,7 +358,7 @@ class AIPublicationSelectionModel:
             for cand in candidates:
                 cand_key = (cand.story_id, cand.story_revision_id)
                 if cand_key not in seen_keys:
-                    if publication_type in ("article", "daily_article"):
+                    if publication_type in ARTICLE_PUBLICATION_TYPES:
                         proposals.append(
                             SelectionProposal(
                                 story_id=cand.story_id,

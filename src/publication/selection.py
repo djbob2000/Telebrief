@@ -22,6 +22,7 @@ from src.publication.models import (
     PublicationSelectionDecision,
 )
 from src.publication.policies import (
+    ARTICLE_PUBLICATION_TYPES,
     SUPPORTED_SELECTION_SEMANTICS_VERSIONS,
     UnsupportedFrozenSemanticVersion,
 )
@@ -177,7 +178,7 @@ class EditorialSelectionService:
             validated_proposals.append((cand, prop))
 
         is_digest = run.publication_type in DIGEST_PUBLICATION_TYPES
-        coverage_preserving = is_digest or run.publication_type in ("article", "daily_article")
+        coverage_preserving = is_digest or run.publication_type in ARTICLE_PUBLICATION_TYPES
 
         props_by_cand_key = {
             (prop.story_id, prop.story_revision_id): (cand, prop)
@@ -192,7 +193,7 @@ class EditorialSelectionService:
 
             if coverage_preserving:
                 default_intent = (
-                    "brief" if run.publication_type in ("article", "daily_article") else "normal"
+                    "brief" if run.publication_type in ARTICLE_PUBLICATION_TYPES else "normal"
                 )
                 if candidate_prop is None:
                     effective_prop = SelectionProposal(

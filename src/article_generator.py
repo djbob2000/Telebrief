@@ -994,6 +994,9 @@ class ArticleGenerator:
         from src.publication.article_coverage import build_article_coverage_plan
         from src.publication.article_writer_context import render_article_writer_context
 
+        if coverage_plan is None and getattr(article_ctx, "coverage_plan", None) is not None:
+            coverage_plan = article_ctx.coverage_plan
+
         if coverage_plan is None:
             if is_longitudinal and article_ctx.story_cards:
                 from collections import defaultdict

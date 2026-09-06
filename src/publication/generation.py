@@ -22,6 +22,7 @@ from src.publication.editorializer import DigestEditorializer
 from src.publication.errors import ArticlePublicationRejected, PublicationGenerationError
 from src.publication.models import Publication
 from src.publication.policies import (
+    ARTICLE_PUBLICATION_TYPES,
     SUPPORTED_ARTICLE_COVERAGE_PLAN_VERSIONS,
     SUPPORTED_ARTICLE_RECOVERY_VERSIONS,
     SUPPORTED_ARTICLE_WRITER_VERSIONS,
@@ -103,7 +104,7 @@ class PublicationGenerationService:
                 )
 
             # Validate frozen writer policy semantics for article publications
-            if run.publication_type in ("daily_article", "article"):
+            if run.publication_type in ARTICLE_PUBLICATION_TYPES:
                 writer_policy = await self.repo.get_writer_policy_by_id(conn, run.writer_policy_id)
                 if writer_policy is not None and writer_policy.config:
                     w_ver = writer_policy.config.get("article_writer_version")
