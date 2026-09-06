@@ -72,7 +72,18 @@ jobs:
         run: python scripts/migrate.py
 
       - name: Run Pytest
-        run: pytest -v
+        run: |
+          set -o pipefail
+          pytest -v --tb=short 2>&1 | tee /tmp/pytest.log
+
+      - name: Publish Test Failure Summary
+        if: failure()
+        run: |
+          echo "## Pytest Failures" >> $GITHUB_STEP_SUMMARY
+          echo '```text' >> $GITHUB_STEP_SUMMARY
+          grep -A 100 "=== FAILURES ===" /tmp/pytest.log >> $GITHUB_STEP_SUMMARY || tail -n 100 /tmp/pytest.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
 
   build-and-push:
     name: Build & Push Docker Image
