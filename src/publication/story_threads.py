@@ -6,7 +6,7 @@ import datetime as dt
 import math
 import re
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -233,9 +233,9 @@ def build_milestone_timeline(
 
 def cluster_stories_into_threads(
     cards: Sequence[StoryCard],
-    story_dates: dict[str, Sequence[dt.datetime | dt.date]] | None = None,
-    story_embeddings: dict[str, list[float]] | None = None,
-    story_support_ids: dict[str, Sequence[str]] | None = None,
+    story_dates: Mapping[str, Sequence[dt.datetime | dt.date]] | None = None,
+    story_embeddings: Mapping[str, Sequence[float]] | None = None,
+    story_support_ids: Mapping[str, Sequence[str]] | None = None,
     min_similarity: float = 0.70,
 ) -> list[StoryThread]:
     """Cluster multi-day StoryCards into coherent StoryThread narratives."""

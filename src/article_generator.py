@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import logging
 import re
@@ -867,17 +868,26 @@ class ArticleGenerator:
     def _build_event_article_system_prompt(
         self,
         length_profile: ArticleLengthProfile | None = None,
+        is_longitudinal: bool = False,
     ) -> str:
         """Compose the Event-First article prompt from safety and narrative newsroom contracts."""
         narrative_contract = build_article_narrative_contract(
             output_language=self.output_language,
             length_profile=length_profile,
         )
+        longitudinal_block = ""
+        if is_longitudinal:
+            longitudinal_block = """
+### СПЕЦИАЛЬНЫЙ ФОРМАТ: ЛОНГРИД-ПАНОРАМА (ИТОГИ НЕДЕЛИ / МЕСЯЦА):
+- СТРУКТУРА: Развивайте сквозные сюжетные линии по ключевым сферам (Инфраструктура и жизнеобеспечение, Городской транспорт и логистика, Потребительский рынок и цены, Социальная жизнь).
+- ХРОНОЛОГИЯ И ВЕХИ: Показывайте динамику развития событий во времени, используя точные даты и временные привязки (например: «[01.09]... к [04.09]...»).
+- ЗАВЕРШАЮЩИЙ РАЗДЕЛ («Городской горизонт»): Заключительный раздел статьи («## Городской горизонт») должен освещать ожидаемые сроки ремонтов, предстоящие изменения и открытые вопросы горожан (строго на основе фактов с ролью FUTURE_SCHEDULED или нерешённых проблем).
+"""
         return f"""Вы — опытный выпускающий редактор и автор регионального издания.
 Ваша задача — написать связную, объективную, детальную и увлекательную городскую хронику (вечерний лонгрид) на русском языке на основе проверенных фактов, оперативной хроники и сообщений.
 
 {narrative_contract}
-
+{longitudinal_block}
 ### Журналистский формат — Городская хроника (вечерний лонгрид):
 1. ОБЪЁМ И ГЛУБИНА:
    - Статья должна представлять собой обстоятельное вечернее чтение городской хроники (ориентир 1200–1800 слов для насыщенных выпусков, 10–15 абзацев).
@@ -952,6 +962,7 @@ class ArticleGenerator:
     async def generate_from_event_article_context(  # noqa: C901
         self,
         article_ctx: ArticleEditorialContext,
+        coverage_plan: Any | None = None,
         attempt_observer: Any | None = None,
     ) -> Tuple[str, str, str]:
         """Synthesize long-form editorial article directly from ArticleEditorialContext in one LLM call."""
@@ -971,16 +982,58 @@ class ArticleGenerator:
         length_profile = derive_article_length_profile(article_ctx, editorial_config)
         develop_story_budget = max(0, min(4, length_profile.target_max_sections - 1))
 
+        lookback_hours = 24
+        if article_ctx.publication_window is not None:
+            delta = (
+                article_ctx.publication_window.snapshot_at
+                - article_ctx.publication_window.lookback_start
+            )
+            lookback_hours = int(delta.total_seconds() // 3600)
+        is_longitudinal = lookback_hours >= 120
+
         from src.publication.article_coverage import build_article_coverage_plan
         from src.publication.article_writer_context import render_article_writer_context
 
-        coverage_plan = build_article_coverage_plan(
-            article_ctx.story_cards,
-            article_ctx,
-            develop_story_budget=develop_story_budget,
-        )
+        if coverage_plan is None:
+            if is_longitudinal and article_ctx.story_cards:
+                from collections import defaultdict
+
+                from src.publication.story_threads import (
+                    build_longitudinal_coverage_plan,
+                    cluster_stories_into_threads,
+                )
+
+                story_dates_map: dict[str, list[dt.datetime | dt.date]] = defaultdict(list)
+                story_sups_map: dict[str, list[str]] = defaultdict(list)
+                for sup in article_ctx.support_index:
+                    sid = getattr(sup, "story_id", "") or ""
+                    if not sid:
+                        m = re.search(r"story:\d+", sup.support_id)
+                        if m:
+                            sid = m.group(0)
+                    if sid:
+                        story_sups_map[sid].append(sup.support_id)
+                        if sup.observed_at:
+                            story_dates_map[sid].append(sup.observed_at)
+
+                threads = cluster_stories_into_threads(
+                    cards=article_ctx.story_cards,
+                    story_dates=story_dates_map,
+                    story_support_ids=story_sups_map,
+                )
+                coverage_plan = build_longitudinal_coverage_plan(threads)
+            else:
+                coverage_plan = build_article_coverage_plan(
+                    article_ctx.story_cards,
+                    article_ctx,
+                    develop_story_budget=develop_story_budget,
+                )
+
         context_str = render_article_writer_context(article_ctx, coverage_plan)
-        system_prompt = self._build_event_article_system_prompt(length_profile=length_profile)
+        system_prompt = self._build_event_article_system_prompt(
+            length_profile=length_profile,
+            is_longitudinal=is_longitudinal,
+        )
         user_prompt = f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\n{context_str}"
 
         from src.publication.article_finalization import ArticleFinalizer

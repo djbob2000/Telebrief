@@ -52,6 +52,32 @@ def derive_article_length_profile(
     min_needed_words = publish_story_count * 22
     hard_max = max(config.article_max_words, min_needed_words)
 
+    lookback_hours = 24
+    if context.publication_window is not None:
+        delta = context.publication_window.snapshot_at - context.publication_window.lookback_start
+        lookback_hours = int(delta.total_seconds() // 3600)
+
+    if lookback_hours >= 336:
+        return ArticleLengthProfile(
+            richness="rich",
+            target_min_words=3000,
+            target_max_words=4500,
+            target_min_sections=4,
+            target_max_sections=8,
+            hard_min_words=1500,
+            hard_max_words=max(5000, hard_max),
+        )
+    elif lookback_hours >= 120:
+        return ArticleLengthProfile(
+            richness="rich",
+            target_min_words=1500,
+            target_max_words=2500,
+            target_min_sections=3,
+            target_max_sections=7,
+            hard_min_words=800,
+            hard_max_words=max(3000, hard_max),
+        )
+
     if is_thin:
         return ArticleLengthProfile(
             richness="thin",

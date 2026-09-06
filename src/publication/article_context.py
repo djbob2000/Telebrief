@@ -35,6 +35,13 @@ class PublicationWindow:
     snapshot_at: dt.datetime
     lookback_start: dt.datetime
 
+    @property
+    def lookback_hours(self) -> int:
+        return int((self.snapshot_at - self.lookback_start).total_seconds() // 3600)
+
+
+ArticlePublicationWindow = PublicationWindow
+
 
 def _normalize_dt(d: dt.datetime | None) -> dt.datetime | None:
     if d is None:

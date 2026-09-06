@@ -68,6 +68,20 @@ def render_article_writer_context(
         blocks.append(
             f"REPORT WINDOW: {context.publication_window.lookback_start.isoformat()} .. {context.publication_window.snapshot_at.isoformat()}"
         )
+        lookback_hours = int(
+            (
+                context.publication_window.snapshot_at - context.publication_window.lookback_start
+            ).total_seconds()
+            // 3600
+        )
+        if lookback_hours >= 120:
+            blocks.append(
+                "LONGITUDINAL PUBLICATION DIRECTIVE:\n"
+                "- Structure into comprehensive thematic chapters (e.g. Infrastructure, Transport, Consumer Market, Social Life).\n"
+                "- Trace trajectory evolution over time using date anchors (e.g. [01.09] or natural dates like '1 сентября... к 4 сентября...').\n"
+                "- Conclude with a dedicated closing section or outlook ('## Городской горизонт') covering upcoming deadlines, scheduled works, and unresolved questions strictly grounded in FUTURE_SCHEDULED and unresolved supports."
+            )
+
     if coverage_plan is not None:
         blocks.append(_render_coverage_plan(coverage_plan))
 

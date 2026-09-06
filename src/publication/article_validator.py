@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import re
 from dataclasses import dataclass
 from typing import Literal
@@ -21,10 +20,21 @@ _INTERNAL_HANDLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_WEEKLY_EXPANSION_RE = re.compile(
+    r"\b(?:хроник[а-я]*\s+недел[а-я]*|итог[а-я]*\s+недел[а-я]*|событи[а-я]*\s+недел[а-я]*|обзор[а-я]*\s+недел[а-я]*|за\s+недел[а-я]*)\b",
+    re.IGNORECASE,
+)
+
+_MONTHLY_EXPANSION_RE = re.compile(
+    r"\b(?:итог[а-я]*\s+месяц[а-я]*|событи[а-я]*\s+месяц[а-я]*|обзор[а-я]*\s+месяц[а-я]*|за\s+месяц[а-я]*)\b",
+    re.IGNORECASE,
+)
+
 _EXPANSION_RE = re.compile(
     r"\b(?:хроник[а-я]*\s+недел[а-я]*|итог[а-я]*\s+недел[а-я]*|событи[а-я]*\s+недел[а-я]*|обзор[а-я]*\s+недел[а-я]*|за\s+недел[а-я]*|итог[а-я]*\s+месяц[а-я]*|событи[а-я]*\s+месяц[а-я]*|обзор[а-я]*\s+месяц[а-я]*|за\s+месяц[а-я]*)\b",
     re.IGNORECASE,
 )
+
 
 _CONTINUATION_RE = re.compile(
     r"\b(?:продолжа[а-я]+|сохраня[а-я]+|оста[её]т[а-я]*|длительн[а-я]*|на\s+фоне|по-прежнему|ранее|с начала|до этого|прежде)\b",
@@ -182,15 +192,20 @@ def validate_article_draft(
             )
         )
 
-    # 3. Reporting window expansion check (for windows <= 48h)
-    is_short_window = True
+    # 3. Reporting window expansion check
+    lookback_hours = 24
     if context.publication_window is not None:
         delta = context.publication_window.snapshot_at - context.publication_window.lookback_start
-        if delta > dt.timedelta(hours=48):
-            is_short_window = False
+        lookback_hours = int(delta.total_seconds() // 3600)
 
-    if is_short_window:
-        if _EXPANSION_RE.search(draft.title):
+    disallowed_patterns: list[re.Pattern[str]] = []
+    if lookback_hours <= 48:
+        disallowed_patterns.extend([_WEEKLY_EXPANSION_RE, _MONTHLY_EXPANSION_RE])
+    elif lookback_hours < 336:
+        disallowed_patterns.append(_MONTHLY_EXPANSION_RE)
+
+    for pattern in disallowed_patterns:
+        if pattern.search(draft.title):
             issues.append(
                 ArticleValidationIssue(
                     code="REPORTING_WINDOW_EXPANSION",
@@ -198,7 +213,9 @@ def validate_article_draft(
                     message=f"Draft title expands reporting window beyond configured lookback: '{draft.title}'",
                 )
             )
-        if _EXPANSION_RE.search(draft.lead):
+            break
+    for pattern in disallowed_patterns:
+        if pattern.search(draft.lead):
             issues.append(
                 ArticleValidationIssue(
                     code="REPORTING_WINDOW_EXPANSION",
@@ -206,6 +223,7 @@ def validate_article_draft(
                     message=f"Draft lead expands reporting window beyond configured lookback: '{draft.lead}'",
                 )
             )
+            break
 
     # 4. Unit-by-unit validation
     # Construct sequence of units: (unit_id, unit_type, text, cited_support_ids, claim_atoms)
