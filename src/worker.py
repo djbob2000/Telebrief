@@ -35,16 +35,25 @@ async def run_worker(*, concurrency: int = DEFAULT_CONCURRENCY) -> None:
     """Open infrastructure, install the runtime, and serve jobs until stopped."""
     if concurrency < 1:
         raise ValueError("concurrency must be >= 1")
+    import logging
+    import os
+
     from src.bootstrap import build_infrastructure
     from src.config_loader import load_database_config
     from src.jobs.app import procrastinate_app
     from src.runtime import clear_runtime, install_runtime
+    from src.utils import setup_logging
+
+    setup_logging(os.getenv("LOG_LEVEL", "INFO"))
+    logger = logging.getLogger("telebrief.worker")
+    logger.info("Initializing Procrastinate worker infrastructure (concurrency=%d)...", concurrency)
 
     config = load_database_config(require_enabled=True)
     # build_infrastructure opens pool + queue app (and gates on the schema
     # version); an explicit open() here would double-open the connector.
     infrastructure = await build_infrastructure(config)
     install_runtime(infrastructure)
+    logger.info("Procrastinate worker listening on queues: %s", list(WORKER_QUEUES))
     try:
         await procrastinate_app.run_worker_async(
             queues=list(WORKER_QUEUES),
