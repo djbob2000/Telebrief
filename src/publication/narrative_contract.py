@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v5"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v6"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v5"
 
 
@@ -84,10 +84,14 @@ def build_article_narrative_contract(
 - Micro-locations: Weave street names and neighborhood references naturally into sentences instead of prefixing clauses with database-like labels such as "Location (Category): fact".
 - Attribution discipline: Group repeated observations sharing the same epistemic status under a single natural attribution. Vary sentence openings and avoid mechanically repeating identical attribution phrases at the start of every sentence.
 - Transitions: Neutral connective phrases (e.g. "meanwhile", "at the same time", "against this background") are permitted only when they connect verified observations without asserting unsupported causal links.
-- Direct quotes:
+- Direct quotes & resident voice integration:
   * Quotation marks («...») mean exact primary-source wording and MUST be used ONLY when quoting the EXACT primary-source words verbatim from `source=...`.
   * NEVER translate or grammar-correct text inside quotation marks, normalize grammar, shorten, or merge words inside a direct quotation.
   * If you need Russian translation, correction, or compression, remove quotation marks and write indirect speech.
+  * No quotation dumps or chat rolls: NEVER string together consecutive direct quotes separated by commas or dashes (e.g. «Quote 1», «Quote 2», «Quote 3» — such reports...). Consecutive quotation dumps destroy narrative flow and read like uncurated chat logs.
+  * Synthesis over enumeration: When multiple residents report the same condition across different locations or times (e.g. utility outages, pervasive odors, connectivity checks), synthesize the shared facts into coherent prose using indirect speech and geographical progression instead of quoting each resident.
+  * Selective, organic quotation: Use direct quotes sparingly (1–2 per thematic block) for vivid human observations, sharp ironies, or distinctive lived experiences. Every direct quote must be smoothly introduced or anchored by narrative attribution (e.g. `..., noting that "..."`, or `"...", describes a resident`).
+  * Indirect speech as default: Use natural indirect speech to summarize repetitive complaints, status checks, or similar observations without quotation marks.
 
 - Proper names & Places:
   * Do NOT introduce external city names, persons, or organizations that are not explicitly mentioned in that paragraph's cited support.

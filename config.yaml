@@ -234,7 +234,7 @@ settings:
     lookback_hours: 24
     author_name: "@berdiansk_news"
     fallback_save_dir: "data/articles"
-    prompt_template: ".agents/skills/news-style/SKILL.md"
+    prompt_template: "src/prompts/news_style.md"
     generation_retries: 1
     generation_retry_delay: 1.0
     # Legacy digest budget above is independent from the long-form article path.

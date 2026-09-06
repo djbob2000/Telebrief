@@ -234,7 +234,7 @@ class ArticleConfig:
     lookback_hours: int = 24
     author_name: str = "Бердянск Новости"
     fallback_save_dir: str = "data/articles"
-    prompt_template: str = ".agents/skills/news-style/SKILL.md"
+    prompt_template: str = "src/prompts/news_style.md"
     generation_retries: int = 2  # Deprecated: retained for schema backwards compatibility
     generation_retry_delay: float = 1.0  # Deprecated: retained for schema backwards compatibility
     # Legacy shared budget retained for backward-compatible configs. New long-form
@@ -829,7 +829,7 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:  # noqa: C901
             f"settings.article.fallback_save_dir must be a non-empty string, got {fallback_save_dir!r}"
         )
 
-    prompt_template = raw.get("prompt_template", ".agents/skills/news-style/SKILL.md")
+    prompt_template = raw.get("prompt_template", "src/prompts/news_style.md")
     if not isinstance(prompt_template, str) or not prompt_template.strip():
         raise ValueError(
             f"settings.article.prompt_template must be a non-empty string, got {prompt_template!r}"

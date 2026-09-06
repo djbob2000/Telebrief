@@ -229,7 +229,7 @@ def test_editorial_writer_prompt_contains_thematic_chapters_and_synthesis_rules(
 def test_news_style_skill_file_contains_approved_composition_contract():
     from src.article_generator import _load_skill_instructions
 
-    content = _load_skill_instructions(".agents/skills/news-style/SKILL.md")
+    content = _load_skill_instructions("src/prompts/news_style.md")
     assert "3–5" in content or "3-5" in content
     assert "жители" in content.lower() or "resident" in content.lower()
     assert "causality" in content.lower() or "причинн" in content.lower()
@@ -376,7 +376,7 @@ def test_article_draft_normalizes_leading_hashes_in_headings():
 def test_writer_prompt_and_skill_contain_chat_slang_normalization(mock_logger):
     from src.article_generator import _load_skill_instructions
 
-    skill_content = _load_skill_instructions(".agents/skills/news-style/SKILL.md")
+    skill_content = _load_skill_instructions("src/prompts/news_style.md")
     writer = EditorialWriter(MagicMock(), "model", skill_content, mock_logger)
     system_prompt, _ = writer.build_prompt(_analysis(), _bundle())
 

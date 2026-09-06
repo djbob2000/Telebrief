@@ -1,4 +1,0 @@
-interface:
-  display_name: "News Style"
-  short_description: "Draft and edit accurate regional news copy"
-  default_prompt: "Use $news-style to draft, translate, fact-check, or edit accurate local news copy."

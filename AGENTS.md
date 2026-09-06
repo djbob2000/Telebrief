@@ -243,6 +243,7 @@ Quotation marks mean exact primary-source wording.
 - Never translate text inside quotation marks and still present it as the original quote.
 - Never merge or shorten a direct quote while pretending it is exact.
 - If translation, correction, or compression is needed, use indirect speech.
+- Avoid "chat rolls": never dump consecutive direct quotes separated by commas («...», «...», «...»). Synthesize multiple community reports into smooth narrative prose with geography and timelines, reserving 1–2 authentic direct quotes per section for vivid human reactions with natural attribution lead-ins.
 
 ### Claim Atoms
 

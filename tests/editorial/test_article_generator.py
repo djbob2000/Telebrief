@@ -148,7 +148,7 @@ def _message(text: str, link: str = "https://t.me/news/1") -> Message:
 @pytest.mark.unit
 def test_article_skill_template_exists_and_is_loaded_by_generator():
     """Skill file must exist and ArticleGenerator should load it directly."""
-    skill_path = Path(".agents/skills/news-style/SKILL.md")
+    skill_path = Path("src/prompts/news_style.md")
     assert skill_path.exists()
     content = skill_path.read_text(encoding="utf-8")
     assert "news-style" in content
