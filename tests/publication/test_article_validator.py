@@ -1985,3 +1985,23 @@ def test_validator_rejects_direct_quote_outside_allowlist():
     quote_issues = [i for i in result.issues if i.code == "UNSUPPORTED_DIRECT_QUOTE"]
     assert len(quote_issues) >= 1
     assert result.is_valid is False
+
+
+def test_quote_tokens_match_tolerates_minor_typos_and_spacing():
+    from src.publication.article_claims import _quote_tokens_match
+
+    # Normalization & punctuation
+    assert _quote_tokens_match(
+        "Звук генераторов уже как колыбельная перед сном",
+        "Звук генераторов , уже как колыбельная перед сном...",
+    )
+    # 1-char typo tolerance for long words (>=6 chars)
+    assert _quote_tokens_match(
+        "Че там по свету в Бердянске? Все стабильно? Стабильно отсутствует",
+        "Че там по свету в Бердянске? Все стабильно? Стабильно отсутсвует?",
+    )
+    # Different wording must not match
+    assert not _quote_tokens_match(
+        "Света не будет до зимы",
+        "Свет обещали включить завтра",
+    )

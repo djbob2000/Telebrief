@@ -243,8 +243,33 @@ def quote_words(text: str) -> list[str]:
     return [w.lower().replace("ё", "е") for w in words]
 
 
+def _levenshtein_distance(s1: str, s2: str) -> int:
+    if len(s1) < len(s2):
+        return _levenshtein_distance(s2, s1)
+    if not s2:
+        return len(s1)
+    prev: list[int] = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr: list[int] = [i + 1]
+        for j, c2 in enumerate(s2):
+            ins = prev[j + 1] + 1
+            dels = curr[j] + 1
+            subs = prev[j] + (c1 != c2)
+            curr.append(min(ins, dels, subs))
+        prev = curr
+    return prev[-1]
+
+
+def _words_match(w1: str, w2: str) -> bool:
+    if w1 == w2:
+        return True
+    if len(w1) >= 6 and len(w2) >= 6 and abs(len(w1) - len(w2)) <= 1:
+        return _levenshtein_distance(w1, w2) <= 1
+    return False
+
+
 def _quote_tokens_match(quote_text: str, source_text: str) -> bool:
-    """Check if words in quote_text form a contiguous subsequence of words in source_text."""
+    """Check if words in quote_text form a contiguous subsequence of words in source_text with minor typo tolerance."""
     q_words = quote_words(quote_text)
     if not q_words:
         return False
@@ -253,7 +278,7 @@ def _quote_tokens_match(quote_text: str, source_text: str) -> bool:
         return False
     q_len = len(q_words)
     for i in range(len(s_words) - q_len + 1):
-        if s_words[i : i + q_len] == q_words:
+        if all(_words_match(qw, sw) for qw, sw in zip(q_words, s_words[i : i + q_len])):
             return True
     return False
 
