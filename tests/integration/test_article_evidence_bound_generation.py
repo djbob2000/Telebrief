@@ -398,6 +398,7 @@ async def test_end_to_end_article_generation_invalid_draft_fails_to_fallback(con
         publication_editorial=PublicationEditorialConfig(
             article_min_words=5,
             article_min_sections=1,
+            article_allow_deterministic_fallback=True,
         ),
     )
     config = Config(
