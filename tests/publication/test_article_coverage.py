@@ -133,7 +133,7 @@ def test_build_article_coverage_plan_prominence_and_context_only():
     ]
 
     # Detail support budgets
-    assert len(by_id["story:power"].detail_support_ids) == 3
+    assert len(by_id["story:power"].detail_support_ids) == 4
     assert len(by_id["story:telecom"].detail_support_ids) == 2
     assert len(by_id["story:sport"].detail_support_ids) == 1
 
