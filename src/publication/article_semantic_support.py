@@ -511,6 +511,10 @@ _EDITORIAL_GLUE = frozenset(
         "wi-fi",
         "вайфай",
         "вай-фай",
+        "telegram",
+        "телеграм",
+        "тг",
+        "бот",
     }
 )
 

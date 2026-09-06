@@ -10,6 +10,7 @@ from typing import Any, Mapping
 from src.ai_providers import AIProvider
 from src.publication.article_context import ArticleEditorialContext
 from src.publication.article_models import (
+    ArticleClaimAtom,
     ArticleParagraph,
     ArticleSection,
     StructuredArticleDraft,
@@ -91,10 +92,11 @@ class ArticleEditor:
             obs_att_id = 0
             if attempt_observer is not None:
                 obs_att_id = await attempt_observer.attempt_started(
-                    "article_editor",
+                    "repair",
                     provider=self.provider.__class__.__name__,
                     model=self.model,
                     metadata={
+                        "strategy": "article_editor",
                         "attempt": attempt,
                         "units": list(issues_by_unit.keys()),
                         "violations": [f"{iss.code}:{iss.unit_id}" for iss in blocking_issues],
@@ -127,11 +129,14 @@ class ArticleEditor:
                 )
 
                 if attempt_observer is not None:
-                    status = "succeeded" if current_val.is_valid else "partial"
+                    status = "succeeded" if current_val.is_valid else "failed"
+                    error_kind = None if current_val.is_valid else "remaining_violations"
                     await attempt_observer.attempt_finished(
                         obs_att_id,
                         status,
+                        error_kind=error_kind,
                         metadata={
+                            "editor_status": "succeeded" if current_val.is_valid else "partial",
                             "patched_units": list(patches.keys()),
                             "remaining_violations": list(current_val.violations),
                         },
@@ -254,7 +259,9 @@ class ArticleEditor:
             "   - Запрещено оставлять кавычки «...» вокруг слов или фраз, если они не являются 100% дословной цитатой из предоставленных фактов.\n"
             "   - Переведите фразу в естественную косвенную речь БЕЗ КАВЫЧЕК (например: «как отметили жители...», «горожане призывают...»).\n\n"
             "2. ИМЕНА СОБСТВЕННЫЕ И НАЗВАНИЯ (UNSUPPORTED_PROPER_NAME / UNSUPPORTED_LOCATION):\n"
-            "   - Если слово с заглавной буквы отмечено как неподтвержденное (название ведомства, организации, улица, имя), замените его на описательную формулировку (например: «профильное ведомство», «местные службы», «городские специалисты», «в одном из районов города») либо исключите упоминание.\n\n"
+            "   - Если имя, аббревиатура, название стороннего города или организации отмечены как неподтвержденные (например, Москва, Киев, НСЗУ и т.д.), ВЫ ДОЛЖНЫ ПОЛНОСТЬЮ УДАЛИТЬ ИХ из текста фрагмента или заменить на нейтральное обобщение (например: «профильное ведомство», «местные службы», «в других направлениях», «в одном из районов города»).\n"
+            "   - В отредактированном тексте КАТЕГОРИЧЕСКИ НЕ ДОЛЖНО остаться слов, указанных в замечаниях валидатора!\n"
+            "   - Если слово с заглавной буквы не в начале предложения отмечено как неподтвержденное (например, «Военного»), замените его на строчные буквы («в одном из военных городков») либо нейтральное обобщение («в одном из районов города»).\n\n"
             "3. КОНКРЕТНЫЕ ФАКТЫ И ПРИЧИНЫ (UNSUPPORTED_CONCRETE_CLAIM):\n"
             "   - Не утверждайте причинно-следственные связи («из-за аварии», «вследствие отключения»), если точная причина не указана прямо в подтверждениях. Используйте нейтральное описание: «на фоне проблем со светом...», «в этот же период...».\n"
             "   - Числа, даты и интервалы должны строго соответствовать предоставленным фактам. Если факт не ясен, используйте качественное описание.\n\n"
@@ -356,35 +363,63 @@ class ArticleEditor:
             return draft
 
         title = draft.title
+        title_claims = draft.title_claims
         if "TITLE" in patches:
             raw_t = patches["TITLE"]
             title = _normalize_homoglyphs(_strip_internal_handles(raw_t))
+            title_claims = tuple(
+                ArticleClaimAtom(text=title, cited_support_ids=c.cited_support_ids)
+                if c.text == draft.title
+                else c
+                for c in draft.title_claims
+            )
 
         lead = draft.lead
+        lead_claims = draft.lead_claims
         if "LEAD" in patches:
             raw_l = patches["LEAD"]
             lead = _normalize_homoglyphs(_strip_internal_handles(raw_l))
+            lead_claims = tuple(
+                ArticleClaimAtom(text=lead, cited_support_ids=c.cited_support_ids)
+                if c.text == draft.lead
+                else c
+                for c in draft.lead_claims
+            )
 
         p_idx = 1
         new_sections: list[ArticleSection] = []
         for s_idx, sec in enumerate(draft.sections, start=1):
             h_id = f"H{s_idx:03d}"
             heading = sec.heading
+            heading_claims = sec.heading_claims
             if h_id in patches:
                 heading = _normalize_homoglyphs(_strip_internal_handles(patches[h_id]))
+                heading_claims = tuple(
+                    ArticleClaimAtom(text=heading, cited_support_ids=c.cited_support_ids)
+                    if c.text == sec.heading
+                    else c
+                    for c in sec.heading_claims
+                )
 
             new_paragraphs: list[ArticleParagraph] = []
             for para in sec.paragraphs:
                 p_id = f"P{p_idx:03d}"
                 text = para.text
+                claims = para.claims
                 if p_id in patches:
                     text = _normalize_homoglyphs(_strip_internal_handles(patches[p_id]))
+                    claims = tuple(
+                        ArticleClaimAtom(text=text, cited_support_ids=c.cited_support_ids)
+                        if c.text == para.text
+                        else c
+                        for c in para.claims
+                    )
 
                 new_paragraphs.append(
                     ArticleParagraph(
                         text=text,
                         cited_support_ids=para.cited_support_ids,
-                        claims=para.claims,
+                        claims=claims,
                         generation_origin=para.generation_origin,
                     )
                 )
@@ -394,7 +429,7 @@ class ArticleEditor:
                 ArticleSection(
                     heading=heading,
                     heading_support_ids=sec.heading_support_ids,
-                    heading_claims=sec.heading_claims,
+                    heading_claims=heading_claims,
                     paragraphs=tuple(new_paragraphs),
                     cited_evidence_ids=sec.cited_evidence_ids,
                     heading_generation_origin=sec.heading_generation_origin,
@@ -407,8 +442,8 @@ class ArticleEditor:
             lead=lead,
             lead_support_ids=draft.lead_support_ids,
             sections=tuple(new_sections),
-            title_claims=draft.title_claims,
-            lead_claims=draft.lead_claims,
+            title_claims=title_claims,
+            lead_claims=lead_claims,
             cited_evidence_ids=draft.cited_evidence_ids,
             word_count=0,
             title_generation_origin=draft.title_generation_origin,

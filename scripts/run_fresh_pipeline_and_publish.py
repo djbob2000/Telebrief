@@ -191,7 +191,11 @@ async def main() -> None:
         logger.info("Article generated: %s", pub_article.title)
 
         article_lines = [f"# {pub_article.title}", ""]
-        if pub_article.lead and pub_article.lead.strip():
+        if (
+            pub_article.lead
+            and pub_article.lead.strip()
+            and not pub_article.body.strip().startswith(pub_article.lead.strip())
+        ):
             article_lines += [pub_article.lead.strip(), ""]
         article_lines.append(pub_article.body.strip())
         article_path.write_text("\n".join(article_lines), encoding="utf-8")

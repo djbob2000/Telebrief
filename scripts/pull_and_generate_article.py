@@ -155,7 +155,7 @@ async def main() -> None:
         logger.info("Article generated successfully: %s", pub.title)
 
         article_lines = [f"# {pub.title}", ""]
-        if pub.lead and pub.lead.strip():
+        if pub.lead and pub.lead.strip() and not pub.body.strip().startswith(pub.lead.strip()):
             article_lines += [pub.lead.strip(), ""]
         article_lines.append(pub.body.strip())
         article_text = "\n".join(article_lines)
@@ -164,7 +164,7 @@ async def main() -> None:
 
         print("\n" + "═" * 80)
         print(f"📰 СТАТЬЯ: {pub.title}")
-        if pub.lead:
+        if pub.lead and not pub.body.strip().startswith(pub.lead.strip()):
             print(f"\n{pub.lead}")
         print("═" * 80)
         print(f"\n{pub.body}")

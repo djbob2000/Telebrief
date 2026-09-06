@@ -132,7 +132,7 @@ settings:
     digest_city_situation_max_positive_items: 2
     article_allow_deterministic_fallback: false
     article_editor_enabled: true
-    article_editor_max_attempts: 2
+    article_editor_max_attempts: 3
 
   digest_mode: "digest"
 

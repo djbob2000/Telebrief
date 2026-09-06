@@ -70,7 +70,7 @@ async def main():
         pub = await generation_service.generate(run.id, defer_delivery=True)
         print("\n" + "═" * 80)
         print(f"📰 СТАТЬЯ: {pub.title}")
-        if pub.lead:
+        if pub.lead and not pub.body.strip().startswith(pub.lead.strip()):
             print(f"\n{pub.lead}")
         print("═" * 80)
         print(f"\n{pub.body}")
