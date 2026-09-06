@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import yaml
 from dotenv import load_dotenv
@@ -147,7 +148,11 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
     elif config_path is None:
         config_path = "config.yaml"
 
-    load_dotenv()
+    legacy_mod = sys.modules.get("src.config_loader")
+    if legacy_mod is not None and hasattr(legacy_mod, "load_dotenv"):
+        legacy_mod.load_dotenv()
+    else:
+        load_dotenv()
 
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Configuration file not found: {config_path}")

@@ -219,8 +219,13 @@ def _parse_database_config(yaml_config: dict, *, require_enabled: bool = False) 
 def load_database_config(
     path: str = "config.yaml", *, require_enabled: bool = False
 ) -> DatabaseConfig:
-    """Load only the PostgreSQL database configuration."""
-    load_dotenv()
+    import sys
+
+    legacy_mod = sys.modules.get("src.config_loader")
+    if legacy_mod is not None and hasattr(legacy_mod, "load_dotenv"):
+        legacy_mod.load_dotenv()
+    else:
+        load_dotenv()
 
     if not os.path.exists(path):
         raise FileNotFoundError(f"Configuration file not found: {path}")
