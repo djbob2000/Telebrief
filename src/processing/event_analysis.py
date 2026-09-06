@@ -290,6 +290,7 @@ class EventAnalysisService:
                     story_id, latest_assignment_id, analysis_version, provider, model, prompt_hash,
                     input_fragment_count, input_chars, output_chars, status, completed_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'succeeded', now())
+                ON CONFLICT DO NOTHING
                 """,
                 (
                     story_id,

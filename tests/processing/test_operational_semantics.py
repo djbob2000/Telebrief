@@ -239,3 +239,20 @@ def test_retail_commodity_sale_is_excluded_from_operational_observations():
     payload = EventPayload(evidence_items=(item,))
     observations = derive_operational_observations(payload)
     assert len(observations) == 0
+
+
+def test_toponym_normalization_in_operational_observations():
+    item = _service_item(
+        text="В микрорайоне Гора вода появилась",
+        fid=8,
+        subject_key="water_supply",
+        subject_label="Водоснабжение",
+        state="AVAILABLE",
+        expected_now=True,
+        basis="normal_operation",
+    )
+    payload = EventPayload(evidence_items=(item,))
+    observations = derive_operational_observations(payload)
+    assert len(observations) == 1
+    assert "нагорной части города" in observations[0].detail
+    assert "микрорайоне Гора" not in observations[0].detail

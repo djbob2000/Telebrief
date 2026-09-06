@@ -63,12 +63,17 @@ For the daily city article («Чем жил Бердянск за последн
    - Exact building addresses and street locations;
    - Operating hours and intake schedules (e.g. `с понедельника по пятницу с 07:00 до 13:00`);
    - Required documents (e.g. `паспорт и СНИЛС`).
-6. **Dual Street Naming and Topography in Berdyansk:**
+6. **Dual Street Naming, Topography, and Local Entities in Berdyansk:**
    - For renamed or historically dual-named streets in Berdyansk, use familiar, natural dual naming for clarity (e.g. `улица Тверская (бывшая Карла Маркса)` or `улица Карла Маркса (Тверская)`).
    - **Topography & Districts (Нижняя часть vs Нагорная часть / Гора):** The city is fundamentally divided into the lower part (*нижняя часть города*) and the elevated plateau (*нагорная часть города*). Locally, residents colloquially call the elevated area simply **«Гора»** (*«на Горе»*).
+     - NEVER write *«микрорайон Гора»* (Гора объединяет несколько спальных массивов: АЗМОЛ, Скловолокно, АКЗ, РТС, Военный городок, 8 Марта; это исторический и административный район на возвышенности, а не отдельный микрорайон).
      - NEVER write unnatural hybrid forms like *«в районе Нагорной»* or *«на Нагорной»* (unless specifically referring to *улица Нагорная*).
-     - In general editorial narrative, overviews, and contrast with the lower part, use **«в нагорной части города»** (e.g. *«...в центре, на Слободке, в нагорной части города и в нижней части города»*).
+     - In general editorial narrative, overviews, and contrast with the lower part, use **«в нагорной части города»** (e.g. *«...в центре, на Слободке, в нагорной части города и в нижней части города»*). Do not combine into clumsy double-parentheses like *«в нагорной части города (на Горе)»*.
      - In resident observations, quotes, and conversational district listings, use the natural colloquial form **«на Горе»** (e.g. *«...в центре, на Слободке, на Горе и в Военном городке»*). Both forms are valid depending on context.
+   - **Local Entities and Settlements Distinction:**
+     - **Осипенко:** это отдельное село, а не микрорайон города. В тексте писать естественно: **«в селе Осипенко»** (не добавлять громоздких пояснений о расстоянии и категорически запрещено писать *«в микрорайоне Осипенко»*).
+     - **Миранда:** региональный оператор связи и интернет-провайдер («Миранда-медиа»). НЕ путать с возвышенностями или горами; фраза «на Горе Миранда» означает на Горе у интернет-провайдера Миранда, а не географический объект «гора Миранда».
+     - **50 лет / 50 лет СССР:** обиходное название улицы 50 лет СССР (официально ул. Нагорная), проходящей в Нагорной части города параллельно Мелитопольскому шоссе. Писать «в районе улицы 50 лет СССР (Нагорной)», а не «в районе 50-летия».
 7. **Resident Observation Synthesis & Anti-Chat-Roll Standard:** synthesize resident observations across districts into coherent narrative paragraphs with natural journalistic attribution (`по сообщениям жителей`, `по словам горожан`, `как отмечают жители`). Do not reveal Telegram ingestion mechanics (`в чате`, `участники чата`). Resident comments are valuable editorial material reflecting the lived reality of the city.
    - **No chained quote dumping:** NEVER string together consecutive direct quotes separated by commas or dashes (e.g. `«Цитата 1», «Цитата 2», «Цитата 3» — такие сообщения...`). This creates an uncurated "chat roll" effect and degrades editorial quality.
    - **Narrative synthesis over quote inventories:** When multiple residents report the same condition (outage, pervasive odor, connectivity check, service unavailability), synthesize the geography and timeline into smooth journalistic prose using indirect speech.

@@ -8,40 +8,49 @@ from typing import Any
 # Built-in geographic definitions for primary editions
 _BERDYANSK_TARGET_LOCATIONS = (
     "Бердянск",
-    "Бердянский залив",
+    "Нагорная часть (Гора)",
+    "Гора",
+    "Нагорная часть",
+    "Центр",
+    "Лиски",
+    "Слободка",
+    "АКЗ",
+    "РТС",
+    "Азмол",
+    "Стекловолокно",
+    "Колония",
+    "Макорты",
+    "8 Марта",
+    "Военный городок",
     "Бердянская коса",
     "Ближняя коса",
     "Средняя коса",
     "Дальняя коса",
-    "АКЗ",
-    "РТС",
-    "Азмол",
-    "Колония",
-    "Слободка",
-    "Лиски",
-    "Нагорная часть",
-    "Центр",
-    "Военный городок",
-    "Стекловолокно",
-    "8 Марта",
+    "Бердянский залив",
     "Черемушки",
     "Аэропорт",
-    "Макорты",
     "Шевченко",
 )
 
 _BERDYANSK_DISTRICT_LOCATIONS = (
     "Бердянский район",
-    "Азовское",
-    "Луначарское",
-    "Нововасильевка",
-    "Осипенко",
-    "Дмитровка",
+    "Осипенко (село Бердянского района, ~20 км от города)",
+    "Азовское (село)",
+    "Луначарское (село)",
+    "Нововасильевка (село)",
+    "Дмитровка (село)",
     "Андреевка",
     "Берестовое",
     "Черниговка",
     "Приморск",
     "Приморский район",
+)
+
+_BERDYANSK_TOPONYM_RULES = (
+    "«Гора» / «Нагорная часть города» — крупный исторический и административный район города на возвышенности, объединяющий жилые массивы АЗМОЛ, Стекловолокно, АКЗ, РТС, Военный городок и 8 Марта. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО называть его «микрорайон Гора». В тексте использовать: «в нагорной части города» или «на Горе».",
+    "«Осипенко» — отдельное село Бердянского района, расположенное примерно в 20 км от Бердянска. Не является районом или микрорайоном города («в селе Осипенко Бердянского района», а не «в микрорайоне Осипенко»).",
+    "«Миранда» («Миранда-медиа») — региональный телеком- и интернет-провайдер. НЕ является горой, возвышенностью или частью топонима «гора Миранда». Фраза «на Горе Миранда» означает «в нагорной части города (на Горе) интернет-провайдер Миранда».",
+    "«50 лет» / «50 лет СССР» — обиходное название улицы 50 лет СССР (официально переименованной в ул. Нагорную), проходящей в Нагорной части города параллельно Мелитопольскому шоссе («в районе улицы 50 лет СССР / Нагорной»), а не абстрактный «район 50-летия».",
 )
 
 _COMMON_OUT_OF_SCOPE_LOCATIONS = (
@@ -80,24 +89,31 @@ class EditionGeographyContext:
     )
     out_of_scope_locations: tuple[str, ...] = _COMMON_OUT_OF_SCOPE_LOCATIONS
     rules: dict[str, Any] = field(default_factory=dict)
+    toponym_rules: tuple[str, ...] = ()
 
     def to_prompt_section(self) -> str:
         """Format geographic reference rules for inclusion in LLM triage and analysis prompts."""
-        target_str = ", ".join(self.target_locations[:12])
-        district_str = ", ".join(self.district_locations[:8]) if self.district_locations else "нет"
+        target_str = ", ".join(self.target_locations[:25])
+        district_str = ", ".join(self.district_locations[:15]) if self.district_locations else "нет"
         out_str = ", ".join(self.out_of_scope_locations[:10])
 
-        return (
-            f"=== ГЕОГРАФИЧЕСКИЙ КОНТЕКСТ ИЗДАНИЯ ({self.edition_name}) ===\n"
-            f"Целевой город и районы (LOCAL): {target_str}\n"
-            f"Прилегающий район (DIRECT_IMPACT при прямом влиянии на город): {district_str}\n"
-            f"Область / регион: {self.region_name}\n"
-            f"За пределами охвата (OUT_OF_SCOPE, если нет прямого влияния на {self.edition_name}): {out_str}\n"
-            f"ПРАВИЛО ГЕОГРАФИЧЕСКОГО ОХВАТА:\n"
-            f" - LOCAL: события происходят непосредственно в г. {self.edition_name} или его районах.\n"
-            f" - DIRECT_IMPACT: региональные события ({self.region_name}), непосредственно влияющие на жизнедеятельность, снабжение или безопасность г. {self.edition_name}.\n"
-            f" - OUT_OF_SCOPE: события других городов ({out_str}), программы помощи и мероприятия для переселенцев/ВПО за пределами города, деятельность релоцированных администраций в других регионах, федеральная/мировая политика без прямой связи с {self.edition_name} -> DROP.\n"
-        )
+        lines = [
+            f"=== ГЕОГРАФИЧЕСКИЙ КОНТЕКСТ ИЗДАНИЯ ({self.edition_name}) ===",
+            f"Целевой город и районы (LOCAL): {target_str}",
+            f"Прилегающий район (DIRECT_IMPACT при прямом влиянии на город): {district_str}",
+            f"Область / регион: {self.region_name}",
+            f"За пределами охвата (OUT_OF_SCOPE, если нет прямого влияния на {self.edition_name}): {out_str}",
+            "ПРАВИЛО ГЕОГРАФИЧЕСКОГО ОХВАТА:",
+            f" - LOCAL: события происходят непосредственно в г. {self.edition_name} или его районах.",
+            f" - DIRECT_IMPACT: региональные события ({self.region_name}), непосредственно влияющие на жизнедеятельность, снабжение или безопасность г. {self.edition_name}.",
+            f" - OUT_OF_SCOPE: события других городов ({out_str}), программы помощи и мероприятия для переселенцев/ВПО за пределами города, деятельность релоцированных администраций в других регионах, федеральная/мировая политика без прямой связи с {self.edition_name} -> DROP.",
+        ]
+        if self.toponym_rules:
+            lines.append("ВАЖНЫЕ МЕСТНЫЕ ТОПОНИМЫ И РАЗЛИЧЕНИЕ СУЩНОСТЕЙ:")
+            for r in self.toponym_rules:
+                lines.append(f" - {r}")
+
+        return "\n".join(lines) + "\n"
 
 
 def resolve_edition_geography(
@@ -108,7 +124,7 @@ def resolve_edition_geography(
     slug = (edition_slug or "").strip().lower()
     name = edition_name.strip() if edition_name else slug.capitalize()
 
-    if slug == "berdyansk":
+    if slug in ("berdyansk", "бердянск"):
         return EditionGeographyContext(
             edition_slug="berdyansk",
             edition_name=name or "Бердянск",
@@ -117,6 +133,7 @@ def resolve_edition_geography(
             region_name="Запорожская область",
             neighboring_regions=("Донецкая область", "Херсонская область", "Ростовская область"),
             out_of_scope_locations=_COMMON_OUT_OF_SCOPE_LOCATIONS,
+            toponym_rules=_BERDYANSK_TOPONYM_RULES,
         )
 
     # Generic fallback

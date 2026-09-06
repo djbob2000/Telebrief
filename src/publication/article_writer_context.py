@@ -58,6 +58,12 @@ def render_article_writer_context(
     blocks: list[str] = []
     if context.edition_name:
         blocks.append(f"EDITION CONTEXT: {context.edition_name}")
+        from src.domain.edition_geography import resolve_edition_geography
+
+        geo_ctx = resolve_edition_geography(context.edition_name.lower(), context.edition_name)
+        geo_section = geo_ctx.to_prompt_section().strip()
+        if geo_section:
+            blocks.append(geo_section)
     if context.publication_window is not None:
         blocks.append(
             f"REPORT WINDOW: {context.publication_window.lookback_start.isoformat()} .. {context.publication_window.snapshot_at.isoformat()}"

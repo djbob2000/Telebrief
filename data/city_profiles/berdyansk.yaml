@@ -41,6 +41,28 @@ city:
     name_ru: Шелковое
     name_uk: Шовкове
     type: settlement
+  district_settlements:
+  - id: osypenko
+    name_ru: Осипенко
+    name_uk: Осипенко
+    type: village
+    description: Село Бердянского района (около 20 км от города, не является городским микрорайоном)
+  - id: lunacharske
+    name_ru: Луначарское
+    name_uk: Луначарське
+    type: village
+  - id: dmytrivka
+    name_ru: Дмитровка
+    name_uk: Дмитрівка
+    type: village
+  - id: andriivka
+    name_ru: Андреевка
+    name_uk: Андріївка
+    type: settlement
+  - id: berestove
+    name_ru: Берестовое
+    name_uk: Берестове
+    type: village
 stable_context:
   review_policy:
     mode: manual
@@ -89,6 +111,9 @@ stable_context:
         - на горе
         - нагорной части
         - нагорная часть
+        - Гора
+        - на Горе
+        - Горе
       - id: center
         name: Центр міста
         aliases:
@@ -103,6 +128,9 @@ stable_context:
         aliases:
         - АЗМОЛ
         - Азмол
+        - на Азмоле
+        - Азмоле
+        - Азмола
       - id: liski
         name: Ліски
         aliases:
@@ -242,6 +270,7 @@ stable_context:
         - Гора
         - на горе
         - горе
+        description: Нагорная часть города (крупный исторический район на возвышенности, объединяющий АЗМОЛ, Скловолокно, АКЗ, РТС, Военный городок, 8 Марта; не является отдельным микрорайоном)
         status: probable_alias
         relation:
           type: probable_alias_of
@@ -3542,6 +3571,24 @@ stable_context:
         - text: 50 років СРСР
           status: occupation_era_2024_local_alias
           source_ref: inform_zp_2024_renames
+        - text: 50 лет СССР
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
+        - text: 50 лет
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
+        - text: ул. 50 лет СССР
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
+        - text: улица 50 лет СССР
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
+        - text: 50-летия СССР
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
+        - text: ул. 50-летия СССР
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
         - text: Нагорная
           status: common_ru_or_abbreviation
           source_ref: editorial_normalization
@@ -6598,6 +6645,26 @@ operational_context:
         verified_at: '2026-08-15'
         note: Confirmed by local editorial knowledge; current-event claims still require
           current reporting evidence.
+    - id: miranda
+      name: Миранда
+      aliases:
+      - Миранда
+      - Миранда-медиа
+      - Миранда медиа
+      - Miranda
+      - Miranda-media
+      status: active_at_last_verification
+      confidence: high
+      services:
+      - fixed_home_internet
+      - fiber
+      - mobile_communication
+      source_refs:
+      - miranda_operator
+      editorial_verification:
+        method: editorial_local_confirmation
+        verified_at: '2026-09-06'
+        note: Major regional telecom and internet provider (ООО Миранда-медиа).
     telecom_operators:
     - id: plus7telecom
       name: +7Телеком
@@ -6628,6 +6695,20 @@ operational_context:
         verified_at: '2026-08-15'
         note: Confirmed by local editorial knowledge; current-event claims still require
           current reporting evidence.
+    - id: miranda_telecom
+      name: Миранда
+      aliases:
+      - Миранда
+      - Миранда-медиа
+      - Miranda
+      status: active_at_last_verification
+      confidence: high
+      source_refs:
+      - miranda_operator
+      editorial_verification:
+        method: editorial_local_confirmation
+        verified_at: '2026-09-06'
+        note: Major regional telecom and internet provider (ООО Миранда-медиа).
 sources:
   brd_neighborhood_committees_2021: https://brd.gov.ua/documents/158004-pro-vnesennia-zmin-do-risennia-berdianskoyi-miskoyi-radi-vid-01082002-no-18-pro-nadannia-dozvolu-na-stvorennia-komitetiv-m
   brd_general_plan: https://brd.gov.ua/pages/58950-generalnii-plan-berdianska

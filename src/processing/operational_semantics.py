@@ -321,6 +321,40 @@ def sanitize_operational_detail(text: str) -> str:
     words = [w for w in norm.split() if w not in boilerplate_words]
     if len(words) < 2:
         return ""
+    # Normalize common geographic / entity confusions
+    result = re.sub(
+        r"\bв\s+микрорайоне\s+Гора\b",
+        "в нагорной части города (на Горе)",
+        result,
+        flags=re.IGNORECASE,
+    )
+    result = re.sub(
+        r"\bмикрорайон(?:е)?\s+Гора\b", "Нагорная часть (Гора)", result, flags=re.IGNORECASE
+    )
+    result = re.sub(
+        r"\bна\s+горе\s+Миранда\b", "на Горе у провайдера «Миранда»", result, flags=re.IGNORECASE
+    )
+    result = re.sub(
+        r"\bгора\s+Миранда\b", "провайдер «Миранда» на Горе", result, flags=re.IGNORECASE
+    )
+    result = re.sub(
+        r"\bв\s+районе\s+50[- ]?летия\b",
+        "в районе улицы 50 лет СССР (Нагорной)",
+        result,
+        flags=re.IGNORECASE,
+    )
+    result = re.sub(
+        r"\bв\s+микрорайоне\s+Осипенко\b",
+        "в селе Осипенко Бердянского района",
+        result,
+        flags=re.IGNORECASE,
+    )
+    result = re.sub(
+        r"\bмикрорайон(?:е)?\s+Осипенко\b",
+        "село Осипенко Бердянского района",
+        result,
+        flags=re.IGNORECASE,
+    )
     return result
 
 
@@ -328,6 +362,54 @@ _RETAIL_COMMODITY_SALE_PATTERN = re.compile(
     r"\b(?:розлив|розничн\w* продаж\w*|продаж\w* питьев\w* вод\w*|\d+\s*(?:[₽р]|руб)/л(?:итр)?)\b",
     re.IGNORECASE,
 )
+
+
+def normalize_operational_location_and_entity(loc: str, entity: str = "") -> tuple[str, str]:
+    """Normalize well-known Berdyansk colloquial anomalies in location/entity."""
+    loc_clean = loc.strip() if loc else ""
+    ent_clean = entity.strip() if entity else ""
+
+    # 1. "гора Миранда" -> loc="Нагорная часть (Гора)", entity="Миранда"
+    if re.search(r"\bгора\s+миранда\b|\bмиранда\s*\(гора\)", loc_clean, re.IGNORECASE):
+        loc_clean = "Нагорная часть (Гора)"
+        if not ent_clean:
+            ent_clean = "Миранда"
+    elif "миранда" in loc_clean.lower() and not ent_clean:
+        ent_clean = "Миранда"
+        loc_clean = re.sub(r"\bмиранда\b", "", loc_clean, flags=re.IGNORECASE).strip(" ,()")
+
+    # 2. "микрорайон Гора" -> "Нагорная часть (Гора)"
+    if re.search(r"\bмикрорайон\s+гора\b|\bмкр\.?\s*гора\b", loc_clean, re.IGNORECASE):
+        loc_clean = re.sub(
+            r"\b(?:микрорайон|мкр\.?)\s+гора\b",
+            "Нагорная часть (Гора)",
+            loc_clean,
+            flags=re.IGNORECASE,
+        )
+
+    # 3. "район 50-летия" / "на 50-летие" / "50 лет" -> "ул. 50 лет СССР (Нагорная)"
+    if re.search(
+        r"\b(?:район\s+50[- ]?летия|на\s+50[- ]?лет(?:ие)?|50[- ]?летия)\b",
+        loc_clean,
+        re.IGNORECASE,
+    ):
+        loc_clean = re.sub(
+            r"\b(?:район\s+50[- ]?летия|на\s+50[- ]?лет(?:ие)?|50[- ]?летия)\b",
+            "ул. 50 лет СССР (Нагорная)",
+            loc_clean,
+            flags=re.IGNORECASE,
+        )
+
+    # 4. "микрорайон Осипенко" -> "село Осипенко"
+    if re.search(r"\b(?:микрорайон|мкр\.?)\s+осипенко\b", loc_clean, re.IGNORECASE):
+        loc_clean = re.sub(
+            r"\b(?:микрорайон|мкр\.?)\s+осипенко\b",
+            "село Осипенко",
+            loc_clean,
+            flags=re.IGNORECASE,
+        )
+
+    return loc_clean, ent_clean
 
 
 def derive_operational_observations(
@@ -347,13 +429,16 @@ def derive_operational_observations(
         clean_detail = sanitize_operational_detail(item.text)
         if not clean_detail:
             continue
+        clean_loc, clean_ent = normalize_operational_location_and_entity(
+            state.location, state.entity
+        )
         observations.append(
             OperationalObservationPayload(
                 subject_key=state.subject_key,
                 subject_label=state.subject_label,
                 dimension=state.dimension,
-                location=state.location,
-                entity=state.entity,
+                location=clean_loc,
+                entity=clean_ent,
                 state=state.state,
                 detail=clean_detail,
                 source_fragment_ids=item.source_fragment_ids,
