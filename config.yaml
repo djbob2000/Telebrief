@@ -120,7 +120,7 @@ settings:
   max_tokens_per_summary: 131072
 
   event_pipeline:
-    triage_batch_size: 128
+    triage_batch_size: 64
     live_batch_size: 500
 
   publication_editorial:

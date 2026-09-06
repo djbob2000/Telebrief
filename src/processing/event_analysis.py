@@ -254,16 +254,11 @@ class EventAnalysisService:
                 raise TypeError(f"Unsupported AI provider type: {type(self.ai)}")
 
             # Parse JSON
-            cleaned_json = raw_response.strip()
-            if cleaned_json.startswith("```"):
-                lines = cleaned_json.splitlines()
-                if lines and lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                cleaned_json = "\n".join(lines).strip()
+            from src.utils import robust_extract_json
 
-            parsed = json.loads(cleaned_json)
+            parsed = robust_extract_json(raw_response)
+            if not isinstance(parsed, dict):
+                raise ValueError("event analysis response must be a JSON object")
             parsed["analysis_version"] = ANALYSIS_VERSION
             parsed["representative_fragment_ids"] = [s.fragment_id for s in sampled]
             parsed_payload = ensure_keep_publishability(

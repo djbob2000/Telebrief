@@ -9,6 +9,7 @@ from src.utils import (
     clear_digest_message_ids,
     get_digest_message_ids,
     get_lookback_time,
+    robust_extract_json,
     save_digest_message_ids,
     setup_logging,
     split_message,
@@ -224,3 +225,66 @@ def test_save_digest_message_ids_multiple_users(tmp_path, monkeypatch):
     # Retrieve and verify
     assert get_digest_message_ids(user1_id) == user1_messages
     assert get_digest_message_ids(user2_id) == user2_messages
+
+
+@pytest.mark.unit
+def test_robust_extract_json_pure():
+    """Test extracting pure valid JSON."""
+    raw = '{"results": [{"story_id": 1, "scope": "LOCAL"}]}'
+    assert robust_extract_json(raw) == {"results": [{"story_id": 1, "scope": "LOCAL"}]}
+
+
+@pytest.mark.unit
+def test_robust_extract_json_fenced():
+    """Test extracting JSON wrapped in markdown fences."""
+    raw = '```json\n{"results": [1, 2, 3]}\n```'
+    assert robust_extract_json(raw) == {"results": [1, 2, 3]}
+
+    raw_no_tag = '```\n{"results": [1, 2, 3]}\n```'
+    assert robust_extract_json(raw_no_tag) == {"results": [1, 2, 3]}
+
+
+@pytest.mark.unit
+def test_robust_extract_json_preamble_and_postscript():
+    """Test extracting JSON with conversational preamble or postscript."""
+    raw = (
+        "Вот результаты анализа историй для Бердянска:\n"
+        "```json\n"
+        '{"results": [{"story_id": 42, "scope": "LOCAL"}]}\n'
+        "```\n"
+        "Надеюсь, это поможет."
+    )
+    assert robust_extract_json(raw) == {"results": [{"story_id": 42, "scope": "LOCAL"}]}
+
+    raw_unfenced = "Конечно, вот результат:\n" '{"status": "ok", "count": 5}\n' "Всего доброго!"
+    assert robust_extract_json(raw_unfenced) == {"status": "ok", "count": 5}
+
+
+@pytest.mark.unit
+def test_robust_extract_json_with_think_tags():
+    """Test stripping <think>...</think> reasoning blocks before extraction."""
+    raw = (
+        "<think>\n"
+        "I need to categorize story 101.\n"
+        "It belongs to Berdyansk scope.\n"
+        "</think>\n"
+        '{"results": [{"story_id": 101, "scope": "LOCAL"}]}'
+    )
+    assert robust_extract_json(raw) == {"results": [{"story_id": 101, "scope": "LOCAL"}]}
+
+
+@pytest.mark.unit
+def test_robust_extract_json_array():
+    """Test extracting top-level JSON array."""
+    raw = "```json\n[1, 2, 3]\n```"
+    assert robust_extract_json(raw) == [1, 2, 3]
+
+
+@pytest.mark.unit
+def test_robust_extract_json_invalid_raises_value_error():
+    """Test that invalid non-JSON raises ValueError with helpful message."""
+    with pytest.raises(ValueError, match="Failed to decode JSON"):
+        robust_extract_json("Just plain text with no json objects at all.")
+
+    with pytest.raises(ValueError, match="Empty response"):
+        robust_extract_json("   ")

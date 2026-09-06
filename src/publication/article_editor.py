@@ -15,6 +15,7 @@ from src.publication.article_models import (
     ArticleSection,
     StructuredArticleDraft,
     _normalize_homoglyphs,
+    _split_sentences_safe,
     _strip_internal_handles,
 )
 from src.publication.article_validator import (
@@ -368,11 +369,8 @@ class ArticleEditor:
         if "TITLE" in patches:
             raw_t = patches["TITLE"]
             title = _normalize_homoglyphs(_strip_internal_handles(raw_t))
-            title_claims = tuple(
-                ArticleClaimAtom(text=title, cited_support_ids=c.cited_support_ids)
-                if c.text == draft.title
-                else c
-                for c in draft.title_claims
+            title_claims = (
+                ArticleClaimAtom(text=title, cited_support_ids=draft.title_support_ids),
             )
 
         lead = draft.lead
@@ -380,11 +378,10 @@ class ArticleEditor:
         if "LEAD" in patches:
             raw_l = patches["LEAD"]
             lead = _normalize_homoglyphs(_strip_internal_handles(raw_l))
+            lead_sentences = _split_sentences_safe(lead)
             lead_claims = tuple(
-                ArticleClaimAtom(text=lead, cited_support_ids=c.cited_support_ids)
-                if c.text == draft.lead
-                else c
-                for c in draft.lead_claims
+                ArticleClaimAtom(text=s, cited_support_ids=draft.lead_support_ids)
+                for s in (lead_sentences or [lead])
             )
 
         p_idx = 1
@@ -395,11 +392,8 @@ class ArticleEditor:
             heading_claims = sec.heading_claims
             if h_id in patches:
                 heading = _normalize_homoglyphs(_strip_internal_handles(patches[h_id]))
-                heading_claims = tuple(
-                    ArticleClaimAtom(text=heading, cited_support_ids=c.cited_support_ids)
-                    if c.text == sec.heading
-                    else c
-                    for c in sec.heading_claims
+                heading_claims = (
+                    ArticleClaimAtom(text=heading, cited_support_ids=sec.heading_support_ids),
                 )
 
             new_paragraphs: list[ArticleParagraph] = []
@@ -409,11 +403,8 @@ class ArticleEditor:
                 claims = para.claims
                 if p_id in patches:
                     text = _normalize_homoglyphs(_strip_internal_handles(patches[p_id]))
-                    claims = tuple(
-                        ArticleClaimAtom(text=text, cited_support_ids=c.cited_support_ids)
-                        if c.text == para.text
-                        else c
-                        for c in para.claims
+                    claims = (
+                        ArticleClaimAtom(text=text, cited_support_ids=para.cited_support_ids),
                     )
 
                 new_paragraphs.append(

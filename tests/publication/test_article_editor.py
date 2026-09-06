@@ -158,6 +158,41 @@ def test_apply_patches_preserves_structure_and_provenance(
 
 
 @pytest.mark.unit
+def test_apply_patches_updates_claim_atoms_for_multisentence_units(
+    sample_draft: StructuredArticleDraft,
+) -> None:
+    editor = ArticleEditor(provider=AsyncMock(), model="test-model")
+    sup_id = sample_draft.lead_support_ids[0]
+
+    # Create a draft where lead has 2 sentences and lead_claims has 2 atoms
+    sent1 = "В городе продолжаются инфраструктурные работы."
+    sent2 = "Отключение продлится до конца года по непроверенным данным."
+    draft = StructuredArticleDraft(
+        title=sample_draft.title,
+        title_support_ids=sample_draft.title_support_ids,
+        title_claims=sample_draft.title_claims,
+        lead=f"{sent1} {sent2}",
+        lead_support_ids=sample_draft.lead_support_ids,
+        lead_claims=(
+            ArticleClaimAtom(text=sent1, cited_support_ids=(sup_id,)),
+            ArticleClaimAtom(text=sent2, cited_support_ids=(sup_id,)),
+        ),
+        sections=sample_draft.sections,
+        cited_evidence_ids=sample_draft.cited_evidence_ids,
+        word_count=sample_draft.word_count,
+    )
+
+    clean_lead = "В городе продолжаются восстановительные работы на сетях."
+    patched = editor.apply_patches(draft, {"LEAD": clean_lead})
+
+    assert patched.lead == clean_lead
+    # Ensure the old invalid sentence atom was removed and new atoms are built from clean_lead
+    assert not any("конца года" in c.text for c in patched.lead_claims)
+    assert any("восстановительные работы" in c.text for c in patched.lead_claims)
+    assert all(c.cited_support_ids == draft.lead_support_ids for c in patched.lead_claims)
+
+
+@pytest.mark.unit
 def test_parse_editor_response_handles_various_formats() -> None:
     editor = ArticleEditor(provider=AsyncMock(), model="test-model")
 
@@ -190,7 +225,7 @@ async def test_article_editor_resolves_validation_issues(
     mock_provider.chat_completion.return_value = json.dumps(
         {
             "units": {
-                "LEAD": "В городе продолжаются инфраструктурные работы, ремонтные бригады занимаются восстановлением сетей.",
+                "LEAD": "В городе продолжаются работы, на Восточном проспекте специалисты продолжают замену водовода.",
                 "P001": "По информации жителей, на Восточном проспекте рабочие продолжают замену водовода.",
             }
         }

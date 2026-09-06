@@ -5,9 +5,10 @@ Utility functions and logging setup for Telebrief.
 import json
 import logging
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import List
+from typing import Any, List
 
 TELEGRAM_MAX_MESSAGE_CHARS = 32768
 TELEGRAM_SAFE_MESSAGE_CHARS = 32000
@@ -224,3 +225,73 @@ def clear_digest_message_ids(user_id: str | int) -> None:
 
     except (json.JSONDecodeError, IOError, KeyError):
         pass
+
+
+def robust_extract_json(raw_response: str) -> Any:
+    """Robustly extract and decode a JSON object or array from an LLM response.
+
+    Handles:
+    - Pure JSON responses
+    - Markdown fenced blocks (```json ... ``` or ``` ... ```)
+    - Responses with leading conversational preamble or trailing commentary
+    - Model thinking/reasoning tags (<think>...</think>)
+    - Embedded JSON objects surrounded by text
+
+    Raises:
+        ValueError: If no valid JSON structure could be extracted or decoded.
+    """
+    if not raw_response or not raw_response.strip():
+        raise ValueError("Empty response from AI model")
+
+    cleaned = raw_response.strip()
+
+    # 1. Remove <think>...</think> reasoning blocks if present
+    cleaned = re.sub(r"<think>.*?</think>", "", cleaned, flags=re.DOTALL).strip()
+
+    # 2. Try direct JSON parse first
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # 3. Try regex markdown code block
+    m = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", cleaned, flags=re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # 4. Try stripping outer code fences if present
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        fence_stripped = "\n".join(lines).strip()
+        try:
+            return json.loads(fence_stripped)
+        except json.JSONDecodeError:
+            pass
+
+    # 5. Extract between outermost { and }
+    s_idx = cleaned.find("{")
+    e_idx = cleaned.rfind("}")
+    if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+        try:
+            return json.loads(cleaned[s_idx : e_idx + 1])
+        except json.JSONDecodeError:
+            pass
+
+    # 6. Extract between outermost [ and ]
+    s_idx = cleaned.find("[")
+    e_idx = cleaned.rfind("]")
+    if s_idx != -1 and e_idx != -1 and e_idx > s_idx:
+        try:
+            return json.loads(cleaned[s_idx : e_idx + 1])
+        except json.JSONDecodeError:
+            pass
+
+    excerpt = raw_response[:300].replace("\n", " ")
+    raise ValueError(f"Failed to decode JSON from AI model response. Raw excerpt: {excerpt!r}")

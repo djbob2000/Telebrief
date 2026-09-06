@@ -492,16 +492,9 @@ class StoryTriageService:
             else:
                 raise TypeError(f"Unsupported AI provider type: {type(self.ai)}")
 
-            cleaned_json = raw_response.strip()
-            if cleaned_json.startswith("```"):
-                lines = cleaned_json.splitlines()
-                if lines and lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                cleaned_json = "\n".join(lines).strip()
+            from src.utils import robust_extract_json
 
-            payload = json.loads(cleaned_json)
+            payload = robust_extract_json(raw_response)
             if not isinstance(payload, dict):
                 raise ValueError("gate response must be a JSON object")
             raw_items = payload.get("results")
