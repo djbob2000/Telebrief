@@ -68,11 +68,59 @@ def _parse_slot(time_str: str) -> tuple[int, int] | None:
     return hour, minute
 
 
-def _publication_types(config: Config) -> list[tuple[str, str]]:
-    """(publication_type, schedule_time) pairs enabled in config."""
-    entries = [(DIGEST_PUBLICATION_TYPE, config.settings.schedule_time)]
+_DAY_OF_WEEK_MAP = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+
+def _matches_schedule_day(day_val: str | int | None, target_dt: dt.datetime) -> bool:
+    if day_val is None:
+        return True
+    if isinstance(day_val, str):
+        expected_weekday = _DAY_OF_WEEK_MAP.get(day_val.strip().lower())
+        if expected_weekday is not None:
+            return target_dt.weekday() == expected_weekday
+        try:
+            expected_day = int(day_val)
+            return target_dt.day == expected_day
+        except ValueError:
+            return False
+    if isinstance(day_val, int):
+        return target_dt.day == day_val
+    return False
+
+
+def _publication_types(config: Config) -> list[tuple[str, str, str | int | None]]:
+    """(publication_type, schedule_time, schedule_day) tuples enabled in config."""
+    entries: list[tuple[str, str, str | int | None]] = [
+        (DIGEST_PUBLICATION_TYPE, config.settings.schedule_time, None)
+    ]
     if config.settings.article.enabled:
-        entries.append((ARTICLE_PUBLICATION_TYPE, config.settings.article.schedule_time))
+        entries.append((ARTICLE_PUBLICATION_TYPE, config.settings.article.schedule_time, None))
+    weekly_cfg = getattr(config.settings, "weekly_article", None)
+    if weekly_cfg is not None and getattr(weekly_cfg, "enabled", False):
+        entries.append(
+            (
+                WEEKLY_ARTICLE_PUBLICATION_TYPE,
+                weekly_cfg.schedule_time,
+                getattr(weekly_cfg, "schedule_day", "sunday"),
+            )
+        )
+    monthly_cfg = getattr(config.settings, "monthly_article", None)
+    if monthly_cfg is not None and getattr(monthly_cfg, "enabled", False):
+        entries.append(
+            (
+                MONTHLY_ARTICLE_PUBLICATION_TYPE,
+                monthly_cfg.schedule_time,
+                getattr(monthly_cfg, "schedule_day", 1),
+            )
+        )
     return entries
 
 
@@ -93,7 +141,9 @@ def due_publication_actions(
     lead_minutes = config.settings.pre_publish_lead_minutes
     actions: list[DuePublicationAction] = []
 
-    for publication_type, time_str in _publication_types(config):
+    for publication_type, time_str, schedule_day in _publication_types(config):
+        if not _matches_schedule_day(schedule_day, local_minute):
+            continue
         slot = _parse_slot(time_str)
         if slot is None:
             logger.warning("invalid schedule time %r for %s", time_str, publication_type)
