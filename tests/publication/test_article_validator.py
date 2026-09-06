@@ -2005,3 +2005,27 @@ def test_quote_tokens_match_tolerates_minor_typos_and_spacing():
         "Света не будет до зимы",
         "Свет обещали включить завтра",
     )
+
+
+def test_strip_non_allowlisted_quotes_converts_direct_speech_to_indirect():
+    from src.publication.article_models import _strip_non_allowlisted_quotes
+
+    allowlist = ["Звук генераторов уже как колыбельная перед сном"]
+
+    # Allowed quote preserves colon and quotes
+    text_allowed = (
+        "Житель признался: «Звук генераторов уже как колыбельная перед сном», а другой подтвердил."
+    )
+    res_allowed = _strip_non_allowlisted_quotes(text_allowed, allowlist)
+    assert (
+        res_allowed
+        == "Житель признался: «Звук генераторов уже как колыбельная перед сном», а другой подтвердил."
+    )
+
+    # Unallowed quote converts to indirect speech without leaving naked colon
+    text_unallowed = "Житель признался: «Света не будет до конца года», а другой подтвердил."
+    res_unallowed = _strip_non_allowlisted_quotes(text_unallowed, allowlist)
+    assert (
+        res_unallowed == "Житель признался, что света не будет до конца года, а другой подтвердил."
+    )
+    assert "признался:" not in res_unallowed

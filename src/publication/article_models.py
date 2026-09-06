@@ -128,13 +128,16 @@ class ArticleSection:
     heading_generation_origin: ArticleGenerationOrigin = "AI"
 
 
-_QUOTE_RE = re.compile(r"[«\"“]([^»\"”]{2,80})[»\"”]")
+_COLON_QUOTE_RE = re.compile(r":\s*[«\"“]([^»\"”]{2,120})[»\"”]")
+_QUOTE_RE = re.compile(r"[«\"“]([^»\"”]{2,120})[»\"”]")
 
 
 def _strip_non_allowlisted_quotes(text: str, quote_allowlist: Sequence[str] | None = None) -> str:
     """Normalize non-allowlisted quotation marks into indirect speech without quotes.
 
     Quotes matching allowlisted exact phrases or word subsequences are preserved.
+    Direct speech preceded by a colon (: «...») is converted into indirect speech (, что ...)
+    to avoid leaving unquoted direct speech after colons.
     """
     if not text or ("«" not in text and '"' not in text and "“" not in text):
         return text
@@ -148,18 +151,32 @@ def _strip_non_allowlisted_quotes(text: str, quote_allowlist: Sequence[str] | No
     }
     raw_allowlist = [q for q in (quote_allowlist or ()) if q]
 
-    def _repl(m: re.Match[str]) -> str:
-        inner = m.group(1).strip()
+    def _is_allowed(inner: str) -> bool:
         norm_inner = re.sub(r"\s+", " ", inner.lower().replace("ё", "е")).strip()
         if allowlist_norm and any(
             norm_inner == a or norm_inner in a or a in norm_inner for a in allowlist_norm
         ):
-            return m.group(0)
+            return True
         if raw_allowlist and any(_quote_tokens_match(inner, a) for a in raw_allowlist):
-            return m.group(0)
-        return inner
+            return True
+        return False
 
-    return _QUOTE_RE.sub(_repl, text)
+    def _repl_colon(m: re.Match[str]) -> str:
+        quote = m.group(1).strip()
+        if _is_allowed(quote):
+            return m.group(0)
+        lowered = quote[0].lower() + quote[1:] if quote else quote
+        return f", что {lowered}"
+
+    def _repl_normal(m: re.Match[str]) -> str:
+        quote = m.group(1).strip()
+        if _is_allowed(quote):
+            return m.group(0)
+        return quote
+
+    res = _COLON_QUOTE_RE.sub(_repl_colon, text)
+    res = _QUOTE_RE.sub(_repl_normal, res)
+    return res
 
 
 @dataclass(frozen=True)
