@@ -256,10 +256,10 @@ async def test_generate_prompt_with_reference_image(mock_config, mock_logger):
 
     assert "Berdyansk" in prompt
     assert mock_provider.chat_completion.called
-    # Check that system instruction contains REDRAW guidelines
+    # Check that system instruction contains redraw guidelines
     call_args = mock_provider.chat_completion.call_args[1]
     sys_content = call_args["messages"][0]["content"]
-    assert "EDITORIAL REDRAW GUIDELINES" in sys_content
+    assert "recreating an attached reference news photograph" in sys_content
 
 
 @pytest.mark.asyncio
@@ -277,9 +277,37 @@ async def test_generate_prompt_fallback_with_reference_image(mock_config, mock_l
         has_reference_image=True,
     )
 
-    assert "reference photo" in prompt
+    assert "recreating the reference news scene" in prompt
     assert "Berdyansk" in prompt
     assert "16:9" in prompt
+
+
+@pytest.mark.asyncio
+async def test_generate_prompt_with_publication_date(mock_config, mock_logger):
+    generator = NewsImageGenerator(mock_config, mock_logger)
+    mock_provider = AsyncMock()
+    mock_provider.chat_completion.return_value = "Realistic editorial photojournalism. Winter scene in Berdyansk, Ukraine with residents in warm coats."
+    generator.prompt_providers = [("test-slot", mock_provider, "gemini-3.7-flash")]
+
+    prompt = await generator.generate_prompt(
+        title="Зимние работы в Бердянске",
+        lead="Городские службы подготовили технику.",
+        article_text="Текст статьи о подготовке к зиме...",
+        city_name="Бердянск",
+        publication_date="2026-01-15",
+    )
+
+    assert "Berdyansk" in prompt
+    assert mock_provider.chat_completion.called
+    call_args = mock_provider.chat_completion.call_args[1]
+    user_content = call_args["messages"][1]["content"]
+    assert "Дата публикации новости: 2026-01-15" in user_content
+    assert "Учитывай дату публикации новости при выборе одежды" in user_content
+    assert "сезону для Бердянск, Украина" in user_content
+
+    sys_content = call_args["messages"][0]["content"]
+    assert "SEASONALITY, WEATHER, AND MOOD" in sys_content
+    assert "Consider the publication date or reporting period" in sys_content
 
 
 @pytest.mark.asyncio

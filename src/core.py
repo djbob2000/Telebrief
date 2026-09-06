@@ -649,6 +649,7 @@ async def generate_and_publish_article(
             lead=lead,
             article_text=markdown_body,
             has_reference_image=False,
+            publication_date=datetime.now(timezone.utc),
         )
 
         print("\n" + "=" * 70)
