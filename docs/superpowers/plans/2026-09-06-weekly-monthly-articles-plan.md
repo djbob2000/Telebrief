@@ -75,7 +75,7 @@ class ArticleScheduleConfig:
     lookback_hours: int = 168
 ```
 2. In `src/config/schemas/root.py`:
-Add `weekly_article: ArticleScheduleConfig` (default lookback 168, schedule_day "sunday", schedule_time "19:00", target_word_count 2000) and `monthly_article: ArticleScheduleConfig` (default lookback 720, schedule_day 1, schedule_time "10:00", target_word_count 3500) to `Settings`.
+Add `weekly_article: ArticleScheduleConfig` (default lookback 168, schedule_day "sunday", schedule_time "19:00", target_word_count 2000) and `monthly_article: ArticleScheduleConfig` (default lookback 720, schedule_day 1, schedule_time "20:00", target_word_count 3500) to `Settings`.
 3. In `src/config/parsers/publication.py`:
 Parse `weekly_article` and `monthly_article` from YAML/dict if present, falling back to defaults.
 4. In `src/publication/policies.py`:
@@ -561,7 +561,7 @@ Expected: FAIL
 1. In `src/jobs/schedules.py`:
    - Update `_publication_types(config)` to evaluate:
      - `weekly_article`: matches `schedule_day == "sunday"` (weekday 6) and `schedule_time == "19:00"`.
-     - `monthly_article`: matches `schedule_day == 1` (day 1 of month) and `schedule_time == "10:00"`.
+     - `monthly_article`: matches `schedule_day == 1` (day 1 of month) and `schedule_time == "20:00"`.
 2. Create `scripts/generate_weekly_article.py`:
    - Accepts `--edition <slug>`, `--date <YYYY-MM-DD>`, `--deliver`, `--dry-run`.
    - Runs `PublicationSnapshotService` with `publication_type="weekly_article"`, seals candidates, executes `EditorialSelectionService`, generates via `PublicationGenerationService`.

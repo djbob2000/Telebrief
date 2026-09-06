@@ -89,7 +89,7 @@ Trajectory Classification             Milestone Timeline
   monthly_article = ArticleScheduleConfig(
       enabled=True,
       schedule_day=1,  # 1st day of month
-      schedule_time="10:00",
+      schedule_time="20:00",
       target_word_count=3500,
   )
   ```
@@ -161,7 +161,7 @@ The writer prompt is structured for multi-chapter synthesis:
 ### 3.8 Scheduling & CLI
 - **Procrastinate Scheduling (`src/jobs/schedules.py`):**
   - Evaluates `weekly_article` due conditions (Sunday 19:00 local time);
-  - Evaluates `monthly_article` due conditions (1st of month 10:00 local time).
+  - Evaluates `monthly_article` due conditions (1st of month 20:00 local time).
 - **CLI Commands:**
   - `scripts/generate_weekly_article.py`:
     - Flags: `--edition <slug>`, `--date <YYYY-MM-DD>`, `--deliver`

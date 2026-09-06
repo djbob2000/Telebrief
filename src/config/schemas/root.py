@@ -82,7 +82,7 @@ class Settings:
         default_factory=lambda: ArticleScheduleConfig(
             enabled=True,
             schedule_day=1,
-            schedule_time="10:00",
+            schedule_time="20:00",
             target_word_count=3500,
             lookback_hours=720,
         )

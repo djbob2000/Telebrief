@@ -83,16 +83,16 @@ async def main() -> None:
     if args.date:
         parsed_date = dt.date.fromisoformat(args.date)
         snapshot_at = dt.datetime(
-            parsed_date.year, parsed_date.month, parsed_date.day, 10, 0, tzinfo=tz
+            parsed_date.year, parsed_date.month, parsed_date.day, 20, 0, tzinfo=tz
         )
     elif args.month:
         parts = args.month.split("-")
         year, month = int(parts[0]), int(parts[1])
-        # Next month 1st 10:00 to cover the target month
+        # Next month 1st 20:00 to cover the target month
         if month == 12:
-            snapshot_at = dt.datetime(year + 1, 1, 1, 10, 0, tzinfo=tz)
+            snapshot_at = dt.datetime(year + 1, 1, 1, 20, 0, tzinfo=tz)
         else:
-            snapshot_at = dt.datetime(year, month + 1, 1, 10, 0, tzinfo=tz)
+            snapshot_at = dt.datetime(year, month + 1, 1, 20, 0, tzinfo=tz)
     else:
         snapshot_at = dt.datetime.now(tz)
 

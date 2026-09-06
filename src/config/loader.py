@@ -253,7 +253,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
             settings_dict,
             "monthly_article",
             default_day=1,
-            default_time="10:00",
+            default_time="20:00",
             default_words=3500,
             default_lookback=720,
         ),

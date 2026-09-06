@@ -47,9 +47,9 @@ def test_not_due_weekly_article_on_other_days():
 def test_due_monthly_article_on_first_day():
     config = load_config()
     tz = ZoneInfo(config.settings.timezone)
-    first_1000 = dt.datetime(2026, 9, 1, 10, 0, tzinfo=tz)
+    first_2000 = dt.datetime(2026, 9, 1, 20, 0, tzinfo=tz)
 
-    actions = due_publication_actions(config, first_1000)
+    actions = due_publication_actions(config, first_2000)
     monthly_acts = [
         a
         for a in actions
@@ -62,9 +62,9 @@ def test_due_monthly_article_on_first_day():
 def test_not_due_monthly_article_on_other_days():
     config = load_config()
     tz = ZoneInfo(config.settings.timezone)
-    second_1000 = dt.datetime(2026, 9, 2, 10, 0, tzinfo=tz)
+    second_2000 = dt.datetime(2026, 9, 2, 20, 0, tzinfo=tz)
 
-    actions = due_publication_actions(config, second_1000)
+    actions = due_publication_actions(config, second_2000)
     monthly_acts = [
         a
         for a in actions

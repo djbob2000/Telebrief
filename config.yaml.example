@@ -177,6 +177,22 @@ settings:
     # generation_retry_delay: 1.0  # (Deprecated) Retained for schema backwards-compatibility.
     # telegraph_access_token: ""  # Optional: generated automatically if omitted
 
+  # Weekly Long-Read Articles (Итоги недели, Telegra.ph + Telegram teaser)
+  weekly_article:
+    enabled: true
+    schedule_day: "sunday"
+    schedule_time: "19:00"
+    lookback_hours: 168
+    target_word_count: 2000
+
+  # Monthly Panorama Articles (Панорама месяца, Telegra.ph + Telegram teaser)
+  monthly_article:
+    enabled: true
+    schedule_day: 1
+    schedule_time: "20:00"
+    lookback_hours: 720
+    target_word_count: 3500
+
   # Publication Editorial parameters (Event-First presentation and narrative synthesis)
   # publication_editorial:
   #   conflict_window_minutes: 90
