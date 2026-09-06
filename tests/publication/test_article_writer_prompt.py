@@ -122,3 +122,43 @@ def test_article_writer_prompt_mandates_quote_allowlist_and_indirect_speech():
     assert "QUOTE ALLOWLIST" in prompt or "Quote Allowlist" in prompt
     assert "косвенн" in prompt.lower()
     assert "«...»" in prompt or '"..."' in prompt
+
+
+def test_build_article_quote_allowlist_extracts_primary_quotes_and_filters_trivial():
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    s_spaced = ArticleSupport(
+        support_id="story:1:evidence:0:frag:1",
+        text="Звук генераторов, уже как колыбельная перед сном...",
+        source_text="Звук генераторов , уже как колыбельная перед сном...",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=now,
+        evidence_kind="community_report",
+        story_id="story:1",
+    )
+    s_trivial = ArticleSupport(
+        support_id="story:1:evidence:1:frag:2",
+        text="нет",
+        source_text="нет",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-2",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=now,
+        evidence_kind="community_report",
+        story_id="story:1",
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=("Энергетика",),
+        support_index=(s_spaced, s_trivial),
+        support_by_id={s.support_id: s for s in (s_spaced, s_trivial)},
+        recurring_topics=(),
+    )
+
+    allowlist = build_article_quote_allowlist(ctx)
+    assert any("Звук генераторов" in q for q in allowlist)
+    assert "нет" not in allowlist
