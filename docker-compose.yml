@@ -9,6 +9,7 @@ services:
     env_file:
       - .env
     environment:
+      - PYTHONUNBUFFERED=1
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TZ=UTC
       - DATABASE_URL=postgresql://${POSTGRES_USER:-telebrief}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-telebrief}
@@ -43,6 +44,7 @@ services:
     env_file:
       - .env
     environment:
+      - PYTHONUNBUFFERED=1
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - TZ=UTC
       - DATABASE_URL=postgresql://${POSTGRES_USER:-telebrief}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-telebrief}
