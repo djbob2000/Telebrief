@@ -34,6 +34,7 @@ _TRUNCATE_TABLES = """
              story_revision_embeddings, story_revisions,
              story_event_analysis_runs, story_edition_scope_decisions, story_event_triage_decisions, story_event_triage_runs,
              story_cluster_state, story_fragments, stories,
+             source_fragment_embeddings, fragment_embedding_vectors, event_embedding_batches,
              publication_inputs, publication_selection_decisions,
              publication_candidates, publication_runs,
              publication_policy_versions, writer_policy_versions,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import logging
+import os
 import uuid
 from typing import Any, Protocol
 
@@ -28,11 +29,18 @@ def _default_telegram_destination() -> str | None:
         from src.config_loader import load_config
 
         config = load_config()
+        target = config.settings.target_chat_id or config.settings.target_user_id
+        if target:
+            return str(target)
     except Exception:
         logger.debug("full config unavailable; no default Telegram destination", exc_info=True)
-        return None
-    target = config.settings.target_chat_id or config.settings.target_user_id
-    return str(target) if target else None
+
+    env_target = (
+        os.environ.get("TELEGRAM_TARGET_CHAT_ID")
+        or os.environ.get("TARGET_CHAT_ID")
+        or os.environ.get("TELEGRAM_TARGET_USER_ID")
+    )
+    return str(env_target) if env_target else None
 
 
 def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
