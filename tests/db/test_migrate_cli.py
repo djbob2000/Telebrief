@@ -45,3 +45,31 @@ def test_default_falls_back_to_public_without_config(migrate_cli, tmp_path, monk
     monkeypatch.chdir(tmp_path)
 
     assert migrate_cli._resolve_domain_schema(None) == "public"
+
+
+def test_parser_procrastinate_defaults(migrate_cli):
+    parser = migrate_cli.build_parser()
+    args = parser.parse_args(["--database-url", "postgresql://localhost/db"])
+    assert args.procrastinate_schema == "procrastinate"
+    assert args.skip_procrastinate is False
+
+
+def test_parser_skip_procrastinate(migrate_cli):
+    parser = migrate_cli.build_parser()
+    args = parser.parse_args(
+        ["--database-url", "postgresql://localhost/db", "--skip-procrastinate"]
+    )
+    assert args.skip_procrastinate is True
+
+
+def test_parser_custom_procrastinate_schema(migrate_cli):
+    parser = migrate_cli.build_parser()
+    args = parser.parse_args(
+        [
+            "--database-url",
+            "postgresql://localhost/db",
+            "--procrastinate-schema",
+            "custom_procrastinate",
+        ]
+    )
+    assert args.procrastinate_schema == "custom_procrastinate"

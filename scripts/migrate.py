@@ -24,6 +24,7 @@ load_dotenv()
 
 from src.config_loader import load_database_config  # noqa: E402
 from src.db.migrations import migrate  # noqa: E402
+from src.jobs.admin import ensure_official_tables  # noqa: E402
 
 
 def _default_database_url() -> str:
@@ -45,7 +46,10 @@ def _resolve_domain_schema(explicit: str | None) -> str:
 
 
 async def _apply(
-    database_url: str, migrations_dir: Path, domain_schema_name: str
+    database_url: str,
+    migrations_dir: Path,
+    domain_schema_name: str,
+    procrastinate_schema_name: str | None = "procrastinate",
 ) -> tuple[int, list[int]]:
     # Autocommit: migrate() manages its own transactions; a session-level
     # search_path pin would otherwise dangle inside an implicit transaction.
@@ -58,10 +62,14 @@ async def _apply(
             "SELECT version FROM telebrief_schema_migrations ORDER BY version"
         )
         rows = await cursor.fetchall()
+
+    if procrastinate_schema_name:
+        await ensure_official_tables(database_url, procrastinate_schema_name)
+
     return version, [int(row[0]) for row in rows]
 
 
-def main(argv: list[str] | None = None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Apply Telebrief PostgreSQL migrations.")
     parser.add_argument(
         "--database-url",
@@ -82,6 +90,21 @@ def main(argv: list[str] | None = None) -> int:
             "(default: database.domain_schema from config.yaml, else public)"
         ),
     )
+    parser.add_argument(
+        "--procrastinate-schema",
+        default="procrastinate",
+        help="Procrastinate queue schema (default: procrastinate)",
+    )
+    parser.add_argument(
+        "--skip-procrastinate",
+        action="store_true",
+        help="Skip Procrastinate table creation",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     if not args.database_url:
@@ -89,12 +112,14 @@ def main(argv: list[str] | None = None) -> int:
             "--database-url is required (or set DATABASE_URL / TELEBRIEF_TEST_DATABASE_URL)"
         )
 
+    procrastinate_schema = None if args.skip_procrastinate else args.procrastinate_schema
     try:
         version, applied = asyncio.run(
             _apply(
                 args.database_url,
                 args.migrations_dir,
                 _resolve_domain_schema(args.domain_schema),
+                procrastinate_schema_name=procrastinate_schema,
             )
         )
     except Exception as exc:  # CLI boundary: report and fail non-zero
@@ -104,6 +129,8 @@ def main(argv: list[str] | None = None) -> int:
     for applied_version in applied:
         print(f"applied: {applied_version}")
     print(f"schema version: {version}")
+    if procrastinate_schema:
+        print(f"procrastinate schema: {procrastinate_schema} (verified)")
     return 0
 
 
