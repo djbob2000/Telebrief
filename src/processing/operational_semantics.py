@@ -344,13 +344,13 @@ def sanitize_operational_detail(text: str) -> str:
         flags=re.IGNORECASE,
     )
     result = re.sub(
-        r"\bв\s+микрорайоне\s+Осипенко\b",
+        r"\bв\s+(?:микрорайоне|пос[её]лке)\s+Осипенко\b",
         "в селе Осипенко Бердянского района",
         result,
         flags=re.IGNORECASE,
     )
     result = re.sub(
-        r"\bмикрорайон(?:е)?\s+Осипенко\b",
+        r"\b(?:микрорайон(?:е)?|пос[её]лок(?:е)?)\s+Осипенко\b",
         "село Осипенко Бердянского района",
         result,
         flags=re.IGNORECASE,
@@ -400,10 +400,12 @@ def normalize_operational_location_and_entity(loc: str, entity: str = "") -> tup
             flags=re.IGNORECASE,
         )
 
-    # 4. "микрорайон Осипенко" -> "село Осипенко"
-    if re.search(r"\b(?:микрорайон|мкр\.?)\s+осипенко\b", loc_clean, re.IGNORECASE):
+    # 4. "микрорайон/посёлок Осипенко" -> "село Осипенко"
+    if re.search(
+        r"\b(?:микрорайон|мкр\.?|пос[её]лок|пос\.?)\s+осипенко\b", loc_clean, re.IGNORECASE
+    ):
         loc_clean = re.sub(
-            r"\b(?:микрорайон|мкр\.?)\s+осипенко\b",
+            r"\b(?:микрорайон|мкр\.?|пос[её]лок|пос\.?)\s+осипенко\b",
             "село Осипенко",
             loc_clean,
             flags=re.IGNORECASE,

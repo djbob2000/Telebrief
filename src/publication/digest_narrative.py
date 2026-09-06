@@ -1085,7 +1085,7 @@ DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регио�
 6. СТРОГОЕ ОГРАНИЧЕНИЕ ДЛИНЫ (ОДНО СООБЩЕНИЕ TELEGRAM):
    - Дайджест ДОЛЖЕН целиком помещаться в ОДНО сообщение Telegram (жесткий лимит Telegram — 4096 символов).
    - Общий объём текста должен быть строго в диапазоне 2500–3500 знаков.
-   - Сформируйте ровно 3–4 рубрики, в каждой — строго по 1–3 самых важных пункта.
+   - Сформируйте ровно 3–4 рубрики, в каждой — строго по 1–3 самых важных пункта.{toponym_rules}
 
 МАТЕРИАЛЫ ДНЯ ДЛЯ ДАЙДЖЕСТА:
 {content}
@@ -1378,10 +1378,20 @@ class DigestNarrativeWriter:
 
         content_for_llm = "\n".join(cards_text_blocks[:35])
 
+        from src.domain.edition_geography import resolve_edition_geography
+
+        geo_ctx = resolve_edition_geography(city.lower(), city)
+        toponym_section = ""
+        if geo_ctx.toponym_rules:
+            toponym_section = "\n7. ВАЖНЫЕ МЕСТНЫЕ ТОПОНИМЫ:\n" + "\n".join(
+                f"   - {r}" for r in geo_ctx.toponym_rules
+            )
+
         prompt = DIGEST_PROMPT_TEMPLATE.format(
             city=city,
             date=date_str,
             content=content_for_llm,
+            toponym_rules=toponym_section,
         )
 
         logger.info("Digest Pass 1: Generating full-text journalistic draft...")
@@ -1415,6 +1425,20 @@ class DigestNarrativeWriter:
         # Final deterministic safety net
         if len(clean_draft) > max_chars:
             clean_draft = enforce_telegram_single_message_limit(clean_draft, max_chars=max_chars)
+
+        # Normalize known local toponym errors
+        clean_draft = re.sub(
+            r"\bв\s+(?:пос[её]лке|микрорайоне)\s+Осипенко\b",
+            "в селе Осипенко",
+            clean_draft,
+            flags=re.IGNORECASE,
+        )
+        clean_draft = re.sub(
+            r"\b(?:пос[её]лок|микрорайон)\s+Осипенко\b",
+            "село Осипенко",
+            clean_draft,
+            flags=re.IGNORECASE,
+        )
 
         # Strip redundant leading title header if generated in body
         clean_draft = re.sub(
