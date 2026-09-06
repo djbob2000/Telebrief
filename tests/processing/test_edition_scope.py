@@ -74,3 +74,40 @@ def test_region_story_with_explicit_focus_consequence_is_not_detected():
         scope=scope,
         geo_context=geo,
     )
+
+
+def test_external_relocated_idp_event_detected_for_bmva_and_vpo():
+    from src.processing.edition_scope import external_relocated_idp_event
+
+    basis = (
+        "За ініціативи та підтримки начальника Бердянської міської військової адміністрації "
+        "Миколи Матвієнка в межах Програми соціального захисту передбачені кошти для організації "
+        "відпочинку родин з дітьми Бердянської громади із числа внутрішньо переміщених осіб.",
+    )
+    assert external_relocated_idp_event(basis_texts=basis)
+
+
+def test_external_relocated_idp_event_detected_for_ridna_stezhka_and_medicines():
+    from src.processing.edition_scope import external_relocated_idp_event
+
+    basis = ("Ліки можна буде отримати вже з наступного тижня. #Рідна_Стежка❤️‍🔥🇺🇦",)
+    assert external_relocated_idp_event(basis_texts=basis)
+
+
+def test_external_relocated_idp_event_detected_for_aquazoo_outside():
+    from src.processing.edition_scope import external_relocated_idp_event
+
+    basis = (
+        "ВИХІДНИЙ В АКВАЗОО. Шановні мешканці Бердянської громади! Запрошуємо до АКВАЗОО (с. Петропіль). "
+        "Збір учасників у м. Запоріжжя.",
+    )
+    assert external_relocated_idp_event(basis_texts=basis)
+
+
+def test_external_relocated_idp_event_not_triggered_for_regular_city_reports():
+    from src.processing.edition_scope import external_relocated_idp_event
+
+    basis = (
+        "На Горе в Бердянске дали воду, но напор слабый. По улице Димитрова чувствуется запах газа.",
+    )
+    assert not external_relocated_idp_event(basis_texts=basis)

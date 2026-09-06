@@ -26,6 +26,7 @@ from src.processing.edition_scope import (
     EditionScopeClass,
     broad_region_without_focus_impact,
     build_scope_contract,
+    external_relocated_idp_event,
 )
 from src.processing.hard_exclusion import evaluate_story_hard_exclusion
 from src.processing.operational_semantics import (
@@ -586,19 +587,25 @@ class StoryTriageService:
                     for sf in story_fragments_map.get(s.story_id, [])
                     if sf["fragment_id"] in scope_basis_ids
                 )
-                if scope in {"LOCAL", "DIRECT_IMPACT"} and broad_region_without_focus_impact(
-                    basis_texts=basis_texts,
-                    scope=scope_config,
-                    geo_context=geo_context,
-                ):
-                    scope = "OUT_OF_SCOPE"
-                    scope_confidence = max(scope_confidence, 0.95)
-                    scope_reason = (
-                        "Broad regional summary without explicit configured focus-area consequence"
-                    )
+                story_frags = story_fragments_map.get(s.story_id, [])
+                story_all_texts = tuple(
+                    str(sf.get("text") or sf.get("text_content", "")) for sf in story_frags
+                )
+                if scope in {"LOCAL", "DIRECT_IMPACT"}:
+                    if broad_region_without_focus_impact(
+                        basis_texts=basis_texts,
+                        scope=scope_config,
+                        geo_context=geo_context,
+                    ):
+                        scope = "OUT_OF_SCOPE"
+                        scope_confidence = max(scope_confidence, 0.95)
+                        scope_reason = "Broad regional summary without explicit configured focus-area consequence"
+                    elif external_relocated_idp_event(basis_texts=basis_texts or story_all_texts):
+                        scope = "OUT_OF_SCOPE"
+                        scope_confidence = max(scope_confidence, 0.95)
+                        scope_reason = "Displaced persons (IDP) or relocated administration activity outside the focus area"
 
                 # Hard exclusion audit on story fragments
-                story_frags = story_fragments_map.get(s.story_id, [])
                 story_frag_texts = {
                     int(sf.get("fragment_id") or sf.get("id", 0)): str(
                         sf.get("text") or sf.get("text_content", "")

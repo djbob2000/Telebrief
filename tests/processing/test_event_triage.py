@@ -2094,6 +2094,123 @@ async def test_gate_broad_regional_guard_drops_summary_without_local_consequence
 
 
 @pytest.mark.postgres
+async def test_gate_external_relocated_idp_guard_drops_story_even_if_ai_classified_local(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8995, 'h_idp1', '[1, 0]'::vector, 'm', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9995, %s, 0, 'Начальник Бердянської міської військової адміністрації анонсував відпочинок для родин громади із числа внутрішньо переміщених осіб у Запоріжжі', 'h_idp1', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10995, 9995, 8995)
+        """
+    )
+    aid = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9995,
+        fragment_embedding_id=10995,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid,
+        centroid=[1.0, 0.0],
+        model="m",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid,
+    )
+
+    s = await cluster_repo.get_cluster_state(conn, sid)
+    assert s is not None
+
+    scope_config = EditionScopeConfig(
+        name="Бердянск",
+        focus_places=("Бердянск", "Азовское"),
+        direct_impact_only=True,
+    )
+    scope_hash = scope_config_hash(scope_config)
+
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "story_id": sid,
+                    "scope": "LOCAL",
+                    "scope_basis_fragment_ids": [9995],
+                    "scope_confidence": 0.95,
+                    "scope_reason": "Mentions Berdyansk community",
+                    "retention": "KEEP",
+                    "enrichment": "BRIEF",
+                    "exclusion_reason": None,
+                    "confidence": 0.95,
+                    "reason": "Civic program",
+                    "brief_payload": {
+                        "topic": "Отдых для семей",
+                        "publishability": "news",
+                        "headline": "Программа для семей громады",
+                        "digest_summary": "Отдых для семей в Запорожье.",
+                        "evidence_items": [
+                            {
+                                "text": "Отдых для семей в Запорожье",
+                                "kind": "established_fact",
+                                "publication_use": "PUBLISH",
+                                "source_fragment_ids": [9995],
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    batch = await service.triage_stories_batch(
+        conn,
+        [s],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert len(batch.results) == 1
+    r = batch.results[0]
+    assert r.scope == "OUT_OF_SCOPE"
+    assert r.retention == "DROP"
+    assert r.enrichment == "NONE"
+    assert r.brief_payload is None
+
+
+@pytest.mark.postgres
 async def test_load_recent_subject_hints_reads_service_state(conn, edition, revision):
     now = dt.datetime.now(dt.timezone.utc)
     story_repo = StoryRepository()

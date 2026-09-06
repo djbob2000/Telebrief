@@ -143,3 +143,62 @@ def broad_region_without_focus_impact(
             has_broad_region_mention = True
 
     return has_broad_region_mention
+
+
+_RELOCATED_OR_IDP_ORGANIZATIONS = (
+    "військової адміністрації",
+    "військова адміністрація",
+    "військовій адміністрації",
+    "военной администрации",
+    "военная администрация",
+    "бмва",
+    "рідна_стежка",
+    "рідна стежка",
+    "медицина херсонщини",
+    "аквазоо",
+    "aquazoo",
+)
+
+_IDP_TERMS = (
+    "внутрішньо переміщен",
+    "внутренне перемещен",
+    "переміщених осіб",
+    "перемещенных лиц",
+    "переселенц",
+    "впо",
+    "впл",
+)
+
+_EXTERNAL_LOGISTICS_OR_LOCATIONS = (
+    "запоріжж",
+    "запорож",
+    "петропіль",
+    "петропол",
+    "нова пошта",
+    "нової пошти",
+    "новою поштою",
+    "гуманітарна нова пошта",
+    "дніпро",
+    "київ",
+    "киев",
+)
+
+
+def external_relocated_idp_event(
+    *,
+    basis_texts: tuple[str, ...] | list[str],
+) -> bool:
+    """Detect if basis fragments describe external activities for IDPs/evacuees or relocated bodies."""
+    if not basis_texts:
+        return False
+
+    for text in basis_texts:
+        norm = _norm_geo_text(text)
+        if any(org in norm for org in _RELOCATED_OR_IDP_ORGANIZATIONS):
+            return True
+        has_idp = any(term in norm for term in _IDP_TERMS)
+        has_ext = any(ext in norm for ext in _EXTERNAL_LOGISTICS_OR_LOCATIONS)
+        if has_idp and has_ext:
+            return True
+
+    return False

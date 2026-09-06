@@ -124,6 +124,16 @@ def test_article_writer_prompt_mandates_quote_allowlist_and_indirect_speech():
     assert "«...»" in prompt or '"..."' in prompt
 
 
+def test_article_writer_prompt_forbids_brief_topic_dumping():
+    generator = ArticleGenerator.__new__(ArticleGenerator)
+    generator.output_language = "Russian"
+    prompt = generator._build_event_article_system_prompt()
+
+    assert "РАЗДЕЛЕНИЕ НА АБЗАЦЫ" in prompt
+    assert "свалку" in prompt.lower() or "сваливать" in prompt.lower()
+    assert "отдельный компактный абзац" in prompt.lower()
+
+
 def test_build_article_quote_allowlist_extracts_primary_quotes_and_filters_trivial():
     now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
     s_spaced = ArticleSupport(
