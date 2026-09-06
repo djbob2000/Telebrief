@@ -74,15 +74,22 @@ jobs:
       - name: Run Pytest
         run: |
           set -o pipefail
-          pytest -v --tb=short 2>&1 | tee /tmp/pytest.log
+          pytest -o addopts="-v --asyncio-mode=auto --timeout=300" 2>&1 | tee /tmp/pytest.log
 
-      - name: Publish Test Failure Summary
+      - name: Upload Test Failure Log to Server
         if: failure()
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          WORK_DIR: ${{ secrets.WORK_DIR }}
         run: |
-          echo "## Pytest Failures" >> $GITHUB_STEP_SUMMARY
-          echo '```text' >> $GITHUB_STEP_SUMMARY
-          grep -A 100 "=== FAILURES ===" /tmp/pytest.log >> $GITHUB_STEP_SUMMARY || tail -n 100 /tmp/pytest.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          mkdir -p ~/.ssh
+          echo "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new /tmp/pytest.log "$SSH_USER@$SSH_HOST:$WORK_DIR/logs/ci_failure.log" || true
+
 
 
   build-and-push:
