@@ -17,6 +17,7 @@ from src.config.schemas.common import (
 from src.config.schemas.facebook import FacebookConfig
 from src.config.schemas.publication import (
     ArticleConfig,
+    ArticleScheduleConfig,
     DigestGroupConfig,
     DigestRubricsConfig,
     EditionScopeConfig,
@@ -67,6 +68,24 @@ class Settings:
     edition_scopes: dict[str, EditionScopeConfig] = field(default_factory=dict)
     publication_editorial: PublicationEditorialConfig = field(
         default_factory=PublicationEditorialConfig
+    )
+    weekly_article: ArticleScheduleConfig = field(
+        default_factory=lambda: ArticleScheduleConfig(
+            enabled=True,
+            schedule_day="sunday",
+            schedule_time="19:00",
+            target_word_count=2000,
+            lookback_hours=168,
+        )
+    )
+    monthly_article: ArticleScheduleConfig = field(
+        default_factory=lambda: ArticleScheduleConfig(
+            enabled=True,
+            schedule_day=1,
+            schedule_time="10:00",
+            target_word_count=3500,
+            lookback_hours=720,
+        )
     )
 
 

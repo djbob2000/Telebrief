@@ -61,6 +61,7 @@ __all__ = [
     "UnsupportedFrozenSemanticVersion",
     "PublicationPolicyService",
     "compute_config_hash",
+    "resolve_publication_lookback_hours",
 ]
 
 
@@ -70,6 +71,67 @@ def compute_config_hash(payload: dict[str, Any] | str) -> str:
     else:
         raw = str(payload)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def resolve_publication_lookback_hours(
+    publication_type: str,
+    config: Any | None = None,
+    override: int | None = None,
+) -> int:
+    """Resolve the effective lookback window in hours for a given publication type."""
+    if override is not None:
+        return int(override)
+
+    default_by_type = {
+        "weekly_article": 168,
+        "monthly_article": 720,
+        "daily_article": 24,
+        "article": 24,
+    }
+    default_hours = default_by_type.get(publication_type, 24)
+
+    if config is None:
+        return default_hours
+
+    # 1. Check publication-specific settings on config
+    cfg_attr_name = (
+        "weekly_article"
+        if publication_type == "weekly_article"
+        else "monthly_article"
+        if publication_type == "monthly_article"
+        else "article"
+        if publication_type in ("daily_article", "article")
+        else None
+    )
+
+    if cfg_attr_name:
+        settings_obj = getattr(config, "settings", None)
+        sub_cfg = (
+            getattr(settings_obj, cfg_attr_name, None)
+            if settings_obj is not None
+            else getattr(config, cfg_attr_name, None)
+        )
+        if sub_cfg is not None and hasattr(sub_cfg, "lookback_hours"):
+            return int(sub_cfg.lookback_hours)
+        elif isinstance(config, dict):
+            dict_settings = config.get("settings")
+            if not isinstance(dict_settings, dict):
+                dict_settings = config
+            sub_dict = dict_settings.get(cfg_attr_name) if isinstance(dict_settings, dict) else None
+            if isinstance(sub_dict, dict) and "lookback_hours" in sub_dict:
+                return int(sub_dict["lookback_hours"])
+
+    # 2. Check general lookback_hours
+    if hasattr(config, "settings") and hasattr(config.settings, "lookback_hours"):
+        return int(config.settings.lookback_hours)
+    elif isinstance(config, dict):
+        if "lookback_hours" in config:
+            return int(config["lookback_hours"])
+        dict_settings = config.get("settings")
+        if isinstance(dict_settings, dict) and "lookback_hours" in dict_settings:
+            return int(dict_settings["lookback_hours"])
+
+    return default_hours
 
 
 class PublicationPolicyService:
@@ -96,44 +158,12 @@ class PublicationPolicyService:
         scope_version: str | None = None,
         scope_config_hash: str | None = None,
     ) -> PublicationPolicySet:
-        lookback_hours = 24
+        lookback_hours = resolve_publication_lookback_hours(
+            publication_type,
+            config,
+            override=lookback_hours_override,
+        )
         excluded_platforms: list[str] = []
-        if lookback_hours_override is not None:
-            lookback_hours = int(lookback_hours_override)
-        elif config is not None:
-            is_article = publication_type in ("daily_article", "article")
-            if (
-                is_article
-                and hasattr(config, "settings")
-                and hasattr(config.settings, "article")
-                and hasattr(config.settings.article, "lookback_hours")
-            ):
-                lookback_hours = int(config.settings.article.lookback_hours)
-            elif (
-                is_article
-                and hasattr(config, "article")
-                and hasattr(config.article, "lookback_hours")
-            ):
-                lookback_hours = int(config.article.lookback_hours)
-            elif hasattr(config, "settings") and hasattr(config.settings, "lookback_hours"):
-                lookback_hours = int(config.settings.lookback_hours)
-            elif isinstance(config, dict):
-                art_dict = config.get("article") or (
-                    config.get("settings", {}).get("article")
-                    if isinstance(config.get("settings"), dict)
-                    else None
-                )
-                if is_article and isinstance(art_dict, dict) and "lookback_hours" in art_dict:
-                    lookback_hours = int(art_dict["lookback_hours"])
-                else:
-                    lookback_hours = int(
-                        config.get(
-                            "lookback_hours",
-                            config.get("settings", {}).get("lookback_hours", 24)
-                            if isinstance(config.get("settings"), dict)
-                            else 24,
-                        )
-                    )
 
         if config is not None:
             fb_cfg = getattr(config, "facebook", None)

@@ -20,6 +20,7 @@ from src.config.parsers.common import (
 from src.config.parsers.facebook import _parse_facebook_config
 from src.config.parsers.publication import (
     _parse_article_config,
+    _parse_article_schedule_config,
     _parse_digest_rubrics,
     _parse_digest_settings,
     _parse_edition_scopes,
@@ -240,6 +241,22 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         digest_rubrics=_parse_digest_rubrics(settings_dict),
         edition_scopes=_parse_edition_scopes(settings_dict),
         publication_editorial=_parse_publication_editorial_config(settings_dict),
+        weekly_article=_parse_article_schedule_config(
+            settings_dict,
+            "weekly_article",
+            default_day="sunday",
+            default_time="19:00",
+            default_words=2000,
+            default_lookback=168,
+        ),
+        monthly_article=_parse_article_schedule_config(
+            settings_dict,
+            "monthly_article",
+            default_day=1,
+            default_time="10:00",
+            default_words=3500,
+            default_lookback=720,
+        ),
     )
 
     if settings.target_user_id == 0:

@@ -87,6 +87,17 @@ class ArticleConfig:
     temperature: float | None = None
 
 
+@dataclass
+class ArticleScheduleConfig:
+    """Configuration for periodic longitudinal articles (weekly/monthly)."""
+
+    enabled: bool = True
+    schedule_day: str | int = "sunday"  # "sunday" or 1
+    schedule_time: str = "19:00"
+    target_word_count: int = 2000
+    lookback_hours: int = 168
+
+
 @dataclass(frozen=True)
 class EventPipelineConfig:
     """Cost-bounded event-first processing pipeline configuration."""

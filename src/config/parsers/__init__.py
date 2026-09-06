@@ -14,6 +14,7 @@ from src.config.parsers.common import (
 from src.config.parsers.facebook import _parse_facebook_config
 from src.config.parsers.publication import (
     _parse_article_config,
+    _parse_article_schedule_config,
     _parse_digest_rubrics,
     _parse_digest_settings,
     _parse_edition_scopes,
@@ -37,6 +38,7 @@ from src.config.parsers.telegram import (
 __all__ = [
     "_normalize_source_type",
     "_parse_article_config",
+    "_parse_article_schedule_config",
     "_parse_channel_entry",
     "_parse_channels",
     "_parse_collection_config",

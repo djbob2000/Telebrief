@@ -42,6 +42,8 @@ PUBLICATION_SCHEDULE_DISPATCHER_LOCK = "publication-schedule-dispatcher"
 PUBLISH_QUEUE = "publication"
 DIGEST_PUBLICATION_TYPE = "digest_grouped"
 ARTICLE_PUBLICATION_TYPE = "daily_article"
+WEEKLY_ARTICLE_PUBLICATION_TYPE = "weekly_article"
+MONTHLY_ARTICLE_PUBLICATION_TYPE = "monthly_article"
 DEFAULT_EDITION_SLUG = "berdyansk"
 
 

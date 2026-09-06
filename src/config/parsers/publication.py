@@ -14,6 +14,7 @@ from src.config.schemas.publication import (
     DEFAULT_DIGEST_RUBRIC,
     EVENT_PIPELINE_MODES,
     ArticleConfig,
+    ArticleScheduleConfig,
     DigestGroupConfig,
     DigestRubricConfig,
     DigestRubricsConfig,
@@ -434,6 +435,74 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
         save_debug_artifacts=save_debug_artifacts,
         debug_artifact_dir=debug_artifact_dir.strip(),
         temperature=article_temp,
+    )
+
+
+def _parse_article_schedule_config(
+    settings_dict: dict,
+    key: str,
+    default_day: str | int = "sunday",
+    default_time: str = "19:00",
+    default_words: int = 2000,
+    default_lookback: int = 168,
+) -> ArticleScheduleConfig:
+    """Parse periodic article schedule settings (weekly_article or monthly_article)."""
+    raw = settings_dict.get(key)
+    if raw is None:
+        return ArticleScheduleConfig(
+            enabled=True,
+            schedule_day=default_day,
+            schedule_time=default_time,
+            target_word_count=default_words,
+            lookback_hours=default_lookback,
+        )
+    if not isinstance(raw, dict):
+        raise ValueError(f"settings.{key} must be a mapping, got {type(raw).__name__}")
+
+    enabled = raw.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"settings.{key}.enabled must be a bool, got {type(enabled).__name__}")
+
+    schedule_day = raw.get("schedule_day", default_day)
+    if not isinstance(schedule_day, (str, int)):
+        raise ValueError(
+            f"settings.{key}.schedule_day must be a string or integer, got {type(schedule_day).__name__}"
+        )
+
+    schedule_time = raw.get("schedule_time", default_time)
+    if not isinstance(schedule_time, str) or not schedule_time.strip():
+        raise ValueError(
+            f"settings.{key}.schedule_time must be a string, got {type(schedule_time).__name__}"
+        )
+
+    target_word_count = raw.get("target_word_count", default_words)
+    if (
+        not isinstance(target_word_count, int)
+        or isinstance(target_word_count, bool)
+        or target_word_count <= 0
+    ):
+        raise ValueError(
+            f"settings.{key}.target_word_count must be a positive int, got {target_word_count!r}"
+        )
+
+    lookback_hours = raw.get("lookback_hours", default_lookback)
+    if (
+        not isinstance(lookback_hours, int)
+        or isinstance(lookback_hours, bool)
+        or lookback_hours <= 0
+    ):
+        raise ValueError(
+            f"settings.{key}.lookback_hours must be a positive int, got {lookback_hours!r}"
+        )
+
+    return ArticleScheduleConfig(
+        enabled=enabled,
+        schedule_day=schedule_day
+        if isinstance(schedule_day, int)
+        else schedule_day.strip().lower(),
+        schedule_time=schedule_time.strip(),
+        target_word_count=target_word_count,
+        lookback_hours=lookback_hours,
     )
 
 
