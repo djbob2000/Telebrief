@@ -7,10 +7,18 @@ import math
 import re
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 from src.editorial_models import StoryCard
+from src.publication.article_coverage import (
+    ArticleCoveragePlan,
+    ArticleProminence,
+    ArticleStoryAssignment,
+    ArticleStoryCoverage,
+    ArticleThematicSection,
+)
 
 _TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
 _STOP_WORDS = {
@@ -342,3 +350,209 @@ def cluster_stories_into_threads(
         thread_idx += 1
 
     return threads
+
+
+@dataclass(frozen=True)
+class AnchorPublicationSummary:
+    """Summary of an existing publication within the reporting window."""
+
+    publication_id: int
+    publication_type: str
+    title: str
+    created_at: dt.datetime
+    lead: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+_CHAPTER_SPECS = [
+    (
+        "chapter_infra",
+        "Инфраструктура и жизнеобеспечение",
+        {
+            "жкх",
+            "вода",
+            "водоснабжение",
+            "электричество",
+            "свет",
+            "газ",
+            "отопление",
+            "коммуналка",
+            "авария",
+            "ремонт",
+            "инфраструктура",
+            "водоканал",
+            "сети",
+            "водовод",
+        },
+        "Хроника коммунальных ремонтов, стабильности подачи ресурсов и аварийных работ за период.",
+    ),
+    (
+        "chapter_transit",
+        "Городской транспорт и логистика",
+        {
+            "транспорт",
+            "автобус",
+            "маршрут",
+            "дорога",
+            "дороги",
+            "логистика",
+            "проезд",
+            "перевозки",
+            "рейс",
+            "сообщение",
+            "маршрутка",
+        },
+        "Состояние маршрутной сети, графики движения и ключевые изменения в сообщении.",
+    ),
+    (
+        "chapter_market",
+        "Потребительский рынок и цены",
+        {
+            "рынок",
+            "цены",
+            "магазин",
+            "продукты",
+            "банк",
+            "банки",
+            "деньги",
+            "наличные",
+            "выплаты",
+            "пенсии",
+            "торговля",
+            "товары",
+        },
+        "Динамика цен, доступность основных товаров и работа финансовых сервисов.",
+    ),
+    (
+        "chapter_civic",
+        "Социальная жизнь и городская среда",
+        {
+            "социальная",
+            "спорт",
+            "культура",
+            "школа",
+            "образование",
+            "медицина",
+            "больница",
+            "дети",
+            "общество",
+            "благоустройство",
+            "городская среда",
+        },
+        "События городской жизни, социальные инициативы и городская атмосфера.",
+    ),
+]
+
+
+def _match_chapter_for_thread(thread: StoryThread) -> str:
+    tokens = _tokenize(f"{thread.rubric} {thread.title} {thread.summary}")
+    best_chap = "chapter_civic"
+    best_score = -1
+
+    for chap_id, _, keywords, _ in _CHAPTER_SPECS:
+        rub_lower = thread.rubric.lower()
+        if any(k in rub_lower for k in keywords):
+            return chap_id
+        overlap = len(tokens & keywords)
+        if overlap > best_score:
+            best_score = overlap
+            best_chap = chap_id
+
+    return best_chap
+
+
+def build_longitudinal_coverage_plan(
+    threads: Sequence[StoryThread],
+    cards_by_id: dict[str, StoryCard] | None = None,
+    anchor_pubs: Sequence[Any] = (),
+) -> ArticleCoveragePlan:
+    """Group story threads into thematic chapters and build a zero-loss coverage plan."""
+    cards_by_id = cards_by_id or {}
+    threads_by_chap: dict[str, list[StoryThread]] = defaultdict(list)
+
+    for t in threads:
+        chap_id = _match_chapter_for_thread(t)
+        threads_by_chap[chap_id].append(t)
+
+    sections: list[ArticleThematicSection] = []
+    story_coverages: list[ArticleStoryCoverage] = []
+    global_rank = 1
+
+    spec_dict = {spec[0]: spec for spec in _CHAPTER_SPECS}
+
+    # Iterate through defined chapters in canonical order, plus any dynamic chapters
+    active_chapter_ids = [s[0] for s in _CHAPTER_SPECS if s[0] in threads_by_chap]
+    for cid in threads_by_chap:
+        if cid not in active_chapter_ids:
+            active_chapter_ids.append(cid)
+
+    for chap_id in active_chapter_ids:
+        chap_threads = threads_by_chap[chap_id]
+        if not chap_threads:
+            continue
+
+        spec = spec_dict.get(chap_id)
+        sec_title = spec[1] if spec else "Городская жизнь"
+        narrative_intent = spec[3] if spec else "События и изменения городской среды за период."
+
+        # Sort threads inside chapter: LEAD first, then WEAVE, then BRIEF
+        weight_order = {
+            ThreadEditorialWeight.LEAD_THREAD: 0,
+            ThreadEditorialWeight.WEAVE_THREAD: 1,
+            ThreadEditorialWeight.BRIEF_THREAD: 2,
+        }
+        chap_threads.sort(key=lambda t: weight_order.get(t.weight, 1))
+        lead_thread = chap_threads[0]
+        lead_story_id = lead_thread.story_ids[0] if lead_thread.story_ids else lead_thread.id
+
+        assignments: list[ArticleStoryAssignment] = []
+
+        for thread in chap_threads:
+            depth: ArticleProminence = (
+                "DEVELOP"
+                if thread.weight == ThreadEditorialWeight.LEAD_THREAD
+                else "WEAVE"
+                if thread.weight == ThreadEditorialWeight.WEAVE_THREAD
+                else "BRIEF"
+            )
+
+            # Every story in the thread is mapped to an assignment and a story coverage
+            for sid in thread.story_ids:
+                card = cards_by_id.get(sid)
+                topic = card.topic if card else thread.title
+                sups = tuple(thread.support_ids) if thread.support_ids else (f"{sid}:ev:1",)
+
+                assignment = ArticleStoryAssignment(
+                    story_id=sid,
+                    section_id=chap_id,
+                    depth=depth,
+                    rank=global_rank,
+                    primary_evidence_ids=sups,
+                    concrete_details=(),
+                )
+                assignments.append(assignment)
+
+                story_cov = ArticleStoryCoverage(
+                    story_id=sid,
+                    topic=topic,
+                    rank=global_rank,
+                    prominence=depth,
+                    support_ids=sups,
+                    detail_support_ids=(),
+                )
+                story_coverages.append(story_cov)
+                global_rank += 1
+
+        sec = ArticleThematicSection(
+            section_id=chap_id,
+            title=sec_title,
+            lead_story_id=lead_story_id,
+            story_assignments=tuple(assignments),
+            narrative_intent=narrative_intent,
+        )
+        sections.append(sec)
+
+    return ArticleCoveragePlan(
+        stories=tuple(story_coverages),
+        sections=tuple(sections),
+    )

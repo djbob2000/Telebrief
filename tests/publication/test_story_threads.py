@@ -4,7 +4,10 @@ import pytest
 
 from src.editorial_models import StoryCard
 from src.publication.story_threads import (
+    StoryThread,
+    ThreadEditorialWeight,
     TrajectoryKind,
+    build_longitudinal_coverage_plan,
     build_milestone_timeline,
     classify_thread_trajectory,
     cluster_stories_into_threads,
@@ -98,3 +101,34 @@ def test_build_milestone_timeline():
     assert milestones[0].date_str == "01.09"
     assert "Отключение водовода" in milestones[0].fact
     assert milestones[1].date_str == "03.09"
+
+
+def test_build_longitudinal_coverage_plan_thematic_chapters():
+    t1 = StoryThread(
+        id="thread:infra",
+        title="Кризис водоснабжения и ремонты водовода",
+        rubric="ЖКХ",
+        story_ids=("story:1", "story:2"),
+        trajectory=TrajectoryKind.CHRONIC_EVOLVING,
+        weight=ThreadEditorialWeight.LEAD_THREAD,
+        milestones=(),
+        support_ids=("story:1:ev:1", "story:2:ev:1"),
+    )
+    t2 = StoryThread(
+        id="thread:transit",
+        title="Сбои в движении пригородных маршрутов",
+        rubric="Транспорт",
+        story_ids=("story:3",),
+        trajectory=TrajectoryKind.ACUTE_PIVOTAL,
+        weight=ThreadEditorialWeight.WEAVE_THREAD,
+        milestones=(),
+        support_ids=("story:3:ev:1",),
+    )
+
+    plan = build_longitudinal_coverage_plan(threads=[t1, t2])
+    assert len(plan.sections) >= 2
+    # Verify 100% story coverage invariant: all story IDs must be in coverage plan
+    assert set(plan.story_ids) == {"story:1", "story:2", "story:3"}
+    sec_titles = [s.title.lower() for s in plan.sections]
+    assert any("инфраструктура" in st or "жкх" in st for st in sec_titles)
+    assert any("транспорт" in st for st in sec_titles)

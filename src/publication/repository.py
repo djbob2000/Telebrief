@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, TypeVar
 
 import psycopg
@@ -1318,6 +1318,39 @@ class PublicationRepository:
         )
         row = await cursor.fetchone()
         return Publication.from_row(row) if row is not None else None
+
+    async def query_anchor_publications(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        since: dt.datetime,
+        until: dt.datetime,
+        publication_types: Sequence[str] = (
+            "daily_article",
+            "article",
+            "digest_grouped",
+            "digest",
+            "digest_channel",
+        ),
+    ) -> list[Publication]:
+        """Query publications of anchor types created within the reporting window."""
+        cursor = await conn.execute(
+            """
+            SELECT p.id, p.publication_run_id, p.winning_generation_attempt_id,
+                   p.publication_type, p.title, p.lead, p.body, p.metadata, p.created_at
+            FROM publications p
+            JOIN publication_runs pr ON p.publication_run_id = pr.id
+            WHERE pr.edition_id = %s
+              AND p.created_at >= %s
+              AND p.created_at <= %s
+              AND p.publication_type = ANY(%s)
+            ORDER BY p.created_at ASC
+            """,
+            (edition_id, since, until, list(publication_types)),
+        )
+        rows = await cursor.fetchall()
+        return [Publication.from_row(r) for r in rows]
 
     async def get_latest_delivered_digest_text(
         self,
