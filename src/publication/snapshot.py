@@ -127,7 +127,11 @@ class PublicationSnapshotService:
                     """,
                     (gap_story_ids,),
                 )
-            await coalesce_dirty_stories_task.func(edition_id=edition_id, force_settled=True)
+            await coalesce_dirty_stories_task.func(
+                edition_id=edition_id,
+                force_settled=True,
+                story_ids=gap_story_ids,
+            )
 
             async with self.uow.transaction() as conn:
                 gap_story_ids = await self.repo.find_authority_gap_story_ids(

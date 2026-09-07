@@ -84,36 +84,33 @@ class EventClusterRepository:
         edition_id: int | None = None,
         *,
         limit: int = 100,
+        story_ids: Sequence[int] | None = None,
     ) -> list[StoryClusterState]:
+        params: list[object] = []
+        conditions = ["sc.analysis_dirty = TRUE"]
         if edition_id is not None:
-            cursor = await conn.execute(
-                """
-                SELECT sc.story_id, sc.centroid, sc.model, sc.dimensions, sc.fragment_count,
-                       sc.unique_source_count, sc.first_seen_at, sc.last_seen_at,
-                       sc.latest_assignment_id, sc.last_analyzed_assignment_id,
-                       sc.last_analyzed_at, sc.analysis_dirty, sc.updated_at
-                FROM story_cluster_state sc
-                JOIN stories s ON s.id = sc.story_id
-                WHERE sc.analysis_dirty = TRUE AND s.edition_id = %s
-                ORDER BY sc.last_seen_at ASC
-                LIMIT %s
-                """,
-                (edition_id, limit),
-            )
-        else:
-            cursor = await conn.execute(
-                """
-                SELECT sc.story_id, sc.centroid, sc.model, sc.dimensions, sc.fragment_count,
-                       sc.unique_source_count, sc.first_seen_at, sc.last_seen_at,
-                       sc.latest_assignment_id, sc.last_analyzed_assignment_id,
-                       sc.last_analyzed_at, sc.analysis_dirty, sc.updated_at
-                FROM story_cluster_state sc
-                WHERE sc.analysis_dirty = TRUE
-                ORDER BY sc.last_seen_at ASC
-                LIMIT %s
-                """,
-                (limit,),
-            )
+            conditions.append("s.edition_id = %s")
+            params.append(edition_id)
+        if story_ids is not None:
+            conditions.append("sc.story_id = ANY(%s)")
+            params.append(list(story_ids))
+        params.append(limit)
+
+        where_clause = " AND ".join(conditions)
+        cursor = await conn.execute(
+            f"""
+            SELECT sc.story_id, sc.centroid, sc.model, sc.dimensions, sc.fragment_count,
+                   sc.unique_source_count, sc.first_seen_at, sc.last_seen_at,
+                   sc.latest_assignment_id, sc.last_analyzed_assignment_id,
+                   sc.last_analyzed_at, sc.analysis_dirty, sc.updated_at
+            FROM story_cluster_state sc
+            JOIN stories s ON s.id = sc.story_id
+            WHERE {where_clause}
+            ORDER BY sc.last_seen_at ASC
+            LIMIT %s
+            """,  # noqa: S608
+            params,
+        )
         res: list[StoryClusterState] = []
         async for row in cursor:
             vec = _vec_to_list(row[1])

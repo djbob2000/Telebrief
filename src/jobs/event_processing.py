@@ -132,6 +132,7 @@ async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int
 async def coalesce_dirty_stories_task(
     edition_id: int | None = None,
     force_settled: bool = False,
+    story_ids: list[int] | None = None,
 ) -> dict[str, int]:
     """Coalesce dirty story clusters, triage/scope them in batches, and route to brief or rich analysis."""
     runtime = get_runtime()
@@ -314,7 +315,10 @@ async def coalesce_dirty_stories_task(
     for current_edition_id in editions_to_process:
         async with runtime.uow.transaction() as conn:
             dirty_stories = await cluster_repo.list_dirty_cluster_states(
-                conn, current_edition_id, limit=cfg.live_batch_size
+                conn,
+                current_edition_id,
+                limit=cfg.live_batch_size,
+                story_ids=story_ids,
             )
             _slug, scope_config = await resolve_edition_scope(conn, config, current_edition_id)
             scope_hash = scope_config_hash(scope_config)
