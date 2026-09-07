@@ -27,7 +27,7 @@ async def test_summarizer_initialization(sample_config, mock_logger):
         assert summarizer.config == sample_config
         assert summarizer.logger == mock_logger
         assert summarizer.model == "gpt-5-nano"
-        assert summarizer.temperature == 0.7
+        assert summarizer.temperature == sample_config.settings.temperature
         assert summarizer.output_language == "Russian"
 
 

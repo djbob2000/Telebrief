@@ -66,7 +66,7 @@ def test_create_provider_multiple_models_returns_cascade():
         assert len(provider.providers) == 3
         assert provider.providers[0][0] == "openrouter-primary"
         assert provider.providers[0][2] == "model-1"
-        assert provider.providers[1][0] == "openrouter-fallback-2"
+        assert provider.providers[1][0] == "openrouter-secondary"
         assert provider.providers[1][2] == "model-2"
         assert provider.providers[2][0] == "openrouter-fallback-3"
         assert provider.providers[2][2] == "model-3"
@@ -87,7 +87,7 @@ def test_create_provider_parses_comma_in_openrouter_model_when_models_not_passed
         assert len(provider.providers) == 2
         assert provider.providers[0][0] == "openrouter-primary"
         assert provider.providers[0][2] == "model-x"
-        assert provider.providers[1][0] == "openrouter-fallback-2"
+        assert provider.providers[1][0] == "openrouter-secondary"
         assert provider.providers[1][2] == "model-y"
 
 

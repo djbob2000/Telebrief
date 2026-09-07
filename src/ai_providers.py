@@ -1049,9 +1049,10 @@ def create_provider(  # noqa: C901
                 )
             ]
             for idx, m in enumerate(models_list[1:], start=2):
+                slot_name = "openrouter-secondary" if idx == 2 else f"openrouter-fallback-{idx}"
                 slots.append(
                     (
-                        f"openrouter-fallback-{idx}",
+                        slot_name,
                         OpenAIProvider(
                             api_key=openrouter_api_key,
                             logger=logger,
