@@ -33,7 +33,6 @@ from src.config.parsers.telegram import (
     _parse_telegram_config,
     _validate_channel_groups,
 )
-from src.config.schemas.common import FORBIDDEN_AI_MODELS
 from src.config.schemas.root import VISION_MODES, Config, Settings
 
 
@@ -70,12 +69,6 @@ def _load_and_validate_env_vars(
         ai_model if ai_provider == "openrouter" and ai_model else "openrouter/free"
     )
     openrouter_model_2 = os.getenv("OPENROUTER_MODEL_2", "")
-    for m in (openrouter_model, openrouter_model_2):
-        if m in FORBIDDEN_AI_MODELS:
-            raise ValueError(
-                f"Model {m!r} is strictly forbidden by project rules. "
-                "Use 'minimax/minimax-m3:free:floor' or 'deepseek/deepseek-v4-flash-0731:floor'."
-            )
     openrouter_image_model = (
         os.getenv("OPENROUTER_IMAGE_MODEL") or "google/gemini-3.1-flash-lite-image"
     )

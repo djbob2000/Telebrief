@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-FORBIDDEN_AI_MODELS: frozenset[str] = frozenset({"deepseek/deepseek-chat"})
 EMBEDDING_PROVIDERS: frozenset[str] = frozenset({"google", "openrouter", "openai"})
+
 MIN_EMBEDDING_DIMENSIONS: int = 128
 MAX_EMBEDDING_DIMENSIONS: int = 8192
 

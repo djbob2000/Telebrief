@@ -94,6 +94,18 @@ settings:
   timezone: "Europe/Kyiv"
   lookback_hours: 24
 
+  event_pipeline:
+    mode: "event_first"
+    fragment_max_chars: 1200
+    active_window_hours: 72
+    join_similarity: 0.84
+    max_cluster_candidates: 20
+    embedding_batch_size: 128
+    triage_batch_size: 80
+    analysis_quiet_seconds: 120
+    analysis_min_interval_seconds: 600
+
+
   edition_scopes:
     berdyansk:
       name: "Бердянск"
@@ -118,10 +130,6 @@ settings:
   api_timeout: 300
 
   max_tokens_per_summary: 131072
-
-  event_pipeline:
-    triage_batch_size: 64
-    live_batch_size: 500
 
   publication_editorial:
     article_min_words: 1000

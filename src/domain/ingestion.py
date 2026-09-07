@@ -86,3 +86,21 @@ class CollectionRun:
             started_at=row[3],
             status=row[4],
         )
+
+
+@dataclass(frozen=True)
+class AssetDescriptor:
+    """Bounded descriptor of one source asset."""
+
+    asset_id: int | None
+    kind: str
+    mime_type: str | None
+    external_url: str | None
+    width: int | None
+    height: int | None
+    duration: int | None
+
+    @property
+    def size_pixels(self) -> int | None:
+        values = [value for value in (self.width, self.height) if value is not None]
+        return max(values) if values else None

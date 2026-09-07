@@ -27,7 +27,7 @@ import asyncio
 # Every queue used by registered tasks: collection (Telegram/Facebook),
 # maintenance (retention, sweeps), processing (knowledge pipeline),
 # publication (snapshot -> delivery), enrichment (Facebook comment refresh).
-WORKER_QUEUES = ("collection", "maintenance", "processing", "publication", "enrichment", "default")
+WORKER_QUEUES = ("publication", "collection", "maintenance", "processing", "enrichment", "default")
 DEFAULT_CONCURRENCY = 2
 
 

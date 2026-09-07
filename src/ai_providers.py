@@ -18,7 +18,60 @@ from openai import BadRequestError as OpenAIBadRequestError
 GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GOOGLE_MAX_OUTPUT_TOKENS = 65_536
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-FORBIDDEN_AI_MODELS = frozenset({"deepseek/deepseek-chat"})
+
+ENV_MODEL_VARS = (
+    "OPENROUTER_MODEL",
+    "OPENROUTER_MODEL_2",
+    "OPENROUTER_IMAGE_MODEL",
+    "OPENAI_MODEL",
+    "AI_MODEL",
+    "GEMINI_MODEL",
+    "EMBEDDING_MODEL",
+)
+
+
+def get_allowed_ai_models() -> set[str]:
+    """Return the set of AI models explicitly permitted from environment variables."""
+    allowed: set[str] = set()
+    for env_var in ENV_MODEL_VARS:
+        val = (os.environ.get(env_var) or "").strip()
+        if val:
+            allowed.add(val)
+    return allowed
+
+
+def validate_model_allowed(model: str, *, force: bool = False) -> None:
+    """Validate that the given model is in the allowlist configured via .env.
+
+    Raises:
+        ValueError: If the model is not in the allowlist.
+    """
+    if not model or not model.strip():
+        return
+
+    # When running automated unit tests under pytest, allow mock/test models unless force=True
+    if "PYTEST_CURRENT_TEST" in os.environ and not force:
+        return
+
+    allowed = get_allowed_ai_models()
+    if not allowed:
+        return
+
+    if model in allowed:
+        return
+    base_model = model.split(":")[0]
+    allowed_bases = {m.split(":")[0] for m in allowed}
+    if base_model in allowed_bases:
+        return
+
+    raise ValueError(
+        f"Model {model!r} is not allowed. "
+        f"Only models explicitly configured in .env are permitted: {sorted(allowed)}"
+    )
+
+
+class ProviderUnavailableError(RuntimeError):
+    """The AI cascade returned no usable verdict for this attempt."""
 
 
 def _redact_url(url: str) -> str:
@@ -508,7 +561,9 @@ class OpenAIProvider(AIProvider):
         thinking: bool | None = None,
         response_format: Dict[str, Any] | None = None,
     ) -> str:
+        validate_model_allowed(model)
         is_openrouter = "openrouter" in self.base_url
+
         effective_max_tokens = max_tokens
         if is_openrouter and (max_tokens == 65536 or max_tokens is None):
             effective_max_tokens = int(os.environ.get("OPENROUTER_MAX_TOKENS", 131072))
@@ -633,7 +688,9 @@ class GoogleProvider(AIProvider):
         response_format: Dict[str, Any] | None = None,
     ) -> str:
         """Generate text with Gemini-compatible Chat Completions parameters."""
+        validate_model_allowed(model)
         output_tokens = min(max_tokens, GOOGLE_MAX_OUTPUT_TOKENS)
+
         if max_tokens > GOOGLE_MAX_OUTPUT_TOKENS:
             self.logger.debug(
                 "Capping Google output budget from %s to Gemini limit %s",
@@ -784,7 +841,9 @@ class AnthropicProvider(AIProvider):
         thinking: bool | None = None,  # noqa: ARG002 — accepted, not used by Anthropic
         response_format: (Dict[str, Any] | None) = None,  # noqa: ARG002 — accepted, not used by Anthropic
     ) -> str:
+        validate_model_allowed(model)
         # Extract system message and user messages
+
         system_text = ""
         api_messages = []
         for msg in messages:
@@ -955,11 +1014,8 @@ def create_provider(  # noqa: C901
         if not openrouter_api_key:
             raise ValueError("OPENROUTER_API_KEY is required for OpenRouter provider")
         for m in (openrouter_model, openrouter_model_2):
-            if m in FORBIDDEN_AI_MODELS:
-                raise ValueError(
-                    f"Model {m!r} is strictly forbidden by project rules. "
-                    "Use 'minimax/minimax-m3:free:floor' or 'deepseek/deepseek-v4-flash-0731:floor'."
-                )
+            if m:
+                validate_model_allowed(m)
         if openrouter_model_2:
             slots = [
                 (

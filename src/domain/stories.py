@@ -23,7 +23,7 @@ class Story:
     current_revision_id: int | None
     lifecycle_state: str
     created_at: dt.datetime
-    knowledge_source: Literal["legacy_claims", "event_first"] = "legacy_claims"
+    knowledge_source: Literal["legacy_claims", "event_first"] = "event_first"
 
     @classmethod
     def from_row(cls, row: Any) -> Story:

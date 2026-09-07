@@ -55,38 +55,50 @@ class TelegramChannelDestinationClient(DestinationClient):
         from telegram.constants import ParseMode
         from telegram.error import TelegramError, TimedOut
 
+        from src.utils import split_message
+
         text = str(payload.rendered_content.get("text", ""))
         if not text:
             raise ValueError(f"telegram payload {payload.id} has no text to deliver")
-        try:
-            message = await self._get_bot().send_message(
-                chat_id=destination.destination_key,
-                text=text,
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
-            )
-        except (TimedOut, asyncio.TimeoutError) as exc:
-            raise TimeoutError(f"telegram send timed out: {exc}") from exc
-        except TelegramError as exc:
-            if "Can't parse entities" in str(exc):
-                logger.warning(
-                    "HTML entity parse error delivering payload %s to %s; retrying with plain text",
-                    payload.id,
-                    destination.destination_key,
+
+        parts = split_message(text, max_length=4000)
+        sent_ids: list[str] = []
+        bot = self._get_bot()
+
+        for part in parts:
+            try:
+                message = await bot.send_message(
+                    chat_id=destination.destination_key,
+                    text=part,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
                 )
-                try:
-                    message = await self._get_bot().send_message(
-                        chat_id=destination.destination_key,
-                        text=text,
-                        parse_mode=None,
-                        disable_web_page_preview=True,
+            except (TimedOut, asyncio.TimeoutError) as exc:
+                raise TimeoutError(f"telegram send timed out: {exc}") from exc
+            except TelegramError as exc:
+                if "Can't parse entities" in str(exc):
+                    logger.warning(
+                        "HTML entity parse error delivering payload %s to %s; retrying with plain text",
+                        payload.id,
+                        destination.destination_key,
                     )
-                except (TimedOut, asyncio.TimeoutError) as timeout_exc:
-                    raise TimeoutError(f"telegram send timed out: {timeout_exc}") from timeout_exc
-            else:
-                raise
+                    try:
+                        message = await bot.send_message(
+                            chat_id=destination.destination_key,
+                            text=part,
+                            parse_mode=None,
+                            disable_web_page_preview=True,
+                        )
+                    except (TimedOut, asyncio.TimeoutError) as timeout_exc:
+                        raise TimeoutError(
+                            f"telegram send timed out: {timeout_exc}"
+                        ) from timeout_exc
+                else:
+                    raise
+            sent_ids.append(str(message.message_id))
+
         return {
-            "external_message_id": str(message.message_id),
+            "external_message_id": ",".join(sent_ids),
             "status": "sent",
         }
 

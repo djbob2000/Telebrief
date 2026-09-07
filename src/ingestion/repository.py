@@ -27,7 +27,7 @@ from src.ingestion.models import (
 )
 
 if TYPE_CHECKING:
-    from src.processing.vision import AssetDescriptor
+    from src.domain.ingestion import AssetDescriptor
 
 
 class IngestionRepository:
@@ -314,7 +314,7 @@ class IngestionRepository:
             (revision_id,),
         )
         rows = await cursor.fetchall()
-        from src.processing.vision import AssetDescriptor
+        from src.domain.ingestion import AssetDescriptor
 
         return [
             AssetDescriptor(

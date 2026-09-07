@@ -1886,3 +1886,56 @@ async def test_provider_cascade_retry_after_over_limit_fails_over_to_secondary(m
     # Primary called once, rejected because >15m, secondary called immediately
     assert primary.chat_completion.call_count == 1
     assert secondary.chat_completion.call_count == 1
+
+
+# --- Model Allowlist Tests ---
+
+
+@pytest.mark.unit
+def test_validate_model_allowed_accepts_configured_models(monkeypatch):
+    """Models configured in .env allowlist pass validation."""
+    from src.ai_providers import validate_model_allowed
+
+    monkeypatch.setenv("OPENROUTER_MODEL", "minimax/minimax-m3:free:floor")
+    monkeypatch.setenv("OPENROUTER_MODEL_2", "minimax/minimax-m2.7:free:floor")
+
+    validate_model_allowed("minimax/minimax-m3:free:floor", force=True)
+    validate_model_allowed("minimax/minimax-m2.7:free:floor", force=True)
+
+
+@pytest.mark.unit
+def test_validate_model_allowed_accepts_base_model_match(monkeypatch):
+    """Tags or suffixes on allowed base models are accepted."""
+    from src.ai_providers import validate_model_allowed
+
+    monkeypatch.setenv("OPENROUTER_MODEL", "minimax/minimax-m3:free:floor")
+
+    # Base model "minimax/minimax-m3" matches
+    validate_model_allowed("minimax/minimax-m3", force=True)
+
+
+@pytest.mark.unit
+def test_validate_model_allowed_rejects_unlisted_model(monkeypatch):
+    """Any model not configured in .env raises ValueError."""
+    from src.ai_providers import validate_model_allowed
+
+    monkeypatch.setenv("OPENROUTER_MODEL", "minimax/minimax-m3:free:floor")
+    monkeypatch.delenv("OPENROUTER_MODEL_2", raising=False)
+    monkeypatch.delenv("AI_MODEL", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+
+    with pytest.raises(ValueError, match="is not allowed"):
+        validate_model_allowed("deepseek/deepseek-v4-flash-0731", force=True)
+
+    with pytest.raises(ValueError, match="is not allowed"):
+        validate_model_allowed("openai/gpt-4o", force=True)
+
+
+@pytest.mark.unit
+def test_validate_model_allowed_accepts_deepseek_if_explicitly_in_env(monkeypatch):
+    """If user explicitly puts a model in .env, it is allowed by the allowlist."""
+    from src.ai_providers import validate_model_allowed
+
+    monkeypatch.setenv("OPENROUTER_MODEL", "deepseek/deepseek-chat")
+
+    validate_model_allowed("deepseek/deepseek-chat", force=True)

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 _DIGEST_RUBRIC_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
-EVENT_PIPELINE_MODES = ("legacy_claims", "event_first_shadow", "event_first")
+EVENT_PIPELINE_MODES = ("event_first",)
 
 
 @dataclass
@@ -102,7 +102,8 @@ class ArticleScheduleConfig:
 class EventPipelineConfig:
     """Cost-bounded event-first processing pipeline configuration."""
 
-    mode: Literal["legacy_claims", "event_first_shadow", "event_first"] = "legacy_claims"
+    mode: Literal["event_first"] = "event_first"
+
     fragment_max_chars: int = 1200
     active_window_hours: int = 72
     join_similarity: float = 0.84

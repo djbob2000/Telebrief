@@ -342,6 +342,7 @@ def test_render_payload_deduplicates_headings():
     assert content_tph2["body_markdown"] == "# Короткая заметка\n\nПросто текст без заголовка"
 
 
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_telegram_channel_adapter_fallback_on_parse_entities():
     from unittest.mock import AsyncMock, MagicMock
@@ -391,3 +392,50 @@ async def test_telegram_channel_adapter_fallback_on_parse_entities():
     assert mock_bot.send_message.call_count == 2
     # Verify fallback call used parse_mode=None
     assert mock_bot.send_message.call_args_list[1].kwargs["parse_mode"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_telegram_channel_adapter_splits_long_messages():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.publication.adapters import TelegramChannelDestinationClient
+    from src.publication.models import DeliveryDestination, PublicationDeliveryPayload
+
+    client = TelegramChannelDestinationClient(bot_token="test-token")
+    mock_bot = MagicMock()
+
+    msg1 = MagicMock()
+    msg1.message_id = 101
+    msg2 = MagicMock()
+    msg2.message_id = 102
+
+    mock_bot.send_message = AsyncMock(side_effect=[msg1, msg2])
+    client._bot = mock_bot
+
+    dest = DeliveryDestination(
+        id=1,
+        edition_id=1,
+        platform="telegram_channel",
+        destination_key="@test_chat",
+        config={},
+        is_active=True,
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+    long_text = "Строка для проверки разделения длинного сообщения.\n" * 150
+    assert len(long_text) > 4000
+
+    payload = PublicationDeliveryPayload(
+        id=1,
+        publication_id=1,
+        destination_id=1,
+        payload_format="telegram_html",
+        rendered_content={"text": long_text},
+        content_hash="hash",
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+    result = await client.send_payload(destination=dest, payload=payload)
+    assert result["status"] == "sent"
+    assert result["external_message_id"] == "101,102"
+    assert mock_bot.send_message.call_count == 2

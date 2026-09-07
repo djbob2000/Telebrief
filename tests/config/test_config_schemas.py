@@ -34,7 +34,7 @@ def test_schema_instantiation_defaults():
     assert article.editorial_max_output_tokens == 65_536
 
     pipeline = EventPipelineConfig()
-    assert pipeline.mode == "legacy_claims"
+    assert pipeline.mode == "event_first"
     assert pipeline.fragment_max_chars == 1200
 
 

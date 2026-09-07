@@ -17,7 +17,6 @@ policy id is fixed at queue time; Procrastinate retries never re-resolve it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
 import psycopg
 
@@ -25,9 +24,6 @@ from src.db.uow import DatabaseUnitOfWork
 from src.domain.ingestion import SourceItem
 from src.ingestion.models import CollectionBatch, CollectionOutcome, CollectionTrigger
 from src.ingestion.repository import IngestionRepository
-
-if TYPE_CHECKING:
-    from src.processing.relevance import IngestionRelevanceWiring
 
 
 @dataclass(frozen=True)
@@ -47,21 +43,9 @@ class IngestionService:
         self,
         uow: DatabaseUnitOfWork,
         repo: IngestionRepository,
-        *,
-        relevance_wiring: "IngestionRelevanceWiring | None" = None,
     ) -> None:
         self.uow = uow
         self.repo = repo
-        self._relevance_wiring = relevance_wiring
-
-    @property
-    def relevance_wiring(self) -> "IngestionRelevanceWiring":
-        """Lazily built default wiring (lenient config identity resolution)."""
-        if self._relevance_wiring is None:
-            from src.processing.relevance import IngestionRelevanceWiring
-
-            self._relevance_wiring = IngestionRelevanceWiring.create()
-        return self._relevance_wiring
 
     async def ingest_batch(
         self,
@@ -172,49 +156,20 @@ class IngestionService:
         source_id: int,
         new_revision_ids: list[int],
     ) -> None:
-        """Resolve each bound edition's exact current policy and defer the job.
+        """Defer Event-First processing for newly ingested revisions.
 
-        The evaluate_relevance task import is lazy on purpose: importing it at
+        The process_event_revisions_task import is lazy on purpose: importing it at
         module scope would build the Procrastinate app (and demand database
         config) for every consumer of this service.
         """
         if not new_revision_ids:
             return
-        wiring = self.relevance_wiring
         edition_ids = await self.repo.list_source_edition_ids(conn, source_id)
         if not edition_ids:
             return
 
-        try:
-            from src.config_loader import load_config
+        from src.jobs.event_processing import process_event_revisions_task
 
-            cfg = load_config()
-            mode = getattr(getattr(cfg.settings, "event_pipeline", None), "mode", "legacy_claims")
-        except Exception:
-            mode = "legacy_claims"
-
-        if mode in ("event_first", "event_first_shadow"):
-            from src.jobs.event_processing import process_event_revisions_task
-
-            await process_event_revisions_task.configure(connection=conn).defer_async(
-                revision_ids=list(new_revision_ids)
-            )
-
-        if mode in ("legacy_claims", "event_first_shadow"):
-            from src.jobs.processing import evaluate_relevance
-
-            relevance_policy_service = wiring.policy_service
-            current_config_hash = wiring.config_hash
-            for revision_id in new_revision_ids:
-                for edition_id in edition_ids:
-                    policy = await relevance_policy_service.ensure_current(
-                        conn,
-                        edition_id=edition_id,
-                        config_hash=current_config_hash,
-                        prompt_version=wiring.prompt_version,
-                    )
-                    await evaluate_relevance.configure(connection=conn).defer_async(
-                        source_item_revision_id=revision_id,
-                        edition_id=edition_id,
-                        policy_id=policy.id,
-                    )
+        await process_event_revisions_task.configure(connection=conn).defer_async(
+            revision_ids=list(new_revision_ids)
+        )

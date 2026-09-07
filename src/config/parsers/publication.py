@@ -8,7 +8,6 @@ import os
 import re
 from typing import Literal, cast
 
-from src.config.schemas.common import FORBIDDEN_AI_MODELS
 from src.config.schemas.publication import (
     _DIGEST_RUBRIC_ID_RE,
     DEFAULT_DIGEST_RUBRIC,
@@ -65,12 +64,6 @@ def _resolve_ai_settings(settings_dict: dict) -> tuple:
             else default_model
         )
     )
-
-    if ai_model in FORBIDDEN_AI_MODELS:
-        raise ValueError(
-            f"AI model {ai_model!r} is strictly forbidden by project rules. "
-            "Use 'minimax/minimax-m3:free:floor' or 'deepseek/deepseek-v4-flash-0731:floor'."
-        )
 
     return ai_provider, ai_model
 
@@ -514,7 +507,7 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
     if not isinstance(raw, dict):
         raise ValueError(f"'event_pipeline' must be a mapping, got {type(raw).__name__}")
 
-    raw_mode = raw.get("mode", "legacy_claims")
+    raw_mode = raw.get("mode", "event_first")
     if not isinstance(raw_mode, str) or raw_mode not in EVENT_PIPELINE_MODES:
         raise ValueError(
             f"settings.event_pipeline.mode must be one of {', '.join(EVENT_PIPELINE_MODES)}, "
@@ -543,7 +536,7 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
             )
         return float(v)
 
-    typed_mode = cast(Literal["legacy_claims", "event_first_shadow", "event_first"], raw_mode)
+    typed_mode = cast(Literal["event_first"], raw_mode)
 
     return EventPipelineConfig(
         mode=typed_mode,

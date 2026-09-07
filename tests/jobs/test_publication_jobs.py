@@ -65,7 +65,7 @@ async def test_select_stories_job_runs_with_fail_open_selection(
 
     # Job executes select_stories_for_publication
     context = {}
-    from src.processing.relevance import ProviderUnavailableError
+    from src.ai_providers import ProviderUnavailableError
 
     with (
         patch("src.jobs.publication.generate_publication.configure") as mock_gen_conf,

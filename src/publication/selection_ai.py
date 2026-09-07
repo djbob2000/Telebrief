@@ -7,9 +7,8 @@ import logging
 import re
 from typing import Any
 
-from src.ai_providers import AIProvider, create_provider
+from src.ai_providers import AIProvider, ProviderUnavailableError, create_provider
 from src.config_loader import Config, load_config
-from src.processing.relevance import ProviderUnavailableError
 from src.publication.digest_contracts import (
     DIGEST_PUBLICATION_TYPES,
     HARD_EXCLUSION_REASONS,

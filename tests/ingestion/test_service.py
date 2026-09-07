@@ -470,18 +470,20 @@ async def _fetch_scalar(conn, sql: str, params: tuple = ()) -> object:
     return row[0]
 
 
-async def _deferred_relevance_jobs(conn) -> list[tuple[str, int, int, int]]:
-    """Queued evaluate_relevance jobs as (revision, edition, policy) triples."""
+async def _deferred_event_jobs(conn) -> list[list[int]]:
+    """Queued process_event_revisions jobs as revision lists."""
+    import json
+
     cursor = await conn.execute(
         """
-        SELECT args->>'source_item_revision_id', args->>'edition_id', args->>'policy_id'
+        SELECT args->>'revision_ids'
         FROM procrastinate.procrastinate_jobs
-        WHERE task_name = 'evaluate_relevance'
+        WHERE task_name = 'process_event_revisions'
         ORDER BY id
         """
     )
     rows = await cursor.fetchall()
-    return [(int(row[0]), int(row[1]), int(row[2])) for row in rows]
+    return [json.loads(row[0]) for row in rows]
 
 
 class _ExplodingDeferral:
@@ -494,10 +496,10 @@ class _ExplodingDeferral:
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_ingest_commits_revision_and_deferred_relevance_job_together(
+async def test_ingest_commits_revision_and_deferred_event_job_together(
     service, source, edition, production_jobs_app, database_config
 ):
-    """New revision + exact-policy evaluate_relevance job commit atomically."""
+    """New revision + process_event_revisions job commit atomically."""
     import psycopg
 
     async with service.uow.pool.connection() as conn:
@@ -526,67 +528,9 @@ async def test_ingest_commits_revision_and_deferred_relevance_job_together(
                 await outside.close()
 
     async with service.uow.pool.connection() as conn:
-        pointer = await _fetch_scalar(
-            conn,
-            "SELECT current_relevance_policy_id FROM editions WHERE id = %s",
-            (edition.id,),
-        )
-        policy_hash = await _fetch_scalar(
-            conn,
-            "SELECT config_hash FROM relevance_policy_versions WHERE id = %s",
-            (pointer,),
-        )
-        prompt_version = await _fetch_scalar(
-            conn,
-            "SELECT prompt_version FROM relevance_policy_versions WHERE id = %s",
-            (pointer,),
-        )
-        jobs = await _deferred_relevance_jobs(conn)
+        jobs = await _deferred_event_jobs(conn)
 
-    assert isinstance(pointer, int) and pointer > 0
-    assert isinstance(policy_hash, str) and len(policy_hash) == 64
-    assert prompt_version == "relevance-2026-08-v1"
-    assert jobs == [(revision_id, edition.id, pointer)]
-
-
-@pytest.mark.postgres
-@pytest.mark.asyncio
-async def test_each_new_revision_fans_out_per_bound_edition(
-    service, source, edition, conn, production_jobs_app
-):
-    """Two new revisions across two bound editions produce four exact jobs,
-    while each edition resolves a single shared current policy."""
-    second = await _fetch_scalar(
-        conn,
-        "INSERT INTO editions (slug, name) VALUES ('mariupol', 'Mariupol') RETURNING id",
-    )
-    await _bind(conn, source.id, edition.id)
-    await _bind(conn, source.id, int(second))
-
-    items = (_observation(external_id="1"), _observation(external_id="2"))
-    result = await service.ingest_batch(
-        source.id, CollectionTrigger.BACKFILL, _batch(items=items, adapter_state={})
-    )
-
-    assert result.new_revisions == 2
-
-    async with service.uow.pool.connection() as db:
-        jobs = await _deferred_relevance_jobs(db)
-        policies_per_edition = await db.execute(
-            """
-            SELECT edition_id, COUNT(*) FROM relevance_policy_versions
-            GROUP BY edition_id ORDER BY edition_id
-            """
-        )
-        policy_rows = await policies_per_edition.fetchall()
-
-    assert len(jobs) == 4
-    assert {(job[0], job[1]) for job in jobs} == {
-        (revision_id, edition_id)
-        for revision_id in result.new_revision_ids
-        for edition_id in (edition.id, int(second))
-    }
-    assert policy_rows == [(edition.id, 1), (second, 1)]
+    assert jobs == [[revision_id]]
 
 
 @pytest.mark.postgres
@@ -594,11 +538,11 @@ async def test_each_new_revision_fans_out_per_bound_edition(
 async def test_forced_defer_failure_rolls_back_ingestion(
     service, source, edition, conn, monkeypatch, jobs_import_env
 ):
-    """A failing relevance deferral aborts the whole ingestion transaction:
-    revisions, runs, checkpoints, policy rows and queued jobs all roll back."""
-    import src.jobs.processing as jobs_processing
+    """A failing deferral aborts the whole ingestion transaction:
+    revisions, runs, checkpoints and queued jobs all roll back."""
+    import src.jobs.event_processing as event_jobs
 
-    monkeypatch.setattr(jobs_processing, "evaluate_relevance", _ExplodingDeferral())
+    monkeypatch.setattr(event_jobs, "process_event_revisions_task", _ExplodingDeferral())
 
     await _bind(conn, source.id, edition.id)
 
@@ -611,11 +555,6 @@ async def test_forced_defer_failure_rolls_back_ingestion(
             "source_item_revisions",
             "collection_runs",
             "collection_checkpoints",
-            "relevance_policy_versions",
             "procrastinate.procrastinate_jobs",
         ):
             assert await _fetch_scalar(db, f"SELECT COUNT(*) FROM {table}") == 0
-        pointer = await _fetch_scalar(
-            db, "SELECT current_relevance_policy_id FROM editions WHERE id = %s", (edition.id,)
-        )
-    assert pointer is None

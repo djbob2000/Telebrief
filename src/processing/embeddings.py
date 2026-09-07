@@ -1,53 +1,17 @@
-"""Semantic embedding services for both legacy claim matching and event-first fragments."""
+"""Semantic embedding services for Event-First fragments."""
 
 from __future__ import annotations
 
-import hashlib
 import logging
-from collections.abc import Awaitable, Callable, Sequence
-from typing import Any
+from collections.abc import Sequence
 
 import psycopg
 
-from src.db.uow import DatabaseUnitOfWork
-from src.domain.claims import Claim
 from src.domain.event_pipeline import SourceFragment
-from src.embedding_providers import EmbeddingProvider, EmbeddingPurpose, validate_vector
-from src.processing.story_matching import StoryMatchingPrerequisiteService
-from src.repositories.claims import ClaimRepository
-from src.repositories.embeddings import (
-    PURPOSE_CLAIM_QUERY,
-    PURPOSE_STORY_DOCUMENT,
-    EmbeddingRepository,
-    FragmentEmbeddingRepository,
-)
+from src.embedding_providers import EmbeddingProvider
+from src.repositories.embeddings import FragmentEmbeddingRepository
 
 logger = logging.getLogger(__name__)
-
-
-def content_hash(text: str) -> str:
-    """Stable identity of one embedding input."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-class EmbeddingInputBuilder:
-    """Sole owner of what becomes an embedding input — whole objects only."""
-
-    @staticmethod
-    def for_claim(claim: Claim) -> str:
-        """The complete self-contained normalized assertion; nothing else."""
-        normalized = claim.normalized_assertion
-        if not isinstance(normalized, str) or not normalized.strip():
-            raise ValueError(f"claim {claim.id} has no normalized_assertion")
-        return normalized
-
-    @staticmethod
-    def for_story_revision(revision: Any) -> str:
-        """The complete compact semantic text of ONE current story meaning."""
-        semantic_text = getattr(revision, "semantic_text", None)
-        if not isinstance(semantic_text, str) or not semantic_text.strip():
-            raise ValueError(f"story revision {getattr(revision, 'id', '?')} has no semantic_text")
-        return semantic_text
 
 
 class FragmentEmbeddingService:
@@ -161,21 +125,10 @@ class EmbeddingService:
     def __init__(
         self,
         *,
-        uow: DatabaseUnitOfWork | None = None,
-        provider: Any = None,
-        repo: EmbeddingRepository | None = None,
-        claim_repo: ClaimRepository | None = None,
-        matching_handoff: bool = False,
-        matching_prerequisites: StoryMatchingPrerequisiteService | None = None,
         fragment_repo: FragmentEmbeddingRepository | None = None,
         logger_instance: logging.Logger | None = None,
+        **_kwargs: object,
     ) -> None:
-        self.uow = uow
-        self.provider = provider
-        self._repo = repo or EmbeddingRepository()
-        self._claim_repo = claim_repo or ClaimRepository()
-        self._matching_handoff = matching_handoff
-        self._prerequisites = matching_prerequisites or StoryMatchingPrerequisiteService()
         self._fragment_service = FragmentEmbeddingService(
             repository=fragment_repo, logger_instance=logger_instance
         )
@@ -199,120 +152,4 @@ class EmbeddingService:
             model=model,
             dimensions=dimensions,
             batch_size=batch_size,
-        )
-
-    async def _embed_object(
-        self,
-        *,
-        text: str,
-        purpose: EmbeddingPurpose,
-        model: str,
-        dimensions: int,
-        insert: Callable[..., Awaitable[int | None]],
-        reuse_lookup: Callable[..., Awaitable[int | None]],
-        on_visible: Callable[..., Awaitable[None]] | None = None,
-    ) -> int | None:
-        if self.uow is None:
-            raise RuntimeError("DatabaseUnitOfWork must be configured on EmbeddingService")
-        digest = content_hash(text)
-        async with self.uow.transaction() as conn:
-            existing = await reuse_lookup(
-                conn, purpose=purpose, content_hash=digest, model=model, dimensions=dimensions
-            )
-            if existing is not None:
-                logger.debug(
-                    "embedding reused (%s dims=%d hash=%s...)", model, dimensions, digest[:12]
-                )
-                if on_visible is not None:
-                    await on_visible(conn, embedding_id=existing)
-                return existing
-        vector = validate_vector(
-            await self.provider.embed(text, purpose=purpose, model=model, dimensions=dimensions),
-            model=model,
-            dimensions=dimensions,
-        )
-        async with self.uow.transaction() as conn:
-            inserted = await insert(
-                conn,
-                embedding=vector,
-                model=model,
-                dimensions=dimensions,
-                purpose=purpose,
-                content_hash=digest,
-            )
-            if inserted is not None:
-                visible_id: int | None = inserted
-            else:
-                visible_id = await reuse_lookup(
-                    conn, purpose=purpose, content_hash=digest, model=model, dimensions=dimensions
-                )
-            if visible_id is not None and on_visible is not None:
-                await on_visible(conn, embedding_id=visible_id)
-            return visible_id
-
-    async def embed_claim(self, claim_id: int, *, model: str, dimensions: int) -> int | None:
-        if self.uow is None:
-            raise RuntimeError("DatabaseUnitOfWork must be configured on EmbeddingService")
-        async with self.uow.transaction() as conn:
-            claims = await self._claim_repo.get_many(conn, [claim_id])
-        if not claims:
-            raise ValueError(f"claim {claim_id} does not exist")
-        claim = claims[0]
-        on_visible = (
-            (
-                lambda conn, *, embedding_id: self._handoff_to_matching(
-                    conn,
-                    claim=claim,
-                )
-            )
-            if self._matching_handoff
-            else None
-        )
-        return await self._embed_object(
-            text=EmbeddingInputBuilder.for_claim(claim),
-            purpose=PURPOSE_CLAIM_QUERY,
-            model=model,
-            dimensions=dimensions,
-            insert=lambda conn, **kw: self._repo.insert_claim_embedding(
-                conn, claim_id=claim_id, **kw
-            ),
-            reuse_lookup=lambda conn, **kw: self._repo.get_claim_embedding(
-                conn, claim_id=claim_id, **kw
-            ),
-            on_visible=on_visible,
-        )
-
-    async def _handoff_to_matching(
-        self,
-        conn: psycopg.AsyncConnection,
-        *,
-        claim: Claim,
-    ) -> None:
-        scheduled = await self._prerequisites.maybe_schedule(conn, claim_id=claim.id)
-        if not scheduled:
-            logger.info(
-                "matching prerequisites unsatisfied for claim=%s; deferral withheld",
-                claim.id,
-            )
-
-    async def embed_story_revision(
-        self, story_revision_id: int, *, model: str, dimensions: int
-    ) -> int | None:
-        if self.uow is None:
-            raise RuntimeError("DatabaseUnitOfWork must be configured on EmbeddingService")
-        async with self.uow.transaction() as conn:
-            revision = await self._repo.get_story_revision(conn, story_revision_id)
-        if revision is None:
-            raise ValueError(f"story revision {story_revision_id} does not exist")
-        return await self._embed_object(
-            text=EmbeddingInputBuilder.for_story_revision(revision),
-            purpose=PURPOSE_STORY_DOCUMENT,
-            model=model,
-            dimensions=dimensions,
-            insert=lambda conn, **kw: self._repo.insert_story_revision_embedding(
-                conn, story_revision_id=story_revision_id, **kw
-            ),
-            reuse_lookup=lambda conn, **kw: self._repo.get_story_revision_embedding(
-                conn, story_revision_id=story_revision_id, **kw
-            ),
         )
