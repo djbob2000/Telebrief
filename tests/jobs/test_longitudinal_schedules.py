@@ -71,3 +71,29 @@ def test_not_due_monthly_article_on_other_days():
         if a.task_kwargs.get("publication_type") == MONTHLY_ARTICLE_PUBLICATION_TYPE
     ]
     assert len(monthly_acts) == 0
+
+
+def test_due_publication_actions_catch_up_within_window():
+    config = load_config()
+    tz = ZoneInfo(config.settings.timezone)
+    # Article scheduled at 21:15; dispatcher tick delayed by 12 minutes to 21:27
+    delayed_tick = dt.datetime(2026, 9, 7, 21, 27, tzinfo=tz)
+
+    actions = due_publication_actions(config, delayed_tick, catch_up_window_minutes=120)
+    article_acts = [a for a in actions if a.task_kwargs.get("publication_type") == "daily_article"]
+    assert len(article_acts) == 1
+    assert article_acts[0].kind == "publish"
+    # Scheduled snapshot_at must still be the intended slot (21:15), not the delayed tick
+    expected_snapshot_dt = dt.datetime(2026, 9, 7, 21, 15, tzinfo=tz).astimezone(dt.timezone.utc)
+    assert article_acts[0].task_kwargs["snapshot_at"] == expected_snapshot_dt.isoformat()
+
+
+def test_not_due_publication_actions_past_catch_up_window():
+    config = load_config()
+    tz = ZoneInfo(config.settings.timezone)
+    # Article scheduled at 21:15; tick arrives 3 hours later (past 120m window)
+    expired_tick = dt.datetime(2026, 9, 8, 0, 30, tzinfo=tz)
+
+    actions = due_publication_actions(config, expired_tick, catch_up_window_minutes=120)
+    article_acts = [a for a in actions if a.task_kwargs.get("publication_type") == "daily_article"]
+    assert len(article_acts) == 0

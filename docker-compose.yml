@@ -37,7 +37,36 @@ services:
     image: ghcr.io/djbob2000/telebrief:${IMAGE_TAG:-dev}
     container_name: telebrief-worker
     restart: unless-stopped
-    command: ["python", "-m", "src.worker", "--concurrency=2"]
+    command: ["python", "-m", "src.worker", "--concurrency=2", "--queues=publication,maintenance"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - TZ=UTC
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-telebrief}:${POSTGRES_PASSWORD:-password}@postgres:5432/${POSTGRES_DB:-telebrief}
+      - DATABASE_MAX_POOL_SIZE=3
+      - DATABASE_MIN_POOL_SIZE=1
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./logs:/app/logs
+      - ./sessions:/app/sessions
+      - ./data:/app/data
+      - telebrief_auth:/var/lib/telebrief/auth
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  telebrief-processing-worker:
+    image: ghcr.io/djbob2000/telebrief:${IMAGE_TAG:-dev}
+    container_name: telebrief-processing-worker
+    restart: unless-stopped
+    command: ["python", "-m", "src.worker", "--concurrency=2", "--queues=processing,collection,enrichment,default"]
     depends_on:
       postgres:
         condition: service_healthy

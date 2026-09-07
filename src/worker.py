@@ -31,7 +31,11 @@ WORKER_QUEUES = ("publication", "collection", "maintenance", "processing", "enri
 DEFAULT_CONCURRENCY = 2
 
 
-async def run_worker(*, concurrency: int = DEFAULT_CONCURRENCY) -> None:
+async def run_worker(
+    *,
+    concurrency: int = DEFAULT_CONCURRENCY,
+    queues: tuple[str, ...] | list[str] | None = None,
+) -> None:
     """Open infrastructure, install the runtime, and serve jobs until stopped."""
     if concurrency < 1:
         raise ValueError("concurrency must be >= 1")
@@ -44,6 +48,7 @@ async def run_worker(*, concurrency: int = DEFAULT_CONCURRENCY) -> None:
     from src.runtime import clear_runtime, install_runtime
     from src.utils import setup_logging
 
+    selected_queues = list(queues) if queues is not None else list(WORKER_QUEUES)
     setup_logging(os.getenv("LOG_LEVEL", "INFO"))
     logger = logging.getLogger("telebrief.worker")
     logger.info("Initializing Procrastinate worker infrastructure (concurrency=%d)...", concurrency)
@@ -53,10 +58,10 @@ async def run_worker(*, concurrency: int = DEFAULT_CONCURRENCY) -> None:
     # version); an explicit open() here would double-open the connector.
     infrastructure = await build_infrastructure(config)
     install_runtime(infrastructure)
-    logger.info("Procrastinate worker listening on queues: %s", list(WORKER_QUEUES))
+    logger.info("Procrastinate worker listening on queues: %s", selected_queues)
     try:
         await procrastinate_app.run_worker_async(
-            queues=list(WORKER_QUEUES),
+            queues=selected_queues,
             concurrency=concurrency,
         )
     finally:
@@ -78,8 +83,15 @@ def main(argv: list[str] | None = None) -> None:
         default=DEFAULT_CONCURRENCY,
         help=f"number of concurrent jobs (default: {DEFAULT_CONCURRENCY})",
     )
+    parser.add_argument(
+        "--queues",
+        type=str,
+        default=None,
+        help="comma-separated queue names to listen on (default: all)",
+    )
     args = parser.parse_args(argv)
-    asyncio.run(run_worker(concurrency=args.concurrency))
+    queues = [q.strip() for q in args.queues.split(",") if q.strip()] if args.queues else None
+    asyncio.run(run_worker(concurrency=args.concurrency, queues=queues))
 
 
 if __name__ == "__main__":

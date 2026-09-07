@@ -124,8 +124,14 @@ def _publication_types(config: Config) -> list[tuple[str, str, str | int | None]
     return entries
 
 
+DEFAULT_CATCH_UP_WINDOW_MINUTES = 120
+
+
 def due_publication_actions(
-    config: Config, scheduled_for: dt.datetime
+    config: Config,
+    scheduled_for: dt.datetime,
+    *,
+    catch_up_window_minutes: int = DEFAULT_CATCH_UP_WINDOW_MINUTES,
 ) -> list[DuePublicationAction]:
     """Pure decision helper: what is due at the periodic tick timestamp."""
     tz: dt.tzinfo
@@ -150,7 +156,9 @@ def due_publication_actions(
             continue
         hour, minute = slot
         publish_at = local_minute.replace(hour=hour, minute=minute)
-        if local_minute == publish_at:
+        # Check if local_minute falls within [publish_at, publish_at + catch_up_window_minutes)
+        publish_window_end = publish_at + dt.timedelta(minutes=max(1, catch_up_window_minutes))
+        if publish_at <= local_minute < publish_window_end:
             snapshot_iso = publish_at.astimezone(dt.timezone.utc).isoformat()
             actions.append(
                 DuePublicationAction(
@@ -165,7 +173,8 @@ def due_publication_actions(
             )
             continue
         pre_publish_at = publish_at - dt.timedelta(minutes=lead_minutes)
-        if lead_minutes > 0 and local_minute == pre_publish_at:
+        pre_publish_window_end = pre_publish_at + dt.timedelta(minutes=max(1, lead_minutes))
+        if lead_minutes > 0 and pre_publish_at <= local_minute < pre_publish_window_end:
             actions.append(
                 DuePublicationAction(
                     kind="pre_publish",
