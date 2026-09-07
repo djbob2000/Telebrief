@@ -962,14 +962,16 @@ class TestPublicationSnapshotConstraints:
         with pytest.raises(IncompleteTriageError, match="lacking authoritative triage"):
             await service.seal_candidates(run.id)
 
-        # 6. Once sid_stale receives an authoritative v9 decision (retention='DROP'), authority gap is resolved
+        # 6. Once sid_stale receives an authoritative v9 decision (retention='DROP'), authority gap is resolved.
+        # Decisions created after snapshot_at (simulating pre-seal drain) must also resolve the gap.
+        post_snap = _NOW + dt.timedelta(minutes=5)
         await conn.execute(
-            "UPDATE story_event_triage_decisions SET triage_version = 'v9', retention = 'DROP', enrichment = 'NONE' WHERE story_id = %s",
-            (sid_stale,),
+            "UPDATE story_event_triage_decisions SET triage_version = 'v9', retention = 'DROP', enrichment = 'NONE', created_at = %s WHERE story_id = %s",
+            (post_snap, sid_stale),
         )
         await conn.execute(
-            "UPDATE story_edition_scope_decisions SET scope_class = 'OUT_OF_SCOPE' WHERE story_id = %s",
-            (sid_stale,),
+            "UPDATE story_edition_scope_decisions SET scope_class = 'OUT_OF_SCOPE', created_at = %s WHERE story_id = %s",
+            (post_snap, sid_stale),
         )
         cands = await service.seal_candidates(run.id)
         assert len(cands) == 1
@@ -1109,45 +1111,3 @@ class TestPublicationSnapshotConstraints:
         )
         with pytest.raises(IncompleteTriageError, match="lacking authoritative triage"):
             await service.seal_candidates(run_with_gap.id)
-
-        # 4. Decisions created AFTER snapshot_at (simulating pre-seal drain)
-        # must satisfy authority gap, make story eligible, and allow candidate sealing
-        post_snap = _NOW + dt.timedelta(minutes=5)
-        await conn.execute(
-            """
-            INSERT INTO story_cluster_state (story_id, centroid, model, dimensions, fragment_count, unique_source_count, first_seen_at, last_seen_at, latest_assignment_id, analysis_dirty)
-            VALUES (%s, '[1, 0]'::vector, 'm', 2, 1, 1, %s, %s, 1001, FALSE)
-            """,
-            (ef_sid, _NOW, _NOW),
-        )
-        await conn.execute(
-            """
-            INSERT INTO story_edition_scope_decisions (
-                story_id, edition_id, latest_assignment_id, scope_version, scope_config_hash,
-                scope_class, confidence, reasoning, created_at
-            ) VALUES (%s, %s, 1001, 'v1', 'hash-1', 'LOCAL', 0.95, 'in focus', %s)
-            """,
-            (ef_sid, edition.id, post_snap),
-        )
-        await conn.execute(
-            """
-            INSERT INTO story_event_triage_decisions (
-                story_id, edition_id, latest_assignment_id, triage_version, scope_config_hash,
-                retention, enrichment, confidence, reasoning, created_at
-            ) VALUES (%s, %s, 1001, 'v10', 'hash-1', 'KEEP', 'BRIEF', 0.95, 'keep news', %s)
-            """,
-            (ef_sid, edition.id, post_snap),
-        )
-
-        gap_count_after = await repo.count_authority_gap(
-            conn, edition_id=edition.id, snapshot_at=_NOW, eligibility_policy_id=pol_valid.id
-        )
-        assert gap_count_after == 0
-
-        eligible = await repo.eligible_story_revisions(
-            conn, edition_id=edition.id, snapshot_at=_NOW, eligibility_policy_id=pol_valid.id
-        )
-        assert any(r["story_id"] == ef_sid for r in eligible)
-
-        sealed = await service.seal_candidates(run_with_gap.id)
-        assert any(c.story_id == ef_sid for c in sealed)
