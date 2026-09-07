@@ -2044,3 +2044,38 @@ def test_one_claim_can_cover_multiple_equivalent_stories_with_union_supports() -
     }
     res = validate_digest_narrative(draft, plan, support_map)
     assert res.is_valid is True
+
+
+@pytest.mark.asyncio
+async def test_generate_journalistic_digest_strips_dividers_and_rubric_asterisks():
+    from unittest.mock import AsyncMock
+
+    from src.publication.digest_narrative import DigestNarrativeWriter
+
+    mock_provider = AsyncMock()
+    mock_provider.chat_completion.return_value = """Дайджест · 07 сентября 2026
+
+---
+
+**⚡ Коммунальная обстановка**
+
+Бердянск остаётся без электричества уже 37-й день.
+
+---
+
+**💥 Безопасность и чрезвычайные ситуации**
+
+Вечером в городе гремели взрывы.
+"""
+    writer = DigestNarrativeWriter(provider=mock_provider)
+    clean_text, draft = await writer.generate_journalistic_digest(
+        city="Бердянск",
+        date_str="07 сентября 2026",
+        cards=[],
+    )
+
+    assert "---" not in clean_text
+    assert "**" not in clean_text
+    assert "⚡ Коммунальная обстановка" in clean_text
+    assert "💥 Безопасность и чрезвычайные ситуации" in clean_text
+    assert clean_text.startswith("⚡ Коммунальная обстановка")

@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import logging
 import os
+import re
 import uuid
 from typing import Any, Protocol
 
@@ -66,12 +67,26 @@ def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
             )
             return "telegram_html", {"text": raw_text}
 
-        if body_text.startswith(f"# {title_text}") or body_text.startswith(title_text):
-            raw_text = body_text
+        # Clean up any stray horizontal dividers or rubric markdown markup
+        clean_body = re.sub(r"(?m)^[^\S\r\n]*[-*_]{3,}[^\S\r\n]*$", "", body_text)
+        clean_body = re.sub(
+            r"(?m)^[^\S\r\n]*\*\*[^\S\r\n]*([^\n*]+?)[^\S\r\n]*\*\*[^\S\r\n]*$",
+            r"\1",
+            clean_body,
+        )
+        clean_body = re.sub(
+            r"(?m)^[^\S\r\n]*\*[^\S\r\n]*([^\n*]+?)[^\S\r\n]*\*[^\S\r\n]*$",
+            r"\1",
+            clean_body,
+        )
+        clean_body = re.sub(r"\n{3,}", "\n\n", clean_body).strip()
+
+        if clean_body.startswith(f"# {title_text}") or clean_body.startswith(title_text):
+            raw_text = clean_body
         elif title_text:
-            raw_text = f"{title_text}\n\n{body_text}"
+            raw_text = f"{title_text}\n\n{clean_body}"
         else:
-            raw_text = body_text
+            raw_text = clean_body
         return "telegram_html", {"text": raw_text}
 
     if platform == "telegraph":

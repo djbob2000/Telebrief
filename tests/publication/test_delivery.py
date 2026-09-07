@@ -342,6 +342,26 @@ def test_render_payload_deduplicates_headings():
     assert content_tph2["body_markdown"] == "# Короткая заметка\n\nПросто текст без заголовка"
 
 
+def test_render_payload_strips_dividers_and_rubric_markup():
+    from types import SimpleNamespace
+
+    from src.publication.delivery import _render_payload
+
+    pub = SimpleNamespace(
+        title="Дайджест · 07 сентября 2026",
+        lead="",
+        body="---\n\n**⚡ Коммунальная обстановка**\n\nБердянск без света.\n\n---\n\n**💥 Безопасность**\n\nВзрывы в городе.",
+    )
+    fmt_tg, content_tg = _render_payload("telegram_channel", pub)
+    assert fmt_tg == "telegram_html"
+    text = content_tg["text"]
+    assert "---" not in text
+    assert "**" not in text
+    assert "⚡ Коммунальная обстановка" in text
+    assert "💥 Безопасность" in text
+    assert text.startswith("Дайджест · 07 сентября 2026\n\n⚡ Коммунальная обстановка")
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_telegram_channel_adapter_fallback_on_parse_entities():
