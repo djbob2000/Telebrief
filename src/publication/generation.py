@@ -327,6 +327,8 @@ class PublicationGenerationService:
                                 date_str=date_str_ru,
                                 cards=cards_to_synthesize,
                                 evidence=evidence_dict,
+                                custom_rubrics=getattr(self.config.settings, "digest_groups", None)
+                                or getattr(renderer, "rubrics", None),
                                 model=getattr(self.config.settings, "openai_model", None)
                                 or getattr(self.config.settings, "ai_model", None),
                                 max_chars=3900,
