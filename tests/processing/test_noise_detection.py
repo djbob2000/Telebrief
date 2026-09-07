@@ -63,3 +63,50 @@ def test_short_concrete_assertions_are_preserved():
         assert not is_noise, f"Did not expect noise for legitimate assertion: {text!r}"
         is_ex, _ = classify_text_noise_or_exclusion(text)
         assert not is_ex, f"Did not expect exclusion for legitimate assertion: {text!r}"
+
+
+def test_commercial_classified_freight_and_junk_hauling_excluded():
+    freight_cases = [
+        "🔴 ВЫВОЗ МУСОРА 🔴\n(строймусор,старая мебель,техника и любой другой хлам)\nГрузовые перевозки Бердянск и р-он.",
+        "Вывоз строймусора, старой мебели, хлама. Грузоперевозки по городу и району.",
+        "Замена водопровода, канализации, замена счетчиков под ключ. Звонить: +79900797078",
+    ]
+    for text in freight_cases:
+        is_ex, reason = classify_text_noise_or_exclusion(text)
+        assert is_ex, f"Expected exclusion for freight/hauling ad: {text!r}"
+        assert reason in ("commercial_classified", "directory_payload")
+
+
+def test_commercial_classified_passenger_transit_and_carpools_excluded():
+    transit_cases = [
+        "Поездка до Ростова 10 сентября числа на машине . Могу взять попутчиков.выезд 10 :00...тел..±79900312672",
+        "Пассажирские перевозки Бердянск - Ростов - Москва. Ежедневные рейсы, комфортные микроавтобусы. Тел: +79901234567",
+        "Возьму попутчиков до Мелитополя завтра утром. Выезд в 8:00, обращаться в лс.",
+    ]
+    for text in transit_cases:
+        is_ex, reason = classify_text_noise_or_exclusion(text)
+        assert is_ex, f"Expected exclusion for passenger transit/carpool ad: {text!r}"
+        assert reason in ("commercial_classified", "directory_payload")
+
+
+def test_directory_payload_medical_clinic_and_business_cards_excluded():
+    directory_cases = [
+        "**ВИЗАНТ**\n🏛 г. Бердянск, ул. Карла-Маркса 49 (бывшая ул. Центральная)\n🕗 Режим работы: Пн.-Сб. с 8:00 до 16:00, Вс. — выходной.",
+        '🌟 Медицинский центр "ВИЗАНТ" — забота о вашем здоровье !\nУЗИ, ЭКГ, прием врачей. Адрес: ул. Тверская, 49. Режим работы: с 8:00 до 16:00.',
+    ]
+    for text in directory_cases:
+        is_ex, reason = classify_text_noise_or_exclusion(text)
+        assert is_ex, f"Expected exclusion for clinic directory card: {text!r}"
+        assert reason in ("directory_payload", "commercial_classified")
+
+
+def test_civic_reports_and_emergency_services_preserved():
+    civic_cases = [
+        "Водоканал ждет возврата генератора для работы насоса",
+        "С любой острой болью в животе на приёмное отделение горбольницы, в семиэтажку.",
+        "Автобус №4 ходит примерно раз в час",
+        "В связи с нехваткой донорской крови просим откликнуться, центр крови работает с 7 до 13",
+    ]
+    for text in civic_cases:
+        is_ex, _ = classify_text_noise_or_exclusion(text)
+        assert not is_ex, f"Civic report or medical emergency must NOT be excluded: {text!r}"

@@ -32,10 +32,17 @@ CLASSIFIED_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d+\b.*\b(руб|рублей|р\.|грн|usd|\$|₽)\b", re.IGNORECASE),
     re.compile(r"\b\d+\s*([₽р]|руб|грн)(?:/(?:литр|л|кг|шт|час|м2|сотку))?\b", re.IGNORECASE),
     re.compile(r"\b(звонить|обращаться|писать в лс|л\.с\.|самовывоз|доставка)\b", re.IGNORECASE),
-    re.compile(r"(\+7\s?9\d{2}|\+380|\b89\d{2})\s?\d{3}", re.IGNORECASE),
+    re.compile(
+        r"(?:[+±]?7\s?9\d{2}|\+380|\b89\d{2})\s?\d{3}|\bтел(?:ефон)?[.:\s]*[+±]?\d{7,12}\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\b(маникюр|педикюр|наращивание|ресниц|брови|эпиляция|стрижка)\b", re.IGNORECASE),
     re.compile(
-        r"\b(грузоперевозки|грузчики|переезды|ремонт квартир|установка окон|бурение скважин)\b",
+        r"\b(грузоперевозки|грузовые перевозки|вывоз мусора|вывоз строймусора|строймусор|грузчики|переезды|ремонт квартир|установка окон|бурение скважин|чистка груб|замена водопровода|замена счетчиков|прокладка труб|врезка в трубу|услуги сантехника|услуги электрика|чистка канализации)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(попутчик[иа-я]*|возьму попутчик[а-я]*|ищу попутчик[а-я]*|поездка до\s+[а-яё]+|поездки в\s+[а-яё]+|пассажирские перевозки|регулярные рейсы|комфортные микроавтобусы|ежедневные выезды)\b",
         re.IGNORECASE,
     ),
     re.compile(
@@ -51,6 +58,10 @@ _COMMODITY_SALE_PATTERN = re.compile(
 )
 _PER_UNIT_PRICE_PATTERN = re.compile(
     r"\b\d+\s*(?:[₽р]|руб|грн)/(?:литр|л|кг|бут|шт)\b",
+    re.IGNORECASE,
+)
+_DEDICATED_COMMERCIAL_SERVICE_PATTERN = re.compile(
+    r"(?:🔴\s*вывоз мусора|вывоз (?:строй)?мусора.*(?:грузовые перевозки|грузоперевозки|хлам|строймусор)|пассажирские перевозки.*(?:рейсы|микроавтобус|автобус|ежедневно)|возьму попутчиков.*(?:выезд|тел|машин[еы]))",
     re.IGNORECASE,
 )
 
@@ -76,6 +87,14 @@ _DIRECTORY_PAYLOAD_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
         r"\b(?:в наличии и под заказ|под заказ и в наличии|хорошие цены|по доступным ценам)\b",
         re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:режим|график)\s+работы\s*:\s*(?:пн[.\s-]*сб|пн[.\s-]*пт|ежедневно|без выходных|\w+\s*[-—–]\s*выходной|с?\s*\d{1,2}[:.]\d{2})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:медицинский центр|клиника|диагностический центр)\s+[«\"]?\w+[»\"]?.*(?:забота о вашем здоровье|ждём вас|прием врачей|узи|экг)",
+        re.IGNORECASE | re.DOTALL,
     ),
 )
 
@@ -139,6 +158,8 @@ def is_commercial_classified(text: str) -> bool:
         return False
     # Direct commodity price match (e.g. "Питьевая вода на розлив — 3 ₽/литр")
     if _COMMODITY_SALE_PATTERN.search(trimmed) or _PER_UNIT_PRICE_PATTERN.search(trimmed):
+        return True
+    if _DEDICATED_COMMERCIAL_SERVICE_PATTERN.search(trimmed):
         return True
     cues = detect_classified_cues(trimmed)
     return len(cues) >= 2

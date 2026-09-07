@@ -20,6 +20,15 @@ _INTERNAL_HANDLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_META_OMISSION_PATTERN = re.compile(
+    r"\b(?:контактн[а-я]+\s+данн[а-я]+\s+опущен[а-я]*|"
+    r"телефон[а-я]*\s+не\s+(?:указыва[а-я]+|привод[а-я]+|публику[а-я]+)|"
+    r"контакт[а-я]*\s+скрыт[а-я]*|"
+    r"дат[а-я]*\s+не\s+(?:указыва[а-я]+|уточня[а-я]+)|"
+    r"номера\s+не\s+публику[а-я]+)\b",
+    re.IGNORECASE,
+)
+
 _WEEKLY_EXPANSION_RE = re.compile(
     r"\b(?:хроник[а-я]*\s+недел[а-я]*|итог[а-я]*\s+недел[а-я]*|событи[а-я]*\s+недел[а-я]*|обзор[а-я]*\s+недел[а-я]*|за\s+недел[а-я]*)\b",
     re.IGNORECASE,
@@ -315,6 +324,16 @@ def validate_article_draft(
                     code="INTERNAL_HANDLE_LEAK",
                     unit_id=unit_id,
                     message=f"Unit {unit_id} contains internal evidence handle",
+                )
+            )
+
+        # Check for leaked meta omission phrases in raw text
+        if _META_OMISSION_PATTERN.search(unit_text):
+            issues.append(
+                ArticleValidationIssue(
+                    code="LEAKED_META_OMISSION",
+                    unit_id=unit_id,
+                    message=f"Unit {unit_id} contains leaked meta-omission commentary",
                 )
             )
 

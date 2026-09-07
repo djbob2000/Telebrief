@@ -416,7 +416,10 @@ def _strip_internal_handles(text: str) -> str:
     """Strip any lingering internal [story:...] or [op:...] evidence handles and normalize homoglyphs."""
     if not text:
         return ""
+    from src.publication.article_cleaner import strip_leaked_meta_omissions
+
     cleaned = _INTERNAL_EVIDENCE_ID_RE.sub("", text)
+    cleaned = strip_leaked_meta_omissions(cleaned)
     cleaned = _normalize_homoglyphs(cleaned)
     cleaned = re.sub(r" {2,}", " ", cleaned)
     cleaned = re.sub(r" \.", ".", cleaned)

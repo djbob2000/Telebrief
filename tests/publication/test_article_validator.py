@@ -147,6 +147,82 @@ def test_valid_draft_passes_validation() -> None:
     assert result.violations == ()
 
 
+def test_validator_rejects_leaked_meta_omission():
+    from src.publication.article_cleaner import strip_leaked_meta_omissions
+
+    ctx = _make_sample_context()
+    config = PublicationEditorialConfig(
+        article_min_words=10,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+
+    draft = StructuredArticleDraft(
+        title="Восстановительные работы в городе",
+        title_support_ids=("story:1:evidence:0:frag:101",),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Восстановительные работы в городе",
+                cited_support_ids=("story:1:evidence:0:frag:101",),
+            ),
+        ),
+        lead="В городе продолжаются восстановительные работы на ключевых объектах.",
+        lead_support_ids=("story:1:evidence:0:frag:101",),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В городе продолжаются восстановительные работы",
+                cited_support_ids=("story:1:evidence:0:frag:101",),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Энергетика и коммунальные службы",
+                heading_support_ids=("story:1:evidence:0:frag:101",),
+                heading_claims=(
+                    ArticleClaimAtom(
+                        text="Энергетика и коммунальные службы",
+                        cited_support_ids=("story:1:evidence:0:frag:101",),
+                    ),
+                ),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Городские службы по вывозу мусора продолжают работать (контактные данные опущены).",
+                        cited_support_ids=("story:1:evidence:0:frag:101",),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Городские службы по вывозу мусора продолжают работать",
+                                cited_support_ids=("story:1:evidence:0:frag:101",),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=35,
+    )
+
+    result = validate_article_draft(draft, ctx, config)
+    assert result.is_valid is False
+    assert any(i.code == "LEAKED_META_OMISSION" for i in result.issues)
+
+    # Test deterministic cleaner
+    cleaned = strip_leaked_meta_omissions(
+        "Городские службы по вывозу мусора продолжают работать (контактные данные опущены)."
+    )
+    assert "(контактные данные опущены)" not in cleaned
+    assert cleaned.strip() == "Городские службы по вывозу мусора продолжают работать."
+
+    cleaned_clause = strip_leaked_meta_omissions(
+        "Частные перевозчики предлагают попутчиков в сторону соседних регионов, хотя конкретные даты и телефоны не указываются."
+    )
+    assert "не указываются" not in cleaned_clause
+    assert (
+        cleaned_clause.strip()
+        == "Частные перевозчики предлагают попутчиков в сторону соседних регионов."
+    )
+
+
 @pytest.mark.unit
 def test_draft_missing_support_fails() -> None:
     ctx = _make_sample_context()

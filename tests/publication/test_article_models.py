@@ -205,3 +205,35 @@ def test_structured_article_from_dict_forces_ai_origin() -> None:
     assert draft.lead_generation_origin == "AI"
     assert draft.sections[0].heading_generation_origin == "AI"
     assert draft.sections[0].paragraphs[0].generation_origin == "AI"
+
+
+@pytest.mark.unit
+def test_structured_article_draft_strips_leaked_meta_omissions() -> None:
+    payload = {
+        "title": "События дня в городе (контактные данные опущены)",
+        "title_support_ids": ["e1"],
+        "lead": "В городе продолжаются восстановительные работы (телефоны не указываются).",
+        "lead_support_ids": ["e1"],
+        "sections": [
+            {
+                "heading": "Транспорт и логистика",
+                "heading_support_ids": ["e1"],
+                "paragraphs": [
+                    {
+                        "text": "Сохраняются нерегулярные пассажирские перевозки (контактные данные опущены).",
+                        "cited_support_ids": ["e1"],
+                    }
+                ],
+            }
+        ],
+    }
+    draft = StructuredArticleDraft.from_dict(payload)
+    assert draft.title == "События дня в городе"
+    assert draft.lead == "В городе продолжаются восстановительные работы."
+    assert (
+        draft.sections[0].paragraphs[0].text == "Сохраняются нерегулярные пассажирские перевозки."
+    )
+
+    md = draft.render_markdown()
+    assert "контактные данные опущены" not in md
+    assert "телефоны не указываются" not in md

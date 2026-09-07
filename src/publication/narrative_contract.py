@@ -68,6 +68,7 @@ def build_article_narrative_contract(
 - Avoid booking announcements: Do not publish specific commercial carrier departure dates, booking schedules, or private transit ads.
 - Editorial distillation: Transform commercial/service advertisements into concise journalistic facts about service availability, price levels, or resident reliance on intermediary services.
 - Organization names, locations, prices, schedules, or addresses may appear only when the detail itself is editorially relevant, supported, and presented concisely without promotional tone.
+- NO META-COMMENTARY OR OMISSION REPORTING: Never write meta-phrases explaining omitted contacts or instructions to the reader, such as "(контактные данные опущены)", "телефоны не указываются", "контакты скрыты", "даты не приводятся", or "как сообщалось ранее". Omit promotional payloads completely and silently without editorializing about their absence.
 
 6. Claim Atom discipline:
 - Claim Atoms are validation metadata, not polished article prose.
