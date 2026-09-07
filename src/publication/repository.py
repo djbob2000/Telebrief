@@ -216,6 +216,7 @@ def _candidate_universe_sql() -> str:
             sr.revision_no,
             sr.current_state,
             sr.semantic_text,
+            sr.reason,
             sr.created_at AS revision_created_at,
             sr.event_payload
         FROM story_revisions sr
@@ -231,6 +232,7 @@ def _candidate_universe_sql() -> str:
             lr.revision_no,
             lr.current_state,
             lr.semantic_text,
+            lr.reason,
             lr.revision_created_at,
             lr.event_payload,
             s.created_at AS story_created_at,
