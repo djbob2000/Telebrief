@@ -182,3 +182,29 @@ def test_filter_drops_sports_section_recruitments():
     )
     filtered = filter_digest_candidate_cards([football_card])
     assert len(filtered) == 0
+
+
+def test_filter_drops_intercity_carrier_rostov_any_wording():
+    card = StoryCard(
+        id="story_rostov",
+        topic="Ежедневно выполняются 4 автобусных рейса из Бердянска в Ростов",
+        summary="По информации перевозчика, ежедневно из Бердянска в Ростов выполняются 4 автобусных рейса.",
+        importance="medium",
+        rubric_id="transport",
+    )
+    filtered = filter_digest_candidate_cards([card])
+    assert len(filtered) == 0
+
+
+def test_filter_drops_ambiguous_bare_outage_chat_fragment():
+    card = StoryCard(
+        id="story_outage_bare",
+        topic="Полное отключение электричества с 9 сентября",
+        summary="Жители Бердянска сообщают о полном отключении электроснабжения с 9-го числа.",
+        importance="high",
+        rubric_id="utilities",
+        hard_facts=[],
+        community_observations=[],
+    )
+    filtered = filter_digest_candidate_cards([card])
+    assert len(filtered) == 0

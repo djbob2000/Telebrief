@@ -19,13 +19,22 @@ _AD_AND_SPAM_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
     # Commercial intercity passenger transport / booking portals / carrier ads
     re.compile(
-        r"(?:рейс[ыа]|поездк[иа]|перевозк[иа]|пассажирские|маршрут|трансфер|выезд).{0,60}"
+        r"(?:рейс[ыа]|поездк[иа]|перевозк[иа]|пассажирские|маршрут|трансфер|выезд|автобус\w*).{0,60}"
+        r"(?:ростов|москв|крым|краснодар|таганрог|симферополь|донецк|мариуполь)",
+        re.IGNORECASE,
+    ),
+    re.compile(
         r"(?:ростов|москв|крым|краснодар|таганрог|симферополь|донецк|мариуполь).{0,60}"
-        r"(?:заказ|бронир|билет|забор\s+по|ежедневно\s+выполняется|\.pro|\.ru|\.com|busking)",
+        r"(?:рейс[ыа]|поездк[иа]|перевозк[иа]|пассажирские|маршрут|трансфер|выезд|автобус\w*)",
         re.IGNORECASE,
     ),
     re.compile(
         r"(?:busking|busking\.pro|забор\s+пассажиров\s+по\s+городским\s+остановкам|запись\s+вед[её]тся\s+через\s+(?:ресурс|сайт))",
+        re.IGNORECASE,
+    ),
+    # Ambiguous chat argument fragments about outages with isolated dates
+    re.compile(
+        r"(?:полное\s+)?отключение\s+(?:электроэнергии|электричества|электроснабжения|света)?\s*с\s+\d+\b",
         re.IGNORECASE,
     ),
     # Private grey market / banking services / card unlock / account recovery
