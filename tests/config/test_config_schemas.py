@@ -49,3 +49,20 @@ def test_source_role_resolver():
     resolver = SourceRoleResolver([ch])
     assert resolver.resolve("Test Channel") == "news"
     assert effective_source_type(ch) == "news"
+
+
+def test_openrouter_models_config_schema():
+    from src.config.schemas.root import Config
+
+    cfg = Config(
+        channels=[],
+        settings=None,  # type: ignore
+        telegram_api_id=1,
+        telegram_api_hash="hash",
+        telegram_bot_token="token",
+        openai_api_key="key",
+        log_level="INFO",
+        openrouter_models=["m1", "m2"],
+    )
+    assert cfg.openrouter_models == ["m1", "m2"]
+    assert cfg.openrouter_model == "openrouter/free"

@@ -151,6 +151,7 @@ async def coalesce_dirty_stories_task(
         openrouter_api_key=config.openrouter_api_key,
         openrouter_model=config.openrouter_model,
         openrouter_model_2=getattr(config, "openrouter_model_2", ""),
+        openrouter_models=getattr(config, "openrouter_models", None),
     )
 
     triage_service = StoryTriageService(

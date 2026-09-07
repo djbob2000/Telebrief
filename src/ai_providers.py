@@ -36,7 +36,10 @@ def get_allowed_ai_models() -> set[str]:
     for env_var in ENV_MODEL_VARS:
         val = (os.environ.get(env_var) or "").strip()
         if val:
-            allowed.add(val)
+            for item in val.split(","):
+                item_clean = item.strip()
+                if item_clean:
+                    allowed.add(item_clean)
     return allowed
 
 
@@ -923,6 +926,7 @@ def create_provider(  # noqa: C901
     openrouter_base_url: str = OPENROUTER_BASE_URL,
     openrouter_model: str = "openrouter/free",
     openrouter_model_2: str = "",
+    openrouter_models: Sequence[str] | None = None,
     ollama_base_url: str = "http://localhost:11434",
     api_timeout: int = 300,
     reasoning_effort: str | None = None,
@@ -1013,10 +1017,25 @@ def create_provider(  # noqa: C901
     if name == "openrouter":
         if not openrouter_api_key:
             raise ValueError("OPENROUTER_API_KEY is required for OpenRouter provider")
-        for m in (openrouter_model, openrouter_model_2):
-            if m:
-                validate_model_allowed(m)
-        if openrouter_model_2:
+
+        models_list: list[str] = []
+        if openrouter_models is not None:
+            models_list = [m.strip() for m in openrouter_models if m and m.strip()]
+        else:
+            for part in (openrouter_model or "").split(","):
+                part_clean = part.strip()
+                if part_clean and part_clean not in models_list:
+                    models_list.append(part_clean)
+            if openrouter_model_2 and openrouter_model_2.strip() not in models_list:
+                models_list.append(openrouter_model_2.strip())
+
+        if not models_list:
+            models_list = ["openrouter/free"]
+
+        for m in models_list:
+            validate_model_allowed(m)
+
+        if len(models_list) > 1:
             slots = [
                 (
                     "openrouter-primary",
@@ -1026,20 +1045,24 @@ def create_provider(  # noqa: C901
                         timeout=api_timeout,
                         base_url=openrouter_base_url,
                     ),
-                    openrouter_model,
-                ),
-                (
-                    "openrouter-secondary",
-                    OpenAIProvider(
-                        api_key=openrouter_api_key,
-                        logger=logger,
-                        timeout=api_timeout,
-                        base_url=openrouter_base_url,
-                    ),
-                    openrouter_model_2,
-                ),
+                    models_list[0],
+                )
             ]
+            for idx, m in enumerate(models_list[1:], start=2):
+                slots.append(
+                    (
+                        f"openrouter-fallback-{idx}",
+                        OpenAIProvider(
+                            api_key=openrouter_api_key,
+                            logger=logger,
+                            timeout=api_timeout,
+                            base_url=openrouter_base_url,
+                        ),
+                        m,
+                    )
+                )
             return ProviderCascade(slots, logger)
+
         return OpenAIProvider(
             api_key=openrouter_api_key,
             logger=logger,

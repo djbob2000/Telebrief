@@ -378,6 +378,7 @@ class DigestGrouper:
             openrouter_base_url=config.openrouter_base_url,
             openrouter_model=config.openrouter_model,
             openrouter_model_2=getattr(config, "openrouter_model_2", ""),
+            openrouter_models=getattr(config, "openrouter_models", None),
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=grouper_timeout,
             reasoning_effort=config.settings.reasoning_effort,

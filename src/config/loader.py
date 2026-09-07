@@ -65,10 +65,19 @@ def _load_and_validate_env_vars(
 
     openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "")
     openrouter_base_url = os.getenv("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1"
-    openrouter_model = os.getenv("OPENROUTER_MODEL") or (
+    raw_openrouter_model = os.getenv("OPENROUTER_MODEL") or (
         ai_model if ai_provider == "openrouter" and ai_model else "openrouter/free"
     )
-    openrouter_model_2 = os.getenv("OPENROUTER_MODEL_2", "")
+    openrouter_models: list[str] = []
+    for part in (raw_openrouter_model or "").split(","):
+        part_clean = part.strip()
+        if part_clean and part_clean not in openrouter_models:
+            openrouter_models.append(part_clean)
+    openrouter_model_2 = os.getenv("OPENROUTER_MODEL_2", "").strip()
+    if openrouter_model_2 and openrouter_model_2 not in openrouter_models:
+        openrouter_models.append(openrouter_model_2)
+
+    openrouter_model = openrouter_models[0] if openrouter_models else "openrouter/free"
     openrouter_image_model = (
         os.getenv("OPENROUTER_IMAGE_MODEL") or "google/gemini-3.1-flash-lite-image"
     )
@@ -128,6 +137,7 @@ def _load_and_validate_env_vars(
         "openrouter_base_url": openrouter_base_url,
         "openrouter_model": openrouter_model,
         "openrouter_model_2": openrouter_model_2,
+        "openrouter_models": openrouter_models,
         "openrouter_image_model": openrouter_image_model,
         "log_level": log_level,
     }

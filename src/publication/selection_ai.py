@@ -104,6 +104,7 @@ class AIPublicationSelectionModel:
                         getattr(self.config.settings, "openrouter_model", "openrouter/free"),
                     ),
                     openrouter_model_2=getattr(self.config, "openrouter_model_2", ""),
+                    openrouter_models=getattr(self.config, "openrouter_models", None),
                     ollama_base_url=self.config.settings.ollama_base_url,
                     api_timeout=self.config.settings.api_timeout,
                     reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),

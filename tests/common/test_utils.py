@@ -256,7 +256,7 @@ def test_robust_extract_json_preamble_and_postscript():
     )
     assert robust_extract_json(raw) == {"results": [{"story_id": 42, "scope": "LOCAL"}]}
 
-    raw_unfenced = "Конечно, вот результат:\n" '{"status": "ok", "count": 5}\n' "Всего доброго!"
+    raw_unfenced = 'Конечно, вот результат:\n{"status": "ok", "count": 5}\nВсего доброго!'
     assert robust_extract_json(raw_unfenced) == {"status": "ok", "count": 5}
 
 

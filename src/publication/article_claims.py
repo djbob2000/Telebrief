@@ -413,12 +413,12 @@ def normalize_support_text(text: str) -> str:
     # Normalize '3к' / '3k' -> '3к 3000' and '3 тыс' -> '3 тыс 3000'
     t = re.sub(
         r"(\d+)\s*[кk](?=[^\w]|$)",
-        lambda m: f"{m.group(0)} {int(m.group(1))*1000}",
+        lambda m: f"{m.group(0)} {int(m.group(1)) * 1000}",
         t,
     )
     t = re.sub(
         r"(\d+)\s*(?:тыс(?:яч[а-я]*)?|тис(?:яч[а-я]*)?)\.?",
-        lambda m: f"{m.group(0)} {int(m.group(1))*1000}",
+        lambda m: f"{m.group(0)} {int(m.group(1)) * 1000}",
         t,
     )
 
