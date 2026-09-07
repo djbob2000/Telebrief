@@ -74,6 +74,80 @@ class PublicationSnapshotService:
                 metadata=metadata,
             )
 
+    async def drain_authority_gap(
+        self,
+        *,
+        run_id: int | None = None,
+        edition_id: int | None = None,
+        snapshot_at: dt.datetime | None = None,
+        eligibility_policy_id: int | None = None,
+        max_rounds: int = 3,
+    ) -> int:
+        """Coalesce and triage dirty in-window stories if an authority gap exists."""
+        if run_id is not None:
+            async with self.uow.transaction() as conn:
+                run = await self.repo.lock_run(conn, run_id)
+                if run is None:
+                    raise ValueError(f"publication run {run_id} not found")
+                edition_id = run.edition_id
+                snapshot_at = run.snapshot_at
+                eligibility_policy_id = run.eligibility_policy_id
+
+        if eligibility_policy_id is None or edition_id is None or snapshot_at is None:
+            return 0
+
+        async with self.uow.transaction() as conn:
+            gap_story_ids = await self.repo.find_authority_gap_story_ids(
+                conn,
+                edition_id=edition_id,
+                snapshot_at=snapshot_at,
+                eligibility_policy_id=eligibility_policy_id,
+            )
+        if not gap_story_ids:
+            return 0
+
+        logger.info(
+            "Authority gap of %d stories detected before sealing (edition=%s, run=%s); coalescing dirty stories",
+            len(gap_story_ids),
+            edition_id,
+            run_id,
+        )
+
+        from src.jobs.event_processing import coalesce_dirty_stories_task
+
+        rounds = 0
+        while gap_story_ids and rounds < max_rounds:
+            rounds += 1
+            async with self.uow.transaction() as conn:
+                await conn.execute(
+                    """
+                    UPDATE story_cluster_state
+                    SET analysis_dirty = TRUE
+                    WHERE story_id = ANY(%s)
+                    """,
+                    (gap_story_ids,),
+                )
+            await coalesce_dirty_stories_task.func(edition_id=edition_id, force_settled=True)
+
+            async with self.uow.transaction() as conn:
+                gap_story_ids = await self.repo.find_authority_gap_story_ids(
+                    conn,
+                    edition_id=edition_id,
+                    snapshot_at=snapshot_at,
+                    eligibility_policy_id=eligibility_policy_id,
+                )
+
+        remaining_gap = len(gap_story_ids)
+        if remaining_gap == 0:
+            logger.info("Authority gap successfully drained in %d rounds", rounds)
+        else:
+            logger.warning(
+                "Authority gap partially drained after %d rounds; %d stories remaining",
+                rounds,
+                remaining_gap,
+            )
+        return remaining_gap
+
     async def seal_candidates(
         self,
         run_id: int,

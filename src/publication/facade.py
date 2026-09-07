@@ -134,26 +134,10 @@ async def request_publication(
         config=config,
         lookback_hours_override=lookback_hours,
     )
-    # Ensure any active in-window dirty stories are coalesced/triaged before sealing
     try:
-        async with runtime.uow.transaction() as conn:
-            gap_count = await service.repo.count_authority_gap(
-                conn,
-                edition_id=edition.id,
-                snapshot_at=snap,
-                eligibility_policy_id=run.eligibility_policy_id,
-            )
-        if gap_count > 0:
-            logger.info(
-                "Authority gap of %d stories detected before sealing run %s; coalescing dirty stories",
-                gap_count,
-                run.id,
-            )
-            from src.jobs.event_processing import coalesce_dirty_stories_task
-
-            await coalesce_dirty_stories_task.func(edition_id=edition.id, force_settled=True)
+        await service.drain_authority_gap(run_id=run.id)
     except Exception as exc:
-        logger.warning("Pre-seal authority gap check/coalesce encountered issue: %s", exc)
+        logger.warning("Pre-seal authority gap drain encountered issue: %s", exc)
 
     # Seal and defer share one transaction: a failed defer rolls the sealing
     # back instead of stranding the run in candidates_sealed forever.
@@ -231,6 +215,11 @@ async def build_publication_preview(
         lookback_hours_override=lookback_hours,
         metadata={"preview": True},
     )
+
+    try:
+        await service.drain_authority_gap(run_id=run.id)
+    except Exception as exc:
+        logger.warning("Pre-seal authority gap drain encountered issue: %s", exc)
 
     async with runtime.uow.transaction() as conn:
         await service.seal_candidates(run.id, conn=conn)

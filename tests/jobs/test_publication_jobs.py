@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import psycopg
 import pytest
@@ -17,12 +17,11 @@ from src.publication.snapshot import PublicationSnapshotService
 
 _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
 
-pytestmark = pytest.mark.skipif(
+
+@pytest.mark.skipif(
     "TELEBRIEF_TEST_DATABASE_URL" not in os.environ,
     reason="TELEBRIEF_TEST_DATABASE_URL is not set",
 )
-
-
 @pytest.mark.postgres
 async def test_select_stories_job_runs_with_fail_open_selection(
     conn: psycopg.AsyncConnection, pool, edition
@@ -128,3 +127,88 @@ async def test_generate_publication_job_still_raises_infrastructure_failure(monk
 
     with pytest.raises(ConnectionError):
         await generate_publication({}, run_id=42)
+
+
+@pytest.mark.asyncio
+async def test_drain_authority_gap_loops_and_drains():
+    mock_uow = MagicMock()
+    mock_conn = AsyncMock()
+    mock_uow.transaction.return_value.__aenter__.return_value = mock_conn
+    mock_repo = AsyncMock()
+
+    # Story 101 in gap initially, drained after round 1
+    mock_repo.find_authority_gap_story_ids = AsyncMock(side_effect=[[101], []])
+
+    service = PublicationSnapshotService(uow=mock_uow, repo=mock_repo)
+
+    coalesce_mock = AsyncMock()
+    with patch("src.jobs.event_processing.coalesce_dirty_stories_task.func", coalesce_mock):
+        remaining = await service.drain_authority_gap(
+            edition_id=1,
+            snapshot_at=dt.datetime.now(dt.timezone.utc),
+            eligibility_policy_id=5,
+        )
+
+    assert remaining == 0
+    assert coalesce_mock.await_count == 1
+    coalesce_mock.assert_awaited_with(edition_id=1, force_settled=True)
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_publication_drains_authority_gap(monkeypatch):
+    from types import SimpleNamespace
+
+    from src import runtime
+    from src.jobs.publication import create_scheduled_publication
+
+    mock_uow = MagicMock()
+    mock_conn = AsyncMock()
+    mock_uow.transaction.return_value.__aenter__.return_value = mock_conn
+    runtime._runtime = SimpleNamespace(uow=mock_uow)
+
+    mock_edition = SimpleNamespace(id=1, slug="berdyansk")
+    mock_run = SimpleNamespace(
+        id=10,
+        edition_id=1,
+        eligibility_policy_id=5,
+        snapshot_at=dt.datetime(2026, 9, 7, 6, 0, tzinfo=dt.timezone.utc),
+    )
+
+    drain_called = []
+    seal_called = []
+
+    async def fake_drain(*args, **kwargs):
+        drain_called.append(kwargs)
+        return 0
+
+    async def fake_seal(run_id, conn=None):
+        seal_called.append(run_id)
+
+    mock_service = AsyncMock()
+    mock_service.create_run.return_value = mock_run
+    mock_service.drain_authority_gap.side_effect = fake_drain
+    mock_service.seal_candidates.side_effect = fake_seal
+
+    monkeypatch.setattr(
+        "src.repositories.editions.EditionRepository.get_by_slug",
+        AsyncMock(return_value=mock_edition),
+    )
+    monkeypatch.setattr(
+        "src.publication.snapshot.PublicationSnapshotService",
+        lambda uow: mock_service,
+    )
+    monkeypatch.setattr(
+        "src.jobs.publication.select_stories_for_publication.configure",
+        lambda connection: SimpleNamespace(defer_async=AsyncMock()),
+    )
+
+    await create_scheduled_publication(
+        {},
+        edition_slug="berdyansk",
+        publication_type="digest_grouped",
+        snapshot_at="2026-09-07T06:00:00+00:00",
+    )
+
+    assert len(drain_called) == 1
+    assert drain_called[0]["run_id"] == 10
+    assert seal_called == [10]

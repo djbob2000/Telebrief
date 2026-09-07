@@ -132,6 +132,8 @@ async def create_scheduled_publication(
         request_key=req_key,
         config=config,
     )
+    await service.drain_authority_gap(run_id=run.id)
+
     # Seal and defer share one transaction so a failed deferral rolls the
     # sealing back instead of stranding the run in candidates_sealed.
     async with runtime.uow.transaction() as conn:
