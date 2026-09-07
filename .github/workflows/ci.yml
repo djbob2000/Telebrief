@@ -58,6 +58,16 @@ jobs:
     env:
       DATABASE_URL: postgresql://telebrief:password@localhost:5432/telebrief_test
       TELEBRIEF_TEST_DATABASE_URL: postgresql://telebrief:password@localhost:5432/telebrief_test
+      OPENROUTER_API_KEY: sk-or-test-key
+      OPENROUTER_MODEL: minimax/minimax-m3:free:floor
+      OPENROUTER_MODEL_2: minimax/minimax-m2.7:free:floor
+      OPENAI_API_KEY: sk-test-key
+      OPENAI_MODEL: gpt-5-nano
+      GEMINI_API_KEY: test-gemini-key
+      ANTHROPIC_API_KEY: test-anthropic-key
+      TELEGRAM_API_ID: "12345678"
+      TELEGRAM_API_HASH: test_hash
+      TELEGRAM_BOT_TOKEN: 123456789:ABC-DEF
 
     steps:
     - name: Checkout code

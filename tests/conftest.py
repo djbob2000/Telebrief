@@ -13,8 +13,12 @@ DEFAULT_TEST_ENV = {
     "TELEGRAM_API_HASH": "test_hash",
     "TELEGRAM_BOT_TOKEN": "123456789:ABC-DEF",
     "OPENAI_API_KEY": "sk-test-key",
+    "OPENAI_MODEL": "gpt-5-nano",
     "GEMINI_API_KEY": "test-gemini-key",
     "ANTHROPIC_API_KEY": "test-anthropic-key",
+    "OPENROUTER_API_KEY": "sk-or-test-key",
+    "OPENROUTER_MODEL": "minimax/minimax-m3:free:floor",
+    "OPENROUTER_MODEL_2": "minimax/minimax-m2.7:free:floor",
     "LOG_LEVEL": "INFO",
 }
 
@@ -139,6 +143,9 @@ def mock_env_vars(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
     monkeypatch.setenv("GOOGLE_API_KEY", "test-google-key")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-anthropic-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key")
+    monkeypatch.setenv("OPENROUTER_MODEL", "minimax/minimax-m3:free:floor")
+    monkeypatch.setenv("OPENROUTER_MODEL_2", "minimax/minimax-m2.7:free:floor")
     monkeypatch.setenv("LOG_LEVEL", "INFO")
 
 

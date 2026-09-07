@@ -126,12 +126,11 @@ async def run_gate_v10_backfill(
             )
             logger.info("Coalesce round %d stats: %s", rounds, coalesce_stats)
 
-            now_snapshot = dt.datetime.now(dt.timezone.utc)
             async with infra.uow.transaction() as conn:
                 gap_story_ids = await repo.find_authority_gap_story_ids(
                     conn,
                     edition_id=edition_id,
-                    snapshot_at=now_snapshot,
+                    snapshot_at=snapshot_at,
                     eligibility_policy_id=policy_id,
                 )
 
@@ -155,7 +154,7 @@ async def run_gate_v10_backfill(
             final_gap = await repo.count_authority_gap(
                 conn,
                 edition_id=edition_id,
-                snapshot_at=dt.datetime.now(dt.timezone.utc),
+                snapshot_at=snapshot_at,
                 eligibility_policy_id=policy_id,
             )
 

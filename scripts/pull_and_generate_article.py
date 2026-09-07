@@ -25,7 +25,6 @@ from src.publication.snapshot import PublicationSnapshotService
 from src.repositories.editions import EditionRepository
 from src.repositories.sources import SourceRepository
 from src.runtime import install_runtime
-
 from src.utils import setup_logging
 
 setup_logging("INFO")
