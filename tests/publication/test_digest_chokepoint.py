@@ -146,3 +146,39 @@ def test_filter_balances_topics_and_prevents_single_topic_monopoly():
     # Security MUST be present
     sec_results = [c for c in filtered if "взрыв" in (c.topic + c.summary).lower()]
     assert len(sec_results) >= 2
+
+
+def test_filter_drops_commercial_intercity_bus_and_booking_sites():
+    bus_card = StoryCard(
+        id="story_bus",
+        topic="Бердянск — Ростов: 4 рейса в день",
+        summary="По маршруту ежедневно выполняется 4 автобусных рейса, перевозчик забирает пассажиров по городским остановкам. Запись ведётся через ресурс BUSKING.PRO.",
+        importance="medium",
+        rubric_id="transport",
+    )
+    filtered = filter_digest_candidate_cards([bus_card])
+    assert len(filtered) == 0
+
+
+def test_filter_drops_grey_market_banking_services():
+    bank_card = StoryCard(
+        id="story_bank",
+        topic="Восстановление доступа к онлайн-банкингу",
+        summary="В Бердянске доступны услуги по восстановлению доступа к личным кабинетам ПриватБанка, А-Банка, Sense Bank.",
+        importance="medium",
+        rubric_id="civic_services",
+    )
+    filtered = filter_digest_candidate_cards([bank_card])
+    assert len(filtered) == 0
+
+
+def test_filter_drops_sports_section_recruitments():
+    football_card = StoryCard(
+        id="story_football",
+        topic="Набор детей на футбол в спортшколу им. Назарова",
+        summary="Бесплатные тренировки для мальчиков 2017–2018 г.р. и девочек 2016–2017 г.р. Ведется набор в секцию.",
+        importance="medium",
+        rubric_id="other",
+    )
+    filtered = filter_digest_candidate_cards([football_card])
+    assert len(filtered) == 0

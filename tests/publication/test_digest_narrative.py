@@ -2095,3 +2095,28 @@ def test_digest_prompt_template_has_no_hardcoded_news_examples():
     # Ensure anti-hallucination and topic synthesis rules are present
     assert "КАТЕГОРИЧЕСКИЙ ЗАПРЕТ НА ВЫДУМЫВАНИЕ И КОПИРОВАНИЕ ШАБЛОНА" in DIGEST_PROMPT_TEMPLATE
     assert "ОБЪЕДИНЕНИЕ СООБЩЕНИЙ ПО ОДНОЙ ТЕМЕ" in DIGEST_PROMPT_TEMPLATE
+
+
+def test_sanitize_digest_terminology():
+    from src.publication.digest_narrative import sanitize_digest_terminology
+
+    text = (
+        "По данным оккупационной администрации, газ подадут завтра. "
+        "Оккупационные власти подтвердили проведение восстановительных работ. "
+        "Жители обратились к оккупантам с просьбой о помощи."
+    )
+    sanitized = sanitize_digest_terminology(text)
+    assert "оккупационн" not in sanitized.lower()
+    assert "оккупант" not in sanitized.lower()
+    assert "По данным городской администрации" in sanitized
+    assert "Городские власти подтвердили" in sanitized or "Местные власти подтвердили" in sanitized
+    assert "к местным властям" in sanitized or "к представителям администрации" in sanitized
+
+
+def test_digest_prompt_template_has_neutrality_and_advice_rules():
+    from src.publication.digest_narrative import DIGEST_PROMPT_TEMPLATE
+
+    assert "НЕЙТРАЛЬНАЯ ТЕРМИНОЛОГИЯ" in DIGEST_PROMPT_TEMPLATE
+    assert "оккупанты" in DIGEST_PROMPT_TEMPLATE.lower()
+    assert "городская администрация" in DIGEST_PROMPT_TEMPLATE.lower()
+    assert "СОДЕРЖАТЕЛЬНОСТЬ" in DIGEST_PROMPT_TEMPLATE

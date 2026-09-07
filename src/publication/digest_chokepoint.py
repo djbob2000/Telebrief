@@ -17,13 +17,35 @@ _AD_AND_SPAM_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:Киев|Польш|Грузи|Батуми|Тбилиси|Ереван).{0,50}(?:пассажирские|перевозк|бронир|выезд)",
         re.IGNORECASE,
     ),
-    # Private grey market / banking services / card unlock / pension brokers
+    # Commercial intercity passenger transport / booking portals / carrier ads
     re.compile(
-        r"(?:разблокировк|актуализаци|верификаци).{0,40}(?:карт|счетов|пенси|пф|приват|сбер|личных\s+кабинетов)",
+        r"(?:рейс[ыа]|поездк[иа]|перевозк[иа]|пассажирские|маршрут|трансфер|выезд).{0,60}"
+        r"(?:ростов|москв|крым|краснодар|таганрог|симферополь|донецк|мариуполь).{0,60}"
+        r"(?:заказ|бронир|билет|забор\s+по|ежедневно\s+выполняется|\.pro|\.ru|\.com|busking)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:busking|busking\.pro|забор\s+пассажиров\s+по\s+городским\s+остановкам|запись\s+вед[её]тся\s+через\s+(?:ресурс|сайт))",
+        re.IGNORECASE,
+    ),
+    # Private grey market / banking services / card unlock / account recovery
+    re.compile(
+        r"(?:разблокировк|актуализаци|верификаци|восстановлени[ея]\s+доступа).{0,40}"
+        r"(?:карт|счетов|пенси|пф|приват|сбер|личных\s+кабинетов|онлайн-банкинг|а-банк|сенс|sense|райффайзен|укргазбанк)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:услуги\s+по\s+восстановлению\s+доступа|помощь\s+с\s+(?:онлайн-)?банкинг|доступ[ае]\s+к\s+личным\s+кабинетам)",
         re.IGNORECASE,
     ),
     re.compile(
         r"(?:оформление|помощь).{0,30}(?:ецп|эцп|пенсий|карт).{0,40}(?:@|\+7|тел)",
+        re.IGNORECASE,
+    ),
+    # Sports clubs, sections, circles recruitment and school enrollments
+    re.compile(
+        r"(?:набор\s+детей|набор\s+в\s+(?:секцию|группу|спортшкол|дюсш|кружок)|вед[её]тся\s+набор|"
+        r"тренировк[иа]\s+для\s+(?:мальчиков|девочек)|бесплатные\s+тренировки|спортшкол\w+\s+им(?:\.|\s+)назарова)",
         re.IGNORECASE,
     ),
     # Telegram handles and phone numbers soliciting business
