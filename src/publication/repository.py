@@ -270,7 +270,11 @@ def _candidate_universe_sql() -> str:
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                 ),
                 (
-                    SELECT scst.fragment_count
+                    SELECT CASE
+                        WHEN scst.last_seen_at >= %(window_start)s AND scst.last_seen_at <= %(snapshot_at)s
+                        THEN scst.fragment_count
+                        ELSE 0
+                    END
                     FROM story_cluster_state scst
                     WHERE scst.story_id = lr.story_id
                 ),
@@ -334,6 +338,19 @@ def _candidate_universe_sql() -> str:
                 FROM (
                     SELECT lr.revision_created_at AS event_time
                     WHERE cardinality(%(excluded_platforms)s::text[]) = 0
+                      AND lr.reason NOT IN (
+                          'event_gate_v2_brief',
+                          'event_analysis_v6',
+                          'event_gate_v2_brief_merge',
+                          'reanalysis',
+                          'backfill'
+                      )
+                      AND lr.reason NOT LIKE 'event_%%'
+                    UNION ALL
+                    SELECT scst.last_seen_at AS event_time
+                    FROM story_cluster_state scst
+                    WHERE scst.story_id = lr.story_id
+                      AND scst.last_seen_at <= %(snapshot_at)s
                     UNION ALL
                     SELECT MAX(sc.attached_at) AS event_time
                     FROM story_claims sc
@@ -360,8 +377,23 @@ def _candidate_universe_sql() -> str:
                     WHERE sr2.story_id = lr.story_id
                       AND sr2.created_at >= %(window_start)s
                       AND sr2.created_at <= %(snapshot_at)s
+                      AND sr2.reason NOT IN (
+                          'event_gate_v2_brief',
+                          'event_analysis_v6',
+                          'event_gate_v2_brief_merge',
+                          'reanalysis',
+                          'backfill'
+                      )
+                      AND sr2.reason NOT LIKE 'event_%%'
                 )
             ) AS has_recent_revision,
+            EXISTS (
+                SELECT 1
+                FROM story_cluster_state scst2
+                WHERE scst2.story_id = lr.story_id
+                  AND scst2.last_seen_at >= %(window_start)s
+                  AND scst2.last_seen_at <= %(snapshot_at)s
+            ) AS has_recent_fragment,
             EXISTS (
                 SELECT 1
                 FROM story_claims sc2
@@ -400,7 +432,13 @@ def _candidate_universe_sql() -> str:
         SELECT *
         FROM story_activity
         WHERE (claim_count > 0 OR knowledge_source = 'event_first')
-          AND (has_recent_revision OR has_recent_claim OR has_recent_event OR story_created_at >= %(window_start)s)
+          AND (
+              has_recent_fragment
+              OR has_recent_revision
+              OR has_recent_claim
+              OR has_recent_event
+              OR (story_created_at >= %(window_start)s AND story_created_at <= %(snapshot_at)s)
+          )
           AND (
               event_payload IS NULL
               OR event_payload->>'publishability' IS NULL
@@ -641,6 +679,7 @@ class PublicationRepository:
             last_activity_at,
             story_created_at,
             has_recent_revision,
+            has_recent_fragment,
             has_recent_claim,
             has_recent_event,
             newest_source_published_at,
@@ -752,10 +791,13 @@ class PublicationRepository:
             last_activity_at = r[9]
             story_created_at = r[10]
             has_recent_revision = r[11]
-            has_recent_claim = r[12]
-            has_recent_event = r[13]
-            newest_source_published_at = r[14]
-            newest_source_temporal_fidelity = r[15]
+            has_recent_fragment = r[12]
+            has_recent_claim = r[13]
+            has_recent_event = r[14]
+            newest_source_published_at = r[15]
+            newest_source_temporal_fidelity = r[16]
+            knowledge_source = r[17]
+            event_payload = r[18]
 
             source_age_hours = (
                 round((snapshot_at - newest_source_published_at).total_seconds() / 3600.0, 1)
@@ -768,7 +810,7 @@ class PublicationRepository:
 
             if story_created_at >= window_start:
                 activity_type = "new_story"
-            elif new_claims_count > 0 or has_recent_claim:
+            elif new_claims_count > 0 or has_recent_claim or has_recent_fragment:
                 activity_type = "new_claims"
             elif has_recent_revision:
                 activity_type = "revised"
@@ -790,8 +832,8 @@ class PublicationRepository:
                     "new_claims_count": new_claims_count,
                     "last_activity_at": last_activity_at,
                     "activity_type": activity_type,
-                    "knowledge_source": r[16],
-                    "event_payload": r[17],
+                    "knowledge_source": knowledge_source,
+                    "event_payload": event_payload,
                     "snapshot_features": {
                         "claim_count": claim_count,
                         "source_count": source_count,
@@ -801,7 +843,7 @@ class PublicationRepository:
                         ),
                         "activity_type": activity_type,
                         "semantic_text": semantic_text,
-                        "knowledge_source": r[16],
+                        "knowledge_source": knowledge_source,
                         "source_published_at": (
                             newest_source_published_at.isoformat()
                             if newest_source_published_at

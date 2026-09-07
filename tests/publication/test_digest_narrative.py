@@ -19,6 +19,8 @@ from src.publication.narrative_contract import (
     build_digest_narrative_contract,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def test_narrative_contracts_epistemic_fidelity():
     assert DIGEST_NARRATIVE_PROMPT_VERSION == "event-digest-narrative-v5"
@@ -2079,3 +2081,17 @@ async def test_generate_journalistic_digest_strips_dividers_and_rubric_asterisks
     assert "⚡ Коммунальная обстановка" in clean_text
     assert "💥 Безопасность и чрезвычайные ситуации" in clean_text
     assert clean_text.startswith("⚡ Коммунальная обстановка")
+
+
+def test_digest_prompt_template_has_no_hardcoded_news_examples():
+    from src.publication.digest_narrative import DIGEST_PROMPT_TEMPLATE
+
+    # Ensure no hardcoded news items that LLM could copy
+    assert "Ремонт магистральных интернет-сетей" not in DIGEST_PROMPT_TEMPLATE
+    assert "Провайдер приступил к утренним восстановительным работам" not in DIGEST_PROMPT_TEMPLATE
+    assert "АКЗ, РТС, Слободка, Центр, Колония, 8 Марта" not in DIGEST_PROMPT_TEMPLATE
+    assert "ул. Шаумяна" not in DIGEST_PROMPT_TEMPLATE
+
+    # Ensure anti-hallucination and topic synthesis rules are present
+    assert "КАТЕГОРИЧЕСКИЙ ЗАПРЕТ НА ВЫДУМЫВАНИЕ И КОПИРОВАНИЕ ШАБЛОНА" in DIGEST_PROMPT_TEMPLATE
+    assert "ОБЪЕДИНЕНИЕ СООБЩЕНИЙ ПО ОДНОЙ ТЕМЕ" in DIGEST_PROMPT_TEMPLATE

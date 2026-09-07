@@ -72,3 +72,77 @@ def test_filter_drops_dining_hall_chili():
     )
     filtered = filter_digest_candidate_cards([canteen_card])
     assert len(filtered) == 0
+
+
+def test_filter_balances_topics_and_prevents_single_topic_monopoly():
+    # 15 high-urgency gas cards
+    gas_cards = [
+        StoryCard(
+            id=f"gas_{i}",
+            topic=f"Запах газа в районе {i}",
+            summary=f"Жители района {i} жалуются на сильный запах газа на улице и в домах.",
+            importance="high",
+            rubric_id="utilities",
+        )
+        for i in range(15)
+    ]
+    # 3 medium-urgency electricity cards
+    electricity_cards = [
+        StoryCard(
+            id=f"power_{i}",
+            topic=f"Отключение света {i}",
+            summary=f"В Бердянске больше месяца нет электричества на улице {i}, жители питаются от генераторов.",
+            importance="medium",
+            rubric_id="utilities",
+        )
+        for i in range(3)
+    ]
+    # 2 medium-urgency water cards
+    water_cards = [
+        StoryCard(
+            id=f"water_{i}",
+            topic=f"Подача воды {i}",
+            summary=f"Водоснабжение на Шаумяна {i} работает по часам, вечером давления нет.",
+            importance="medium",
+            rubric_id="utilities",
+        )
+        for i in range(2)
+    ]
+    # 2 high-urgency security cards
+    security_cards = [
+        StoryCard(
+            id=f"security_{i}",
+            topic=f"Взрывы в городе {i}",
+            summary=f"Жители сообщают о серии громких взрывов и работе ПВО в небе {i}.",
+            importance="high",
+            rubric_id="security",
+        )
+        for i in range(2)
+    ]
+
+    all_cards = gas_cards + electricity_cards + water_cards + security_cards
+    filtered = filter_digest_candidate_cards(all_cards, max_cards=12, max_per_topic=3)
+
+    # Total must not exceed max_cards
+    assert len(filtered) <= 12
+
+    # Gas must be capped so it does not crowd out other critical topics
+    gas_results = [c for c in filtered if "газ" in (c.topic + c.summary).lower()]
+    assert len(gas_results) <= 3
+
+    # Electricity MUST be present despite being "medium" importance
+    power_results = [
+        c
+        for c in filtered
+        if "электричеств" in (c.topic + c.summary).lower()
+        or "свет" in (c.topic + c.summary).lower()
+    ]
+    assert len(power_results) >= 2
+
+    # Water MUST be present
+    water_results = [c for c in filtered if "вод" in (c.topic + c.summary).lower()]
+    assert len(water_results) >= 1
+
+    # Security MUST be present
+    sec_results = [c for c in filtered if "взрыв" in (c.topic + c.summary).lower()]
+    assert len(sec_results) >= 2
