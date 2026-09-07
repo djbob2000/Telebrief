@@ -459,3 +459,204 @@ async def test_telegram_channel_adapter_splits_long_messages():
     assert result["status"] == "sent"
     assert result["external_message_id"] == "101,102"
     assert mock_bot.send_message.call_count == 2
+
+
+@pytest.mark.unit
+def test_render_payload_for_article_with_photo_and_telegraph_button(tmp_path):
+    from types import SimpleNamespace
+
+    from src.publication.delivery import _render_payload
+
+    dummy_photo = tmp_path / "cover.jpg"
+    dummy_photo.write_bytes(b"image_bytes")
+
+    pub = SimpleNamespace(
+        publication_type="daily_article",
+        title="Заголовок статьи",
+        lead="Вводный лид статьи",
+        body="## Раздел\n\nПолный текст...",
+        metadata={
+            "telegraph_url": "https://telegra.ph/article-1",
+            "photo_path": str(dummy_photo),
+        },
+    )
+
+    fmt_tg, content_tg = _render_payload("telegram_channel", pub)
+    assert fmt_tg == "telegram_photo_post"
+    assert "📰 *Заголовок статьи*" in content_tg["text"]
+    assert "Вводный лид статьи" in content_tg["text"]
+    assert content_tg["photo_path"] == str(dummy_photo)
+    assert content_tg["inline_button"]["url"] == "https://telegra.ph/article-1"
+    assert content_tg["inline_button"]["text"] == "⚡️ Читать статью полностью"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_telegram_channel_adapter_sends_photo_post_with_inline_button(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.publication.adapters import TelegramChannelDestinationClient
+    from src.publication.models import DeliveryDestination, PublicationDeliveryPayload
+
+    dummy_photo = tmp_path / "test.jpg"
+    dummy_photo.write_bytes(b"fake_jpeg")
+
+    client = TelegramChannelDestinationClient(bot_token="test-token")
+    mock_bot = MagicMock()
+    sent_photo_msg = MagicMock()
+    sent_photo_msg.message_id = 777
+    mock_bot.send_photo = AsyncMock(return_value=sent_photo_msg)
+    client._bot = mock_bot
+
+    dest = DeliveryDestination(
+        id=1,
+        edition_id=1,
+        platform="telegram_channel",
+        destination_key="@test_chat",
+        config={},
+        is_active=True,
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+    payload = PublicationDeliveryPayload(
+        id=1,
+        publication_id=1,
+        destination_id=1,
+        payload_format="telegram_photo_post",
+        rendered_content={
+            "text": "📰 *Заголовок*\n\nЛид",
+            "photo_path": str(dummy_photo),
+            "parse_mode": "Markdown",
+            "inline_button": {
+                "text": "⚡️ Читать статью полностью",
+                "url": "https://telegra.ph/page-1",
+            },
+        },
+        content_hash="hash",
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+    result = await client.send_payload(destination=dest, payload=payload)
+    assert result["status"] == "sent"
+    assert result["external_message_id"] == "777"
+    assert mock_bot.send_photo.call_count == 1
+    call_kwargs = mock_bot.send_photo.call_args.kwargs
+    assert call_kwargs["caption"] == "📰 *Заголовок*\n\nЛид"
+    assert call_kwargs["reply_markup"] is not None
+    # Verify button in markup
+    btn = call_kwargs["reply_markup"].inline_keyboard[0][0]
+    assert btn.text == "⚡️ Читать статью полностью"
+    assert btn.url == "https://telegra.ph/page-1"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_telegram_channel_adapter_photo_entity_parse_error_fallback(tmp_path):
+    from unittest.mock import AsyncMock, MagicMock
+
+    from telegram.error import TelegramError
+
+    from src.publication.adapters import TelegramChannelDestinationClient
+    from src.publication.models import DeliveryDestination, PublicationDeliveryPayload
+
+    dummy_photo = tmp_path / "test.jpg"
+    dummy_photo.write_bytes(b"fake_jpeg")
+
+    client = TelegramChannelDestinationClient(bot_token="test-token")
+    mock_bot = MagicMock()
+    sent_photo_msg = MagicMock()
+    sent_photo_msg.message_id = 888
+    # First send_photo raises parse entities; second call succeeds with parse_mode=None
+    mock_bot.send_photo = AsyncMock(
+        side_effect=[
+            TelegramError("Can't parse entities: can't find end tag"),
+            sent_photo_msg,
+        ]
+    )
+    client._bot = mock_bot
+
+    dest = DeliveryDestination(
+        id=1,
+        edition_id=1,
+        platform="telegram_channel",
+        destination_key="@test_chat",
+        config={},
+        is_active=True,
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+    payload = PublicationDeliveryPayload(
+        id=1,
+        publication_id=1,
+        destination_id=1,
+        payload_format="telegram_photo_post",
+        rendered_content={
+            "text": "📰 *Плохой маркдаун",
+            "photo_path": str(dummy_photo),
+            "parse_mode": "Markdown",
+            "inline_button": {
+                "text": "⚡️ Читать",
+                "url": "https://telegra.ph/page",
+            },
+        },
+        content_hash="hash",
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+    result = await client.send_payload(destination=dest, payload=payload)
+    assert result["status"] == "sent"
+    assert result["external_message_id"] == "888"
+    assert mock_bot.send_photo.call_count == 2
+    assert mock_bot.send_photo.call_args_list[1].kwargs["parse_mode"] is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_telegram_channel_adapter_photo_missing_falls_back_to_text_with_button():
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.publication.adapters import TelegramChannelDestinationClient
+    from src.publication.models import DeliveryDestination, PublicationDeliveryPayload
+
+    client = TelegramChannelDestinationClient(bot_token="test-token")
+    mock_bot = MagicMock()
+    sent_text_msg = MagicMock()
+    sent_text_msg.message_id = 999
+    mock_bot.send_message = AsyncMock(return_value=sent_text_msg)
+    client._bot = mock_bot
+
+    dest = DeliveryDestination(
+        id=1,
+        edition_id=1,
+        platform="telegram_channel",
+        destination_key="@test_chat",
+        config={},
+        is_active=True,
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+    payload = PublicationDeliveryPayload(
+        id=1,
+        publication_id=1,
+        destination_id=1,
+        payload_format="telegram_photo_post",
+        rendered_content={
+            "text": "📰 *Заголовок*\n\nЛид",
+            "photo_path": "/nonexistent/photo.jpg",
+            "parse_mode": "Markdown",
+            "inline_button": {
+                "text": "⚡️ Читать статью полностью",
+                "url": "https://telegra.ph/page-1",
+            },
+        },
+        content_hash="hash",
+        created_at=dt.datetime.now(dt.timezone.utc),
+    )
+
+    result = await client.send_payload(destination=dest, payload=payload)
+    assert result["status"] == "sent"
+    assert result["external_message_id"] == "999"
+    assert mock_bot.send_message.call_count == 1
+    call_kwargs = mock_bot.send_message.call_args.kwargs
+    assert call_kwargs["text"] == "📰 *Заголовок*\n\nЛид"
+    assert call_kwargs["reply_markup"] is not None
+    btn = call_kwargs["reply_markup"].inline_keyboard[0][0]
+    assert btn.text == "⚡️ Читать статью полностью"
+    assert btn.url == "https://telegra.ph/page-1"

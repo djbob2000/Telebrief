@@ -649,6 +649,61 @@ class PublicationGenerationService:
                 title, lead, body = await self.generator.generate_from_frozen_input(
                     frozen, attempt_observer=observer
                 )
+                is_article = run.publication_type in (
+                    "daily_article",
+                    "article",
+                    "weekly_article",
+                    "monthly_article",
+                ) or run.publication_type.endswith("_article")
+                if is_article and self.config is not None:
+                    article_meta: dict[str, Any] = {}
+                    article_cfg = getattr(self.config.settings, "article", None)
+
+                    # 1. Publish to Telegra.ph if not already provided
+                    if not (publication_metadata and publication_metadata.get("telegraph_url")):
+                        try:
+                            from src.telegraph import TelegraphPublisher
+
+                            author_name = (
+                                getattr(article_cfg, "author_name", "@berdiansk_news")
+                                if article_cfg
+                                else "@berdiansk_news"
+                            )
+                            token = (
+                                getattr(article_cfg, "telegraph_access_token", None)
+                                if article_cfg
+                                else None
+                            )
+                            publisher = TelegraphPublisher(access_token=token, logger=logger)
+                            telegraph_url = await publisher.create_page(
+                                title=title,
+                                content_markdown=body,
+                                author_name=author_name,
+                            )
+                            article_meta["telegraph_url"] = telegraph_url
+                            logger.info("Published article to Telegra.ph: %s", telegraph_url)
+                        except Exception as exc:
+                            logger.warning("Failed to publish article to Telegra.ph: %s", exc)
+
+                    # 2. Generate Editorial Cover Photo if not already provided
+                    if not (publication_metadata and publication_metadata.get("photo_path")):
+                        try:
+                            from src.image_generator import NewsImageGenerator
+
+                            img_gen = NewsImageGenerator(self.config, logger)
+                            img_prompt = await img_gen.generate_prompt(
+                                title=title, lead=lead or "", article_text=body
+                            )
+                            photo_path = await img_gen.generate_image(img_prompt)
+                            if photo_path:
+                                article_meta["photo_path"] = str(photo_path)
+                                article_meta["image_prompt"] = img_prompt
+                                logger.info("Generated article cover photo: %s", photo_path)
+                        except Exception as exc:
+                            logger.warning("Failed to generate article cover photo: %s", exc)
+
+                    if article_meta:
+                        publication_metadata = {**(publication_metadata or {}), **article_meta}
         except ArticlePublicationRejected as exc:
             logger.warning(
                 "article publication rejected for run %s: %s (%s)",

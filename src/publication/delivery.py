@@ -52,12 +52,15 @@ def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
 
     pub_type = getattr(pub, "publication_type", "")
     if platform == "telegram_channel":
-        if pub_type in ("weekly_article", "monthly_article"):
+        telegraph_url = ""
+        photo_path = ""
+        if hasattr(pub, "metadata") and isinstance(pub.metadata, dict):
+            telegraph_url = str(pub.metadata.get("telegraph_url", "") or "")
+            photo_path = str(pub.metadata.get("photo_path", "") or "")
+
+        if pub_type in ("weekly_article", "monthly_article") and not photo_path:
             from src.publication.renderers import render_longitudinal_telegram_teaser
 
-            telegraph_url = ""
-            if hasattr(pub, "metadata") and isinstance(pub.metadata, dict):
-                telegraph_url = str(pub.metadata.get("telegraph_url", ""))
             raw_text = render_longitudinal_telegram_teaser(
                 publication_type=pub_type,
                 title=title_text,
@@ -66,6 +69,33 @@ def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
                 telegraph_url=telegraph_url,
             )
             return "telegram_html", {"text": raw_text}
+
+        is_article = pub_type in ("daily_article", "article") or (
+            bool(pub_type) and pub_type.endswith("_article")
+        )
+        if is_article and (photo_path or telegraph_url):
+            title_clean = title_text.strip()
+            lead_clean = lead_text.strip() if lead_text else ""
+            header = f"📰 *{title_clean}*\n\n"
+            max_lead_chars = max(0, 1000 - len(header))
+            if len(lead_clean) > max_lead_chars:
+                trimmed = lead_clean[:max_lead_chars].rsplit(" ", 1)[0]
+                lead_clean = f"{trimmed}..." if trimmed else "..."
+
+            caption = f"{header}{lead_clean}" if lead_clean else f"📰 *{title_clean}*"
+            rendered_data: dict[str, Any] = {
+                "text": caption,
+                "parse_mode": "Markdown",
+            }
+            if photo_path:
+                rendered_data["photo_path"] = photo_path
+            if telegraph_url:
+                rendered_data["inline_button"] = {
+                    "text": "⚡️ Читать статью полностью",
+                    "url": telegraph_url,
+                }
+            payload_fmt = "telegram_photo_post" if photo_path else "telegram_html"
+            return payload_fmt, rendered_data
 
         # Clean up any stray horizontal dividers or rubric markdown markup
         clean_body = re.sub(r"(?m)^[^\S\r\n]*[-*_]{3,}[^\S\r\n]*$", "", body_text)

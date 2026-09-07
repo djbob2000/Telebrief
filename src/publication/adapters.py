@@ -52,26 +52,97 @@ class TelegramChannelDestinationClient(DestinationClient):
         destination: DeliveryDestination,
         payload: PublicationDeliveryPayload,
     ) -> dict[str, Any]:
+        from pathlib import Path
+
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         from telegram.constants import ParseMode
         from telegram.error import TelegramError, TimedOut
 
         from src.utils import split_message
 
-        text = str(payload.rendered_content.get("text", ""))
+        text = str(payload.rendered_content.get("text", "")).strip()
         if not text:
             raise ValueError(f"telegram payload {payload.id} has no text to deliver")
 
-        parts = split_message(text, max_length=4000)
-        sent_ids: list[str] = []
         bot = self._get_bot()
 
-        for part in parts:
+        # Check for inline keyboard button (e.g. Telegraph link)
+        reply_markup = None
+        inline_btn = payload.rendered_content.get("inline_button")
+        if inline_btn and isinstance(inline_btn, dict):
+            btn_text = inline_btn.get("text")
+            btn_url = inline_btn.get("url")
+            if btn_text and btn_url:
+                reply_markup = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton(text=btn_text, url=btn_url)]]
+                )
+
+        parse_mode_str = str(payload.rendered_content.get("parse_mode", "HTML")).upper()
+        parse_mode = ParseMode.MARKDOWN if parse_mode_str == "MARKDOWN" else ParseMode.HTML
+
+        # 1. Check if photo post is requested and photo file exists on disk
+        photo_path_raw = payload.rendered_content.get("photo_path")
+        if photo_path_raw:
+            photo_path = Path(photo_path_raw)
+            if photo_path.exists():
+                try:
+                    with open(photo_path, "rb") as photo_file:
+                        message = await bot.send_photo(
+                            chat_id=destination.destination_key,
+                            photo=photo_file,
+                            caption=text,
+                            parse_mode=parse_mode,
+                            reply_markup=reply_markup,
+                        )
+                    return {
+                        "external_message_id": str(message.message_id),
+                        "status": "sent",
+                    }
+                except (TimedOut, asyncio.TimeoutError) as exc:
+                    raise TimeoutError(f"telegram photo send timed out: {exc}") from exc
+                except TelegramError as exc:
+                    if "Can't parse entities" in str(exc):
+                        logger.warning(
+                            "Entity parse error delivering photo payload %s to %s; retrying with plain text caption",
+                            payload.id,
+                            destination.destination_key,
+                        )
+                        try:
+                            with open(photo_path, "rb") as photo_file:
+                                message = await bot.send_photo(
+                                    chat_id=destination.destination_key,
+                                    photo=photo_file,
+                                    caption=text,
+                                    parse_mode=None,
+                                    reply_markup=reply_markup,
+                                )
+                            return {
+                                "external_message_id": str(message.message_id),
+                                "status": "sent",
+                            }
+                        except (TimedOut, asyncio.TimeoutError) as timeout_exc:
+                            raise TimeoutError(
+                                f"telegram photo send timed out: {timeout_exc}"
+                            ) from timeout_exc
+                    else:
+                        logger.warning(
+                            "Failed to send photo post (%s); falling back to text delivery", exc
+                        )
+
+        # 2. Text message delivery (single part or multi-part split)
+        parts = split_message(text, max_length=4000)
+        sent_ids: list[str] = []
+
+        for i, part in enumerate(parts):
+            is_last = i == len(parts) - 1
+            markup = reply_markup if is_last else None
             try:
                 message = await bot.send_message(
                     chat_id=destination.destination_key,
                     text=part,
-                    parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=False if reply_markup else True,
+                    reply_markup=markup,
                 )
             except (TimedOut, asyncio.TimeoutError) as exc:
                 raise TimeoutError(f"telegram send timed out: {exc}") from exc
@@ -87,7 +158,8 @@ class TelegramChannelDestinationClient(DestinationClient):
                             chat_id=destination.destination_key,
                             text=part,
                             parse_mode=None,
-                            disable_web_page_preview=True,
+                            disable_web_page_preview=False if reply_markup else True,
+                            reply_markup=markup,
                         )
                     except (TimedOut, asyncio.TimeoutError) as timeout_exc:
                         raise TimeoutError(
