@@ -151,7 +151,7 @@ async def test_drain_authority_gap_loops_and_drains():
 
     assert remaining == 0
     assert coalesce_mock.await_count == 1
-    coalesce_mock.assert_awaited_with(edition_id=1, force_settled=True)
+    coalesce_mock.assert_awaited_with(edition_id=1, force_settled=True, story_ids=[101])
 
 
 @pytest.mark.asyncio

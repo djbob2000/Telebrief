@@ -314,10 +314,13 @@ async def coalesce_dirty_stories_task(
 
     for current_edition_id in editions_to_process:
         async with runtime.uow.transaction() as conn:
+            fetch_limit = (
+                max(cfg.live_batch_size, len(story_ids)) if story_ids else cfg.live_batch_size
+            )
             dirty_stories = await cluster_repo.list_dirty_cluster_states(
                 conn,
                 current_edition_id,
-                limit=cfg.live_batch_size,
+                limit=fetch_limit,
                 story_ids=story_ids,
             )
             _slug, scope_config = await resolve_edition_scope(conn, config, current_edition_id)
