@@ -194,9 +194,14 @@ jobs:
             echo "==> Running database migrations..."
             docker compose run --rm telebrief-app python scripts/migrate.py
 
-            # Start all services and clean up obsolete containers
-            echo "==> Starting services..."
+            # Start all services with force recreate for application containers
+            echo "==> Starting services with force recreate..."
+            docker compose up -d --force-recreate telebrief-app telebrief-worker
             docker compose up -d --remove-orphans
+
+            # Clean up old unused images to save disk space
+            echo "==> Pruning dangling images..."
+            docker image prune -f
 
             # Display running containers
             echo "==> Current container status:"
