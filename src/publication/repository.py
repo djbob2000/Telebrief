@@ -668,7 +668,6 @@ class PublicationRepository:
                   AND (%(scope_config_hash)s::text IS NULL OR setd.scope_config_hash = %(scope_config_hash)s)
                   AND setd.scope_config_hash = sesd.scope_config_hash
                   AND setd.retention = 'KEEP'
-                  AND sesd.created_at <= %(snapshot_at)s
             )
         )
         ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
@@ -885,7 +884,6 @@ class PublicationRepository:
                 AND setd.triage_version = %(triage_version)s
                 AND setd.scope_config_hash = %(scope_config_hash)s
                 AND setd.scope_config_hash = sesd.scope_config_hash
-                AND sesd.created_at <= %(snapshot_at)s
           )
         ORDER BY cu.story_id ASC
         """  # noqa: S608 — static CTE template; values are bound params
