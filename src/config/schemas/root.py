@@ -38,8 +38,8 @@ class Settings:
     timezone: str
     lookback_hours: int
     openai_model: str
-    openai_temperature: float
-    temperature: float = 0.7
+    openai_temperature: float | None = None
+    temperature: float | None = None
     max_tokens_per_summary: int = 96000
     use_emojis: bool = True
     include_statistics: bool = True
