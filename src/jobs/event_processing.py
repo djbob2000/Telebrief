@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import logging
+import os
 from typing import Any
 
 from src.ai_providers import create_provider
@@ -194,8 +195,12 @@ async def coalesce_dirty_stories_task(
 
     if not editions_to_process:
         return stats
-
-    triage_sem = asyncio.Semaphore(1)
+    triage_concurrency_str = os.environ.get("EVENT_PROCESSING_CONCURRENCY", "4")
+    try:
+        triage_concurrency = max(1, int(triage_concurrency_str))
+    except (ValueError, TypeError):
+        triage_concurrency = 4
+    triage_sem = asyncio.Semaphore(triage_concurrency)
 
     async def _process_gate_batch(
         gate_batch: list[StoryClusterState],

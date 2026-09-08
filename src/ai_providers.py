@@ -472,9 +472,20 @@ class ProviderCascade(AIProvider):
                 failure_labels.append(label)
                 failure_kinds.append(kind)
                 if slot_index < len(available_slots) - 1:
-                    self.logger.warning("AI provider slot %s failed; switching to next slot", label)
+                    self.logger.warning(
+                        "AI provider slot %s failed (%s: %s); switching to next slot (%s)",
+                        label,
+                        exc_type,
+                        exc,
+                        available_slots[slot_index + 1][0],
+                    )
                 else:
-                    self.logger.warning("AI provider slot %s failed; no slots remain", label)
+                    self.logger.warning(
+                        "AI provider slot %s failed (%s: %s); no slots remain",
+                        label,
+                        exc_type,
+                        exc,
+                    )
 
         if not failures:
             raise ProviderCascadeError("AI provider cascade has no configured slots")
@@ -552,7 +563,12 @@ class OpenAIProvider(AIProvider):
         )
         self.logger = logger
         self.base_url = base_url.lower()
-        self._semaphore = asyncio.Semaphore(1)
+        max_concurrency_str = os.environ.get("OPENROUTER_MAX_CONCURRENCY", "4")
+        try:
+            max_concurrency = max(1, int(max_concurrency_str))
+        except (ValueError, TypeError):
+            max_concurrency = 4
+        self._semaphore = asyncio.Semaphore(max_concurrency)
 
     async def chat_completion(  # pylint: disable=too-many-positional-arguments
         self,
@@ -600,11 +616,23 @@ class OpenAIProvider(AIProvider):
             prompt_chars,
         )
         _t0 = time.monotonic()
-        async with self._semaphore:
-            try:
-                response = await self.client.chat.completions.create(**create_kwargs)
-            except OpenAIBadRequestError as exc:
-                response = await self._handle_bad_request(create_kwargs, exc, reasoning_effort)
+        try:
+            async with self._semaphore:
+                try:
+                    response = await self.client.chat.completions.create(**create_kwargs)
+                except OpenAIBadRequestError as exc:
+                    response = await self._handle_bad_request(create_kwargs, exc, reasoning_effort)
+        except Exception as exc:
+            _elapsed = time.monotonic() - _t0
+            self.logger.warning(
+                "✗ %s request failed after %.1fs: model=%s exc=%s: %s",
+                provider_label,
+                _elapsed,
+                model,
+                type(exc).__name__,
+                exc,
+            )
+            raise
         _elapsed = time.monotonic() - _t0
 
         result = _extract_chat_completion_text(response, self.logger, provider_label)
