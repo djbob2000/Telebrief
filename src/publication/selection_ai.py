@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -9,6 +10,7 @@ from typing import Any
 
 from src.ai_providers import AIProvider, ProviderUnavailableError, create_provider
 from src.config_loader import Config, load_config
+from src.llm_telemetry import llm_call_context
 from src.publication.digest_contracts import (
     DIGEST_PUBLICATION_TYPES,
     HARD_EXCLUSION_REASONS,
@@ -170,13 +172,22 @@ class AIPublicationSelectionModel:
             {"role": "user", "content": prompt},
         ]
 
-        raw_output = await self.provider.chat_completion(
-            messages=messages,
-            model=self.model_name,
-            temperature=0.2,
-            max_tokens=self.config.settings.publication_editorial.selection_max_output_tokens,
-            reasoning_effort=self.config.settings.publication_editorial.selection_reasoning_effort,
-        )
+        prompt_hash = hashlib.sha256(
+            "\n".join(message["content"] for message in messages).encode("utf-8")
+        ).hexdigest()
+
+        with llm_call_context(
+            stage="publication_selection",
+            prompt_hash=prompt_hash,
+            story_count=len(candidates),
+        ):
+            raw_output = await self.provider.chat_completion(
+                messages=messages,
+                model=self.model_name,
+                temperature=0.2,
+                max_tokens=self.config.settings.publication_editorial.selection_max_output_tokens,
+                reasoning_effort=self.config.settings.publication_editorial.selection_reasoning_effort,
+            )
 
         return self._parse_and_validate(
             raw_output, candidates, publication_type=run.publication_type

@@ -15,6 +15,8 @@ import httpx
 from openai import AsyncOpenAI
 from openai import BadRequestError as OpenAIBadRequestError
 
+from src.llm_telemetry import get_llm_call_context
+
 GOOGLE_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 GOOGLE_MAX_OUTPUT_TOKENS = 65_536
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
@@ -678,6 +680,30 @@ class OpenAIProvider(AIProvider):
             usage.prompt_tokens if usage else None,
             usage.completion_tokens if usage else None,
         )
+        call_context = get_llm_call_context()
+        if call_context is not None:
+            details = getattr(usage, "completion_tokens_details", None) if usage else None
+            reasoning_tokens = (
+                details.get("reasoning_tokens")
+                if isinstance(details, dict)
+                else getattr(details, "reasoning_tokens", None)
+            )
+            self.logger.info(
+                "llm_usage stage=%s prompt_hash=%s response_id=%s model=%s max_tokens=%s "
+                "reasoning_effort=%s story_count=%s prompt_tokens=%s completion_tokens=%s "
+                "reasoning_tokens=%s finish_reason=%s",
+                call_context.stage,
+                call_context.prompt_hash or "-",
+                getattr(response, "id", None) or "-",
+                model,
+                effective_max_tokens,
+                reasoning_effort or "-",
+                call_context.story_count if call_context.story_count is not None else "-",
+                usage.prompt_tokens if usage else None,
+                usage.completion_tokens if usage else None,
+                reasoning_tokens,
+                response.choices[0].finish_reason if response.choices else "?",
+            )
         return result
 
     async def _handle_bad_request(

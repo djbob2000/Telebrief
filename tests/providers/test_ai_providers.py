@@ -730,6 +730,44 @@ async def test_openrouter_reasoning_and_thinking_merge_without_overwrite(mock_lo
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_openrouter_logs_stage_aware_usage(mock_logger):
+    from src.llm_telemetry import llm_call_context
+
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = OpenAIProvider(
+            api_key="sk-test",
+            logger=mock_logger,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        response = MagicMock()
+        response.id = "response-1"
+        response.choices = [
+            MagicMock(message=MagicMock(content="ok", refusal=None), finish_reason="stop")
+        ]
+        response.usage.prompt_tokens = 11
+        response.usage.completion_tokens = 7
+        response.usage.completion_tokens_details = {"reasoning_tokens": 3}
+        provider.client.chat.completions.create = AsyncMock(return_value=response)
+
+        with llm_call_context(stage="event_triage", prompt_hash="abc", story_count=2):
+            await provider.chat_completion(
+                messages=[{"role": "user", "content": "Hello"}],
+                model="openrouter-test-model",
+                max_tokens=4096,
+                reasoning_effort="low",
+            )
+
+        usage_logs = [
+            str(call) for call in mock_logger.info.call_args_list if "llm_usage" in str(call)
+        ]
+        assert usage_logs
+        assert "event_triage" in usage_logs[-1]
+        assert "prompt_tokens" in usage_logs[-1]
+        assert "reasoning_tokens" in usage_logs[-1]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_openai_provider_falls_back_when_reasoning_effort_rejected(mock_logger):
     """When the API rejects reasoning_effort (BadRequestError), the provider retries without it."""
     import httpx

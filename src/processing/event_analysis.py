@@ -20,6 +20,7 @@ from src.domain.event_payload import (
 )
 from src.domain.event_pipeline import SourceFragment
 from src.domain.stories import NewStoryRevision, StoryRevision
+from src.llm_telemetry import llm_call_context
 from src.processing.evidence_sampling import (
     FragmentWithContext,
     RepresentativeEvidenceSampler,
@@ -280,29 +281,30 @@ class EventAnalysisService:
         # 5. Call LLM
         now = dt.datetime.now(dt.timezone.utc)
         try:
-            if hasattr(self.ai, "generate_text"):
-                raw_response = await self.ai.generate_text(
-                    prompt=user_prompt,
-                    system_prompt=_EVENT_ANALYSIS_SYSTEM_PROMPT,
-                    temperature=0.2,
-                    json_mode=True,
-                    max_tokens=self.max_output_tokens,
-                    reasoning_effort=self.reasoning_effort,
-                )
-            elif hasattr(self.ai, "chat_completion"):
-                raw_response = await self.ai.chat_completion(
-                    messages=[
-                        {"role": "system", "content": _EVENT_ANALYSIS_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    model=self.model,
-                    temperature=0.2,
-                    max_tokens=self.max_output_tokens,
-                    reasoning_effort=self.reasoning_effort,
-                    response_format={"type": "json_object"},
-                )
-            else:
-                raise TypeError(f"Unsupported AI provider type: {type(self.ai)}")
+            with llm_call_context(stage="event_analysis", prompt_hash=prompt_hash, story_count=1):
+                if hasattr(self.ai, "generate_text"):
+                    raw_response = await self.ai.generate_text(
+                        prompt=user_prompt,
+                        system_prompt=_EVENT_ANALYSIS_SYSTEM_PROMPT,
+                        temperature=0.2,
+                        json_mode=True,
+                        max_tokens=self.max_output_tokens,
+                        reasoning_effort=self.reasoning_effort,
+                    )
+                elif hasattr(self.ai, "chat_completion"):
+                    raw_response = await self.ai.chat_completion(
+                        messages=[
+                            {"role": "system", "content": _EVENT_ANALYSIS_SYSTEM_PROMPT},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        model=self.model,
+                        temperature=0.2,
+                        max_tokens=self.max_output_tokens,
+                        reasoning_effort=self.reasoning_effort,
+                        response_format={"type": "json_object"},
+                    )
+                else:
+                    raise TypeError(f"Unsupported AI provider type: {type(self.ai)}")
 
             # Parse JSON
             from src.utils import robust_extract_json
