@@ -18,7 +18,6 @@ from src.publication.editorial_adapter import (
     DatabaseGenerationAttemptObserver,
     KnowledgeEditorialAdapter,
 )
-from src.publication.editorializer import DigestEditorializer
 from src.publication.errors import ArticlePublicationRejected, PublicationGenerationError
 from src.publication.models import Publication
 from src.publication.policies import (
@@ -48,17 +47,17 @@ class PublicationGenerationService:
         repo: PublicationRepository | None = None,
         adapter: KnowledgeEditorialAdapter | None = None,
         generator: ArticleGenerator | None = None,
-        editorializer: DigestEditorializer | None = None,
+        editorializer: Any = None,
         rubric_classifier: DigestRubricClassifier | None = None,
     ) -> None:
         from src.config_loader import load_config
 
+        del editorializer
         self.uow = uow
         self.config = config or load_config()
         self.repo = repo or PublicationRepository()
         self.adapter = adapter or KnowledgeEditorialAdapter(uow=uow, repo=self.repo)
         self.generator = generator or ArticleGenerator(config=self.config, logger=logger)
-        self.editorializer = editorializer or DigestEditorializer(config=self.config)
 
         self.rubric_classifier = rubric_classifier
         if self.rubric_classifier is None:
@@ -155,24 +154,6 @@ class PublicationGenerationService:
 
         try:
             if run.publication_type in DIGEST_PUBLICATION_TYPES:
-                if frozen.analysis.cards and not has_event_first:
-                    try:
-                        editorialized_cards = await self.editorializer.editorialize(
-                            cards=frozen.analysis.cards,
-                            bundle=frozen.writer_bundle,
-                            attempt_observer=observer,
-                        )
-                        frozen = replace(
-                            frozen,
-                            analysis=replace(frozen.analysis, cards=editorialized_cards),
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "digest editorializer failed (%s: %s); falling back to canonical cards",
-                            type(exc).__name__,
-                            exc,
-                        )
-
                 # Rubric classification (semantic embedding assignment)
                 if (
                     frozen.analysis.cards

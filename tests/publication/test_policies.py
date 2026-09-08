@@ -8,9 +8,9 @@ import psycopg
 import pytest
 
 from src.config_loader import Config, Settings
-from src.publication.editorializer import DIGEST_EDITORIALIZER_PROMPT_VERSION
 from src.publication.policies import (
     DEFAULT_WRITER_PROMPT_VERSION,
+    DIGEST_EDITORIALIZER_PROMPT_VERSION,
     PublicationPolicyService,
 )
 

@@ -10,7 +10,6 @@ from typing import Any
 import psycopg
 
 from src.publication.digest_contracts import DIGEST_PUBLICATION_TYPES
-from src.publication.editorializer import DIGEST_EDITORIALIZER_PROMPT_VERSION
 from src.publication.errors import UnsupportedFrozenSemanticVersion
 from src.publication.models import (
     PublicationPolicySet,
@@ -18,6 +17,8 @@ from src.publication.models import (
 from src.publication.repository import PublicationPolicyRepository
 
 logger = logging.getLogger(__name__)
+
+DIGEST_EDITORIALIZER_PROMPT_VERSION = "digest-editorializer-v1"
 
 ARTICLE_PUBLICATION_TYPES: frozenset[str] = frozenset(
     {"daily_article", "article", "weekly_article", "monthly_article"}
