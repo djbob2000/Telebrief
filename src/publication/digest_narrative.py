@@ -1113,7 +1113,7 @@ DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регио�
 3. КАТЕГОРИЧЕСКИЙ ЗАПРЕТ НА СПЛОШНОЙ ТЕКСТ / «РАССКАЗ»:
    - ЗАПРЕЩЕНО сливать разные события (например, свет, воду, запах газа, безопасность, больницы) в один общий абзац или связный рассказ.
    - Каждая отдельная тема/событие — это ОТДЕЛЬНЫЙ ПУНКТ списка со своим эмодзи.
-4. Журналистский стиль: чистый, энергичный русский язык хроники. Точный и грамотный перевод сообщений на украинском языке.
+4. Журналистский стиль: чистый, энергичный русский язык хроники. Точный и грамотный перевод сообщений на украинском языке (названия памятников и ориентиров переводить строго на русский язык, например «у памятника Самолёту», а не «у «Літака»»; «ліхтарі» переводить как «фонари», а не «лихтари»).
 5. Сохраняйте микродетали: точные улицы, микрорайоны, графики подачи, номера маршрутов, цены, важные решения жителей.
 6. Очистка от рекламы и спама: категорически исключайте коммерческие перевозки за границу ($450), разблокировку карт и счетов, прайс-листы клиник/процедур, рекламу общепита и бытовой чат-флуд («все живые», пустые реплики).
 7. Разнообразная естественная атрибуция: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО начинать каждое предложение с «По сообщениям жителей...». Используйте естественные и разнообразные обороты («По словам горожан...», «В местных чатах отмечают...», «Как рассказали жители...») либо пишите сразу от сути события.
@@ -1557,8 +1557,8 @@ class DigestNarrativeWriter:
         geo_ctx = resolve_edition_geography(city.lower(), city)
         toponym_section = ""
         if geo_ctx.toponym_rules:
-            toponym_section = "\n7. ВАЖНЫЕ МЕСТНЫЕ ТОПОНИМЫ:\n" + "\n".join(
-                f"   - {r}" for r in geo_ctx.toponym_rules
+            toponym_section = "\n\nВАЖНЫЕ МЕСТНЫЕ ТОПОНИМЫ И РАЗЛИЧЕНИЕ СУЩНОСТЕЙ:\n" + "\n".join(
+                f"- {r}" for r in geo_ctx.toponym_rules
             )
 
         prompt = DIGEST_PROMPT_TEMPLATE.format(
@@ -1601,18 +1601,9 @@ class DigestNarrativeWriter:
             clean_draft = enforce_telegram_single_message_limit(clean_draft, max_chars=max_chars)
 
         # Normalize known local toponym errors
-        clean_draft = re.sub(
-            r"\bв\s+(?:пос[её]лке|микрорайоне)\s+Осипенко\b",
-            "в селе Осипенко",
-            clean_draft,
-            flags=re.IGNORECASE,
-        )
-        clean_draft = re.sub(
-            r"\b(?:пос[её]лок|микрорайон)\s+Осипенко\b",
-            "село Осипенко",
-            clean_draft,
-            flags=re.IGNORECASE,
-        )
+        from src.processing.operational_semantics import normalize_berdyansk_toponyms
+
+        clean_draft = normalize_berdyansk_toponyms(clean_draft)
 
         # Enforce neutral administrative terminology (fail-safe against hostile labels)
         clean_draft = sanitize_digest_terminology(clean_draft)

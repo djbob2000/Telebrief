@@ -367,6 +367,27 @@ stable_context:
       - санаторий Бердянск
       - санаторій Бердянськ
       type: sanatorium
+    - id: monument_plane_berdyansk
+      name: Памятник Самолёту
+      aliases:
+      - Памятник «Самолёт»
+      - Памятник самолет
+      - Самолёт
+      - Пам'ятник «Літак»
+      - Пам'ятник Літак
+      - Літак
+      type: monument
+      area_hint: sklovolokno
+      description: Памятник самолёту в Бердянске на пересечении ул. Орджоникидзе (Довганюка) и Пролетарского (Восточного) проспекта
+    - id: monument_plane_osipenko
+      name: Памятник Самолёту (Осипенко)
+      aliases:
+      - Самолёт в Осипенко
+      - Памятник самолёту в Осипенко
+      - Пам'ятник літаку в Осипенко
+      type: monument
+      area_hint: osipenko
+      description: Памятник самолёту в селе Осипенко Бердянского района (памятник лётчице Полине Осипенко)
     street_gazetteer:
       basis: 2021 municipal neighborhood-committee boundaries plus rename/alias sources
       source_refs:

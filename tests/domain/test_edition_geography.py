@@ -61,3 +61,6 @@ def test_edition_geography_prompt_formatting() -> None:
     assert "ГЕОГРАФИЧЕСКИЙ КОНТЕКСТ ИЗДАНИЯ" in prompt_str
     assert "Бердянск" in prompt_str
     assert "Запорожская область" in prompt_str
+    assert "Юпитер" in prompt_str
+    assert "Самолёт" in prompt_str
+    assert "Осипенко" in prompt_str

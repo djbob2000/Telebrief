@@ -256,3 +256,56 @@ def test_toponym_normalization_in_operational_observations():
     assert len(observations) == 1
     assert "нагорной части города" in observations[0].detail
     assert "микрорайоне Гора" not in observations[0].detail
+
+
+@pytest.mark.unit
+def test_normalize_berdyansk_toponyms_jupiter():
+    from src.processing.operational_semantics import normalize_berdyansk_toponyms
+
+    t1 = "В районе Юпитер пока отсутствует оптоволокно."
+    assert normalize_berdyansk_toponyms(t1) == "У провайдера «Юпитер» пока отсутствует оптоволокно."
+
+    t2 = "В бердянском районе «Юпитер» пока нет оптоволоконного подключения"
+    assert (
+        normalize_berdyansk_toponyms(t2)
+        == "У провайдера «Юпитер» пока нет оптоволоконного подключения"
+    )
+
+    t3 = "район Юпитер сообщает о работах"
+    assert normalize_berdyansk_toponyms(t3) == "провайдер «Юпитер» сообщает о работах"
+
+
+@pytest.mark.unit
+def test_normalize_berdyansk_toponyms_plane_monument_and_lanterns():
+    from src.processing.operational_semantics import normalize_berdyansk_toponyms
+
+    t1 = "У «Літака» выброшены новые фонари, предназначавшиеся для установки — сообщают жители."
+    assert (
+        normalize_berdyansk_toponyms(t1)
+        == "У памятника Самолёту выброшены новые фонари, предназначавшиеся для установки — сообщают жители."
+    )
+
+    t2 = "возле «Літака» лежат новые лихтари"
+    assert normalize_berdyansk_toponyms(t2) == "возле памятника Самолёту лежат новые фонари"
+
+    t3 = "Окупаційна влада відзвітувала про ремонт біля пам'ятника «Літак»"
+    assert (
+        normalize_berdyansk_toponyms(t3)
+        == "Окупаційна влада відзвітувала про ремонт біля памятника Самолёту"
+    )
+
+
+@pytest.mark.unit
+def test_normalize_operational_location_and_entity_jupiter_and_plane():
+    from src.processing.operational_semantics import normalize_operational_location_and_entity
+
+    loc, ent = normalize_operational_location_and_entity("район Юпитер")
+    assert ent == "Юпитер"
+    assert loc == ""
+
+    loc, ent = normalize_operational_location_and_entity("у Літака")
+    assert "памятник Самолёту" in loc
+    assert "Довганюка" in loc
+
+    loc, ent = normalize_operational_location_and_entity("памятник Самолёт в селе Осипенко")
+    assert "село Осипенко" in loc

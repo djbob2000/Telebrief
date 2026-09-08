@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+from dataclasses import replace
 
 import psycopg
 
@@ -161,6 +162,15 @@ class EventBriefService:
         else:
             final_payload = payload
             reason = "event_gate_v2_brief"
+
+        from src.processing.operational_semantics import normalize_berdyansk_toponyms
+
+        final_payload = replace(
+            final_payload,
+            headline=normalize_berdyansk_toponyms(final_payload.headline),
+            digest_summary=normalize_berdyansk_toponyms(final_payload.digest_summary),
+            topic=normalize_berdyansk_toponyms(final_payload.topic),
+        )
 
         payload_dict = final_payload.to_dict()
         content_hash = hashlib.sha256(
