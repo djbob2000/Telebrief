@@ -6,6 +6,7 @@ import datetime as dt
 import hashlib
 import json
 import logging
+from contextlib import asynccontextmanager
 from typing import Any
 
 import psycopg
@@ -107,6 +108,7 @@ class EventAnalysisService:
         fragment_repo: FragmentRepository | None = None,
         model: str | None = None,
         logger_instance: logging.Logger | None = None,
+        uow: Any | None = None,
     ) -> None:
         self.ai = ai_cascade
         self.sampler = sampler or RepresentativeEvidenceSampler()
@@ -115,68 +117,95 @@ class EventAnalysisService:
         self.fragment_repo = fragment_repo or FragmentRepository()
         self.model = model or "default"
         self.logger = logger_instance or logger
+        self.uow = uow
 
     async def analyze_story(
         self,
-        conn: psycopg.AsyncConnection,
-        story_id: int,
+        conn: psycopg.AsyncConnection | None = None,
+        story_id: int = 0,
         *,
         max_representative_fragments: int = 16,
         max_input_chars: int = 24000,
     ) -> StoryRevision | None:
         """Run rich LLM event analysis for a story cluster and persist the new revision."""
-        cluster_state = await self.cluster_repo.get_cluster_state(conn, story_id)
-        if cluster_state is None:
-            return None
 
-        # 1. Fetch all fragments for this story with metadata and embeddings
-        cursor = await conn.execute(
-            """
-            SELECT f.id, f.source_item_revision_id, f.ordinal, f.text_content,
-                   f.normalized_hash, f.fragmenter_version, f.is_candidate, f.drop_reason, f.created_at,
-                   fev.embedding, s.id, s.name, COALESCE(s.role, s.kind, 'unknown'),
-                   COALESCE(si.first_collected_at, f.created_at)
-            FROM story_fragments sf
-            JOIN source_fragments f ON f.id = sf.fragment_id
-            JOIN source_fragment_embeddings sfe ON sfe.fragment_id = f.id
-            JOIN fragment_embedding_vectors fev ON fev.id = sfe.vector_id
-            JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
-            JOIN source_items si ON si.id = sir.source_item_id
-            JOIN sources s ON s.id = si.source_id
-            WHERE sf.story_id = %s
-            ORDER BY sf.id ASC
-            """,
-            (story_id,),
-        )
+        @asynccontextmanager
+        async def _get_conn():
+            if conn is not None:
+                yield conn
+            elif self.uow is not None:
+                async with self.uow.transaction() as c:
+                    yield c
+            else:
+                raise ValueError("Either conn or uow must be provided for analyze_story")
 
-        contexts: list[FragmentWithContext] = []
-        async for row in cursor:
-            frag = SourceFragment(
-                id=int(row[0]),
-                source_item_revision_id=int(row[1]),
-                ordinal=int(row[2]),
-                text_content=str(row[3]),
-                normalized_hash=str(row[4]),
-                fragmenter_version=str(row[5]),
-                is_candidate=bool(row[6]),
-                drop_reason=row[7],
-                created_at=row[8],
+        async with _get_conn() as read_conn:
+            cluster_state = await self.cluster_repo.get_cluster_state(read_conn, story_id)
+            if cluster_state is None:
+                return None
+
+            # 1. Fetch all fragments for this story with metadata and embeddings
+            cursor = await read_conn.execute(
+                """
+                SELECT f.id, f.source_item_revision_id, f.ordinal, f.text_content,
+                       f.normalized_hash, f.fragmenter_version, f.is_candidate, f.drop_reason, f.created_at,
+                       fev.embedding, s.id, s.name, COALESCE(s.role, s.kind, 'unknown'),
+                       COALESCE(si.first_collected_at, f.created_at)
+                FROM story_fragments sf
+                JOIN source_fragments f ON f.id = sf.fragment_id
+                JOIN source_fragment_embeddings sfe ON sfe.fragment_id = f.id
+                JOIN fragment_embedding_vectors fev ON fev.id = sfe.vector_id
+                JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
+                JOIN source_items si ON si.id = sir.source_item_id
+                JOIN sources s ON s.id = si.source_id
+                WHERE sf.story_id = %s
+                ORDER BY sf.id ASC
+                """,
+                (story_id,),
             )
-            vec = _vec_to_list(row[9])
-            ctx = FragmentWithContext(
-                fragment=frag,
-                vector=vec,
-                source_id=int(row[10]),
-                source_name=str(row[11]),
-                source_type=str(row[12]),
-                timestamp=row[13],
+
+            contexts: list[FragmentWithContext] = []
+            async for row in cursor:
+                frag = SourceFragment(
+                    id=int(row[0]),
+                    source_item_revision_id=int(row[1]),
+                    ordinal=int(row[2]),
+                    text_content=str(row[3]),
+                    normalized_hash=str(row[4]),
+                    fragmenter_version=str(row[5]),
+                    is_candidate=bool(row[6]),
+                    drop_reason=row[7],
+                    created_at=row[8],
+                )
+                vec = _vec_to_list(row[9])
+                ctx = FragmentWithContext(
+                    fragment=frag,
+                    vector=vec,
+                    source_id=int(row[10]),
+                    source_name=str(row[11]),
+                    source_type=str(row[12]),
+                    timestamp=row[13],
+                )
+                contexts.append(ctx)
+
+            if not contexts:
+                return None
+
+            # 3. Format prompt with geographic context
+            cur_ed = await read_conn.execute(
+                """
+                SELECT e.slug, e.name
+                FROM stories st
+                JOIN editions e ON e.id = st.edition_id
+                WHERE st.id = %s
+                """,
+                (story_id,),
             )
-            contexts.append(ctx)
+            row_ed = await cur_ed.fetchone()
+            ed_slug = str(row_ed[0]) if row_ed else "unknown"
+            ed_name = str(row_ed[1]) if row_ed and row_ed[1] else ed_slug.capitalize()
 
-        if not contexts:
-            return None
-
-        # 2. Sample representative fragments
+        # 2. Sample representative fragments (CPU)
         sampled = self.sampler.sample_fragments(
             contexts,
             centroid=cluster_state.centroid,
@@ -184,20 +213,6 @@ class EventAnalysisService:
         )
         if not sampled:
             return None
-
-        # 3. Format prompt with geographic context
-        cur_ed = await conn.execute(
-            """
-            SELECT e.slug, e.name
-            FROM stories st
-            JOIN editions e ON e.id = st.edition_id
-            WHERE st.id = %s
-            """,
-            (story_id,),
-        )
-        row_ed = await cur_ed.fetchone()
-        ed_slug = str(row_ed[0]) if row_ed else "unknown"
-        ed_name = str(row_ed[1]) if row_ed and row_ed[1] else ed_slug.capitalize()
 
         from src.domain.edition_geography import resolve_edition_geography
 
@@ -279,34 +294,14 @@ class EventAnalysisService:
                     story_id,
                 )
 
-            await conn.execute(
-                """
-                INSERT INTO story_event_analysis_runs (
-                    story_id, latest_assignment_id, analysis_version, provider, model, prompt_hash,
-                    input_fragment_count, input_chars, output_chars, status, completed_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'succeeded', now())
-                ON CONFLICT DO NOTHING
-                """,
-                (
-                    story_id,
-                    cluster_state.latest_assignment_id,
-                    ANALYSIS_VERSION,
-                    str(provider_name),
-                    str(model_name),
-                    prompt_hash,
-                    len(sampled),
-                    len(user_prompt),
-                    len(raw_response),
-                ),
-            )
-        except Exception as exc:
-            try:
-                await conn.execute(
+            async with _get_conn() as write_conn:
+                await write_conn.execute(
                     """
                     INSERT INTO story_event_analysis_runs (
                         story_id, latest_assignment_id, analysis_version, provider, model, prompt_hash,
-                        input_fragment_count, input_chars, status, error_kind, completed_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'failed', %s, now())
+                        input_fragment_count, input_chars, output_chars, status, completed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'succeeded', now())
+                    ON CONFLICT DO NOTHING
                     """,
                     (
                         story_id,
@@ -317,43 +312,65 @@ class EventAnalysisService:
                         prompt_hash,
                         len(sampled),
                         len(user_prompt),
-                        type(exc).__name__,
+                        len(raw_response),
                     ),
                 )
+
+                # 6. Create new story revision with event_payload
+                content_hash = hashlib.sha256(
+                    json.dumps(payload.to_dict(), sort_keys=True).encode("utf-8")
+                ).hexdigest()
+
+                new_rev = NewStoryRevision(
+                    current_state="active",
+                    semantic_text=payload.digest_summary,
+                    content_hash=content_hash,
+                    created_at=now,
+                    title=payload.headline,
+                    summary=payload.digest_summary,
+                    reason=f"event_analysis_{ANALYSIS_VERSION}",
+                    event_payload=payload.to_dict(),
+                )
+
+                rev = await self.story_repo.create_revision_if_semantic_change(
+                    write_conn,
+                    story_id=story_id,
+                    semantic_changed=True,
+                    revision=new_rev,
+                )
+
+                # 7. Update cluster state as analyzed
+                await self.cluster_repo.update_cluster_analysis_analyzed(
+                    write_conn,
+                    story_id=story_id,
+                    assignment_id=cluster_state.latest_assignment_id,
+                    analyzed_at=now,
+                )
+
+                return rev
+        except Exception as exc:
+            try:
+                async with _get_conn() as err_conn:
+                    await err_conn.execute(
+                        """
+                        INSERT INTO story_event_analysis_runs (
+                            story_id, latest_assignment_id, analysis_version, provider, model, prompt_hash,
+                            input_fragment_count, input_chars, status, error_kind, completed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'failed', %s, now())
+                        """,
+                        (
+                            story_id,
+                            cluster_state.latest_assignment_id,
+                            ANALYSIS_VERSION,
+                            str(provider_name),
+                            str(model_name),
+                            prompt_hash,
+                            len(sampled),
+                            len(user_prompt),
+                            type(exc).__name__,
+                        ),
+                    )
             except Exception as log_exc:
                 self.logger.warning("Failed to record failed analysis run: %s", log_exc)
             self.logger.warning("Event analysis failed for story %s: %s", story_id, exc)
             return None
-
-        # 6. Create new story revision with event_payload
-        content_hash = hashlib.sha256(
-            json.dumps(payload.to_dict(), sort_keys=True).encode("utf-8")
-        ).hexdigest()
-
-        new_rev = NewStoryRevision(
-            current_state="active",
-            semantic_text=payload.digest_summary,
-            content_hash=content_hash,
-            created_at=now,
-            title=payload.headline,
-            summary=payload.digest_summary,
-            reason=f"event_analysis_{ANALYSIS_VERSION}",
-            event_payload=payload.to_dict(),
-        )
-
-        rev = await self.story_repo.create_revision_if_semantic_change(
-            conn,
-            story_id=story_id,
-            semantic_changed=True,
-            revision=new_rev,
-        )
-
-        # 7. Update cluster state as analyzed
-        await self.cluster_repo.update_cluster_analysis_analyzed(
-            conn,
-            story_id=story_id,
-            assignment_id=cluster_state.latest_assignment_id,
-            analyzed_at=now,
-        )
-
-        return rev

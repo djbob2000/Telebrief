@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping
 
@@ -307,16 +308,18 @@ class StoryTriageService:
         cluster_repo: EventClusterRepository | None = None,
         model: str | None = None,
         logger_instance: logging.Logger | None = None,
+        uow: Any | None = None,
     ) -> None:
         self.ai = ai_cascade
         self.cluster_repo = cluster_repo or EventClusterRepository()
         self.model = model or "default"
         self.logger = logger_instance or logger
+        self.uow = uow
 
     async def triage_stories_batch(
         self,
-        conn: psycopg.AsyncConnection,
-        stories: list[StoryClusterState],
+        conn: psycopg.AsyncConnection | None = None,
+        stories: list[StoryClusterState] | None = None,
         *,
         edition_id: int,
         scope_config: EditionScopeConfig,
@@ -329,62 +332,83 @@ class StoryTriageService:
         if not stories:
             return StoryGateBatchResult(results=(), deferred_story_ids=())
 
-        # 1. Lookup cached Gate V2 results
-        cached_results = await self._lookup_cached_decisions(conn, stories, scope_hash)
-        uncached_stories = [s for s in stories if s.story_id not in cached_results]
+        @asynccontextmanager
+        async def _get_conn():
+            if conn is not None:
+                yield conn
+            elif self.uow is not None:
+                async with self.uow.transaction() as c:
+                    yield c
+            else:
+                raise ValueError("Either conn or uow must be provided for triage_stories_batch")
 
-        valid_results: list[StoryGateResult] = [
-            cached_results[s.story_id] for s in stories if s.story_id in cached_results
-        ]
-        deferred_ids: list[int] = []
+        async with _get_conn() as read_conn:
+            # 1. Lookup cached Gate V2 results
+            cached_results = await self._lookup_cached_decisions(read_conn, stories, scope_hash)
+            uncached_stories = [s for s in stories if s.story_id not in cached_results]
 
-        if not uncached_stories:
-            return StoryGateBatchResult(
-                results=tuple(valid_results),
-                deferred_story_ids=(),
+            valid_results: list[StoryGateResult] = [
+                cached_results[s.story_id] for s in stories if s.story_id in cached_results
+            ]
+            deferred_ids: list[int] = []
+
+            if not uncached_stories:
+                return StoryGateBatchResult(
+                    results=tuple(valid_results),
+                    deferred_story_ids=(),
+                )
+
+            # 2. Fetch fragment metadata for uncached stories
+            story_ids = [s.story_id for s in uncached_stories]
+            cursor = await read_conn.execute(
+                """
+                SELECT sf.story_id, f.id, f.text_content, s.id, s.name,
+                       COALESCE(s.role, s.kind, 'unknown'),
+                       COALESCE(si.published_at, si.first_collected_at, f.created_at)
+                FROM story_fragments sf
+                JOIN source_fragments f ON f.id = sf.fragment_id
+                JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
+                JOIN source_items si ON si.id = sir.source_item_id
+                JOIN sources s ON s.id = si.source_id
+                WHERE sf.story_id = ANY(%s)
+                ORDER BY sf.story_id, f.id DESC
+                """,
+                (story_ids,),
             )
 
-        # 2. Fetch fragment metadata for uncached stories
-        story_ids = [s.story_id for s in uncached_stories]
-        cursor = await conn.execute(
-            """
-            SELECT sf.story_id, f.id, f.text_content, s.id, s.name,
-                   COALESCE(s.role, s.kind, 'unknown'),
-                   COALESCE(si.published_at, si.first_collected_at, f.created_at)
-            FROM story_fragments sf
-            JOIN source_fragments f ON f.id = sf.fragment_id
-            JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
-            JOIN source_items si ON si.id = sir.source_item_id
-            JOIN sources s ON s.id = si.source_id
-            WHERE sf.story_id = ANY(%s)
-            ORDER BY sf.story_id, f.id DESC
-            """,
-            (story_ids,),
-        )
+            story_fragments_map: dict[int, list[dict[str, Any]]] = {sid: [] for sid in story_ids}
+            all_story_frag_ids: dict[int, set[int]] = {sid: set() for sid in story_ids}
+            async for row in cursor:
+                sid = int(row[0])
+                fid = int(row[1])
+                full_text = str(row[2])
+                text = full_text[:excerpt_chars]
+                source_id = int(row[3])
+                source_name = str(row[4])
+                source_role = str(row[5])
+                obs_time = row[6]
+                story_fragments_map[sid].append(
+                    {
+                        "fragment_id": fid,
+                        "text": text,
+                        "full_text": full_text,
+                        "source_id": source_id,
+                        "source_name": source_name,
+                        "source_role": source_role,
+                        "observed_at": obs_time,
+                    }
+                )
+                all_story_frag_ids[sid].add(fid)
 
-        story_fragments_map: dict[int, list[dict[str, Any]]] = {sid: [] for sid in story_ids}
-        all_story_frag_ids: dict[int, set[int]] = {sid: set() for sid in story_ids}
-        async for row in cursor:
-            sid = int(row[0])
-            fid = int(row[1])
-            full_text = str(row[2])
-            text = full_text[:excerpt_chars]
-            source_id = int(row[3])
-            source_name = str(row[4])
-            source_role = str(row[5])
-            obs_time = row[6]
-            story_fragments_map[sid].append(
-                {
-                    "fragment_id": fid,
-                    "text": text,
-                    "full_text": full_text,
-                    "source_id": source_id,
-                    "source_name": source_name,
-                    "source_role": source_role,
-                    "observed_at": obs_time,
-                }
+            # 3. Load dynamic recent subject hints
+            recent_hints = await self._load_recent_subject_hints(read_conn, edition_id)
+
+            # 4. Build prompt with geographic context
+            cur_slug = await read_conn.execute(
+                "SELECT slug FROM editions WHERE id = %s", (edition_id,)
             )
-            all_story_frag_ids[sid].add(fid)
+            row_slug = await cur_slug.fetchone()
+            edition_slug = str(row_slug[0]) if row_slug else "unknown"
 
         # Select at most max_gate_fragments per story deterministically:
         # first newest fragment from each distinct source, then newest unused
@@ -423,8 +447,6 @@ class StoryTriageService:
                 )
             story_sampled_excerpts[sid] = excerpt_lines
 
-        # 3. Load dynamic recent subject hints
-        recent_hints = await self._load_recent_subject_hints(conn, edition_id)
         hint_text = ""
         if recent_hints:
             hint_lines = [f"- {k}: {lbl}" for k, lbl in recent_hints]
@@ -433,11 +455,6 @@ class StoryTriageService:
                 + "\n".join(hint_lines)
                 + "\n\n"
             )
-
-        # 4. Build prompt with geographic context
-        cur_slug = await conn.execute("SELECT slug FROM editions WHERE id = %s", (edition_id,))
-        row_slug = await cur_slug.fetchone()
-        edition_slug = str(row_slug[0]) if row_slug else "unknown"
 
         from src.domain.edition_geography import resolve_edition_geography
 
@@ -763,34 +780,13 @@ class StoryTriageService:
                 )
                 new_valid_results.append(gate_res)
 
-            cursor = await conn.execute(
-                """
-                INSERT INTO story_event_triage_runs (
-                    triage_version, provider, model, prompt_hash, story_count, input_chars, output_chars, status, completed_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'succeeded', now())
-                RETURNING id
-                """,
-                (
-                    TRIAGE_VERSION,
-                    str(provider_name),
-                    str(model_name),
-                    prompt_hash,
-                    len(uncached_stories),
-                    len(user_prompt),
-                    len(raw_response),
-                ),
-            )
-            run_row = await cursor.fetchone()
-            if run_row is None:
-                raise RuntimeError("Failed to insert story_event_triage_runs")
-            run_id = int(run_row[0])
-        except Exception as exc:
-            try:
-                await conn.execute(
+            async with _get_conn() as write_conn:
+                cursor = await write_conn.execute(
                     """
                     INSERT INTO story_event_triage_runs (
-                        triage_version, provider, model, prompt_hash, story_count, input_chars, status, error_kind, completed_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, 'failed', %s, now())
+                        triage_version, provider, model, prompt_hash, story_count, input_chars, output_chars, status, completed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'succeeded', now())
+                    RETURNING id
                     """,
                     (
                         TRIAGE_VERSION,
@@ -799,88 +795,113 @@ class StoryTriageService:
                         prompt_hash,
                         len(uncached_stories),
                         len(user_prompt),
-                        type(exc).__name__,
+                        len(raw_response),
                     ),
                 )
+                run_row = await cursor.fetchone()
+                if run_row is None:
+                    raise RuntimeError("Failed to insert story_event_triage_runs")
+                run_id = int(run_row[0])
+
+                # 7. Persist decisions
+                s_map = {s.story_id: s for s in uncached_stories}
+                for res in new_valid_results:
+                    st = s_map[res.story_id]
+                    # Scope decision
+                    await write_conn.execute(
+                        """
+                        INSERT INTO story_edition_scope_decisions (
+                            triage_run_id,
+                            story_id,
+                            edition_id,
+                            latest_assignment_id,
+                            scope_version,
+                            scope_config_hash,
+                            scope_class,
+                            confidence,
+                            reason
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (
+                            story_id,
+                            latest_assignment_id,
+                            scope_version,
+                            scope_config_hash
+                        ) DO NOTHING
+                        """,
+                        (
+                            run_id,
+                            res.story_id,
+                            edition_id,
+                            st.latest_assignment_id,
+                            SCOPE_VERSION,
+                            scope_hash,
+                            res.scope,
+                            res.scope_confidence,
+                            res.scope_reason,
+                        ),
+                    )
+
+                    # Gate V2 decision
+                    brief_json = (
+                        json.dumps(res.brief_payload.to_dict()) if res.brief_payload else None
+                    )
+                    await write_conn.execute(
+                        """
+                        INSERT INTO story_event_triage_decisions (
+                            run_id, story_id, latest_assignment_id, triage_version,
+                            scope_config_hash, decision, retention, enrichment,
+                            exclusion_reason, confidence, reason, brief_payload
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (story_id, latest_assignment_id, triage_version, scope_config_hash)
+                        DO UPDATE SET
+                            decision = EXCLUDED.decision,
+                            retention = EXCLUDED.retention,
+                            enrichment = EXCLUDED.enrichment,
+                            exclusion_reason = EXCLUDED.exclusion_reason,
+                            confidence = EXCLUDED.confidence,
+                            reason = EXCLUDED.reason,
+                            brief_payload = EXCLUDED.brief_payload
+                        """,
+                        (
+                            run_id,
+                            res.story_id,
+                            st.latest_assignment_id,
+                            TRIAGE_VERSION,
+                            scope_hash,
+                            res.decision,
+                            res.retention,
+                            res.enrichment,
+                            res.exclusion_reason,
+                            res.confidence,
+                            res.reason,
+                            brief_json,
+                        ),
+                    )
+        except Exception as exc:
+            try:
+                async with _get_conn() as err_conn:
+                    await err_conn.execute(
+                        """
+                        INSERT INTO story_event_triage_runs (
+                            triage_version, provider, model, prompt_hash, story_count, input_chars, status, error_kind, completed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, 'failed', %s, now())
+                        """,
+                        (
+                            TRIAGE_VERSION,
+                            str(provider_name),
+                            str(model_name),
+                            prompt_hash,
+                            len(uncached_stories),
+                            len(user_prompt),
+                            type(exc).__name__,
+                        ),
+                    )
             except Exception as log_exc:
                 self.logger.warning("Failed to record failed triage run: %s", log_exc)
             self.logger.warning("Story triage batch failed: %s; deferring stories", exc)
             return StoryGateBatchResult(
                 results=tuple(valid_results),
                 deferred_story_ids=tuple(s.story_id for s in uncached_stories),
-            )
-
-        # 7. Persist decisions
-        s_map = {s.story_id: s for s in uncached_stories}
-        for res in new_valid_results:
-            st = s_map[res.story_id]
-            # Scope decision
-            await conn.execute(
-                """
-                INSERT INTO story_edition_scope_decisions (
-                    triage_run_id,
-                    story_id,
-                    edition_id,
-                    latest_assignment_id,
-                    scope_version,
-                    scope_config_hash,
-                    scope_class,
-                    confidence,
-                    reason
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (
-                    story_id,
-                    latest_assignment_id,
-                    scope_version,
-                    scope_config_hash
-                ) DO NOTHING
-                """,
-                (
-                    run_id,
-                    res.story_id,
-                    edition_id,
-                    st.latest_assignment_id,
-                    SCOPE_VERSION,
-                    scope_hash,
-                    res.scope,
-                    res.scope_confidence,
-                    res.scope_reason,
-                ),
-            )
-
-            # Gate V2 decision
-            brief_json = json.dumps(res.brief_payload.to_dict()) if res.brief_payload else None
-            await conn.execute(
-                """
-                INSERT INTO story_event_triage_decisions (
-                    run_id, story_id, latest_assignment_id, triage_version,
-                    scope_config_hash, decision, retention, enrichment,
-                    exclusion_reason, confidence, reason, brief_payload
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (story_id, latest_assignment_id, triage_version, scope_config_hash)
-                DO UPDATE SET
-                    decision = EXCLUDED.decision,
-                    retention = EXCLUDED.retention,
-                    enrichment = EXCLUDED.enrichment,
-                    exclusion_reason = EXCLUDED.exclusion_reason,
-                    confidence = EXCLUDED.confidence,
-                    reason = EXCLUDED.reason,
-                    brief_payload = EXCLUDED.brief_payload
-                """,
-                (
-                    run_id,
-                    res.story_id,
-                    st.latest_assignment_id,
-                    TRIAGE_VERSION,
-                    scope_hash,
-                    res.decision,
-                    res.retention,
-                    res.enrichment,
-                    res.exclusion_reason,
-                    res.confidence,
-                    res.reason,
-                    brief_json,
-                ),
             )
 
         all_results_by_id = {r.story_id: r for r in valid_results + new_valid_results}

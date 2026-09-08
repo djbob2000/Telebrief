@@ -160,6 +160,7 @@ async def coalesce_dirty_stories_task(
         ai_cascade=ai_provider,
         cluster_repo=cluster_repo,
         model=config.settings.ai_model,
+        uow=runtime.uow,
     )
     analysis_service = EventAnalysisService(
         ai_cascade=ai_provider,
@@ -167,6 +168,7 @@ async def coalesce_dirty_stories_task(
         story_repo=story_repo,
         fragment_repo=fragment_repo,
         model=config.settings.ai_model,
+        uow=runtime.uow,
     )
     brief_service = EventBriefService(
         story_repo=story_repo,
@@ -219,19 +221,21 @@ async def coalesce_dirty_stories_task(
             "analyzed": 0,
         }
         async with triage_sem:
-            async with runtime.uow.transaction() as batch_conn:
-                batch_result = await triage_service.triage_stories_batch(
-                    batch_conn,
-                    gate_batch,
-                    edition_id=cur_ed_id,
-                    scope_config=sc_cfg,
-                    scope_hash=sc_hsh,
-                    excerpt_chars=cfg.triage_excerpt_chars,
-                    min_ignore_confidence=cfg.triage_min_ignore_confidence,
-                )
-                b_stats["triaged"] = len(batch_result.results)
-                results_by_id = {item.story_id: item for item in batch_result.results}
+            batch_result = await triage_service.triage_stories_batch(
+                None,
+                gate_batch,
+                edition_id=cur_ed_id,
+                scope_config=sc_cfg,
+                scope_hash=sc_hsh,
+                excerpt_chars=cfg.triage_excerpt_chars,
+                min_ignore_confidence=cfg.triage_min_ignore_confidence,
+            )
+            b_stats["triaged"] = len(batch_result.results)
+            results_by_id = {item.story_id: item for item in batch_result.results}
 
+            stories_to_analyze: list[StoryClusterState] = []
+
+            async with runtime.uow.transaction() as persist_conn:
                 for state in gate_batch:
                     if state.story_id in batch_result.deferred_story_ids:
                         b_stats["deferred"] += 1
@@ -245,7 +249,7 @@ async def coalesce_dirty_stories_task(
                     if result.scope == "OUT_OF_SCOPE":
                         b_stats["scope_out_of_scope"] += 1
                         await cluster_repo.mark_cluster_processed_without_analysis(
-                            batch_conn,
+                            persist_conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
                         )
@@ -254,7 +258,7 @@ async def coalesce_dirty_stories_task(
                     if result.scope == "UNCERTAIN":
                         b_stats["scope_uncertain"] += 1
                         await cluster_repo.mark_cluster_processed_without_analysis(
-                            batch_conn,
+                            persist_conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
                         )
@@ -269,7 +273,7 @@ async def coalesce_dirty_stories_task(
 
                     if result.retention == "DROP":
                         await cluster_repo.mark_cluster_processed_without_analysis(
-                            batch_conn,
+                            persist_conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
                         )
@@ -277,7 +281,7 @@ async def coalesce_dirty_stories_task(
 
                     # In-scope KEEP: persist brief revision first
                     await brief_service.persist_brief(
-                        batch_conn,
+                        persist_conn,
                         story_id=state.story_id,
                         assignment_id=state.latest_assignment_id,
                         payload=result.brief_payload,
@@ -292,7 +296,7 @@ async def coalesce_dirty_stories_task(
 
                     if effective_enrichment == "BRIEF":
                         await cluster_repo.mark_cluster_processed_without_analysis(
-                            batch_conn,
+                            persist_conn,
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
                         )
@@ -306,14 +310,17 @@ async def coalesce_dirty_stories_task(
                     ):
                         continue
 
-                    rev = await analysis_service.analyze_story(
-                        batch_conn,
-                        state.story_id,
-                        max_representative_fragments=cfg.representative_fragment_limit,
-                        max_input_chars=cfg.analysis_max_input_chars,
-                    )
-                    if rev is not None:
-                        b_stats["analyzed"] += 1
+                    stories_to_analyze.append(state)
+
+            for state in stories_to_analyze:
+                rev = await analysis_service.analyze_story(
+                    None,
+                    state.story_id,
+                    max_representative_fragments=cfg.representative_fragment_limit,
+                    max_input_chars=cfg.analysis_max_input_chars,
+                )
+                if rev is not None:
+                    b_stats["analyzed"] += 1
 
         return b_stats
 

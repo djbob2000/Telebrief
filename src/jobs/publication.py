@@ -32,6 +32,7 @@ PUBLICATION_RETRY_STRATEGY = procrastinate.RetryStrategy(
     name=SELECT_STORIES_TASK_NAME,
     queue=PUBLICATION_QUEUE,
     retry=PUBLICATION_RETRY_STRATEGY,
+    lock="select_stories_for_publication:{run_id}",
     pass_context=True,
 )
 async def select_stories_for_publication(context: Any, run_id: int) -> None:
@@ -47,6 +48,7 @@ async def select_stories_for_publication(context: Any, run_id: int) -> None:
     name=GENERATE_PUBLICATION_TASK_NAME,
     queue=PUBLICATION_QUEUE,
     retry=PUBLICATION_RETRY_STRATEGY,
+    lock="generate_publication:{run_id}",
     pass_context=True,
 )
 async def generate_publication(context: Any, run_id: int) -> None:
@@ -71,6 +73,7 @@ async def generate_publication(context: Any, run_id: int) -> None:
     name=PREPARE_DELIVERY_PAYLOADS_TASK_NAME,
     queue=PUBLICATION_QUEUE,
     retry=PUBLICATION_RETRY_STRATEGY,
+    lock="prepare_delivery_payloads:{publication_id}",
     pass_context=True,
 )
 async def prepare_delivery_payloads(context: Any, publication_id: int) -> None:
@@ -86,6 +89,7 @@ async def prepare_delivery_payloads(context: Any, publication_id: int) -> None:
     name=DELIVER_PAYLOAD_TASK_NAME,
     queue=PUBLICATION_QUEUE,
     retry=PUBLICATION_RETRY_STRATEGY,
+    lock="deliver_publication_payload:{delivery_id}",
     pass_context=True,
 )
 async def deliver_publication_payload(context: Any, delivery_id: int) -> None:
