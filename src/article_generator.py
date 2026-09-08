@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import datetime as dt
 import json
 import logging
 import re
@@ -1004,26 +1003,15 @@ class ArticleGenerator:
 
         if coverage_plan is None:
             if is_longitudinal and article_ctx.story_cards:
-                from collections import defaultdict
-
                 from src.publication.story_threads import (
                     build_longitudinal_coverage_plan,
                     cluster_stories_into_threads,
+                    extract_story_thread_maps,
                 )
 
-                story_dates_map: dict[str, list[dt.datetime | dt.date]] = defaultdict(list)
-                story_sups_map: dict[str, list[str]] = defaultdict(list)
-                for sup in article_ctx.support_index:
-                    sid = getattr(sup, "story_id", "") or ""
-                    if not sid:
-                        m = re.search(r"story:\d+", sup.support_id)
-                        if m:
-                            sid = m.group(0)
-                    if sid:
-                        story_sups_map[sid].append(sup.support_id)
-                        if sup.observed_at:
-                            story_dates_map[sid].append(sup.observed_at)
-
+                story_dates_map, story_sups_map = extract_story_thread_maps(
+                    article_ctx.support_index
+                )
                 threads = cluster_stories_into_threads(
                     cards=article_ctx.story_cards,
                     story_dates=story_dates_map,
@@ -1046,127 +1034,97 @@ class ArticleGenerator:
 
         from src.publication.article_finalization import ArticleFinalizer
 
-        max_writer_attempts = 1
         writer_draft: StructuredArticleDraft | None = None
         writer_error: Exception | None = None
         writer_attempt_id = 0
-        current_user_prompt = user_prompt
 
         quote_allowlist = build_article_quote_allowlist(article_ctx)
 
-        for writer_try in range(1, max_writer_attempts + 1):
-            if attempt_observer is not None:
-                writer_attempt_id = await attempt_observer.attempt_started(
-                    "writer",
-                    provider=self.config.settings.ai_provider,
-                    model=self.model,
-                    metadata={"attempt": writer_try},
-                )
+        if attempt_observer is not None:
+            writer_attempt_id = await attempt_observer.attempt_started(
+                "writer",
+                provider=self.config.settings.ai_provider,
+                model=self.model,
+                metadata={"attempt": 1},
+            )
 
-            try:
-                article_temp = getattr(
-                    getattr(self.config.settings, "article", None), "temperature", 0.3
-                )
-                response = await self.provider.chat_completion(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": current_user_prompt},
-                    ],
-                    model=self.model,
-                    temperature=article_temp,
-                    max_tokens=self.config.settings.article.editorial_writer_max_output_tokens,
-                    reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
-                    response_format={"type": "json_object"},
-                )
-                raw_parsed = self._parse_event_article_response_json(response)
-                parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
-                candidate_draft = StructuredArticleDraft.from_dict(
-                    parsed, quote_allowlist=quote_allowlist
-                )
-                candidate_val = validate_article_draft(
-                    candidate_draft,
-                    article_ctx,
-                    config=editorial_config,
-                    length_profile=length_profile,
-                )
-                if candidate_val.is_valid:
-                    writer_draft = candidate_draft
-                    writer_error = None
-                    break
-                else:
-                    self.logger.warning(
-                        "Writer attempt %d produced invalid draft: %s",
-                        writer_try,
-                        list(candidate_val.violations)[:5],
-                    )
-                    writer_draft = candidate_draft
-
-                    # Targeted copy-editor / fact-checker pass
-                    if getattr(editorial_config, "article_editor_enabled", False):
-                        from src.publication.article_editor import ArticleEditor
-
-                        editor_max_tokens = getattr(
-                            getattr(self.config.settings, "article", None),
-                            "editorial_repair_max_output_tokens",
-                            8192,
-                        )
-                        editor = ArticleEditor(
-                            provider=self.provider,
-                            model=self.model,
-                            max_output_tokens=editor_max_tokens,
-                        )
-                        editor_attempts = getattr(
-                            editorial_config, "article_editor_max_attempts", 2
-                        )
-                        edited_draft, edited_val = await editor.edit_draft(
-                            candidate_draft,
-                            candidate_val,
-                            article_ctx,
-                            config=editorial_config,
-                            length_profile=length_profile,
-                            attempt_observer=attempt_observer,
-                            max_attempts=editor_attempts,
-                        )
-                        if edited_val.is_valid:
-                            self.logger.info(
-                                "ArticleEditor successfully resolved validation issues; draft accepted"
-                            )
-                            writer_draft = edited_draft
-                            candidate_val = edited_val
-                            writer_error = None
-                            break
-                        else:
-                            writer_draft = edited_draft
-                            candidate_val = edited_val
-
-                    if writer_try < max_writer_attempts:
-                        blocking_issues = [iss for iss in candidate_val.issues if iss.blocking]
-                        issue_lines = [
-                            f"- [{iss.unit_id}] {iss.message}" for iss in blocking_issues[:6]
-                        ]
-                        violations_summary = "\n".join(issue_lines)
-                        current_user_prompt = (
-                            f"{user_prompt}\n\n"
-                            f"### ВНИМАНИЕ: Предыдущий черновик отклонен валидатором со следующими ошибками:\n"
-                            f"{violations_summary}\n\n"
-                            f"ТРЕБОВАНИЯ ДЛЯ ИСПРАВЛЕНИЯ ЧЕРНОВИКА:\n"
-                            f"1. Не придумывайте время (например, 21:00, 22:00) или даты, если их нет в тексте фактов.\n"
-                            f"2. Не используйте причинные обороты ('из-за', 'вследствие', 'причиной стало').\n"
-                            f"3. Не ставьте кавычки вокруг названий (школ, клубов, магазинов) — используйте косвенную речь без кавычек.\n"
-                            f"4. Используйте ТОЛЬКО точные support_id из предоставленного списка фактов. Не выдумывайте ID."
-                        )
-            except Exception as exc:
+        try:
+            article_temp = getattr(
+                getattr(self.config.settings, "article", None), "temperature", 0.3
+            )
+            response = await self.provider.chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model=self.model,
+                temperature=article_temp,
+                max_tokens=self.config.settings.article.editorial_writer_max_output_tokens,
+                reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
+                response_format={"type": "json_object"},
+            )
+            raw_parsed = self._parse_event_article_response_json(response)
+            parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
+            candidate_draft = StructuredArticleDraft.from_dict(
+                parsed, quote_allowlist=quote_allowlist
+            )
+            candidate_val = validate_article_draft(
+                candidate_draft,
+                article_ctx,
+                config=editorial_config,
+                length_profile=length_profile,
+            )
+            if candidate_val.is_valid:
+                writer_draft = candidate_draft
+                writer_error = None
+            else:
                 self.logger.warning(
-                    "Event article writer execution attempt %d failed (%s: %s)",
-                    writer_try,
-                    type(exc).__name__,
-                    exc,
+                    "Writer attempt produced invalid draft: %s",
+                    list(candidate_val.violations)[:5],
                 )
-                if isinstance(exc, ProviderCascadeError) and writer_try >= max_writer_attempts:
-                    raise
-                writer_error = exc
-                if writer_try >= max_writer_attempts:
-                    break
+                writer_draft = candidate_draft
+
+                # Targeted copy-editor / fact-checker pass
+                if getattr(editorial_config, "article_editor_enabled", False):
+                    from src.publication.article_editor import ArticleEditor
+
+                    editor_max_tokens = getattr(
+                        getattr(self.config.settings, "article", None),
+                        "editorial_repair_max_output_tokens",
+                        8192,
+                    )
+                    editor = ArticleEditor(
+                        provider=self.provider,
+                        model=self.model,
+                        max_output_tokens=editor_max_tokens,
+                    )
+                    editor_attempts = getattr(editorial_config, "article_editor_max_attempts", 2)
+                    edited_draft, edited_val = await editor.edit_draft(
+                        candidate_draft,
+                        candidate_val,
+                        article_ctx,
+                        config=editorial_config,
+                        length_profile=length_profile,
+                        attempt_observer=attempt_observer,
+                        max_attempts=editor_attempts,
+                    )
+                    if edited_val.is_valid:
+                        self.logger.info(
+                            "ArticleEditor successfully resolved validation issues; draft accepted"
+                        )
+                        writer_draft = edited_draft
+                        writer_error = None
+                    else:
+                        writer_draft = edited_draft
+        except Exception as exc:
+            self.logger.warning(
+                "Event article writer execution failed (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+            if isinstance(exc, ProviderCascadeError):
+                raise
+            writer_error = exc
 
         finalization_result = await ArticleFinalizer().finalize(
             writer_draft=writer_draft,

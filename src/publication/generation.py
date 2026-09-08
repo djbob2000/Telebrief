@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -34,6 +36,44 @@ from src.publication.rubrics import (
 )
 
 logger = logging.getLogger(__name__)
+
+_MONTHS_RU = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+
+def compute_digest_allowed_terms(
+    all_draft_support_texts: Sequence[str],
+    snapshot_at: dt.datetime | None = None,
+) -> tuple[str, ...]:
+    """Compute allowed context terms (edition tokens + date window terms) for digest validation."""
+    edition_tokens: set[str] = {
+        tok.lower()
+        for st in all_draft_support_texts
+        for tok in re.findall(r"[\w-]+", st)
+        if len(tok) >= 2
+    }
+    window_terms: set[str] = set()
+    if snapshot_at:
+        for offset in range(3):
+            cur_d = (snapshot_at - dt.timedelta(days=offset)).date()
+            window_terms.add(cur_d.strftime("%d.%m"))
+            window_terms.add(str(cur_d.day))
+            m_name = _MONTHS_RU[cur_d.month - 1]
+            window_terms.add(m_name)
+            window_terms.add(f"{cur_d.day} {m_name}")
+    return tuple(edition_tokens | window_terms)
 
 
 class PublicationGenerationService:
@@ -359,40 +399,9 @@ class PublicationGenerationService:
                                 frozen_input=frozen,
                             )
                             all_draft_support_texts = list(support_text_index.values())
-                            import datetime as _dt
-                            import re as _re
-
-                            edition_tokens: set[str] = {
-                                tok.lower()
-                                for st in all_draft_support_texts
-                                for tok in _re.findall(r"[\w-]+", st)
-                                if len(tok) >= 2
-                            }
-                            window_terms: set[str] = set()
-                            if getattr(run, "snapshot_at", None):
-                                s_at = run.snapshot_at
-                                months_ru = [
-                                    "января",
-                                    "февраля",
-                                    "марта",
-                                    "апреля",
-                                    "мая",
-                                    "июня",
-                                    "июля",
-                                    "августа",
-                                    "сентября",
-                                    "октября",
-                                    "ноября",
-                                    "декабря",
-                                ]
-                                for offset in range(3):
-                                    cur_d = (s_at - _dt.timedelta(days=offset)).date()
-                                    window_terms.add(cur_d.strftime("%d.%m"))
-                                    window_terms.add(str(cur_d.day))
-                                    m_name = months_ru[cur_d.month - 1]
-                                    window_terms.add(m_name)
-                                    window_terms.add(f"{cur_d.day} {m_name}")
-                            allowed_digest_terms = tuple(edition_tokens | window_terms)
+                            allowed_digest_terms = compute_digest_allowed_terms(
+                                all_draft_support_texts, getattr(run, "snapshot_at", None)
+                            )
 
                             val_res = validate_digest_narrative(
                                 draft_cand,
@@ -519,40 +528,9 @@ class PublicationGenerationService:
                             frozen_input=frozen,
                         )
                         all_draft_support_texts = list(support_text_index.values())
-                        import datetime as _dt
-                        import re as _re
-
-                        det_edition_tokens: set[str] = {
-                            tok.lower()
-                            for st in all_draft_support_texts
-                            for tok in _re.findall(r"[\w-]+", st)
-                            if len(tok) >= 2
-                        }
-                        det_window_terms: set[str] = set()
-                        if getattr(run, "snapshot_at", None):
-                            s_at = run.snapshot_at
-                            months_ru = [
-                                "января",
-                                "февраля",
-                                "марта",
-                                "апреля",
-                                "мая",
-                                "июня",
-                                "июля",
-                                "августа",
-                                "сентября",
-                                "октября",
-                                "ноября",
-                                "декабря",
-                            ]
-                            for offset in range(3):
-                                cur_d = (s_at - _dt.timedelta(days=offset)).date()
-                                det_window_terms.add(cur_d.strftime("%d.%m"))
-                                det_window_terms.add(str(cur_d.day))
-                                m_name = months_ru[cur_d.month - 1]
-                                det_window_terms.add(m_name)
-                                det_window_terms.add(f"{cur_d.day} {m_name}")
-                        allowed_digest_terms = tuple(det_edition_tokens | det_window_terms)
+                        allowed_digest_terms = compute_digest_allowed_terms(
+                            all_draft_support_texts, getattr(run, "snapshot_at", None)
+                        )
 
                         final_digest_draft = build_deterministic_digest_draft(
                             cards=frozen.analysis.cards,

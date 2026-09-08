@@ -132,3 +132,30 @@ def test_build_longitudinal_coverage_plan_thematic_chapters():
     sec_titles = [s.title.lower() for s in plan.sections]
     assert any("инфраструктура" in st or "жкх" in st for st in sec_titles)
     assert any("транспорт" in st for st in sec_titles)
+
+
+def test_extract_story_thread_maps():
+    from dataclasses import dataclass
+
+    from src.publication.story_threads import extract_story_thread_maps
+
+    @dataclass
+    class FakeSupport:
+        support_id: str
+        story_id: str = ""
+        observed_at: dt.datetime | None = None
+
+    now = dt.datetime(2026, 9, 1, 10, 0, tzinfo=dt.timezone.utc)
+    supports = [
+        FakeSupport(support_id="sup:1", story_id="story:1", observed_at=now),
+        FakeSupport(support_id="story:2:ev:1", story_id="", observed_at=now),
+        FakeSupport(support_id="orphan_sup", story_id=""),
+    ]
+
+    dates_map, sups_map = extract_story_thread_maps(supports)
+    assert "story:1" in dates_map
+    assert dates_map["story:1"] == [now]
+    assert sups_map["story:1"] == ["sup:1"]
+    assert "story:2" in sups_map
+    assert sups_map["story:2"] == ["story:2:ev:1"]
+    assert "orphan_sup" not in sups_map

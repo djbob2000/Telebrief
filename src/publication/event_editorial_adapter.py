@@ -546,28 +546,17 @@ class EventEditorialAdapter:
             )
 
             if run.publication_type in ("weekly_article", "monthly_article") and story_cards:
-                import re
-                from collections import defaultdict
                 from dataclasses import replace
 
                 from src.publication.story_threads import (
                     build_longitudinal_coverage_plan,
                     cluster_stories_into_threads,
+                    extract_story_thread_maps,
                 )
 
-                story_dates_map: dict[str, list[dt.datetime | dt.date]] = defaultdict(list)
-                story_sups_map: dict[str, list[str]] = defaultdict(list)
-                for sup in article_ctx.support_index:
-                    sid = getattr(sup, "story_id", "") or ""
-                    if not sid:
-                        m = re.search(r"story:\d+", sup.support_id)
-                        if m:
-                            sid = m.group(0)
-                    if sid:
-                        story_sups_map[sid].append(sup.support_id)
-                        if sup.observed_at:
-                            story_dates_map[sid].append(sup.observed_at)
-
+                story_dates_map, story_sups_map = extract_story_thread_maps(
+                    article_ctx.support_index
+                )
                 threads = cluster_stories_into_threads(
                     cards=story_cards,
                     story_dates=story_dates_map,

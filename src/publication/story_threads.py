@@ -554,3 +554,25 @@ def build_longitudinal_coverage_plan(
         stories=tuple(story_coverages),
         sections=tuple(sections),
     )
+
+
+def extract_story_thread_maps(
+    support_index: Sequence[Any],
+) -> tuple[dict[str, list[dt.datetime | dt.date]], dict[str, list[str]]]:
+    """Extract story dates and support IDs mappings from article support index."""
+    story_dates_map: dict[str, list[dt.datetime | dt.date]] = defaultdict(list)
+    story_sups_map: dict[str, list[str]] = defaultdict(list)
+    for sup in support_index:
+        sid = getattr(sup, "story_id", "") or ""
+        if not sid:
+            m = re.search(r"story:\d+", getattr(sup, "support_id", ""))
+            if m:
+                sid = m.group(0)
+        if sid:
+            sup_id = getattr(sup, "support_id", "")
+            if sup_id:
+                story_sups_map[sid].append(sup_id)
+            observed = getattr(sup, "observed_at", None)
+            if observed:
+                story_dates_map[sid].append(observed)
+    return story_dates_map, story_sups_map
