@@ -1535,12 +1535,8 @@ class DigestNarrativeWriter:
         max_chars: int = 3900,
         target_chars: int = 3500,
     ) -> tuple[str, DigestNarrativeDraft]:
-        """Synthesize journalistic digest in two passes: full draft, then conditional AI condensation if > max_chars."""
-        from src.publication.digest_chokepoint import filter_digest_candidate_cards
-
-        filtered_cards = filter_digest_candidate_cards(cards)
         cards_text_blocks = []
-        for c in filtered_cards:
+        for c in cards:
             if not c.topic:
                 continue
             facts = [f.text for f in getattr(c, "hard_facts", ()) if f.text]
@@ -1639,7 +1635,7 @@ class DigestNarrativeWriter:
 
         draft = parse_journalistic_markdown_to_draft(
             clean_draft,
-            cards=filtered_cards,
+            cards=cards,
             evidence=evidence,
             custom_rubrics=custom_rubrics,
         )

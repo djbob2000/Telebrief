@@ -106,7 +106,22 @@ def test_civic_reports_and_emergency_services_preserved():
         "С любой острой болью в животе на приёмное отделение горбольницы, в семиэтажку.",
         "Автобус №4 ходит примерно раз в час",
         "В связи с нехваткой донорской крови просим откликнуться, центр крови работает с 7 до 13",
+        "На маршрут №4 в Бердянске вышел новый автобус, стоимость проезда 17 рублей.",
     ]
     for text in civic_cases:
         is_ex, _ = classify_text_noise_or_exclusion(text)
         assert not is_ex, f"Civic report or medical emergency must NOT be excluded: {text!r}"
+
+
+def test_intercity_carrier_and_grey_banking_excluded():
+    ad_cases = [
+        "Пассажирские перевозки через Мелитополь и Бердянск в Грузию, цена 450$. Бронирование по телефону.",
+        "Рейсы в Крым и Ростов, комфортные автобусы, запись ведётся через busking.pro",
+        "Разблокировка банковских карт Приват и Сбер, оформление ЕЦП. Обращаться в telegram: @endofmee_13 или +79900236421.",
+        "Услуги по восстановлению доступа к онлайн-банкингу, помощь с картами.",
+        "Спортшкола им. Назарова проводит набор детей в секцию дзюдо. Бесплатные тренировки для мальчиков и девочек.",
+    ]
+    for text in ad_cases:
+        is_ex, reason = classify_text_noise_or_exclusion(text)
+        assert is_ex, f"Expected exclusion for commercial/ad: {text!r}"
+        assert reason in ("commercial_classified", "directory_payload")

@@ -309,16 +309,11 @@ class PublicationGenerationService:
                                 or getattr(frozen, "edition_name", None)
                                 or "Бердянск"
                             )
-                            from src.publication.digest_chokepoint import (
-                                filter_digest_candidate_cards,
-                            )
                             from src.publication.digest_narrative import format_digest_date_ru
 
                             snap_date = run.snapshot_at or dt.datetime.now(dt.timezone.utc)
                             date_str_ru = format_digest_date_ru(snap_date)
-                            cards_to_synthesize = filter_digest_candidate_cards(
-                                frozen.analysis.cards
-                            )
+                            cards_to_synthesize = frozen.analysis.cards
                             (
                                 journalistic_text,
                                 draft_cand,
