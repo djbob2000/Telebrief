@@ -112,6 +112,7 @@ async def test_coalesce_dirty_stories_task_end_to_end(conn, pool, uow, sample_co
         mode="event_first",
         analysis_quiet_seconds=60,
         analysis_min_interval_seconds=300,
+        analysis_min_new_fragments=1,
         direct_analysis_min_fragments=2,
     )
     sample_config.settings.edition_scopes = {
@@ -589,6 +590,7 @@ async def test_coalesce_retry_cache_cost(conn, pool, uow, sample_config):
         mode="event_first",
         analysis_quiet_seconds=60,
         analysis_min_interval_seconds=0,
+        analysis_min_new_fragments=1,
         direct_analysis_min_fragments=2,
     )
     sample_config.settings.edition_scopes = {

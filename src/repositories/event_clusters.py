@@ -246,6 +246,26 @@ class EventClusterRepository:
             (assignment_id, story_id),
         )
 
+    async def count_fragments_after_assignment(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        story_id: int,
+        last_assignment_id: int | None,
+    ) -> int:
+        """Count this story's assignments newer than the last analyzed assignment."""
+        cursor = await conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM story_fragments
+            WHERE story_id = %s
+              AND (%s::bigint IS NULL OR id > %s::bigint)
+            """,
+            (story_id, last_assignment_id, last_assignment_id),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row is not None else 0
+
     async def get_unique_sources_for_story(
         self, conn: psycopg.AsyncConnection, story_id: int
     ) -> int:

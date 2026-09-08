@@ -19,7 +19,10 @@ from src.processing.event_brief import EventBriefService
 from src.processing.event_clustering import EventClusteringService
 from src.processing.event_triage import StoryTriageService
 from src.processing.fragments import split_into_fragments
+from src.processing.retry_policy import decide_retry
+from src.repositories.event_analysis_runs import EventAnalysisRunRepository
 from src.repositories.event_clusters import EventClusterRepository, StoryClusterState
+from src.repositories.event_retries import EventProcessingRetryRepository
 from src.repositories.fragments import FragmentRepository
 from src.repositories.stories import StoryRepository
 from src.runtime import get_runtime
@@ -143,6 +146,8 @@ async def coalesce_dirty_stories_task(
     cluster_repo = EventClusterRepository()
     story_repo = StoryRepository()
     fragment_repo = FragmentRepository()
+    retry_repo = EventProcessingRetryRepository()
+    analysis_runs_repo = EventAnalysisRunRepository()
 
     ai_provider = getattr(runtime, "provider_cascade", None) or create_provider(
         config.settings.ai_provider,
@@ -189,6 +194,13 @@ async def coalesce_dirty_stories_task(
         "scope_out_of_scope": 0,
         "scope_uncertain": 0,
         "deferred": 0,
+        "retry_backoff_skipped": 0,
+        "retry_exhausted_skipped": 0,
+        "triage_failures": 0,
+        "analysis_failures": 0,
+        "analysis_backoff_skipped": 0,
+        "analysis_exhausted_skipped": 0,
+        "analysis_budget_skipped": 0,
         "triaged": 0,
         "analyzed": 0,
     }
@@ -207,6 +219,16 @@ async def coalesce_dirty_stories_task(
     except (ValueError, TypeError):
         triage_concurrency = 4
     triage_sem = asyncio.Semaphore(triage_concurrency)
+    analysis_claim_lock = asyncio.Lock()
+    remaining_analysis_calls = cfg.rich_analysis_max_calls_per_cycle
+
+    async def _claim_analysis_slot() -> bool:
+        nonlocal remaining_analysis_calls
+        async with analysis_claim_lock:
+            if remaining_analysis_calls <= 0:
+                return False
+            remaining_analysis_calls -= 1
+            return True
 
     async def _process_gate_batch(
         gate_batch: list[StoryClusterState],
@@ -218,6 +240,13 @@ async def coalesce_dirty_stories_task(
             "gated": len(gate_batch),
             "triaged": 0,
             "deferred": 0,
+            "retry_backoff_skipped": 0,
+            "retry_exhausted_skipped": 0,
+            "triage_failures": 0,
+            "analysis_failures": 0,
+            "analysis_backoff_skipped": 0,
+            "analysis_exhausted_skipped": 0,
+            "analysis_budget_skipped": 0,
             "scope_local": 0,
             "scope_direct_impact": 0,
             "scope_out_of_scope": 0,
@@ -237,9 +266,52 @@ async def coalesce_dirty_stories_task(
             b_stats["triaged"] = len(batch_result.results)
             results_by_id = {item.story_id: item for item in batch_result.results}
 
+            deferred_set = set(batch_result.deferred_story_ids)
+            if deferred_set:
+                async with runtime.uow.transaction() as retry_conn:
+                    retry_states = await retry_repo.get_for_assignments(
+                        retry_conn,
+                        [
+                            (state.story_id, state.latest_assignment_id)
+                            for state in gate_batch
+                            if state.story_id in deferred_set
+                        ],
+                        stage="triage",
+                    )
+                    error_kind = batch_result.batch_error_kind or "other"
+                    for state in gate_batch:
+                        if state.story_id not in deferred_set:
+                            continue
+                        previous = retry_states.get((state.story_id, state.latest_assignment_id))
+                        attempt_count = (previous.attempt_count if previous else 0) + 1
+                        decision = decide_retry(
+                            error_kind,
+                            attempt_count=attempt_count,
+                            max_attempts=cfg.triage_max_attempts_per_assignment,
+                            base_backoff_seconds=cfg.provider_retry_backoff_seconds,
+                            max_backoff_seconds=cfg.provider_retry_backoff_max_seconds,
+                            now=now,
+                        )
+                        await retry_repo.record_failure(
+                            retry_conn,
+                            story_id=state.story_id,
+                            latest_assignment_id=state.latest_assignment_id,
+                            stage="triage",
+                            error_kind=error_kind,
+                            next_retry_at=decision.next_retry_at,
+                            exhausted=decision.exhausted,
+                            prompt_hash=batch_result.prompt_hash,
+                        )
+                        b_stats["triage_failures"] += 1
+
             stories_to_analyze: list[StoryClusterState] = []
 
             async with runtime.uow.transaction() as persist_conn:
+                analysis_retry_states = await retry_repo.get_for_assignments(
+                    persist_conn,
+                    [(state.story_id, state.latest_assignment_id) for state in gate_batch],
+                    stage="analysis",
+                )
                 for state in gate_batch:
                     if state.story_id in batch_result.deferred_story_ids:
                         b_stats["deferred"] += 1
@@ -249,6 +321,13 @@ async def coalesce_dirty_stories_task(
                     if result is None:
                         b_stats["deferred"] += 1
                         continue
+
+                    await retry_repo.clear(
+                        persist_conn,
+                        story_id=state.story_id,
+                        latest_assignment_id=state.latest_assignment_id,
+                        stage="triage",
+                    )
 
                     if result.scope == "OUT_OF_SCOPE":
                         b_stats["scope_out_of_scope"] += 1
@@ -307,24 +386,128 @@ async def coalesce_dirty_stories_task(
                         continue
 
                     # effective_enrichment == "ANALYZE"
+                    analysis_retry_state = analysis_retry_states.get(
+                        (state.story_id, state.latest_assignment_id)
+                    )
+                    if (
+                        analysis_retry_state is not None
+                        and analysis_retry_state.exhausted_at is not None
+                    ):
+                        b_stats["analysis_exhausted_skipped"] += 1
+                        await cluster_repo.mark_cluster_processed_without_analysis(
+                            persist_conn,
+                            story_id=state.story_id,
+                            assignment_id=state.latest_assignment_id,
+                        )
+                        continue
+                    if (
+                        analysis_retry_state is not None
+                        and analysis_retry_state.next_retry_at is not None
+                        and analysis_retry_state.next_retry_at > now
+                    ):
+                        b_stats["analysis_backoff_skipped"] += 1
+                        continue
+
                     min_interval_delta = dt.timedelta(seconds=cfg.analysis_min_interval_seconds)
                     if (
                         state.last_analyzed_at is not None
                         and (now - state.last_analyzed_at) < min_interval_delta
                     ):
+                        await cluster_repo.mark_cluster_processed_without_analysis(
+                            persist_conn,
+                            story_id=state.story_id,
+                            assignment_id=state.latest_assignment_id,
+                        )
+                        continue
+
+                    new_fragment_count = await cluster_repo.count_fragments_after_assignment(
+                        persist_conn,
+                        story_id=state.story_id,
+                        last_assignment_id=state.last_analyzed_assignment_id,
+                    )
+                    if new_fragment_count < cfg.analysis_min_new_fragments:
+                        await cluster_repo.mark_cluster_processed_without_analysis(
+                            persist_conn,
+                            story_id=state.story_id,
+                            assignment_id=state.latest_assignment_id,
+                        )
+                        continue
+
+                    calls_last_hour = await analysis_runs_repo.count_calls_since(
+                        persist_conn,
+                        story_id=state.story_id,
+                        since=now - dt.timedelta(hours=1),
+                    )
+                    if calls_last_hour >= cfg.analysis_max_calls_per_story_per_hour:
+                        await cluster_repo.mark_cluster_processed_without_analysis(
+                            persist_conn,
+                            story_id=state.story_id,
+                            assignment_id=state.latest_assignment_id,
+                        )
+                        continue
+
+                    if not await _claim_analysis_slot():
+                        b_stats["analysis_budget_skipped"] += 1
+                        await retry_repo.record_failure(
+                            persist_conn,
+                            story_id=state.story_id,
+                            latest_assignment_id=state.latest_assignment_id,
+                            stage="analysis",
+                            error_kind="cycle_budget",
+                            next_retry_at=now
+                            + dt.timedelta(seconds=cfg.provider_retry_backoff_seconds),
+                            exhausted=False,
+                        )
                         continue
 
                     stories_to_analyze.append(state)
 
             for state in stories_to_analyze:
-                rev = await analysis_service.analyze_story(
+                outcome = await analysis_service.analyze_story_outcome(
                     None,
                     state.story_id,
                     max_representative_fragments=cfg.representative_fragment_limit,
                     max_input_chars=cfg.analysis_max_input_chars,
                 )
-                if rev is not None:
+                if outcome.succeeded:
                     b_stats["analyzed"] += 1
+                    async with runtime.uow.transaction() as success_conn:
+                        await retry_repo.clear(
+                            success_conn,
+                            story_id=state.story_id,
+                            latest_assignment_id=state.latest_assignment_id,
+                            stage="analysis",
+                        )
+                    continue
+
+                b_stats["analysis_failures"] += 1
+                previous = analysis_retry_states.get((state.story_id, state.latest_assignment_id))
+                attempt_count = (previous.attempt_count if previous else 0) + 1
+                decision = decide_retry(
+                    outcome.error_kind or "other",
+                    attempt_count=attempt_count,
+                    max_attempts=cfg.analysis_max_attempts_per_assignment,
+                    base_backoff_seconds=cfg.provider_retry_backoff_seconds,
+                    max_backoff_seconds=cfg.provider_retry_backoff_max_seconds,
+                    now=now,
+                )
+                async with runtime.uow.transaction() as failure_conn:
+                    await retry_repo.record_failure(
+                        failure_conn,
+                        story_id=state.story_id,
+                        latest_assignment_id=state.latest_assignment_id,
+                        stage="analysis",
+                        error_kind=outcome.error_kind or "other",
+                        next_retry_at=decision.next_retry_at,
+                        exhausted=decision.exhausted,
+                        prompt_hash=outcome.prompt_hash,
+                    )
+                    if decision.exhausted:
+                        await cluster_repo.mark_cluster_processed_without_analysis(
+                            failure_conn,
+                            story_id=state.story_id,
+                            assignment_id=state.latest_assignment_id,
+                        )
 
         return b_stats
 
@@ -357,10 +540,35 @@ async def coalesce_dirty_stories_task(
         if not settled:
             continue
 
+        async with runtime.uow.transaction() as retry_conn:
+            retry_states = await retry_repo.get_for_assignments(
+                retry_conn,
+                [(state.story_id, state.latest_assignment_id) for state in settled],
+                stage="triage",
+            )
+
+        eligible: list[StoryClusterState] = []
+        for state in settled:
+            retry_state = retry_states.get((state.story_id, state.latest_assignment_id))
+            if retry_state is not None and retry_state.exhausted_at is not None:
+                stats["retry_exhausted_skipped"] += 1
+                continue
+            if (
+                retry_state is not None
+                and retry_state.next_retry_at is not None
+                and retry_state.next_retry_at > now
+            ):
+                stats["retry_backoff_skipped"] += 1
+                continue
+            eligible.append(state)
+
+        if not eligible:
+            continue
+
         # Prepare batches and run concurrently with Semaphore(4)
         batches = [
-            settled[start : start + cfg.triage_batch_size]
-            for start in range(0, len(settled), cfg.triage_batch_size)
+            eligible[start : start + cfg.triage_batch_size]
+            for start in range(0, len(eligible), cfg.triage_batch_size)
         ]
         batch_results = await asyncio.gather(
             *[_process_gate_batch(b, current_edition_id, scope_config, scope_hash) for b in batches]
@@ -371,6 +579,13 @@ async def coalesce_dirty_stories_task(
                 "gated",
                 "triaged",
                 "deferred",
+                "retry_backoff_skipped",
+                "retry_exhausted_skipped",
+                "triage_failures",
+                "analysis_failures",
+                "analysis_backoff_skipped",
+                "analysis_exhausted_skipped",
+                "analysis_budget_skipped",
                 "scope_local",
                 "scope_direct_impact",
                 "scope_out_of_scope",
