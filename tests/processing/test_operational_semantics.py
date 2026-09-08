@@ -286,12 +286,12 @@ def test_normalize_berdyansk_toponyms_plane_monument_and_lanterns():
     )
 
     t2 = "возле «Літака» лежат новые лихтари"
-    assert normalize_berdyansk_toponyms(t2) == "возле памятника Самолёту лежат новые фонари"
+    assert normalize_berdyansk_toponyms(t2) == "у памятника Самолёту лежат новые фонари"
 
     t3 = "Окупаційна влада відзвітувала про ремонт біля пам'ятника «Літак»"
     assert (
         normalize_berdyansk_toponyms(t3)
-        == "Окупаційна влада відзвітувала про ремонт біля памятника Самолёту"
+        == "Окупаційна влада відзвітувала про ремонт возле памятника Самолёту"
     )
 
 
