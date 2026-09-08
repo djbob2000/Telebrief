@@ -287,5 +287,6 @@ embedding:
   dimensions: 1536
   timeout: 300
 
+# Facebook provider integration (preserved for upcoming releases, currently disabled)
 facebook:
   enabled: false

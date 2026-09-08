@@ -1,4 +1,8 @@
-"""Procrastinate task definitions and execution lock resolvers for Facebook (Plan 5 Task 3 & Task 5)."""
+"""Procrastinate task definitions and execution lock resolvers for Facebook (Plan 5 Task 3 & Task 5).
+
+NOTE: Facebook provider jobs are intentionally preserved while disabled in configuration.
+Activation and verification are planned for upcoming releases.
+"""
 
 from __future__ import annotations
 
