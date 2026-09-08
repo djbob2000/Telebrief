@@ -206,6 +206,16 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
             "settings.pre_publish_lead_minutes must be an int between 0 and 120, "
             f"got {pre_publish_lead_minutes!r}"
         )
+    publication_snapshot_lag_minutes = settings_dict.get("publication_snapshot_lag_minutes", 30)
+    if (
+        not isinstance(publication_snapshot_lag_minutes, int)
+        or isinstance(publication_snapshot_lag_minutes, bool)
+        or not 0 <= publication_snapshot_lag_minutes <= 120
+    ):
+        raise ValueError(
+            "settings.publication_snapshot_lag_minutes must be an int between 0 and 120, "
+            f"got {publication_snapshot_lag_minutes!r}"
+        )
 
     settings = Settings(
         schedule_time=settings_dict.get("schedule_time", "08:00"),
@@ -239,6 +249,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         ),
         vision_mode=vision_mode,
         pre_publish_lead_minutes=pre_publish_lead_minutes,
+        publication_snapshot_lag_minutes=publication_snapshot_lag_minutes,
         article=_parse_article_config(settings_dict),
         event_pipeline=_parse_event_pipeline_config(settings_dict),
         digest_rubrics=_parse_digest_rubrics(settings_dict),

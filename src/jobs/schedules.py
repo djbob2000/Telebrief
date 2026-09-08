@@ -159,7 +159,9 @@ def due_publication_actions(
         # Check if local_minute falls within [publish_at, publish_at + catch_up_window_minutes)
         publish_window_end = publish_at + dt.timedelta(minutes=max(1, catch_up_window_minutes))
         if publish_at <= local_minute < publish_window_end:
-            snapshot_iso = publish_at.astimezone(dt.timezone.utc).isoformat()
+            lag_minutes = getattr(config.settings, "publication_snapshot_lag_minutes", 0)
+            snapshot_at = publish_at - dt.timedelta(minutes=max(0, lag_minutes))
+            snapshot_iso = snapshot_at.astimezone(dt.timezone.utc).isoformat()
             actions.append(
                 DuePublicationAction(
                     kind="publish",
@@ -237,6 +239,38 @@ async def publication_schedule_dispatcher(timestamp: int) -> None:
 
     for action in due_publication_actions(config, scheduled_for):
         if action.kind == "publish":
+            edition_slug = action.task_kwargs.get("edition_slug", DEFAULT_EDITION_SLUG)
+            pub_type = action.task_kwargs.get("publication_type", "")
+            snap_iso = action.task_kwargs.get("snapshot_at", "")
+            req_key = f"scheduled:{edition_slug}:{pub_type}:{snap_iso}"
+
+            already_processed = False
+            try:
+                from src.runtime import get_runtime
+
+                runtime = get_runtime()
+                async with runtime.uow.transaction() as conn:
+                    cur = await conn.execute(
+                        """
+                        SELECT 1 FROM publication_runs
+                        WHERE request_key = %s
+                          AND status IN ('candidates_sealed', 'selected_inputs_sealed', 'generating', 'succeeded')
+                        LIMIT 1
+                        """,
+                        (req_key,),
+                    )
+                    if await cur.fetchone():
+                        already_processed = True
+            except Exception as exc:
+                logger.warning("failed to check existing publication run for %s: %s", req_key, exc)
+
+            if already_processed:
+                logger.debug(
+                    "scheduled publication %s already processed; skipping duplicate deferral",
+                    req_key,
+                )
+                continue
+
             await create_scheduled_publication.configure(
                 queueing_lock=action.queueing_lock,
             ).defer_async(**action.task_kwargs)

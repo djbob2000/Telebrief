@@ -116,7 +116,7 @@ services:
       - "-c"
       - "temp_buffers=4MB"
       - "-c"
-      - "max_connections=10"
+      - "max_connections=50"
       - "-c"
       - "max_parallel_workers=0"
       - "-c"

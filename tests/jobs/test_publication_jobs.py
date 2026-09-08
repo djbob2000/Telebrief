@@ -212,3 +212,68 @@ async def test_create_scheduled_publication_drains_authority_gap(monkeypatch):
     assert len(drain_called) == 1
     assert drain_called[0]["run_id"] == 10
     assert seal_called == [10]
+
+
+@pytest.mark.asyncio
+async def test_create_scheduled_publication_skips_when_already_advanced(monkeypatch):
+    from types import SimpleNamespace
+
+    from src import runtime
+    from src.jobs.publication import create_scheduled_publication
+
+    mock_uow = MagicMock()
+    mock_conn = AsyncMock()
+    mock_uow.transaction.return_value.__aenter__.return_value = mock_conn
+    runtime._runtime = SimpleNamespace(uow=mock_uow)
+
+    mock_edition = SimpleNamespace(id=1, slug="berdyansk")
+    mock_run = SimpleNamespace(
+        id=10,
+        edition_id=1,
+        status="succeeded",
+        eligibility_policy_id=5,
+        snapshot_at=dt.datetime(2026, 9, 7, 6, 0, tzinfo=dt.timezone.utc),
+    )
+
+    drain_called = []
+    seal_called = []
+    defer_called = []
+
+    async def fake_drain(*args, **kwargs):
+        drain_called.append(kwargs)
+        return 0
+
+    async def fake_seal(run_id, conn=None):
+        seal_called.append(run_id)
+
+    mock_service = AsyncMock()
+    mock_service.create_run.return_value = mock_run
+    mock_service.drain_authority_gap.side_effect = fake_drain
+    mock_service.seal_candidates.side_effect = fake_seal
+
+    mock_defer = AsyncMock(side_effect=lambda **kw: defer_called.append(kw))
+
+    monkeypatch.setattr(
+        "src.repositories.editions.EditionRepository.get_by_slug",
+        AsyncMock(return_value=mock_edition),
+    )
+    monkeypatch.setattr(
+        "src.publication.snapshot.PublicationSnapshotService",
+        lambda uow: mock_service,
+    )
+    monkeypatch.setattr(
+        "src.jobs.publication.select_stories_for_publication.configure",
+        lambda connection: SimpleNamespace(defer_async=mock_defer),
+    )
+
+    await create_scheduled_publication(
+        {},
+        edition_slug="berdyansk",
+        publication_type="digest_grouped",
+        snapshot_at="2026-09-07T06:00:00+00:00",
+    )
+
+    # Must skip draining, sealing, and deferring
+    assert len(drain_called) == 0
+    assert len(seal_called) == 0
+    assert len(defer_called) == 0

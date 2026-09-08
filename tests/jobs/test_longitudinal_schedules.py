@@ -83,8 +83,11 @@ def test_due_publication_actions_catch_up_within_window():
     article_acts = [a for a in actions if a.task_kwargs.get("publication_type") == "daily_article"]
     assert len(article_acts) == 1
     assert article_acts[0].kind == "publish"
-    # Scheduled snapshot_at must still be the intended slot (21:15), not the delayed tick
-    expected_snapshot_dt = dt.datetime(2026, 9, 7, 21, 15, tzinfo=tz).astimezone(dt.timezone.utc)
+    # Scheduled snapshot_at must still be the intended slot (21:15 - lag), not the delayed tick
+    lag = dt.timedelta(minutes=config.settings.publication_snapshot_lag_minutes)
+    expected_snapshot_dt = (dt.datetime(2026, 9, 7, 21, 15, tzinfo=tz) - lag).astimezone(
+        dt.timezone.utc
+    )
     assert article_acts[0].task_kwargs["snapshot_at"] == expected_snapshot_dt.isoformat()
 
 

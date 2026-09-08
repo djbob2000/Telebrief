@@ -237,6 +237,7 @@ settings:
   persistent_ingestion: true
   max_messages_per_channel: 5000
   max_prompt_chars: 300000
+  publication_snapshot_lag_minutes: 30
 
   article:
 

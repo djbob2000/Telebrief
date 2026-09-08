@@ -132,6 +132,17 @@ async def create_scheduled_publication(
         request_key=req_key,
         config=config,
     )
+    run_status = getattr(run, "status", "created")
+    if run_status != "created":
+        logger.info(
+            "scheduled publication run %s for %s (%s) already in status %r; skipping duplicate execution",
+            run.id,
+            edition_slug,
+            publication_type,
+            run_status,
+        )
+        return
+
     await service.drain_authority_gap(run_id=run.id)
 
     # Seal and defer share one transaction so a failed deferral rolls the

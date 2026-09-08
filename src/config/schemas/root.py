@@ -62,6 +62,7 @@ class Settings:
     reasoning_effort: str | None = None
     vision_mode: str = "relevance_only"
     pre_publish_lead_minutes: int = 15
+    publication_snapshot_lag_minutes: int = 30
     article: ArticleConfig = field(default_factory=ArticleConfig)
     event_pipeline: EventPipelineConfig = field(default_factory=EventPipelineConfig)
     digest_rubrics: DigestRubricsConfig = field(default_factory=DigestRubricsConfig)
