@@ -263,160 +263,10 @@ _CHAT_CHATTER_RE = re.compile(
 
 
 def normalize_berdyansk_toponyms(text: str) -> str:
-    """Normalize well-known Berdyansk toponym and entity misattributions in Russian-language text."""
-    if not text:
-        return ""
-    res = text
+    """Normalize well-known Berdyansk toponym and entity misattributions in Russian-language text (legacy alias)."""
+    from src.domain.edition_geography import normalize_edition_toponyms
 
-    # 1. Юпитер (местный интернет-провайдер, НЕ район и НЕ микрорайон города)
-    def _sub_jupiter_in(m: re.Match[str]) -> str:
-        is_cap = m.group(0)[0].isupper()
-        return "У провайдера «Юпитер»" if is_cap else "у провайдера «Юпитер»"
-
-    res = re.sub(
-        r"\b[Вв]\s+(?:бердянском\s+)?районе\s+[«\"“]?Юпитер[»\"”]?",
-        _sub_jupiter_in,
-        res,
-    )
-    res = re.sub(
-        r"\b[Вв]\s+[«\"“]?Юпитере[»\"”]?\s+пока\s+(?:ещ[её]\s+)?(?:его\s+)?(?:нет|отсутствует)\b",
-        lambda m: (
-            "У провайдера «Юпитер» пока отсутствует"
-            if m.group(0)[0].isupper()
-            else "у провайдера «Юпитер» пока отсутствует"
-        ),
-        res,
-    )
-    res = re.sub(
-        r"\b(?:[Бб]ердянск(?:ий|ом)\s+)?район(?:е)?\s+[«\"“]?Юпитер[»\"”]?",
-        lambda m: "Провайдер «Юпитер»" if m.group(0)[0].isupper() else "провайдер «Юпитер»",
-        res,
-    )
-    res = re.sub(
-        r"\b[«\"“]?Юпитер[»\"”]?\s+(?:район|микрорайон)\b",
-        "провайдер «Юпитер»",
-        res,
-        flags=re.IGNORECASE,
-    )
-
-    # 2. Памятник Самолёт / Літак (пересечение ул. Орджоникидзе/Довганюка и Пролетарского/Восточного пр.)
-    def _sub_litak(m: re.Match[str]) -> str:
-        prep = m.group(1)
-        is_cap = prep[0].isupper()
-        return "У памятника Самолёту" if is_cap else "у памятника Самолёту"
-
-    res = re.sub(
-        r"\b(У|у|Возле|возле|Около|около|Біля|біля)\s+[«\"“]?[Лл][іiи]так[аa]?[»\"”]?",
-        _sub_litak,
-        res,
-    )
-    res = re.sub(
-        r"\b(?:біля|возле|у)\s+пам[\'’]ятник(?:а)?\s+[«\"“]?[Лл][іiи]так[»\"”]?",
-        "возле памятника Самолёту",
-        res,
-        flags=re.IGNORECASE,
-    )
-    res = re.sub(
-        r"\bпам[\'’]ятник(?:а)?\s+[«\"“]?[Лл][іiи]так[»\"”]?",
-        "памятника Самолёту",
-        res,
-        flags=re.IGNORECASE,
-    )
-    res = re.sub(
-        r"\bпамятник(?:а)?\s+[«\"“]?[Лл][іiи]так[»\"”]?",
-        "памятника Самолёту",
-        res,
-        flags=re.IGNORECASE,
-    )
-
-    # 3. Лихтари / ліхтарі -> фонари
-    res = re.sub(
-        r"\b[Лл]ихтар(?:и|ей|ям|ями|ях|я|ь|ем|ём)?\b",
-        lambda m: (
-            ("Фонар" if m.group(0)[0].isupper() else "фонар")
-            + {
-                "и": "и",
-                "ей": "ей",
-                "ям": "ям",
-                "ями": "ями",
-                "ях": "ях",
-                "я": "я",
-                "ь": "ь",
-                "ем": "ём",
-                "ём": "ём",
-            }.get(m.group(0)[6:].lower(), "и")
-        ),
-        res,
-    )
-    res = re.sub(
-        r"\b[Лл]іхтар(?:і|ів|ям|ями|ях|я|ь|ем|ем)?\b",
-        lambda m: (
-            ("Фонар" if m.group(0)[0].isupper() else "фонар")
-            + {
-                "і": "и",
-                "ів": "ей",
-                "ям": "ям",
-                "ями": "ями",
-                "ях": "ях",
-                "я": "я",
-                "ь": "ь",
-                "ем": "ём",
-            }.get(m.group(0)[6:].lower(), "и")
-        ),
-        res,
-    )
-
-    # 4. Осипенко (отдельное село, не посёлок и не микрорайон)
-    res = re.sub(
-        r"\bв\s+(?:микрорайоне|пос[её]лке)\s+Осипенко\b",
-        "в селе Осипенко",
-        res,
-        flags=re.IGNORECASE,
-    )
-    res = re.sub(
-        r"\b(?:микрорайон(?:е)?|пос[её]лок(?:е)?)\s+Осипенко\b",
-        "село Осипенко",
-        res,
-        flags=re.IGNORECASE,
-    )
-
-    # 5. Гора (нагорная часть города, не микрорайон Гора)
-    res = re.sub(
-        r"\bв\s+микрорайоне\s+Гора\b",
-        "в нагорной части города (на Горе)",
-        res,
-        flags=re.IGNORECASE,
-    )
-    res = re.sub(
-        r"\bмикрорайон(?:е)?\s+Гора\b",
-        "Нагорная часть (Гора)",
-        res,
-        flags=re.IGNORECASE,
-    )
-
-    # 6. Миранда (интернет-провайдер, не гора)
-    res = re.sub(
-        r"\bна\s+горе\s+Миранда\b",
-        "на Горе у провайдера «Миранда»",
-        res,
-        flags=re.IGNORECASE,
-    )
-    res = re.sub(
-        r"\bгора\s+Миранда\b",
-        "провайдер «Миранда» на Горе",
-        res,
-        flags=re.IGNORECASE,
-    )
-
-    # 7. 50 лет СССР (улица 50 лет СССР / Нагорная)
-    res = re.sub(
-        r"\bв\s+районе\s+50[- ]?летия\b",
-        "в районе улицы 50 лет СССР (Нагорной)",
-        res,
-        flags=re.IGNORECASE,
-    )
-
-    return res
+    return normalize_edition_toponyms(text, edition_slug="berdyansk")
 
 
 def sanitize_operational_detail(text: str) -> str:
@@ -489,72 +339,13 @@ _RETAIL_COMMODITY_SALE_PATTERN = re.compile(
 )
 
 
-def normalize_operational_location_and_entity(loc: str, entity: str = "") -> tuple[str, str]:
-    """Normalize well-known Berdyansk colloquial anomalies in location/entity."""
-    loc_clean = loc.strip() if loc else ""
-    ent_clean = entity.strip() if entity else ""
+def normalize_operational_location_and_entity(
+    loc: str, entity: str = "", edition_slug: str = "berdyansk"
+) -> tuple[str, str]:
+    """Normalize colloquial anomalies in location/entity for an edition."""
+    from src.domain.edition_geography import normalize_edition_operational_location_and_entity
 
-    # 1. "гора Миранда" -> loc="Нагорная часть (Гора)", entity="Миранда"
-    if re.search(r"\bгора\s+миранда\b|\bмиранда\s*\(гора\)", loc_clean, re.IGNORECASE):
-        loc_clean = "Нагорная часть (Гора)"
-        if not ent_clean:
-            ent_clean = "Миранда"
-    elif "миранда" in loc_clean.lower() and not ent_clean:
-        ent_clean = "Миранда"
-        loc_clean = re.sub(r"\bмиранда\b", "", loc_clean, flags=re.IGNORECASE).strip(" ,()")
-
-    # 2. "микрорайон Гора" -> "Нагорная часть (Гора)"
-    if re.search(r"\bмикрорайон\s+гора\b|\bмкр\.?\s*гора\b", loc_clean, re.IGNORECASE):
-        loc_clean = re.sub(
-            r"\b(?:микрорайон|мкр\.?)\s+гора\b",
-            "Нагорная часть (Гора)",
-            loc_clean,
-            flags=re.IGNORECASE,
-        )
-
-    # 3. "район 50-летия" / "на 50-летие" / "50 лет" -> "ул. 50 лет СССР (Нагорная)"
-    if re.search(
-        r"\b(?:район\s+50[- ]?летия|на\s+50[- ]?лет(?:ие)?|50[- ]?летия)\b",
-        loc_clean,
-        re.IGNORECASE,
-    ):
-        loc_clean = re.sub(
-            r"\b(?:район\s+50[- ]?летия|на\s+50[- ]?лет(?:ие)?|50[- ]?летия)\b",
-            "ул. 50 лет СССР (Нагорная)",
-            loc_clean,
-            flags=re.IGNORECASE,
-        )
-
-    # 4. "микрорайон/посёлок Осипенко" -> "село Осипенко"
-    if re.search(
-        r"\b(?:микрорайон|мкр\.?|пос[её]лок|пос\.?)\s+осипенко\b", loc_clean, re.IGNORECASE
-    ):
-        loc_clean = re.sub(
-            r"\b(?:микрорайон|мкр\.?|пос[её]лок|пос\.?)\s+осипенко\b",
-            "село Осипенко",
-            loc_clean,
-            flags=re.IGNORECASE,
-        )
-
-    # 5. "Юпитер" / "район Юпитер" -> ent="Юпитер", loc_clean stripped of Юпитер
-    if re.search(r"\b[«\"“]?юпитер[»\"”]?\b", loc_clean, re.IGNORECASE):
-        if not ent_clean:
-            ent_clean = "Юпитер"
-        loc_clean = re.sub(
-            r"\b(?:в\s+)?(?:район(?:е|а)?|микрорайон(?:е|а)?|мкр\.?)?\s*[«\"“]?юпитер[»\"”]?\s*(?:район(?:е|а)?|микрорайон(?:е|а)?|мкр\.?)?\b",
-            "",
-            loc_clean,
-            flags=re.IGNORECASE,
-        ).strip(" ,()")
-
-    # 6. "Самолёт" / "Літак" (пересечение ул. Довганюка и Восточного пр. vs село Осипенко)
-    if re.search(r"\b(?:[Лл][іiи]так(?:а)?|[Сс]амол[её]т(?:а)?)\b", loc_clean, re.IGNORECASE):
-        if re.search(r"\bосипенко\b", loc_clean, re.IGNORECASE):
-            loc_clean = "село Осипенко (памятник Самолёту)"
-        else:
-            loc_clean = "памятник Самолёту (пересечение ул. Довганюка и Восточного пр.)"
-
-    return loc_clean, ent_clean
+    return normalize_edition_operational_location_and_entity(loc, entity, edition_slug=edition_slug)
 
 
 def derive_operational_observations(

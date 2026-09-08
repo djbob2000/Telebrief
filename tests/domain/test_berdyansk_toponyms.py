@@ -4,11 +4,29 @@ from __future__ import annotations
 
 import pytest
 
+from src.domain.edition_geography import (
+    normalize_edition_toponyms,
+)
 from src.processing.operational_semantics import (
     normalize_berdyansk_toponyms,
     normalize_operational_location_and_entity,
     sanitize_operational_detail,
 )
+
+
+@pytest.mark.unit
+def test_edition_aware_toponym_normalization_berdyansk() -> None:
+    text = "В районе Юпитер пока отсутствует оптоволокно."
+    assert (
+        normalize_edition_toponyms(text, edition_slug="berdyansk")
+        == "У провайдера «Юпитер» пока отсутствует оптоволокно."
+    )
+
+
+@pytest.mark.unit
+def test_edition_aware_toponym_normalization_unknown_edition() -> None:
+    text = "В районе Юпитер пока отсутствует оптоволокно."
+    assert normalize_edition_toponyms(text, edition_slug="unknown_city") == text
 
 
 @pytest.mark.unit
