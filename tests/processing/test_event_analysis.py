@@ -287,6 +287,9 @@ async def test_event_analysis_service_workflow(conn, edition, revision):
     assert rev.title == llm_output["headline"]
     assert rev.event_payload["topic"] == llm_output["topic"]
     assert rev.event_payload["affected_areas"] == ["АКЗ", "Мелитопольское шоссе"]
+    call_kwargs = mock_ai.generate_text.call_args.kwargs
+    assert call_kwargs["max_tokens"] == 8_192
+    assert call_kwargs["reasoning_effort"] == "low"
 
     # Check cluster state is no longer dirty
     state = await cluster_repo.get_cluster_state(conn, story_id)

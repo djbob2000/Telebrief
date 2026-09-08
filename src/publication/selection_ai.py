@@ -174,7 +174,8 @@ class AIPublicationSelectionModel:
             messages=messages,
             model=self.model_name,
             temperature=0.2,
-            max_tokens=65536,
+            max_tokens=self.config.settings.publication_editorial.selection_max_output_tokens,
+            reasoning_effort=self.config.settings.publication_editorial.selection_reasoning_effort,
         )
 
         return self._parse_and_validate(

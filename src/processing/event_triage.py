@@ -309,12 +309,16 @@ class StoryTriageService:
         model: str | None = None,
         logger_instance: logging.Logger | None = None,
         uow: Any | None = None,
+        max_output_tokens: int = 12_288,
+        reasoning_effort: str | None = "low",
     ) -> None:
         self.ai = ai_cascade
         self.cluster_repo = cluster_repo or EventClusterRepository()
         self.model = model or "default"
         self.logger = logger_instance or logger
         self.uow = uow
+        self.max_output_tokens = max_output_tokens
+        self.reasoning_effort = reasoning_effort
 
     async def triage_stories_batch(
         self,
@@ -493,7 +497,8 @@ class StoryTriageService:
                     system_prompt=_GATE_V2_SYSTEM_PROMPT,
                     temperature=0.0,
                     json_mode=True,
-                    max_tokens=131072,
+                    max_tokens=self.max_output_tokens,
+                    reasoning_effort=self.reasoning_effort,
                 )
             elif hasattr(self.ai, "chat_completion"):
                 raw_response = await self.ai.chat_completion(
@@ -503,7 +508,8 @@ class StoryTriageService:
                     ],
                     model=self.model,
                     temperature=0.0,
-                    max_tokens=131072,
+                    max_tokens=self.max_output_tokens,
+                    reasoning_effort=self.reasoning_effort,
                     response_format={"type": "json_object"},
                 )
             else:

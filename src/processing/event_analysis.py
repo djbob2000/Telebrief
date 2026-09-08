@@ -109,6 +109,8 @@ class EventAnalysisService:
         model: str | None = None,
         logger_instance: logging.Logger | None = None,
         uow: Any | None = None,
+        max_output_tokens: int = 8_192,
+        reasoning_effort: str | None = "low",
     ) -> None:
         self.ai = ai_cascade
         self.sampler = sampler or RepresentativeEvidenceSampler()
@@ -118,6 +120,8 @@ class EventAnalysisService:
         self.model = model or "default"
         self.logger = logger_instance or logger
         self.uow = uow
+        self.max_output_tokens = max_output_tokens
+        self.reasoning_effort = reasoning_effort
 
     async def analyze_story(
         self,
@@ -253,6 +257,8 @@ class EventAnalysisService:
                     system_prompt=_EVENT_ANALYSIS_SYSTEM_PROMPT,
                     temperature=0.2,
                     json_mode=True,
+                    max_tokens=self.max_output_tokens,
+                    reasoning_effort=self.reasoning_effort,
                 )
             elif hasattr(self.ai, "chat_completion"):
                 raw_response = await self.ai.chat_completion(
@@ -262,7 +268,8 @@ class EventAnalysisService:
                     ],
                     model=self.model,
                     temperature=0.2,
-                    max_tokens=16384,
+                    max_tokens=self.max_output_tokens,
+                    reasoning_effort=self.reasoning_effort,
                     response_format={"type": "json_object"},
                 )
             else:

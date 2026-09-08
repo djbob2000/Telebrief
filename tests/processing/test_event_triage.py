@@ -253,6 +253,9 @@ async def test_story_triage_service_batch_flow(conn, edition, revision):
 
     assert len(batch_res.results) == 3
     assert batch_res.deferred_story_ids == ()
+    call_kwargs = mock_ai.generate_text.call_args.kwargs
+    assert call_kwargs["max_tokens"] == 12_288
+    assert call_kwargs["reasoning_effort"] == "low"
 
     # Check scope decisions in DB
     cursor = await conn.execute(

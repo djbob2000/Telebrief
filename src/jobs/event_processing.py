@@ -161,6 +161,8 @@ async def coalesce_dirty_stories_task(
         cluster_repo=cluster_repo,
         model=config.settings.ai_model,
         uow=runtime.uow,
+        max_output_tokens=cfg.triage_max_output_tokens,
+        reasoning_effort=cfg.triage_reasoning_effort,
     )
     analysis_service = EventAnalysisService(
         ai_cascade=ai_provider,
@@ -169,6 +171,8 @@ async def coalesce_dirty_stories_task(
         fragment_repo=fragment_repo,
         model=config.settings.ai_model,
         uow=runtime.uow,
+        max_output_tokens=cfg.analysis_max_output_tokens,
+        reasoning_effort=cfg.analysis_reasoning_effort,
     )
     brief_service = EventBriefService(
         story_repo=story_repo,
