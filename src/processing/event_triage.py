@@ -12,6 +12,7 @@ from typing import Any, Literal, Mapping
 
 import psycopg
 
+from src.ai_providers import classify_provider_failure
 from src.config_loader import EditionScopeConfig
 from src.domain.event_clusters import StoryClusterState
 from src.domain.event_payload import (
@@ -292,6 +293,8 @@ class StoryGateResult:
 class StoryGateBatchResult:
     results: tuple[StoryGateResult, ...]
     deferred_story_ids: tuple[int, ...]
+    batch_error_kind: str | None = None
+    prompt_hash: str | None = None
 
 
 # Backward compatibility aliases
@@ -908,6 +911,8 @@ class StoryTriageService:
             return StoryGateBatchResult(
                 results=tuple(valid_results),
                 deferred_story_ids=tuple(s.story_id for s in uncached_stories),
+                batch_error_kind=classify_provider_failure(exc),
+                prompt_hash=prompt_hash,
             )
 
         all_results_by_id = {r.story_id: r for r in valid_results + new_valid_results}
@@ -918,6 +923,7 @@ class StoryTriageService:
         return StoryGateBatchResult(
             results=tuple(final_results),
             deferred_story_ids=tuple(deferred_ids),
+            prompt_hash=prompt_hash,
         )
 
     async def _lookup_cached_decisions(
