@@ -29,6 +29,7 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %
 async def run_cli_publication(
     publication_type: str = "digest_grouped",
     edition_slug: str = "berdyansk",
+    hours: int | None = None,
     save_markdown: bool = True,
 ) -> int:
     """Run end-to-end publication pipeline for CLI tools."""
@@ -65,6 +66,7 @@ async def run_cli_publication(
             snapshot_at=now,
             request_key=f"cli:{publication_type}:{now.isoformat()}",
             config=config,
+            lookback_hours_override=hours,
         )
         await snapshot_service.seal_candidates(run.id)
         await selection_service.select(run.id, defer_generation=False)
@@ -149,6 +151,12 @@ def main() -> None:
         help="Edition slug (default: berdyansk)",
     )
     parser.add_argument(
+        "--hours",
+        type=int,
+        default=None,
+        help="Lookback window in hours (overrides configuration default)",
+    )
+    parser.add_argument(
         "--no-save",
         action="store_true",
         help="Do not save markdown file to disk",
@@ -159,6 +167,7 @@ def main() -> None:
         run_cli_publication(
             publication_type=pub_type,
             edition_slug=args.edition,
+            hours=args.hours,
             save_markdown=not args.no_save,
         )
     )

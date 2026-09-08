@@ -15,6 +15,12 @@ from scripts.publish import run_cli_publication
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate and print Telegram digest")
     parser.add_argument("--edition", default="berdyansk", help="Edition slug (default: berdyansk)")
+    parser.add_argument(
+        "--hours",
+        type=int,
+        default=None,
+        help="Lookback window in hours (overrides configuration default)",
+    )
     parser.add_argument("--no-save", action="store_true", help="Do not save markdown file to disk")
     args = parser.parse_args()
 
@@ -22,6 +28,7 @@ def main() -> None:
         run_cli_publication(
             publication_type="digest_grouped",
             edition_slug=args.edition,
+            hours=args.hours,
             save_markdown=not args.no_save,
         )
     )
