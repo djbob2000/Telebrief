@@ -617,6 +617,37 @@ async def test_openrouter_provider_uses_thinking_and_native_max_tokens(mock_logg
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_openrouter_provider_routes_reasoning_effort(mock_logger):
+    """OpenRouter routes reasoning_effort to extra_body.reasoning.effort to avoid infinite reasoning loops."""
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = OpenAIProvider(
+            api_key="sk-test",
+            logger=mock_logger,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Short summary"
+        mock_choice.message.refusal = None
+        mock_choice.finish_reason = "stop"
+        mock_response = MagicMock()
+        mock_response.choices = [mock_choice]
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        provider.client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        await provider.chat_completion(
+            messages=[{"role": "user", "content": "Hello"}],
+            model="openrouter-test-model",
+            reasoning_effort="low",
+        )
+
+        call_kwargs = provider.client.chat.completions.create.call_args.kwargs
+        assert "reasoning_effort" not in call_kwargs
+        assert call_kwargs["extra_body"] == {"reasoning": {"effort": "low"}}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_openai_provider_falls_back_when_reasoning_effort_rejected(mock_logger):
     """When the API rejects reasoning_effort (BadRequestError), the provider retries without it."""
     import httpx

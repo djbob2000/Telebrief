@@ -597,11 +597,21 @@ class OpenAIProvider(AIProvider):
 
         if temperature is not None:
             create_kwargs["temperature"] = temperature
-        if reasoning_effort is not None:
-            create_kwargs["reasoning_effort"] = reasoning_effort
+        if is_openrouter:
+            effort = reasoning_effort or os.environ.get("OPENROUTER_REASONING_EFFORT", "low")
+            max_reas_tokens = os.environ.get("OPENROUTER_REASONING_MAX_TOKENS")
+            if thinking is not False:
+                extra = create_kwargs.setdefault("extra_body", {})
+                if max_reas_tokens and max_reas_tokens.isdigit():
+                    extra["reasoning"] = {"max_tokens": int(max_reas_tokens)}
+                elif effort:
+                    extra["reasoning"] = {"effort": effort}
+        else:
+            if reasoning_effort is not None:
+                create_kwargs["reasoning_effort"] = reasoning_effort
         if thinking is not None:
-            create_kwargs["extra_body"] = {
-                "thinking": {"type": "enabled" if thinking else "disabled"}
+            create_kwargs.setdefault("extra_body", {})["thinking"] = {
+                "type": "enabled" if thinking else "disabled"
             }
         if response_format is not None:
             create_kwargs["response_format"] = response_format
@@ -671,6 +681,19 @@ class OpenAIProvider(AIProvider):
                 return await self.client.chat.completions.create(**create_kwargs)
             except OpenAIBadRequestError as exc:
                 self.logger.warning("retry without reasoning_effort failed: %s", exc)
+
+        if "extra_body" in create_kwargs and "reasoning" in create_kwargs["extra_body"]:
+            self.logger.debug(
+                "extra_body.reasoning rejected by model, retrying without it: %s",
+                original_exc,
+            )
+            create_kwargs["extra_body"].pop("reasoning")
+            if not create_kwargs["extra_body"]:
+                create_kwargs.pop("extra_body")
+            try:
+                return await self.client.chat.completions.create(**create_kwargs)
+            except OpenAIBadRequestError as exc:
+                self.logger.warning("retry without extra_body.reasoning failed: %s", exc)
 
         if "response_format" in create_kwargs:
             create_kwargs.pop("response_format")

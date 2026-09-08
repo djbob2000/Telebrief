@@ -59,6 +59,7 @@ class Settings:
     filters: list[FilterSpec] = field(default_factory=list)
     dedup_topics: bool = False
     persistent_ingestion: bool = False
+    periodic_ingestion_enabled: bool = False
     reasoning_effort: str | None = None
     vision_mode: str = "relevance_only"
     pre_publish_lead_minutes: int = 15

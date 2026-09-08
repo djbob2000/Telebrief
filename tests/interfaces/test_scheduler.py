@@ -66,7 +66,11 @@ def test_due_publication_actions_dispatch(sample_config):
     # At 08:45 UTC -> pre-publish due
     tick_845 = dt.datetime(2026, 8, 23, 8, 45, tzinfo=dt.timezone.utc)
     actions_pre = due_publication_actions(sample_config, tick_845)
-    assert any(a.kind == "pre_publish" for a in actions_pre)
+    pre_acts = [a for a in actions_pre if a.kind == "pre_publish"]
+    assert len(pre_acts) >= 1
+    assert pre_acts[0].queueing_lock.startswith("pre-publish-refresh:digest_grouped:")
+    assert pre_acts[0].task_kwargs.get("publication_type") == "digest_grouped"
+    assert "2026-08-23T09:00:00" in pre_acts[0].task_kwargs.get("publish_at", "")
 
     # At 20:00 UTC -> article due
     tick_20 = dt.datetime(2026, 8, 23, 20, 0, tzinfo=dt.timezone.utc)

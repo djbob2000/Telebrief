@@ -93,6 +93,9 @@ settings:
   schedule_time: "09:00"
   timezone: "Europe/Kyiv"
   lookback_hours: 24
+  pre_publish_lead_minutes: 15
+  periodic_ingestion_enabled: false
+  reasoning_effort: "low"
 
   event_pipeline:
     mode: "event_first"

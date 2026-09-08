@@ -186,6 +186,11 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         raise ValueError(
             f"settings.persistent_ingestion must be a bool, got {type(persistent_ingestion).__name__}"
         )
+    periodic_ingestion_enabled = settings_dict.get("periodic_ingestion_enabled", False)
+    if not isinstance(periodic_ingestion_enabled, bool):
+        raise ValueError(
+            f"settings.periodic_ingestion_enabled must be a bool, got {type(periodic_ingestion_enabled).__name__}"
+        )
     raw_global_filters = settings_dict.get("filters")
     global_filters = _parse_filter_specs(
         raw_global_filters if raw_global_filters is not None else [],
@@ -242,6 +247,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         filters=global_filters,
         dedup_topics=bool(settings_dict.get("dedup_topics", False)),
         persistent_ingestion=persistent_ingestion,
+        periodic_ingestion_enabled=periodic_ingestion_enabled,
         reasoning_effort=(
             str(settings_dict["reasoning_effort"]).strip()
             if settings_dict.get("reasoning_effort") is not None

@@ -31,6 +31,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
+import procrastinate
+
 from src.config_loader import Config
 from src.jobs.app import procrastinate_app
 
@@ -38,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 PUBLICATION_SCHEDULE_DISPATCHER_TASK_NAME = "publication_schedule_dispatcher"
 PUBLICATION_SCHEDULE_DISPATCHER_LOCK = "publication-schedule-dispatcher"
+PRE_PUBLISH_REFRESH_TASK_NAME = "pre_publish_refresh"
 
 PUBLISH_QUEUE = "publication"
 DIGEST_PUBLICATION_TYPE = "digest_grouped"
@@ -180,8 +183,11 @@ def due_publication_actions(
             actions.append(
                 DuePublicationAction(
                     kind="pre_publish",
-                    queueing_lock=f"pre-publish-refresh:{snapshot_key(publish_at)}",
-                    task_kwargs={},
+                    queueing_lock=f"pre-publish-refresh:{publication_type}:{snapshot_key(publish_at)}",
+                    task_kwargs={
+                        "publication_type": publication_type,
+                        "publish_at": snapshot_key(publish_at),
+                    },
                 )
             )
     return actions
@@ -280,10 +286,73 @@ async def publication_schedule_dispatcher(timestamp: int) -> None:
                 action.task_kwargs["snapshot_at"],
             )
         elif action.kind == "pre_publish":
+            pub_type = action.task_kwargs.get("publication_type", "")
+            publish_at = action.task_kwargs.get("publish_at", "")
+            queueing_lock = action.queueing_lock
+
+            already_processed = False
             try:
-                queued = await _fan_out_pre_publish_scans()
-                logger.info("pre-publish refresh deferred %d source scans", queued)
-            except Exception:
-                # The publication itself must still be attempted even when the
-                # opportunistic refresh could not be scheduled.
-                logger.exception("pre-publish refresh fan-out failed")
+                from src.runtime import get_runtime
+
+                runtime = get_runtime()
+                async with runtime.uow.transaction() as conn:
+                    cur = await conn.execute(
+                        """
+                        SELECT 1 FROM procrastinate_jobs
+                        WHERE queueing_lock = %s
+                        LIMIT 1
+                        """,
+                        (queueing_lock,),
+                    )
+                    if await cur.fetchone():
+                        already_processed = True
+            except Exception as exc:
+                logger.warning(
+                    "failed to check existing pre-publish job for %s: %s",
+                    queueing_lock,
+                    exc,
+                )
+
+            if already_processed:
+                logger.debug(
+                    "pre-publish refresh %s already scheduled/processed; skipping duplicate",
+                    queueing_lock,
+                )
+                continue
+
+            try:
+                await pre_publish_refresh.configure(
+                    queueing_lock=queueing_lock,
+                ).defer_async(**action.task_kwargs)
+                logger.info(
+                    "deferred pre-publish refresh for %s at %s",
+                    pub_type,
+                    publish_at,
+                )
+            except procrastinate.exceptions.AlreadyEnqueued:
+                logger.debug(
+                    "pre-publish refresh %s already enqueued; skipping duplicate",
+                    queueing_lock,
+                )
+
+
+@procrastinate_app.task(
+    name=PRE_PUBLISH_REFRESH_TASK_NAME,
+    queue="maintenance",
+)
+async def pre_publish_refresh(publication_type: str, publish_at: str) -> None:
+    """Scan all enabled sources once ahead of a scheduled publication."""
+    try:
+        queued = await _fan_out_pre_publish_scans()
+        logger.info(
+            "pre-publish refresh for %s at %s deferred %d source scans",
+            publication_type,
+            publish_at,
+            queued,
+        )
+    except Exception:
+        logger.exception(
+            "pre-publish refresh fan-out failed for %s at %s",
+            publication_type,
+            publish_at,
+        )

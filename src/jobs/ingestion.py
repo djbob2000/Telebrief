@@ -151,7 +151,7 @@ async def enqueue_source_scan(
             .defer_async(source_id=source_id, trigger=trigger.value)
         )
     except AlreadyEnqueued:
-        logger.info(f"scan-source:{source_id} already queued; skipping duplicate enqueue")
+        logger.debug("scan-source:%s already queued; skipping duplicate enqueue", source_id)
         return None
 
 
@@ -239,6 +239,15 @@ def _rate_limit_backoff_until(batch: CollectionBatch) -> datetime:
 )
 async def dispatch_due_sources(timestamp: int) -> None:
     """Defer scans for every due source; never sleeps inside a worker job."""
+    try:
+        from src.config_loader import load_config
+
+        config = load_config()
+        if not getattr(config.settings, "periodic_ingestion_enabled", True):
+            return
+    except Exception as exc:
+        logger.debug("could not evaluate periodic_ingestion_enabled: %s", exc)
+
     scheduled_at = datetime.fromtimestamp(timestamp, tz=timezone.utc)
     runtime = get_runtime()
     async with runtime.uow.transaction() as conn:
