@@ -2167,7 +2167,13 @@ def test_event_pipeline_config_defaults(tmp_path, mock_env_vars):
     assert ep.embedding_batch_size == 128
     assert ep.direct_analysis_min_fragments == 3
     assert ep.direct_analysis_min_unique_sources == 2
-    assert ep.triage_batch_size == 30
+    assert ep.triage_batch_size == 25
+    assert ep.triage_max_output_tokens == 12_288
+    assert ep.triage_reasoning_effort == "low"
+    assert ep.analysis_max_output_tokens == 8_192
+    assert ep.analysis_reasoning_effort == "low"
+    assert ep.triage_max_attempts_per_assignment == 2
+    assert ep.analysis_max_attempts_per_assignment == 2
     assert ep.triage_excerpt_chars == 320
     assert ep.triage_min_ignore_confidence == 0.95
     assert ep.analysis_quiet_seconds == 120
@@ -2175,6 +2181,7 @@ def test_event_pipeline_config_defaults(tmp_path, mock_env_vars):
     assert ep.analysis_min_new_fragments == 3
     assert ep.analysis_max_calls_per_story_per_hour == 4
     assert ep.provider_retry_backoff_seconds == 300
+    assert ep.provider_retry_backoff_max_seconds == 3_600
     assert ep.analysis_max_input_chars == 24000
     assert ep.representative_fragment_limit == 16
     assert ep.live_batch_size == 100
@@ -2371,6 +2378,8 @@ def test_publication_editorial_config_defaults(temp_config_file, mock_env_vars):
     assert pub_edit.digest_narrative_mode == "deterministic"
     assert pub_edit.digest_narrative_max_cards_per_block == 6
     assert pub_edit.digest_narrative_max_output_tokens == 4096
+    assert pub_edit.selection_max_output_tokens == 4096
+    assert pub_edit.selection_reasoning_effort == "low"
 
 
 @pytest.mark.unit

@@ -8,6 +8,7 @@ from typing import Literal
 
 _DIGEST_RUBRIC_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 EVENT_PIPELINE_MODES = ("event_first",)
+ALLOWED_REASONING_EFFORTS = {"low", "medium", "high"}
 
 
 @dataclass
@@ -111,7 +112,13 @@ class EventPipelineConfig:
     embedding_batch_size: int = 128
     direct_analysis_min_fragments: int = 3
     direct_analysis_min_unique_sources: int = 2
-    triage_batch_size: int = 30
+    triage_batch_size: int = 25
+    triage_max_output_tokens: int = 12_288
+    triage_reasoning_effort: str | None = "low"
+    analysis_max_output_tokens: int = 8_192
+    analysis_reasoning_effort: str | None = "low"
+    triage_max_attempts_per_assignment: int = 2
+    analysis_max_attempts_per_assignment: int = 2
     triage_excerpt_chars: int = 320
     triage_min_ignore_confidence: float = 0.95
     analysis_quiet_seconds: int = 120
@@ -119,11 +126,29 @@ class EventPipelineConfig:
     analysis_min_new_fragments: int = 3
     analysis_max_calls_per_story_per_hour: int = 4
     provider_retry_backoff_seconds: int = 300
+    provider_retry_backoff_max_seconds: int = 3_600
     analysis_max_input_chars: int = 24000
     representative_fragment_limit: int = 16
     rich_analysis_max_calls_per_cycle: int = 40
     live_batch_size: int = 100
     backfill_batch_size: int = 500
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "triage_max_output_tokens",
+            "analysis_max_output_tokens",
+            "triage_max_attempts_per_assignment",
+            "analysis_max_attempts_per_assignment",
+            "provider_retry_backoff_max_seconds",
+        ):
+            if getattr(self, field_name) <= 0:
+                raise ValueError(f"{field_name} must be positive")
+        for field_name in ("triage_reasoning_effort", "analysis_reasoning_effort"):
+            effort = getattr(self, field_name)
+            if effort is not None and effort not in ALLOWED_REASONING_EFFORTS:
+                raise ValueError(
+                    f"{field_name} must be one of {sorted(ALLOWED_REASONING_EFFORTS)} or null"
+                )
 
 
 @dataclass(frozen=True)
@@ -142,6 +167,8 @@ class PublicationEditorialConfig:
     digest_narrative_max_cards_per_block: int = 6
 
     digest_narrative_max_output_tokens: int = 4096
+    selection_max_output_tokens: int = 4096
+    selection_reasoning_effort: str | None = "low"
     digest_city_situation_max_items: int = 7
     digest_city_situation_max_details_per_item: int = 2
     digest_city_situation_max_positive_items: int = 2
@@ -172,6 +199,15 @@ class PublicationEditorialConfig:
             raise ValueError("digest_narrative_max_cards_per_block must be a positive integer")
         if self.digest_narrative_max_output_tokens <= 0:
             raise ValueError("digest_narrative_max_output_tokens must be a positive integer")
+        if self.selection_max_output_tokens <= 0:
+            raise ValueError("selection_max_output_tokens must be a positive integer")
+        if (
+            self.selection_reasoning_effort is not None
+            and self.selection_reasoning_effort not in ALLOWED_REASONING_EFFORTS
+        ):
+            raise ValueError(
+                f"selection_reasoning_effort must be one of {sorted(ALLOWED_REASONING_EFFORTS)} or null"
+            )
         if not (1 <= self.digest_city_situation_max_items <= 12):
             raise ValueError("digest_city_situation_max_items must be between 1 and 12")
         if not (1 <= self.digest_city_situation_max_details_per_item <= 4):

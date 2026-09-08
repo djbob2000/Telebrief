@@ -104,7 +104,15 @@ settings:
     join_similarity: 0.84
     max_cluster_candidates: 20
     embedding_batch_size: 128
-    triage_batch_size: 80
+    triage_batch_size: 25
+    triage_max_output_tokens: 12288
+    triage_reasoning_effort: "low"
+    analysis_max_output_tokens: 8192
+    analysis_reasoning_effort: "low"
+    triage_max_attempts_per_assignment: 2
+    analysis_max_attempts_per_assignment: 2
+    provider_retry_backoff_seconds: 300
+    provider_retry_backoff_max_seconds: 3600
     analysis_quiet_seconds: 120
     analysis_min_interval_seconds: 600
 
@@ -141,6 +149,8 @@ settings:
     digest_narrative_mode: "journalistic"
     digest_narrative_max_cards_per_block: 6
     digest_narrative_max_output_tokens: 4096
+    selection_max_output_tokens: 4096
+    selection_reasoning_effort: "low"
     digest_city_situation_max_items: 7
     digest_city_situation_max_details_per_item: 2
     digest_city_situation_max_positive_items: 2

@@ -10,6 +10,7 @@ from typing import Literal, cast
 
 from src.config.schemas.publication import (
     _DIGEST_RUBRIC_ID_RE,
+    ALLOWED_REASONING_EFFORTS,
     DEFAULT_DIGEST_RUBRIC,
     EVENT_PIPELINE_MODES,
     ArticleConfig,
@@ -536,6 +537,15 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
             )
         return float(v)
 
+    def _val_reasoning_effort(key: str, default: str | None) -> str | None:
+        v = raw.get(key, default)
+        if v is not None and (not isinstance(v, str) or v not in ALLOWED_REASONING_EFFORTS):
+            raise ValueError(
+                f"settings.event_pipeline.{key} must be one of "
+                f"{sorted(ALLOWED_REASONING_EFFORTS)} or null, got {v!r}"
+            )
+        return v
+
     typed_mode = cast(Literal["event_first"], raw_mode)
 
     return EventPipelineConfig(
@@ -547,7 +557,15 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
         embedding_batch_size=_val_pos_int("embedding_batch_size", 128),
         direct_analysis_min_fragments=_val_pos_int("direct_analysis_min_fragments", 3),
         direct_analysis_min_unique_sources=_val_pos_int("direct_analysis_min_unique_sources", 2),
-        triage_batch_size=_val_pos_int("triage_batch_size", 30),
+        triage_batch_size=_val_pos_int("triage_batch_size", 25),
+        triage_max_output_tokens=_val_pos_int("triage_max_output_tokens", 12_288),
+        triage_reasoning_effort=_val_reasoning_effort("triage_reasoning_effort", "low"),
+        analysis_max_output_tokens=_val_pos_int("analysis_max_output_tokens", 8_192),
+        analysis_reasoning_effort=_val_reasoning_effort("analysis_reasoning_effort", "low"),
+        triage_max_attempts_per_assignment=_val_pos_int("triage_max_attempts_per_assignment", 2),
+        analysis_max_attempts_per_assignment=_val_pos_int(
+            "analysis_max_attempts_per_assignment", 2
+        ),
         triage_excerpt_chars=_val_pos_int("triage_excerpt_chars", 320),
         triage_min_ignore_confidence=_val_unit_float("triage_min_ignore_confidence", 0.95),
         analysis_quiet_seconds=_val_nonneg_int("analysis_quiet_seconds", 120),
@@ -557,6 +575,9 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
             "analysis_max_calls_per_story_per_hour", 4
         ),
         provider_retry_backoff_seconds=_val_nonneg_int("provider_retry_backoff_seconds", 300),
+        provider_retry_backoff_max_seconds=_val_pos_int(
+            "provider_retry_backoff_max_seconds", 3_600
+        ),
         analysis_max_input_chars=_val_pos_int("analysis_max_input_chars", 24000),
         representative_fragment_limit=_val_pos_int("representative_fragment_limit", 16),
         rich_analysis_max_calls_per_cycle=_val_pos_int("rich_analysis_max_calls_per_cycle", 40),
@@ -589,6 +610,15 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
             )
         return int(v)
 
+    def _val_reasoning_effort(key: str, default: str | None) -> str | None:
+        v = raw.get(key, default)
+        if v is not None and (not isinstance(v, str) or v not in ALLOWED_REASONING_EFFORTS):
+            raise ValueError(
+                f"settings.publication_editorial.{key} must be one of "
+                f"{sorted(ALLOWED_REASONING_EFFORTS)} or null, got {v!r}"
+            )
+        return v
+
     mode_val = raw.get("digest_narrative_mode", "deterministic")
     if not isinstance(mode_val, str) or mode_val not in (
         "deterministic",
@@ -611,6 +641,8 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
             "digest_narrative_max_cards_per_block", 6
         ),
         digest_narrative_max_output_tokens=_val_pos_int("digest_narrative_max_output_tokens", 4096),
+        selection_max_output_tokens=_val_pos_int("selection_max_output_tokens", 4096),
+        selection_reasoning_effort=_val_reasoning_effort("selection_reasoning_effort", "low"),
         digest_city_situation_max_items=_val_pos_int("digest_city_situation_max_items", 7),
         digest_city_situation_max_details_per_item=_val_pos_int(
             "digest_city_situation_max_details_per_item", 2
