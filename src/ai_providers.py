@@ -219,6 +219,30 @@ def _classify_provider_failure(exc: BaseException) -> str:
     return "other"
 
 
+def classify_provider_failure(exc: BaseException) -> str:
+    """Return the stable retry category for a provider failure."""
+    return _classify_provider_failure(exc)
+
+
+def _resolve_openrouter_max_tokens(requested: int | None) -> int:
+    """Resolve an OpenRouter output budget without allowing env to raise it."""
+    effective = 65_536 if requested is None else int(requested)
+    if effective <= 0:
+        raise ValueError("max_tokens must be positive")
+
+    raw_cap = os.environ.get("OPENROUTER_MAX_TOKENS")
+    if not raw_cap:
+        return effective
+
+    try:
+        cap = int(raw_cap)
+    except ValueError as exc:
+        raise ValueError("OPENROUTER_MAX_TOKENS must be a positive integer") from exc
+    if cap <= 0:
+        raise ValueError("OPENROUTER_MAX_TOKENS must be positive")
+    return min(effective, cap)
+
+
 def extract_retry_after(exc: BaseException) -> float | None:
     """Extract retry-after in seconds from HTTP headers, response body, or error message."""
     resp = getattr(exc, "response", None)
@@ -583,11 +607,9 @@ class OpenAIProvider(AIProvider):
         validate_model_allowed(model)
         is_openrouter = "openrouter" in self.base_url
 
-        effective_max_tokens = max_tokens
-        if is_openrouter and (max_tokens == 65536 or max_tokens is None):
-            effective_max_tokens = int(os.environ.get("OPENROUTER_MAX_TOKENS", 131072))
-        elif is_openrouter and "OPENROUTER_MAX_TOKENS" in os.environ:
-            effective_max_tokens = int(os.environ["OPENROUTER_MAX_TOKENS"])
+        effective_max_tokens = (
+            _resolve_openrouter_max_tokens(max_tokens) if is_openrouter else max_tokens
+        )
 
         create_kwargs: Dict[str, Any] = {
             "model": model,
@@ -602,10 +624,11 @@ class OpenAIProvider(AIProvider):
             max_reas_tokens = os.environ.get("OPENROUTER_REASONING_MAX_TOKENS")
             if thinking is not False:
                 extra = create_kwargs.setdefault("extra_body", {})
-                if max_reas_tokens and max_reas_tokens.isdigit():
-                    extra["reasoning"] = {"max_tokens": int(max_reas_tokens)}
-                elif effort:
-                    extra["reasoning"] = {"effort": effort}
+                reasoning = extra.setdefault("reasoning", {})
+                if effort:
+                    reasoning["effort"] = effort
+                elif max_reas_tokens and max_reas_tokens.isdigit():
+                    reasoning["max_tokens"] = int(max_reas_tokens)
         else:
             if reasoning_effort is not None:
                 create_kwargs["reasoning_effort"] = reasoning_effort
@@ -665,8 +688,9 @@ class OpenAIProvider(AIProvider):
     ):
         """Handle a BadRequestError by retrying with stripped parameters."""
         self.logger.warning(
-            "OpenAI/OpenRouter BadRequestError: %s (model=%s, params=%s)",
+            "OpenAI/OpenRouter BadRequestError: %s (provider=%s, model=%s, params=%s)",
             original_exc,
+            "OpenRouter" if "openrouter" in str(self.base_url).lower() else "OpenAI",
             create_kwargs.get("model"),
             [k for k in create_kwargs if k != "messages"],
         )
@@ -683,9 +707,9 @@ class OpenAIProvider(AIProvider):
                 self.logger.warning("retry without reasoning_effort failed: %s", exc)
 
         if "extra_body" in create_kwargs and "reasoning" in create_kwargs["extra_body"]:
-            self.logger.debug(
-                "extra_body.reasoning rejected by model, retrying without it: %s",
-                original_exc,
+            self.logger.warning(
+                "OpenRouter reasoning policy rejected by model=%s; retrying without reasoning field",
+                create_kwargs.get("model"),
             )
             create_kwargs["extra_body"].pop("reasoning")
             if not create_kwargs["extra_body"]:

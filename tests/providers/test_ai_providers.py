@@ -648,6 +648,88 @@ async def test_openrouter_provider_routes_reasoning_effort(mock_logger):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_openrouter_never_expands_explicit_max_tokens(mock_logger):
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = OpenAIProvider(
+            api_key="sk-test",
+            logger=mock_logger,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        response = MagicMock()
+        response.choices = [
+            MagicMock(message=MagicMock(content="ok", refusal=None), finish_reason="stop")
+        ]
+        response.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+        provider.client.chat.completions.create = AsyncMock(return_value=response)
+
+        with patch.dict("os.environ", {"OPENROUTER_MAX_TOKENS": "131072"}):
+            await provider.chat_completion(
+                messages=[{"role": "user", "content": "Hello"}],
+                model="openrouter-test-model",
+                max_tokens=4096,
+            )
+
+        assert provider.client.chat.completions.create.call_args.kwargs["max_tokens"] == 4096
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_openrouter_env_max_tokens_is_only_a_ceiling(mock_logger):
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = OpenAIProvider(
+            api_key="sk-test",
+            logger=mock_logger,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        response = MagicMock()
+        response.choices = [
+            MagicMock(message=MagicMock(content="ok", refusal=None), finish_reason="stop")
+        ]
+        response.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+        provider.client.chat.completions.create = AsyncMock(return_value=response)
+
+        with patch.dict("os.environ", {"OPENROUTER_MAX_TOKENS": "8192"}):
+            await provider.chat_completion(
+                messages=[{"role": "user", "content": "Hello"}],
+                model="openrouter-test-model",
+                max_tokens=12288,
+            )
+
+        assert provider.client.chat.completions.create.call_args.kwargs["max_tokens"] == 8192
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_openrouter_reasoning_and_thinking_merge_without_overwrite(mock_logger):
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = OpenAIProvider(
+            api_key="sk-test",
+            logger=mock_logger,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        response = MagicMock()
+        response.choices = [
+            MagicMock(message=MagicMock(content="ok", refusal=None), finish_reason="stop")
+        ]
+        response.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+        provider.client.chat.completions.create = AsyncMock(return_value=response)
+
+        await provider.chat_completion(
+            messages=[{"role": "user", "content": "Hello"}],
+            model="openrouter-test-model",
+            max_tokens=4096,
+            reasoning_effort="low",
+            thinking=True,
+        )
+
+        assert provider.client.chat.completions.create.call_args.kwargs["extra_body"] == {
+            "reasoning": {"effort": "low"},
+            "thinking": {"type": "enabled"},
+        }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_openai_provider_falls_back_when_reasoning_effort_rejected(mock_logger):
     """When the API rejects reasoning_effort (BadRequestError), the provider retries without it."""
     import httpx
