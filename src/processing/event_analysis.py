@@ -7,10 +7,12 @@ import hashlib
 import json
 import logging
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any
 
 import psycopg
 
+from src.ai_providers import classify_provider_failure
 from src.domain.event_payload import (
     EventPayload,
     ensure_keep_publishability,
@@ -96,6 +98,16 @@ Respond ONLY with a valid JSON object with the exact keys:
 EventAnalysisPayload = EventPayload
 
 
+@dataclass(frozen=True)
+class EventAnalysisOutcome:
+    """Structured outcome separating semantic no-op from provider failure."""
+
+    succeeded: bool
+    revision: StoryRevision | None
+    error_kind: str | None
+    prompt_hash: str
+
+
 class EventAnalysisService:
     """Coordinates rich event analysis for dirty stories using ProviderCascade."""
 
@@ -123,15 +135,17 @@ class EventAnalysisService:
         self.max_output_tokens = max_output_tokens
         self.reasoning_effort = reasoning_effort
 
-    async def analyze_story(
+    async def analyze_story_outcome(
         self,
         conn: psycopg.AsyncConnection | None = None,
         story_id: int = 0,
         *,
         max_representative_fragments: int = 16,
         max_input_chars: int = 24000,
-    ) -> StoryRevision | None:
+    ) -> EventAnalysisOutcome:
         """Run rich LLM event analysis for a story cluster and persist the new revision."""
+
+        prompt_hash = ""
 
         @asynccontextmanager
         async def _get_conn():
@@ -146,7 +160,12 @@ class EventAnalysisService:
         async with _get_conn() as read_conn:
             cluster_state = await self.cluster_repo.get_cluster_state(read_conn, story_id)
             if cluster_state is None:
-                return None
+                return EventAnalysisOutcome(
+                    succeeded=False,
+                    revision=None,
+                    error_kind="story_not_found",
+                    prompt_hash=prompt_hash,
+                )
 
             # 1. Fetch all fragments for this story with metadata and embeddings
             cursor = await read_conn.execute(
@@ -193,7 +212,12 @@ class EventAnalysisService:
                 contexts.append(ctx)
 
             if not contexts:
-                return None
+                return EventAnalysisOutcome(
+                    succeeded=False,
+                    revision=None,
+                    error_kind="no_evidence",
+                    prompt_hash=prompt_hash,
+                )
 
             # 3. Format prompt with geographic context
             cur_ed = await read_conn.execute(
@@ -216,7 +240,12 @@ class EventAnalysisService:
             limit=max_representative_fragments,
         )
         if not sampled:
-            return None
+            return EventAnalysisOutcome(
+                succeeded=False,
+                revision=None,
+                error_kind="no_evidence",
+                prompt_hash=prompt_hash,
+            )
 
         from src.domain.edition_geography import resolve_edition_geography
 
@@ -354,7 +383,12 @@ class EventAnalysisService:
                     analyzed_at=now,
                 )
 
-                return rev
+                return EventAnalysisOutcome(
+                    succeeded=True,
+                    revision=rev,
+                    error_kind=None,
+                    prompt_hash=prompt_hash,
+                )
         except Exception as exc:
             try:
                 async with _get_conn() as err_conn:
@@ -380,4 +414,26 @@ class EventAnalysisService:
             except Exception as log_exc:
                 self.logger.warning("Failed to record failed analysis run: %s", log_exc)
             self.logger.warning("Event analysis failed for story %s: %s", story_id, exc)
-            return None
+            return EventAnalysisOutcome(
+                succeeded=False,
+                revision=None,
+                error_kind=classify_provider_failure(exc),
+                prompt_hash=prompt_hash,
+            )
+
+    async def analyze_story(
+        self,
+        conn: psycopg.AsyncConnection | None = None,
+        story_id: int = 0,
+        *,
+        max_representative_fragments: int = 16,
+        max_input_chars: int = 24000,
+    ) -> StoryRevision | None:
+        """Compatibility wrapper returning only the persisted revision."""
+        outcome = await self.analyze_story_outcome(
+            conn,
+            story_id,
+            max_representative_fragments=max_representative_fragments,
+            max_input_chars=max_input_chars,
+        )
+        return outcome.revision

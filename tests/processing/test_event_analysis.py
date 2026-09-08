@@ -281,7 +281,11 @@ async def test_event_analysis_service_workflow(conn, edition, revision):
 
     service = EventAnalysisService(ai_cascade=mock_ai)
 
-    rev = await service.analyze_story(conn, story_id)
+    outcome = await service.analyze_story_outcome(conn, story_id)
+    assert outcome.succeeded is True
+    assert outcome.error_kind is None
+    assert outcome.prompt_hash
+    rev = outcome.revision
     assert rev is not None
     assert rev.story_id == story_id
     assert rev.title == llm_output["headline"]
