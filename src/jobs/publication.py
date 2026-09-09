@@ -17,7 +17,7 @@ SELECT_STORIES_TASK_NAME = "select_stories_for_publication"
 GENERATE_PUBLICATION_TASK_NAME = "generate_publication"
 PREPARE_DELIVERY_PAYLOADS_TASK_NAME = "prepare_delivery_payloads"
 DELIVER_PAYLOAD_TASK_NAME = "deliver_publication_payload"
-CREATE_SCHEDULED_PUBLICATION_TASK_NAME = "create_scheduled_publication"
+PREPARE_PUBLICATION_FROM_INTENT_TASK_NAME = "prepare_publication_from_intent"
 
 PUBLICATION_QUEUE = "publication"
 
@@ -102,19 +102,13 @@ async def deliver_publication_payload(context: Any, delivery_id: int) -> None:
 
 
 @procrastinate_app.task(
-    name=CREATE_SCHEDULED_PUBLICATION_TASK_NAME,
+    name=PREPARE_PUBLICATION_FROM_INTENT_TASK_NAME,
     queue=PUBLICATION_QUEUE,
     retry=PUBLICATION_RETRY_STRATEGY,
     pass_context=True,
 )
-async def create_scheduled_publication(
-    context: Any,
-    refresh_run_id: int | None = None,
-    edition_slug: str | None = None,
-    publication_type: str | None = None,
-    snapshot_at: str | None = None,
-) -> None:
-    """Prepare one durable refresh and atomically queue story selection."""
+async def prepare_publication_from_intent(context: Any, intent_id: int) -> None:
+    """Create a PublicationRun only after a durable intent is ready."""
     from src.config_loader import load_config
     from src.publication.policies import PublicationPolicyService
     from src.publication.readiness_repository import PublicationReadinessRepository
@@ -124,57 +118,17 @@ async def create_scheduled_publication(
     runtime = get_runtime()
     config = load_config()
 
-    # Keep direct invocations from the pre-readiness API operational while all
-    # scheduled dispatcher traffic uses the refresh-id contract below.
-    if refresh_run_id is None:
-        if edition_slug is None or publication_type is None or snapshot_at is None:
-            raise ValueError("scheduled publication requires refresh_run_id")
-        from src.publication.snapshot import PublicationSnapshotService
-        from src.repositories.editions import EditionRepository
-
-        snap_dt = dt.datetime.fromisoformat(snapshot_at)
-        async with runtime.uow.transaction() as conn:
-            edition = await EditionRepository().get_by_slug(conn, edition_slug)
-            if edition is None:
-                raise ValueError(f"edition slug {edition_slug} not found")
-        service = PublicationSnapshotService(uow=runtime.uow)
-        req_key = f"scheduled:{edition_slug}:{publication_type}:{snap_dt.isoformat()}"
-        run = await service.create_run(
-            edition_id=edition.id,
-            publication_type=publication_type,
-            snapshot_at=snap_dt,
-            request_key=req_key,
-            config=config,
-        )
-        if getattr(run, "status", "created") != "created":
-            return
-        await service.drain_authority_gap(run_id=run.id)
-        async with runtime.uow.transaction() as conn:
-            await service.seal_candidates(run.id, conn=conn)
-            await select_stories_for_publication.configure(connection=conn).defer_async(
-                run_id=run.id
-            )
-        return
-
     readiness_repo = PublicationReadinessRepository()
     service = PublicationSnapshotService(uow=runtime.uow)
 
     async with runtime.uow.transaction() as conn:
-        refresh = await readiness_repo.get_refresh_run(conn, refresh_run_id, for_update=True)
+        refresh = await readiness_repo.get_refresh_run(conn, intent_id, for_update=True)
         if refresh is None:
-            raise ValueError(f"refresh run {refresh_run_id} not found")
+            raise ValueError(f"publication intent {intent_id} not found")
         if refresh.status == "publication_queued":
             return
-        if refresh.status in {"ready_for_preparation", "fallback_ready"}:
-            refresh = await readiness_repo.mark_preparing(
-                conn,
-                refresh_run_id=refresh.id,
-                fallback_used=refresh.status == "fallback_ready",
-            )
-            if refresh is None:
-                raise RuntimeError(f"refresh run {refresh_run_id} was claimed by another worker")
         if refresh.status != "preparing":
-            raise ValueError(f"refresh run {refresh_run_id} is not preparing: {refresh.status}")
+            raise ValueError(f"publication intent {intent_id} is not preparing: {refresh.status}")
         edition = await EditionRepository().get_by_id(conn, refresh.edition_id)
         if edition is None:
             raise ValueError(f"edition {refresh.edition_id} not found")
@@ -185,53 +139,39 @@ async def create_scheduled_publication(
             config=config,
         )
 
-    source_cutoff_at = (
-        refresh.fallback_snapshot_at if refresh.fallback_used else refresh.normal_source_cutoff_at
-    )
+    source_cutoff_at = refresh.slot_at
     knowledge_snapshot_at: dt.datetime | None = None
-    if refresh.fallback_used:
-        knowledge_snapshot_at = refresh.fallback_snapshot_at
+    remaining = 1
+    for _ in range(3):
+        candidate_at = dt.datetime.now(dt.timezone.utc)
+        await service.drain_authority_gap(
+            edition_id=refresh.edition_id,
+            source_cutoff_at=source_cutoff_at,
+            snapshot_at=candidate_at,
+            eligibility_policy_id=policy_set.eligibility_policy_id,
+            max_rounds=1,
+        )
+        knowledge_snapshot_at = dt.datetime.now(dt.timezone.utc)
         remaining = await service.count_authority_gap(
             edition_id=refresh.edition_id,
             source_cutoff_at=source_cutoff_at,
             snapshot_at=knowledge_snapshot_at,
             eligibility_policy_id=policy_set.eligibility_policy_id,
         )
-        if remaining:
-            raise IncompleteTriageError(
-                f"historical fallback has {remaining} unresolved authority-gap stories"
-            )
-    else:
-        remaining = 1
-        for _ in range(3):
-            candidate_at = dt.datetime.now(dt.timezone.utc)
-            await service.drain_authority_gap(
-                edition_id=refresh.edition_id,
-                source_cutoff_at=source_cutoff_at,
-                snapshot_at=candidate_at,
-                eligibility_policy_id=policy_set.eligibility_policy_id,
-                max_rounds=1,
-            )
-            knowledge_snapshot_at = dt.datetime.now(dt.timezone.utc)
-            remaining = await service.count_authority_gap(
-                edition_id=refresh.edition_id,
-                source_cutoff_at=source_cutoff_at,
-                snapshot_at=knowledge_snapshot_at,
-                eligibility_policy_id=policy_set.eligibility_policy_id,
-            )
-            if remaining == 0:
-                break
-        if knowledge_snapshot_at is None or remaining != 0:
-            raise IncompleteTriageError("authority gap did not converge")
+        if remaining == 0:
+            break
+    if knowledge_snapshot_at is None or remaining != 0:
+        raise IncompleteTriageError("authority gap did not converge")
 
     if knowledge_snapshot_at is None:
         raise IncompleteTriageError("authority gap did not produce a snapshot")
     slot_key = refresh.slot_at.astimezone(dt.timezone.utc).isoformat()
-    req_key = f"scheduled:{edition.slug}:{refresh.publication_type}:{slot_key}"
+    req_key = f"publication-intent:{refresh.request_key}"
     run_metadata = {
         "refresh_run_id": refresh.id,
         "scheduled_slot_at": slot_key,
-        "fallback_used": refresh.fallback_used,
+        "intent_request_key": refresh.request_key,
+        "trigger": refresh.trigger,
     }
 
     async with runtime.uow.transaction() as conn:
@@ -268,10 +208,15 @@ async def create_scheduled_publication(
                 "scheduled_slot_at": slot_key,
                 "source_cutoff_at": source_cutoff_at.isoformat(),
                 "snapshot_at": knowledge_snapshot_at.isoformat(),
-                "fallback_used": refresh.fallback_used,
                 "publication_delay_seconds": max(
                     0, (knowledge_snapshot_at - refresh.slot_at).total_seconds()
                 ),
             },
         )
         await select_stories_for_publication.configure(connection=conn).defer_async(run_id=run.id)
+
+
+# Kept as an import-level compatibility name for code that only imported the
+# old symbol.  It intentionally has the new intent-only signature and cannot
+# accept the former edition/snapshot arguments.
+create_scheduled_publication = prepare_publication_from_intent
