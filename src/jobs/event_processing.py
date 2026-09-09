@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import logging
 import os
+import uuid
 from typing import Any
 
 from src.ai_providers import create_provider
@@ -22,6 +23,10 @@ from src.processing.fragments import split_into_fragments
 from src.processing.retry_policy import decide_retry
 from src.repositories.event_analysis_runs import EventAnalysisRunRepository
 from src.repositories.event_clusters import EventClusterRepository, StoryClusterState
+from src.repositories.event_processing_claims import (
+    EventProcessingClaimRepository,
+    EventProcessingCycleClaim,
+)
 from src.repositories.event_retries import EventProcessingRetryRepository
 from src.repositories.fragments import FragmentRepository
 from src.repositories.stories import StoryRepository
@@ -148,6 +153,7 @@ async def coalesce_dirty_stories_task(
     fragment_repo = FragmentRepository()
     retry_repo = EventProcessingRetryRepository()
     analysis_runs_repo = EventAnalysisRunRepository()
+    claim_repo = EventProcessingClaimRepository()
 
     ai_provider = getattr(runtime, "provider_cascade", None) or create_provider(
         config.settings.ai_provider,
@@ -201,6 +207,9 @@ async def coalesce_dirty_stories_task(
         "analysis_backoff_skipped": 0,
         "analysis_exhausted_skipped": 0,
         "analysis_budget_skipped": 0,
+        "cycle_lease_skipped": 0,
+        "cycle_lease_lost": 0,
+        "stage_claim_skipped": 0,
         "triaged": 0,
         "analyzed": 0,
     }
@@ -219,22 +228,13 @@ async def coalesce_dirty_stories_task(
     except (ValueError, TypeError):
         triage_concurrency = 4
     triage_sem = asyncio.Semaphore(triage_concurrency)
-    analysis_claim_lock = asyncio.Lock()
-    remaining_analysis_calls = cfg.rich_analysis_max_calls_per_cycle
-
-    async def _claim_analysis_slot() -> bool:
-        nonlocal remaining_analysis_calls
-        async with analysis_claim_lock:
-            if remaining_analysis_calls <= 0:
-                return False
-            remaining_analysis_calls -= 1
-            return True
 
     async def _process_gate_batch(
         gate_batch: list[StoryClusterState],
         cur_ed_id: int,
         sc_cfg: Any,
         sc_hsh: str,
+        cycle_claim: EventProcessingCycleClaim,
     ) -> dict[str, Any]:
         b_stats = {
             "gated": len(gate_batch),
@@ -247,12 +247,24 @@ async def coalesce_dirty_stories_task(
             "analysis_backoff_skipped": 0,
             "analysis_exhausted_skipped": 0,
             "analysis_budget_skipped": 0,
+            "cycle_lease_lost": 0,
+            "stage_claim_skipped": 0,
             "scope_local": 0,
             "scope_direct_impact": 0,
             "scope_out_of_scope": 0,
             "scope_uncertain": 0,
             "analyzed": 0,
         }
+        async with runtime.uow.transaction() as lease_conn:
+            renewed_claim = await claim_repo.renew_cycle(
+                lease_conn,
+                cycle_claim,
+                ttl_seconds=cfg.event_processing_cycle_lease_seconds,
+            )
+        if renewed_claim is None:
+            b_stats["cycle_lease_lost"] = 1
+            b_stats["deferred"] = len(gate_batch)
+            return b_stats
         async with triage_sem:
             batch_result = await triage_service.triage_stories_batch(
                 None,
@@ -446,18 +458,13 @@ async def coalesce_dirty_stories_task(
                         )
                         continue
 
-                    if not await _claim_analysis_slot():
+                    if not await claim_repo.claim_rich_slot(
+                        persist_conn,
+                        cycle_claim,
+                        max_calls=cfg.rich_analysis_max_calls_per_cycle,
+                        ttl_seconds=cfg.event_processing_cycle_lease_seconds,
+                    ):
                         b_stats["analysis_budget_skipped"] += 1
-                        await retry_repo.record_failure(
-                            persist_conn,
-                            story_id=state.story_id,
-                            latest_assignment_id=state.latest_assignment_id,
-                            stage="analysis",
-                            error_kind="cycle_budget",
-                            next_retry_at=now
-                            + dt.timedelta(seconds=cfg.provider_retry_backoff_seconds),
-                            exhausted=False,
-                        )
                         continue
 
                     stories_to_analyze.append(state)
@@ -512,6 +519,18 @@ async def coalesce_dirty_stories_task(
         return b_stats
 
     for current_edition_id in editions_to_process:
+        owner_id = f"pid-{os.getpid()}-{uuid.uuid4().hex}"
+        async with runtime.uow.transaction() as claim_conn:
+            cycle_claim = await claim_repo.acquire_cycle(
+                claim_conn,
+                edition_id=current_edition_id,
+                owner_id=owner_id,
+                ttl_seconds=cfg.event_processing_cycle_lease_seconds,
+            )
+        if cycle_claim is None:
+            stats["cycle_lease_skipped"] += 1
+            continue
+
         async with runtime.uow.transaction() as conn:
             fetch_limit = (
                 max(cfg.live_batch_size, len(story_ids)) if story_ids else cfg.live_batch_size
@@ -527,6 +546,8 @@ async def coalesce_dirty_stories_task(
 
         stats["scanned"] += len(dirty_stories)
         if not dirty_stories:
+            async with runtime.uow.transaction() as release_conn:
+                await claim_repo.release_cycle(release_conn, cycle_claim)
             continue
 
         # Filter settled stories: quiet window has passed since last fragment arrived (unless force_settled)
@@ -538,6 +559,8 @@ async def coalesce_dirty_stories_task(
 
         stats["settled"] += len(settled)
         if not settled:
+            async with runtime.uow.transaction() as release_conn:
+                await claim_repo.release_cycle(release_conn, cycle_claim)
             continue
 
         async with runtime.uow.transaction() as retry_conn:
@@ -563,6 +586,8 @@ async def coalesce_dirty_stories_task(
             eligible.append(state)
 
         if not eligible:
+            async with runtime.uow.transaction() as release_conn:
+                await claim_repo.release_cycle(release_conn, cycle_claim)
             continue
 
         # Prepare batches and run concurrently with Semaphore(4)
@@ -571,7 +596,16 @@ async def coalesce_dirty_stories_task(
             for start in range(0, len(eligible), cfg.triage_batch_size)
         ]
         batch_results = await asyncio.gather(
-            *[_process_gate_batch(b, current_edition_id, scope_config, scope_hash) for b in batches]
+            *[
+                _process_gate_batch(
+                    b,
+                    current_edition_id,
+                    scope_config,
+                    scope_hash,
+                    cycle_claim,
+                )
+                for b in batches
+            ]
         )
 
         for b_stat in batch_results:
@@ -586,6 +620,8 @@ async def coalesce_dirty_stories_task(
                 "analysis_backoff_skipped",
                 "analysis_exhausted_skipped",
                 "analysis_budget_skipped",
+                "cycle_lease_lost",
+                "stage_claim_skipped",
                 "scope_local",
                 "scope_direct_impact",
                 "scope_out_of_scope",
@@ -593,6 +629,9 @@ async def coalesce_dirty_stories_task(
                 "analyzed",
             ):
                 stats[k] += b_stat[k]
+
+        async with runtime.uow.transaction() as release_conn:
+            await claim_repo.release_cycle(release_conn, cycle_claim)
 
     return stats
 

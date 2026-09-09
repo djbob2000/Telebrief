@@ -581,6 +581,15 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
         analysis_max_input_chars=_val_pos_int("analysis_max_input_chars", 24000),
         representative_fragment_limit=_val_pos_int("representative_fragment_limit", 16),
         rich_analysis_max_calls_per_cycle=_val_pos_int("rich_analysis_max_calls_per_cycle", 40),
+        event_processing_cycle_lease_seconds=_val_pos_int(
+            "event_processing_cycle_lease_seconds", 600
+        ),
+        event_processing_stage_lease_seconds=_val_pos_int(
+            "event_processing_stage_lease_seconds", 600
+        ),
+        triage_split_max_extra_calls_per_cycle=_val_pos_int(
+            "triage_split_max_extra_calls_per_cycle", 8
+        ),
         live_batch_size=_val_pos_int("live_batch_size", 100),
         backfill_batch_size=_val_pos_int("backfill_batch_size", 500),
     )
