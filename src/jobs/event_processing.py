@@ -779,7 +779,22 @@ async def coalesce_dirty_stories_task(
                 stats[k] += b_stat[k]
 
         async with runtime.uow.transaction() as release_conn:
+            durable_cycle = await claim_repo.get_cycle(release_conn, cycle_claim)
             await claim_repo.release_cycle(release_conn, cycle_claim)
+        if durable_cycle is not None:
+            logger.info(
+                "event_first_cycle_complete",
+                extra={
+                    "edition_id": durable_cycle.edition_id,
+                    "cycle_claim_status": "acquired",
+                    "stage_claim_status": (
+                        "skipped" if stats["stage_claim_skipped"] else "acquired"
+                    ),
+                    "rich_calls_started": durable_cycle.rich_calls_started,
+                    "triage_split_calls_started": durable_cycle.triage_split_calls_started,
+                    "retry_error_kind": None,
+                },
+            )
 
     return stats
 
