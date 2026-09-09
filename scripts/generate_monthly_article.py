@@ -21,6 +21,7 @@ from src.config_loader import load_config
 from src.domain.editions import NewEdition
 from src.publication.delivery import PublicationDeliveryService
 from src.publication.errors import ArticlePublicationRejected
+from src.publication.facade import request_publication
 from src.publication.generation import PublicationGenerationService
 from src.publication.renderers import render_longitudinal_telegram_teaser
 from src.publication.repository import PublicationRepository
@@ -111,12 +112,28 @@ async def main() -> None:
                 ),
             )
 
+    req_key = f"cli:monthly_article:{edition_slug}:{snapshot_at.date().isoformat()}"
+    if not args.dry_run:
+        try:
+            result = await request_publication(
+                publication_type="monthly_article",
+                edition_slug=edition_slug,
+                snapshot_at=snapshot_at,
+                request_key=req_key,
+                config=config,
+            )
+            print(
+                f"Обновляю источники и ставлю месячную публикацию в очередь "
+                f"(intent={result.intent_id}, status={result.readiness_status})."
+            )
+            return
+        finally:
+            await infra.close()
+
     snapshot_service = PublicationSnapshotService(uow=uow, repo=repo)
     selection_service = EditorialSelectionService(uow=uow, repo=repo, config=config)
     generation_service = PublicationGenerationService(uow=uow, config=config, repo=repo)
     delivery_service = PublicationDeliveryService(uow=uow, pub_repo=repo)
-
-    req_key = f"cli:monthly_article:{edition_slug}:{snapshot_at.date().isoformat()}"
 
     print(f"\n🚀 Запуск генерации панорамы месяца для издания '{edition.name}'...")
     print(f"📅 Окно среза: {snapshot_at.isoformat()} (720 часов lookback)")

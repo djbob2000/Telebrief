@@ -26,12 +26,40 @@ async def test_registers_all_tools(server):
 
     names = {tool.name for tool in tools}
     assert names == {
+        "request_publication",
         "get_digest",
         "get_last_digest",
         "get_digest_rubrics",
         "get_channel_messages",
     }
     assert all(tool.description for tool in tools)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_request_publication_returns_intent_status(server, sample_config):
+    from src.publication.facade import PublicationRequestResult
+
+    result_value = PublicationRequestResult(
+        intent_id=42,
+        request_key="manual:test",
+        edition_slug="berdyansk",
+        publication_type="digest_grouped",
+        snapshot_at=__import__("datetime").datetime(
+            2026, 9, 9, tzinfo=__import__("datetime").timezone.utc
+        ),
+        readiness_status="collecting",
+    )
+    with patch(
+        "src.publication.facade.request_publication",
+        new_callable=AsyncMock,
+        return_value=result_value,
+    ) as request:
+        result = await server.call_tool("request_publication", {})
+
+    assert "intent=42" in _text(result)
+    assert "collecting" in _text(result)
+    request.assert_awaited_once_with(publication_type="digest_grouped", config=sample_config)
 
 
 @pytest.mark.unit

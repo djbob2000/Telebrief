@@ -63,6 +63,32 @@ def build_server(config: Config, logger: logging.Logger) -> MCPServer:
     mcp = MCPServer("telebrief")
 
     @mcp.tool()
+    async def request_publication(publication_type: str = "digest_grouped") -> str:
+        """Queue a production publication intent and return its durable status.
+
+        This operation refreshes persisted sources asynchronously. It does not
+        wait for collection or content generation and never returns a claim
+        that delivery has completed.
+        """
+        from src.publication.facade import request_publication as request_intent
+
+        if publication_type not in {"digest_grouped", "daily_article"}:
+            raise ValueError("publication_type must be digest_grouped or daily_article")
+        try:
+            result = await request_intent(
+                publication_type=publication_type,
+                config=config,
+            )
+            return (
+                "Publication intent queued: "
+                f"intent={result.intent_id}, status={result.readiness_status}, "
+                f"target={result.snapshot_at.isoformat()}"
+            )
+        except Exception as exc:
+            logger.warning("MCP publication request failed: %s", exc)
+            raise
+
+    @mcp.tool()
     async def get_digest(hours: int = 24) -> str:
         """Generate a fresh digest of the configured channels using the unified publication pipeline.
 
