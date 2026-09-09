@@ -148,3 +148,11 @@ async def test_terminal_source_failure_is_immediate():
     decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
     assert decision.status == "failed"
     assert decision.failure_kind == "source_auth_required"
+
+
+@pytest.mark.asyncio
+async def test_ready_after_deadline_is_still_fail_closed():
+    repo = FakeReadinessRepository(_refresh(deadline_at=NOW - dt.timedelta(seconds=1)), [_source()])
+    decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
+    assert decision.status == "failed"
+    assert decision.failure_kind == "readiness_deadline"

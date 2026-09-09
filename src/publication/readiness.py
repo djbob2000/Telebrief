@@ -103,6 +103,16 @@ class PublicationReadinessService:
             )
             return PublicationReadinessDecision("failed", None, error_kind)
 
+        if now >= refresh.deadline_at:
+            await self._transition(
+                conn,
+                refresh.id,
+                status="failed",
+                error_kind="readiness_deadline",
+                now=now,
+            )
+            return PublicationReadinessDecision("failed", None, "readiness_deadline")
+
         all_sources_succeeded = all(source.status == "succeeded" for source in sources)
 
         if all_sources_succeeded:
@@ -202,6 +212,10 @@ class PublicationReadinessService:
             extra["processing_ready_ms"] = max(
                 0,
                 int((refresh.processing_ready_at - refresh.requested_at).total_seconds() * 1000),
+            )
+        if status == "ready_waiting_slot":
+            extra["waiting_for_slot_ms"] = max(
+                0, int((refresh.slot_at - refresh.requested_at).total_seconds() * 1000)
             )
         if error_kind is not None:
             extra["retry_error_kind"] = error_kind

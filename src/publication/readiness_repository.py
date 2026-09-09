@@ -372,7 +372,9 @@ class PublicationReadinessRepository:
                     collection_outcome=outcome,
                     collection_run_id=int(row[3]) if row[3] is not None else None,
                     backoff_until=row[4],
-                    retryable=outcome in retryable or outcome is None,
+                    retryable=(
+                        outcome in retryable or outcome is None or str(row[1]) != "succeeded"
+                    ),
                 )
             )
         return diagnostics

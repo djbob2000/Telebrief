@@ -144,6 +144,19 @@ class PublicationOrchestrator:
             edition_slug_result = edition.slug
 
         await self._enqueue_sources(source_ids_to_enqueue)
+        logger.info(
+            "publication_intent_requested",
+            extra={
+                "intent_id": intent.id,
+                "trigger": intent.trigger,
+                "publication_type": intent.publication_type,
+                "target_at": intent.slot_at.isoformat(),
+                "freshness_cutoff_at": freshness_cutoff_at.isoformat(),
+                "deadline_at": deadline_at.isoformat(),
+                "retry_source_count": len(source_ids_to_enqueue),
+                "status": decision.status,
+            },
+        )
         return self._result(
             intent,
             edition_slug=edition_slug_result,
@@ -166,6 +179,21 @@ class PublicationOrchestrator:
                 conn, intent, decision, now=now
             )
         await self._enqueue_sources(source_ids_to_enqueue)
+        logger.info(
+            "publication_intent_reconciled",
+            extra={
+                "intent_id": intent_id,
+                "status": decision.status,
+                "retry_source_count": len(source_ids_to_enqueue),
+                "target_at": intent.slot_at.isoformat(),
+                "freshness_cutoff_at": (
+                    intent.freshness_cutoff_at.isoformat()
+                    if intent.freshness_cutoff_at is not None
+                    else None
+                ),
+                "deadline_at": intent.deadline_at.isoformat(),
+            },
+        )
         return decision
 
     async def _prepare_decision(

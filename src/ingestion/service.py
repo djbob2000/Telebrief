@@ -16,6 +16,7 @@ policy id is fixed at queue time; Procrastinate retries never re-resolve it.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import psycopg
@@ -25,6 +26,8 @@ from src.domain.ingestion import SourceItem
 from src.ingestion.models import CollectionBatch, CollectionOutcome, CollectionTrigger
 from src.ingestion.repository import IngestionRepository
 from src.repositories.event_revision_processing import EventRevisionProcessingRepository
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -176,6 +179,17 @@ class IngestionService:
         )
         await self._defer_relevance_jobs(
             conn, source_id=source_id, new_revision_ids=full_processing_revision_ids
+        )
+        logger.info(
+            "event_first_ingestion_completed",
+            extra={
+                "source_id": source_id,
+                "collection_run_id": run.id,
+                "new_revision_count": len(new_revision_ids),
+                "full_processing_revision_count": len(full_processing_revision_ids),
+                "semantic_reuse_revision_count": len(reused_revision_ids),
+                "collection_outcome": batch.outcome.value,
+            },
         )
         return IngestionResult(
             collection_run_id=run.id,
