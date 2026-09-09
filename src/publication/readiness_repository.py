@@ -30,6 +30,10 @@ class PublicationRefreshRun:
     fallback_used: bool
     error_kind: str | None
     metadata: dict[str, Any]
+    trigger: str = "scheduled"
+    request_key: str = ""
+    freshness_cutoff_at: dt.datetime | None = None
+    requested_by_user_id: int | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> PublicationRefreshRun:
@@ -50,6 +54,10 @@ class PublicationRefreshRun:
             fallback_used=bool(row[13]),
             error_kind=row[14],
             metadata=row[15] if isinstance(row[15], dict) else {},
+            trigger=str(row[16]),
+            request_key=str(row[17]),
+            freshness_cutoff_at=row[18],
+            requested_by_user_id=int(row[19]) if row[19] is not None else None,
         )
 
 
@@ -80,6 +88,18 @@ class PublicationRefreshSource:
         )
 
 
+@dataclass(frozen=True)
+class PublicationSourceDiagnostic:
+    """Provider-neutral facts explaining why one source is not ready."""
+
+    source_id: int
+    status: str
+    collection_outcome: str | None
+    collection_run_id: int | None
+    backoff_until: dt.datetime | None
+    retryable: bool
+
+
 class PublicationReadinessRepository:
     """SQL authority for refresh-run state transitions and source barriers."""
 
@@ -88,7 +108,8 @@ class PublicationReadinessRepository:
         id, edition_id, publication_type, slot_at, requested_at,
         normal_source_cutoff_at, fallback_snapshot_at, deadline_at, status,
         collection_ready_at, processing_ready_at, prepared_at,
-        publication_run_id, fallback_used, error_kind, metadata
+        publication_run_id, fallback_used, error_kind, metadata,
+        trigger, request_key, freshness_cutoff_at, requested_by_user_id
         FROM publication_refresh_runs
     """
     _SOURCE_SELECT = """
@@ -107,9 +128,11 @@ class PublicationReadinessRepository:
         publication_type: str,
         slot_at: dt.datetime,
         requested_at: dt.datetime,
-        normal_source_cutoff_at: dt.datetime,
-        fallback_snapshot_at: dt.datetime,
+        trigger: str,
+        request_key: str,
+        freshness_cutoff_at: dt.datetime,
         deadline_at: dt.datetime,
+        requested_by_user_id: int | None,
         source_ids: Sequence[int],
     ) -> PublicationRefreshRun:
         """Create the refresh barrier once and add any newly bound sources."""
@@ -118,23 +141,29 @@ class PublicationReadinessRepository:
             INSERT INTO publication_refresh_runs (
                 edition_id, publication_type, slot_at, requested_at,
                 normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
-                status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'collecting')
-            ON CONFLICT (edition_id, publication_type, slot_at)
+                status, trigger, request_key, freshness_cutoff_at,
+                requested_by_user_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'collecting', %s, %s, %s, %s)
+            ON CONFLICT (request_key)
             DO UPDATE SET updated_at = now()
             RETURNING id, edition_id, publication_type, slot_at, requested_at,
                       normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
                       status, collection_ready_at, processing_ready_at, prepared_at,
-                      publication_run_id, fallback_used, error_kind, metadata
+                      publication_run_id, fallback_used, error_kind, metadata,
+                      trigger, request_key, freshness_cutoff_at, requested_by_user_id
             """,
             (
                 edition_id,
                 publication_type,
                 slot_at,
                 requested_at,
-                normal_source_cutoff_at,
-                fallback_snapshot_at,
+                slot_at,
+                requested_at,
                 deadline_at,
+                trigger,
+                request_key,
+                freshness_cutoff_at,
+                requested_by_user_id,
             ),
         )
         row = await cursor.fetchone()
@@ -147,13 +176,13 @@ class PublicationReadinessRepository:
             await conn.execute(
                 """
                 INSERT INTO publication_refresh_sources (
-                    refresh_run_id, source_id, required_since_at
+                    refresh_run_id, source_id, required_since_at, status
                 )
-                SELECT %s, source_id, %s
+                SELECT %s, source_id, %s, 'pending'
                 FROM unnest(%s::bigint[]) AS source_id
                 ON CONFLICT (refresh_run_id, source_id) DO NOTHING
                 """,
-                (refresh.id, requested_at, unique_source_ids),
+                (refresh.id, freshness_cutoff_at, unique_source_ids),
             )
         return refresh
 
@@ -178,7 +207,7 @@ class PublicationReadinessRepository:
             self._RUN_SELECT
             + """
             WHERE status IN (
-                'collecting', 'processing', 'ready_for_preparation', 'fallback_ready'
+                'collecting', 'processing', 'ready_waiting_slot', 'ready_for_preparation'
             )
             ORDER BY slot_at, id
             """
@@ -270,7 +299,7 @@ class PublicationReadinessRepository:
                 await conn.execute(
                     """
                     UPDATE publication_refresh_sources
-                    SET status = CASE WHEN %s IN ('success', 'skipped')
+                    SET status = CASE WHEN %s = 'success'
                                       THEN 'succeeded' ELSE 'degraded' END,
                         collection_run_id = %s, collection_outcome = %s,
                         completed_at = %s, updated_at = now()
@@ -308,6 +337,46 @@ class PublicationReadinessRepository:
         row = await cursor.fetchone()
         return int(row[0]) if row is not None else 0
 
+    async def list_unready_source_diagnostics(
+        self, conn: psycopg.AsyncConnection, refresh_run_id: int
+    ) -> list[PublicationSourceDiagnostic]:
+        """Return latest collection facts for sources that still block readiness."""
+        cursor = await conn.execute(
+            """
+            SELECT prs.source_id, prs.status, latest.status, latest.id,
+                   checkpoint.backoff_until
+            FROM publication_refresh_sources prs
+            LEFT JOIN LATERAL (
+                SELECT id, status
+                FROM collection_runs
+                WHERE source_id = prs.source_id
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+            ) latest ON TRUE
+            LEFT JOIN collection_checkpoints checkpoint
+              ON checkpoint.source_id = prs.source_id
+            WHERE prs.refresh_run_id = %s
+              AND prs.status <> 'succeeded'
+            ORDER BY prs.source_id
+            """,
+            (refresh_run_id,),
+        )
+        retryable = {"transient", "rate_limited"}
+        diagnostics: list[PublicationSourceDiagnostic] = []
+        for row in await cursor.fetchall():
+            outcome = str(row[2]) if row[2] is not None else None
+            diagnostics.append(
+                PublicationSourceDiagnostic(
+                    source_id=int(row[0]),
+                    status=str(row[1]),
+                    collection_outcome=outcome,
+                    collection_run_id=int(row[3]) if row[3] is not None else None,
+                    backoff_until=row[4],
+                    retryable=outcome in retryable or outcome is None,
+                )
+            )
+        return diagnostics
+
     async def transition_refresh(
         self,
         conn: psycopg.AsyncConnection,
@@ -342,23 +411,33 @@ class PublicationReadinessRepository:
         conn: psycopg.AsyncConnection,
         *,
         refresh_run_id: int,
-        fallback_used: bool,
     ) -> PublicationRefreshRun | None:
         cursor = await conn.execute(
             """
-            UPDATE publication_refresh_runs
-            SET status = 'preparing', fallback_used = %s, updated_at = now()
+            SELECT id, edition_id, publication_type, slot_at, requested_at,
+                   normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
+                   status, collection_ready_at, processing_ready_at, prepared_at,
+                   publication_run_id, fallback_used, error_kind, metadata,
+                   trigger, request_key, freshness_cutoff_at, requested_by_user_id
+            FROM publication_refresh_runs
             WHERE id = %s
-              AND status IN ('ready_for_preparation', 'fallback_ready')
-            RETURNING id, edition_id, publication_type, slot_at, requested_at,
-                      normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
-                      status, collection_ready_at, processing_ready_at, prepared_at,
-                      publication_run_id, fallback_used, error_kind, metadata
+              AND status = 'ready_for_preparation'
+            FOR UPDATE
             """,
-            (fallback_used, refresh_run_id),
+            (refresh_run_id,),
         )
         row = await cursor.fetchone()
-        return PublicationRefreshRun.from_row(row) if row is not None else None
+        if row is None:
+            return None
+        await conn.execute(
+            """
+            UPDATE publication_refresh_runs
+            SET status = 'preparing', updated_at = now()
+            WHERE id = %s
+            """,
+            (refresh_run_id,),
+        )
+        return await self.get_refresh_run(conn, refresh_run_id)
 
     async def mark_publication_queued(
         self,
