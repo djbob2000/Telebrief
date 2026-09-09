@@ -142,7 +142,6 @@ class BotCommandHandler:
             return
 
         self.logger.info(f"Manual /article requested by user {user_id} (24h)")
-        await update.message.reply_text(self._ui["generating_article"])
         try:
             success = await generate_and_publish_article(
                 config=self.config, logger=self.logger, hours=24, user_id=user_id
@@ -169,7 +168,6 @@ class BotCommandHandler:
             return
 
         self.logger.info(f"Manual /{command_name} digest requested by user {user_id} ({hours}h)")
-        await update.message.reply_text(self._ui["generating_digest"])
         try:
             success = await generate_and_send_digest(
                 config=self.config, logger=self.logger, hours=hours, user_id=user_id

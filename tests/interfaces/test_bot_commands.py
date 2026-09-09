@@ -82,21 +82,22 @@ async def test_handle_digest_processing_message_uses_output_language(english_con
         await handler.handle_digest(update, MagicMock())
 
     processing_text = update.message.reply_text.call_args_list[0][0][0]
-    assert "Queueing digest publication" in processing_text
+    assert "publication queued" in processing_text
     assert "Генерирую" not in processing_text
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_handle_digest_success_message_uses_output_language(english_config, mock_logger):
-    """handle_digest sends an English success message when digest generation succeeds."""
+    """handle_digest sends one English queue confirmation when accepted."""
     handler = BotCommandHandler(english_config, mock_logger)
     update = _make_update(123456789)
 
     with patch("src.bot_commands.generate_and_send_digest", new=AsyncMock(return_value=True)):
         await handler.handle_digest(update, MagicMock())
 
-    success_text = update.message.reply_text.call_args_list[1][0][0]
+    assert update.message.reply_text.call_count == 1
+    success_text = update.message.reply_text.call_args_list[0][0][0]
     assert "publication queued" in success_text
     assert "Дайджест готов" not in success_text
 
@@ -111,7 +112,8 @@ async def test_handle_digest_error_message_uses_output_language(english_config, 
     with patch("src.bot_commands.generate_and_send_digest", new=AsyncMock(return_value=False)):
         await handler.handle_digest(update, MagicMock())
 
-    error_text = update.message.reply_text.call_args_list[1][0][0]
+    assert update.message.reply_text.call_count == 1
+    error_text = update.message.reply_text.call_args_list[0][0][0]
     assert "Error generating digest" in error_text
     assert "Ошибка при генерации" not in error_text
 
@@ -230,7 +232,7 @@ async def test_rate_limit_resets_after_cooldown(english_config, mock_logger):
         await handler.handle_digest(update, MagicMock())
 
         first_texts = [call[0][0] for call in update.message.reply_text.call_args_list]
-        assert any("Queueing" in t for t in first_texts), "First call should not be rate-limited"
+        assert any("queued" in t for t in first_texts), "First call should not be rate-limited"
 
         update.message.reply_text.reset_mock()
 
@@ -238,9 +240,9 @@ async def test_rate_limit_resets_after_cooldown(english_config, mock_logger):
         mock_time.monotonic.return_value = 31.0
         await handler.handle_digest(update, MagicMock())
 
-    # Should get the normal "generating" message, not rate limited
+    # Should get the normal queue confirmation, not rate limited
     texts = [call[0][0] for call in update.message.reply_text.call_args_list]
-    assert any("Queueing" in t for t in texts)
+    assert any("queued" in t for t in texts)
 
 
 @pytest.mark.unit
@@ -320,7 +322,7 @@ async def test_cleanup_rate_limited(english_config, mock_logger):
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_handle_article_authorized_success(english_config, mock_logger):
-    """handle_article sends processing message then success message when article succeeds."""
+    """handle_article sends one queue confirmation when article is accepted."""
     handler = BotCommandHandler(english_config, mock_logger)
     update = _make_update(123456789)
 
@@ -332,10 +334,8 @@ async def test_handle_article_authorized_success(english_config, mock_logger):
             config=english_config, logger=mock_logger, hours=24, user_id=123456789
         )
 
-    assert update.message.reply_text.call_count == 2
-    processing_text = update.message.reply_text.call_args_list[0][0][0]
-    success_text = update.message.reply_text.call_args_list[1][0][0]
-    assert "Queueing article publication" in processing_text
+    assert update.message.reply_text.call_count == 1
+    success_text = update.message.reply_text.call_args_list[0][0][0]
     assert "publication queued" in success_text
 
 
@@ -349,8 +349,8 @@ async def test_handle_article_authorized_failure(english_config, mock_logger):
     with patch("src.bot_commands.generate_and_publish_article", new=AsyncMock(return_value=False)):
         await handler.handle_article(update, MagicMock())
 
-    assert update.message.reply_text.call_count == 2
-    error_text = update.message.reply_text.call_args_list[1][0][0]
+    assert update.message.reply_text.call_count == 1
+    error_text = update.message.reply_text.call_args_list[0][0][0]
     assert "Error generating article" in error_text
 
 
@@ -400,8 +400,8 @@ async def test_handle_article_exception(english_config, mock_logger):
     ):
         await handler.handle_article(update, MagicMock())
 
-    assert update.message.reply_text.call_count == 2
-    exc_text = update.message.reply_text.call_args_list[1][0][0]
+    assert update.message.reply_text.call_count == 1
+    exc_text = update.message.reply_text.call_args_list[0][0][0]
     assert "error occurred while generating the article" in exc_text
 
 
