@@ -158,6 +158,11 @@ class TestPublicationFacade:
         from src.publication.errors import ArticlePublicationRejected
 
         async def reject(*args, **kwargs):
+            assert kwargs["defer_delivery"] is False
+            assert kwargs["publication_metadata"] == {
+                "preview": True,
+                "preview_mode": "no_delivery",
+            }
             raise ArticlePublicationRejected(
                 reason="validation_failed",
                 message="preview article rejected",

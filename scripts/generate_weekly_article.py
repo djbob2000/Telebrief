@@ -136,7 +136,11 @@ async def main() -> None:
     await selection_service.select(run.id, defer_generation=False)
 
     try:
-        pub = await generation_service.generate(run.id, defer_delivery=True)
+        pub = await generation_service.generate(
+            run.id,
+            defer_delivery=False,
+            publication_metadata={"preview": True, "preview_mode": "no_delivery"},
+        )
         print("\n" + "═" * 80)
         print(f"📰 ИТОГИ НЕДЕЛИ: {pub.title}")
         if pub.lead and not pub.body.strip().startswith(pub.lead.strip()):

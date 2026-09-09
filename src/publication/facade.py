@@ -206,7 +206,7 @@ async def build_publication_preview(
     pub = await generator.generate(
         run.id,
         defer_delivery=False,
-        publication_metadata={"preview": True},
+        publication_metadata={"preview": True, "preview_mode": "no_delivery"},
     )
 
     logger.info(

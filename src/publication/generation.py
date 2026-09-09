@@ -612,9 +612,16 @@ class PublicationGenerationService:
                 if is_article and self.config is not None:
                     article_meta: dict[str, Any] = {}
                     article_cfg = getattr(self.config.settings, "article", None)
+                    preview_mode = bool(
+                        publication_metadata and publication_metadata.get("preview") is True
+                    )
 
-                    # 1. Publish to Telegra.ph if not already provided
-                    if not (publication_metadata and publication_metadata.get("telegraph_url")):
+                    # Preview generation must not create external artifacts. In particular,
+                    # do not create a Telegra.ph page or an image that could later be
+                    # mistaken for a deliverable publication.
+                    if not preview_mode and not (
+                        publication_metadata and publication_metadata.get("telegraph_url")
+                    ):
                         try:
                             from src.telegraph import TelegraphPublisher
 
@@ -639,8 +646,9 @@ class PublicationGenerationService:
                         except Exception as exc:
                             logger.warning("Failed to publish article to Telegra.ph: %s", exc)
 
-                    # 2. Generate Editorial Cover Photo if not already provided
-                    if not (publication_metadata and publication_metadata.get("photo_path")):
+                    if not preview_mode and not (
+                        publication_metadata and publication_metadata.get("photo_path")
+                    ):
                         try:
                             from src.image_generator import NewsImageGenerator
 
