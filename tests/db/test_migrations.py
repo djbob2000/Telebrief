@@ -369,3 +369,53 @@ async def test_event_processing_execution_guard_schema(pg_conn):
         ("source_item_revisions", "collection_run_id"),
         ("story_revisions", "event_assignment_id"),
     ]
+
+
+@pytest.mark.postgres
+async def test_event_processing_semantic_reuse_schema(pg_conn):
+    await migrate(pg_conn, MIGRATIONS_DIR)
+
+    cur = await pg_conn.execute(
+        """
+        SELECT table_name, column_name, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND (
+              (table_name = 'source_item_revisions' AND column_name IN ('event_processing_hash', 'event_input_version'))
+              OR (table_name = 'event_revision_processing_state' AND column_name IN ('processing_mode', 'reused_from_revision_id'))
+          )
+        ORDER BY table_name, column_name
+        """
+    )
+    assert await cur.fetchall() == [
+        ("event_revision_processing_state", "processing_mode", "NO"),
+        ("event_revision_processing_state", "reused_from_revision_id", "YES"),
+        ("source_item_revisions", "event_input_version", "YES"),
+        ("source_item_revisions", "event_processing_hash", "YES"),
+    ]
+
+    cur = await pg_conn.execute(
+        """
+        SELECT constraint_name
+        FROM information_schema.check_constraints
+        WHERE constraint_schema = 'public'
+          AND constraint_name = 'event_revision_processing_state_processing_mode_check'
+        """
+    )
+    assert await cur.fetchone() is not None
+
+    cur = await pg_conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.referential_constraints
+        WHERE constraint_schema = 'public'
+          AND constraint_name IN (
+              SELECT constraint_name
+              FROM information_schema.key_column_usage
+              WHERE table_schema = 'public'
+                AND table_name = 'event_revision_processing_state'
+                AND column_name = 'reused_from_revision_id'
+          )
+        """
+    )
+    assert await cur.fetchone() is not None
