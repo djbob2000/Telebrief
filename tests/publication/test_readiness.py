@@ -141,6 +141,16 @@ async def test_scheduled_ready_before_slot_waits():
 
 
 @pytest.mark.asyncio
+async def test_persisted_ready_state_cannot_bypass_scheduled_slot():
+    repo = FakeReadinessRepository(_refresh(status="ready_for_preparation"), [_source()])
+    decision = await PublicationReadinessService(repo).reconcile(
+        None, 10, now=NOW - dt.timedelta(minutes=1)
+    )
+    assert decision.status == "ready_waiting_slot"
+    assert repo.refresh.status == "ready_waiting_slot"
+
+
+@pytest.mark.asyncio
 async def test_terminal_source_failure_is_immediate():
     repo = FakeReadinessRepository(
         _refresh(), [replace(_source(), status="degraded", collection_outcome="auth_required")]

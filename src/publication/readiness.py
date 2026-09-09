@@ -80,6 +80,19 @@ class PublicationReadinessService:
             raise ValueError(f"refresh run {refresh_run_id} not found")
 
         if refresh.status == "ready_for_preparation":
+            # A scheduled intent may have been left in this state by a
+            # worker handoff immediately before its slot. Re-apply the slot
+            # barrier instead of allowing an early preparation claim.
+            if refresh.trigger == "scheduled" and now < refresh.slot_at:
+                await self._transition(
+                    conn,
+                    refresh.id,
+                    status="ready_waiting_slot",
+                    now=now,
+                    collection_ready_at=refresh.collection_ready_at,
+                    processing_ready_at=refresh.processing_ready_at,
+                )
+                return PublicationReadinessDecision("ready_waiting_slot", None)
             return self._normal_decision(refresh)
         if refresh.status == "failed":
             return PublicationReadinessDecision("failed", None, refresh.error_kind)
