@@ -157,6 +157,18 @@ _RELOCATED_OR_IDP_ORGANIZATIONS = (
     "медицина херсонщини",
     "аквазоо",
     "aquazoo",
+    "бердянськ мва",
+    "бердянська мва",
+    "бердянської мва",
+    "бердянській мва",
+    "бердянская мва",
+    "бердянской мва",
+    "бердянськ мтг",
+    "бердянська мтг",
+    "бердянської мтг",
+    "бердянській мтг",
+    "бердянская мтг",
+    "бердянской мтг",
 )
 
 _IDP_TERMS = (
@@ -167,6 +179,18 @@ _IDP_TERMS = (
     "переселенц",
     "впо",
     "впл",
+    "бердянськ громад",
+    "бердянська громад",
+    "бердянської громад",
+    "бердянській громад",
+    "бердянск громад",
+    "бердянская громад",
+    "бердянской громад",
+    "бердянскую громад",
+    "бердянськ мтг",
+    "бердянск мтг",
+    "бердянськ мва",
+    "бердянск мва",
 )
 
 _EXTERNAL_LOGISTICS_OR_LOCATIONS = (
@@ -200,5 +224,14 @@ def external_relocated_idp_event(
         has_ext = any(ext in norm for ext in _EXTERNAL_LOGISTICS_OR_LOCATIONS)
         if has_idp and has_ext:
             return True
+
+    # Also inspect combined text across fragments to catch split items
+    combined_norm = " ".join(_norm_geo_text(t) for t in basis_texts)
+    if any(org in combined_norm for org in _RELOCATED_OR_IDP_ORGANIZATIONS):
+        return True
+    has_combined_idp = any(term in combined_norm for term in _IDP_TERMS)
+    has_combined_ext = any(ext in combined_norm for ext in _EXTERNAL_LOGISTICS_OR_LOCATIONS)
+    if has_combined_idp and has_combined_ext:
+        return True
 
     return False

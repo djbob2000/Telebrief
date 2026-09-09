@@ -625,7 +625,7 @@ class StoryTriageService:
                         scope = "OUT_OF_SCOPE"
                         scope_confidence = max(scope_confidence, 0.95)
                         scope_reason = "Broad regional summary without explicit configured focus-area consequence"
-                    elif external_relocated_idp_event(basis_texts=basis_texts or story_all_texts):
+                    elif external_relocated_idp_event(basis_texts=(*basis_texts, *story_all_texts)):
                         scope = "OUT_OF_SCOPE"
                         scope_confidence = max(scope_confidence, 0.95)
                         scope_reason = "Displaced persons (IDP) or relocated administration activity outside the focus area"

@@ -2214,6 +2214,134 @@ async def test_gate_external_relocated_idp_guard_drops_story_even_if_ai_classifi
 
 
 @pytest.mark.postgres
+async def test_gate_external_relocated_idp_guard_drops_story_when_idp_marker_is_in_non_basis_fragment(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8996, 'h_idp_aquazoo', '[1, 0]'::vector, 'm', 2),
+        (8997, 'h_idp_greeting', '[0, 1]'::vector, 'm', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9996, %s, 0, '☘️ ВИХІДНИЙ В АКВАЗОО', 'h_idp_aquazoo', 'v1', TRUE, NULL, %s),
+        (9997, %s, 1, '**❗️Шановні мешканці Бердянської громади!**', 'h_idp_greeting', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now, revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10996, 9996, 8996),
+        (10997, 9997, 8997)
+        """
+    )
+    await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9996,
+        fragment_embedding_id=10996,
+        assignment_kind="new_story",
+    )
+    aid2 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid,
+        fragment_id=9997,
+        fragment_embedding_id=10997,
+        assignment_kind="vector_join",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid,
+        centroid=[0.5, 0.5],
+        model="m",
+        dimensions=2,
+        fragment_count=2,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid2,
+    )
+
+    s = await cluster_repo.get_cluster_state(conn, sid)
+    assert s is not None
+
+    scope_config = EditionScopeConfig(
+        name="Бердянск",
+        focus_places=("Бердянск", "Азовское"),
+        direct_impact_only=True,
+    )
+    scope_hash = scope_config_hash(scope_config)
+
+    # AI model chooses only fragment 9997 as scope_basis (which only says "Шановні мешканці Бердянської громади!")
+    mock_ai = AsyncMock()
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "story_id": sid,
+                    "scope": "LOCAL",
+                    "scope_basis_fragment_ids": [9997],
+                    "scope_confidence": 0.95,
+                    "scope_reason": "Mentions Berdyansk community",
+                    "retention": "KEEP",
+                    "enrichment": "BRIEF",
+                    "exclusion_reason": None,
+                    "confidence": 0.95,
+                    "reason": "Local announcement",
+                    "brief_payload": {
+                        "topic": "Вихідний в Аквазоо",
+                        "publishability": "news",
+                        "headline": "Вихідний в Аквазоо для мешканців Бердянської громади",
+                        "digest_summary": "Анонс вихідного в Аквазоо.",
+                        "evidence_items": [
+                            {
+                                "text": "Шановні мешканці Бердянської громади!",
+                                "kind": "community_report",
+                                "publication_use": "PUBLISH",
+                                "source_fragment_ids": [9997],
+                            }
+                        ],
+                    },
+                }
+            ]
+        }
+    )
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    batch = await service.triage_stories_batch(
+        conn,
+        [s],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert len(batch.results) == 1
+    r = batch.results[0]
+    assert r.scope == "OUT_OF_SCOPE"
+    assert r.retention == "DROP"
+    assert r.enrichment == "NONE"
+    assert r.brief_payload is None
+
+
+@pytest.mark.postgres
 async def test_load_recent_subject_hints_reads_service_state(conn, edition, revision):
     now = dt.datetime.now(dt.timezone.utc)
     story_repo = StoryRepository()

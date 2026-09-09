@@ -111,3 +111,24 @@ def test_external_relocated_idp_event_not_triggered_for_regular_city_reports():
         "На Горе в Бердянске дали воду, но напор слабый. По улице Димитрова чувствуется запах газа.",
     )
     assert not external_relocated_idp_event(basis_texts=basis)
+
+
+def test_external_relocated_idp_event_detected_when_split_across_fragments():
+    from src.processing.edition_scope import external_relocated_idp_event
+
+    # Fragment 1 has only the greeting, fragment 2 has the external location
+    basis = (
+        "❗️Шановні мешканці Бердянської громади!",
+        "Виїзд автобусом із м. Запоріжжя об 11:00.",
+    )
+    assert external_relocated_idp_event(basis_texts=basis)
+
+
+def test_external_relocated_idp_event_detected_for_berdyansk_mva_and_mtg():
+    from src.processing.edition_scope import external_relocated_idp_event
+
+    assert external_relocated_idp_event(basis_texts=("Бердянська МВА оголошує про видачу ліків.",))
+    assert external_relocated_idp_event(
+        basis_texts=("Допомога для мешканців Бердянської МТГ у Запоріжжі.",)
+    )
+    assert external_relocated_idp_event(basis_texts=("☘️ ВИХІДНИЙ В АКВАЗОО",))
