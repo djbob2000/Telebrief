@@ -24,6 +24,7 @@ from src.db.uow import DatabaseUnitOfWork
 from src.domain.ingestion import SourceItem
 from src.ingestion.models import CollectionBatch, CollectionOutcome, CollectionTrigger
 from src.ingestion.repository import IngestionRepository
+from src.repositories.event_revision_processing import EventRevisionProcessingRepository
 
 
 @dataclass(frozen=True)
@@ -103,7 +104,11 @@ class IngestionService:
                 root_external_id=root_external_id,
             )
             revision = await self.repo.insert_revision_if_changed(
-                conn, item.id, observation, collected_at=observation.observed_at
+                conn,
+                item.id,
+                observation,
+                collected_at=observation.observed_at,
+                collection_run_id=run.id,
             )
             current = revision or await self.repo.get_latest_revision(conn, item.id)
             if current is None:
@@ -164,6 +169,8 @@ class IngestionService:
         """
         if not new_revision_ids:
             return
+        processing_repo = EventRevisionProcessingRepository()
+        await processing_repo.mark_pending(conn, new_revision_ids)
         edition_ids = await self.repo.list_source_edition_ids(conn, source_id)
         if not edition_ids:
             return

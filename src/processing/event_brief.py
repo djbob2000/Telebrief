@@ -191,10 +191,18 @@ class EventBriefService:
             event_payload=payload_dict,
         )
 
+        if not await self.cluster_repo.is_current_assignment(
+            conn,
+            story_id=story_id,
+            assignment_id=assignment_id,
+        ):
+            return None
+
         rev = await self.story_repo.create_revision_if_semantic_change(
             conn,
             story_id=story_id,
             semantic_changed=True,
             revision=new_rev,
+            event_assignment_id=assignment_id,
         )
         return rev

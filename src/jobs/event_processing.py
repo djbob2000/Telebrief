@@ -9,7 +9,9 @@ import os
 import uuid
 from typing import Any
 
-from src.ai_providers import create_provider
+import procrastinate
+
+from src.ai_providers import classify_provider_failure, create_provider
 from src.config_loader import load_config
 from src.embedding_providers import create_embedding_provider
 from src.jobs.app import procrastinate_app
@@ -28,15 +30,61 @@ from src.repositories.event_processing_claims import (
     EventProcessingCycleClaim,
 )
 from src.repositories.event_retries import EventProcessingRetryRepository
+from src.repositories.event_revision_processing import EventRevisionProcessingRepository
 from src.repositories.fragments import FragmentRepository
 from src.repositories.stories import StoryRepository
 from src.runtime import get_runtime
 
 logger = logging.getLogger(__name__)
 
+_GATE_SPLIT_ERROR_KINDS = frozenset({"token_budget", "context_size", "other"})
 
-@procrastinate_app.task(queue="processing", name="process_event_revisions")
+
+def _should_split_gate(error_kind: str | None, batch_size: int) -> bool:
+    """Return whether a deterministic Gate failure can be isolated by bisection."""
+    return batch_size > 1 and (error_kind or "other") in _GATE_SPLIT_ERROR_KINDS
+
+
+EVENT_REVISION_PROCESSING_RETRY_STRATEGY = procrastinate.RetryStrategy(
+    max_attempts=2,
+    wait=30,
+    linear_wait=60,
+)
+
+
+@procrastinate_app.task(
+    queue="processing",
+    name="process_event_revisions",
+    retry=EVENT_REVISION_PROCESSING_RETRY_STRATEGY,
+)
 async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int]:
+    """Run Event-First processing with durable revision-state transitions."""
+    runtime = get_runtime()
+    processing_repo = EventRevisionProcessingRepository()
+    async with runtime.uow.transaction() as state_conn:
+        pending_ids = await processing_repo.list_incomplete(state_conn, revision_ids)
+        if pending_ids:
+            await processing_repo.mark_running(state_conn, pending_ids)
+
+    if not pending_ids:
+        return {"revisions": 0, "fragments": 0, "candidates": 0, "assignments": 0}
+
+    try:
+        stats = await _process_event_revisions_in_transaction(pending_ids)
+    except Exception as exc:
+        async with runtime.uow.transaction() as state_conn:
+            await processing_repo.mark_failed(
+                state_conn,
+                pending_ids,
+                error_kind=classify_provider_failure(exc),
+            )
+        raise
+    async with runtime.uow.transaction() as state_conn:
+        await processing_repo.mark_succeeded(state_conn, pending_ids)
+    return stats
+
+
+async def _process_event_revisions_in_transaction(revision_ids: list[int]) -> dict[str, int]:
     """Ingest and cluster a batch of source item revisions."""
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
@@ -265,16 +313,85 @@ async def coalesce_dirty_stories_task(
             b_stats["cycle_lease_lost"] = 1
             b_stats["deferred"] = len(gate_batch)
             return b_stats
-        async with triage_sem:
-            batch_result = await triage_service.triage_stories_batch(
-                None,
-                gate_batch,
-                edition_id=cur_ed_id,
-                scope_config=sc_cfg,
-                scope_hash=sc_hsh,
-                excerpt_chars=cfg.triage_excerpt_chars,
-                min_ignore_confidence=cfg.triage_min_ignore_confidence,
+
+        stage_claims = []
+        claimed_stories: list[StoryClusterState] = []
+        for state in gate_batch:
+            async with runtime.uow.transaction() as claim_conn:
+                stage_claim = await claim_repo.try_claim_stage(
+                    claim_conn,
+                    story_id=state.story_id,
+                    latest_assignment_id=state.latest_assignment_id,
+                    stage="triage",
+                    owner_id=cycle_claim.owner_id,
+                    ttl_seconds=cfg.event_processing_stage_lease_seconds,
+                )
+            if stage_claim is None:
+                b_stats["stage_claim_skipped"] += 1
+                continue
+            stage_claims.append(stage_claim)
+            claimed_stories.append(state)
+
+        if not claimed_stories:
+            b_stats["deferred"] = len(gate_batch)
+            return b_stats
+
+        async def _triage_batch_with_split(
+            batch: list[StoryClusterState],
+            *,
+            allow_split: bool = True,
+        ) -> Any:
+            async with triage_sem:
+                result = await triage_service.triage_stories_batch(
+                    None,
+                    batch,
+                    edition_id=cur_ed_id,
+                    scope_config=sc_cfg,
+                    scope_hash=sc_hsh,
+                    excerpt_chars=cfg.triage_excerpt_chars,
+                    min_ignore_confidence=cfg.triage_min_ignore_confidence,
+                )
+            failed_ids = set(result.deferred_story_ids)
+            if not allow_split or not _should_split_gate(result.batch_error_kind, len(batch)):
+                return result
+            failed_batch = [state for state in batch if state.story_id in failed_ids]
+            if len(failed_batch) <= 1:
+                return result
+            mid = len(failed_batch) // 2
+            if mid <= 0:
+                return result
+            async with runtime.uow.transaction() as lease_conn:
+                renewed = await claim_repo.renew_cycle(
+                    lease_conn,
+                    cycle_claim,
+                    ttl_seconds=cfg.event_processing_cycle_lease_seconds,
+                )
+            if renewed is None:
+                b_stats["cycle_lease_lost"] += 1
+                return result
+            async with runtime.uow.transaction() as slot_conn:
+                slot_ok = await claim_repo.claim_triage_split_slot(
+                    slot_conn,
+                    cycle_claim,
+                    max_calls=cfg.triage_split_max_extra_calls_per_cycle,
+                    ttl_seconds=cfg.event_processing_cycle_lease_seconds,
+                )
+            if not slot_ok:
+                return result
+            left = await _triage_batch_with_split(failed_batch[:mid], allow_split=True)
+            right = await _triage_batch_with_split(failed_batch[mid:], allow_split=True)
+            resolved = [item for item in result.results if item.story_id not in failed_ids]
+            combined_results = tuple(resolved) + tuple(left.results) + tuple(right.results)
+            deferred_ids = tuple(left.deferred_story_ids) + tuple(right.deferred_story_ids)
+            return result.__class__(
+                results=combined_results,
+                deferred_story_ids=deferred_ids,
+                batch_error_kind=(left.batch_error_kind or right.batch_error_kind),
+                prompt_hash=result.prompt_hash,
             )
+
+        batch_result = await _triage_batch_with_split(claimed_stories)
+        if stage_claims:
             b_stats["triaged"] = len(batch_result.results)
             results_by_id = {item.story_id: item for item in batch_result.results}
 
@@ -285,13 +402,13 @@ async def coalesce_dirty_stories_task(
                         retry_conn,
                         [
                             (state.story_id, state.latest_assignment_id)
-                            for state in gate_batch
+                            for state in claimed_stories
                             if state.story_id in deferred_set
                         ],
                         stage="triage",
                     )
                     error_kind = batch_result.batch_error_kind or "other"
-                    for state in gate_batch:
+                    for state in claimed_stories:
                         if state.story_id not in deferred_set:
                             continue
                         previous = retry_states.get((state.story_id, state.latest_assignment_id))
@@ -375,12 +492,18 @@ async def coalesce_dirty_stories_task(
                         continue
 
                     # In-scope KEEP: persist brief revision first
-                    await brief_service.persist_brief(
+                    brief_revision = await brief_service.persist_brief(
                         persist_conn,
                         story_id=state.story_id,
                         assignment_id=state.latest_assignment_id,
                         payload=result.brief_payload,
                     )
+                    if brief_revision is None and not await cluster_repo.is_current_assignment(
+                        persist_conn,
+                        story_id=state.story_id,
+                        assignment_id=state.latest_assignment_id,
+                    ):
+                        continue
 
                     effective_enrichment = result.enrichment
                     if (
@@ -487,6 +610,27 @@ async def coalesce_dirty_stories_task(
                         )
                     continue
 
+                if outcome.error_kind in {"no_evidence", "story_not_found", "superseded"}:
+                    async with runtime.uow.transaction() as semantic_conn:
+                        await retry_repo.clear(
+                            semantic_conn,
+                            story_id=state.story_id,
+                            latest_assignment_id=state.latest_assignment_id,
+                            stage="analysis",
+                        )
+                        if outcome.error_kind in {"no_evidence", "story_not_found"}:
+                            if await cluster_repo.is_current_assignment(
+                                semantic_conn,
+                                story_id=state.story_id,
+                                assignment_id=state.latest_assignment_id,
+                            ):
+                                await cluster_repo.mark_cluster_processed_without_analysis(
+                                    semantic_conn,
+                                    story_id=state.story_id,
+                                    assignment_id=state.latest_assignment_id,
+                                )
+                    continue
+
                 b_stats["analysis_failures"] += 1
                 previous = analysis_retry_states.get((state.story_id, state.latest_assignment_id))
                 attempt_count = (previous.attempt_count if previous else 0) + 1
@@ -515,6 +659,10 @@ async def coalesce_dirty_stories_task(
                             story_id=state.story_id,
                             assignment_id=state.latest_assignment_id,
                         )
+
+            async with runtime.uow.transaction() as release_conn:
+                for stage_claim in stage_claims:
+                    await claim_repo.release_stage(release_conn, stage_claim)
 
         return b_stats
 

@@ -78,6 +78,24 @@ class EventClusterRepository:
         vec = _vec_to_list(row[1])
         return StoryClusterState.from_row(row, vec)
 
+    async def is_current_assignment(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        story_id: int,
+        assignment_id: int,
+    ) -> bool:
+        """Return whether an Event-First assignment is still the current one."""
+        cursor = await conn.execute(
+            """
+            SELECT 1
+            FROM story_cluster_state
+            WHERE story_id = %s AND latest_assignment_id = %s
+            """,
+            (story_id, assignment_id),
+        )
+        return await cursor.fetchone() is not None
+
     async def list_dirty_cluster_states(
         self,
         conn: psycopg.AsyncConnection,

@@ -67,6 +67,8 @@ class StoryRepository:
         inside the caller's transaction."""
         story_id = await self._insert_story_shell(conn, edition_id=edition_id)
         story_revision = await self._insert_revision(conn, story_id=story_id, revision=revision)
+        if story_revision is None:
+            raise RuntimeError("initial Story revision could not be persisted")
         await conn.execute(
             "UPDATE stories SET current_revision_id=%s, lifecycle_state='active' WHERE id=%s",
             (story_revision.id, story_id),
@@ -135,13 +137,21 @@ class StoryRepository:
         story_id: int,
         semantic_changed: bool,
         revision: NewStoryRevision | None,
+        event_assignment_id: int | None = None,
     ) -> StoryRevision | None:
         """Append the next revision only when the service says semantics
         changed AND supplies the explicit payload; otherwise this is a no-op
         returning None. The new revision becomes the current one."""
         if not semantic_changed or revision is None:
             return None
-        story_revision = await self._insert_revision(conn, story_id=story_id, revision=revision)
+        story_revision = await self._insert_revision(
+            conn,
+            story_id=story_id,
+            revision=revision,
+            event_assignment_id=event_assignment_id,
+        )
+        if story_revision is None:
+            return None
         await conn.execute(
             "UPDATE stories SET current_revision_id=%s WHERE id=%s",
             (story_revision.id, story_id),
@@ -266,7 +276,8 @@ class StoryRepository:
         *,
         story_id: int,
         revision: NewStoryRevision,
-    ) -> StoryRevision:
+        event_assignment_id: int | None = None,
+    ) -> StoryRevision | None:
         """Append one immutable revision with revision_no = MAX+1 computed
         inside the caller's transaction; uq_story_revisions_story_no is the
         concurrency backstop."""
@@ -274,11 +285,20 @@ class StoryRepository:
             """
             INSERT INTO story_revisions (
                 story_id, revision_no, title, summary, current_state,
-                semantic_text, content_hash, reason, event_payload, created_at
+                semantic_text, content_hash, reason, event_payload,
+                event_assignment_id, created_at
             )
-            SELECT %s, COALESCE(MAX(revision_no), 0) + 1, %s, %s, %s, %s, %s, %s, %s, %s
+            SELECT %s, COALESCE(MAX(revision_no), 0) + 1, %s, %s, %s, %s, %s, %s, %s, %s, %s
             FROM story_revisions
             WHERE story_id = %s
+              AND (
+                  %s::bigint IS NULL
+                  OR EXISTS (
+                      SELECT 1
+                      FROM story_cluster_state
+                      WHERE story_id = %s AND latest_assignment_id = %s
+                  )
+              )
             RETURNING id, story_id, revision_no, title, summary, current_state,
                 semantic_text, content_hash, reason, created_at, event_payload
             """,
@@ -291,8 +311,13 @@ class StoryRepository:
                 revision.content_hash,
                 revision.reason,
                 Jsonb(revision.event_payload or {}),
+                event_assignment_id,
                 revision.created_at,
                 story_id,
+                event_assignment_id,
+                story_id,
+                event_assignment_id,
             ),
         )
-        return StoryRevision.from_row(await cursor.fetchone())
+        row = await cursor.fetchone()
+        return None if row is None else StoryRevision.from_row(row)

@@ -333,6 +333,18 @@ class EventAnalysisService:
                 )
 
             async with _get_conn() as write_conn:
+                if not await self.cluster_repo.is_current_assignment(
+                    write_conn,
+                    story_id=story_id,
+                    assignment_id=cluster_state.latest_assignment_id,
+                ):
+                    return EventAnalysisOutcome(
+                        succeeded=False,
+                        revision=None,
+                        error_kind="superseded",
+                        prompt_hash=prompt_hash,
+                    )
+
                 await write_conn.execute(
                     """
                     INSERT INTO story_event_analysis_runs (
@@ -375,7 +387,16 @@ class EventAnalysisService:
                     story_id=story_id,
                     semantic_changed=True,
                     revision=new_rev,
+                    event_assignment_id=cluster_state.latest_assignment_id,
                 )
+
+                if rev is None:
+                    return EventAnalysisOutcome(
+                        succeeded=False,
+                        revision=None,
+                        error_kind="superseded",
+                        prompt_hash=prompt_hash,
+                    )
 
                 # 7. Update cluster state as analyzed
                 await self.cluster_repo.update_cluster_analysis_analyzed(

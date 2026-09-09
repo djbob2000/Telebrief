@@ -207,6 +207,7 @@ class IngestionRepository:
         observation: ObservedItem,
         *,
         collected_at: datetime,
+        collection_run_id: int | None = None,
     ) -> SourceItemRevision | None:
         """Append a revision unless it matches the latest revision's hash.
 
@@ -222,9 +223,9 @@ class IngestionRepository:
             """
             INSERT INTO source_item_revisions (
                 source_item_id, revision_no, collected_at, content_hash,
-                text_content, payload
+                text_content, payload, collection_run_id
             )
-            VALUES (%s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             RETURNING id, source_item_id, revision_no, collected_at,
                 content_hash, text_content, payload
             """,
@@ -235,6 +236,7 @@ class IngestionRepository:
                 content_hash,
                 observation.text,
                 Jsonb(observation.metadata),
+                collection_run_id,
             ),
         )
         row = await cursor.fetchone()

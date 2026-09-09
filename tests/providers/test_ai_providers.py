@@ -730,6 +730,79 @@ async def test_openrouter_reasoning_and_thinking_merge_without_overwrite(mock_lo
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_openrouter_explicit_reasoning_bad_request_fails_over_once(mock_logger):
+    """An explicit OpenRouter reasoning rejection is handed to the cascade."""
+    import httpx
+    from openai import BadRequestError
+
+    with patch("src.ai_providers.AsyncOpenAI"):
+        primary = OpenAIProvider(
+            api_key="sk-test",
+            logger=mock_logger,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        bad_request = BadRequestError(
+            message="reasoning is unsupported",
+            response=httpx.Response(
+                400,
+                json={"error": {"message": "reasoning is unsupported"}},
+                request=httpx.Request("POST", "https://openrouter.ai/api/v1"),
+            ),
+            body={"error": {"message": "reasoning is unsupported"}},
+        )
+        primary.client.chat.completions.create = AsyncMock(side_effect=bad_request)
+
+    backup = MagicMock()
+    backup.chat_completion = AsyncMock(return_value="backup response")
+    cascade = ProviderCascade(
+        [("openrouter-primary", primary), ("openrouter-secondary", backup)],
+        mock_logger,
+    )
+
+    result = await cascade.chat_completion(
+        messages=[{"role": "user", "content": "Hello"}],
+        model="openrouter-test-model",
+        reasoning_effort="low",
+    )
+
+    assert result == "backup response"
+    primary.client.chat.completions.create.assert_awaited_once()
+    backup.chat_completion.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_openrouter_reasoning_uses_max_tokens_only_without_explicit_effort(
+    mock_logger, monkeypatch
+):
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = OpenAIProvider(
+            api_key="sk-test",
+            logger=mock_logger,
+            base_url="https://openrouter.ai/api/v1",
+        )
+        response = MagicMock()
+        response.choices = [
+            MagicMock(message=MagicMock(content="ok", refusal=None), finish_reason="stop")
+        ]
+        response.usage = MagicMock(prompt_tokens=1, completion_tokens=1)
+        provider.client.chat.completions.create = AsyncMock(return_value=response)
+        monkeypatch.delenv("OPENROUTER_REASONING_EFFORT", raising=False)
+        monkeypatch.setenv("OPENROUTER_REASONING_MAX_TOKENS", "123")
+
+        await provider.chat_completion(
+            messages=[{"role": "user", "content": "Hello"}],
+            model="openrouter-test-model",
+            reasoning_effort=None,
+        )
+
+    assert provider.client.chat.completions.create.call_args.kwargs["extra_body"] == {
+        "reasoning": {"max_tokens": 123}
+    }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_openrouter_logs_stage_aware_usage(mock_logger):
     from src.llm_telemetry import llm_call_context
 

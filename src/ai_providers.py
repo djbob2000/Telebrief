@@ -245,6 +245,16 @@ def _resolve_openrouter_max_tokens(requested: int | None) -> int:
     return min(effective, cap)
 
 
+def _request_has_openrouter_reasoning(create_kwargs: Dict[str, Any]) -> bool:
+    """Return whether an OpenRouter request carries an explicit reasoning object."""
+    extra_body = create_kwargs.get("extra_body")
+    return (
+        isinstance(extra_body, dict)
+        and isinstance(extra_body.get("reasoning"), dict)
+        and bool(extra_body["reasoning"])
+    )
+
+
 def extract_retry_after(exc: BaseException) -> float | None:
     """Extract retry-after in seconds from HTTP headers, response body, or error message."""
     resp = getattr(exc, "response", None)
@@ -622,15 +632,22 @@ class OpenAIProvider(AIProvider):
         if temperature is not None:
             create_kwargs["temperature"] = temperature
         if is_openrouter:
-            effort = reasoning_effort or os.environ.get("OPENROUTER_REASONING_EFFORT", "low")
-            max_reas_tokens = os.environ.get("OPENROUTER_REASONING_MAX_TOKENS")
             if thinking is not False:
                 extra = create_kwargs.setdefault("extra_body", {})
-                reasoning = extra.setdefault("reasoning", {})
-                if effort:
-                    reasoning["effort"] = effort
-                elif max_reas_tokens and max_reas_tokens.isdigit():
-                    reasoning["max_tokens"] = int(max_reas_tokens)
+                env_effort = (os.environ.get("OPENROUTER_REASONING_EFFORT") or "").strip()
+                raw_max_reasoning = (
+                    os.environ.get("OPENROUTER_REASONING_MAX_TOKENS") or ""
+                ).strip()
+                reasoning: dict[str, Any]
+                if reasoning_effort is not None:
+                    reasoning = {"effort": reasoning_effort}
+                elif env_effort:
+                    reasoning = {"effort": env_effort}
+                elif raw_max_reasoning.isdigit() and int(raw_max_reasoning) > 0:
+                    reasoning = {"max_tokens": int(raw_max_reasoning)}
+                else:
+                    reasoning = {"effort": "low"}
+                extra["reasoning"] = reasoning
         else:
             if reasoning_effort is not None:
                 create_kwargs["reasoning_effort"] = reasoning_effort
@@ -720,6 +737,8 @@ class OpenAIProvider(AIProvider):
             create_kwargs.get("model"),
             [k for k in create_kwargs if k != "messages"],
         )
+        if "openrouter" in self.base_url and _request_has_openrouter_reasoning(create_kwargs):
+            raise original_exc
         if reasoning_effort is not None and "reasoning_effort" in create_kwargs:
             self.logger.debug(
                 "reasoning_effort=%r rejected by model, retrying without it: %s",
