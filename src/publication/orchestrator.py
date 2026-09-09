@@ -178,6 +178,7 @@ class PublicationOrchestrator:
     ) -> tuple[PublicationReadinessDecision, list[int]]:
         """Apply retry/claim policy while the intent transaction is held."""
         if decision.status == "failed":
+            await self._enqueue_failure_notification(conn, intent, decision.failure_kind)
             return decision, []
 
         if decision.status == "ready_for_preparation":
@@ -197,7 +198,9 @@ class PublicationOrchestrator:
                 status="failed",
                 error_kind="rate_limit_deadline",
             )
-            return PublicationReadinessDecision("failed", None, "rate_limit_deadline"), []
+            failed = PublicationReadinessDecision("failed", None, "rate_limit_deadline")
+            await self._enqueue_failure_notification(conn, intent, failed.failure_kind)
+            return failed, []
 
         source_ids = [
             diagnostic.source_id
@@ -213,6 +216,26 @@ class PublicationOrchestrator:
             )
 
         return decision, source_ids
+
+    async def _enqueue_failure_notification(
+        self,
+        conn: psycopg.AsyncConnection,
+        intent: PublicationRefreshRun,
+        failure_kind: str | None,
+    ) -> None:
+        from src.publication.notifications import PublicationFailureNotificationService
+
+        current = await self.readiness_repo.get_refresh_run(conn, intent.id)
+        if current is None:
+            return
+        await PublicationFailureNotificationService(
+            config=self.config,
+            readiness_repo=self.readiness_repo,
+        ).enqueue_for_failed_intent(
+            conn,
+            intent=current,
+            failure_kind=failure_kind,
+        )
 
     async def _enqueue_sources(self, source_ids: Sequence[int]) -> None:
         for source_id in source_ids:

@@ -6,12 +6,80 @@ the sole owner of every table and function inside it.
 
 from __future__ import annotations
 
+import datetime as dt
+
+import procrastinate
 import psycopg
 from procrastinate import PsycopgConnector
 from procrastinate.schema import SchemaManager
 from psycopg import sql
+from telegram import Bot
+
+from src.jobs.app import procrastinate_app
 
 DEFAULT_SCHEMA = "procrastinate"
+
+PUBLICATION_FAILURE_NOTIFICATION_TASK_NAME = "send_publication_failure_notification"
+PUBLICATION_NOTIFICATION_RETRY_STRATEGY = procrastinate.RetryStrategy(
+    max_attempts=3, wait=30, linear_wait=60
+)
+
+
+@procrastinate_app.task(
+    name=PUBLICATION_FAILURE_NOTIFICATION_TASK_NAME,
+    queue="maintenance",
+    retry=PUBLICATION_NOTIFICATION_RETRY_STRATEGY,
+)
+async def send_publication_failure_notification(
+    notification_id: int, message: str | None = None
+) -> None:
+    """Send one final failure notification, preserving failed intent state."""
+    from src.config_loader import load_config
+    from src.publication.notification_repository import PublicationNotificationRepository
+    from src.publication.notifications import PublicationFailureNotificationService
+    from src.publication.readiness_repository import PublicationReadinessRepository
+    from src.runtime import get_runtime
+
+    runtime = get_runtime()
+    notification_repo = PublicationNotificationRepository()
+    readiness_repo = PublicationReadinessRepository()
+    config = load_config()
+    async with runtime.uow.transaction() as conn:
+        notification = await notification_repo.get(conn, notification_id, for_update=True)
+        if notification is None or notification.status == "sent":
+            return
+        intent = await readiness_repo.get_refresh_run(conn, notification.refresh_run_id)
+        if intent is None:
+            raise ValueError(f"publication intent {notification.refresh_run_id} not found")
+        if message is None:
+            diagnostics = await readiness_repo.list_unready_source_diagnostics(conn, intent.id)
+            message = PublicationFailureNotificationService(config=config).render_message(
+                intent, diagnostics
+            )
+        recipient_user_id = notification.recipient_user_id
+
+    try:
+        async with Bot(token=config.telegram_bot_token) as bot:
+            await bot.send_message(
+                chat_id=recipient_user_id,
+                text=message,
+                disable_web_page_preview=True,
+            )
+    except Exception as exc:
+        async with runtime.uow.transaction() as conn:
+            await notification_repo.mark_failed(
+                conn,
+                notification_id=notification_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        raise
+
+    async with runtime.uow.transaction() as conn:
+        await notification_repo.mark_sent(
+            conn,
+            notification_id=notification_id,
+            sent_at=dt.datetime.now(dt.timezone.utc),
+        )
 
 
 async def ensure_schema(
