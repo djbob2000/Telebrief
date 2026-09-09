@@ -7,15 +7,10 @@ only — it never generates content inline.
 
 Due semantics:
 
-* at ``slot - pre_publish_lead_minutes`` a high-priority ``PRE_PUBLISH``
-  refresh fans out ordinary source scans so fresh knowledge is collected
-  ahead of the publication minute;
-* at the configured publication minute a
-  :func:`src.jobs.publication.create_scheduled_publication` job is deferred
-  with ``snapshot_at`` equal to the scheduled slot; the deterministic request
-  key derived inside that task makes repeated dispatcher executions
-  idempotent — a late worker still uses the scheduled timestamp, so
-  at-least-once dispatch cannot create duplicate scheduled publications.
+* at ``slot - pre_publish_lead_minutes`` a durable scheduled publication
+  intent is created and unresolved source scans are targeted;
+* at the configured publication minute the same intent is reconciled and may
+  advance to preparation.
 
 A slot is evaluated once per matching minute tick; if no worker was running
 at that minute the slot's publication is skipped for that day (there is no
@@ -167,18 +162,17 @@ def due_publication_actions(
         # Check if local_minute falls within [publish_at, publish_at + catch_up_window_minutes)
         publish_window_end = publish_at + dt.timedelta(minutes=max(1, catch_up_window_minutes))
         if publish_at <= local_minute < publish_window_end:
-            lag_minutes = getattr(config.settings, "publication_snapshot_lag_minutes", 0)
-            snapshot_at = publish_at - dt.timedelta(minutes=max(0, lag_minutes))
-            snapshot_iso = snapshot_at.astimezone(dt.timezone.utc).isoformat()
+            target_iso = snapshot_key(publish_at)
+            request_key = scheduled_request_key(DEFAULT_EDITION_SLUG, publication_type, target_iso)
             actions.append(
                 DuePublicationAction(
                     kind="publish",
-                    queueing_lock=f"publication-schedule:{publication_type}:{snapshot_iso}",
+                    queueing_lock=f"publication-intent:{request_key}",
                     task_kwargs={
                         "edition_slug": DEFAULT_EDITION_SLUG,
                         "publication_type": publication_type,
-                        "slot_at": snapshot_key(publish_at),
-                        "snapshot_at": snapshot_iso,
+                        "target_at": target_iso,
+                        "request_key": request_key,
                     },
                 )
             )
@@ -189,10 +183,17 @@ def due_publication_actions(
             actions.append(
                 DuePublicationAction(
                     kind="pre_publish",
-                    queueing_lock=f"pre-publish-refresh:{publication_type}:{snapshot_key(publish_at)}",
+                    queueing_lock=(
+                        "publication-intent:"
+                        f"{scheduled_request_key(DEFAULT_EDITION_SLUG, publication_type, snapshot_key(publish_at))}"
+                    ),
                     task_kwargs={
+                        "edition_slug": DEFAULT_EDITION_SLUG,
                         "publication_type": publication_type,
-                        "publish_at": snapshot_key(publish_at),
+                        "target_at": snapshot_key(publish_at),
+                        "request_key": scheduled_request_key(
+                            DEFAULT_EDITION_SLUG, publication_type, snapshot_key(publish_at)
+                        ),
                     },
                 )
             )
@@ -203,37 +204,9 @@ def snapshot_key(publish_at: dt.datetime) -> str:
     return publish_at.astimezone(dt.timezone.utc).isoformat()
 
 
-async def _fan_out_refresh_sources(refresh_run_id: int) -> int:
-    """Defer pending source scans for a refresh without fabricating success."""
-    from src.ingestion.models import CollectionTrigger
-    from src.jobs.ingestion import PRE_PUBLISH_PRIORITY, enqueue_source_scan
-    from src.publication.readiness_repository import PublicationReadinessRepository
-    from src.runtime import get_runtime
-
-    runtime = get_runtime()
-    async with runtime.uow.transaction() as conn:
-        sources = await PublicationReadinessRepository().list_refresh_sources(conn, refresh_run_id)
-
-    queued = 0
-    for source in sources:
-        if source.status != "pending":
-            continue
-        attempted_at = dt.datetime.now(dt.timezone.utc)
-        async with runtime.uow.transaction() as conn:
-            await PublicationReadinessRepository().mark_source_enqueue_attempt(
-                conn,
-                refresh_run_id=refresh_run_id,
-                source_id=source.source_id,
-                attempted_at=attempted_at,
-            )
-        job_id = await enqueue_source_scan(
-            source_id=source.source_id,
-            trigger=CollectionTrigger.PRE_PUBLISH,
-            priority=PRE_PUBLISH_PRIORITY,
-        )
-        if job_id is not None:
-            queued += 1
-    return queued
+def scheduled_request_key(edition_slug: str, publication_type: str, target_at: str) -> str:
+    """Stable identity shared by every scheduler tick for one publication slot."""
+    return f"scheduled:{edition_slug}:{publication_type}:{target_at}"
 
 
 @procrastinate_app.periodic(
@@ -246,113 +219,36 @@ async def _fan_out_refresh_sources(refresh_run_id: int) -> int:
     queueing_lock=PUBLICATION_SCHEDULE_DISPATCHER_LOCK,
 )
 async def publication_schedule_dispatcher(timestamp: int) -> None:
-    """Decide what the configured schedule makes due and defer durable work."""
+    """Own the publication clock; the orchestrator owns all publication state."""
     from src.config_loader import load_config
 
     scheduled_for = dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc)
     config = load_config()
-
-    from src.jobs.publication import create_scheduled_publication
-    from src.publication.readiness import PublicationReadinessService
-    from src.publication.readiness_repository import PublicationReadinessRepository
-    from src.repositories.editions import EditionRepository
+    from src.publication.orchestrator import PublicationOrchestrator
     from src.runtime import get_runtime
 
     runtime = get_runtime()
-    readiness_service = PublicationReadinessService()
+    orchestrator = PublicationOrchestrator(uow=runtime.uow, config=config)
 
     async with runtime.uow.transaction() as conn:
-        open_refreshes = await PublicationReadinessRepository().list_reconcilable_refresh_runs(conn)
-        for refresh in open_refreshes:
-            decision = await readiness_service.reconcile(
-                conn,
-                refresh.id,
-                now=scheduled_for,
-                on_deadline=config.settings.publication_readiness_on_deadline,
-            )
-            if decision.status in {"ready_for_preparation", "fallback_ready"}:
-                prepared = await PublicationReadinessRepository().mark_preparing(
-                    conn,
-                    refresh_run_id=refresh.id,
-                    fallback_used=decision.status == "fallback_ready",
-                )
-                if prepared is not None:
-                    await create_scheduled_publication.configure(
-                        connection=conn,
-                        queueing_lock=f"publication-refresh:{refresh.id}",
-                    ).defer_async(refresh_run_id=refresh.id)
+        open_refreshes = await orchestrator.readiness_repo.list_reconcilable_refresh_runs(conn)
+    for refresh in open_refreshes:
+        await orchestrator.reconcile(refresh.id, now=scheduled_for)
 
     for action in due_publication_actions(config, scheduled_for):
-        if action.kind == "publish":
-            edition_slug = action.task_kwargs.get("edition_slug", DEFAULT_EDITION_SLUG)
-            pub_type = action.task_kwargs.get("publication_type", "")
-            slot_at = dt.datetime.fromisoformat(action.task_kwargs["slot_at"])
-            async with runtime.uow.transaction() as conn:
-                edition = await EditionRepository().get_by_slug(conn, edition_slug)
-                if edition is None:
-                    raise ValueError(f"edition slug {edition_slug} not found")
-                source_ids = await EditionRepository().list_enabled_source_ids(conn, edition.id)
-                requested_at = slot_at - dt.timedelta(
-                    minutes=config.settings.pre_publish_lead_minutes
-                )
-                refresh = await readiness_service.create_refresh(
-                    conn,
-                    edition_id=edition.id,
-                    publication_type=pub_type,
-                    slot_at=slot_at,
-                    source_ids=source_ids,
-                    requested_at=requested_at,
-                    deadline_minutes=config.settings.publication_readiness_deadline_minutes,
-                )
-                decision = await readiness_service.reconcile(
-                    conn,
-                    refresh.id,
-                    now=scheduled_for,
-                    on_deadline=config.settings.publication_readiness_on_deadline,
-                )
-                if decision.status in {"ready_for_preparation", "fallback_ready"}:
-                    prepared = await PublicationReadinessRepository().mark_preparing(
-                        conn,
-                        refresh_run_id=refresh.id,
-                        fallback_used=decision.status == "fallback_ready",
-                    )
-                    if prepared is not None:
-                        await create_scheduled_publication.configure(
-                            connection=conn,
-                            queueing_lock=f"publication-refresh:{refresh.id}",
-                        ).defer_async(refresh_run_id=refresh.id)
-                else:
-                    await pre_publish_refresh.configure(
-                        connection=conn,
-                        queueing_lock=f"pre-publish-refresh:{refresh.id}",
-                    ).defer_async(refresh_run_id=refresh.id)
-            logger.info("reconciled scheduled %s publication for %s", pub_type, slot_at)
-        elif action.kind == "pre_publish":
-            pub_type = action.task_kwargs.get("publication_type", "")
-            publish_at = action.task_kwargs.get("publish_at", "")
-            slot_at = dt.datetime.fromisoformat(publish_at)
-            async with runtime.uow.transaction() as conn:
-                edition = await EditionRepository().get_by_slug(conn, DEFAULT_EDITION_SLUG)
-                if edition is None:
-                    raise ValueError(f"edition slug {DEFAULT_EDITION_SLUG} not found")
-                source_ids = await EditionRepository().list_enabled_source_ids(conn, edition.id)
-                requested_at = slot_at - dt.timedelta(
-                    minutes=config.settings.pre_publish_lead_minutes
-                )
-                refresh = await readiness_service.create_refresh(
-                    conn,
-                    edition_id=edition.id,
-                    publication_type=pub_type,
-                    slot_at=slot_at,
-                    source_ids=source_ids,
-                    requested_at=requested_at,
-                    deadline_minutes=config.settings.publication_readiness_deadline_minutes,
-                )
-                await pre_publish_refresh.configure(
-                    connection=conn,
-                    queueing_lock=f"pre-publish-refresh:{refresh.id}",
-                ).defer_async(refresh_run_id=refresh.id)
-            logger.info("deferred pre-publish refresh %s for %s", refresh.id, slot_at)
+        await orchestrator.request(
+            edition_slug=action.task_kwargs["edition_slug"],
+            publication_type=action.task_kwargs["publication_type"],
+            trigger="scheduled",
+            target_at=dt.datetime.fromisoformat(action.task_kwargs["target_at"]),
+            request_key=action.task_kwargs["request_key"],
+            now=scheduled_for,
+        )
+        logger.info(
+            "reconciled scheduled %s publication for %s",
+            action.task_kwargs["publication_type"],
+            action.task_kwargs["target_at"],
+        )
 
 
 @procrastinate_app.task(
@@ -361,6 +257,13 @@ async def publication_schedule_dispatcher(timestamp: int) -> None:
     retry=PRE_PUBLISH_FANOUT_RETRY_STRATEGY,
 )
 async def pre_publish_refresh(refresh_run_id: int) -> None:
-    """Fan out a durable refresh; exceptions remain retryable task failures."""
-    queued = await _fan_out_refresh_sources(refresh_run_id)
-    logger.info("pre-publish refresh %s deferred %d source scans", refresh_run_id, queued)
+    """Reconcile a durable intent; retry selection belongs to the orchestrator."""
+    from src.config_loader import load_config
+    from src.publication.orchestrator import PublicationOrchestrator
+    from src.runtime import get_runtime
+
+    runtime = get_runtime()
+    decision = await PublicationOrchestrator(uow=runtime.uow, config=load_config()).reconcile(
+        refresh_run_id
+    )
+    logger.info("publication intent %s reconciled as %s", refresh_run_id, decision.status)
