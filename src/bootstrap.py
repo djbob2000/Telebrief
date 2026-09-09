@@ -27,10 +27,10 @@ if TYPE_CHECKING:
 # (relevance + claims) lands version 5, Plan 3 Task 5
 # (embeddings + stories) lands version 6, Plan 3 Task 8
 # (places + versioned place resolution) lands version 7, and the
-# retention/trigger migration lands version 12, and Event-First retry state
-# lands version 26.
+# retention/trigger migration lands version 12, Event-First retry state lands
+# version 26, and durable Event-First execution guards land version 27.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 26
+SCHEMA_VERSION_MAXIMUM = 27
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]

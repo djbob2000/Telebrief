@@ -300,3 +300,44 @@ async def test_event_gate_enrichment_schema(pg_conn):
         """,
         (run_id, story_id, assign_id),
     )
+
+
+@pytest.mark.postgres
+async def test_event_processing_execution_guard_schema(pg_conn):
+    await migrate(pg_conn, MIGRATIONS_DIR)
+
+    cur = await pg_conn.execute(
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = current_schema()
+          AND table_name IN (
+              'event_processing_cycle_leases',
+              'story_event_processing_claims',
+              'event_revision_processing_state'
+          )
+        ORDER BY table_name
+        """
+    )
+    assert [row[0] for row in await cur.fetchall()] == [
+        "event_processing_cycle_leases",
+        "event_revision_processing_state",
+        "story_event_processing_claims",
+    ]
+
+    cur = await pg_conn.execute(
+        """
+        SELECT table_name, column_name
+        FROM information_schema.columns
+        WHERE table_schema = current_schema()
+          AND (
+              (table_name = 'source_item_revisions' AND column_name = 'collection_run_id')
+              OR (table_name = 'story_revisions' AND column_name = 'event_assignment_id')
+          )
+        ORDER BY table_name, column_name
+        """
+    )
+    assert await cur.fetchall() == [
+        ("source_item_revisions", "collection_run_id"),
+        ("story_revisions", "event_assignment_id"),
+    ]
