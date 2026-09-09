@@ -11,6 +11,7 @@ roll back) together.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import pytest
@@ -25,6 +26,7 @@ from src.ingestion.models import (
 )
 from src.ingestion.repository import IngestionRepository
 from src.ingestion.service import IngestionService
+from src.repositories.event_revision_processing import EventRevisionProcessingRepository
 
 STARTED_AT = datetime(2026, 8, 22, 10, 0, tzinfo=timezone.utc)
 COMPLETED_AT = datetime(2026, 8, 22, 10, 0, 5, tzinfo=timezone.utc)
@@ -169,6 +171,45 @@ async def test_ingest_batch_reports_new_edit_unchanged_counts(service, source):
     )
     assert result3.new_revisions == 1
     assert len(result3.new_revision_ids) == 1
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_semantic_noop_revision_reuses_succeeded_predecessor(service, source, uow):
+    first = await service.ingest_batch(
+        source.id, CollectionTrigger.SCHEDULED, _batch(text="Water outage on Street A")
+    )
+    assert first.full_processing_revision_ids == first.new_revision_ids
+
+    async with uow.transaction() as conn:
+        processing_repo = EventRevisionProcessingRepository()
+        await processing_repo.mark_succeeded(conn, first.new_revision_ids)
+
+    original = _observation(text="Water outage on Street A")
+    metadata_edit = replace(original, metadata={"topic": 8})
+    second = await service.ingest_batch(
+        source.id,
+        CollectionTrigger.SCHEDULED,
+        _batch(items=(metadata_edit,)),
+    )
+
+    assert second.new_revisions == 1
+    assert second.full_processing_revision_ids == ()
+    assert second.reused_revision_ids == second.new_revision_ids
+    async with uow.pool.connection() as conn:
+        cursor = await conn.execute(
+            """
+            SELECT status, processing_mode, reused_from_revision_id
+            FROM event_revision_processing_state
+            WHERE source_item_revision_id = %s
+            """,
+            (second.new_revision_ids[0],),
+        )
+        assert await cursor.fetchone() == (
+            "succeeded",
+            "reused",
+            first.new_revision_ids[0],
+        )
 
 
 @pytest.mark.postgres

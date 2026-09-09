@@ -267,6 +267,28 @@ class IngestionRepository:
         row = await cursor.fetchone()
         return None if row is None else SourceItemRevision.from_row(row)
 
+    async def get_previous_revision(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        source_item_id: int,
+        before_revision_no: int,
+    ) -> SourceItemRevision | None:
+        """Fetch only the immediately preceding immutable revision."""
+        cursor = await conn.execute(
+            """
+            SELECT id, source_item_id, revision_no, collected_at, content_hash,
+                   text_content, payload, event_processing_hash, event_input_version
+            FROM source_item_revisions
+            WHERE source_item_id = %s AND revision_no < %s
+            ORDER BY revision_no DESC
+            LIMIT 1
+            """,
+            (source_item_id, before_revision_no),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else SourceItemRevision.from_row(row)
+
     async def get_revision(
         self, conn: psycopg.AsyncConnection, revision_id: int
     ) -> SourceItemRevision | None:

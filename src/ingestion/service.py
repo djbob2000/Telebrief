@@ -35,6 +35,8 @@ class IngestionResult:
     new_items: int
     new_revisions: int
     new_revision_ids: tuple[int, ...]
+    full_processing_revision_ids: tuple[int, ...] = ()
+    reused_revision_ids: tuple[int, ...] = ()
 
 
 class IngestionService:
@@ -74,7 +76,10 @@ class IngestionService:
         )
         new_items = 0
         new_revision_ids: list[int] = []
+        full_processing_revision_ids: list[int] = []
+        reused_revision_ids: list[int] = []
         current_revision_by_external_id: dict[str, int] = {}
+        processing_repo = EventRevisionProcessingRepository()
 
         item_by_external_id: dict[str, SourceItem] = {}
         for observation in batch.items:
@@ -116,6 +121,31 @@ class IngestionService:
             current_revision_by_external_id[observation.external_id] = current.id
             if revision is not None:
                 new_revision_ids.append(revision.id)
+                previous = await self.repo.get_previous_revision(
+                    conn,
+                    source_item_id=item.id,
+                    before_revision_no=revision.revision_no,
+                )
+                previous_state = (
+                    await processing_repo.get_state(conn, previous.id)
+                    if previous is not None
+                    else None
+                )
+                if (
+                    previous is not None
+                    and previous.event_processing_hash is not None
+                    and previous.event_processing_hash == revision.event_processing_hash
+                    and previous_state is not None
+                    and previous_state.status == "succeeded"
+                ):
+                    await processing_repo.mark_reused(
+                        conn,
+                        revision_id=revision.id,
+                        reused_from_revision_id=previous.id,
+                    )
+                    reused_revision_ids.append(revision.id)
+                else:
+                    full_processing_revision_ids.append(revision.id)
 
         for asset in batch.assets:
             revision_id = current_revision_by_external_id[asset.item_external_id]
@@ -145,13 +175,15 @@ class IngestionService:
             updated_count=len(new_revision_ids),
         )
         await self._defer_relevance_jobs(
-            conn, source_id=source_id, new_revision_ids=new_revision_ids
+            conn, source_id=source_id, new_revision_ids=full_processing_revision_ids
         )
         return IngestionResult(
             collection_run_id=run.id,
             new_items=new_items,
             new_revisions=len(new_revision_ids),
             new_revision_ids=tuple(new_revision_ids),
+            full_processing_revision_ids=tuple(full_processing_revision_ids),
+            reused_revision_ids=tuple(reused_revision_ids),
         )
 
     async def _defer_relevance_jobs(
