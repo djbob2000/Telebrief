@@ -254,22 +254,42 @@ class PublicationSnapshotService:
         if ef_story_ids:
             cur = await conn.execute(
                 """
-                SELECT sc.story_id,
+                WITH event_assignments_at_cutoff AS (
+                    SELECT DISTINCT ON (sf.story_id)
+                        sf.story_id,
+                        sf.id AS cutoff_assignment_id
+                    FROM story_fragments sf
+                    JOIN source_fragments f ON f.id = sf.fragment_id
+                    JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    WHERE sf.assigned_at <= %s
+                      AND COALESCE(si.published_at, si.first_collected_at, f.created_at) <= %s
+                    ORDER BY sf.story_id, sf.assigned_at DESC, sf.id DESC
+                )
+                SELECT ea.story_id,
                        setd.triage_version,
                        setd.scope_config_hash,
                        setd.retention,
                        sesd.scope_version,
                        sesd.scope_config_hash
-                FROM story_cluster_state sc
+                FROM event_assignments_at_cutoff ea
                 JOIN story_edition_scope_decisions sesd
-                  ON sesd.story_id = sc.story_id
-                 AND sesd.latest_assignment_id = sc.latest_assignment_id
+                  ON sesd.story_id = ea.story_id
+                 AND sesd.latest_assignment_id = ea.cutoff_assignment_id
                 JOIN story_event_triage_decisions setd
-                  ON setd.story_id = sc.story_id
-                 AND setd.latest_assignment_id = sc.latest_assignment_id
-                WHERE sc.story_id = ANY(%s)
+                  ON setd.story_id = ea.story_id
+                 AND setd.latest_assignment_id = ea.cutoff_assignment_id
+                WHERE ea.story_id = ANY(%s)
+                  AND sesd.created_at <= %s
+                  AND setd.created_at <= %s
                 """,
-                (ef_story_ids,),
+                (
+                    run.snapshot_at,
+                    run.source_cutoff_at or run.snapshot_at,
+                    ef_story_ids,
+                    run.snapshot_at,
+                    run.snapshot_at,
+                ),
             )
             triage_map = {row[0]: row for row in await cur.fetchall()}
             for row in eligible_rows:
