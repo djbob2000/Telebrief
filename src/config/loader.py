@@ -48,7 +48,7 @@ def _parse_admin_user_ids(settings_dict: dict, target_user_id: int) -> list[int]
     for user_id in raw_admins:
         if not isinstance(user_id, int) or isinstance(user_id, bool) or user_id <= 0:
             raise ValueError(
-                "settings.admin_user_ids must be a list of positive integers; " f"got {user_id!r}"
+                f"settings.admin_user_ids must be a list of positive integers; got {user_id!r}"
             )
         if user_id not in admin_user_ids:
             admin_user_ids.append(user_id)
@@ -278,7 +278,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         or target_user_id < 0
     ):
         raise ValueError(
-            "settings.target_user_id must be a non-negative integer, " f"got {target_user_id!r}"
+            f"settings.target_user_id must be a non-negative integer, got {target_user_id!r}"
         )
     admin_user_ids = _parse_admin_user_ids(settings_dict, target_user_id)
 
