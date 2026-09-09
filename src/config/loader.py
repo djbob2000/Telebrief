@@ -36,6 +36,27 @@ from src.config.parsers.telegram import (
 from src.config.schemas.root import VISION_MODES, Config, Settings
 
 
+def _parse_admin_user_ids(settings_dict: dict, target_user_id: int) -> list[int]:
+    """Normalize configured Telegram administrators without coercing YAML values."""
+    raw_admins = settings_dict.get("admin_user_ids")
+    if raw_admins is None:
+        return [target_user_id]
+    if not isinstance(raw_admins, list):
+        raise ValueError("settings.admin_user_ids must be a list of positive integers")
+
+    admin_user_ids: list[int] = []
+    for user_id in raw_admins:
+        if not isinstance(user_id, int) or isinstance(user_id, bool) or user_id <= 0:
+            raise ValueError(
+                "settings.admin_user_ids must be a list of positive integers; " f"got {user_id!r}"
+            )
+        if user_id not in admin_user_ids:
+            admin_user_ids.append(user_id)
+    if target_user_id not in admin_user_ids:
+        admin_user_ids.insert(0, target_user_id)
+    return admin_user_ids
+
+
 def _load_and_validate_env_vars(
     ai_provider: str,
     *,
@@ -201,7 +222,17 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         raise ValueError(
             f"settings.vision_mode must be one of {', '.join(VISION_MODES)}, got {vision_mode!r}"
         )
-    pre_publish_lead_minutes = settings_dict.get("pre_publish_lead_minutes", 15)
+    publication_freshness_ttl_minutes = settings_dict.get("publication_freshness_ttl_minutes", 30)
+    if (
+        not isinstance(publication_freshness_ttl_minutes, int)
+        or isinstance(publication_freshness_ttl_minutes, bool)
+        or not 1 <= publication_freshness_ttl_minutes <= 120
+    ):
+        raise ValueError(
+            "settings.publication_freshness_ttl_minutes must be an int between 1 and 120, "
+            f"got {publication_freshness_ttl_minutes!r}"
+        )
+    pre_publish_lead_minutes = settings_dict.get("pre_publish_lead_minutes", 30)
     if (
         not isinstance(pre_publish_lead_minutes, int)
         or isinstance(pre_publish_lead_minutes, bool)
@@ -211,7 +242,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
             "settings.pre_publish_lead_minutes must be an int between 0 and 120, "
             f"got {pre_publish_lead_minutes!r}"
         )
-    publication_snapshot_lag_minutes = settings_dict.get("publication_snapshot_lag_minutes", 30)
+    publication_snapshot_lag_minutes = settings_dict.get("publication_snapshot_lag_minutes", 0)
     if (
         not isinstance(publication_snapshot_lag_minutes, int)
         or isinstance(publication_snapshot_lag_minutes, bool)
@@ -233,12 +264,23 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
             "settings.publication_readiness_deadline_minutes must be an int between 1 and 120"
         )
     publication_readiness_on_deadline = settings_dict.get(
-        "publication_readiness_on_deadline", "fallback"
+        "publication_readiness_on_deadline", "fail_closed"
     )
-    if publication_readiness_on_deadline not in {"fallback", "fail_closed"}:
+    if publication_readiness_on_deadline != "fail_closed":
         raise ValueError(
-            "settings.publication_readiness_on_deadline must be 'fallback' or 'fail_closed'"
+            "settings.publication_readiness_on_deadline: only 'fail_closed' is supported"
         )
+
+    target_user_id = settings_dict.get("target_user_id", 0)
+    if (
+        not isinstance(target_user_id, int)
+        or isinstance(target_user_id, bool)
+        or target_user_id < 0
+    ):
+        raise ValueError(
+            "settings.target_user_id must be a non-negative integer, " f"got {target_user_id!r}"
+        )
+    admin_user_ids = _parse_admin_user_ids(settings_dict, target_user_id)
 
     settings = Settings(
         schedule_time=settings_dict.get("schedule_time", "08:00"),
@@ -250,8 +292,9 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         max_tokens_per_summary=settings_dict.get("max_tokens_per_summary", 96000),
         use_emojis=settings_dict.get("use_emojis", True),
         include_statistics=settings_dict.get("include_statistics", True),
-        target_user_id=settings_dict.get("target_user_id", 0),
-        target_chat_id=settings_dict.get("target_chat_id", settings_dict.get("target_user_id", 0)),
+        target_user_id=target_user_id,
+        admin_user_ids=admin_user_ids,
+        target_chat_id=settings_dict.get("target_chat_id", target_user_id),
         auto_cleanup_old_digests=settings_dict.get("auto_cleanup_old_digests", True),
         max_messages_per_channel=settings_dict.get("max_messages_per_channel", 5000),
         max_prompt_chars=settings_dict.get("max_prompt_chars", 8000),
@@ -272,6 +315,7 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
             else None
         ),
         vision_mode=vision_mode,
+        publication_freshness_ttl_minutes=publication_freshness_ttl_minutes,
         pre_publish_lead_minutes=pre_publish_lead_minutes,
         publication_snapshot_lag_minutes=publication_snapshot_lag_minutes,
         publication_readiness_deadline_minutes=publication_readiness_deadline_minutes,

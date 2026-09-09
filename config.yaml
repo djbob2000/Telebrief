@@ -93,10 +93,11 @@ settings:
   schedule_time: "09:00"
   timezone: "Europe/Kyiv"
   lookback_hours: 24
-  pre_publish_lead_minutes: 45
+  publication_freshness_ttl_minutes: 30
+  pre_publish_lead_minutes: 30
   publication_snapshot_lag_minutes: 0
   publication_readiness_deadline_minutes: 20
-  publication_readiness_on_deadline: fallback
+  publication_readiness_on_deadline: fail_closed
   periodic_ingestion_enabled: false
   reasoning_effort: "low"
 

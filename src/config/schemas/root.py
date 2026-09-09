@@ -44,6 +44,7 @@ class Settings:
     use_emojis: bool = True
     include_statistics: bool = True
     target_user_id: int = 0
+    admin_user_ids: list[int] = field(default_factory=list)
     target_chat_id: str | int | None = None
     auto_cleanup_old_digests: bool = True
     max_messages_per_channel: int = 5000
@@ -62,10 +63,11 @@ class Settings:
     periodic_ingestion_enabled: bool = False
     reasoning_effort: str | None = None
     vision_mode: str = "relevance_only"
-    pre_publish_lead_minutes: int = 15
-    publication_snapshot_lag_minutes: int = 30
+    publication_freshness_ttl_minutes: int = 30
+    pre_publish_lead_minutes: int = 30
+    publication_snapshot_lag_minutes: int = 0
     publication_readiness_deadline_minutes: int = 20
-    publication_readiness_on_deadline: Literal["fallback", "fail_closed"] = "fallback"
+    publication_readiness_on_deadline: Literal["fail_closed"] = "fail_closed"
     article: ArticleConfig = field(default_factory=ArticleConfig)
     event_pipeline: EventPipelineConfig = field(default_factory=EventPipelineConfig)
     digest_rubrics: DigestRubricsConfig = field(default_factory=DigestRubricsConfig)

@@ -39,6 +39,85 @@ def test_article_config_defaults(temp_config_file, mock_env_vars):
 
 
 @pytest.mark.unit
+def test_publication_freshness_defaults_and_legacy_admin_normalization(
+    temp_config_file, mock_env_vars
+):
+    config = load_config(temp_config_file)
+
+    assert config.settings.publication_freshness_ttl_minutes == 30
+    assert config.settings.pre_publish_lead_minutes == 30
+    assert config.settings.publication_snapshot_lag_minutes == 0
+    assert config.settings.publication_readiness_deadline_minutes == 20
+    assert config.settings.publication_readiness_on_deadline == "fail_closed"
+    assert config.settings.admin_user_ids == [config.settings.target_user_id]
+
+
+@pytest.mark.unit
+def test_publication_freshness_explicit_admins_are_stable_and_include_legacy_target(
+    tmp_path, mock_env_vars
+):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@test"
+    name: "Test"
+settings:
+  target_user_id: 111
+  admin_user_ids: [111, 222, 333, 222]
+"""
+    )
+
+    config = load_config(str(config_file))
+
+    assert config.settings.admin_user_ids == [111, 222, 333]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "setting, value",
+    [
+        ("publication_freshness_ttl_minutes", 0),
+        ("publication_freshness_ttl_minutes", True),
+        ("admin_user_ids", [111, "222"]),
+    ],
+)
+def test_publication_freshness_settings_reject_invalid_values(
+    tmp_path, mock_env_vars, setting, value
+):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        yaml.safe_dump(
+            {
+                "channels": [{"id": "@test", "name": "Test"}],
+                "settings": {"target_user_id": 111, setting: value},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match=setting):
+        load_config(str(config_file))
+
+
+@pytest.mark.unit
+def test_publication_readiness_rejects_legacy_fallback_policy(tmp_path, mock_env_vars):
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(
+        """
+channels:
+  - id: "@test"
+    name: "Test"
+settings:
+  target_user_id: 111
+  publication_readiness_on_deadline: fallback
+"""
+    )
+
+    with pytest.raises(ValueError, match="only 'fail_closed' is supported"):
+        load_config(str(config_file))
+
+
+@pytest.mark.unit
 def test_article_audit_output_budget_defaults_to_32768(temp_config_file, mock_env_vars):
     """Article audit output budget defaults to 32768 tokens independently of other stages."""
     config = load_config(temp_config_file)

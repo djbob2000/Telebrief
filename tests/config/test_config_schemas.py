@@ -37,6 +37,15 @@ def test_schema_instantiation_defaults():
     assert pipeline.mode == "event_first"
     assert pipeline.fragment_max_chars == 1200
 
+    from src.config.schemas.root import Settings
+
+    settings = Settings(schedule_time="09:00", timezone="UTC", lookback_hours=24, openai_model="m")
+    assert settings.publication_freshness_ttl_minutes == 30
+    assert settings.pre_publish_lead_minutes == 30
+    assert settings.publication_snapshot_lag_minutes == 0
+    assert settings.publication_readiness_deadline_minutes == 20
+    assert settings.publication_readiness_on_deadline == "fail_closed"
+
 
 def test_publication_editorial_validation():
     pub = PublicationEditorialConfig()
