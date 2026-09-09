@@ -508,8 +508,7 @@ async def generate_and_send_digest(
         logger: Logger instance
         hours: Retained for call-site compatibility; the persistent pipeline
             derives its window from the sealed snapshot, not this value.
-        user_id: Unused delivery detail; destinations are resolved by the
-            delivery service.
+        user_id: Telegram requester recorded on the durable publication intent.
 
     Returns:
         True when the publication request was durably queued.
@@ -519,7 +518,6 @@ async def generate_and_send_digest(
         ValueError: If hours is outside [1, MAX_DIGEST_HOURS]
     """
     validate_hours(hours)
-    del user_id  # delivery destinations come from configuration, not callers
     try:
         from src.publication.facade import request_publication
 
@@ -527,8 +525,14 @@ async def generate_and_send_digest(
             DIGEST_PUBLICATION_TYPE,
             config=config,
             lookback_hours=hours,
+            requested_by_user_id=user_id,
         )
-        logger.info("digest publication requested: run %s (%s)", result.run_id, result.request_key)
+        logger.info(
+            "digest publication intent requested: %s (%s, status=%s)",
+            getattr(result, "intent_id", result.run_id),
+            result.request_key,
+            getattr(result, "readiness_status", "accepted"),
+        )
         return True
     except Exception as e:
         logger.error(f"Digest publication request failed: {e}", exc_info=True)
@@ -576,14 +580,13 @@ async def generate_and_publish_article(
         logger: Logger instance
         hours: Lookback window in hours (preview window; ignored by the
             durable pipeline, which uses its sealed snapshot)
-        user_id: Unused delivery detail; kept for call-site compatibility.
+        user_id: Telegram requester recorded on the durable publication intent.
         dry_run: If True, generate and print/save a preview without publishing
 
     Returns:
         True when the request was queued (or preview produced), False otherwise
     """
     validate_hours(hours)
-    del user_id
     start_time = datetime.now(timezone.utc)
     logger.info(f"Starting editorial article workflow for last {hours} hours (dry_run={dry_run})")
 
@@ -594,11 +597,13 @@ async def generate_and_publish_article(
             result = await request_publication(
                 ARTICLE_PUBLICATION_TYPE,
                 config=config,
+                requested_by_user_id=user_id,
             )
             logger.info(
-                "article publication requested: run %s (%s)",
-                result.run_id,
+                "article publication intent requested: %s (%s, status=%s)",
+                getattr(result, "intent_id", result.run_id),
                 result.request_key,
+                getattr(result, "readiness_status", "accepted"),
             )
             return True
         except Exception as e:

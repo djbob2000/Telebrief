@@ -1,13 +1,4 @@
-"""Publication request facade: the single production entry for digests/articles.
-
-Every caller (scheduler dispatcher, bot commands, MCP, CLI) goes through
-:func:`request_publication`, which validates the fail-fast configuration
-invariant, creates (or gets) a deterministic :class:`PublicationRun`, seals
-the candidate snapshot, and defers the durable selection -> generation ->
-delivery chain onto the Procrastinate ``publication`` queue. The facade never
-collects from providers, never generates content inline, and never owns a
-clock (Plan 4 Task 8).
-"""
+"""Publication request facade for the unified durable publication intent."""
 
 from __future__ import annotations
 
@@ -29,13 +20,19 @@ class PublicationConfigError(RuntimeError):
 
 @dataclass(frozen=True)
 class PublicationRequestResult:
-    """Outcome of a publication request: the durable run that was enqueued."""
+    """Outcome of a request: the durable intent accepted by the orchestrator."""
 
-    run_id: int
+    intent_id: int
     request_key: str
     edition_slug: str
     publication_type: str
     snapshot_at: dt.datetime
+    readiness_status: str
+
+    @property
+    def run_id(self) -> int:
+        """Compatibility alias; PublicationRun creation happens downstream."""
+        return self.intent_id
 
 
 @dataclass(frozen=True)
@@ -78,17 +75,16 @@ async def request_publication(
     snapshot_at: dt.datetime | None = None,
     lookback_hours: int | None = None,
     request_key: str | None = None,
+    requested_by_user_id: int | None = None,
     dry_run: bool = False,
     config: Config | None = None,
 ) -> PublicationRequestResult:
-    """Request one durable publication run over current frozen knowledge.
+    """Request one durable publication intent over persisted source history.
 
     Args:
         publication_type: e.g. ``"digest_grouped"`` or ``"daily_article"``.
         edition_slug: target edition slug (default ``berdyansk``).
-        snapshot_at: knowledge cutoff; defaults to now (UTC). Scheduled
-            orchestration always passes the scheduled slot so repeated
-            dispatcher executions dedupe on the derived request key.
+        snapshot_at: target time override; defaults to now (UTC).
         lookback_hours: lookback hours override for publication eligibility.
         request_key: deterministic key; on-demand callers get a fresh UUID.
         dry_run: accepted for call-site compatibility; the durable pipeline
@@ -111,58 +107,36 @@ async def request_publication(
         config = load_config()
     validate_publication_config(config)
 
-    from src.jobs.publication import select_stories_for_publication
-    from src.publication.snapshot import PublicationSnapshotService
-    from src.repositories.editions import EditionRepository
+    from src.publication.orchestrator import PublicationOrchestrator
     from src.runtime import get_runtime
 
     runtime = get_runtime()
     snap = snapshot_at or dt.datetime.now(dt.timezone.utc)
     key = request_key or f"on-demand:{edition_slug}:{publication_type}:{uuid.uuid4().hex}"
 
-    async with runtime.uow.transaction() as conn:
-        edition = await EditionRepository().get_by_slug(conn, edition_slug)
-        if edition is None:
-            raise ValueError(f"edition slug {edition_slug!r} not found")
-
-    service = PublicationSnapshotService(uow=runtime.uow)
-    run = await service.create_run(
-        edition_id=edition.id,
-        publication_type=publication_type,
-        snapshot_at=snap,
-        request_key=key,
-        config=config,
-        lookback_hours_override=lookback_hours,
-    )
-    try:
-        await service.drain_authority_gap(run_id=run.id)
-    except Exception as exc:
-        logger.warning("Pre-seal authority gap drain encountered issue: %s", exc)
-
-    # Seal and defer share one transaction: a failed defer rolls the sealing
-    # back instead of stranding the run in candidates_sealed forever.
-    async with runtime.uow.transaction() as conn:
-        await service.seal_candidates(run.id, conn=conn)
-        try:
-            await select_stories_for_publication.configure(connection=conn).defer_async(
-                run_id=run.id
-            )
-        except Exception as err:
-            logger.error("could not defer selection for run %s (%s): %s", run.id, key, err)
-            raise
-    logger.info(
-        "requested %s publication run %s (edition=%s, snapshot_at=%s)",
-        publication_type,
-        run.id,
-        edition_slug,
-        snap.isoformat(),
-    )
-    return PublicationRequestResult(
-        run_id=run.id,
-        request_key=key,
+    result = await PublicationOrchestrator(uow=runtime.uow, config=config).request(
         edition_slug=edition_slug,
         publication_type=publication_type,
-        snapshot_at=snap,
+        trigger="manual",
+        target_at=snap,
+        requested_by_user_id=requested_by_user_id,
+        request_key=key,
+    )
+    logger.info(
+        "requested %s publication intent %s (edition=%s, target_at=%s, status=%s)",
+        publication_type,
+        result.intent_id,
+        edition_slug,
+        snap.isoformat(),
+        result.readiness_status,
+    )
+    return PublicationRequestResult(
+        intent_id=result.intent_id,
+        request_key=result.request_key,
+        edition_slug=result.edition_slug,
+        publication_type=result.publication_type,
+        snapshot_at=result.target_at,
+        readiness_status=result.readiness_status,
     )
 
 

@@ -129,10 +129,10 @@ class TestPublicationFacade:
         row = await cur.fetchone()
         assert int(row[0]) == 6
 
-    async def test_request_publication_defers_selection_job(
+    async def test_request_publication_creates_intent_before_preparation(
         self, conn: psycopg.AsyncConnection, pool, edition, pub_config: Config
     ):
-        """Normal request_publication defers selection job on procrastinate publication queue."""
+        """Manual requests create a durable intent; no run exists without ready sources."""
         await conn.execute("DELETE FROM procrastinate_jobs")
 
         res = await request_publication(
@@ -142,13 +142,14 @@ class TestPublicationFacade:
             config=pub_config,
         )
 
-        assert res.run_id > 0
+        assert res.intent_id > 0
+        assert res.readiness_status == "failed"
         cur = await conn.execute(
-            "SELECT queue_name, task_name FROM procrastinate_jobs WHERE queue_name = 'publication'"
+            "SELECT status FROM publication_refresh_runs WHERE id = %s", (res.intent_id,)
         )
-        jobs = await cur.fetchall()
-        assert len(jobs) == 1
-        assert jobs[0][1] == "select_stories_for_publication"
+        assert (await cur.fetchone())[0] == "failed"
+        cur = await conn.execute("SELECT count(*) FROM publication_runs")
+        assert (await cur.fetchone())[0] == 0
 
     async def test_article_preview_propagates_terminal_rejection(
         self, conn: psycopg.AsyncConnection, pool, edition, pub_config: Config, monkeypatch

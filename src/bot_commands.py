@@ -106,7 +106,10 @@ class BotCommandHandler:
         Returns:
             True if authorized
         """
-        return user_id == self.config.settings.target_user_id
+        admin_user_ids = getattr(self.config.settings, "admin_user_ids", None) or [
+            self.config.settings.target_user_id
+        ]
+        return user_id in admin_user_ids
 
     async def handle_digest(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -139,9 +142,7 @@ class BotCommandHandler:
             return
 
         self.logger.info(f"Manual /article requested by user {user_id} (24h)")
-        processing_message = self._ui["generating_article"]
-        await update.message.reply_text(processing_message)
-
+        await update.message.reply_text(self._ui["generating_article"])
         try:
             success = await generate_and_publish_article(
                 config=self.config, logger=self.logger, hours=24, user_id=user_id
@@ -168,9 +169,7 @@ class BotCommandHandler:
             return
 
         self.logger.info(f"Manual /{command_name} digest requested by user {user_id} ({hours}h)")
-        processing_message = self._ui["generating_digest"]
-        await update.message.reply_text(processing_message)
-
+        await update.message.reply_text(self._ui["generating_digest"])
         try:
             success = await generate_and_send_digest(
                 config=self.config, logger=self.logger, hours=hours, user_id=user_id
