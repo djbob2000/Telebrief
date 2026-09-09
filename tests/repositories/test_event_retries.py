@@ -106,3 +106,31 @@ async def test_clear_removes_successful_assignment_state(repo_conn):
 
     await repo.clear(repo_conn, story_id=story_id, latest_assignment_id=101, stage="triage")
     assert await repo.get_for_assignments(repo_conn, [(story_id, 101)], stage="triage") == {}
+
+
+async def test_non_exhausted_update_cannot_clear_exhausted_at(repo_conn):
+    story_id = await _create_story(repo_conn)
+    repo = EventProcessingRetryRepository()
+
+    exhausted = await repo.record_failure(
+        repo_conn,
+        story_id=story_id,
+        latest_assignment_id=4242,
+        stage="analysis",
+        error_kind="token_budget",
+        next_retry_at=None,
+        exhausted=True,
+    )
+    again = await repo.record_failure(
+        repo_conn,
+        story_id=story_id,
+        latest_assignment_id=4242,
+        stage="analysis",
+        error_kind="server",
+        next_retry_at=dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5),
+        exhausted=False,
+    )
+
+    assert exhausted.exhausted_at is not None
+    assert again.exhausted_at == exhausted.exhausted_at
+    assert again.next_retry_at is None

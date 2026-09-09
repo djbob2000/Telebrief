@@ -76,3 +76,20 @@ def test_attempt_limit_exhausts_without_same_cycle_retry():
     )
     assert decision.exhausted is True
     assert decision.next_retry_at is None
+
+
+@pytest.mark.parametrize("kind", ["token_budget", "context_size", "other"])
+def test_deterministic_provider_failures_use_fixed_backoff(kind: str):
+    now = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    decision = decide_retry(
+        kind,
+        attempt_count=2,
+        max_attempts=3,
+        base_backoff_seconds=30,
+        max_backoff_seconds=600,
+        now=now,
+    )
+
+    assert decision.retry is True
+    assert decision.delay_seconds == 30
+    assert decision.next_retry_at == now + dt.timedelta(seconds=30)

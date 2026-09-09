@@ -34,12 +34,13 @@ def decide_retry(
             max(0, base_backoff_seconds) * (2 ** max(0, attempt_count - 1)),
             max_backoff_seconds,
         )
-        current = now or dt.datetime.now(dt.timezone.utc)
-        return RetryDecision(
-            retry=True,
-            exhausted=False,
-            delay_seconds=delay,
-            next_retry_at=current + dt.timedelta(seconds=delay),
-        )
+    else:
+        delay = min(max(0, base_backoff_seconds), max_backoff_seconds)
 
-    return RetryDecision(retry=True, exhausted=False, delay_seconds=0, next_retry_at=now)
+    current = now or dt.datetime.now(dt.timezone.utc)
+    return RetryDecision(
+        retry=True,
+        exhausted=False,
+        delay_seconds=delay,
+        next_retry_at=current + dt.timedelta(seconds=delay),
+    )

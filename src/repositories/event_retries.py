@@ -71,8 +71,15 @@ class EventProcessingRetryRepository:
             ) VALUES (%s, %s, %s, 1, %s, CASE WHEN %s THEN now() ELSE NULL END, %s, %s)
             ON CONFLICT (story_id, latest_assignment_id, stage) DO UPDATE SET
                 attempt_count = story_event_processing_retries.attempt_count + 1,
-                next_retry_at = EXCLUDED.next_retry_at,
-                exhausted_at = CASE WHEN %s THEN now() ELSE NULL END,
+                next_retry_at = CASE
+                    WHEN story_event_processing_retries.exhausted_at IS NOT NULL OR %s
+                        THEN NULL
+                    ELSE EXCLUDED.next_retry_at
+                END,
+                exhausted_at = COALESCE(
+                    story_event_processing_retries.exhausted_at,
+                    CASE WHEN %s THEN now() END
+                ),
                 last_error_kind = EXCLUDED.last_error_kind,
                 last_prompt_hash = EXCLUDED.last_prompt_hash,
                 updated_at = now()
@@ -86,6 +93,7 @@ class EventProcessingRetryRepository:
                 exhausted,
                 error_kind,
                 prompt_hash,
+                exhausted,
                 exhausted,
             ),
         )
