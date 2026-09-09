@@ -29,9 +29,10 @@ if TYPE_CHECKING:
 # (places + versioned place resolution) lands version 7, and the
 # retention/trigger migration lands version 12, Event-First retry state lands
 # version 26, execution guards land version 27, publication readiness lands
-# version 28, and semantic Event-First reuse lands version 29.
+# version 28, semantic Event-First reuse lands version 29, and unified
+# publication intents land version 30.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 29
+SCHEMA_VERSION_MAXIMUM = 30
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]

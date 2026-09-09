@@ -404,6 +404,61 @@ async def test_event_processing_semantic_reuse_schema(pg_conn):
     )
     assert await cur.fetchone() is not None
 
+
+@pytest.mark.postgres
+async def test_unified_publication_intent_schema(pg_conn):
+    await migrate(pg_conn, MIGRATIONS_DIR)
+
+    cur = await pg_conn.execute(
+        """
+        SELECT column_name, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'publication_refresh_runs'
+          AND column_name IN ('trigger', 'request_key', 'freshness_cutoff_at', 'requested_by_user_id')
+        ORDER BY column_name
+        """
+    )
+    assert await cur.fetchall() == [
+        ("freshness_cutoff_at", "NO"),
+        ("request_key", "NO"),
+        ("requested_by_user_id", "YES"),
+        ("trigger", "NO"),
+    ]
+
+    cur = await pg_conn.execute(
+        """
+        SELECT constraint_name
+        FROM information_schema.table_constraints
+        WHERE table_schema = 'public'
+          AND table_name = 'publication_refresh_runs'
+          AND constraint_type = 'UNIQUE'
+        """
+    )
+    assert await cur.fetchone() is not None
+
+    cur = await pg_conn.execute(
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'publication_failure_notifications'
+        """
+    )
+    assert await cur.fetchone() == ("publication_failure_notifications",)
+
+    cur = await pg_conn.execute(
+        """
+        SELECT check_clause
+        FROM information_schema.check_constraints
+        WHERE constraint_schema = 'public'
+          AND constraint_name = 'publication_refresh_runs_status_check'
+        """
+    )
+    row = await cur.fetchone()
+    assert row is not None
+    assert "fallback_ready" not in row[0]
+
     cur = await pg_conn.execute(
         """
         SELECT 1
