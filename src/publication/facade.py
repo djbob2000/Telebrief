@@ -121,6 +121,7 @@ async def request_publication(
         target_at=snap,
         requested_by_user_id=requested_by_user_id,
         request_key=key,
+        lookback_hours=lookback_hours,
     )
     logger.info(
         "requested %s publication intent %s (edition=%s, target_at=%s, status=%s)",

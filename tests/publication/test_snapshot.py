@@ -255,11 +255,12 @@ class TestPublicationSnapshotConstraints:
 
         cur = await conn.execute(
             """
-            INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind)
-            VALUES (%s, %s, %s, 'new_story')
+            INSERT INTO story_fragments (
+                story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at
+            ) VALUES (%s, %s, %s, 'new_story', %s)
             RETURNING id
             """,
-            (story_id, frag_id, sfe_id),
+            (story_id, frag_id, sfe_id, _NOW),
         )
         aid = (await cur.fetchone())[0]
 
@@ -482,11 +483,12 @@ class TestPublicationSnapshotConstraints:
         ):
             cur = await conn.execute(
                 """
-                INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind)
-                VALUES (%s, %s, %s, 'new_story')
+                INSERT INTO story_fragments (
+                    story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at
+                ) VALUES (%s, %s, %s, 'new_story', %s)
                 RETURNING id
                 """,
-                (sid, fid, sfe_id),
+                (sid, fid, sfe_id, _NOW),
             )
             aids.append((await cur.fetchone())[0])
 
@@ -740,11 +742,12 @@ class TestPublicationSnapshotConstraints:
         # Assign fragment to story
         cur = await conn.execute(
             """
-            INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind)
-            VALUES (%s, %s, %s, 'new_story')
+            INSERT INTO story_fragments (
+                story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at
+            ) VALUES (%s, %s, %s, 'new_story', %s)
             RETURNING id
             """,
-            (story_id, frag_id, sfe_id),
+            (story_id, frag_id, sfe_id, _NOW),
         )
         aid = (await cur.fetchone())[0]
 
@@ -864,8 +867,8 @@ class TestPublicationSnapshotConstraints:
         )
         sfe_id = (await cur.fetchone())[0]
         cur = await conn.execute(
-            "INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind) VALUES (%s, %s, %s, 'new_story') RETURNING id",
-            (sid_stale, fid_stale, sfe_id),
+            "INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at) VALUES (%s, %s, %s, 'new_story', %s) RETURNING id",
+            (sid_stale, fid_stale, sfe_id, _NOW),
         )
         aid_stale = (await cur.fetchone())[0]
         await conn.execute(
@@ -922,8 +925,8 @@ class TestPublicationSnapshotConstraints:
         )
         sfe_id_v9 = (await cur.fetchone())[0]
         cur = await conn.execute(
-            "INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind) VALUES (%s, %s, %s, 'new_story') RETURNING id",
-            (sid_v9, fid_v9, sfe_id_v9),
+            "INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at) VALUES (%s, %s, %s, 'new_story', %s) RETURNING id",
+            (sid_v9, fid_v9, sfe_id_v9, _NOW),
         )
         aid_v9 = (await cur.fetchone())[0]
         await conn.execute(

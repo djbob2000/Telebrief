@@ -52,6 +52,7 @@ class PublicationReadinessService:
         request_key: str,
         freshness_cutoff_at: dt.datetime,
         requested_by_user_id: int | None,
+        lookback_hours: int,
         deadline_minutes: int,
     ) -> PublicationRefreshRun:
         return await self.repo.get_or_create_refresh_run(
@@ -65,6 +66,7 @@ class PublicationReadinessService:
             freshness_cutoff_at=freshness_cutoff_at,
             deadline_at=slot_at + dt.timedelta(minutes=deadline_minutes),
             requested_by_user_id=requested_by_user_id,
+            lookback_hours=lookback_hours,
             source_ids=source_ids,
         )
 

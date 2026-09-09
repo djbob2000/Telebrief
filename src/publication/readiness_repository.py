@@ -34,6 +34,7 @@ class PublicationRefreshRun:
     request_key: str = ""
     freshness_cutoff_at: dt.datetime | None = None
     requested_by_user_id: int | None = None
+    lookback_hours: int = 24
 
     @classmethod
     def from_row(cls, row: Any) -> PublicationRefreshRun:
@@ -58,6 +59,7 @@ class PublicationRefreshRun:
             request_key=str(row[17]),
             freshness_cutoff_at=row[18],
             requested_by_user_id=int(row[19]) if row[19] is not None else None,
+            lookback_hours=int(row[20]),
         )
 
 
@@ -109,7 +111,8 @@ class PublicationReadinessRepository:
         normal_source_cutoff_at, fallback_snapshot_at, deadline_at, status,
         collection_ready_at, processing_ready_at, prepared_at,
         publication_run_id, fallback_used, error_kind, metadata,
-        trigger, request_key, freshness_cutoff_at, requested_by_user_id
+        trigger, request_key, freshness_cutoff_at, requested_by_user_id,
+        lookback_hours
         FROM publication_refresh_runs
     """
     _SOURCE_SELECT = """
@@ -134,6 +137,7 @@ class PublicationReadinessRepository:
         deadline_at: dt.datetime,
         requested_by_user_id: int | None,
         source_ids: Sequence[int],
+        lookback_hours: int = 24,
     ) -> PublicationRefreshRun:
         """Create the refresh barrier once and add any newly bound sources."""
         cursor = await conn.execute(
@@ -142,15 +146,16 @@ class PublicationReadinessRepository:
                 edition_id, publication_type, slot_at, requested_at,
                 normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
                 status, trigger, request_key, freshness_cutoff_at,
-                requested_by_user_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'collecting', %s, %s, %s, %s)
+                requested_by_user_id, lookback_hours
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'collecting', %s, %s, %s, %s, %s)
             ON CONFLICT (request_key)
             DO UPDATE SET updated_at = now()
             RETURNING id, edition_id, publication_type, slot_at, requested_at,
                       normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
                       status, collection_ready_at, processing_ready_at, prepared_at,
                       publication_run_id, fallback_used, error_kind, metadata,
-                      trigger, request_key, freshness_cutoff_at, requested_by_user_id
+                      trigger, request_key, freshness_cutoff_at, requested_by_user_id,
+                      lookback_hours
             """,
             (
                 edition_id,
@@ -164,6 +169,7 @@ class PublicationReadinessRepository:
                 request_key,
                 freshness_cutoff_at,
                 requested_by_user_id,
+                lookback_hours,
             ),
         )
         row = await cursor.fetchone()
@@ -324,8 +330,10 @@ class PublicationReadinessRepository:
             """
             SELECT COUNT(*)
             FROM publication_refresh_sources prs
+            JOIN collection_run_revision_observations cro
+              ON cro.collection_run_id = prs.collection_run_id
             JOIN source_item_revisions sir
-              ON sir.collection_run_id = prs.collection_run_id
+              ON sir.id = cro.source_item_revision_id
             LEFT JOIN event_revision_processing_state erps
               ON erps.source_item_revision_id = sir.id
             WHERE prs.refresh_run_id = %s
@@ -420,7 +428,8 @@ class PublicationReadinessRepository:
                    normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
                    status, collection_ready_at, processing_ready_at, prepared_at,
                    publication_run_id, fallback_used, error_kind, metadata,
-                   trigger, request_key, freshness_cutoff_at, requested_by_user_id
+                   trigger, request_key, freshness_cutoff_at, requested_by_user_id,
+                   lookback_hours
             FROM publication_refresh_runs
             WHERE id = %s
               AND status = 'ready_for_preparation'

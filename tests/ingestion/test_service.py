@@ -154,7 +154,7 @@ def test_collection_trigger_values_match_run_trigger_contract():
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_ingest_batch_reports_new_edit_unchanged_counts(service, source):
+async def test_ingest_batch_reports_new_edit_unchanged_counts(service, source, uow):
     """First observation is new, re-observation unchanged, edit adds revision 2."""
     result1 = await service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, _batch())
     assert result1.new_items == 1
@@ -165,6 +165,29 @@ async def test_ingest_batch_reports_new_edit_unchanged_counts(service, source):
     result2 = await service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, _batch())
     assert result2.new_items == 0
     assert result2.new_revisions == 0
+
+    observed = await _scalar(
+        uow,
+        """
+        SELECT source_item_revision_id
+        FROM collection_run_revision_observations
+        WHERE collection_run_id = %s
+        """,
+        (result2.collection_run_id,),
+    )
+    latest = await _scalar(
+        uow,
+        """
+        SELECT sir.id
+        FROM source_item_revisions sir
+        JOIN source_items si ON si.id = sir.source_item_id
+        WHERE si.source_id = %s AND si.external_id = '42'
+        ORDER BY sir.revision_no DESC
+        LIMIT 1
+        """,
+        (source.id,),
+    )
+    assert observed == latest
 
     result3 = await service.ingest_batch(
         source.id, CollectionTrigger.SCHEDULED, _batch(text="hello edited")

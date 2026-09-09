@@ -49,6 +49,7 @@ def test_notification_recipients_are_trigger_specific(sample_config):
     )
     service = PublicationFailureNotificationService(config=config)
     assert service.recipients(_intent("manual", requester=77)) == [77]
+    assert service.recipients(_intent("manual", requester=None)) == [123, 456]
     assert service.recipients(_intent("scheduled", requester=77)) == [123, 456]
 
 

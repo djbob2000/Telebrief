@@ -193,3 +193,109 @@ async def test_scheduled_ready_early_waits_then_prepares_at_slot(
         "SELECT status FROM publication_refresh_runs WHERE id = %s", (early.intent_id,)
     )
     assert (await cur.fetchone())[0] == "preparing"
+
+    # A late scheduler tick may submit the same stable key again after the
+    # preparation handoff. It must be an idempotent no-op, not a readiness
+    # error for the non-reconcilable state.
+    await conn.execute(
+        "UPDATE publication_refresh_runs SET status = 'publication_queued' WHERE id = %s",
+        (early.intent_id,),
+    )
+    repeated = await orchestrator.request(
+        edition_slug="berdyansk",
+        publication_type="digest_grouped",
+        trigger="scheduled",
+        target_at=TARGET,
+        request_key=key,
+        now=TARGET + dt.timedelta(minutes=7),
+    )
+    assert repeated.intent_id == early.intent_id
+    assert repeated.readiness_status == "publication_queued"
+
+
+@pytest.mark.postgres
+async def test_manual_lookback_override_is_persisted_for_deferred_preparation(
+    conn, edition, sample_config, uow, no_background_job_enqueue
+):
+    source_id = await _source(conn, edition.id, "lookback-override")
+    await _collection_run(conn, source_id, started_at=TARGET - dt.timedelta(minutes=5))
+    result = await PublicationOrchestrator(uow=uow, config=_config(sample_config)).request(
+        edition_slug="berdyansk",
+        publication_type="digest_grouped",
+        trigger="manual",
+        target_at=TARGET,
+        lookback_hours=6,
+        requested_by_user_id=123,
+        request_key="manual:integration:lookback",
+        now=TARGET,
+    )
+    cur = await conn.execute(
+        "SELECT lookback_hours FROM publication_refresh_runs WHERE id = %s",
+        (result.intent_id,),
+    )
+    assert (await cur.fetchone())[0] == 6
+
+
+@pytest.mark.postgres
+async def test_repeated_successful_scan_does_not_bypass_pending_revision_barrier(
+    conn, edition, sample_config, uow, no_background_job_enqueue
+):
+    source_id = await _source(conn, edition.id, "pending-revision")
+    first_run = await _collection_run(conn, source_id, started_at=TARGET - dt.timedelta(minutes=5))
+    cursor = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'message', 'pending-1', %s)
+        RETURNING id
+        """,
+        (source_id, TARGET - dt.timedelta(minutes=5)),
+    )
+    item_id = int((await cursor.fetchone())[0])
+    cursor = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (
+            source_item_id, revision_no, collected_at, content_hash, text_content,
+            collection_run_id, event_processing_hash, event_input_version
+        ) VALUES (%s, 1, %s, 'pending-hash', 'pending text', %s, 'pending-input', 'text-v1')
+        RETURNING id
+        """,
+        (item_id, TARGET - dt.timedelta(minutes=5), first_run),
+    )
+    revision_id = int((await cursor.fetchone())[0])
+    await conn.execute(
+        """
+        INSERT INTO collection_run_revision_observations
+            (collection_run_id, source_item_revision_id, observed_at)
+        VALUES (%s, %s, %s)
+        """,
+        (first_run, revision_id, TARGET - dt.timedelta(minutes=5)),
+    )
+    await conn.execute(
+        """
+        INSERT INTO event_revision_processing_state (source_item_revision_id, status)
+        VALUES (%s, 'pending')
+        """,
+        (revision_id,),
+    )
+    # This successful scan observes the same post but creates no new revision.
+    second_run = await _collection_run(conn, source_id, started_at=TARGET - dt.timedelta(minutes=1))
+    assert second_run != first_run
+    await conn.execute(
+        """
+        INSERT INTO collection_run_revision_observations
+            (collection_run_id, source_item_revision_id, observed_at)
+        VALUES (%s, %s, %s)
+        """,
+        (second_run, revision_id, TARGET - dt.timedelta(minutes=1)),
+    )
+
+    result = await PublicationOrchestrator(uow=uow, config=_config(sample_config)).request(
+        edition_slug="berdyansk",
+        publication_type="digest_grouped",
+        trigger="manual",
+        target_at=TARGET,
+        requested_by_user_id=123,
+        request_key="manual:integration:pending-revision",
+        now=TARGET,
+    )
+    assert result.readiness_status == "processing"

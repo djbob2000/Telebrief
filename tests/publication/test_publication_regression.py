@@ -302,13 +302,13 @@ async def test_export_publication_case_postgres(conn, edition):
     cur = await conn.execute(
         """
         INSERT INTO publication_runs (
-            edition_id, publication_type, status, request_key, snapshot_at,
+            edition_id, publication_type, status, request_key, snapshot_at, source_cutoff_at,
             eligibility_policy_id, selection_policy_id, writer_policy_id, created_at
         )
-        VALUES (%s, 'article', 'succeeded', 'req-exp-test', %s, %s, %s, %s, %s)
+        VALUES (%s, 'article', 'succeeded', 'req-exp-test', %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (edition.id, now, elig.id, sel.id, wri.id, now),
+        (edition.id, now, now, elig.id, sel.id, wri.id, now),
     )
     run_id = (await cur.fetchone())[0]
 
@@ -468,13 +468,13 @@ async def test_export_publication_case_source_corpus_independent_of_stories(conn
     cur = await conn.execute(
         """
         INSERT INTO publication_runs (
-            edition_id, publication_type, status, request_key, snapshot_at,
+            edition_id, publication_type, status, request_key, snapshot_at, source_cutoff_at,
             eligibility_policy_id, selection_policy_id, writer_policy_id, created_at
         )
-        VALUES (%s, 'digest', 'succeeded', 'req-source-only-test', %s, %s, %s, %s, %s)
+        VALUES (%s, 'digest', 'succeeded', 'req-source-only-test', %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (edition.id, now, elig.id, sel.id, wri.id, now),
+        (edition.id, now, now, elig.id, sel.id, wri.id, now),
     )
     run_id = (await cur.fetchone())[0]
 
@@ -566,13 +566,13 @@ async def test_export_publication_case_distinct_evidence_and_candidate_stages(co
     cur = await conn.execute(
         """
         INSERT INTO publication_runs (
-            edition_id, publication_type, status, request_key, snapshot_at,
+            edition_id, publication_type, status, request_key, snapshot_at, source_cutoff_at,
             eligibility_policy_id, selection_policy_id, writer_policy_id, created_at
         )
-        VALUES (%s, 'digest', 'succeeded', 'req-distinct-test', %s, %s, %s, %s, %s)
+        VALUES (%s, 'digest', 'succeeded', 'req-distinct-test', %s, %s, %s, %s, %s, %s)
         RETURNING id
         """,
-        (edition.id, now, elig.id, sel.id, wri.id, now),
+        (edition.id, now, now, elig.id, sel.id, wri.id, now),
     )
     run_id = (await cur.fetchone())[0]
 

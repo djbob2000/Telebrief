@@ -280,15 +280,11 @@ class PublicationSnapshotService:
                   ON setd.story_id = ea.story_id
                  AND setd.latest_assignment_id = ea.cutoff_assignment_id
                 WHERE ea.story_id = ANY(%s)
-                  AND sesd.created_at <= %s
-                  AND setd.created_at <= %s
                 """,
                 (
                     run.snapshot_at,
                     run.source_cutoff_at or run.snapshot_at,
                     ef_story_ids,
-                    run.snapshot_at,
-                    run.snapshot_at,
                 ),
             )
             triage_map = {row[0]: row for row in await cur.fetchall()}

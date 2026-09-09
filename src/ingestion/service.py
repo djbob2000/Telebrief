@@ -122,6 +122,12 @@ class IngestionService:
             if current is None:
                 raise RuntimeError(f"item {observation.external_id!r} has no revision after ingest")
             current_revision_by_external_id[observation.external_id] = current.id
+            await self.repo.record_collection_run_observation(
+                conn,
+                collection_run_id=run.id,
+                source_item_revision_id=current.id,
+                observed_at=observation.observed_at,
+            )
             if revision is not None:
                 new_revision_ids.append(revision.id)
                 previous = await self.repo.get_previous_revision(

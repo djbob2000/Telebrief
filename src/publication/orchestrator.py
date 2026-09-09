@@ -18,6 +18,7 @@ import psycopg
 
 from src.config_loader import Config
 from src.ingestion.models import CollectionTrigger
+from src.publication.policies import resolve_publication_lookback_hours
 from src.publication.readiness import (
     PublicationReadinessDecision,
     PublicationReadinessService,
@@ -107,6 +108,7 @@ class PublicationOrchestrator:
         target_at: dt.datetime,
         requested_by_user_id: int | None = None,
         request_key: str | None = None,
+        lookback_hours: int | None = None,
         now: dt.datetime | None = None,
     ) -> PublicationIntentResult:
         """Create/get and immediately reconcile one publication intent."""
@@ -118,6 +120,11 @@ class PublicationOrchestrator:
             freshness_ttl_minutes=self.config.settings.publication_freshness_ttl_minutes,
             deadline_minutes=self.config.settings.publication_readiness_deadline_minutes,
         )
+        effective_lookback_hours = resolve_publication_lookback_hours(
+            publication_type, self.config, override=lookback_hours
+        )
+        if effective_lookback_hours <= 0:
+            raise ValueError("lookback_hours must be positive")
 
         async with self.uow.transaction() as conn:
             edition = await EditionRepository().get_by_slug(conn, edition_slug)
@@ -135,13 +142,22 @@ class PublicationOrchestrator:
                 request_key=key,
                 freshness_cutoff_at=freshness_cutoff_at,
                 requested_by_user_id=requested_by_user_id,
+                lookback_hours=effective_lookback_hours,
                 deadline_minutes=self.config.settings.publication_readiness_deadline_minutes,
             )
-            decision = await self.readiness.reconcile(conn, intent.id, now=now)
-            decision, source_ids_to_enqueue = await self._prepare_decision(
-                conn, intent, decision, now=now
-            )
-            edition_slug_result = edition.slug
+            if intent.status in {"preparing", "publication_queued", "failed"}:
+                # The scheduler may submit the same stable request key on
+                # every catch-up tick. A handed-off or terminal intent is
+                # already decided and must remain an idempotent no-op.
+                decision = None
+                source_ids_to_enqueue: list[int] = []
+                edition_slug_result = edition.slug
+            else:
+                decision = await self.readiness.reconcile(conn, intent.id, now=now)
+                decision, source_ids_to_enqueue = await self._prepare_decision(
+                    conn, intent, decision, now=now
+                )
+                edition_slug_result = edition.slug
 
         await self._enqueue_sources(source_ids_to_enqueue)
         logger.info(
@@ -154,15 +170,15 @@ class PublicationOrchestrator:
                 "freshness_cutoff_at": freshness_cutoff_at.isoformat(),
                 "deadline_at": deadline_at.isoformat(),
                 "retry_source_count": len(source_ids_to_enqueue),
-                "status": decision.status,
+                "status": decision.status if decision is not None else intent.status,
             },
         )
         return self._result(
             intent,
             edition_slug=edition_slug_result,
             decision=decision,
-            freshness_cutoff_at=freshness_cutoff_at,
-            deadline_at=deadline_at,
+            freshness_cutoff_at=intent.freshness_cutoff_at or freshness_cutoff_at,
+            deadline_at=intent.deadline_at,
         )
 
     async def reconcile(
@@ -292,7 +308,7 @@ class PublicationOrchestrator:
         intent: PublicationRefreshRun,
         *,
         edition_slug: str,
-        decision: PublicationReadinessDecision,
+        decision: PublicationReadinessDecision | None,
         freshness_cutoff_at: dt.datetime,
         deadline_at: dt.datetime,
     ) -> PublicationIntentResult:
@@ -305,7 +321,7 @@ class PublicationOrchestrator:
             target_at=intent.slot_at,
             freshness_cutoff_at=freshness_cutoff_at,
             deadline_at=deadline_at,
-            readiness_status=decision.status,
+            readiness_status=decision.status if decision is not None else intent.status,
         )
 
 

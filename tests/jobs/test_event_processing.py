@@ -592,6 +592,7 @@ async def test_coalesce_retry_cache_cost(conn, pool, uow, sample_config):
         analysis_min_interval_seconds=0,
         analysis_min_new_fragments=1,
         direct_analysis_min_fragments=2,
+        provider_retry_backoff_seconds=0,
     )
     sample_config.settings.edition_scopes = {
         "berdyansk-cache": EditionScopeConfig(

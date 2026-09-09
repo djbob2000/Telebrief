@@ -109,6 +109,16 @@ async def deliver_publication_payload(context: Any, delivery_id: int) -> None:
 )
 async def prepare_publication_from_intent(context: Any, intent_id: int) -> None:
     """Create a PublicationRun only after a durable intent is ready."""
+    try:
+        await _prepare_publication_from_intent_once(intent_id)
+    except Exception:
+        if _is_final_publication_attempt(context):
+            await _mark_preparation_failed(intent_id)
+        raise
+
+
+async def _prepare_publication_from_intent_once(intent_id: int) -> None:
+    """Create a PublicationRun only after a durable intent is ready."""
     from src.config_loader import load_config
     from src.publication.policies import PublicationPolicyService
     from src.publication.readiness_repository import PublicationReadinessRepository
@@ -137,6 +147,7 @@ async def prepare_publication_from_intent(context: Any, intent_id: int) -> None:
             edition_id=refresh.edition_id,
             publication_type=refresh.publication_type,
             config=config,
+            lookback_hours_override=refresh.lookback_hours,
         )
 
     source_cutoff_at = refresh.slot_at
@@ -214,6 +225,50 @@ async def prepare_publication_from_intent(context: Any, intent_id: int) -> None:
             },
         )
         await select_stories_for_publication.configure(connection=conn).defer_async(run_id=run.id)
+
+
+def _is_final_publication_attempt(context: Any) -> bool:
+    """Match Procrastinate's retry boundary for the current task attempt."""
+    attempts = getattr(getattr(context, "job", None), "attempts", None)
+    maximum = PUBLICATION_RETRY_STRATEGY.max_attempts
+    return isinstance(attempts, int) and maximum is not None and attempts >= maximum
+
+
+async def _mark_preparation_failed(intent_id: int) -> None:
+    """Close a preparation intent after retries are exhausted, then notify."""
+    from src.config_loader import load_config
+    from src.publication.notifications import PublicationFailureNotificationService
+    from src.publication.readiness_repository import PublicationReadinessRepository
+    from src.runtime import get_runtime
+
+    runtime = get_runtime()
+    readiness_repo = PublicationReadinessRepository()
+    async with runtime.uow.transaction() as conn:
+        refresh = await readiness_repo.get_refresh_run(conn, intent_id, for_update=True)
+        if refresh is None or refresh.status != "preparing":
+            return
+        await readiness_repo.transition_refresh(
+            conn,
+            intent_id,
+            status="failed",
+            error_kind="preparation_failed",
+        )
+
+    try:
+        async with runtime.uow.transaction() as conn:
+            refresh = await readiness_repo.get_refresh_run(conn, intent_id)
+            if refresh is not None:
+                await PublicationFailureNotificationService(
+                    config=load_config(), readiness_repo=readiness_repo
+                ).enqueue_for_failed_intent(
+                    conn,
+                    intent=refresh,
+                    failure_kind="preparation_failed",
+                )
+    except Exception:
+        logger.exception(
+            "failed to enqueue preparation failure notification for intent %s", intent_id
+        )
 
 
 # Kept as an import-level compatibility name for code that only imported the

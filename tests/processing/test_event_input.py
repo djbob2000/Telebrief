@@ -3,7 +3,7 @@
 from src.processing.event_input import build_event_processing_fingerprint
 
 
-def test_processing_hash_is_versioned_and_normalized():
+def test_processing_hash_preserves_semantically_consumed_urls():
     first = build_event_processing_fingerprint(
         "  Water OUT https://example.com/a ",
         fragmenter_version="v2",
@@ -13,7 +13,7 @@ def test_processing_hash_is_versioned_and_normalized():
         fragmenter_version="v2",
     )
 
-    assert first == second
+    assert first != second
 
 
 def test_meaningful_text_change_changes_hash():

@@ -30,6 +30,10 @@ def build_event_processing_fingerprint(
     semantic_fragments = [
         {
             "ordinal": fragment.ordinal,
+            # Gate reads the exact fragment text. Keep normalized_hash for
+            # diagnostics/cache identity, but do not let URL-only edits become
+            # semantic no-ops.
+            "text_content": fragment.text_content,
             "normalized_hash": fragment.normalized_hash,
             "is_candidate": fragment.is_candidate,
             "drop_reason": fragment.drop_reason,

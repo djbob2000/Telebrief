@@ -31,7 +31,9 @@ class PublicationFailureNotificationService:
 
     def recipients(self, intent: PublicationRefreshRun) -> list[int]:
         if intent.trigger == "manual":
-            return [intent.requested_by_user_id] if intent.requested_by_user_id is not None else []
+            if intent.requested_by_user_id is not None:
+                return [intent.requested_by_user_id]
+            return list(dict.fromkeys(self.config.settings.admin_user_ids))
         return list(dict.fromkeys(self.config.settings.admin_user_ids))
 
     def render_message(

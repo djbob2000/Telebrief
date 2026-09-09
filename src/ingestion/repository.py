@@ -250,6 +250,25 @@ class IngestionRepository:
             raise RuntimeError("revision insert returned no row")
         return SourceItemRevision.from_row(row)
 
+    async def record_collection_run_observation(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        collection_run_id: int,
+        source_item_revision_id: int,
+        observed_at: datetime | None = None,
+    ) -> None:
+        """Record the revision visible to a scan, including semantic no-ops."""
+        await conn.execute(
+            """
+            INSERT INTO collection_run_revision_observations (
+                collection_run_id, source_item_revision_id, observed_at
+            ) VALUES (%s, %s, COALESCE(%s, now()))
+            ON CONFLICT (collection_run_id, source_item_revision_id) DO NOTHING
+            """,
+            (collection_run_id, source_item_revision_id, observed_at),
+        )
+
     async def get_latest_revision(
         self, conn: psycopg.AsyncConnection, item_id: int
     ) -> SourceItemRevision | None:

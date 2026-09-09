@@ -51,6 +51,19 @@ async def test_event_brief_service_persists_brief_revision(conn, edition, revisi
         fragment_embedding_id=7021,
         assignment_kind="new_story",
     )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=story_id,
+        centroid=[1.0, 0.0],
+        model="m",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid,
+        analysis_dirty=True,
+    )
 
     payload = EventPayload(
         topic="ATM on AKZ",
@@ -164,6 +177,49 @@ async def test_event_brief_service_merges_into_rich_revision_without_downgrading
         ),
     )
 
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES (7002, 'hb2', '[0, 1]'::vector, 'm', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (7012, %s, 0, 'Brief restoration text', 'hb2', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES (7022, 7012, 7002)
+        """
+    )
+    aid = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=story_id,
+        fragment_id=7012,
+        fragment_embedding_id=7022,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=story_id,
+        centroid=[0.0, 1.0],
+        model="m",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid,
+        analysis_dirty=True,
+    )
+
     # 2. Gate V2 brief with new observation (e.g. restoration at 2pm)
     new_brief = EventPayload(
         topic="Water restored",
@@ -193,7 +249,7 @@ async def test_event_brief_service_merges_into_rich_revision_without_downgrading
 
     service = EventBriefService(story_repo=story_repo, cluster_repo=cluster_repo)
     merged_rev = await service.persist_brief(
-        conn, story_id=story_id, assignment_id=1, payload=new_brief
+        conn, story_id=story_id, assignment_id=aid, payload=new_brief
     )
 
     assert merged_rev is not None

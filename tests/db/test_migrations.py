@@ -156,6 +156,26 @@ async def test_publication_refresh_readiness_schema(pg_conn):
         "publication_refresh_sources",
     ]
 
+    cur = await pg_conn.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'publication_refresh_runs'
+        """
+    )
+    assert "lookback_hours" in {row[0] for row in await cur.fetchall()}
+
+    cur = await pg_conn.execute(
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name = 'collection_run_revision_observations'
+        """
+    )
+    assert await cur.fetchone() == ("collection_run_revision_observations",)
+
 
 @pytest.mark.postgres
 async def test_event_edition_scope_schema(pg_conn):
