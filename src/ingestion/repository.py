@@ -25,6 +25,7 @@ from src.ingestion.models import (
     ObservedItem,
     ObservedStateEvent,
 )
+from src.processing.event_input import EVENT_INPUT_VERSION, build_event_processing_fingerprint
 
 if TYPE_CHECKING:
     from src.domain.ingestion import AssetDescriptor
@@ -219,15 +220,18 @@ class IngestionRepository:
         if latest is not None and latest.content_hash == content_hash:
             return None
         revision_no = 1 if latest is None else latest.revision_no + 1
+        event_processing_hash = build_event_processing_fingerprint(observation.text)
         cursor = await conn.execute(
             """
             INSERT INTO source_item_revisions (
                 source_item_id, revision_no, collected_at, content_hash,
-                text_content, payload, collection_run_id
+                text_content, payload, collection_run_id,
+                event_processing_hash, event_input_version
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, source_item_id, revision_no, collected_at,
-                content_hash, text_content, payload
+                content_hash, text_content, payload,
+                event_processing_hash, event_input_version
             """,
             (
                 item_id,
@@ -237,6 +241,8 @@ class IngestionRepository:
                 observation.text,
                 Jsonb(observation.metadata),
                 collection_run_id,
+                event_processing_hash,
+                EVENT_INPUT_VERSION,
             ),
         )
         row = await cursor.fetchone()
@@ -250,7 +256,7 @@ class IngestionRepository:
         cursor = await conn.execute(
             """
             SELECT id, source_item_id, revision_no, collected_at, content_hash,
-                   text_content, payload
+                   text_content, payload, event_processing_hash, event_input_version
             FROM source_item_revisions
             WHERE source_item_id = %s
             ORDER BY revision_no DESC
@@ -268,7 +274,7 @@ class IngestionRepository:
         cursor = await conn.execute(
             """
             SELECT id, source_item_id, revision_no, collected_at, content_hash,
-                   text_content, payload
+                   text_content, payload, event_processing_hash, event_input_version
             FROM source_item_revisions
             WHERE id = %s
             """,

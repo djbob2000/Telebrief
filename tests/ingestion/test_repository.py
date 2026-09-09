@@ -18,6 +18,7 @@ import pytest
 
 from src.ingestion.models import ObservedAsset, ObservedItem, ObservedStateEvent
 from src.ingestion.repository import IngestionRepository
+from src.processing.event_input import build_event_processing_fingerprint
 
 PUBLISHED_AT = datetime(2026, 8, 22, 10, 0, tzinfo=timezone.utc)
 
@@ -511,6 +512,28 @@ async def test_insert_revision_if_changed_compares_latest_hash_only(conn, source
         "SELECT count(*) FROM source_item_revisions WHERE source_item_id = %s", (item.id,)
     )
     assert (await cursor.fetchone())[0] == 3
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_revision_persists_event_processing_fingerprint_and_version(conn, source):
+    repo = IngestionRepository()
+    observation = _observation(text="Water outage on Street A")
+    item, _ = await repo.get_or_create_item_shell(conn, source.id, observation)
+
+    revision = await repo.insert_revision_if_changed(
+        conn, item.id, observation, collected_at=PUBLISHED_AT
+    )
+
+    assert revision is not None
+    expected_hash = build_event_processing_fingerprint(observation.text)
+    assert revision.event_processing_hash == expected_hash
+    assert revision.event_input_version == "text-v1"
+
+    latest = await repo.get_latest_revision(conn, item.id)
+    assert latest is not None
+    assert latest.event_processing_hash == expected_hash
+    assert latest.event_input_version == "text-v1"
 
 
 @pytest.mark.postgres

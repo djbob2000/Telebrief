@@ -53,6 +53,8 @@ class SourceItemRevision:
     content_hash: str
     text_content: str | None
     payload: dict[str, Any]
+    event_processing_hash: str | None
+    event_input_version: str | None
 
     @classmethod
     def from_row(cls, row: Any) -> SourceItemRevision:
@@ -64,6 +66,8 @@ class SourceItemRevision:
             content_hash=row[4],
             text_content=row[5],
             payload=row[6],
+            event_processing_hash=row[7],
+            event_input_version=row[8],
         )
 
 
