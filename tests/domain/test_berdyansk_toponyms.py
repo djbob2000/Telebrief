@@ -120,3 +120,15 @@ def test_sanitize_operational_detail_integrates_toponyms() -> None:
     sanitized = sanitize_operational_detail(raw)
     assert "У провайдера «Юпитер» пока отсутствует оптоволокно." in sanitized
     assert "кто знает" not in sanitized
+
+
+@pytest.mark.unit
+def test_normalize_akz_not_azmol_complex() -> None:
+    t1 = "Жители сообщают, что весь Азмоловский комплекс остаётся без электроэнергии."
+    assert (
+        normalize_berdyansk_toponyms(t1)
+        == "Жители сообщают, что весь АКЗ остаётся без электроэнергии."
+    )
+
+    t2 = "В Азмоловском комплексе дали свет."
+    assert normalize_berdyansk_toponyms(t2) == "В АКЗ дали свет."

@@ -110,6 +110,13 @@ def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
             clean_body,
         )
         clean_body = re.sub(r"\n{3,}", "\n\n", clean_body).strip()
+        # Strip redundant leading preamble if present
+        clean_body = re.sub(
+            r"^\s*(?:Вот\s+(?:ежедневный\s+)?дайджест[^\n]*\n+|Ниже\s+(?:представлен|следует)[^\n]*\n+|Здравствуйте[^\n]*\n+)+",
+            "",
+            clean_body,
+            flags=re.IGNORECASE,
+        ).strip()
 
         if clean_body.startswith(f"# {title_text}") or clean_body.startswith(title_text):
             raw_text = clean_body

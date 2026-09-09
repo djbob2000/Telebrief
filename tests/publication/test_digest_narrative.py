@@ -2057,6 +2057,8 @@ async def test_generate_journalistic_digest_strips_dividers_and_rubric_asterisks
     mock_provider = AsyncMock()
     mock_provider.chat_completion.return_value = """Дайджест · 07 сентября 2026
 
+Вот ежедневный дайджест новостей Бердянска за 7 сентября 2026 года, составленный строго на основе предоставленных материалов.
+
 ---
 
 **⚡ Коммунальная обстановка**
@@ -2078,6 +2080,7 @@ async def test_generate_journalistic_digest_strips_dividers_and_rubric_asterisks
 
     assert "---" not in clean_text
     assert "**" not in clean_text
+    assert "Вот ежедневный дайджест" not in clean_text
     assert "⚡ Коммунальная обстановка" in clean_text
     assert "💥 Безопасность и чрезвычайные ситуации" in clean_text
     assert clean_text.startswith("⚡ Коммунальная обстановка")
