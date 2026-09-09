@@ -136,8 +136,19 @@ async def test_drain_authority_gap_loops_and_drains():
     mock_uow.transaction.return_value.__aenter__.return_value = mock_conn
     mock_repo = AsyncMock()
 
-    # Story 101 in gap initially, drained after round 1
-    mock_repo.find_authority_gap_story_ids = AsyncMock(side_effect=[[101], []])
+    # Story 101 in gap initially, drained after round 1. The second query must
+    # use a post-coalesce candidate cutoff so decisions created by the drain are
+    # visible without weakening the historical snapshot contract.
+    initial_snapshot = dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=1)
+
+    async def find_gap(*args, **kwargs):
+        if mock_repo.find_authority_gap_story_ids.await_count == 1:
+            assert kwargs["snapshot_at"] == initial_snapshot
+            return [101]
+        assert kwargs["snapshot_at"] > initial_snapshot
+        return []
+
+    mock_repo.find_authority_gap_story_ids = AsyncMock(side_effect=find_gap)
 
     service = PublicationSnapshotService(uow=mock_uow, repo=mock_repo)
 
@@ -145,7 +156,7 @@ async def test_drain_authority_gap_loops_and_drains():
     with patch("src.jobs.event_processing.coalesce_dirty_stories_task.func", coalesce_mock):
         remaining = await service.drain_authority_gap(
             edition_id=1,
-            snapshot_at=dt.datetime.now(dt.timezone.utc),
+            snapshot_at=initial_snapshot,
             eligibility_policy_id=5,
         )
 
@@ -312,6 +323,7 @@ async def test_prepare_publication_marks_final_failure_and_notifies(monkeypatch)
         ),
     )
     notify = AsyncMock()
+    notify.return_value = []
     monkeypatch.setattr(
         "src.publication.notifications.PublicationFailureNotificationService.enqueue_for_failed_intent",
         notify,
@@ -324,4 +336,9 @@ async def test_prepare_publication_marks_final_failure_and_notifies(monkeypatch)
     readiness_repo.transition_refresh.assert_awaited_once_with(
         mock_conn, 10, status="failed", error_kind="preparation_failed"
     )
-    notify.assert_awaited_once()
+    notify.assert_awaited_once_with(
+        mock_conn,
+        intent=refresh,
+        failure_kind="preparation_failed",
+        dispatch=False,
+    )

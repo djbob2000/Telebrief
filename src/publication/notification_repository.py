@@ -76,6 +76,22 @@ class PublicationNotificationRepository:
             last_error=row[6],
         )
 
+    async def list_dispatchable(
+        self, conn: psycopg.AsyncConnection, *, limit: int = 100
+    ) -> list[int]:
+        """Return durable outbox rows that still need a delivery job."""
+        cursor = await conn.execute(
+            """
+            SELECT id
+            FROM publication_failure_notifications
+            WHERE status IN ('pending', 'failed')
+            ORDER BY updated_at ASC, id ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return [int(row[0]) for row in await cursor.fetchall()]
+
     async def mark_sent(
         self, conn: psycopg.AsyncConnection, *, notification_id: int, sent_at: dt.datetime
     ) -> None:

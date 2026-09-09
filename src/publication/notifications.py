@@ -41,10 +41,25 @@ class PublicationFailureNotificationService:
         intent: PublicationRefreshRun,
         diagnostics: Sequence[PublicationSourceDiagnostic],
     ) -> str:
-        source_lines = [
-            f"- source {diagnostic.source_id}: {diagnostic.collection_outcome or 'no completed scan'}"
-            for diagnostic in diagnostics
-        ]
+        source_lines = []
+        for diagnostic in diagnostics:
+            if diagnostic.stage == "preparation":
+                source_lines.append("- preparation: publication snapshot preparation failed")
+                continue
+            label = f"source {diagnostic.source_id}"
+            if diagnostic.source_name:
+                label += f" ({diagnostic.source_name})"
+            if diagnostic.stage == "event_processing":
+                source_lines.append(
+                    f"- {label}: event processing pending; "
+                    f"unprocessed revisions={diagnostic.unprocessed_revision_count}, "
+                    f"pending={diagnostic.pending_revision_count}, "
+                    f"failed={diagnostic.failed_revision_count}"
+                )
+            else:
+                source_lines.append(
+                    f"- {label}: {diagnostic.collection_outcome or 'no completed scan'}"
+                )
         sources = (
             "\n".join(source_lines)
             if source_lines
@@ -65,6 +80,7 @@ class PublicationFailureNotificationService:
         *,
         intent: PublicationRefreshRun,
         failure_kind: str | None = None,
+        dispatch: bool = True,
     ) -> list[int]:
         diagnostics = await self.readiness_repo.list_unready_source_diagnostics(conn, intent.id)
         ids = await self.repo.insert_new(
@@ -75,12 +91,58 @@ class PublicationFailureNotificationService:
         )
         if not ids:
             return []
+        if dispatch:
+            await self.dispatch_existing(
+                conn,
+                intent=intent,
+                notification_ids=ids,
+                diagnostics=diagnostics,
+            )
+        return ids
+
+    async def dispatch_existing(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        intent: PublicationRefreshRun,
+        notification_ids: Sequence[int],
+        diagnostics: Sequence[PublicationSourceDiagnostic] | None = None,
+    ) -> None:
+        """Queue already-committed outbox rows without changing their durability."""
+        if not notification_ids:
+            return
         from src.jobs.admin import send_publication_failure_notification
 
+        if diagnostics is None:
+            diagnostics = await self.readiness_repo.list_unready_source_diagnostics(conn, intent.id)
         message = self.render_message(intent, diagnostics)
-        for notification_id in ids:
+        for notification_id in notification_ids:
             await send_publication_failure_notification.configure(
                 connection=conn,
                 queueing_lock=f"publication-failure-notification:{notification_id}",
             ).defer_async(notification_id=notification_id, message=message)
-        return ids
+
+    async def redrive_pending(self, *, limit: int = 100) -> list[int]:
+        """Queue pending/failed outbox rows; rows remain durable if queueing fails."""
+        from src.runtime import get_runtime
+
+        runtime = get_runtime()
+        queued: list[int] = []
+        async with runtime.uow.transaction() as conn:
+            ids = await self.repo.list_dispatchable(conn, limit=limit)
+            for notification_id in ids:
+                notification = await self.repo.get(conn, notification_id)
+                if notification is None or notification.status == "sent":
+                    continue
+                intent = await self.readiness_repo.get_refresh_run(
+                    conn, notification.refresh_run_id
+                )
+                if intent is None:
+                    continue
+                await self.dispatch_existing(
+                    conn,
+                    intent=intent,
+                    notification_ids=[notification_id],
+                )
+                queued.append(notification_id)
+        return queued

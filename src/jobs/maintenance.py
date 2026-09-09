@@ -17,6 +17,23 @@ async def retry_stalled_jobs(context: JobContext, timestamp: int) -> None:
         await procrastinate_app.job_manager.retry_job(job)
 
 
+@procrastinate_app.periodic(
+    cron="*/5 * * * *",
+    periodic_id="publication-failure-notification-redrive",
+)
+@procrastinate_app.task(
+    queue="maintenance",
+    queueing_lock="publication-failure-notification-redrive",
+)
+async def redrive_publication_failure_notifications(timestamp: int) -> None:
+    """Requeue durable publication-failure outbox rows after queue failures."""
+    del timestamp
+    from src.config_loader import load_config
+    from src.publication.notifications import PublicationFailureNotificationService
+
+    await PublicationFailureNotificationService(config=load_config()).redrive_pending()
+
+
 @procrastinate_app.periodic(cron="15 3 * * *", periodic_id="retention-cleanup")
 @procrastinate_app.task(queue="maintenance", queueing_lock="retention-cleanup")
 async def retention_cleanup(timestamp: int) -> None:

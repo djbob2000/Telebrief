@@ -249,6 +249,7 @@ class PublicationOrchestrator:
         source_ids = [
             diagnostic.source_id
             for diagnostic in diagnostics
+            if diagnostic.stage == "collection"
             if _source_retry_allowed(diagnostic, now=now, deadline_at=intent.deadline_at)
         ]
         for source_id in source_ids:

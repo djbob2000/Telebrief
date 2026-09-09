@@ -100,6 +100,11 @@ class PublicationSourceDiagnostic:
     collection_run_id: int | None
     backoff_until: dt.datetime | None
     retryable: bool
+    stage: str = "collection"
+    source_name: str | None = None
+    pending_revision_count: int = 0
+    failed_revision_count: int = 0
+    unprocessed_revision_count: int = 0
 
 
 class PublicationReadinessRepository:
@@ -139,7 +144,7 @@ class PublicationReadinessRepository:
         source_ids: Sequence[int],
         lookback_hours: int = 24,
     ) -> PublicationRefreshRun:
-        """Create the refresh barrier once and add any newly bound sources."""
+        """Create the refresh barrier once with an immutable source set."""
         cursor = await conn.execute(
             """
             INSERT INTO publication_refresh_runs (
@@ -149,7 +154,7 @@ class PublicationReadinessRepository:
                 requested_by_user_id, lookback_hours
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'collecting', %s, %s, %s, %s, %s)
             ON CONFLICT (request_key)
-            DO UPDATE SET updated_at = now()
+            DO NOTHING
             RETURNING id, edition_id, publication_type, slot_at, requested_at,
                       normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
                       status, collection_ready_at, processing_ready_at, prepared_at,
@@ -173,12 +178,19 @@ class PublicationReadinessRepository:
             ),
         )
         row = await cursor.fetchone()
+        created = row is not None
         if row is None:
-            raise RuntimeError("refresh run insert returned no row")
+            cursor = await conn.execute(
+                self._RUN_SELECT + "\nWHERE request_key = %s",
+                (request_key,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise RuntimeError("refresh run conflict returned no existing row")
         refresh = PublicationRefreshRun.from_row(row)
 
         unique_source_ids = list(dict.fromkeys(int(source_id) for source_id in source_ids))
-        if unique_source_ids:
+        if created and unique_source_ids:
             await conn.execute(
                 """
                 INSERT INTO publication_refresh_sources (
@@ -261,7 +273,7 @@ class PublicationReadinessRepository:
                 SELECT id, status, completed_at
                 FROM collection_runs
                 WHERE source_id = %s
-                  AND started_at >= %s
+                  AND completed_at >= %s
                   AND status = 'success'
                   AND completed_at IS NOT NULL
                 ORDER BY completed_at DESC, id DESC
@@ -293,7 +305,7 @@ class PublicationReadinessRepository:
                 SELECT id, status, completed_at
                 FROM collection_runs
                 WHERE source_id = %s
-                  AND started_at >= %s
+                  AND completed_at >= %s
                   AND completed_at IS NOT NULL
                 ORDER BY completed_at DESC, id DESC
                 LIMIT 1
@@ -348,23 +360,67 @@ class PublicationReadinessRepository:
     async def list_unready_source_diagnostics(
         self, conn: psycopg.AsyncConnection, refresh_run_id: int
     ) -> list[PublicationSourceDiagnostic]:
-        """Return latest collection facts for sources that still block readiness."""
+        """Return collection and Event-First facts that still block readiness."""
+        run_cursor = await conn.execute(
+            """
+            SELECT status, error_kind
+            FROM publication_refresh_runs
+            WHERE id = %s
+            """,
+            (refresh_run_id,),
+        )
+        run_row = await run_cursor.fetchone()
+        if run_row is not None and run_row[1] == "preparation_failed":
+            return [
+                PublicationSourceDiagnostic(
+                    source_id=0,
+                    status=str(run_row[0]),
+                    collection_outcome="preparation_failed",
+                    collection_run_id=None,
+                    backoff_until=None,
+                    retryable=False,
+                    stage="preparation",
+                )
+            ]
         cursor = await conn.execute(
             """
-            SELECT prs.source_id, prs.status, latest.status, latest.id,
-                   checkpoint.backoff_until
+            SELECT prs.source_id, source.name, prs.status, latest.status, latest.id,
+                   checkpoint.backoff_until,
+                   COALESCE(processing.unprocessed_count, 0),
+                   COALESCE(processing.pending_count, 0),
+                   COALESCE(processing.failed_count, 0)
             FROM publication_refresh_sources prs
+            JOIN sources source ON source.id = prs.source_id
             LEFT JOIN LATERAL (
                 SELECT id, status
                 FROM collection_runs
                 WHERE source_id = prs.source_id
-                ORDER BY started_at DESC, id DESC
+                ORDER BY completed_at DESC NULLS LAST, id DESC
                 LIMIT 1
             ) latest ON TRUE
             LEFT JOIN collection_checkpoints checkpoint
               ON checkpoint.source_id = prs.source_id
+            LEFT JOIN LATERAL (
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(erps.status, 'missing') <> 'succeeded'
+                    ) AS unprocessed_count,
+                    COUNT(*) FILTER (
+                        WHERE COALESCE(erps.status, 'missing') IN ('missing', 'pending', 'running')
+                    ) AS pending_count,
+                    COUNT(*) FILTER (WHERE erps.status = 'failed') AS failed_count
+                FROM collection_run_revision_observations cro
+                JOIN source_item_revisions sir
+                  ON sir.id = cro.source_item_revision_id
+                LEFT JOIN event_revision_processing_state erps
+                  ON erps.source_item_revision_id = sir.id
+                WHERE cro.collection_run_id = prs.collection_run_id
+            ) processing ON TRUE
             WHERE prs.refresh_run_id = %s
-              AND prs.status <> 'succeeded'
+              AND (
+                  prs.status <> 'succeeded'
+                  OR COALESCE(processing.unprocessed_count, 0) > 0
+              )
             ORDER BY prs.source_id
             """,
             (refresh_run_id,),
@@ -372,17 +428,30 @@ class PublicationReadinessRepository:
         retryable = {"transient", "rate_limited"}
         diagnostics: list[PublicationSourceDiagnostic] = []
         for row in await cursor.fetchall():
-            outcome = str(row[2]) if row[2] is not None else None
+            source_status = str(row[2])
+            outcome = str(row[3]) if row[3] is not None else None
+            unprocessed = int(row[6])
+            pending = int(row[7])
+            failed = int(row[8])
+            stage = "event_processing" if source_status == "succeeded" else "collection"
             diagnostics.append(
                 PublicationSourceDiagnostic(
                     source_id=int(row[0]),
-                    status=str(row[1]),
+                    status=source_status,
                     collection_outcome=outcome,
-                    collection_run_id=int(row[3]) if row[3] is not None else None,
-                    backoff_until=row[4],
+                    collection_run_id=int(row[4]) if row[4] is not None else None,
+                    backoff_until=row[5],
                     retryable=(
-                        outcome in retryable or outcome is None or str(row[1]) != "succeeded"
+                        stage == "collection"
+                        and (
+                            outcome in retryable or outcome is None or source_status != "succeeded"
+                        )
                     ),
+                    stage=stage,
+                    source_name=str(row[1]) if row[1] is not None else None,
+                    pending_revision_count=pending,
+                    failed_revision_count=failed,
+                    unprocessed_revision_count=unprocessed,
                 )
             )
         return diagnostics

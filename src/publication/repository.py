@@ -745,9 +745,11 @@ class PublicationRepository:
                 JOIN story_edition_scope_decisions sesd
                   ON sesd.story_id = ea.story_id
                  AND sesd.latest_assignment_id = ea.cutoff_assignment_id
+                 AND sesd.created_at <= %(snapshot_at)s
                 JOIN story_event_triage_decisions setd
                   ON setd.story_id = ea.story_id
                  AND setd.latest_assignment_id = ea.cutoff_assignment_id
+                 AND setd.created_at <= %(snapshot_at)s
                 WHERE ea.story_id = cu.story_id
                   AND sesd.edition_id = %(edition_id)s
                   AND (%(scope_version)s::text IS NULL OR sesd.scope_version = %(scope_version)s)
@@ -971,9 +973,11 @@ class PublicationRepository:
               JOIN story_edition_scope_decisions sesd
                 ON sesd.story_id = ea.story_id
                AND sesd.latest_assignment_id = ea.cutoff_assignment_id
+               AND sesd.created_at <= %(snapshot_at)s
               JOIN story_event_triage_decisions setd
                 ON setd.story_id = ea.story_id
                AND setd.latest_assignment_id = ea.cutoff_assignment_id
+               AND setd.created_at <= %(snapshot_at)s
               WHERE ea.story_id = cu.story_id
                 AND sesd.edition_id = %(edition_id)s
                 AND sesd.scope_version = %(scope_version)s

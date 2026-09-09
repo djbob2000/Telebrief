@@ -965,8 +965,7 @@ class TestPublicationSnapshotConstraints:
         with pytest.raises(IncompleteTriageError, match="lacking authoritative triage"):
             await service.seal_candidates(run.id)
 
-        # 6. Once sid_stale receives an authoritative v9 decision (retention='DROP'), authority gap is resolved.
-        # Decisions created after snapshot_at (simulating pre-seal drain) must also resolve the gap.
+        # 6. Decisions created after snapshot_at must not alter the frozen run.
         post_snap = _NOW + dt.timedelta(minutes=5)
         await conn.execute(
             "UPDATE story_event_triage_decisions SET triage_version = 'v9', retention = 'DROP', enrichment = 'NONE', created_at = %s WHERE story_id = %s",
@@ -976,7 +975,18 @@ class TestPublicationSnapshotConstraints:
             "UPDATE story_edition_scope_decisions SET scope_class = 'OUT_OF_SCOPE', created_at = %s WHERE story_id = %s",
             (post_snap, sid_stale),
         )
-        cands = await service.seal_candidates(run.id)
+        with pytest.raises(IncompleteTriageError, match="lacking authoritative triage"):
+            await service.seal_candidates(run.id)
+
+        # The same decisions are visible to a later candidate snapshot.
+        later_run = await service.create_run(
+            edition_id=edition.id,
+            publication_type="daily_article",
+            snapshot_at=post_snap,
+            request_key="test-later-frozen-v9-run",
+            policy_ids=policy_ids,
+        )
+        cands = await service.seal_candidates(later_run.id)
         assert len(cands) == 1
         assert cands[0].story_id == sid_v9
 
@@ -999,7 +1009,7 @@ class TestPublicationSnapshotConstraints:
         run_no_pub = await service.create_run(
             edition_id=edition.id,
             publication_type="daily_article",
-            snapshot_at=_NOW,
+            snapshot_at=post_snap,
             request_key="test-run-no-pub",
             policy_ids=policy_ids,
         )
@@ -1018,7 +1028,7 @@ class TestPublicationSnapshotConstraints:
         run_non_keep = await service.create_run(
             edition_id=edition.id,
             publication_type="daily_article",
-            snapshot_at=_NOW,
+            snapshot_at=post_snap,
             request_key="test-run-non-keep",
             policy_ids=policy_ids,
         )

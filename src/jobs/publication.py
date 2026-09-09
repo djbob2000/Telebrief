@@ -235,7 +235,7 @@ def _is_final_publication_attempt(context: Any) -> bool:
 
 
 async def _mark_preparation_failed(intent_id: int) -> None:
-    """Close a preparation intent after retries are exhausted, then notify."""
+    """Atomically close a preparation intent and persist notification outbox rows."""
     from src.config_loader import load_config
     from src.publication.notifications import PublicationFailureNotificationService
     from src.publication.readiness_repository import PublicationReadinessRepository
@@ -243,6 +243,7 @@ async def _mark_preparation_failed(intent_id: int) -> None:
 
     runtime = get_runtime()
     readiness_repo = PublicationReadinessRepository()
+    notification_ids: list[int] = []
     async with runtime.uow.transaction() as conn:
         refresh = await readiness_repo.get_refresh_run(conn, intent_id, for_update=True)
         if refresh is None or refresh.status != "preparing":
@@ -253,21 +254,30 @@ async def _mark_preparation_failed(intent_id: int) -> None:
             status="failed",
             error_kind="preparation_failed",
         )
+        notification_ids = await PublicationFailureNotificationService(
+            config=load_config(), readiness_repo=readiness_repo
+        ).enqueue_for_failed_intent(
+            conn,
+            intent=refresh,
+            failure_kind="preparation_failed",
+            dispatch=False,
+        )
 
     try:
-        async with runtime.uow.transaction() as conn:
-            refresh = await readiness_repo.get_refresh_run(conn, intent_id)
-            if refresh is not None:
-                await PublicationFailureNotificationService(
-                    config=load_config(), readiness_repo=readiness_repo
-                ).enqueue_for_failed_intent(
-                    conn,
-                    intent=refresh,
-                    failure_kind="preparation_failed",
-                )
+        if notification_ids:
+            async with runtime.uow.transaction() as conn:
+                refresh = await readiness_repo.get_refresh_run(conn, intent_id)
+                if refresh is not None:
+                    await PublicationFailureNotificationService(
+                        config=load_config(), readiness_repo=readiness_repo
+                    ).dispatch_existing(
+                        conn,
+                        intent=refresh,
+                        notification_ids=notification_ids,
+                    )
     except Exception:
         logger.exception(
-            "failed to enqueue preparation failure notification for intent %s", intent_id
+            "failed to dispatch preparation failure notification for intent %s", intent_id
         )
 
 

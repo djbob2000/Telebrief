@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -74,6 +76,93 @@ def test_notification_message_is_explicit_and_safe(sample_config):
     assert "source 55" in message
     assert "No stale fallback data was used" in message
     assert "traceback" not in message.lower()
+
+
+@pytest.mark.unit
+def test_event_processing_diagnostics_are_rendered_with_counts(sample_config):
+    service = PublicationFailureNotificationService(config=sample_config)
+    message = service.render_message(
+        _intent("scheduled"),
+        [
+            PublicationSourceDiagnostic(
+                source_id=55,
+                source_name="local-news",
+                status="succeeded",
+                collection_outcome="success",
+                collection_run_id=9,
+                backoff_until=None,
+                retryable=False,
+                stage="event_processing",
+                pending_revision_count=2,
+                failed_revision_count=1,
+                unprocessed_revision_count=3,
+            )
+        ],
+    )
+    assert "local-news" in message
+    assert "event processing pending" in message
+    assert "unprocessed revisions=3" in message
+
+
+@pytest.mark.unit
+def test_preparation_diagnostics_are_rendered_as_a_distinct_stage(sample_config):
+    service = PublicationFailureNotificationService(config=sample_config)
+    message = service.render_message(
+        _intent("scheduled"),
+        [
+            PublicationSourceDiagnostic(
+                source_id=0,
+                status="failed",
+                collection_outcome="preparation_failed",
+                collection_run_id=None,
+                backoff_until=None,
+                retryable=False,
+                stage="preparation",
+            )
+        ],
+    )
+    assert "preparation: publication snapshot preparation failed" in message
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_redrive_requeues_durable_pending_notification(monkeypatch, sample_config):
+    from src import runtime
+
+    conn = AsyncMock()
+    uow = MagicMock()
+    uow.transaction.return_value.__aenter__ = AsyncMock(return_value=conn)
+    uow.transaction.return_value.__aexit__ = AsyncMock(return_value=None)
+    runtime._runtime = SimpleNamespace(uow=uow)
+
+    repo = MagicMock()
+    repo.list_dispatchable = AsyncMock(return_value=[7])
+    repo.get = AsyncMock(
+        return_value=SimpleNamespace(
+            id=7,
+            refresh_run_id=1,
+            recipient_user_id=123,
+            failure_kind="preparation_failed",
+            status="pending",
+        )
+    )
+    readiness_repo = MagicMock()
+    readiness_repo.get_refresh_run = AsyncMock(return_value=_intent("scheduled"))
+    readiness_repo.list_unready_source_diagnostics = AsyncMock(return_value=[])
+    service = PublicationFailureNotificationService(
+        config=sample_config,
+        repo=repo,
+        readiness_repo=readiness_repo,
+    )
+    defer_async = AsyncMock()
+    with patch(
+        "src.jobs.admin.send_publication_failure_notification.configure",
+        return_value=SimpleNamespace(defer_async=defer_async),
+    ):
+        queued = await service.redrive_pending()
+
+    assert queued == [7]
+    defer_async.assert_awaited_once()
 
 
 @pytest.mark.postgres

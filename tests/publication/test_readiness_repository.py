@@ -49,6 +49,7 @@ async def test_collection_success_is_qualified_by_freshness_cutoff(conn, edition
     source_fresh = await _source(conn, "fresh")
     source_boundary = await _source(conn, "boundary")
     source_old = await _source(conn, "old")
+    source_started_before_completed_after = await _source(conn, "started-before-completed-after")
     source_transient = await _source(conn, "transient")
 
     fresh_run = await _collection_run(
@@ -69,7 +70,14 @@ async def test_collection_success_is_qualified_by_freshness_cutoff(conn, edition
         conn,
         source_old,
         started_at=CUTOFF - dt.timedelta(seconds=1),
-        completed_at=CUTOFF + dt.timedelta(minutes=5),
+        completed_at=CUTOFF - dt.timedelta(seconds=1),
+        status="success",
+    )
+    completed_after = await _collection_run(
+        conn,
+        source_started_before_completed_after,
+        started_at=CUTOFF - dt.timedelta(seconds=10),
+        completed_at=CUTOFF + dt.timedelta(seconds=20),
         status="success",
     )
     await _collection_run(
@@ -92,7 +100,13 @@ async def test_collection_success_is_qualified_by_freshness_cutoff(conn, edition
         freshness_cutoff_at=CUTOFF,
         deadline_at=TARGET + dt.timedelta(minutes=20),
         requested_by_user_id=123,
-        source_ids=[source_fresh, source_boundary, source_old, source_transient],
+        source_ids=[
+            source_fresh,
+            source_boundary,
+            source_old,
+            source_started_before_completed_after,
+            source_transient,
+        ],
     )
     assert refresh.trigger == "manual"
     assert refresh.request_key == "manual:freshness-test"
@@ -105,7 +119,50 @@ async def test_collection_success_is_qualified_by_freshness_cutoff(conn, edition
     assert by_id[source_fresh].collection_run_id == fresh_run
     assert by_id[source_boundary].status == "succeeded"
     assert by_id[source_old].status != "succeeded"
+    assert by_id[source_started_before_completed_after].status == "succeeded"
+    assert by_id[source_started_before_completed_after].collection_run_id == completed_after
     assert by_id[source_transient].status == "degraded"
+
+
+@pytest.mark.postgres
+async def test_repeated_request_key_does_not_expand_frozen_source_set(conn, edition):
+    first_source = await _source(conn, "frozen-first")
+    later_source = await _source(conn, "frozen-later")
+    repo = PublicationReadinessRepository()
+
+    first = await repo.get_or_create_refresh_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="weekly_article",
+        slot_at=TARGET,
+        requested_at=CUTOFF,
+        trigger="manual",
+        request_key="manual:frozen-source-set",
+        freshness_cutoff_at=CUTOFF,
+        deadline_at=TARGET + dt.timedelta(minutes=20),
+        requested_by_user_id=123,
+        source_ids=[first_source],
+        lookback_hours=168,
+    )
+    second = await repo.get_or_create_refresh_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="weekly_article",
+        slot_at=TARGET,
+        requested_at=CUTOFF,
+        trigger="manual",
+        request_key="manual:frozen-source-set",
+        freshness_cutoff_at=CUTOFF,
+        deadline_at=TARGET + dt.timedelta(minutes=20),
+        requested_by_user_id=123,
+        source_ids=[first_source, later_source],
+        lookback_hours=168,
+    )
+
+    assert second.id == first.id
+    assert [source.source_id for source in await repo.list_refresh_sources(conn, first.id)] == [
+        first_source
+    ]
 
 
 @pytest.mark.postgres

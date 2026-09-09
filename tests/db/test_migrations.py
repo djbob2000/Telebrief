@@ -168,6 +168,17 @@ async def test_publication_refresh_readiness_schema(pg_conn):
 
     cur = await pg_conn.execute(
         """
+        SELECT column_default
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'publication_refresh_runs'
+          AND column_name = 'lookback_hours'
+        """
+    )
+    assert (await cur.fetchone())[0] == "24"
+
+    cur = await pg_conn.execute(
+        """
         SELECT table_name
         FROM information_schema.tables
         WHERE table_schema = 'public'

@@ -127,6 +127,7 @@ class PublicationSnapshotService:
         from src.jobs.event_processing import coalesce_dirty_stories_task
 
         rounds = 0
+        candidate_snapshot_at = snapshot_at
         while gap_story_ids and rounds < max_rounds:
             rounds += 1
             async with self.uow.transaction() as conn:
@@ -143,13 +144,18 @@ class PublicationSnapshotService:
                 force_settled=True,
                 story_ids=gap_story_ids,
             )
+            # A drain is allowed to make newly-created knowledge eligible for
+            # the candidate snapshot. Historical PublicationRun reads remain
+            # fenced by their saved snapshot_at; only this pre-publication
+            # candidate cutoff advances after coalescing.
+            candidate_snapshot_at = dt.datetime.now(dt.timezone.utc)
 
             async with self.uow.transaction() as conn:
                 gap_story_ids = await self.repo.find_authority_gap_story_ids(
                     conn,
                     edition_id=edition_id,
                     source_cutoff_at=source_cutoff_at,
-                    snapshot_at=snapshot_at,
+                    snapshot_at=candidate_snapshot_at,
                     eligibility_policy_id=eligibility_policy_id,
                 )
 
@@ -276,14 +282,18 @@ class PublicationSnapshotService:
                 JOIN story_edition_scope_decisions sesd
                   ON sesd.story_id = ea.story_id
                  AND sesd.latest_assignment_id = ea.cutoff_assignment_id
+                 AND sesd.created_at <= %s
                 JOIN story_event_triage_decisions setd
                   ON setd.story_id = ea.story_id
                  AND setd.latest_assignment_id = ea.cutoff_assignment_id
+                 AND setd.created_at <= %s
                 WHERE ea.story_id = ANY(%s)
                 """,
                 (
                     run.snapshot_at,
                     run.source_cutoff_at or run.snapshot_at,
+                    run.snapshot_at,
+                    run.snapshot_at,
                     ef_story_ids,
                 ),
             )
