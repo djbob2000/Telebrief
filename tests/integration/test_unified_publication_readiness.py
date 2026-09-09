@@ -111,7 +111,10 @@ async def test_stale_source_is_the_only_scan_enqueued(
     fresh = await _source(conn, edition.id, "fresh-not-rescanned")
     stale = await _source(conn, edition.id, "stale-retry")
     await _collection_run(conn, fresh, started_at=TARGET - dt.timedelta(minutes=5))
-    await _collection_run(conn, stale, started_at=TARGET - dt.timedelta(minutes=31))
+    # Freshness is measured by successful completion, not scan start time.
+    # The helper completes one minute after it starts, so start this run far
+    # enough before the cutoff for its completion to be stale as well.
+    await _collection_run(conn, stale, started_at=TARGET - dt.timedelta(minutes=32))
     enqueued = []
 
     async def enqueue(source_id, trigger, priority):
