@@ -34,6 +34,10 @@ def _refresh(*, status: str = "collecting", deadline_at: dt.datetime | None = No
         fallback_used=False,
         error_kind=None,
         metadata={},
+        trigger="scheduled",
+        request_key="scheduled:test",
+        freshness_cutoff_at=NOW - dt.timedelta(minutes=30),
+        requested_by_user_id=None,
     )
 
 
@@ -80,9 +84,7 @@ class FakeReadinessRepository:
 @pytest.mark.asyncio
 async def test_all_sources_success_and_no_new_revisions_is_ready():
     repo = FakeReadinessRepository(_refresh(), [_source()])
-    decision = await PublicationReadinessService(repo).reconcile(
-        None, 10, now=NOW, on_deadline="fallback"
-    )
+    decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
     assert decision.status == "ready_for_preparation"
     assert decision.source_cutoff_at == NOW
 
@@ -90,33 +92,25 @@ async def test_all_sources_success_and_no_new_revisions_is_ready():
 @pytest.mark.asyncio
 async def test_processed_barrier_keeps_refresh_in_processing():
     repo = FakeReadinessRepository(_refresh(), [_source()], unprocessed=1)
-    decision = await PublicationReadinessService(repo).reconcile(
-        None, 10, now=NOW, on_deadline="fallback"
-    )
+    decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
     assert decision.status == "processing"
 
 
 @pytest.mark.asyncio
 async def test_degraded_source_waits_before_deadline():
     repo = FakeReadinessRepository(_refresh(), [_source(status="degraded")])
-    decision = await PublicationReadinessService(repo).reconcile(
-        None, 10, now=NOW, on_deadline="fallback"
-    )
+    decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
     assert decision.status == "collecting"
 
 
 @pytest.mark.asyncio
-async def test_deadline_fallback_is_historical():
-    historical = NOW - dt.timedelta(minutes=45)
+async def test_deadline_is_fail_closed():
     repo = FakeReadinessRepository(
         _refresh(deadline_at=NOW - dt.timedelta(seconds=1)), [_source(status="degraded")]
     )
-    decision = await PublicationReadinessService(repo).reconcile(
-        None, 10, now=NOW, on_deadline="fallback"
-    )
-    assert decision.status == "fallback_ready"
-    assert decision.source_cutoff_at == historical
-    assert decision.historical_snapshot_at == historical
+    decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
+    assert decision.status == "failed"
+    assert decision.failure_kind == "readiness_deadline"
 
 
 @pytest.mark.asyncio
@@ -124,9 +118,7 @@ async def test_deadline_fail_closed_is_terminal():
     repo = FakeReadinessRepository(
         _refresh(deadline_at=NOW - dt.timedelta(seconds=1)), [_source(status="degraded")]
     )
-    decision = await PublicationReadinessService(repo).reconcile(
-        None, 10, now=NOW, on_deadline="fail_closed"
-    )
+    decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
     assert decision.status == "failed"
     assert repo.refresh.error_kind == "readiness_deadline"
 
@@ -134,7 +126,25 @@ async def test_deadline_fail_closed_is_terminal():
 @pytest.mark.asyncio
 async def test_no_bound_sources_is_immediately_ready():
     repo = FakeReadinessRepository(_refresh(), [])
+    decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
+    assert decision.status == "failed"
+    assert decision.failure_kind == "no_enabled_sources"
+
+
+@pytest.mark.asyncio
+async def test_scheduled_ready_before_slot_waits():
+    repo = FakeReadinessRepository(_refresh(), [_source()])
     decision = await PublicationReadinessService(repo).reconcile(
-        None, 10, now=NOW, on_deadline="fallback"
+        None, 10, now=NOW - dt.timedelta(minutes=1)
     )
-    assert decision.status == "ready_for_preparation"
+    assert decision.status == "ready_waiting_slot"
+
+
+@pytest.mark.asyncio
+async def test_terminal_source_failure_is_immediate():
+    repo = FakeReadinessRepository(
+        _refresh(), [replace(_source(), status="degraded", collection_outcome="auth_required")]
+    )
+    decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
+    assert decision.status == "failed"
+    assert decision.failure_kind == "source_auth_required"

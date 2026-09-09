@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 ReadinessStatus = Literal[
     "collecting",
     "processing",
+    "ready_waiting_slot",
     "ready_for_preparation",
-    "fallback_ready",
     "failed",
 ]
 
@@ -30,7 +30,7 @@ ReadinessStatus = Literal[
 class PublicationReadinessDecision:
     status: ReadinessStatus
     source_cutoff_at: dt.datetime | None
-    historical_snapshot_at: dt.datetime | None
+    failure_kind: str | None = None
 
 
 class PublicationReadinessService:
@@ -48,6 +48,10 @@ class PublicationReadinessService:
         slot_at: dt.datetime,
         source_ids: Sequence[int],
         requested_at: dt.datetime,
+        trigger: Literal["manual", "scheduled"],
+        request_key: str,
+        freshness_cutoff_at: dt.datetime,
+        requested_by_user_id: int | None,
         deadline_minutes: int,
     ) -> PublicationRefreshRun:
         return await self.repo.get_or_create_refresh_run(
@@ -56,9 +60,11 @@ class PublicationReadinessService:
             publication_type=publication_type,
             slot_at=slot_at,
             requested_at=requested_at,
-            normal_source_cutoff_at=slot_at,
-            fallback_snapshot_at=requested_at,
+            trigger=trigger,
+            request_key=request_key,
+            freshness_cutoff_at=freshness_cutoff_at,
             deadline_at=slot_at + dt.timedelta(minutes=deadline_minutes),
+            requested_by_user_id=requested_by_user_id,
             source_ids=source_ids,
         )
 
@@ -68,7 +74,6 @@ class PublicationReadinessService:
         refresh_run_id: int,
         *,
         now: dt.datetime,
-        on_deadline: Literal["fallback", "fail_closed"],
     ) -> PublicationReadinessDecision:
         refresh = await self.repo.get_refresh_run(conn, refresh_run_id)
         if refresh is None:
@@ -76,14 +81,28 @@ class PublicationReadinessService:
 
         if refresh.status == "ready_for_preparation":
             return self._normal_decision(refresh)
-        if refresh.status == "fallback_ready":
-            return self._fallback_decision(refresh)
         if refresh.status == "failed":
-            return PublicationReadinessDecision("failed", None, None)
+            return PublicationReadinessDecision("failed", None, refresh.error_kind)
         if refresh.status in {"preparing", "publication_queued"}:
             raise ValueError(f"refresh run {refresh.id} is not reconcilable: {refresh.status}")
+        if refresh.status == "ready_waiting_slot" and now < refresh.slot_at:
+            return PublicationReadinessDecision("ready_waiting_slot", None)
 
         sources = await self.repo.reconcile_qualifying_collection_runs(conn, refresh.id)
+        if not sources:
+            await self._transition(
+                conn, refresh.id, status="failed", error_kind="no_enabled_sources", now=now
+            )
+            return PublicationReadinessDecision("failed", None, "no_enabled_sources")
+
+        terminal_outcome = self._terminal_source_outcome(sources)
+        if terminal_outcome is not None:
+            error_kind = f"source_{terminal_outcome}"
+            await self._transition(
+                conn, refresh.id, status="failed", error_kind=error_kind, now=now
+            )
+            return PublicationReadinessDecision("failed", None, error_kind)
+
         all_sources_succeeded = all(source.status == "succeeded" for source in sources)
 
         if all_sources_succeeded:
@@ -97,6 +116,16 @@ class PublicationReadinessService:
                     processing_ready_at=now,
                     now=now,
                 )
+                if refresh.trigger == "scheduled" and now < refresh.slot_at:
+                    await self._transition(
+                        conn,
+                        refresh.id,
+                        status="ready_waiting_slot",
+                        collection_ready_at=refresh.collection_ready_at or now,
+                        processing_ready_at=now,
+                        now=now,
+                    )
+                    return PublicationReadinessDecision("ready_waiting_slot", None)
                 return self._normal_decision(refresh)
             await self._transition(
                 conn,
@@ -111,10 +140,6 @@ class PublicationReadinessService:
             await self._transition(conn, refresh.id, status="collecting", now=now)
             return PublicationReadinessDecision("collecting", None, None)
 
-        if on_deadline == "fallback":
-            await self._transition(conn, refresh.id, status="fallback_ready", now=now)
-            return self._fallback_decision(refresh)
-
         await self._transition(
             conn,
             refresh.id,
@@ -122,19 +147,23 @@ class PublicationReadinessService:
             error_kind="readiness_deadline",
             now=now,
         )
-        return PublicationReadinessDecision("failed", None, None)
+        return PublicationReadinessDecision("failed", None, "readiness_deadline")
 
     @staticmethod
     def _normal_decision(refresh: PublicationRefreshRun) -> PublicationReadinessDecision:
         return PublicationReadinessDecision(
-            "ready_for_preparation", refresh.normal_source_cutoff_at, None
+            "ready_for_preparation", refresh.normal_source_cutoff_at
         )
 
     @staticmethod
-    def _fallback_decision(refresh: PublicationRefreshRun) -> PublicationReadinessDecision:
-        return PublicationReadinessDecision(
-            "fallback_ready", refresh.fallback_snapshot_at, refresh.fallback_snapshot_at
-        )
+    def _terminal_source_outcome(sources: Sequence) -> str | None:
+        retryable = {"transient", "rate_limited"}
+        non_terminal = {None, "success", "skipped", *retryable}
+        for source in sources:
+            outcome = source.collection_outcome
+            if outcome not in non_terminal:
+                return str(outcome)
+        return None
 
     async def _transition(
         self,
