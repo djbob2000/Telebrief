@@ -3,8 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 import psycopg
+
+
+@dataclass(frozen=True)
+class RevisionProcessingState:
+    """Persisted processing state for one source-item revision."""
+
+    revision_id: int
+    status: str
+    processing_mode: str
+    reused_from_revision_id: int | None
 
 
 class EventRevisionProcessingRepository:
@@ -58,9 +69,10 @@ class EventRevisionProcessingRepository:
             """
             INSERT INTO event_revision_processing_state (
                 source_item_revision_id, status, attempt_count, started_at,
-                completed_at, last_error_kind, updated_at
+                completed_at, last_error_kind, processing_mode,
+                reused_from_revision_id, updated_at
             )
-            SELECT revision_id, 'running', 1, now(), NULL, NULL, now()
+            SELECT revision_id, 'running', 1, now(), NULL, NULL, 'full', NULL, now()
             FROM unnest(%s::bigint[]) AS revision_id
             ON CONFLICT (source_item_revision_id) DO UPDATE SET
                 status = 'running',
@@ -68,6 +80,8 @@ class EventRevisionProcessingRepository:
                 last_error_kind = NULL,
                 started_at = now(),
                 completed_at = NULL,
+                processing_mode = 'full',
+                reused_from_revision_id = NULL,
                 updated_at = now()
             """,
             (list(revision_ids),),
@@ -82,7 +96,8 @@ class EventRevisionProcessingRepository:
             """
             UPDATE event_revision_processing_state
             SET status = 'succeeded', completed_at = now(),
-                last_error_kind = NULL, updated_at = now()
+                last_error_kind = NULL, processing_mode = 'full',
+                reused_from_revision_id = NULL, updated_at = now()
             WHERE source_item_revision_id = ANY(%s)
             """,
             (list(revision_ids),),
@@ -105,4 +120,53 @@ class EventRevisionProcessingRepository:
             WHERE source_item_revision_id = ANY(%s)
             """,
             (error_kind, list(revision_ids)),
+        )
+
+    async def mark_reused(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        revision_id: int,
+        reused_from_revision_id: int,
+    ) -> None:
+        """Mark a revision complete by reusing its immediate predecessor's work."""
+        await conn.execute(
+            """
+            INSERT INTO event_revision_processing_state (
+                source_item_revision_id, status, attempt_count,
+                last_error_kind, completed_at, processing_mode,
+                reused_from_revision_id, updated_at
+            )
+            VALUES (%s, 'succeeded', 0, NULL, now(), 'reused', %s, now())
+            ON CONFLICT (source_item_revision_id) DO UPDATE SET
+                status = 'succeeded',
+                last_error_kind = NULL,
+                completed_at = now(),
+                processing_mode = 'reused',
+                reused_from_revision_id = EXCLUDED.reused_from_revision_id,
+                updated_at = now()
+            """,
+            (revision_id, reused_from_revision_id),
+        )
+
+    async def get_state(
+        self, conn: psycopg.AsyncConnection, revision_id: int
+    ) -> RevisionProcessingState | None:
+        cursor = await conn.execute(
+            """
+            SELECT source_item_revision_id, status, processing_mode,
+                   reused_from_revision_id
+            FROM event_revision_processing_state
+            WHERE source_item_revision_id = %s
+            """,
+            (revision_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return RevisionProcessingState(
+            revision_id=int(row[0]),
+            status=str(row[1]),
+            processing_mode=str(row[2]),
+            reused_from_revision_id=(int(row[3]) if row[3] is not None else None),
         )

@@ -101,3 +101,62 @@ async def test_mark_running_supports_replayed_revision_and_failed_state(repo_con
     )
     assert await cursor.fetchone() == ("failed", 1, "server")
     del edition_id
+
+
+@pytest.mark.postgres
+async def test_mark_reused_is_idempotent_and_normal_processing_clears_provenance(repo_conn):
+    cursor = await repo_conn.execute(
+        "INSERT INTO editions (slug, name) VALUES ('processing-reuse', 'Processing Reuse') RETURNING id"
+    )
+    edition_id = int((await cursor.fetchone())[0])
+    cursor = await repo_conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, name)
+        VALUES ('telegram', 'channel', 'processing-reuse-source', 'Processing Reuse Source')
+        RETURNING id
+        """
+    )
+    source_id = int((await cursor.fetchone())[0])
+    revision_ids: list[int] = []
+    for index in range(2):
+        cursor = await repo_conn.execute(
+            """
+            INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+            VALUES (%s, 'message', %s, now()) RETURNING id
+            """,
+            (source_id, f"processing-reuse-item-{index}"),
+        )
+        item_id = int((await cursor.fetchone())[0])
+        cursor = await repo_conn.execute(
+            """
+            INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+            VALUES (%s, 1, %s, 'processing text') RETURNING id
+            """,
+            (item_id, f"processing-reuse-revision-{index}"),
+        )
+        revision_ids.append(int((await cursor.fetchone())[0]))
+
+    repository = EventRevisionProcessingRepository()
+    await repository.mark_reused(
+        repo_conn,
+        revision_id=revision_ids[1],
+        reused_from_revision_id=revision_ids[0],
+    )
+    await repository.mark_reused(
+        repo_conn,
+        revision_id=revision_ids[1],
+        reused_from_revision_id=revision_ids[0],
+    )
+    state = await repository.get_state(repo_conn, revision_ids[1])
+    assert state is not None
+    assert state.status == "succeeded"
+    assert state.processing_mode == "reused"
+    assert state.reused_from_revision_id == revision_ids[0]
+
+    await repository.mark_running(repo_conn, [revision_ids[1]])
+    await repository.mark_succeeded(repo_conn, [revision_ids[1]])
+    state = await repository.get_state(repo_conn, revision_ids[1])
+    assert state is not None
+    assert state.processing_mode == "full"
+    assert state.reused_from_revision_id is None
+    del edition_id
