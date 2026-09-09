@@ -130,6 +130,34 @@ async def test_non_transactional_migration_header(isolated_pg_conn, tmp_path):
 
 
 @pytest.mark.postgres
+async def test_publication_refresh_readiness_schema(pg_conn):
+    await migrate(pg_conn, MIGRATIONS_DIR)
+
+    cur = await pg_conn.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'publication_runs'
+        """
+    )
+    assert "source_cutoff_at" in {row[0] for row in await cur.fetchall()}
+
+    cur = await pg_conn.execute(
+        """
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+          AND table_name IN ('publication_refresh_runs', 'publication_refresh_sources')
+        ORDER BY table_name
+        """
+    )
+    assert [row[0] for row in await cur.fetchall()] == [
+        "publication_refresh_runs",
+        "publication_refresh_sources",
+    ]
+
+
+@pytest.mark.postgres
 async def test_event_edition_scope_schema(pg_conn):
     await migrate(pg_conn, MIGRATIONS_DIR)
     cur = await pg_conn.execute(

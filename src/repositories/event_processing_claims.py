@@ -130,6 +130,24 @@ class EventProcessingClaimRepository:
         row = await cursor.fetchone()
         return None if row is None else self._cycle_from_row(row)
 
+    async def get_cycle(
+        self,
+        conn: psycopg.AsyncConnection,
+        claim: EventProcessingCycleClaim,
+    ) -> EventProcessingCycleClaim | None:
+        """Read durable cycle counters while fencing by the claim token."""
+        cursor = await conn.execute(
+            """
+            SELECT edition_id, claim_token, owner_id, lease_expires_at,
+                   rich_calls_started, triage_split_calls_started
+            FROM event_processing_cycle_leases
+            WHERE edition_id = %s AND claim_token = %s
+            """,
+            (claim.edition_id, claim.claim_token),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else self._cycle_from_row(row)
+
     async def _claim_cycle_slot(
         self,
         conn: psycopg.AsyncConnection,

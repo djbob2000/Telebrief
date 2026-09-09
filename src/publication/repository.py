@@ -209,7 +209,20 @@ class PublicationPolicyRepository:
 
 def _candidate_universe_sql() -> str:
     return """
-    WITH latest_revs AS (
+    WITH event_assignments_at_cutoff AS (
+        SELECT DISTINCT ON (sf.story_id)
+            sf.story_id,
+            sf.id AS cutoff_assignment_id
+        FROM story_fragments sf
+        JOIN source_fragments f ON f.id = sf.fragment_id
+        JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
+        JOIN source_items si ON si.id = sir.source_item_id
+        WHERE sf.assigned_at <= %(snapshot_at)s
+          AND COALESCE(si.published_at, si.first_collected_at, f.created_at)
+              <= %(source_cutoff_at)s
+        ORDER BY sf.story_id, sf.assigned_at DESC, sf.id DESC
+    ),
+    latest_revs AS (
         SELECT DISTINCT ON (sr.story_id)
             sr.story_id,
             sr.id AS story_revision_id,
@@ -221,8 +234,20 @@ def _candidate_universe_sql() -> str:
             sr.event_payload
         FROM story_revisions sr
         JOIN stories s ON s.id = sr.story_id
+        LEFT JOIN event_assignments_at_cutoff ea ON ea.story_id = sr.story_id
         WHERE s.edition_id = %(edition_id)s
           AND sr.created_at <= %(snapshot_at)s
+          AND (
+              s.knowledge_source <> 'event_first'
+              OR NOT EXISTS (
+                  SELECT 1
+                  FROM story_revisions tagged
+                  WHERE tagged.story_id = sr.story_id
+                    AND tagged.event_assignment_id IS NOT NULL
+                    AND tagged.created_at <= %(snapshot_at)s
+              )
+              OR sr.event_assignment_id = ea.cutoff_assignment_id
+          )
         ORDER BY sr.story_id, sr.revision_no DESC, sr.created_at DESC
     ),
     story_activity AS (
@@ -248,6 +273,8 @@ def _candidate_universe_sql() -> str:
                     WHERE sc.story_id = lr.story_id
                       AND sc.attached_at <= %(snapshot_at)s
                       AND c.created_at <= %(snapshot_at)s
+                      AND COALESCE(si.published_at, si.first_collected_at, c.created_at)
+                          <= %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                 ),
                 (
@@ -269,6 +296,8 @@ def _candidate_universe_sql() -> str:
                       AND sc.attached_at >= %(window_start)s
                       AND sc.attached_at <= %(snapshot_at)s
                       AND c.created_at <= %(snapshot_at)s
+                      AND COALESCE(si.published_at, si.first_collected_at, c.created_at)
+                          <= %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                 ),
                 (
@@ -293,6 +322,8 @@ def _candidate_universe_sql() -> str:
                     WHERE sc.story_id = lr.story_id
                       AND sc.attached_at <= %(snapshot_at)s
                       AND c.created_at <= %(snapshot_at)s
+                      AND COALESCE(si.published_at, si.first_collected_at, c.created_at)
+                          <= %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                 ),
                 (
@@ -313,6 +344,8 @@ def _candidate_universe_sql() -> str:
                     WHERE sc.story_id = lr.story_id
                       AND sc.attached_at <= %(snapshot_at)s
                       AND c.created_at <= %(snapshot_at)s
+                      AND COALESCE(si.published_at, si.first_collected_at, c.created_at)
+                          <= %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                 ),
                 (
@@ -331,6 +364,8 @@ def _candidate_universe_sql() -> str:
                 WHERE sc.story_id = lr.story_id
                   AND sc.attached_at <= %(snapshot_at)s
                   AND c.created_at <= %(snapshot_at)s
+                  AND COALESCE(si.published_at, si.first_collected_at, c.created_at)
+                      <= %(source_cutoff_at)s
                   AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                 ORDER BY COALESCE(si.published_at, si.first_collected_at) DESC NULLS LAST
                 LIMIT 1
@@ -363,6 +398,8 @@ def _candidate_universe_sql() -> str:
                     WHERE sc.story_id = lr.story_id
                       AND sc.attached_at <= %(snapshot_at)s
                       AND c.created_at <= %(snapshot_at)s
+                      AND COALESCE(si.published_at, si.first_collected_at, c.created_at)
+                          <= %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                     UNION ALL
                     SELECT MAX(sse.observed_at) AS event_time
@@ -407,6 +444,8 @@ def _candidate_universe_sql() -> str:
                   AND sc2.attached_at >= %(window_start)s
                   AND sc2.attached_at <= %(snapshot_at)s
                   AND c2.created_at <= %(snapshot_at)s
+                  AND COALESCE(si2.published_at, si2.first_collected_at, c2.created_at)
+                      <= %(source_cutoff_at)s
                   AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src2.platform <> ALL(%(excluded_platforms)s::text[]))
             ) AS has_recent_claim,
             EXISTS (
@@ -462,6 +501,7 @@ class PublicationRepository:
         request_key: str,
         snapshot_at: dt.datetime,
         policy_ids: PublicationPolicySet | tuple[int, int, int],
+        source_cutoff_at: dt.datetime | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> PublicationRun:
         if isinstance(policy_ids, PublicationPolicySet):
@@ -474,8 +514,9 @@ class PublicationRepository:
         cursor = await conn.execute(
             """
             SELECT id, edition_id, publication_type, request_key, snapshot_at,
-                   eligibility_policy_id, selection_policy_id, writer_policy_id,
-                   status, error_kind, metadata, created_at, completed_at
+                   source_cutoff_at, eligibility_policy_id, selection_policy_id,
+                   writer_policy_id, status, error_kind, metadata, created_at,
+                   completed_at
             FROM publication_runs
             WHERE request_key = %s
             """,
@@ -489,18 +530,21 @@ class PublicationRepository:
             """
             INSERT INTO publication_runs (
                 edition_id, publication_type, request_key, snapshot_at,
+                source_cutoff_at,
                 eligibility_policy_id, selection_policy_id, writer_policy_id,
                 metadata
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING id, edition_id, publication_type, request_key, snapshot_at,
-                      eligibility_policy_id, selection_policy_id, writer_policy_id,
-                      status, error_kind, metadata, created_at, completed_at
+                      source_cutoff_at, eligibility_policy_id, selection_policy_id,
+                      writer_policy_id, status, error_kind, metadata, created_at,
+                      completed_at
             """,
             (
                 edition_id,
                 publication_type,
                 request_key,
                 snapshot_at,
+                source_cutoff_at or snapshot_at,
                 eligibility_id,
                 selection_id,
                 writer_id,
@@ -515,8 +559,9 @@ class PublicationRepository:
         cursor = await conn.execute(
             """
             SELECT id, edition_id, publication_type, request_key, snapshot_at,
-                   eligibility_policy_id, selection_policy_id, writer_policy_id,
-                   status, error_kind, metadata, created_at, completed_at
+                   source_cutoff_at, eligibility_policy_id, selection_policy_id,
+                   writer_policy_id, status, error_kind, metadata, created_at,
+                   completed_at
             FROM publication_runs
             WHERE id = %s
             """,
@@ -577,8 +622,9 @@ class PublicationRepository:
         cursor = await conn.execute(
             """
             SELECT id, edition_id, publication_type, request_key, snapshot_at,
-                   eligibility_policy_id, selection_policy_id, writer_policy_id,
-                   status, error_kind, metadata, created_at, completed_at
+                   source_cutoff_at, eligibility_policy_id, selection_policy_id,
+                   writer_policy_id, status, error_kind, metadata, created_at,
+                   completed_at
             FROM publication_runs
             WHERE id = %s
             FOR UPDATE
@@ -616,6 +662,7 @@ class PublicationRepository:
         snapshot_at: dt.datetime,
         eligibility_policy_id: int | None = None,
         scope_config_hash: str | None = None,
+        source_cutoff_at: dt.datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Query stories and their latest revision visible at snapshot_at with recent activity."""
         lookback_hours = 24
@@ -665,7 +712,8 @@ class PublicationRepository:
             triage_version = triage_version or "v10"
             scope_version = scope_version or "v1"
 
-        window_start = snapshot_at - dt.timedelta(hours=lookback_hours)
+        effective_source_cutoff_at = source_cutoff_at or snapshot_at
+        window_start = effective_source_cutoff_at - dt.timedelta(hours=lookback_hours)
 
         query = f"""{_candidate_universe_sql()}
         SELECT
@@ -693,15 +741,16 @@ class PublicationRepository:
             knowledge_source <> 'event_first'
             OR EXISTS (
                 SELECT 1
-                FROM story_cluster_state sc
+                FROM event_assignments_at_cutoff ea
                 JOIN story_edition_scope_decisions sesd
-                  ON sesd.story_id = sc.story_id
-                 AND sesd.latest_assignment_id = sc.latest_assignment_id
+                  ON sesd.story_id = ea.story_id
+                 AND sesd.latest_assignment_id = ea.cutoff_assignment_id
                 JOIN story_event_triage_decisions setd
-                  ON setd.story_id = sc.story_id
-                 AND setd.latest_assignment_id = sc.latest_assignment_id
-                WHERE sc.story_id = cu.story_id
+                  ON setd.story_id = ea.story_id
+                 AND setd.latest_assignment_id = ea.cutoff_assignment_id
+                WHERE ea.story_id = cu.story_id
                   AND sesd.edition_id = %(edition_id)s
+                  AND sesd.created_at <= %(snapshot_at)s
                   AND (%(scope_version)s::text IS NULL OR sesd.scope_version = %(scope_version)s)
                   AND (%(scope_config_hash)s::text IS NULL OR sesd.scope_config_hash = %(scope_config_hash)s)
                   AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
@@ -709,6 +758,7 @@ class PublicationRepository:
                   AND (%(scope_config_hash)s::text IS NULL OR setd.scope_config_hash = %(scope_config_hash)s)
                   AND setd.scope_config_hash = sesd.scope_config_hash
                   AND setd.retention = 'KEEP'
+                  AND setd.created_at <= %(snapshot_at)s
             )
         )
         ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
@@ -716,6 +766,7 @@ class PublicationRepository:
         params = {
             "edition_id": edition_id,
             "snapshot_at": snapshot_at,
+            "source_cutoff_at": effective_source_cutoff_at,
             "window_start": window_start,
             "excluded_platforms": excluded_platforms,
             "scope_version": scope_version,
@@ -757,6 +808,7 @@ class PublicationRepository:
                 WHERE sc.story_id = ANY(%s)
                   AND sc.attached_at <= %s
                   AND c.created_at <= %s
+                  AND COALESCE(si.published_at, si.first_collected_at, c.created_at) <= %s
                   AND (cardinality(%s::text[]) = 0 OR src.platform <> ALL(%s::text[]))
                 ORDER BY sc.story_id, sc.claim_id ASC
                 """,
@@ -764,6 +816,7 @@ class PublicationRepository:
                     [r[0] for r in rows],
                     snapshot_at,
                     snapshot_at,
+                    effective_source_cutoff_at,
                     excluded_platforms,
                     excluded_platforms,
                 ),
@@ -870,6 +923,7 @@ class PublicationRepository:
         edition_id: int,
         snapshot_at: dt.datetime,
         eligibility_policy_id: int,
+        source_cutoff_at: dt.datetime | None = None,
     ) -> list[int]:
         """Find story IDs in candidate_universe that lack authoritative triage decision for latest assignment."""
         cur = await conn.execute(
@@ -907,33 +961,37 @@ class PublicationRepository:
                 f"and scope_config_hash ({scope_config_hash})"
             )
 
-        window_start = snapshot_at - dt.timedelta(hours=lookback_hours)
+        effective_source_cutoff_at = source_cutoff_at or snapshot_at
+        window_start = effective_source_cutoff_at - dt.timedelta(hours=lookback_hours)
         query = f"""{_candidate_universe_sql()}
         SELECT cu.story_id
         FROM candidate_universe cu
         WHERE cu.knowledge_source = 'event_first'
           AND NOT EXISTS (
               SELECT 1
-              FROM story_cluster_state sc
+              FROM event_assignments_at_cutoff ea
               JOIN story_edition_scope_decisions sesd
-                ON sesd.story_id = sc.story_id
-               AND sesd.latest_assignment_id = sc.latest_assignment_id
+                ON sesd.story_id = ea.story_id
+               AND sesd.latest_assignment_id = ea.cutoff_assignment_id
               JOIN story_event_triage_decisions setd
-                ON setd.story_id = sc.story_id
-               AND setd.latest_assignment_id = sc.latest_assignment_id
-              WHERE sc.story_id = cu.story_id
+                ON setd.story_id = ea.story_id
+               AND setd.latest_assignment_id = ea.cutoff_assignment_id
+              WHERE ea.story_id = cu.story_id
                 AND sesd.edition_id = %(edition_id)s
                 AND sesd.scope_version = %(scope_version)s
                 AND sesd.scope_config_hash = %(scope_config_hash)s
+                AND sesd.created_at <= %(snapshot_at)s
                 AND setd.triage_version = %(triage_version)s
                 AND setd.scope_config_hash = %(scope_config_hash)s
                 AND setd.scope_config_hash = sesd.scope_config_hash
+                AND setd.created_at <= %(snapshot_at)s
           )
         ORDER BY cu.story_id ASC
         """  # noqa: S608 — static CTE template; values are bound params
         params = {
             "edition_id": edition_id,
             "snapshot_at": snapshot_at,
+            "source_cutoff_at": effective_source_cutoff_at,
             "window_start": window_start,
             "excluded_platforms": excluded_platforms,
             "triage_version": triage_version,
@@ -951,11 +1009,13 @@ class PublicationRepository:
         edition_id: int,
         snapshot_at: dt.datetime,
         eligibility_policy_id: int,
+        source_cutoff_at: dt.datetime | None = None,
     ) -> int:
         gap_ids = await self.find_authority_gap_story_ids(
             conn,
             edition_id=edition_id,
             snapshot_at=snapshot_at,
+            source_cutoff_at=source_cutoff_at,
             eligibility_policy_id=eligibility_policy_id,
         )
         return len(gap_ids)

@@ -43,6 +43,16 @@ class EditionRepository:
         row = await cursor.fetchone()
         return None if row is None else Edition.from_row(row)
 
+    async def get_by_id(self, conn: psycopg.AsyncConnection, edition_id: int) -> Edition | None:
+        cursor = await conn.execute(
+            """SELECT id, slug, name, timezone, language, profile, config, enabled,
+                   created_at, updated_at
+               FROM editions WHERE id = %s""",
+            (edition_id,),
+        )
+        row = await cursor.fetchone()
+        return None if row is None else Edition.from_row(row)
+
     async def bind_source(
         self, conn: psycopg.AsyncConnection, source_id: int, edition_id: int
     ) -> None:
@@ -53,3 +63,19 @@ class EditionRepository:
                ON CONFLICT (source_id, edition_id) DO NOTHING""",
             (source_id, edition_id),
         )
+
+    async def list_enabled_source_ids(
+        self, conn: psycopg.AsyncConnection, edition_id: int
+    ) -> list[int]:
+        """Return enabled sources bound to an edition in stable order."""
+        cursor = await conn.execute(
+            """
+            SELECT s.id
+            FROM sources s
+            JOIN source_editions se ON se.source_id = s.id
+            WHERE se.edition_id = %s AND s.enabled = TRUE
+            ORDER BY s.id
+            """,
+            (edition_id,),
+        )
+        return [int(row[0]) for row in await cursor.fetchall()]

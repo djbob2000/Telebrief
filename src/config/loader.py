@@ -221,6 +221,24 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
             "settings.publication_snapshot_lag_minutes must be an int between 0 and 120, "
             f"got {publication_snapshot_lag_minutes!r}"
         )
+    publication_readiness_deadline_minutes = settings_dict.get(
+        "publication_readiness_deadline_minutes", 20
+    )
+    if (
+        isinstance(publication_readiness_deadline_minutes, bool)
+        or not isinstance(publication_readiness_deadline_minutes, int)
+        or not 1 <= publication_readiness_deadline_minutes <= 120
+    ):
+        raise ValueError(
+            "settings.publication_readiness_deadline_minutes must be an int between 1 and 120"
+        )
+    publication_readiness_on_deadline = settings_dict.get(
+        "publication_readiness_on_deadline", "fallback"
+    )
+    if publication_readiness_on_deadline not in {"fallback", "fail_closed"}:
+        raise ValueError(
+            "settings.publication_readiness_on_deadline must be 'fallback' or 'fail_closed'"
+        )
 
     settings = Settings(
         schedule_time=settings_dict.get("schedule_time", "08:00"),
@@ -256,6 +274,8 @@ def load_config(config_path: str | None = None, *, path: str | None = None) -> C
         vision_mode=vision_mode,
         pre_publish_lead_minutes=pre_publish_lead_minutes,
         publication_snapshot_lag_minutes=publication_snapshot_lag_minutes,
+        publication_readiness_deadline_minutes=publication_readiness_deadline_minutes,
+        publication_readiness_on_deadline=publication_readiness_on_deadline,
         article=_parse_article_config(settings_dict),
         event_pipeline=_parse_event_pipeline_config(settings_dict),
         digest_rubrics=_parse_digest_rubrics(settings_dict),

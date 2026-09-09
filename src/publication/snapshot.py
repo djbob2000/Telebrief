@@ -43,19 +43,22 @@ class PublicationSnapshotService:
         edition_id: int,
         publication_type: str,
         snapshot_at: dt.datetime,
+        source_cutoff_at: dt.datetime | None = None,
         request_key: str | None = None,
         policy_ids: PublicationPolicySet | tuple[int, int, int] | None = None,
         config: Any | None = None,
         lookback_hours_override: int | None = None,
         metadata: dict[str, Any] | None = None,
+        conn: Any | None = None,
     ) -> PublicationRun:
-        key = request_key or f"manual:{edition_id}:{publication_type}:{uuid.uuid4().hex}"
+        effective_source_cutoff_at = source_cutoff_at or snapshot_at
 
-        async with self.uow.transaction() as conn:
+        async def create_on(tx_conn: Any) -> PublicationRun:
+            key = request_key or f"manual:{edition_id}:{publication_type}:{uuid.uuid4().hex}"
             policy_set: PublicationPolicySet | tuple[int, int, int]
             if policy_ids is None:
                 policy_set = await self.policy_service.ensure_current(
-                    conn,
+                    tx_conn,
                     edition_id=edition_id,
                     publication_type=publication_type,
                     config=config,
@@ -63,22 +66,28 @@ class PublicationSnapshotService:
                 )
             else:
                 policy_set = policy_ids
-
             return await self.repo.get_or_create_run(
-                conn,
+                tx_conn,
                 edition_id=edition_id,
                 publication_type=publication_type,
                 request_key=key,
                 snapshot_at=snapshot_at,
+                source_cutoff_at=effective_source_cutoff_at,
                 policy_ids=policy_set,
                 metadata=metadata,
             )
+
+        if conn is not None:
+            return await create_on(conn)
+        async with self.uow.transaction() as tx_conn:
+            return await create_on(tx_conn)
 
     async def drain_authority_gap(
         self,
         *,
         run_id: int | None = None,
         edition_id: int | None = None,
+        source_cutoff_at: dt.datetime | None = None,
         snapshot_at: dt.datetime | None = None,
         eligibility_policy_id: int | None = None,
         max_rounds: int = 3,
@@ -91,6 +100,7 @@ class PublicationSnapshotService:
                     raise ValueError(f"publication run {run_id} not found")
                 edition_id = run.edition_id
                 snapshot_at = run.snapshot_at
+                source_cutoff_at = run.source_cutoff_at or run.snapshot_at
                 eligibility_policy_id = run.eligibility_policy_id
 
         if eligibility_policy_id is None or edition_id is None or snapshot_at is None:
@@ -100,6 +110,7 @@ class PublicationSnapshotService:
             gap_story_ids = await self.repo.find_authority_gap_story_ids(
                 conn,
                 edition_id=edition_id,
+                source_cutoff_at=source_cutoff_at,
                 snapshot_at=snapshot_at,
                 eligibility_policy_id=eligibility_policy_id,
             )
@@ -137,6 +148,7 @@ class PublicationSnapshotService:
                 gap_story_ids = await self.repo.find_authority_gap_story_ids(
                     conn,
                     edition_id=edition_id,
+                    source_cutoff_at=source_cutoff_at,
                     snapshot_at=snapshot_at,
                     eligibility_policy_id=eligibility_policy_id,
                 )
@@ -151,6 +163,23 @@ class PublicationSnapshotService:
                 remaining_gap,
             )
         return remaining_gap
+
+    async def count_authority_gap(
+        self,
+        *,
+        edition_id: int,
+        source_cutoff_at: dt.datetime,
+        snapshot_at: dt.datetime,
+        eligibility_policy_id: int,
+    ) -> int:
+        async with self.uow.transaction() as conn:
+            return await self.repo.count_authority_gap(
+                conn,
+                edition_id=edition_id,
+                source_cutoff_at=source_cutoff_at,
+                snapshot_at=snapshot_at,
+                eligibility_policy_id=eligibility_policy_id,
+            )
 
     async def seal_candidates(
         self,
@@ -180,6 +209,7 @@ class PublicationSnapshotService:
         eligible_rows = await self.repo.eligible_story_revisions(
             conn,
             edition_id=run.edition_id,
+            source_cutoff_at=run.source_cutoff_at or run.snapshot_at,
             snapshot_at=run.snapshot_at,
             eligibility_policy_id=run.eligibility_policy_id,
         )
@@ -208,6 +238,7 @@ class PublicationSnapshotService:
             gap_count = await self.repo.count_authority_gap(
                 conn,
                 edition_id=run.edition_id,
+                source_cutoff_at=run.source_cutoff_at or run.snapshot_at,
                 snapshot_at=run.snapshot_at,
                 eligibility_policy_id=run.eligibility_policy_id,
             )

@@ -93,7 +93,10 @@ settings:
   schedule_time: "09:00"
   timezone: "Europe/Kyiv"
   lookback_hours: 24
-  pre_publish_lead_minutes: 15
+  pre_publish_lead_minutes: 45
+  publication_snapshot_lag_minutes: 0
+  publication_readiness_deadline_minutes: 20
+  publication_readiness_on_deadline: fallback
   periodic_ingestion_enabled: false
   reasoning_effort: "low"
 
@@ -115,6 +118,9 @@ settings:
     provider_retry_backoff_max_seconds: 3600
     analysis_quiet_seconds: 120
     analysis_min_interval_seconds: 600
+    event_processing_cycle_lease_seconds: 600
+    event_processing_stage_lease_seconds: 600
+    triage_split_max_extra_calls_per_cycle: 8
 
 
   edition_scopes:
@@ -250,8 +256,6 @@ settings:
   persistent_ingestion: true
   max_messages_per_channel: 5000
   max_prompt_chars: 300000
-  publication_snapshot_lag_minutes: 30
-
   article:
 
     enabled: true

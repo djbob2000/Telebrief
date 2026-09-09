@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from zoneinfo import ZoneInfo
 
@@ -48,6 +47,12 @@ ARTICLE_PUBLICATION_TYPE = "daily_article"
 WEEKLY_ARTICLE_PUBLICATION_TYPE = "weekly_article"
 MONTHLY_ARTICLE_PUBLICATION_TYPE = "monthly_article"
 DEFAULT_EDITION_SLUG = "berdyansk"
+
+PRE_PUBLISH_FANOUT_RETRY_STRATEGY = procrastinate.RetryStrategy(
+    max_attempts=2,
+    wait=15,
+    linear_wait=30,
+)
 
 
 @dataclass(frozen=True)
@@ -172,6 +177,7 @@ def due_publication_actions(
                     task_kwargs={
                         "edition_slug": DEFAULT_EDITION_SLUG,
                         "publication_type": publication_type,
+                        "slot_at": snapshot_key(publish_at),
                         "snapshot_at": snapshot_iso,
                     },
                 )
@@ -197,32 +203,37 @@ def snapshot_key(publish_at: dt.datetime) -> str:
     return publish_at.astimezone(dt.timezone.utc).isoformat()
 
 
-async def _fan_out_pre_publish_scans() -> int:
-    """Defer one PRE_PUBLISH scan per registered source; returns count queued."""
+async def _fan_out_refresh_sources(refresh_run_id: int) -> int:
+    """Defer pending source scans for a refresh without fabricating success."""
     from src.ingestion.models import CollectionTrigger
     from src.jobs.ingestion import PRE_PUBLISH_PRIORITY, enqueue_source_scan
+    from src.publication.readiness_repository import PublicationReadinessRepository
+    from src.runtime import get_runtime
+
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        sources = await PublicationReadinessRepository().list_refresh_sources(conn, refresh_run_id)
 
     queued = 0
-    async for source_id in _iter_enabled_source_ids():
+    for source in sources:
+        if source.status != "pending":
+            continue
+        attempted_at = dt.datetime.now(dt.timezone.utc)
+        async with runtime.uow.transaction() as conn:
+            await PublicationReadinessRepository().mark_source_enqueue_attempt(
+                conn,
+                refresh_run_id=refresh_run_id,
+                source_id=source.source_id,
+                attempted_at=attempted_at,
+            )
         job_id = await enqueue_source_scan(
-            source_id=source_id,
+            source_id=source.source_id,
             trigger=CollectionTrigger.PRE_PUBLISH,
             priority=PRE_PUBLISH_PRIORITY,
         )
         if job_id is not None:
             queued += 1
     return queued
-
-
-async def _iter_enabled_source_ids() -> AsyncIterator[int]:
-    from src.repositories.sources import SourceRepository
-    from src.runtime import get_runtime
-
-    runtime = get_runtime()
-    async with runtime.uow.transaction() as conn:
-        sources = await SourceRepository().list_enabled(conn)
-    for source in sources:
-        yield source.id
 
 
 @procrastinate_app.periodic(
@@ -242,117 +253,114 @@ async def publication_schedule_dispatcher(timestamp: int) -> None:
     config = load_config()
 
     from src.jobs.publication import create_scheduled_publication
+    from src.publication.readiness import PublicationReadinessService
+    from src.publication.readiness_repository import PublicationReadinessRepository
+    from src.repositories.editions import EditionRepository
+    from src.runtime import get_runtime
+
+    runtime = get_runtime()
+    readiness_service = PublicationReadinessService()
+
+    async with runtime.uow.transaction() as conn:
+        open_refreshes = await PublicationReadinessRepository().list_reconcilable_refresh_runs(conn)
+        for refresh in open_refreshes:
+            decision = await readiness_service.reconcile(
+                conn,
+                refresh.id,
+                now=scheduled_for,
+                on_deadline=config.settings.publication_readiness_on_deadline,
+            )
+            if decision.status in {"ready_for_preparation", "fallback_ready"}:
+                prepared = await PublicationReadinessRepository().mark_preparing(
+                    conn,
+                    refresh_run_id=refresh.id,
+                    fallback_used=decision.status == "fallback_ready",
+                )
+                if prepared is not None:
+                    await create_scheduled_publication.configure(
+                        connection=conn,
+                        queueing_lock=f"publication-refresh:{refresh.id}",
+                    ).defer_async(refresh_run_id=refresh.id)
 
     for action in due_publication_actions(config, scheduled_for):
         if action.kind == "publish":
             edition_slug = action.task_kwargs.get("edition_slug", DEFAULT_EDITION_SLUG)
             pub_type = action.task_kwargs.get("publication_type", "")
-            snap_iso = action.task_kwargs.get("snapshot_at", "")
-            req_key = f"scheduled:{edition_slug}:{pub_type}:{snap_iso}"
-
-            already_processed = False
-            try:
-                from src.runtime import get_runtime
-
-                runtime = get_runtime()
-                async with runtime.uow.transaction() as conn:
-                    cur = await conn.execute(
-                        """
-                        SELECT 1 FROM publication_runs
-                        WHERE request_key = %s
-                          AND status IN ('candidates_sealed', 'selected_inputs_sealed', 'generating', 'succeeded')
-                        LIMIT 1
-                        """,
-                        (req_key,),
-                    )
-                    if await cur.fetchone():
-                        already_processed = True
-            except Exception as exc:
-                logger.warning("failed to check existing publication run for %s: %s", req_key, exc)
-
-            if already_processed:
-                logger.debug(
-                    "scheduled publication %s already processed; skipping duplicate deferral",
-                    req_key,
+            slot_at = dt.datetime.fromisoformat(action.task_kwargs["slot_at"])
+            async with runtime.uow.transaction() as conn:
+                edition = await EditionRepository().get_by_slug(conn, edition_slug)
+                if edition is None:
+                    raise ValueError(f"edition slug {edition_slug} not found")
+                source_ids = await EditionRepository().list_enabled_source_ids(conn, edition.id)
+                requested_at = slot_at - dt.timedelta(
+                    minutes=config.settings.pre_publish_lead_minutes
                 )
-                continue
-
-            await create_scheduled_publication.configure(
-                queueing_lock=action.queueing_lock,
-            ).defer_async(**action.task_kwargs)
-            logger.info(
-                "deferred scheduled %s publication for %s",
-                action.task_kwargs["publication_type"],
-                action.task_kwargs["snapshot_at"],
-            )
+                refresh = await readiness_service.create_refresh(
+                    conn,
+                    edition_id=edition.id,
+                    publication_type=pub_type,
+                    slot_at=slot_at,
+                    source_ids=source_ids,
+                    requested_at=requested_at,
+                    deadline_minutes=config.settings.publication_readiness_deadline_minutes,
+                )
+                decision = await readiness_service.reconcile(
+                    conn,
+                    refresh.id,
+                    now=scheduled_for,
+                    on_deadline=config.settings.publication_readiness_on_deadline,
+                )
+                if decision.status in {"ready_for_preparation", "fallback_ready"}:
+                    prepared = await PublicationReadinessRepository().mark_preparing(
+                        conn,
+                        refresh_run_id=refresh.id,
+                        fallback_used=decision.status == "fallback_ready",
+                    )
+                    if prepared is not None:
+                        await create_scheduled_publication.configure(
+                            connection=conn,
+                            queueing_lock=f"publication-refresh:{refresh.id}",
+                        ).defer_async(refresh_run_id=refresh.id)
+                else:
+                    await pre_publish_refresh.configure(
+                        connection=conn,
+                        queueing_lock=f"pre-publish-refresh:{refresh.id}",
+                    ).defer_async(refresh_run_id=refresh.id)
+            logger.info("reconciled scheduled %s publication for %s", pub_type, slot_at)
         elif action.kind == "pre_publish":
             pub_type = action.task_kwargs.get("publication_type", "")
             publish_at = action.task_kwargs.get("publish_at", "")
-            queueing_lock = action.queueing_lock
-
-            already_processed = False
-            try:
-                from src.runtime import get_runtime
-
-                runtime = get_runtime()
-                async with runtime.uow.transaction() as conn:
-                    cur = await conn.execute(
-                        """
-                        SELECT 1 FROM procrastinate_jobs
-                        WHERE queueing_lock = %s
-                        LIMIT 1
-                        """,
-                        (queueing_lock,),
-                    )
-                    if await cur.fetchone():
-                        already_processed = True
-            except Exception as exc:
-                logger.warning(
-                    "failed to check existing pre-publish job for %s: %s",
-                    queueing_lock,
-                    exc,
+            slot_at = dt.datetime.fromisoformat(publish_at)
+            async with runtime.uow.transaction() as conn:
+                edition = await EditionRepository().get_by_slug(conn, DEFAULT_EDITION_SLUG)
+                if edition is None:
+                    raise ValueError(f"edition slug {DEFAULT_EDITION_SLUG} not found")
+                source_ids = await EditionRepository().list_enabled_source_ids(conn, edition.id)
+                requested_at = slot_at - dt.timedelta(
+                    minutes=config.settings.pre_publish_lead_minutes
                 )
-
-            if already_processed:
-                logger.debug(
-                    "pre-publish refresh %s already scheduled/processed; skipping duplicate",
-                    queueing_lock,
+                refresh = await readiness_service.create_refresh(
+                    conn,
+                    edition_id=edition.id,
+                    publication_type=pub_type,
+                    slot_at=slot_at,
+                    source_ids=source_ids,
+                    requested_at=requested_at,
+                    deadline_minutes=config.settings.publication_readiness_deadline_minutes,
                 )
-                continue
-
-            try:
                 await pre_publish_refresh.configure(
-                    queueing_lock=queueing_lock,
-                ).defer_async(**action.task_kwargs)
-                logger.info(
-                    "deferred pre-publish refresh for %s at %s",
-                    pub_type,
-                    publish_at,
-                )
-            except procrastinate.exceptions.AlreadyEnqueued:
-                logger.debug(
-                    "pre-publish refresh %s already enqueued; skipping duplicate",
-                    queueing_lock,
-                )
+                    connection=conn,
+                    queueing_lock=f"pre-publish-refresh:{refresh.id}",
+                ).defer_async(refresh_run_id=refresh.id)
+            logger.info("deferred pre-publish refresh %s for %s", refresh.id, slot_at)
 
 
 @procrastinate_app.task(
     name=PRE_PUBLISH_REFRESH_TASK_NAME,
     queue="maintenance",
+    retry=PRE_PUBLISH_FANOUT_RETRY_STRATEGY,
 )
-async def pre_publish_refresh(publication_type: str, publish_at: str) -> None:
-    """Scan all enabled sources once ahead of a scheduled publication."""
-    try:
-        queued = await _fan_out_pre_publish_scans()
-        logger.info(
-            "pre-publish refresh for %s at %s deferred %d source scans",
-            publication_type,
-            publish_at,
-            queued,
-        )
-    except Exception:
-        logger.exception(
-            "pre-publish refresh fan-out failed for %s at %s",
-            publication_type,
-            publish_at,
-        )
+async def pre_publish_refresh(refresh_run_id: int) -> None:
+    """Fan out a durable refresh; exceptions remain retryable task failures."""
+    queued = await _fan_out_refresh_sources(refresh_run_id)
+    logger.info("pre-publish refresh %s deferred %d source scans", refresh_run_id, queued)

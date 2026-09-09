@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Literal
 
 from src.config.schemas.common import (
     CollectionConfig,
@@ -64,6 +64,8 @@ class Settings:
     vision_mode: str = "relevance_only"
     pre_publish_lead_minutes: int = 15
     publication_snapshot_lag_minutes: int = 30
+    publication_readiness_deadline_minutes: int = 20
+    publication_readiness_on_deadline: Literal["fallback", "fail_closed"] = "fallback"
     article: ArticleConfig = field(default_factory=ArticleConfig)
     event_pipeline: EventPipelineConfig = field(default_factory=EventPipelineConfig)
     digest_rubrics: DigestRubricsConfig = field(default_factory=DigestRubricsConfig)

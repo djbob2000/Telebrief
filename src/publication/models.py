@@ -150,6 +150,9 @@ class PublicationRun:
     metadata: dict[str, Any]
     created_at: dt.datetime
     completed_at: dt.datetime | None = None
+    # Kept optional for compatibility with in-memory callers constructing old
+    # PublicationRun values; persisted rows are non-null after migration 0028.
+    source_cutoff_at: dt.datetime | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> PublicationRun:
@@ -159,14 +162,15 @@ class PublicationRun:
             publication_type=row[2],
             request_key=row[3],
             snapshot_at=row[4],
-            eligibility_policy_id=row[5],
-            selection_policy_id=row[6],
-            writer_policy_id=row[7],
-            status=row[8],
-            error_kind=row[9],
-            metadata=row[10] if isinstance(row[10], dict) else {},
-            created_at=row[11],
-            completed_at=row[12],
+            source_cutoff_at=row[5],
+            eligibility_policy_id=row[6],
+            selection_policy_id=row[7],
+            writer_policy_id=row[8],
+            status=row[9],
+            error_kind=row[10],
+            metadata=row[11] if isinstance(row[11], dict) else {},
+            created_at=row[12],
+            completed_at=row[13],
         )
 
 
