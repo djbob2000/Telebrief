@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+
+import procrastinate
 from procrastinate import JobContext
 
 from src.jobs.app import procrastinate_app
+
+logger = logging.getLogger(__name__)
 
 
 @procrastinate_app.periodic(cron="*/10 * * * *")
@@ -14,7 +19,17 @@ async def retry_stalled_jobs(context: JobContext, timestamp: int) -> None:
     del context, timestamp
     stalled_jobs = await procrastinate_app.job_manager.get_stalled_jobs()
     for job in stalled_jobs:
-        await procrastinate_app.job_manager.retry_job(job)
+        try:
+            await procrastinate_app.job_manager.retry_job(job)
+        except procrastinate.exceptions.UniqueViolation as exc:
+            if exc.queueing_lock and exc.constraint_name and "queueing_lock" in exc.constraint_name:
+                logger.info(
+                    "stalled job %s was not retried because queueing_lock=%s is already occupied",
+                    job.id,
+                    exc.queueing_lock,
+                )
+                continue
+            raise
 
 
 @procrastinate_app.periodic(

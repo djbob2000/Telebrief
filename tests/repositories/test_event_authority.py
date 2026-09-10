@@ -227,3 +227,30 @@ async def test_filter_unsatisfied_targets_requires_exact_temporal_authority(repo
     assert await repository.filter_unsatisfied_targets(
         conn, targets=[target], snapshot_at=SNAPSHOT
     ) == [target]
+
+
+@pytest.mark.unit
+async def test_due_enrichment_query_orders_distinct_rows_by_last_seen_at():
+    class Cursor:
+        async def fetchall(self):
+            return [(11, 101)]
+
+    class Connection:
+        def __init__(self):
+            self.query = ""
+
+        async def execute(self, query, params):
+            self.query = query
+            assert params[-1] == 10
+            return Cursor()
+
+    conn = Connection()
+    result = await EventAuthorityRepository().list_due_enrichment_assignments(
+        conn,
+        now=dt.datetime.now(dt.timezone.utc),
+        limit=10,
+    )
+
+    assert result == [(11, 101)]
+    assert "SELECT DISTINCT sc.story_id, sc.latest_assignment_id, sc.last_seen_at" in conn.query
+    assert "ORDER BY due.last_seen_at ASC, due.story_id ASC" in conn.query

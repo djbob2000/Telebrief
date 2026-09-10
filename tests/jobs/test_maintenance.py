@@ -4,6 +4,7 @@ import datetime as dt
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import procrastinate
 import pytest
 
 from src.jobs.maintenance import retention_cleanup, retry_stalled_jobs
@@ -43,3 +44,20 @@ class TestMaintenanceJobs:
 
         assert fake_app.job_manager.retry_job.await_args_list[0].args == (stalled[0],)
         assert fake_app.job_manager.retry_job.await_args_list[1].args == (stalled[1],)
+
+    @pytest.mark.asyncio
+    async def test_retry_stalled_jobs_ignores_existing_queueing_lock(self):
+        stalled = MagicMock(id=60642)
+        fake_app = MagicMock()
+        fake_app.job_manager.get_stalled_jobs = AsyncMock(return_value=[stalled])
+        fake_app.job_manager.retry_job = AsyncMock(
+            side_effect=procrastinate.exceptions.UniqueViolation(
+                constraint_name="procrastinate_jobs_queueing_lock_idx_v1",
+                queueing_lock="authority-background:1",
+            )
+        )
+
+        with patch("src.jobs.maintenance.procrastinate_app", fake_app):
+            await retry_stalled_jobs(context=SimpleNamespace(), timestamp=0)
+
+        fake_app.job_manager.retry_job.assert_awaited_once_with(stalled)
