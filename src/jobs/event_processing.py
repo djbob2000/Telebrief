@@ -177,10 +177,19 @@ async def _process_event_revisions_in_transaction(revision_ids: list[int]) -> di
             stats["assignments"] += 1
 
     if stats["assignments"] > 0:
-        try:
-            await coalesce_dirty_stories_task.defer_async()
-        except Exception as exc:
-            logger.warning("could not defer coalesce_dirty_stories_task: %s", exc)
+        from src.jobs.event_authority import request_background_authority_dispatch
+
+        async with runtime.uow.transaction() as conn:
+            edition_ids = await cluster_repo.list_dirty_edition_ids(conn)
+        for edition_id in edition_ids:
+            try:
+                await request_background_authority_dispatch(edition_id)
+            except Exception as exc:
+                logger.warning(
+                    "could not defer background authority dispatcher for edition %s: %s",
+                    edition_id,
+                    exc,
+                )
 
     return stats
 
@@ -806,14 +815,3 @@ async def coalesce_dirty_stories_task(
         },
     )
     return stats
-
-
-@procrastinate_app.periodic(cron="*/5 * * * *", periodic_id="periodic-coalesce-dirty-stories")
-@procrastinate_app.task(queue="maintenance", queueing_lock="coalesce_dirty_stories")
-async def periodic_coalesce_dirty_stories(timestamp: int) -> None:
-    """Periodically coalesce settled dirty stories every 5 minutes."""
-    del timestamp
-    try:
-        await coalesce_dirty_stories_task.defer_async()
-    except Exception as exc:
-        logger.warning("periodic coalesce_dirty_stories deferral failed: %s", exc)

@@ -138,6 +138,7 @@ class StoryRepository:
         semantic_changed: bool,
         revision: NewStoryRevision | None,
         event_assignment_id: int | None = None,
+        set_current: bool = True,
     ) -> StoryRevision | None:
         """Append the next revision only when the service says semantics
         changed AND supplies the explicit payload; otherwise this is a no-op
@@ -149,13 +150,15 @@ class StoryRepository:
             story_id=story_id,
             revision=revision,
             event_assignment_id=event_assignment_id,
+            require_current_assignment=set_current,
         )
         if story_revision is None:
             return None
-        await conn.execute(
-            "UPDATE stories SET current_revision_id=%s WHERE id=%s",
-            (story_revision.id, story_id),
-        )
+        if set_current:
+            await conn.execute(
+                "UPDATE stories SET current_revision_id=%s WHERE id=%s",
+                (story_revision.id, story_id),
+            )
         return story_revision
 
     async def set_state(
@@ -277,6 +280,7 @@ class StoryRepository:
         story_id: int,
         revision: NewStoryRevision,
         event_assignment_id: int | None = None,
+        require_current_assignment: bool = True,
     ) -> StoryRevision | None:
         """Append one immutable revision with revision_no = MAX+1 computed
         inside the caller's transaction; uq_story_revisions_story_no is the
@@ -292,7 +296,8 @@ class StoryRepository:
             FROM story_revisions
             WHERE story_id = %s
               AND (
-                  %s::bigint IS NULL
+                  %s::boolean = FALSE
+                  OR %s::bigint IS NULL
                   OR EXISTS (
                       SELECT 1
                       FROM story_cluster_state
@@ -314,6 +319,7 @@ class StoryRepository:
                 event_assignment_id,
                 revision.created_at,
                 story_id,
+                require_current_assignment,
                 event_assignment_id,
                 story_id,
                 event_assignment_id,

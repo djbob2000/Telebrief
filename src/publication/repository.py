@@ -10,6 +10,7 @@ from typing import Any, TypeVar
 import psycopg
 from psycopg.types.json import Jsonb
 
+from src.domain.event_authority import AuthorityTarget
 from src.publication.errors import IdempotencyConflictError
 from src.publication.models import (
     DeliveryDestination,
@@ -980,7 +981,21 @@ class PublicationRepository:
         eligibility_policy_id: int,
         source_cutoff_at: dt.datetime | None = None,
     ) -> list[int]:
-        """Find story IDs in candidate_universe that lack authoritative triage decision for latest assignment."""
+        """Compatibility projection over exact authority-gap targets."""
+        targets = await self.find_authority_gap_targets(
+            conn,
+            edition_id=edition_id,
+            snapshot_at=snapshot_at,
+            source_cutoff_at=source_cutoff_at,
+            eligibility_policy_id=eligibility_policy_id,
+        )
+        return [target.story_id for target in targets]
+
+    async def _load_authority_policy(
+        self,
+        conn: psycopg.AsyncConnection,
+        policy_id: int,
+    ) -> tuple[int, list[str], str, str, str]:
         cur = await conn.execute(
             """
             SELECT config->>'lookback_hours',
@@ -990,56 +1005,126 @@ class PublicationRepository:
                    config->>'scope_config_hash'
             FROM eligibility_policy_versions WHERE id = %s
             """,
-            (eligibility_policy_id,),
+            (policy_id,),
         )
-        pol_row = await cur.fetchone()
-        if pol_row is None:
-            raise ValueError(f"Eligibility policy {eligibility_policy_id} not found")
+        row = await cur.fetchone()
+        if row is None:
+            raise ValueError(f"Eligibility policy {policy_id} not found")
 
-        lookback_hours = 24
-        excluded_platforms: list[str] = []
-        if pol_row[0] is not None:
-            try:
-                lookback_hours = int(pol_row[0])
-            except (ValueError, TypeError):
-                lookback_hours = 24
-        if pol_row[1] is not None and isinstance(pol_row[1], list):
-            excluded_platforms = [str(p).strip().lower() for p in pol_row[1] if str(p).strip()]
-        triage_version = str(pol_row[2]).strip() if pol_row[2] is not None else ""
-        scope_version = str(pol_row[3]).strip() if pol_row[3] is not None else ""
-        scope_config_hash = str(pol_row[4]).strip() if pol_row[4] is not None else ""
-
+        try:
+            lookback_hours = int(row[0]) if row[0] is not None else 24
+        except (TypeError, ValueError):
+            lookback_hours = 24
+        excluded_platforms = (
+            [str(value).strip().lower() for value in row[1] if str(value).strip()]
+            if isinstance(row[1], list)
+            else []
+        )
+        versions = tuple(str(value).strip() if value is not None else "" for value in row[2:5])
+        triage_version, scope_version, scope_config_hash = versions
         if not triage_version or not scope_version or not scope_config_hash:
             raise ValueError(
-                f"Eligibility policy {eligibility_policy_id} must have non-null "
+                f"Eligibility policy {policy_id} must have non-null "
                 f"triage_version ({triage_version}), scope_version ({scope_version}), "
                 f"and scope_config_hash ({scope_config_hash})"
             )
+        return lookback_hours, excluded_platforms, triage_version, scope_version, scope_config_hash
 
+    async def list_required_authority_targets(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        snapshot_at: dt.datetime,
+        eligibility_policy_id: int,
+        source_cutoff_at: dt.datetime | None = None,
+    ) -> list[AuthorityTarget]:
+        """Return every Event-First candidate at its exact cutoff assignment."""
+        (
+            lookback_hours,
+            excluded_platforms,
+            triage_version,
+            scope_version,
+            scope_config_hash,
+        ) = await self._load_authority_policy(conn, eligibility_policy_id)
+        effective_source_cutoff_at = source_cutoff_at or snapshot_at
+        params = {
+            "edition_id": edition_id,
+            "snapshot_at": snapshot_at,
+            "source_cutoff_at": effective_source_cutoff_at,
+            "window_start": effective_source_cutoff_at - dt.timedelta(hours=lookback_hours),
+            "excluded_platforms": excluded_platforms,
+        }
+        query = f"""{_candidate_universe_sql()}
+            SELECT cu.story_id, ea.cutoff_assignment_id
+            FROM candidate_universe cu
+            JOIN event_assignments_at_cutoff ea ON ea.story_id = cu.story_id
+            WHERE cu.knowledge_source = 'event_first'
+            ORDER BY cu.story_id ASC
+        """  # noqa: S608 — static CTE template; values are bound params
+        cursor = await conn.execute(query, params)
+        return [
+            AuthorityTarget(
+                story_id=int(row[0]),
+                assignment_id=int(row[1]),
+                edition_id=edition_id,
+                triage_version=triage_version,
+                scope_version=scope_version,
+                scope_config_hash=scope_config_hash,
+            )
+            for row in await cursor.fetchall()
+        ]
+
+    async def find_authority_gap_targets(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        snapshot_at: dt.datetime,
+        eligibility_policy_id: int,
+        source_cutoff_at: dt.datetime | None = None,
+    ) -> list[AuthorityTarget]:
+        """Return exact assignments missing Gate/scope/KEEP brief authority."""
+        (
+            lookback_hours,
+            excluded_platforms,
+            triage_version,
+            scope_version,
+            scope_config_hash,
+        ) = await self._load_authority_policy(conn, eligibility_policy_id)
         effective_source_cutoff_at = source_cutoff_at or snapshot_at
         window_start = effective_source_cutoff_at - dt.timedelta(hours=lookback_hours)
         query = f"""{_candidate_universe_sql()}
-        SELECT cu.story_id
+        SELECT cu.story_id, ea.cutoff_assignment_id
         FROM candidate_universe cu
+        JOIN event_assignments_at_cutoff ea ON ea.story_id = cu.story_id
         WHERE cu.knowledge_source = 'event_first'
           AND NOT EXISTS (
-              SELECT 1
-              FROM event_assignments_at_cutoff ea
-              JOIN story_edition_scope_decisions sesd
-                ON sesd.story_id = ea.story_id
-               AND sesd.latest_assignment_id = ea.cutoff_assignment_id
-               AND sesd.created_at <= %(snapshot_at)s
+              SELECT 1 FROM story_edition_scope_decisions sesd
               JOIN story_event_triage_decisions setd
-                ON setd.story_id = ea.story_id
-               AND setd.latest_assignment_id = ea.cutoff_assignment_id
-               AND setd.created_at <= %(snapshot_at)s
-              WHERE ea.story_id = cu.story_id
+                ON setd.story_id = sesd.story_id
+               AND setd.latest_assignment_id = sesd.latest_assignment_id
+               AND setd.scope_config_hash = sesd.scope_config_hash
+              WHERE sesd.story_id = cu.story_id
+                AND sesd.latest_assignment_id = ea.cutoff_assignment_id
                 AND sesd.edition_id = %(edition_id)s
                 AND sesd.scope_version = %(scope_version)s
                 AND sesd.scope_config_hash = %(scope_config_hash)s
                 AND setd.triage_version = %(triage_version)s
                 AND setd.scope_config_hash = %(scope_config_hash)s
-                AND setd.scope_config_hash = sesd.scope_config_hash
+                AND sesd.created_at <= %(snapshot_at)s
+                AND setd.created_at <= %(snapshot_at)s
+                AND (
+                    setd.retention <> 'KEEP'
+                    OR EXISTS (
+                        SELECT 1 FROM story_revisions sr
+                        WHERE sr.story_id = cu.story_id
+                          AND sr.event_assignment_id = ea.cutoff_assignment_id
+                          AND sr.created_at <= %(snapshot_at)s
+                          AND sr.event_payload IS NOT NULL
+                          AND sr.event_payload->>'publishability' IN ('news', 'brief')
+                    )
+                )
           )
         ORDER BY cu.story_id ASC
         """  # noqa: S608 — static CTE template; values are bound params
@@ -1054,8 +1139,17 @@ class PublicationRepository:
             "scope_config_hash": scope_config_hash,
         }
         cursor = await conn.execute(query, params)
-        rows = await cursor.fetchall()
-        return [int(r[0]) for r in rows]
+        return [
+            AuthorityTarget(
+                story_id=int(row[0]),
+                assignment_id=int(row[1]),
+                edition_id=edition_id,
+                triage_version=triage_version,
+                scope_version=scope_version,
+                scope_config_hash=scope_config_hash,
+            )
+            for row in await cursor.fetchall()
+        ]
 
     async def count_authority_gap(
         self,
@@ -1074,6 +1168,84 @@ class PublicationRepository:
             eligibility_policy_id=eligibility_policy_id,
         )
         return len(gap_ids)
+
+    async def get_authority_barrier_completed_at(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        targets: Sequence[AuthorityTarget],
+        snapshot_at: dt.datetime,
+    ) -> dt.datetime | None:
+        """Return the last durable exact-assignment authority completion time."""
+        if not targets:
+            return None
+        editions = {target.edition_id for target in targets}
+        versions = {
+            (target.triage_version, target.scope_version, target.scope_config_hash)
+            for target in targets
+        }
+        if len(editions) != 1 or len(versions) != 1:
+            raise ValueError("authority targets must share one policy contract")
+        edition_id = next(iter(editions))
+        triage_version, scope_version, scope_hash = next(iter(versions))
+        cursor = await conn.execute(
+            """
+            WITH required(story_id, assignment_id) AS (
+                SELECT * FROM unnest(%s::bigint[], %s::bigint[])
+            ), satisfied AS (
+                SELECT GREATEST(
+                    setd.created_at,
+                    sesd.created_at,
+                    CASE WHEN setd.retention = 'KEEP' THEN brief.created_at
+                         ELSE setd.created_at END
+                ) AS completed_at
+                FROM required r
+                JOIN story_event_triage_decisions setd
+                  ON setd.story_id = r.story_id
+                 AND setd.latest_assignment_id = r.assignment_id
+                 AND setd.triage_version = %s
+                 AND setd.scope_config_hash = %s
+                JOIN story_edition_scope_decisions sesd
+                  ON sesd.story_id = r.story_id
+                 AND sesd.latest_assignment_id = r.assignment_id
+                 AND sesd.edition_id = %s
+                 AND sesd.scope_version = %s
+                 AND sesd.scope_config_hash = %s
+                LEFT JOIN LATERAL (
+                    SELECT sr.created_at
+                    FROM story_revisions sr
+                    WHERE sr.story_id = r.story_id
+                      AND sr.event_assignment_id = r.assignment_id
+                      AND sr.created_at <= %s
+                      AND sr.event_payload IS NOT NULL
+                      AND sr.event_payload->>'publishability' IN ('news', 'brief')
+                    ORDER BY sr.created_at DESC
+                    LIMIT 1
+                ) brief ON TRUE
+                WHERE setd.created_at <= %s
+                  AND sesd.created_at <= %s
+                  AND (setd.retention <> 'KEEP' OR brief.created_at IS NOT NULL)
+            )
+            SELECT COUNT(*), MAX(completed_at)
+            FROM satisfied
+            """,
+            (
+                [target.story_id for target in targets],
+                [target.assignment_id for target in targets],
+                triage_version,
+                scope_hash,
+                edition_id,
+                scope_version,
+                scope_hash,
+                snapshot_at,
+                snapshot_at,
+                snapshot_at,
+            ),
+        )
+        row = await cursor.fetchone()
+        if row is None or int(row[0]) != len(targets):
+            return None
+        return row[1] if isinstance(row[1], dt.datetime) else None
 
     async def insert_candidate(
         self,

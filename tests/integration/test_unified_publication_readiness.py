@@ -302,3 +302,32 @@ async def test_repeated_successful_scan_does_not_bypass_pending_revision_barrier
         now=TARGET,
     )
     assert result.readiness_status == "processing"
+
+
+@pytest.mark.postgres
+async def test_late_reconcile_freezes_deadline_snapshot_for_completed_facts(
+    conn, edition, sample_config, uow, no_background_job_enqueue
+):
+    """Facts complete before the deadline remain publishable on a late tick."""
+    source_id = await _source(conn, edition.id, "late-reconcile")
+    await _collection_run(conn, source_id, started_at=TARGET - dt.timedelta(minutes=5))
+
+    result = await PublicationOrchestrator(uow=uow, config=_config(sample_config)).request(
+        edition_slug="berdyansk",
+        publication_type="digest_grouped",
+        trigger="manual",
+        target_at=TARGET,
+        requested_by_user_id=123,
+        request_key="manual:integration:late-reconcile",
+        now=TARGET + dt.timedelta(minutes=21),
+    )
+
+    assert result.readiness_status == "ready_for_preparation"
+    cursor = await conn.execute(
+        "SELECT status, knowledge_snapshot_at, processing_ready_at FROM publication_refresh_runs WHERE id = %s",
+        (result.intent_id,),
+    )
+    status, snapshot_at, processing_ready_at = await cursor.fetchone()
+    assert status == "preparing"
+    assert snapshot_at == TARGET + dt.timedelta(minutes=20)
+    assert processing_ready_at == TARGET - dt.timedelta(minutes=4)

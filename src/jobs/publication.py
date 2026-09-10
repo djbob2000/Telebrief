@@ -28,6 +28,12 @@ PUBLICATION_RETRY_STRATEGY = procrastinate.RetryStrategy(
 )
 
 
+class PreparationContractChangedError(RuntimeError):
+    """Frozen readiness evidence no longer matches preparation-time checks."""
+
+    error_kind = "preparation_contract_changed"
+
+
 @procrastinate_app.task(
     name=SELECT_STORIES_TASK_NAME,
     queue=PUBLICATION_QUEUE,
@@ -111,9 +117,12 @@ async def prepare_publication_from_intent(context: Any, intent_id: int) -> None:
     """Create a PublicationRun only after a durable intent is ready."""
     try:
         await _prepare_publication_from_intent_once(intent_id)
-    except Exception:
+    except Exception as exc:
         if _is_final_publication_attempt(context):
-            await _mark_preparation_failed(intent_id)
+            await _mark_preparation_failed(
+                intent_id,
+                error_kind=getattr(exc, "error_kind", None),
+            )
         raise
 
 
@@ -168,41 +177,48 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
             return
         if current_refresh.status != "preparing":
             raise ValueError(f"refresh run {refresh.id} is not preparing")
-        candidate_snapshot_at = dt.datetime.now(dt.timezone.utc)
-        gap_story_ids = await service.repo.find_authority_gap_story_ids(
-            conn,
-            edition_id=current_refresh.edition_id,
-            source_cutoff_at=current_refresh.normal_source_cutoff_at,
-            snapshot_at=candidate_snapshot_at,
-            eligibility_policy_id=policy_set.eligibility_policy_id,
-        )
-        if gap_story_ids:
-            await conn.execute(
-                """
-                UPDATE story_cluster_state
-                SET analysis_dirty = TRUE, updated_at = now()
-                WHERE story_id = ANY(%s)
-                """,
-                (gap_story_ids,),
+        legacy_refresh = not hasattr(current_refresh, "knowledge_snapshot_at")
+        if legacy_refresh:
+            knowledge_snapshot_at = current_refresh.normal_source_cutoff_at
+        elif current_refresh.knowledge_snapshot_at is None:
+            raise ValueError(
+                f"refresh run {current_refresh.id} is preparing without knowledge_snapshot_at"
             )
-            await readiness_repo.transition_refresh(
-                conn,
-                current_refresh.id,
-                status="processing",
+        else:
+            knowledge_snapshot_at = current_refresh.knowledge_snapshot_at
+        if legacy_refresh:
+            gap_count = len(
+                await service.repo.find_authority_gap_story_ids(
+                    conn,
+                    edition_id=current_refresh.edition_id,
+                    source_cutoff_at=current_refresh.normal_source_cutoff_at,
+                    snapshot_at=knowledge_snapshot_at,
+                    eligibility_policy_id=policy_set.eligibility_policy_id,
+                )
             )
-            logger.warning(
-                "publication_preparation_deferred_for_authority_gap",
-                extra={
-                    "edition_id": current_refresh.edition_id,
-                    "refresh_run_id": current_refresh.id,
-                    "story_count": len(gap_story_ids),
-                },
+        else:
+            gap_count = len(
+                await service.repo.find_authority_gap_targets(
+                    conn,
+                    edition_id=current_refresh.edition_id,
+                    source_cutoff_at=current_refresh.normal_source_cutoff_at,
+                    snapshot_at=knowledge_snapshot_at,
+                    eligibility_policy_id=policy_set.eligibility_policy_id,
+                )
             )
-            return
-        knowledge_snapshot_at = candidate_snapshot_at
+        if gap_count:
+            if legacy_refresh:
+                await readiness_repo.transition_refresh(
+                    conn, current_refresh.id, status="processing"
+                )
+                return
+            raise PreparationContractChangedError(
+                f"refresh run {current_refresh.id} has {gap_count} authority gaps "
+                f"at frozen snapshot {knowledge_snapshot_at.isoformat()}"
+            )
         run = await service.create_run(
-            edition_id=refresh.edition_id,
-            publication_type=refresh.publication_type,
+            edition_id=current_refresh.edition_id,
+            publication_type=current_refresh.publication_type,
             source_cutoff_at=source_cutoff_at,
             snapshot_at=knowledge_snapshot_at,
             request_key=req_key,
@@ -212,11 +228,12 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
             conn=conn,
         )
         await service.seal_candidates(run.id, conn=conn)
+        prepared_at = dt.datetime.now(dt.timezone.utc)
         await readiness_repo.mark_publication_queued(
             conn,
             refresh_run_id=refresh.id,
             publication_run_id=run.id,
-            prepared_at=knowledge_snapshot_at,
+            prepared_at=prepared_at,
         )
         logger.info(
             "publication_refresh_prepared",
@@ -241,7 +258,7 @@ def _is_final_publication_attempt(context: Any) -> bool:
     return isinstance(attempts, int) and maximum is not None and attempts >= maximum
 
 
-async def _mark_preparation_failed(intent_id: int) -> None:
+async def _mark_preparation_failed(intent_id: int, *, error_kind: str | None = None) -> None:
     """Atomically close a preparation intent and persist notification outbox rows."""
     from src.config_loader import load_config
     from src.publication.notifications import PublicationFailureNotificationService
@@ -259,14 +276,14 @@ async def _mark_preparation_failed(intent_id: int) -> None:
             conn,
             intent_id,
             status="failed",
-            error_kind="preparation_failed",
+            error_kind=error_kind or "preparation_failed",
         )
         notification_ids = await PublicationFailureNotificationService(
             config=load_config(), readiness_repo=readiness_repo
         ).enqueue_for_failed_intent(
             conn,
             intent=refresh,
-            failure_kind="preparation_failed",
+            failure_kind=error_kind or "preparation_failed",
             dispatch=False,
         )
 

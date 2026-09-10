@@ -27,7 +27,6 @@ from src.db.uow import DatabaseUnitOfWork
 from src.domain.ingestion import SourceItem
 from src.ingestion.models import CollectionBatch, CollectionOutcome, CollectionTrigger
 from src.ingestion.repository import IngestionRepository
-from src.repositories.event_revision_processing import EventRevisionProcessingRepository
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +83,7 @@ class IngestionService:
         full_processing_revision_ids: list[int] = []
         reused_revision_ids: list[int] = []
         current_revision_by_external_id: dict[str, int] = {}
-        processing_repo = EventRevisionProcessingRepository()
+        canonical_created_by_external_id: dict[str, bool] = {}
 
         item_by_external_id: dict[str, SourceItem] = {}
         for observation in batch.items:
@@ -94,71 +93,47 @@ class IngestionService:
 
         for observation in batch.items:
             item = item_by_external_id[observation.external_id]
-            # A malformed observation that references itself as its own
-            # parent/root must never create a self-referencing FK link.
-            parent_external_id = (
-                None
-                if observation.parent_external_id == observation.external_id
-                else observation.parent_external_id
-            )
-            root_external_id = (
-                None
-                if observation.root_external_id == observation.external_id
-                else observation.root_external_id
-            )
-            await self.repo.ensure_relationships(
-                conn,
-                source_id=source_id,
-                item_id=item.id,
-                parent_external_id=parent_external_id,
-                root_external_id=root_external_id,
-            )
-            revision = await self.repo.insert_revision_if_changed(
+            revision, canonical_created = await self.repo.get_or_create_canonical_revision(
                 conn,
                 item.id,
                 observation,
                 collected_at=observation.observed_at,
                 collection_run_id=run.id,
             )
-            current = revision or await self.repo.get_latest_revision(conn, item.id)
-            if current is None:
-                raise RuntimeError(f"item {observation.external_id!r} has no revision after ingest")
-            current_revision_by_external_id[observation.external_id] = current.id
+            current_revision_by_external_id[observation.external_id] = revision.id
+            canonical_created_by_external_id[observation.external_id] = canonical_created
             await self.repo.record_collection_run_observation(
                 conn,
                 collection_run_id=run.id,
-                source_item_revision_id=current.id,
+                source_item_revision_id=revision.id,
                 observed_at=observation.observed_at,
             )
-            if revision is not None:
+            if canonical_created:
                 new_revision_ids.append(revision.id)
-                previous = await self.repo.get_previous_revision(
+                full_processing_revision_ids.append(revision.id)
+                # A malformed observation that references itself as its own
+                # parent/root must never create a self-referencing FK link.
+                parent_external_id = (
+                    None
+                    if observation.parent_external_id == observation.external_id
+                    else observation.parent_external_id
+                )
+                root_external_id = (
+                    None
+                    if observation.root_external_id == observation.external_id
+                    else observation.root_external_id
+                )
+                await self.repo.ensure_relationships(
                     conn,
-                    source_item_id=item.id,
-                    before_revision_no=revision.revision_no,
+                    source_id=source_id,
+                    item_id=item.id,
+                    parent_external_id=parent_external_id,
+                    root_external_id=root_external_id,
                 )
-                previous_state = (
-                    await processing_repo.get_state(conn, previous.id)
-                    if previous is not None
-                    else None
-                )
-                if (
-                    previous is not None
-                    and previous.event_processing_hash is not None
-                    and previous.event_processing_hash == revision.event_processing_hash
-                    and previous_state is not None
-                    and previous_state.status == "succeeded"
-                ):
-                    await processing_repo.mark_reused(
-                        conn,
-                        revision_id=revision.id,
-                        reused_from_revision_id=previous.id,
-                    )
-                    reused_revision_ids.append(revision.id)
-                else:
-                    full_processing_revision_ids.append(revision.id)
 
         for asset in batch.assets:
+            if not canonical_created_by_external_id.get(asset.item_external_id, False):
+                continue
             revision_id = current_revision_by_external_id[asset.item_external_id]
             await self.repo.upsert_asset_for_revision(conn, revision_id, asset)
 
@@ -231,6 +206,8 @@ class IngestionService:
         """
         if not observed_revision_ids:
             return
+        from src.repositories.event_revision_processing import EventRevisionProcessingRepository
+
         processing_repo = EventRevisionProcessingRepository()
         incomplete_revision_ids = await processing_repo.list_incomplete(conn, observed_revision_ids)
         if not incomplete_revision_ids:

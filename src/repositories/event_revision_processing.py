@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -16,6 +17,7 @@ class RevisionProcessingState:
     status: str
     processing_mode: str
     reused_from_revision_id: int | None
+    completed_at: dt.datetime | None
 
 
 class EventRevisionProcessingRepository:
@@ -155,7 +157,7 @@ class EventRevisionProcessingRepository:
         cursor = await conn.execute(
             """
             SELECT source_item_revision_id, status, processing_mode,
-                   reused_from_revision_id
+                   reused_from_revision_id, completed_at
             FROM event_revision_processing_state
             WHERE source_item_revision_id = %s
             """,
@@ -169,4 +171,5 @@ class EventRevisionProcessingRepository:
             status=str(row[1]),
             processing_mode=str(row[2]),
             reused_from_revision_id=(int(row[3]) if row[3] is not None else None),
+            completed_at=row[4],
         )

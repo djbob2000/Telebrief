@@ -14,6 +14,8 @@ JOB_IMPORT_PATHS = (
     "src.jobs.maintenance",
     "src.jobs.ingestion",
     "src.jobs.event_processing",
+    "src.jobs.event_authority",
+    "src.jobs.event_enrichment",
     "src.jobs.publication",
     "src.jobs.facebook",
     "src.jobs.schedules",

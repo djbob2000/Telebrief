@@ -44,6 +44,28 @@ async def _collection_run(
     return int((await cursor.fetchone())[0])
 
 
+async def _revision(conn, source_id: int, external_id: str) -> int:
+    cursor = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'message', %s, %s)
+        RETURNING id
+        """,
+        (source_id, external_id, CUTOFF),
+    )
+    item_id = int((await cursor.fetchone())[0])
+    cursor = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (
+            source_item_id, revision_no, collected_at, content_hash, text_content
+        ) VALUES (%s, 1, %s, %s, 'revision text')
+        RETURNING id
+        """,
+        (item_id, CUTOFF, external_id),
+    )
+    return int((await cursor.fetchone())[0])
+
+
 @pytest.mark.postgres
 async def test_collection_success_is_qualified_by_freshness_cutoff(conn, edition):
     source_fresh = await _source(conn, "fresh")
@@ -125,6 +147,78 @@ async def test_collection_success_is_qualified_by_freshness_cutoff(conn, edition
 
 
 @pytest.mark.postgres
+async def test_collection_and_revision_barriers_are_evaluated_as_of_boundary(conn, edition):
+    source_id = await _source(conn, "as-of-boundary")
+    revision_id = await _revision(conn, source_id, "as-of-revision")
+    before_deadline = await _collection_run(
+        conn,
+        source_id,
+        started_at=CUTOFF + dt.timedelta(minutes=1),
+        completed_at=TARGET - dt.timedelta(seconds=2),
+        status="success",
+    )
+    after_deadline = await _collection_run(
+        conn,
+        source_id,
+        started_at=TARGET + dt.timedelta(seconds=1),
+        completed_at=TARGET + dt.timedelta(seconds=2),
+        status="success",
+    )
+    await conn.execute(
+        """
+        INSERT INTO collection_run_revision_observations (
+            collection_run_id, source_item_revision_id
+        ) VALUES (%s, %s), (%s, %s)
+        """,
+        (before_deadline, revision_id, after_deadline, revision_id),
+    )
+    await conn.execute(
+        """
+        INSERT INTO event_revision_processing_state (
+            source_item_revision_id, status, attempt_count, completed_at
+        ) VALUES (%s, 'succeeded', 1, %s)
+        """,
+        (revision_id, TARGET + dt.timedelta(seconds=5)),
+    )
+
+    repo = PublicationReadinessRepository()
+    refresh = await repo.get_or_create_refresh_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        slot_at=TARGET,
+        requested_at=CUTOFF,
+        trigger="manual",
+        request_key="manual:as-of-boundary",
+        freshness_cutoff_at=CUTOFF,
+        deadline_at=TARGET + dt.timedelta(minutes=20),
+        requested_by_user_id=123,
+        source_ids=[source_id],
+    )
+
+    sources = await repo.reconcile_qualifying_collection_runs(
+        conn, refresh.id, evaluation_at=TARGET
+    )
+    assert sources[0].collection_run_id == before_deadline
+
+    state = await repo.get_revision_barrier_state(conn, refresh.id, evaluation_at=TARGET)
+    assert state.unprocessed_count == 1
+    assert state.completed_at is None
+
+    await conn.execute(
+        """
+        UPDATE event_revision_processing_state
+        SET completed_at = %s
+        WHERE source_item_revision_id = %s
+        """,
+        (TARGET - dt.timedelta(seconds=1), revision_id),
+    )
+    state = await repo.get_revision_barrier_state(conn, refresh.id, evaluation_at=TARGET)
+    assert state.unprocessed_count == 0
+    assert state.completed_at == TARGET - dt.timedelta(seconds=1)
+
+
+@pytest.mark.postgres
 async def test_repeated_request_key_does_not_expand_frozen_source_set(conn, edition):
     first_source = await _source(conn, "frozen-first")
     later_source = await _source(conn, "frozen-later")
@@ -163,6 +257,120 @@ async def test_repeated_request_key_does_not_expand_frozen_source_set(conn, edit
     assert [source.source_id for source in await repo.list_refresh_sources(conn, first.id)] == [
         first_source
     ]
+    assert first.knowledge_snapshot_at is None
+
+
+@pytest.mark.postgres
+async def test_knowledge_snapshot_is_immutable_after_first_write(conn, edition):
+    repo = PublicationReadinessRepository()
+    refresh = await repo.get_or_create_refresh_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        slot_at=TARGET,
+        requested_at=CUTOFF,
+        trigger="manual",
+        request_key="manual:immutable-knowledge-snapshot",
+        freshness_cutoff_at=CUTOFF,
+        deadline_at=TARGET + dt.timedelta(minutes=20),
+        requested_by_user_id=None,
+        source_ids=[],
+    )
+    first = await repo.freeze_knowledge_snapshot(
+        conn, refresh_run_id=refresh.id, snapshot_at=TARGET - dt.timedelta(seconds=5)
+    )
+    assert first.knowledge_snapshot_at == TARGET - dt.timedelta(seconds=5)
+    same = await repo.freeze_knowledge_snapshot(
+        conn, refresh_run_id=refresh.id, snapshot_at=TARGET - dt.timedelta(seconds=5)
+    )
+    assert same.knowledge_snapshot_at == first.knowledge_snapshot_at
+    with pytest.raises(ValueError, match="knowledge_snapshot_at"):
+        await repo.freeze_knowledge_snapshot(conn, refresh_run_id=refresh.id, snapshot_at=TARGET)
+
+
+@pytest.mark.postgres
+async def test_authority_diagnostics_track_progress_only_on_gap_decrease(conn, edition):
+    repo = PublicationReadinessRepository()
+    refresh = await repo.get_or_create_refresh_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        slot_at=TARGET,
+        requested_at=CUTOFF,
+        trigger="manual",
+        request_key="manual:authority-diagnostics",
+        freshness_cutoff_at=CUTOFF,
+        deadline_at=TARGET + dt.timedelta(minutes=20),
+        requested_by_user_id=None,
+        source_ids=[],
+    )
+    first_at = TARGET - dt.timedelta(minutes=3)
+    second_at = TARGET - dt.timedelta(minutes=2)
+    third_at = TARGET - dt.timedelta(minutes=1)
+    await repo.update_authority_diagnostics(
+        conn,
+        refresh_run_id=refresh.id,
+        observed_at=first_at,
+        gap_count=53,
+        block_reason="pending",
+        terminal_count=0,
+    )
+    await repo.update_authority_diagnostics(
+        conn,
+        refresh_run_id=refresh.id,
+        observed_at=second_at,
+        gap_count=31,
+        block_reason="pending",
+        terminal_count=0,
+    )
+    await repo.update_authority_diagnostics(
+        conn,
+        refresh_run_id=refresh.id,
+        observed_at=third_at,
+        gap_count=31,
+        block_reason="retry_wait",
+        terminal_count=0,
+    )
+    current = await repo.get_refresh_run(conn, refresh.id)
+    assert current is not None
+    assert current.metadata["authority_gap_count"] == 31
+    assert current.metadata["authority_last_attempt_at"] == third_at.isoformat()
+    assert current.metadata["authority_last_progress_at"] == second_at.isoformat()
+    assert current.metadata["authority_last_block_reason"] == "retry_wait"
+
+
+@pytest.mark.postgres
+async def test_freeze_knowledge_snapshot_sets_once(conn, edition):
+    repo = PublicationReadinessRepository()
+    refresh_run = await repo.get_or_create_refresh_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        slot_at=TARGET,
+        requested_at=CUTOFF,
+        trigger="manual",
+        request_key="manual:freeze-knowledge-snapshot",
+        freshness_cutoff_at=CUTOFF,
+        deadline_at=TARGET + dt.timedelta(minutes=20),
+        requested_by_user_id=123,
+        source_ids=[],
+    )
+    t1 = refresh_run.deadline_at - dt.timedelta(seconds=5)
+
+    frozen = await repo.freeze_knowledge_snapshot(
+        conn, refresh_run_id=refresh_run.id, snapshot_at=t1
+    )
+    assert frozen.knowledge_snapshot_at == t1
+
+    same = await repo.freeze_knowledge_snapshot(conn, refresh_run_id=refresh_run.id, snapshot_at=t1)
+    assert same.knowledge_snapshot_at == t1
+
+    with pytest.raises(ValueError, match="knowledge_snapshot_at"):
+        await repo.freeze_knowledge_snapshot(
+            conn,
+            refresh_run_id=refresh_run.id,
+            snapshot_at=t1 + dt.timedelta(seconds=1),
+        )
 
 
 @pytest.mark.postgres

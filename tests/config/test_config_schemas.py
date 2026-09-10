@@ -36,6 +36,7 @@ def test_schema_instantiation_defaults():
     pipeline = EventPipelineConfig()
     assert pipeline.mode == "event_first"
     assert pipeline.fragment_max_chars == 1200
+    assert pipeline.authority_coordination_lease_seconds == 10
 
     from src.config.schemas.root import Settings
 

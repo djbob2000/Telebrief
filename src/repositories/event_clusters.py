@@ -300,3 +300,35 @@ class EventClusterRepository:
         )
         row = await cursor.fetchone()
         return int(row[0]) if row is not None else 1
+
+    async def get_assignment_snapshot_metrics(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        story_id: int,
+        assignment_id: int,
+    ) -> tuple[int, int, dt.datetime]:
+        """Return fragment/source metrics visible through one assignment boundary."""
+        cursor = await conn.execute(
+            """
+            WITH target AS (
+                SELECT assigned_at, id
+                FROM story_fragments
+                WHERE story_id = %s AND id = %s
+            )
+            SELECT COUNT(sf.id),
+                   COUNT(DISTINCT si.source_id),
+                   MAX(sf.assigned_at)
+            FROM target t
+            JOIN story_fragments sf ON sf.story_id = %s
+            JOIN source_fragments f ON f.id = sf.fragment_id
+            JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
+            JOIN source_items si ON si.id = sir.source_item_id
+            WHERE (sf.assigned_at, sf.id) <= (t.assigned_at, t.id)
+            """,
+            (story_id, assignment_id, story_id),
+        )
+        row = await cursor.fetchone()
+        if row is None or row[2] is None:
+            raise ValueError(f"assignment {assignment_id} does not belong to story {story_id}")
+        return int(row[0]), int(row[1]), row[2]

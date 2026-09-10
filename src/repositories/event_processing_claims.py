@@ -296,6 +296,28 @@ class EventProcessingClaimRepository:
         row = await cursor.fetchone()
         return None if row is None else self._stage_from_row(row)
 
+    async def lock_stage_claim_if_live(
+        self,
+        conn: psycopg.AsyncConnection,
+        claim: EventProcessingStageClaim,
+    ) -> bool:
+        """Lock the exact live claim before persisting fenced stage output."""
+        self._validate_stage(claim.stage)
+        cursor = await conn.execute(
+            """
+            SELECT 1
+            FROM story_event_processing_claims
+            WHERE story_id = %s
+              AND latest_assignment_id = %s
+              AND stage = %s
+              AND claim_token = %s
+              AND lease_expires_at > now()
+            FOR UPDATE
+            """,
+            (claim.story_id, claim.latest_assignment_id, claim.stage, claim.claim_token),
+        )
+        return await cursor.fetchone() is not None
+
     async def release_stage(
         self,
         conn: psycopg.AsyncConnection,

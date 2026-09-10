@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from uuid import uuid4
 
 import pytest
 
@@ -18,31 +19,33 @@ async def _seed_edition(conn, slug: str) -> int:
 
 
 async def _seed_story_assignment(conn) -> tuple[int, int, int]:
-    edition_id = await _seed_edition(conn, "claim-story")
+    token = uuid4().hex
+    edition_id = await _seed_edition(conn, f"claim-story-{token}")
     cursor = await conn.execute(
         """
         INSERT INTO sources (platform, kind, external_id, name)
-        VALUES ('telegram', 'channel', 'claim-source', 'Claim Source')
+        VALUES ('telegram', 'channel', %s, 'Claim Source')
         RETURNING id
-        """
+        """,
+        (f"claim-source-{token}",),
     )
     source_id = int((await cursor.fetchone())[0])
     cursor = await conn.execute(
         """
         INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
-        VALUES (%s, 'message', 'claim-message', now())
+        VALUES (%s, 'message', %s, now())
         RETURNING id
         """,
-        (source_id,),
+        (source_id, f"claim-message-{token}"),
     )
     item_id = int((await cursor.fetchone())[0])
     cursor = await conn.execute(
         """
         INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
-        VALUES (%s, 1, 'claim-revision', 'claim text')
+        VALUES (%s, 1, %s, 'claim text')
         RETURNING id
         """,
-        (item_id,),
+        (item_id, f"claim-revision-{token}"),
     )
     revision_id = int((await cursor.fetchone())[0])
     cursor = await conn.execute(
@@ -50,18 +53,19 @@ async def _seed_story_assignment(conn) -> tuple[int, int, int]:
         INSERT INTO source_fragments
             (source_item_revision_id, ordinal, text_content, normalized_hash,
              fragmenter_version, is_candidate)
-        VALUES (%s, 0, 'claim text', 'claim-fragment', 'v1', TRUE)
+        VALUES (%s, 0, 'claim text', %s, 'v1', TRUE)
         RETURNING id
         """,
-        (revision_id,),
+        (revision_id, f"claim-fragment-{token}"),
     )
     fragment_id = int((await cursor.fetchone())[0])
     cursor = await conn.execute(
         """
         INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions)
-        VALUES ('claim-fragment', '[1, 0]'::vector, 'test', 2)
+        VALUES (%s, '[1, 0]'::vector, 'test', 2)
         RETURNING id
-        """
+        """,
+        (f"claim-fragment-{token}",),
     )
     vector_id = int((await cursor.fetchone())[0])
     cursor = await conn.execute(
@@ -146,6 +150,28 @@ async def test_stage_claim_is_assignment_scoped(repo_conn):
         ttl_seconds=600,
     )
     assert duplicate is None
+
+
+@pytest.mark.postgres
+async def test_stage_claim_fence_locks_only_live_exact_token(repo_conn):
+    _, story_id, assignment_id = await _seed_story_assignment(repo_conn)
+    repository = EventProcessingClaimRepository()
+    claim = await repository.try_claim_stage(
+        repo_conn,
+        story_id=story_id,
+        latest_assignment_id=assignment_id,
+        stage="triage",
+        owner_id="worker-a",
+        ttl_seconds=600,
+    )
+    assert claim is not None
+    assert await repository.lock_stage_claim_if_live(repo_conn, claim) is True
+    assert (
+        await repository.lock_stage_claim_if_live(
+            repo_conn, replace(claim, claim_token="replaced-token")
+        )
+        is False
+    )
 
 
 @pytest.mark.postgres
