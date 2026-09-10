@@ -587,9 +587,7 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
         event_processing_stage_lease_seconds=_val_pos_int(
             "event_processing_stage_lease_seconds", 600
         ),
-        authority_provider_timeout_seconds=_val_pos_int(
-            "authority_provider_timeout_seconds", 540
-        ),
+        authority_provider_timeout_seconds=_val_pos_int("authority_provider_timeout_seconds", 540),
         triage_split_max_extra_calls_per_cycle=_val_pos_int(
             "triage_split_max_extra_calls_per_cycle", 8
         ),

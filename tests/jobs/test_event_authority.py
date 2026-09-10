@@ -59,7 +59,9 @@ def test_contention_error_is_distinct_from_provider_failure():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_publication_authority_records_progress_after_provider_batch(monkeypatch):
-    started_at = authority_jobs.dt.datetime(2026, 9, 10, 10, 0, tzinfo=authority_jobs.dt.timezone.utc)
+    started_at = authority_jobs.dt.datetime(
+        2026, 9, 10, 10, 0, tzinfo=authority_jobs.dt.timezone.utc
+    )
     observed_at = started_at + authority_jobs.dt.timedelta(seconds=5)
     deadline_at = started_at + authority_jobs.dt.timedelta(minutes=20)
 
@@ -84,7 +86,9 @@ async def test_publication_authority_records_progress_after_provider_batch(monke
     )
     authority_service = SimpleNamespace(
         process_batch=AsyncMock(
-            return_value=SimpleNamespace(stats=AuthorityBatchStats(triaged=1), enrichment_targets=())
+            return_value=SimpleNamespace(
+                stats=AuthorityBatchStats(triaged=1), enrichment_targets=()
+            )
         )
     )
     runtime = SimpleNamespace(uow=MagicMock(), config=SimpleNamespace())
@@ -103,9 +107,10 @@ async def test_publication_authority_records_progress_after_provider_batch(monke
 
     await authority_jobs.process_publication_authority_gap(68)
 
-    assert orchestrator.find_authority_gap_targets.await_args_list[1].kwargs[
-        "evaluation_at"
-    ] == observed_at
+    assert (
+        orchestrator.find_authority_gap_targets.await_args_list[1].kwargs["evaluation_at"]
+        == observed_at
+    )
     diagnostics_repo.update_authority_diagnostics.assert_awaited_once_with(
         runtime.uow.transaction.return_value.__aenter__.return_value,
         refresh_run_id=68,

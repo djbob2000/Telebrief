@@ -8,7 +8,10 @@ def test_dev_deploy_is_immutable_noninteractive_and_verifies_all_runtime_service
 
     assert "DEPLOY_TAG: ${{ github.event_name == 'workflow_dispatch'" in text
     assert "dev-${{ github.sha }}" in text
-    assert "docker compose run --rm --interactive=false -T telebrief-app python scripts/migrate.py </dev/null" in text
+    assert (
+        "docker compose run --rm --interactive=false -T telebrief-app python scripts/migrate.py </dev/null"
+        in text
+    )
     assert "telebrief-app telebrief-worker telebrief-processing-worker" in text
     assert "org.opencontainers.image.revision" in text
     assert "SCHEMA_VERSION_MAXIMUM" in text

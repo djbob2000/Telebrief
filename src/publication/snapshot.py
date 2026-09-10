@@ -144,14 +144,19 @@ class PublicationSnapshotService:
                     """,
                     (gap_story_ids,),
                 )
-            drain_kwargs = {
-                "edition_id": edition_id,
-                "force_settled": True,
-                "story_ids": gap_story_ids,
-            }
-            if source_cutoff_at is not None:
-                drain_kwargs["source_cutoff_at"] = source_cutoff_at
-            await run_legacy_coalesce_dirty_stories(**drain_kwargs)
+            if source_cutoff_at is None:
+                await run_legacy_coalesce_dirty_stories(
+                    edition_id=edition_id,
+                    force_settled=True,
+                    story_ids=gap_story_ids,
+                )
+            else:
+                await run_legacy_coalesce_dirty_stories(
+                    edition_id=edition_id,
+                    force_settled=True,
+                    story_ids=gap_story_ids,
+                    source_cutoff_at=source_cutoff_at,
+                )
             # A drain is allowed to make newly-created knowledge eligible for
             # the candidate snapshot. Historical PublicationRun reads remain
             # fenced by their saved snapshot_at; only this pre-publication
