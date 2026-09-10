@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import psycopg
+from psycopg.types.json import Jsonb
 
 
 @dataclass(frozen=True)
@@ -302,6 +303,49 @@ class PublicationReadinessRepository:
             WHERE refresh_run_id = %s AND source_id = %s
             """,
             (attempted_at, refresh_run_id, source_id),
+        )
+
+    async def update_authority_diagnostics(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        refresh_run_id: int,
+        observed_at: dt.datetime,
+        gap_count: int,
+        block_reason: str | None,
+        terminal_count: int,
+    ) -> None:
+        """Persist semantic authority progress without affecting readiness truth."""
+        cursor = await conn.execute(
+            """
+            SELECT metadata
+            FROM publication_refresh_runs
+            WHERE id = %s
+            FOR UPDATE
+            """,
+            (refresh_run_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise ValueError(f"refresh run {refresh_run_id} not found")
+        metadata = dict(row[0] or {})
+        previous_gap = metadata.get("authority_gap_count")
+        patch: dict[str, object] = {
+            "authority_gap_count": gap_count,
+            "authority_last_attempt_at": observed_at.isoformat(),
+            "authority_last_block_reason": block_reason,
+            "authority_terminal_count": terminal_count,
+        }
+        if isinstance(previous_gap, int) and gap_count < previous_gap:
+            patch["authority_last_progress_at"] = observed_at.isoformat()
+        await conn.execute(
+            """
+            UPDATE publication_refresh_runs
+            SET metadata = metadata || %s::jsonb,
+                updated_at = now()
+            WHERE id = %s
+            """,
+            (Jsonb(patch), refresh_run_id),
         )
 
     async def reconcile_qualifying_collection_runs(

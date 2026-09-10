@@ -261,6 +261,85 @@ async def test_repeated_request_key_does_not_expand_frozen_source_set(conn, edit
 
 
 @pytest.mark.postgres
+async def test_knowledge_snapshot_is_immutable_after_first_write(conn, edition):
+    repo = PublicationReadinessRepository()
+    refresh = await repo.get_or_create_refresh_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        slot_at=TARGET,
+        requested_at=CUTOFF,
+        trigger="manual",
+        request_key="manual:immutable-knowledge-snapshot",
+        freshness_cutoff_at=CUTOFF,
+        deadline_at=TARGET + dt.timedelta(minutes=20),
+        requested_by_user_id=None,
+        source_ids=[],
+    )
+    first = await repo.freeze_knowledge_snapshot(
+        conn, refresh_run_id=refresh.id, snapshot_at=TARGET - dt.timedelta(seconds=5)
+    )
+    assert first.knowledge_snapshot_at == TARGET - dt.timedelta(seconds=5)
+    same = await repo.freeze_knowledge_snapshot(
+        conn, refresh_run_id=refresh.id, snapshot_at=TARGET - dt.timedelta(seconds=5)
+    )
+    assert same.knowledge_snapshot_at == first.knowledge_snapshot_at
+    with pytest.raises(ValueError, match="knowledge_snapshot_at"):
+        await repo.freeze_knowledge_snapshot(conn, refresh_run_id=refresh.id, snapshot_at=TARGET)
+
+
+@pytest.mark.postgres
+async def test_authority_diagnostics_track_progress_only_on_gap_decrease(conn, edition):
+    repo = PublicationReadinessRepository()
+    refresh = await repo.get_or_create_refresh_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        slot_at=TARGET,
+        requested_at=CUTOFF,
+        trigger="manual",
+        request_key="manual:authority-diagnostics",
+        freshness_cutoff_at=CUTOFF,
+        deadline_at=TARGET + dt.timedelta(minutes=20),
+        requested_by_user_id=None,
+        source_ids=[],
+    )
+    first_at = TARGET - dt.timedelta(minutes=3)
+    second_at = TARGET - dt.timedelta(minutes=2)
+    third_at = TARGET - dt.timedelta(minutes=1)
+    await repo.update_authority_diagnostics(
+        conn,
+        refresh_run_id=refresh.id,
+        observed_at=first_at,
+        gap_count=53,
+        block_reason="pending",
+        terminal_count=0,
+    )
+    await repo.update_authority_diagnostics(
+        conn,
+        refresh_run_id=refresh.id,
+        observed_at=second_at,
+        gap_count=31,
+        block_reason="pending",
+        terminal_count=0,
+    )
+    await repo.update_authority_diagnostics(
+        conn,
+        refresh_run_id=refresh.id,
+        observed_at=third_at,
+        gap_count=31,
+        block_reason="retry_wait",
+        terminal_count=0,
+    )
+    current = await repo.get_refresh_run(conn, refresh.id)
+    assert current is not None
+    assert current.metadata["authority_gap_count"] == 31
+    assert current.metadata["authority_last_attempt_at"] == third_at.isoformat()
+    assert current.metadata["authority_last_progress_at"] == second_at.isoformat()
+    assert current.metadata["authority_last_block_reason"] == "retry_wait"
+
+
+@pytest.mark.postgres
 async def test_freeze_knowledge_snapshot_sets_once(conn, edition):
     repo = PublicationReadinessRepository()
     refresh_run = await repo.get_or_create_refresh_run(

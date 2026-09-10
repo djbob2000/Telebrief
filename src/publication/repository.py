@@ -1169,6 +1169,84 @@ class PublicationRepository:
         )
         return len(gap_ids)
 
+    async def get_authority_barrier_completed_at(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        targets: Sequence[AuthorityTarget],
+        snapshot_at: dt.datetime,
+    ) -> dt.datetime | None:
+        """Return the last durable exact-assignment authority completion time."""
+        if not targets:
+            return None
+        editions = {target.edition_id for target in targets}
+        versions = {
+            (target.triage_version, target.scope_version, target.scope_config_hash)
+            for target in targets
+        }
+        if len(editions) != 1 or len(versions) != 1:
+            raise ValueError("authority targets must share one policy contract")
+        edition_id = next(iter(editions))
+        triage_version, scope_version, scope_hash = next(iter(versions))
+        cursor = await conn.execute(
+            """
+            WITH required(story_id, assignment_id) AS (
+                SELECT * FROM unnest(%s::bigint[], %s::bigint[])
+            ), satisfied AS (
+                SELECT GREATEST(
+                    setd.created_at,
+                    sesd.created_at,
+                    CASE WHEN setd.retention = 'KEEP' THEN brief.created_at
+                         ELSE setd.created_at END
+                ) AS completed_at
+                FROM required r
+                JOIN story_event_triage_decisions setd
+                  ON setd.story_id = r.story_id
+                 AND setd.latest_assignment_id = r.assignment_id
+                 AND setd.triage_version = %s
+                 AND setd.scope_config_hash = %s
+                JOIN story_edition_scope_decisions sesd
+                  ON sesd.story_id = r.story_id
+                 AND sesd.latest_assignment_id = r.assignment_id
+                 AND sesd.edition_id = %s
+                 AND sesd.scope_version = %s
+                 AND sesd.scope_config_hash = %s
+                LEFT JOIN LATERAL (
+                    SELECT sr.created_at
+                    FROM story_revisions sr
+                    WHERE sr.story_id = r.story_id
+                      AND sr.event_assignment_id = r.assignment_id
+                      AND sr.created_at <= %s
+                      AND sr.event_payload IS NOT NULL
+                      AND sr.event_payload->>'publishability' IN ('news', 'brief')
+                    ORDER BY sr.created_at DESC
+                    LIMIT 1
+                ) brief ON TRUE
+                WHERE setd.created_at <= %s
+                  AND sesd.created_at <= %s
+                  AND (setd.retention <> 'KEEP' OR brief.created_at IS NOT NULL)
+            )
+            SELECT COUNT(*), MAX(completed_at)
+            FROM satisfied
+            """,
+            (
+                [target.story_id for target in targets],
+                [target.assignment_id for target in targets],
+                triage_version,
+                scope_hash,
+                edition_id,
+                scope_version,
+                scope_hash,
+                snapshot_at,
+                snapshot_at,
+                snapshot_at,
+            ),
+        )
+        row = await cursor.fetchone()
+        if row is None or int(row[0]) != len(targets):
+            return None
+        return row[1] if isinstance(row[1], dt.datetime) else None
+
     async def insert_candidate(
         self,
         conn: psycopg.AsyncConnection,

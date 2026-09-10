@@ -17,7 +17,12 @@ SOURCE_CUTOFF = dt.datetime(2026, 9, 10, 8, 55, tzinfo=UTC)
 
 
 @pytest.mark.postgres
-async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions(conn, edition):
+async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions(repo_conn):
+    conn = repo_conn
+    cursor = await conn.execute(
+        "INSERT INTO editions (slug, name) VALUES ('authority-edition', 'Authority Edition') RETURNING id"
+    )
+    edition_id = int((await cursor.fetchone())[0])
     # Seed the story separately so the assignment helper can use its id.
     cursor = await conn.execute(
         """
@@ -25,7 +30,7 @@ async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions
         VALUES (%s, 'event_first', 'active', %s)
         RETURNING id
         """,
-        (edition.id, SOURCE_CUTOFF - dt.timedelta(minutes=10)),
+        (edition_id, SOURCE_CUTOFF - dt.timedelta(minutes=10)),
     )
     story_id = int((await cursor.fetchone())[0])
 
@@ -130,7 +135,7 @@ async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions
     )
     policy = await PublicationPolicyRepository().get_or_create_eligibility_policy(
         conn,
-        edition_id=edition.id,
+        edition_id=edition_id,
         config_hash="authority-policy",
         prompt_version="v1",
         config={
@@ -144,7 +149,7 @@ async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions
     repo = PublicationRepository()
     required = await repo.list_required_authority_targets(
         conn,
-        edition_id=edition.id,
+        edition_id=edition_id,
         snapshot_at=SNAPSHOT,
         source_cutoff_at=SOURCE_CUTOFF,
         eligibility_policy_id=policy.id,
@@ -169,7 +174,7 @@ async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions
             scope_version, scope_config_hash, scope_class, confidence, reason
         ) VALUES (%s, %s, %s, %s, 'v1', 'scope-hash', 'LOCAL', 1, 'test')
         """,
-        (triage_run_id, story_id, edition.id, new_assignment),
+        (triage_run_id, story_id, edition_id, new_assignment),
     )
     await conn.execute(
         """
@@ -182,7 +187,7 @@ async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions
     )
     gaps = await repo.find_authority_gap_targets(
         conn,
-        edition_id=edition.id,
+        edition_id=edition_id,
         snapshot_at=SNAPSHOT,
         source_cutoff_at=SOURCE_CUTOFF,
         eligibility_policy_id=policy.id,
@@ -193,7 +198,8 @@ async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions
 
 
 @pytest.mark.postgres
-async def test_filter_unsatisfied_targets_requires_exact_temporal_authority(conn):
+async def test_filter_unsatisfied_targets_requires_exact_temporal_authority(repo_conn):
+    conn = repo_conn
     repository = EventAuthorityRepository()
     target = AuthorityTarget(
         story_id=1,

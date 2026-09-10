@@ -9,6 +9,7 @@ from unittest.mock import ANY, AsyncMock
 
 import pytest
 
+from src.domain.event_authority import AuthorityTarget
 from src.ingestion.models import CollectionTrigger
 from src.publication.orchestrator import (
     PublicationOrchestrator,
@@ -193,14 +194,23 @@ async def test_authority_gap_uses_assignment_at_source_cutoff_and_current_snapsh
 
     async def find_gap(_repository, conn, **kwargs):
         gap_calls.append((conn, kwargs))
-        return [9001]
+        return [
+            AuthorityTarget(
+                story_id=9001,
+                assignment_id=1201,
+                edition_id=intent.edition_id,
+                triage_version="v10",
+                scope_version="v1",
+                scope_config_hash="hash",
+            )
+        ]
 
     monkeypatch.setattr(
         "src.publication.policies.PublicationPolicyService.ensure_current",
         ensure_current,
     )
     monkeypatch.setattr(
-        "src.publication.repository.PublicationRepository.find_authority_gap_story_ids",
+        "src.publication.repository.PublicationRepository.find_authority_gap_targets",
         find_gap,
     )
 
@@ -254,6 +264,7 @@ async def test_authority_gap_requeues_processing_without_preparing():
     assert repo.preparing == 0
     defer_event_processing.assert_awaited_once_with(
         ANY,
+        intent_id=7,
         edition_id=1,
         story_ids=(9001, 9002),
     )

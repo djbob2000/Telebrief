@@ -7,7 +7,8 @@ from collections.abc import Sequence
 
 import psycopg
 
-from src.domain.event_authority import AuthorityTarget
+from src.domain.event_authority import AuthorityBarrierState, AuthorityTarget
+from src.repositories.event_retries import EventProcessingRetryRepository
 
 
 class EventAuthorityRepository:
@@ -194,3 +195,80 @@ class EventAuthorityRepository:
             (now, limit),
         )
         return [(int(row[0]), int(row[1])) for row in await cursor.fetchall()]
+
+    async def get_publication_barrier_state(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        required_targets: Sequence[AuthorityTarget],
+        gap_targets: Sequence[AuthorityTarget],
+        evaluation_at: dt.datetime,
+        deadline_at: dt.datetime,
+        observed_at: dt.datetime,
+        publication_repo,
+    ) -> AuthorityBarrierState:
+        """Classify mutable retry/claim state without changing exact gap truth."""
+        del observed_at
+        gap_tuple = tuple(gap_targets)
+        if not gap_tuple:
+            completed_at = await publication_repo.get_authority_barrier_completed_at(
+                conn, targets=required_targets, snapshot_at=evaluation_at
+            )
+            return AuthorityBarrierState((), completed_at, 0, 0, None, 0, 0)
+
+        retry_states = await EventProcessingRetryRepository().get_for_assignments(
+            conn,
+            [(target.story_id, target.assignment_id) for target in gap_tuple],
+            stage="triage",
+        )
+        cursor = await conn.execute(
+            """
+            SELECT story_id, latest_assignment_id
+            FROM story_event_processing_claims
+            WHERE stage = 'triage'
+              AND lease_expires_at > now()
+              AND (story_id, latest_assignment_id) IN (
+                  SELECT * FROM unnest(%s::bigint[], %s::bigint[])
+              )
+            """,
+            (
+                [target.story_id for target in gap_tuple],
+                [target.assignment_id for target in gap_tuple],
+            ),
+        )
+        live_claims = {(int(row[0]), int(row[1])) for row in await cursor.fetchall()}
+        terminal = 0
+        retry_exceeds = 0
+        processable = 0
+        in_flight = 0
+        future_retries: list[dt.datetime] = []
+        for target in gap_tuple:
+            retry = retry_states.get((target.story_id, target.assignment_id))
+            if (
+                retry is not None
+                and retry.exhausted_at is not None
+                and retry.exhausted_at <= evaluation_at
+                and retry.updated_at <= evaluation_at
+            ):
+                terminal += 1
+                continue
+            if retry is not None and retry.updated_at <= evaluation_at:
+                if retry.next_retry_at is not None and retry.next_retry_at >= deadline_at:
+                    retry_exceeds += 1
+                    continue
+                if retry.next_retry_at is not None and retry.next_retry_at > evaluation_at:
+                    future_retries.append(retry.next_retry_at)
+                    continue
+            if (target.story_id, target.assignment_id) in live_claims:
+                in_flight += 1
+            else:
+                processable += 1
+        return AuthorityBarrierState(
+            gap_tuple,
+            None,
+            terminal,
+            retry_exceeds,
+            min(future_retries) if future_retries else None,
+            processable,
+            in_flight,
+        )

@@ -11,6 +11,7 @@ roll back) together.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -371,6 +372,35 @@ async def test_duplicate_execution_is_idempotent(service, source, uow):
     assert assets == 1
     assert runs == 2
     assert await _scalar(uow, "SELECT content_hash FROM source_assets") == "hash-photo"
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_concurrent_first_observations_share_one_coherent_canonical_revision(
+    service, source, uow
+):
+    """Concurrent collectors race on identity but converge on one first revision."""
+    first, second = await asyncio.gather(
+        service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, _batch(text="winner-a")),
+        service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, _batch(text="winner-b")),
+    )
+
+    assert await _scalar(uow, "SELECT count(*) FROM source_items") == 1
+    assert await _scalar(uow, "SELECT count(*) FROM source_item_revisions") == 1
+    canonical_revision_id = await _scalar(
+        uow,
+        "SELECT id FROM source_item_revisions",
+    )
+    observed_revision_ids = await _scalar(
+        uow,
+        "SELECT count(DISTINCT source_item_revision_id) FROM collection_run_revision_observations",
+    )
+    assert observed_revision_ids == 1
+    assert set(first.new_revision_ids + second.new_revision_ids) <= {canonical_revision_id}
+    assert await _scalar(uow, "SELECT text_content FROM source_item_revisions") in {
+        "winner-a",
+        "winner-b",
+    }
 
 
 @pytest.mark.postgres

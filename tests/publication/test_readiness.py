@@ -66,6 +66,10 @@ class FakeReadinessRepository:
     async def reconcile_qualifying_collection_runs(self, conn, refresh_run_id):
         return self.sources
 
+    async def freeze_knowledge_snapshot(self, conn, *, refresh_run_id, snapshot_at):
+        self.refresh = replace(self.refresh, knowledge_snapshot_at=snapshot_at)
+        return self.refresh
+
     async def count_unprocessed_refresh_revisions(self, conn, refresh_run_id):
         return self.unprocessed
 
@@ -135,7 +139,8 @@ async def test_authority_gap_fails_closed_at_deadline():
     repo = FakeReadinessRepository(_refresh(deadline_at=NOW - dt.timedelta(seconds=1)), [_source()])
 
     async def authority_gap_checker(conn, refresh, now):
-        raise AssertionError("deadline must be checked before authority-gap work")
+        assert now == refresh.deadline_at
+        return [9001]
 
     decision = await PublicationReadinessService(
         repo,
@@ -221,5 +226,5 @@ async def test_terminal_source_failure_is_immediate():
 async def test_ready_after_deadline_is_still_fail_closed():
     repo = FakeReadinessRepository(_refresh(deadline_at=NOW - dt.timedelta(seconds=1)), [_source()])
     decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
-    assert decision.status == "failed"
-    assert decision.failure_kind == "readiness_deadline"
+    assert decision.status == "ready_for_preparation"
+    assert repo.refresh.knowledge_snapshot_at == repo.refresh.deadline_at

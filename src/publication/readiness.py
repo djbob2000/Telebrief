@@ -10,9 +10,11 @@ from typing import Literal
 
 import psycopg
 
+from src.domain.event_authority import AuthorityBarrierState
 from src.publication.readiness_repository import (
     PublicationReadinessRepository,
     PublicationRefreshRun,
+    RevisionBarrierState,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,6 +40,10 @@ AuthorityGapChecker = Callable[
     [psycopg.AsyncConnection, PublicationRefreshRun, dt.datetime],
     Awaitable[Sequence[int]],
 ]
+AuthorityBarrierChecker = Callable[
+    [psycopg.AsyncConnection, PublicationRefreshRun, dt.datetime, dt.datetime],
+    Awaitable[AuthorityBarrierState],
+]
 
 
 class PublicationReadinessService:
@@ -48,9 +54,11 @@ class PublicationReadinessService:
         repo: PublicationReadinessRepository | None = None,
         *,
         authority_gap_checker: AuthorityGapChecker | None = None,
+        authority_barrier_checker: AuthorityBarrierChecker | None = None,
     ) -> None:
         self.repo = repo or PublicationReadinessRepository()
         self.authority_gap_checker = authority_gap_checker
+        self.authority_barrier_checker = authority_barrier_checker
 
     async def create_refresh(
         self,
@@ -116,7 +124,17 @@ class PublicationReadinessService:
         if refresh.status == "ready_waiting_slot" and now < refresh.slot_at:
             return PublicationReadinessDecision("ready_waiting_slot", None)
 
-        sources = await self.repo.reconcile_qualifying_collection_runs(conn, refresh.id)
+        evaluation_at = min(now, refresh.deadline_at)
+        try:
+            sources = await self.repo.reconcile_qualifying_collection_runs(
+                conn, refresh.id, evaluation_at=evaluation_at
+            )
+        except TypeError as exc:
+            if "evaluation_at" not in str(exc):
+                raise
+            # Small compatibility seam for in-memory repository doubles and
+            # downstream adapters that predate the as-of keyword.
+            sources = await self.repo.reconcile_qualifying_collection_runs(conn, refresh.id)
         if not sources:
             await self._transition(
                 conn, refresh.id, status="failed", error_kind="no_enabled_sources", now=now
@@ -131,33 +149,94 @@ class PublicationReadinessService:
             )
             return PublicationReadinessDecision("failed", None, error_kind)
 
-        if now >= refresh.deadline_at:
-            await self._transition(
-                conn,
-                refresh.id,
-                status="failed",
-                error_kind="readiness_deadline",
-                now=now,
-            )
-            return PublicationReadinessDecision("failed", None, "readiness_deadline")
-
         all_sources_succeeded = all(source.status == "succeeded" for source in sources)
 
         if all_sources_succeeded:
-            unprocessed = await self.repo.count_unprocessed_refresh_revisions(conn, refresh.id)
-            if unprocessed == 0:
+            if hasattr(self.repo, "get_revision_barrier_state"):
+                revision_barrier = await self.repo.get_revision_barrier_state(
+                    conn, refresh.id, evaluation_at=evaluation_at
+                )
+            else:
+                unprocessed = await self.repo.count_unprocessed_refresh_revisions(conn, refresh.id)
+                revision_barrier = RevisionBarrierState(
+                    unprocessed_count=unprocessed,
+                    completed_at=(
+                        max(
+                            source.completed_at
+                            for source in sources
+                            if source.completed_at is not None
+                        )
+                        if unprocessed == 0 and sources
+                        else None
+                    ),
+                )
+            if revision_barrier.unprocessed_count == 0:
                 authority_gap_story_ids: tuple[int, ...] = ()
-                if self.authority_gap_checker is not None:
+                authority_completed_at: dt.datetime | None = None
+                authority_barrier: AuthorityBarrierState | None = None
+                if self.authority_barrier_checker is not None:
+                    authority_barrier = await self.authority_barrier_checker(
+                        conn, refresh, evaluation_at, now
+                    )
+                    authority_gap_story_ids = tuple(
+                        target.story_id for target in authority_barrier.gap_targets
+                    )
+                    authority_completed_at = authority_barrier.completed_at
+                elif self.authority_gap_checker is not None:
                     authority_gap_story_ids = tuple(
                         int(story_id)
-                        for story_id in await self.authority_gap_checker(conn, refresh, now)
+                        for story_id in await self.authority_gap_checker(
+                            conn, refresh, evaluation_at
+                        )
                     )
                 if authority_gap_story_ids:
+                    if authority_barrier is not None and authority_barrier.terminal_count > 0:
+                        await self._transition(
+                            conn,
+                            refresh.id,
+                            status="failed",
+                            error_kind="authority_terminal",
+                            now=now,
+                        )
+                        return PublicationReadinessDecision(
+                            "failed", None, "authority_terminal", authority_gap_story_ids
+                        )
+                    if (
+                        authority_barrier is not None
+                        and authority_barrier.retry_exceeds_deadline_count > 0
+                    ):
+                        await self._transition(
+                            conn,
+                            refresh.id,
+                            status="failed",
+                            error_kind="authority_retry_exceeds_deadline",
+                            now=now,
+                        )
+                        return PublicationReadinessDecision(
+                            "failed",
+                            None,
+                            "authority_retry_exceeds_deadline",
+                            authority_gap_story_ids,
+                        )
+                    if now >= refresh.deadline_at:
+                        await self._transition(
+                            conn,
+                            refresh.id,
+                            status="failed",
+                            error_kind="readiness_deadline",
+                            now=now,
+                        )
+                        return PublicationReadinessDecision("failed", None, "readiness_deadline")
                     await self._transition(
                         conn,
                         refresh.id,
                         status="processing",
-                        collection_ready_at=refresh.collection_ready_at or now,
+                        collection_ready_at=refresh.collection_ready_at
+                        or max(
+                            source.completed_at
+                            for source in sources
+                            if source.completed_at is not None
+                        ),
                         now=now,
                     )
                     return PublicationReadinessDecision(
@@ -165,12 +244,17 @@ class PublicationReadinessService:
                         None,
                         authority_gap_story_ids=authority_gap_story_ids,
                     )
+                processing_ready_at = max(
+                    [source.completed_at for source in sources if source.completed_at is not None]
+                    + ([revision_barrier.completed_at] if revision_barrier.completed_at else [])
+                    + ([authority_completed_at] if authority_completed_at else [])
+                )
                 await self._transition(
                     conn,
                     refresh.id,
                     status="ready_for_preparation",
-                    collection_ready_at=refresh.collection_ready_at or now,
-                    processing_ready_at=now,
+                    collection_ready_at=refresh.collection_ready_at or processing_ready_at,
+                    processing_ready_at=processing_ready_at,
                     now=now,
                 )
                 if refresh.trigger == "scheduled" and now < refresh.slot_at:
@@ -183,6 +267,10 @@ class PublicationReadinessService:
                         now=now,
                     )
                     return PublicationReadinessDecision("ready_waiting_slot", None)
+                if hasattr(self.repo, "freeze_knowledge_snapshot"):
+                    await self.repo.freeze_knowledge_snapshot(
+                        conn, refresh_run_id=refresh.id, snapshot_at=evaluation_at
+                    )
                 return self._normal_decision(refresh)
             await self._transition(
                 conn,

@@ -13,6 +13,26 @@ from typing import Any, List
 TELEGRAM_MAX_MESSAGE_CHARS = 32768
 TELEGRAM_SAFE_MESSAGE_CHARS = 32000
 
+_STANDARD_LOG_FIELDS = frozenset(logging.makeLogRecord({}).__dict__) | {
+    "message",
+    "asctime",
+}
+
+
+class ExtraJSONFormatter(logging.Formatter):
+    """Append structured ``LogRecord.extra`` fields to the normal line."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        base = super().format(record)
+        extra = {
+            key: value
+            for key, value in record.__dict__.items()
+            if key not in _STANDARD_LOG_FIELDS and not key.startswith("_")
+        }
+        if not extra:
+            return base
+        return f"{base} {json.dumps(extra, ensure_ascii=False, sort_keys=True, default=str)}"
+
 
 def setup_logging(log_level: str = "INFO") -> logging.Logger:
     """
@@ -31,7 +51,7 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
     # Configure logging format
     log_format = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
-    formatter = logging.Formatter(log_format, date_format)
+    formatter = ExtraJSONFormatter(log_format, date_format)
 
     # Console handler
     console_handler = logging.StreamHandler()

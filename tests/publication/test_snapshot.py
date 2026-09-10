@@ -759,9 +759,9 @@ class TestPublicationSnapshotConstraints:
         cur = await conn.execute(
             """
             INSERT INTO story_revisions (
-                story_id, revision_no, current_state, semantic_text, content_hash,
+                story_id, revision_no, event_assignment_id, current_state, semantic_text, content_hash,
                 title, summary, event_payload, created_at
-            ) VALUES (%s, 1, 'open', %s, 'h-rev-snap-comm', %s, %s, %s, %s)
+            ) VALUES (%s, 1, NULL, 'open', %s, 'h-rev-snap-comm', %s, %s, %s, %s)
             RETURNING id
             """,
             (
@@ -809,6 +809,11 @@ class TestPublicationSnapshotConstraints:
             (story_id, frag_id, sfe_id, _NOW),
         )
         aid = (await cur.fetchone())[0]
+
+        await conn.execute(
+            "UPDATE story_revisions SET event_assignment_id = %s WHERE id = %s",
+            (aid, rev_id),
+        )
 
         # Story cluster state
         await conn.execute(
@@ -989,6 +994,10 @@ class TestPublicationSnapshotConstraints:
         )
         aid_v9 = (await cur.fetchone())[0]
         await conn.execute(
+            "UPDATE story_revisions SET event_assignment_id = %s WHERE id = %s",
+            (aid_v9, rev_v9),
+        )
+        await conn.execute(
             "INSERT INTO story_cluster_state (story_id, centroid, model, dimensions, fragment_count, unique_source_count, first_seen_at, last_seen_at, latest_assignment_id, analysis_dirty) VALUES (%s, '[1, 0]'::vector, 'm', 2, 1, 1, %s, %s, %s, FALSE)",
             (sid_v9, _NOW, _NOW, aid_v9),
         )
@@ -1155,6 +1164,54 @@ class TestPublicationSnapshotConstraints:
         ef_rev = (await cur.fetchone())[0]
         await conn.execute(
             "UPDATE stories SET current_revision_id = %s WHERE id = %s", (ef_rev, ef_sid)
+        )
+
+        # Give the Event-First story an exact assignment so the authority-gap
+        # query can evaluate it under the current assignment contract.
+        cur = await conn.execute(
+            "INSERT INTO sources (platform, kind, external_id, url, name) VALUES ('telegram', 'channel', '-100-gap', 'https://t.me/gap', 'Gap') RETURNING id"
+        )
+        gap_source_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+            (gap_source_id, edition.id),
+        )
+        cur = await conn.execute(
+            "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'message', 'ext-gap', %s) RETURNING id",
+            (gap_source_id, _NOW),
+        )
+        gap_item_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, 'h-sir-gap', 'gap text') RETURNING id",
+            (gap_item_id,),
+        )
+        gap_sir_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, 'gap text', 'h-gap-frag', 'v1', TRUE, %s) RETURNING id",
+            (gap_sir_id, _NOW),
+        )
+        gap_fragment_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions) VALUES ('h-gap-frag', '[1, 0]'::vector, 'm', 2) RETURNING id"
+        )
+        gap_vector_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO source_fragment_embeddings (fragment_id, vector_id) VALUES (%s, %s) RETURNING id",
+            (gap_fragment_id, gap_vector_id),
+        )
+        gap_embedding_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at) VALUES (%s, %s, %s, 'new_story', %s) RETURNING id",
+            (ef_sid, gap_fragment_id, gap_embedding_id, _NOW),
+        )
+        gap_assignment_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE story_revisions SET event_assignment_id = %s WHERE id = %s",
+            (gap_assignment_id, ef_rev),
+        )
+        await conn.execute(
+            "INSERT INTO story_cluster_state (story_id, centroid, model, dimensions, fragment_count, unique_source_count, first_seen_at, last_seen_at, latest_assignment_id, analysis_dirty) VALUES (%s, '[1, 0]'::vector, 'm', 2, 1, 1, %s, %s, %s, FALSE)",
+            (ef_sid, _NOW, _NOW, gap_assignment_id),
         )
 
         # Authority gap MUST count this story
