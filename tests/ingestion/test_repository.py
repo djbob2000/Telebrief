@@ -438,6 +438,56 @@ async def test_get_or_create_item_shell_creates_identity_once(conn, source):
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
+async def test_get_or_create_canonical_revision_is_first_observation_wins(conn, source):
+    """Concurrent/repeated observations resolve to one immutable revision."""
+    repo = IngestionRepository()
+    item, _ = await repo.get_or_create_item_shell(conn, source.id, _observation())
+
+    first, created = await repo.get_or_create_canonical_revision(
+        conn,
+        item.id,
+        _observation(text="first text"),
+        collected_at=PUBLISHED_AT,
+    )
+    second, created_again = await repo.get_or_create_canonical_revision(
+        conn,
+        item.id,
+        _observation(text="later text"),
+        collected_at=PUBLISHED_AT,
+    )
+
+    assert created is True
+    assert created_again is False
+    assert second.id == first.id
+    assert second.revision_no == 1
+    assert second.text_content == "first text"
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_get_or_create_canonical_revision_adopts_existing_legacy_revision(conn, source):
+    """Existing historical revisions are never replaced by canonicalization."""
+    repo = IngestionRepository()
+    item, _ = await repo.get_or_create_item_shell(conn, source.id, _observation())
+    legacy = await repo.insert_revision_if_changed(
+        conn, item.id, _observation(text="legacy text"), collected_at=PUBLISHED_AT
+    )
+    assert legacy is not None
+
+    canonical, created = await repo.get_or_create_canonical_revision(
+        conn,
+        item.id,
+        _observation(text="new observation"),
+        collected_at=PUBLISHED_AT,
+    )
+
+    assert created is False
+    assert canonical.id == legacy.id
+    assert canonical.text_content == "legacy text"
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
 async def test_ensure_relationships_links_known_and_skips_unknown_references(conn, source):
     """Resolved parent/root ids are written; unresolved references stay NULL.
 
@@ -869,8 +919,8 @@ async def test_update_checkpoint_without_cursor_keeps_previous_cursor(conn, sour
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_get_or_create_item_shell_monotonically_enriches_published_at(conn, source):
-    """Monotonic enrichment: NULL published_at is updated when subsequent scan provides known timestamp."""
+async def test_get_or_create_item_shell_preserves_first_observation(conn, source):
+    """A later observation cannot rewrite first-seen shell fields."""
     repo = IngestionRepository()
 
     obs1 = ObservedItem(
@@ -887,7 +937,7 @@ async def test_get_or_create_item_shell_monotonically_enriches_published_at(conn
     assert created1 is True
     assert item1.published_at is None
 
-    # Second observation of the same post with parsed published_at
+    # A later observation with a parsed timestamp does not rewrite the shell.
     known_time = datetime(2026, 8, 22, 9, 30, tzinfo=timezone.utc)
     obs2 = ObservedItem(
         kind="facebook_post",
@@ -901,12 +951,12 @@ async def test_get_or_create_item_shell_monotonically_enriches_published_at(conn
     )
     item2, created2 = await repo.get_or_create_item_shell(conn, source.id, obs2)
     assert created2 is False
-    assert item2.published_at == known_time
+    assert item2.published_at is None
 
-    # Verify DB has the enriched published_at
+    # Verify the durable shell remains the first observation.
     fetched = await repo.get_item(conn, source_id=source.id, external_id="post:777")
     assert fetched is not None
-    assert fetched.published_at == known_time
+    assert fetched.published_at is None
 
 
 @pytest.mark.postgres
@@ -980,8 +1030,8 @@ async def test_content_hash_ignores_volatile_metadata_and_avoids_spurious_revisi
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_get_or_create_item_shell_upgrades_temporal_fidelity(conn, source):
-    """Subsequent observation with higher temporal fidelity upgrades published_at and fidelity."""
+async def test_get_or_create_item_shell_preserves_first_temporal_fidelity(conn, source):
+    """A later precise observation cannot rewrite first-seen temporal metadata."""
     repo = IngestionRepository()
 
     rel_time = datetime(2026, 8, 24, 10, 5, tzinfo=timezone.utc)
@@ -1000,7 +1050,7 @@ async def test_get_or_create_item_shell_upgrades_temporal_fidelity(conn, source)
     assert item1.metadata.get("temporal_fidelity") == "relative"
     assert item1.metadata.get("raw_timestamp") == "2 ч."
 
-    # Later scan discovers precise data-utime timestamp
+    # A later scan discovers precise data but the canonical shell is unchanged.
     precise_time = datetime(2026, 8, 24, 10, 0, 15, tzinfo=timezone.utc)
     obs_precise = ObservedItem(
         kind="facebook_post",
@@ -1013,11 +1063,11 @@ async def test_get_or_create_item_shell_upgrades_temporal_fidelity(conn, source)
         observed_at=datetime(2026, 8, 24, 13, 0, tzinfo=timezone.utc),
     )
     item2, _ = await repo.get_or_create_item_shell(conn, source.id, obs_precise)
-    assert item2.published_at == precise_time
-    assert item2.metadata.get("temporal_fidelity") == "precise_epoch"
-    assert item2.metadata.get("raw_timestamp") == "1724493615"
+    assert item2.published_at == rel_time
+    assert item2.metadata.get("temporal_fidelity") == "relative"
+    assert item2.metadata.get("raw_timestamp") == "2 ч."
 
-    # Subsequent scan with relative fidelity does NOT downgrade precise timestamp or raw_timestamp
+    # Nor can an even later relative observation rewrite the first shell.
     obs_rel2 = ObservedItem(
         kind="facebook_post",
         external_id="post:999",
@@ -1029,6 +1079,6 @@ async def test_get_or_create_item_shell_upgrades_temporal_fidelity(conn, source)
         observed_at=datetime(2026, 8, 24, 13, 10, tzinfo=timezone.utc),
     )
     item3, _ = await repo.get_or_create_item_shell(conn, source.id, obs_rel2)
-    assert item3.published_at == precise_time
-    assert item3.metadata.get("temporal_fidelity") == "precise_epoch"
-    assert item3.metadata.get("raw_timestamp") == "1724493615"
+    assert item3.published_at == rel_time
+    assert item3.metadata.get("temporal_fidelity") == "relative"
+    assert item3.metadata.get("raw_timestamp") == "2 ч."

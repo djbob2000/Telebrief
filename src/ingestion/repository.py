@@ -2,8 +2,10 @@
 
 Repositories never commit and never open their own connections; the caller
 owns transaction boundaries. Item identity is UNIQUE(source_id, external_id);
-revisions are immutable and dedup against the latest revision's content hash
-only; state events are append-only.
+the production ingestion path stores one immutable first-observation canonical
+revision per item and re-observations point back to it; the legacy append-only
+helper remains available for explicit historical/import callers. State events
+are append-only.
 """
 
 from __future__ import annotations
@@ -66,89 +68,8 @@ class IngestionRepository:
                 published_at, first_collected_at, metadata
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (source_id, external_id) DO UPDATE
-            SET published_at = CASE
-                    WHEN (
-                        CASE COALESCE(EXCLUDED.metadata->>'temporal_fidelity', '')
-                            WHEN 'exact' THEN 3
-                            WHEN 'precise' THEN 3
-                            WHEN 'precise_epoch' THEN 3
-                            WHEN 'precise_iso' THEN 3
-                            WHEN 'absolute_local' THEN 2
-                            WHEN 'relative' THEN 1
-                            ELSE (CASE WHEN EXCLUDED.published_at IS NOT NULL THEN 1 ELSE 0 END)
-                        END
-                    ) > (
-                        CASE COALESCE(source_items.metadata->>'temporal_fidelity', '')
-                            WHEN 'exact' THEN 3
-                            WHEN 'precise' THEN 3
-                            WHEN 'precise_epoch' THEN 3
-                            WHEN 'precise_iso' THEN 3
-                            WHEN 'absolute_local' THEN 2
-                            WHEN 'relative' THEN 1
-                            ELSE (CASE WHEN source_items.published_at IS NOT NULL THEN 1 ELSE 0 END)
-                        END
-                    ) OR source_items.published_at IS NULL THEN EXCLUDED.published_at
-                    ELSE source_items.published_at
-                END,
-                metadata = CASE
-                    WHEN (
-                        CASE COALESCE(EXCLUDED.metadata->>'temporal_fidelity', '')
-                            WHEN 'exact' THEN 3
-                            WHEN 'precise' THEN 3
-                            WHEN 'precise_epoch' THEN 3
-                            WHEN 'precise_iso' THEN 3
-                            WHEN 'absolute_local' THEN 2
-                            WHEN 'relative' THEN 1
-                            ELSE (CASE WHEN EXCLUDED.published_at IS NOT NULL THEN 1 ELSE 0 END)
-                        END
-                    ) > (
-                        CASE COALESCE(source_items.metadata->>'temporal_fidelity', '')
-                            WHEN 'exact' THEN 3
-                            WHEN 'precise' THEN 3
-                            WHEN 'precise_epoch' THEN 3
-                            WHEN 'precise_iso' THEN 3
-                            WHEN 'absolute_local' THEN 2
-                            WHEN 'relative' THEN 1
-                            ELSE (CASE WHEN source_items.published_at IS NOT NULL THEN 1 ELSE 0 END)
-                        END
-                    ) OR source_items.published_at IS NULL THEN jsonb_set(
-                        jsonb_set(
-                            source_items.metadata,
-                            '{temporal_fidelity}',
-                            COALESCE(EXCLUDED.metadata->'temporal_fidelity', '"unknown"'::jsonb)
-                        ),
-                        '{raw_timestamp}',
-                        COALESCE(EXCLUDED.metadata->'raw_timestamp', 'null'::jsonb)
-                    )
-                    ELSE source_items.metadata
-                END
-            WHERE (
-                source_items.published_at IS NULL AND EXCLUDED.published_at IS NOT NULL
-            ) OR (
-                (
-                    CASE COALESCE(EXCLUDED.metadata->>'temporal_fidelity', '')
-                        WHEN 'exact' THEN 3
-                        WHEN 'precise' THEN 3
-                        WHEN 'precise_epoch' THEN 3
-                        WHEN 'precise_iso' THEN 3
-                        WHEN 'absolute_local' THEN 2
-                        WHEN 'relative' THEN 1
-                        ELSE (CASE WHEN EXCLUDED.published_at IS NOT NULL THEN 1 ELSE 0 END)
-                    END
-                ) > (
-                    CASE COALESCE(source_items.metadata->>'temporal_fidelity', '')
-                        WHEN 'exact' THEN 3
-                        WHEN 'precise' THEN 3
-                        WHEN 'precise_epoch' THEN 3
-                        WHEN 'precise_iso' THEN 3
-                        WHEN 'absolute_local' THEN 2
-                        WHEN 'relative' THEN 1
-                        ELSE (CASE WHEN source_items.published_at IS NOT NULL THEN 1 ELSE 0 END)
-                    END
-                )
-            )
-            RETURNING (xmax = 0) AS is_inserted, id, source_id, kind, external_id, parent_item_id,
+            ON CONFLICT (source_id, external_id) DO NOTHING
+            RETURNING id, source_id, kind, external_id, parent_item_id,
                 root_item_id, author_name, author_external_id, canonical_url,
                 published_at, first_collected_at, metadata
             """,
@@ -165,13 +86,59 @@ class IngestionRepository:
         )
         row = await cursor.fetchone()
         if row is not None:
-            is_inserted = bool(row[0])
-            return SourceItem.from_row(row[1:]), is_inserted
+            return SourceItem.from_row(row), True
 
         item = await self.get_item(conn, source_id=source_id, external_id=observation.external_id)
         if item is None:
             raise RuntimeError(f"source item {observation.external_id!r} vanished during upsert")
         return item, False
+
+    async def get_or_create_canonical_revision(
+        self,
+        conn: psycopg.AsyncConnection,
+        item_id: int,
+        observation: ObservedItem,
+        *,
+        collected_at: datetime,
+        collection_run_id: int | None = None,
+    ) -> tuple[SourceItemRevision, bool]:
+        """Return the immutable first revision, race-safe across collectors."""
+        latest = await self.get_latest_revision(conn, item_id)
+        if latest is not None:
+            return latest, False
+
+        content_hash = _content_hash(observation)
+        cursor = await conn.execute(
+            """
+            INSERT INTO source_item_revisions (
+                source_item_id, revision_no, collected_at, content_hash,
+                text_content, payload, collection_run_id,
+                event_processing_hash, event_input_version
+            )
+            VALUES (%s, 1, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (source_item_id, revision_no) DO NOTHING
+            RETURNING id, source_item_id, revision_no, collected_at,
+                      content_hash, text_content, payload,
+                      event_processing_hash, event_input_version
+            """,
+            (
+                item_id,
+                collected_at,
+                content_hash,
+                observation.text,
+                Jsonb(observation.metadata),
+                collection_run_id,
+                build_event_processing_fingerprint(observation.text),
+                EVENT_INPUT_VERSION,
+            ),
+        )
+        row = await cursor.fetchone()
+        if row is not None:
+            return SourceItemRevision.from_row(row), True
+        canonical = await self.get_latest_revision(conn, item_id)
+        if canonical is None:
+            raise RuntimeError(f"source item {item_id} has no canonical revision")
+        return canonical, False
 
     async def ensure_relationships(
         self,
