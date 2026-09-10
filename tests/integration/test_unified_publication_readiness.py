@@ -203,14 +203,8 @@ async def test_scheduled_ready_early_waits_then_prepares_at_slot(
     )
     assert (await cur.fetchone())[0] == "preparing"
     cur = await conn.execute(
-        "SELECT publication_run_id FROM publication_refresh_runs WHERE id = %s",
+        "SELECT knowledge_snapshot_at FROM publication_refresh_runs WHERE id = %s",
         (early.intent_id,),
-    )
-    publication_run_id = (await cur.fetchone())[0]
-    assert publication_run_id is not None
-    cur = await conn.execute(
-        "SELECT snapshot_at FROM publication_runs WHERE id = %s",
-        (publication_run_id,),
     )
     assert (await cur.fetchone())[0] == early_snapshot
 
