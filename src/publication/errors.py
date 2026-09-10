@@ -44,3 +44,7 @@ class UnsupportedFrozenSemanticVersion(ValueError):
 
 class PublicationGenerationError(RuntimeError):
     """Raised when publication generation fails (e.g. fail-closed digest generation)."""
+
+
+class IdempotencyConflictError(RuntimeError):
+    """Raised when a request key is reused with a different frozen run contract."""

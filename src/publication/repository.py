@@ -10,6 +10,7 @@ from typing import Any, TypeVar
 import psycopg
 from psycopg.types.json import Jsonb
 
+from src.publication.errors import IdempotencyConflictError
 from src.publication.models import (
     DeliveryDestination,
     EditorialSelectionPolicyVersion,
@@ -492,6 +493,48 @@ def _candidate_universe_sql() -> str:
 class PublicationRepository:
     """Repository for publication runs, candidates, inputs, attempts, and publications."""
 
+    @staticmethod
+    def _verify_existing_run_contract(
+        existing: PublicationRun,
+        *,
+        request_key: str,
+        edition_id: int,
+        publication_type: str,
+        snapshot_at: dt.datetime,
+        source_cutoff_at: dt.datetime,
+        eligibility_id: int,
+        selection_id: int,
+        writer_id: int,
+    ) -> None:
+        expected = {
+            "edition_id": edition_id,
+            "publication_type": publication_type,
+            "snapshot_at": snapshot_at,
+            "source_cutoff_at": source_cutoff_at,
+            "eligibility_policy_id": eligibility_id,
+            "selection_policy_id": selection_id,
+            "writer_policy_id": writer_id,
+        }
+        actual = {
+            "edition_id": existing.edition_id,
+            "publication_type": existing.publication_type,
+            "snapshot_at": existing.snapshot_at,
+            "source_cutoff_at": existing.source_cutoff_at,
+            "eligibility_policy_id": existing.eligibility_policy_id,
+            "selection_policy_id": existing.selection_policy_id,
+            "writer_policy_id": existing.writer_policy_id,
+        }
+        mismatches = [
+            f"{field}: existing={actual[field]!r}, requested={value!r}"
+            for field, value in expected.items()
+            if actual[field] != value
+        ]
+        if mismatches:
+            raise IdempotencyConflictError(
+                f"request_key {request_key!r} already belongs to a different "
+                f"publication run contract ({'; '.join(mismatches)})"
+            )
+
     async def get_or_create_run(
         self,
         conn: psycopg.AsyncConnection,
@@ -524,7 +567,19 @@ class PublicationRepository:
         )
         row = await cursor.fetchone()
         if row is not None:
-            return PublicationRun.from_row(row)
+            existing = PublicationRun.from_row(row)
+            self._verify_existing_run_contract(
+                existing,
+                request_key=request_key,
+                edition_id=edition_id,
+                publication_type=publication_type,
+                snapshot_at=snapshot_at,
+                source_cutoff_at=source_cutoff_at or snapshot_at,
+                eligibility_id=eligibility_id,
+                selection_id=selection_id,
+                writer_id=writer_id,
+            )
+            return existing
 
         cursor = await conn.execute(
             """

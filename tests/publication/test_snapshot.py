@@ -5,6 +5,7 @@ import datetime as dt
 import psycopg
 import pytest
 
+from src.publication.errors import IdempotencyConflictError
 from src.publication.repository import (
     PublicationPolicyRepository,
     PublicationRepository,
@@ -94,6 +95,64 @@ class TestPublicationSnapshotConstraints:
             policy_ids=policy_ids,
         )
         assert run2.id == run1.id
+
+    async def test_request_key_idempotency_rejects_frozen_contract_conflicts(
+        self, conn: psycopg.AsyncConnection, edition
+    ):
+        repo = PublicationRepository()
+        policy_ids = await _seed_policies(conn, edition.id)
+        policy_repo = PublicationPolicyRepository()
+        alternate_selection = await policy_repo.get_or_create_selection_policy(
+            conn,
+            edition_id=edition.id,
+            config_hash="sel-hash-2",
+            prompt_version="sel-v2",
+        )
+
+        request_key = "scheduled:berdyansk:article:contract-conflict"
+        source_cutoff_at = _NOW - dt.timedelta(hours=24)
+        await repo.get_or_create_run(
+            conn,
+            edition_id=edition.id,
+            publication_type="article",
+            request_key=request_key,
+            snapshot_at=_NOW,
+            source_cutoff_at=source_cutoff_at,
+            policy_ids=policy_ids,
+        )
+
+        with pytest.raises(IdempotencyConflictError, match="snapshot_at"):
+            await repo.get_or_create_run(
+                conn,
+                edition_id=edition.id,
+                publication_type="article",
+                request_key=request_key,
+                snapshot_at=_NOW + dt.timedelta(minutes=1),
+                source_cutoff_at=source_cutoff_at,
+                policy_ids=policy_ids,
+            )
+
+        with pytest.raises(IdempotencyConflictError, match="source_cutoff_at"):
+            await repo.get_or_create_run(
+                conn,
+                edition_id=edition.id,
+                publication_type="article",
+                request_key=request_key,
+                snapshot_at=_NOW,
+                source_cutoff_at=source_cutoff_at + dt.timedelta(minutes=1),
+                policy_ids=policy_ids,
+            )
+
+        with pytest.raises(IdempotencyConflictError, match="selection_policy_id"):
+            await repo.get_or_create_run(
+                conn,
+                edition_id=edition.id,
+                publication_type="article",
+                request_key=request_key,
+                snapshot_at=_NOW,
+                source_cutoff_at=source_cutoff_at,
+                policy_ids=(policy_ids[0], alternate_selection.id, policy_ids[2]),
+            )
 
     async def test_candidate_duplicate_story_in_same_run_is_rejected(
         self, conn: psycopg.AsyncConnection, edition
