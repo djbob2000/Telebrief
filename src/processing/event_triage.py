@@ -335,6 +335,7 @@ class StoryTriageService:
         excerpt_chars: int = 320,
         min_ignore_confidence: float = 0.95,
         max_gate_fragments: int = 6,
+        assignment_id_by_story: Mapping[int, int] | None = None,
     ) -> StoryGateBatchResult:
         """Run batch Gate V2 classification on story clusters."""
         if not stories:
@@ -351,12 +352,43 @@ class StoryTriageService:
                 raise ValueError("Either conn or uow must be provided for triage_stories_batch")
 
         async with _get_conn() as read_conn:
+            effective_stories: list[StoryClusterState] = []
+            for story in stories:
+                if assignment_id_by_story is None:
+                    effective_stories.append(story)
+                    continue
+                target_assignment = assignment_id_by_story.get(
+                    story.story_id, story.latest_assignment_id
+                )
+                (
+                    fragment_count,
+                    source_count,
+                    last_seen_at,
+                ) = await self.cluster_repo.get_assignment_snapshot_metrics(
+                    read_conn,
+                    story_id=story.story_id,
+                    assignment_id=target_assignment,
+                )
+                effective_stories.append(
+                    replace(
+                        story,
+                        latest_assignment_id=target_assignment,
+                        fragment_count=fragment_count,
+                        unique_source_count=source_count,
+                        last_seen_at=last_seen_at,
+                    )
+                )
+
             # 1. Lookup cached Gate V2 results
-            cached_results = await self._lookup_cached_decisions(read_conn, stories, scope_hash)
-            uncached_stories = [s for s in stories if s.story_id not in cached_results]
+            cached_results = await self._lookup_cached_decisions(
+                read_conn, effective_stories, scope_hash
+            )
+            uncached_stories = [s for s in effective_stories if s.story_id not in cached_results]
 
             valid_results: list[StoryGateResult] = [
-                cached_results[s.story_id] for s in stories if s.story_id in cached_results
+                cached_results[s.story_id]
+                for s in effective_stories
+                if s.story_id in cached_results
             ]
             deferred_ids: list[int] = []
 
@@ -383,6 +415,36 @@ class StoryTriageService:
                 """,
                 (story_ids,),
             )
+
+            if assignment_id_by_story is not None:
+                await cursor.close()
+                target_story_ids = [story.story_id for story in uncached_stories]
+                target_assignment_ids = [story.latest_assignment_id for story in uncached_stories]
+                cursor = await read_conn.execute(
+                    """
+                    WITH target(story_id, assignment_id) AS (
+                        SELECT * FROM unnest(%s::bigint[], %s::bigint[])
+                    ), target_assignment AS (
+                        SELECT t.story_id, t.assignment_id, sf.assigned_at
+                        FROM target t
+                        JOIN story_fragments sf
+                          ON sf.id = t.assignment_id
+                         AND sf.story_id = t.story_id
+                    )
+                    SELECT sf.story_id, f.id, f.text_content, s.id, s.name,
+                           COALESCE(s.role, s.kind, 'unknown'),
+                           COALESCE(si.published_at, si.first_collected_at, f.created_at)
+                    FROM target_assignment ta
+                    JOIN story_fragments sf ON sf.story_id = ta.story_id
+                    JOIN source_fragments f ON f.id = sf.fragment_id
+                    JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
+                    JOIN source_items si ON si.id = sir.source_item_id
+                    JOIN sources s ON s.id = si.source_id
+                    WHERE (sf.assigned_at, sf.id) <= (ta.assigned_at, ta.assignment_id)
+                    ORDER BY sf.story_id, sf.id DESC
+                    """,
+                    (target_story_ids, target_assignment_ids),
+                )
 
             story_fragments_map: dict[int, list[dict[str, Any]]] = {sid: [] for sid in story_ids}
             all_story_frag_ids: dict[int, set[int]] = {sid: set() for sid in story_ids}
@@ -923,7 +985,9 @@ class StoryTriageService:
 
         all_results_by_id = {r.story_id: r for r in valid_results + new_valid_results}
         final_results = [
-            all_results_by_id[s.story_id] for s in stories if s.story_id in all_results_by_id
+            all_results_by_id[s.story_id]
+            for s in effective_stories
+            if s.story_id in all_results_by_id
         ]
 
         return StoryGateBatchResult(
@@ -946,6 +1010,9 @@ class StoryTriageService:
 
         cursor = await conn.execute(
             """
+            WITH requested(story_id, assignment_id) AS (
+                SELECT * FROM unnest(%s::bigint[], %s::bigint[])
+            )
             SELECT setd.story_id, sesd.scope_class, sesd.confidence, sesd.reason,
                    setd.retention, setd.enrichment, setd.exclusion_reason,
                    setd.confidence, setd.reason, setd.brief_payload
@@ -954,16 +1021,17 @@ class StoryTriageService:
               ON sesd.story_id = setd.story_id
              AND sesd.latest_assignment_id = setd.latest_assignment_id
              AND sesd.scope_config_hash = setd.scope_config_hash
+            JOIN requested r
+              ON r.story_id = setd.story_id
+             AND r.assignment_id = setd.latest_assignment_id
             WHERE setd.triage_version = %s
               AND setd.scope_config_hash = %s
-              AND setd.story_id = ANY(%s)
-              AND setd.latest_assignment_id = ANY(%s)
             """,
             (
-                TRIAGE_VERSION,
-                scope_hash,
                 story_ids,
                 assignment_ids,
+                TRIAGE_VERSION,
+                scope_hash,
             ),
         )
 
