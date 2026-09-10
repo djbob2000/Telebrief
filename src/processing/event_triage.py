@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping
@@ -296,6 +297,11 @@ class StoryGateBatchResult:
     deferred_story_ids: tuple[int, ...]
     batch_error_kind: str | None = None
     prompt_hash: str | None = None
+    fence_lost_story_ids: tuple[int, ...] = ()
+
+
+DecisionFence = Callable[[psycopg.AsyncConnection, int, int], Awaitable[bool]]
+DecisionPersistHook = Callable[[psycopg.AsyncConnection, StoryGateResult, int], Awaitable[None]]
 
 
 # Backward compatibility aliases
@@ -336,6 +342,8 @@ class StoryTriageService:
         min_ignore_confidence: float = 0.95,
         max_gate_fragments: int = 6,
         assignment_id_by_story: Mapping[int, int] | None = None,
+        decision_fence: DecisionFence | None = None,
+        before_decision_persist: DecisionPersistHook | None = None,
     ) -> StoryGateBatchResult:
         """Run batch Gate V2 classification on story clusters."""
         if not stories:
@@ -391,6 +399,7 @@ class StoryTriageService:
                 if s.story_id in cached_results
             ]
             deferred_ids: list[int] = []
+            fence_lost_ids: set[int] = set()
 
             if not uncached_stories:
                 return StoryGateBatchResult(
@@ -884,6 +893,18 @@ class StoryTriageService:
                 s_map = {s.story_id: s for s in uncached_stories}
                 for res in new_valid_results:
                     st = s_map[res.story_id]
+                    assignment_id = (
+                        assignment_id_by_story.get(res.story_id, st.latest_assignment_id)
+                        if assignment_id_by_story is not None
+                        else st.latest_assignment_id
+                    )
+                    if decision_fence is not None and not await decision_fence(
+                        write_conn, res.story_id, assignment_id
+                    ):
+                        fence_lost_ids.add(res.story_id)
+                        continue
+                    if before_decision_persist is not None:
+                        await before_decision_persist(write_conn, res, assignment_id)
                     # Scope decision
                     await write_conn.execute(
                         """
@@ -909,7 +930,7 @@ class StoryTriageService:
                             run_id,
                             res.story_id,
                             edition_id,
-                            st.latest_assignment_id,
+                            assignment_id,
                             SCOPE_VERSION,
                             scope_hash,
                             res.scope,
@@ -942,7 +963,7 @@ class StoryTriageService:
                         (
                             run_id,
                             res.story_id,
-                            st.latest_assignment_id,
+                            assignment_id,
                             TRIAGE_VERSION,
                             scope_hash,
                             res.decision,
@@ -981,9 +1002,14 @@ class StoryTriageService:
                 deferred_story_ids=tuple(s.story_id for s in uncached_stories),
                 batch_error_kind=classify_provider_failure(exc),
                 prompt_hash=prompt_hash,
+                fence_lost_story_ids=tuple(sorted(fence_lost_ids)),
             )
 
-        all_results_by_id = {r.story_id: r for r in valid_results + new_valid_results}
+        all_results_by_id = {
+            r.story_id: r
+            for r in valid_results + new_valid_results
+            if r.story_id not in fence_lost_ids
+        }
         final_results = [
             all_results_by_id[s.story_id]
             for s in effective_stories
@@ -994,6 +1020,7 @@ class StoryTriageService:
             results=tuple(final_results),
             deferred_story_ids=tuple(deferred_ids),
             prompt_hash=prompt_hash,
+            fence_lost_story_ids=tuple(sorted(fence_lost_ids)),
         )
 
     async def _lookup_cached_decisions(

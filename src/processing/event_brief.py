@@ -113,23 +113,33 @@ class EventBriefService:
         story_id: int,
         assignment_id: int,
         payload: EventPayload | None,
+        exact_assignment: bool = False,
     ) -> StoryRevision | None:
         """Create or update a StoryRevision using the already-computed brief payload."""
         if payload is None:
             return None
 
-        # Fetch latest revision if any to check if already rich
-        cursor = await conn.execute(
+        if exact_assignment:
+            revision_query = """
+                SELECT id, story_id, revision_no, current_state, semantic_text,
+                       content_hash, event_payload, created_at, title, summary, reason
+                FROM story_revisions
+                WHERE story_id = %s AND event_assignment_id = %s
+                ORDER BY revision_no DESC
+                LIMIT 1
             """
-            SELECT id, story_id, revision_no, current_state, semantic_text,
-                   content_hash, event_payload, created_at, title, summary, reason
-            FROM story_revisions
-            WHERE story_id = %s
-            ORDER BY revision_no DESC
-            LIMIT 1
-            """,
-            (story_id,),
-        )
+            revision_params: tuple[object, ...] = (story_id, assignment_id)
+        else:
+            revision_query = """
+                SELECT sr.id, sr.story_id, sr.revision_no, sr.current_state,
+                       sr.semantic_text, sr.content_hash, sr.event_payload,
+                       sr.created_at, sr.title, sr.summary, sr.reason
+                FROM stories s
+                JOIN story_revisions sr ON sr.id = s.current_revision_id
+                WHERE s.id = %s
+            """
+            revision_params = (story_id,)
+        cursor = await conn.execute(revision_query, revision_params)
         row = await cursor.fetchone()
         existing_rev: StoryRevision | None = None
         if row is not None:
@@ -191,11 +201,10 @@ class EventBriefService:
             event_payload=payload_dict,
         )
 
-        if not await self.cluster_repo.is_current_assignment(
-            conn,
-            story_id=story_id,
-            assignment_id=assignment_id,
-        ):
+        is_current_assignment = await self.cluster_repo.is_current_assignment(
+            conn, story_id=story_id, assignment_id=assignment_id
+        )
+        if not exact_assignment and not is_current_assignment:
             return None
 
         rev = await self.story_repo.create_revision_if_semantic_change(
@@ -204,5 +213,6 @@ class EventBriefService:
             semantic_changed=True,
             revision=new_rev,
             event_assignment_id=assignment_id,
+            set_current=is_current_assignment,
         )
         return rev
