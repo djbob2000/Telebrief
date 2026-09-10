@@ -25,18 +25,10 @@ WHERE sir.collection_run_id IS NOT NULL
 ON CONFLICT DO NOTHING;
 
 ALTER TABLE publication_refresh_runs
-    ADD COLUMN IF NOT EXISTS lookback_hours INTEGER;
+    ADD COLUMN IF NOT EXISTS lookback_hours INTEGER DEFAULT 24;
 
 UPDATE publication_refresh_runs
-SET lookback_hours = CASE publication_type
-    WHEN 'weekly_article' THEN 168
-    WHEN 'monthly_article' THEN 720
-    ELSE 24
-END
-WHERE lookback_hours IS NULL;
-
-ALTER TABLE publication_refresh_runs
-    ALTER COLUMN lookback_hours SET DEFAULT 24;
+SET lookback_hours = COALESCE(lookback_hours, 24);
 
 ALTER TABLE publication_refresh_runs
     ALTER COLUMN lookback_hours SET NOT NULL;

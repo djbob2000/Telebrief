@@ -127,6 +127,11 @@ class PublicationSnapshotService:
         from src.jobs.event_processing import coalesce_dirty_stories_task
 
         rounds = 0
+        # A PublicationRun is a frozen knowledge boundary. Candidate drains
+        # may move their cutoff forward, but a run-specific drain must keep
+        # checking the run's saved snapshot or it can report success that
+        # seal_candidates() immediately disproves.
+        advances_snapshot = run_id is None
         candidate_snapshot_at = snapshot_at
         while gap_story_ids and rounds < max_rounds:
             rounds += 1
@@ -148,7 +153,8 @@ class PublicationSnapshotService:
             # the candidate snapshot. Historical PublicationRun reads remain
             # fenced by their saved snapshot_at; only this pre-publication
             # candidate cutoff advances after coalescing.
-            candidate_snapshot_at = dt.datetime.now(dt.timezone.utc)
+            if advances_snapshot:
+                candidate_snapshot_at = dt.datetime.now(dt.timezone.utc)
 
             async with self.uow.transaction() as conn:
                 gap_story_ids = await self.repo.find_authority_gap_story_ids(

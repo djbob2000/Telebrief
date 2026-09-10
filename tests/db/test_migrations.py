@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import shutil
 from pathlib import Path
 
 import psycopg
@@ -27,7 +29,7 @@ PROBE_NT_REBUILD = 900031
 @pytest.mark.postgres
 async def test_migrate_applies_each_version_once(pg_conn):
     version = await migrate(pg_conn, MIGRATIONS_DIR)
-    assert version >= 7
+    assert version >= 32
     again = await migrate(pg_conn, MIGRATIONS_DIR)
     assert again == version
 
@@ -186,6 +188,94 @@ async def test_publication_refresh_readiness_schema(pg_conn):
         """
     )
     assert await cur.fetchone() == ("collection_run_revision_observations",)
+
+
+@pytest.mark.postgres
+async def test_publication_lookback_repair_only_updates_legacy_open_rows(
+    isolated_pg_conn, tmp_path
+):
+    """0032 repairs rows from before 0031 without clobbering later overrides."""
+    for migration in MIGRATIONS_DIR.glob("*.sql"):
+        if migration.name.startswith("0032_"):
+            continue
+        shutil.copy2(migration, tmp_path / migration.name)
+
+    from src.db.migrations import migrate
+
+    await migrate(isolated_pg_conn, tmp_path)
+    boundary = dt.datetime(2026, 9, 10, 8, 0, tzinfo=dt.timezone.utc)
+    cursor = await isolated_pg_conn.execute(
+        "INSERT INTO editions (slug, name) VALUES ('lookback-repair', 'Lookback Repair') RETURNING id"
+    )
+    edition_id = (await cursor.fetchone())[0]
+
+    async def insert_run(
+        publication_type: str,
+        status: str,
+        created_at: dt.datetime,
+        request_key: str,
+    ) -> int:
+        cursor = await isolated_pg_conn.execute(
+            """
+            INSERT INTO publication_refresh_runs (
+                edition_id, publication_type, slot_at, requested_at,
+                normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
+                status, trigger, request_key, freshness_cutoff_at,
+                created_at, updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'manual', %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (
+                edition_id,
+                publication_type,
+                boundary,
+                boundary,
+                boundary,
+                boundary,
+                boundary + dt.timedelta(hours=1),
+                status,
+                request_key,
+                boundary,
+                created_at,
+                created_at,
+            ),
+        )
+        return int((await cursor.fetchone())[0])
+
+    weekly_legacy = await insert_run(
+        "weekly_article", "collecting", boundary - dt.timedelta(hours=1), "repair:weekly"
+    )
+    monthly_legacy = await insert_run(
+        "monthly_article", "preparing", boundary - dt.timedelta(hours=1), "repair:monthly"
+    )
+    terminal_legacy = await insert_run(
+        "weekly_article", "failed", boundary - dt.timedelta(hours=1), "repair:terminal"
+    )
+    queued_legacy = await insert_run(
+        "monthly_article", "publication_queued", boundary - dt.timedelta(hours=1), "repair:queued"
+    )
+    post_migration_override = await insert_run(
+        "weekly_article", "collecting", boundary + dt.timedelta(seconds=1), "repair:override"
+    )
+
+    await isolated_pg_conn.execute(
+        "UPDATE telebrief_schema_migrations SET applied_at = %s WHERE version = 31",
+        (boundary,),
+    )
+    assert await migrate(isolated_pg_conn, MIGRATIONS_DIR) == 32
+
+    cursor = await isolated_pg_conn.execute(
+        "SELECT id, lookback_hours FROM publication_refresh_runs WHERE id = ANY(%s)",
+        ([weekly_legacy, monthly_legacy, terminal_legacy, queued_legacy, post_migration_override],),
+    )
+    values = {int(row[0]): int(row[1]) for row in await cursor.fetchall()}
+    assert values == {
+        weekly_legacy: 168,
+        monthly_legacy: 720,
+        terminal_legacy: 24,
+        queued_legacy: 24,
+        post_migration_override: 24,
+    }
 
 
 @pytest.mark.postgres

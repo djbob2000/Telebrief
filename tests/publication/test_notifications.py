@@ -165,6 +165,54 @@ async def test_redrive_requeues_durable_pending_notification(monkeypatch, sample
     defer_async.assert_awaited_once()
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_redrive_treats_already_enqueued_as_idempotent(monkeypatch, sample_config):
+    from procrastinate.exceptions import AlreadyEnqueued
+
+    from src import runtime
+
+    conn = AsyncMock()
+    uow = MagicMock()
+    uow.transaction.return_value.__aenter__ = AsyncMock(return_value=conn)
+    uow.transaction.return_value.__aexit__ = AsyncMock(return_value=None)
+    runtime._runtime = SimpleNamespace(uow=uow)
+
+    repo = MagicMock()
+    repo.list_dispatchable = AsyncMock(return_value=[7, 8])
+    repo.get = AsyncMock(
+        side_effect=lambda _conn, notification_id: SimpleNamespace(
+            id=notification_id,
+            refresh_run_id=1,
+            recipient_user_id=123,
+            failure_kind="preparation_failed",
+            status="pending",
+        )
+    )
+    readiness_repo = MagicMock()
+    readiness_repo.get_refresh_run = AsyncMock(return_value=_intent("scheduled"))
+    readiness_repo.list_unready_source_diagnostics = AsyncMock(return_value=[])
+    service = PublicationFailureNotificationService(
+        config=sample_config,
+        repo=repo,
+        readiness_repo=readiness_repo,
+    )
+    first_defer = AsyncMock(side_effect=AlreadyEnqueued())
+    second_defer = AsyncMock()
+    configure = MagicMock(
+        side_effect=[
+            SimpleNamespace(defer_async=first_defer),
+            SimpleNamespace(defer_async=second_defer),
+        ]
+    )
+    with patch("src.jobs.admin.send_publication_failure_notification.configure", configure):
+        queued = await service.redrive_pending()
+
+    assert queued == [7, 8]
+    first_defer.assert_awaited_once()
+    second_defer.assert_awaited_once()
+
+
 @pytest.mark.postgres
 async def test_notification_rows_are_idempotent(conn, edition):
     repo = PublicationNotificationRepository()

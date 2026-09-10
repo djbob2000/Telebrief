@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import psycopg
+from procrastinate.exceptions import AlreadyEnqueued
 
 from src.config_loader import Config
 from src.publication.notification_repository import PublicationNotificationRepository
@@ -117,10 +118,16 @@ class PublicationFailureNotificationService:
             diagnostics = await self.readiness_repo.list_unready_source_diagnostics(conn, intent.id)
         message = self.render_message(intent, diagnostics)
         for notification_id in notification_ids:
-            await send_publication_failure_notification.configure(
-                connection=conn,
-                queueing_lock=f"publication-failure-notification:{notification_id}",
-            ).defer_async(notification_id=notification_id, message=message)
+            try:
+                await send_publication_failure_notification.configure(
+                    connection=conn,
+                    queueing_lock=f"publication-failure-notification:{notification_id}",
+                ).defer_async(notification_id=notification_id, message=message)
+            except AlreadyEnqueued:
+                # The durable outbox row is already represented by a queued
+                # job. Treat that as idempotent success so one duplicate does
+                # not abort the transaction for the remaining notifications.
+                continue
 
     async def redrive_pending(self, *, limit: int = 100) -> list[int]:
         """Queue pending/failed outbox rows; rows remain durable if queueing fails."""

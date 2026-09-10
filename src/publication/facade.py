@@ -151,9 +151,10 @@ async def build_publication_preview(
 ) -> PublicationPreviewResult:
     """Generate a full publication preview in-process without delivery side effects.
 
-    Executes the canonical production publication pipeline:
-    create_run -> seal_candidates -> select -> generate -> Publication,
-    with explicit flags to suppress queueing selection, generation, and delivery jobs.
+    Executes the canonical production publication pipeline: drain candidate
+    knowledge -> freeze a PublicationRun -> seal_candidates -> select ->
+    generate -> Publication, with explicit flags to suppress queueing
+    selection, generation, and delivery jobs.
 
     Raises:
         ArticlePublicationRejected: the one-call Event-First article writer did not
@@ -166,8 +167,9 @@ async def build_publication_preview(
     validate_publication_config(config)
 
     from src.publication.generation import PublicationGenerationService
+    from src.publication.policies import PublicationPolicyService
     from src.publication.selection import EditorialSelectionService
-    from src.publication.snapshot import PublicationSnapshotService
+    from src.publication.snapshot import IncompleteTriageError, PublicationSnapshotService
     from src.repositories.editions import EditionRepository
     from src.runtime import get_runtime
 
@@ -179,22 +181,47 @@ async def build_publication_preview(
         edition = await EditionRepository().get_by_slug(conn, edition_slug)
         if edition is None:
             raise ValueError(f"edition slug {edition_slug!r} not found")
+        policy_set = await PublicationPolicyService().ensure_current(
+            conn,
+            edition_id=edition.id,
+            publication_type=publication_type,
+            config=config,
+            lookback_hours_override=lookback_hours,
+        )
 
     service = PublicationSnapshotService(uow=runtime.uow)
+    knowledge_snapshot_at: dt.datetime | None = None
+    remaining = 1
+    for _ in range(3):
+        candidate_at = dt.datetime.now(dt.timezone.utc)
+        await service.drain_authority_gap(
+            edition_id=edition.id,
+            source_cutoff_at=snap,
+            snapshot_at=candidate_at,
+            eligibility_policy_id=policy_set.eligibility_policy_id,
+            max_rounds=1,
+        )
+        knowledge_snapshot_at = dt.datetime.now(dt.timezone.utc)
+        remaining = await service.count_authority_gap(
+            edition_id=edition.id,
+            source_cutoff_at=snap,
+            snapshot_at=knowledge_snapshot_at,
+            eligibility_policy_id=policy_set.eligibility_policy_id,
+        )
+        if remaining == 0:
+            break
+    if knowledge_snapshot_at is None or remaining != 0:
+        raise IncompleteTriageError("authority gap did not converge for preview")
+
     run = await service.create_run(
         edition_id=edition.id,
         publication_type=publication_type,
-        snapshot_at=snap,
+        source_cutoff_at=snap,
+        snapshot_at=knowledge_snapshot_at,
         request_key=key,
-        config=config,
-        lookback_hours_override=lookback_hours,
+        policy_ids=policy_set,
         metadata={"preview": True},
     )
-
-    try:
-        await service.drain_authority_gap(run_id=run.id)
-    except Exception as exc:
-        logger.warning("Pre-seal authority gap drain encountered issue: %s", exc)
 
     async with runtime.uow.transaction() as conn:
         await service.seal_candidates(run.id, conn=conn)
@@ -223,5 +250,5 @@ async def build_publication_preview(
         lead=pub.lead or "",
         body=pub.body,
         publication_type=pub.publication_type,
-        snapshot_at=snap,
+        snapshot_at=knowledge_snapshot_at,
     )

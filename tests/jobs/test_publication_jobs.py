@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import psycopg
@@ -163,6 +164,35 @@ async def test_drain_authority_gap_loops_and_drains():
     assert remaining == 0
     assert coalesce_mock.await_count == 1
     coalesce_mock.assert_awaited_with(edition_id=1, force_settled=True, story_ids=[101])
+
+
+@pytest.mark.asyncio
+async def test_run_drain_keeps_frozen_snapshot_after_coalesce():
+    mock_uow = MagicMock()
+    mock_conn = AsyncMock()
+    mock_uow.transaction.return_value.__aenter__.return_value = mock_conn
+    mock_repo = AsyncMock()
+    frozen_snapshot = dt.datetime(2026, 9, 7, 6, 0, tzinfo=dt.timezone.utc)
+    mock_repo.lock_run.return_value = SimpleNamespace(
+        id=42,
+        edition_id=1,
+        snapshot_at=frozen_snapshot,
+        source_cutoff_at=frozen_snapshot,
+        eligibility_policy_id=5,
+    )
+
+    async def find_gap(*args, **kwargs):
+        assert kwargs["snapshot_at"] == frozen_snapshot
+        return [101]
+
+    mock_repo.find_authority_gap_story_ids = AsyncMock(side_effect=find_gap)
+    service = PublicationSnapshotService(uow=mock_uow, repo=mock_repo)
+
+    with patch("src.jobs.event_processing.coalesce_dirty_stories_task.func", AsyncMock()):
+        remaining = await service.drain_authority_gap(run_id=42, max_rounds=1)
+
+    assert remaining == 1
+    assert mock_repo.find_authority_gap_story_ids.await_count == 2
 
 
 @pytest.mark.asyncio
