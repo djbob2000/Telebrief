@@ -198,6 +198,28 @@ async def test_ingest_batch_reports_new_edit_unchanged_counts(service, source, u
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
+async def test_unchanged_revision_without_processing_state_is_requeued(
+    service, source, edition, conn, production_jobs_app
+):
+    """A scan must repair an old revision missing Event-First processing state."""
+    await _bind(conn, source.id, edition.id)
+    first = await service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, _batch())
+    revision_id = first.new_revision_ids[0]
+
+    await conn.execute(
+        "DELETE FROM event_revision_processing_state WHERE source_item_revision_id = %s",
+        (revision_id,),
+    )
+    await conn.execute("DELETE FROM procrastinate.procrastinate_jobs")
+
+    second = await service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, _batch())
+
+    assert second.new_revisions == 0
+    assert await _deferred_event_jobs(conn) == [[revision_id]]
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
 async def test_semantic_noop_revision_reuses_succeeded_predecessor(service, source, uow):
     first = await service.ingest_batch(
         source.id, CollectionTrigger.SCHEDULED, _batch(text="Water outage on Street A")

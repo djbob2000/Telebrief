@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import cast
 
 import psycopg
+from procrastinate.types import JSONValue
 
 from src.db.uow import DatabaseUnitOfWork
 from src.domain.ingestion import SourceItem
@@ -184,7 +186,9 @@ class IngestionService:
             updated_count=len(new_revision_ids),
         )
         await self._defer_relevance_jobs(
-            conn, source_id=source_id, new_revision_ids=full_processing_revision_ids
+            conn,
+            source_id=source_id,
+            observed_revision_ids=list(current_revision_by_external_id.values()),
         )
         logger.info(
             "event_first_ingestion_completed",
@@ -211,18 +215,27 @@ class IngestionService:
         conn: psycopg.AsyncConnection,
         *,
         source_id: int,
-        new_revision_ids: list[int],
+        observed_revision_ids: list[int],
     ) -> None:
-        """Defer Event-First processing for newly ingested revisions.
+        """Defer Event-First processing for incomplete observed revisions.
+
+        A collection scan observes unchanged historical revisions as well as new
+        ones. Re-queue every observed revision whose durable processing state is
+        missing or incomplete so imports and interrupted backlogs can self-heal;
+        otherwise the publication readiness barrier would wait for revisions
+        that no job could ever process.
 
         The process_event_revisions_task import is lazy on purpose: importing it at
         module scope would build the Procrastinate app (and demand database
         config) for every consumer of this service.
         """
-        if not new_revision_ids:
+        if not observed_revision_ids:
             return
         processing_repo = EventRevisionProcessingRepository()
-        await processing_repo.mark_pending(conn, new_revision_ids)
+        incomplete_revision_ids = await processing_repo.list_incomplete(conn, observed_revision_ids)
+        if not incomplete_revision_ids:
+            return
+        await processing_repo.mark_pending(conn, incomplete_revision_ids)
         edition_ids = await self.repo.list_source_edition_ids(conn, source_id)
         if not edition_ids:
             return
@@ -230,5 +243,5 @@ class IngestionService:
         from src.jobs.event_processing import process_event_revisions_task
 
         await process_event_revisions_task.configure(connection=conn).defer_async(
-            revision_ids=list(new_revision_ids)
+            revision_ids=cast(JSONValue, incomplete_revision_ids)
         )
