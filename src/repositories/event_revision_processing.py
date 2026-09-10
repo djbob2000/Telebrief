@@ -95,6 +95,7 @@ class EventRevisionProcessingRepository:
         *,
         claim_token: UUID,
         lease_seconds: int,
+        allow_succeeded: bool = False,
     ) -> list[int]:
         """Atomically acquire only revisions without a live processing owner."""
         if not revision_ids:
@@ -128,11 +129,12 @@ class EventRevisionProcessingRepository:
             WHERE source_item_revision_id = ANY(%s)
               AND (
                   status IN ('pending', 'failed')
+                  OR (%s AND status = 'succeeded')
                   OR (status = 'running' AND claim_expires_at <= now())
               )
             RETURNING source_item_revision_id
             """,
-            (claim_token, lease_seconds, list(revision_ids)),
+            (claim_token, lease_seconds, allow_succeeded, list(revision_ids)),
         )
         claimed = {int(row[0]) for row in await cursor.fetchall()}
         return [revision_id for revision_id in revision_ids if revision_id in claimed]
@@ -151,6 +153,7 @@ class EventRevisionProcessingRepository:
             revision_ids,
             claim_token=claim_token,
             lease_seconds=lease_seconds,
+            allow_succeeded=True,
         )
 
     async def mark_succeeded(
