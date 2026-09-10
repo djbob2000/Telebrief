@@ -26,7 +26,6 @@ from src.ingestion.models import (
 )
 from src.ingestion.repository import IngestionRepository
 from src.ingestion.service import IngestionService
-from src.repositories.event_revision_processing import EventRevisionProcessingRepository
 
 STARTED_AT = datetime(2026, 8, 22, 10, 0, tzinfo=timezone.utc)
 COMPLETED_AT = datetime(2026, 8, 22, 10, 0, 5, tzinfo=timezone.utc)
@@ -155,7 +154,7 @@ def test_collection_trigger_values_match_run_trigger_contract():
 @pytest.mark.postgres
 @pytest.mark.asyncio
 async def test_ingest_batch_reports_new_edit_unchanged_counts(service, source, uow):
-    """First observation is new, re-observation unchanged, edit adds revision 2."""
+    """First observation is canonical; later edits remain observations only."""
     result1 = await service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, _batch())
     assert result1.new_items == 1
     assert result1.new_revisions == 1
@@ -192,8 +191,19 @@ async def test_ingest_batch_reports_new_edit_unchanged_counts(service, source, u
     result3 = await service.ingest_batch(
         source.id, CollectionTrigger.SCHEDULED, _batch(text="hello edited")
     )
-    assert result3.new_revisions == 1
-    assert len(result3.new_revision_ids) == 1
+    assert result3.new_revisions == 0
+    assert result3.full_processing_revision_ids == ()
+    assert result3.reused_revision_ids == ()
+    assert await _scalar(uow, "SELECT count(*) FROM source_item_revisions") == 1
+    assert (
+        await _scalar(
+            uow,
+            "SELECT text_content FROM source_item_revisions WHERE source_item_id = "
+            "(SELECT id FROM source_items WHERE source_id = %s AND external_id = '42')",
+            (source.id,),
+        )
+        == "hello"
+    )
 
 
 @pytest.mark.postgres
@@ -220,41 +230,25 @@ async def test_unchanged_revision_without_processing_state_is_requeued(
 
 @pytest.mark.postgres
 @pytest.mark.asyncio
-async def test_semantic_noop_revision_reuses_succeeded_predecessor(service, source, uow):
+async def test_reobservation_requeues_incomplete_canonical_revision(service, source, edition, conn):
+    """An unchanged canonical revision is requeued when processing is incomplete."""
+    await _bind(conn, source.id, edition.id)
     first = await service.ingest_batch(
         source.id, CollectionTrigger.SCHEDULED, _batch(text="Water outage on Street A")
     )
-    assert first.full_processing_revision_ids == first.new_revision_ids
+    revision_id = first.new_revision_ids[0]
+    await conn.execute("DELETE FROM procrastinate.procrastinate_jobs")
 
-    async with uow.transaction() as conn:
-        processing_repo = EventRevisionProcessingRepository()
-        await processing_repo.mark_succeeded(conn, first.new_revision_ids)
-
-    original = _observation(text="Water outage on Street A")
-    metadata_edit = replace(original, metadata={"topic": 8})
     second = await service.ingest_batch(
         source.id,
         CollectionTrigger.SCHEDULED,
-        _batch(items=(metadata_edit,)),
+        _batch(text="Water outage changed at source"),
     )
 
-    assert second.new_revisions == 1
+    assert second.new_revisions == 0
     assert second.full_processing_revision_ids == ()
-    assert second.reused_revision_ids == second.new_revision_ids
-    async with uow.pool.connection() as conn:
-        cursor = await conn.execute(
-            """
-            SELECT status, processing_mode, reused_from_revision_id
-            FROM event_revision_processing_state
-            WHERE source_item_revision_id = %s
-            """,
-            (second.new_revision_ids[0],),
-        )
-        assert await cursor.fetchone() == (
-            "succeeded",
-            "reused",
-            first.new_revision_ids[0],
-        )
+    assert second.reused_revision_ids == ()
+    assert await _deferred_event_jobs(conn) == [[revision_id]]
 
 
 @pytest.mark.postgres
@@ -360,7 +354,12 @@ async def test_duplicate_execution_is_idempotent(service, source, uow):
     batch = _batch(assets=(asset,))
 
     first = await service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, batch)
-    second = await service.ingest_batch(source.id, CollectionTrigger.SCHEDULED, batch)
+    changed_asset = replace(asset, content_hash="hash-photo-new", metadata={"width": 1600})
+    second = await service.ingest_batch(
+        source.id,
+        CollectionTrigger.SCHEDULED,
+        _batch(text="edited at source", assets=(changed_asset,)),
+    )
 
     assert first.new_items == 1 and first.new_revisions == 1
     assert second.new_items == 0 and second.new_revisions == 0
@@ -371,6 +370,41 @@ async def test_duplicate_execution_is_idempotent(service, source, uow):
     assert revisions == 1
     assert assets == 1
     assert runs == 2
+    assert await _scalar(uow, "SELECT content_hash FROM source_assets") == "hash-photo"
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_reobservation_does_not_rewrite_canonical_relationships(service, source, uow):
+    """Relationships from a later observation cannot rewrite the first shell."""
+    first = await service.ingest_batch(
+        source.id,
+        CollectionTrigger.SCHEDULED,
+        _batch(
+            items=(
+                _observation(
+                    external_id="reply",
+                    parent_external_id="parent",
+                ),
+            )
+        ),
+    )
+    assert first.new_revisions == 1
+
+    await service.ingest_batch(
+        source.id,
+        CollectionTrigger.SCHEDULED,
+        _batch(items=(_observation(external_id="parent", text="parent"),)),
+    )
+
+    assert (
+        await _scalar(
+            uow,
+            "SELECT parent_item_id FROM source_items WHERE source_id = %s AND external_id = 'reply'",
+            (source.id,),
+        )
+        is None
+    )
 
 
 @pytest.mark.postgres
@@ -460,7 +494,7 @@ async def test_run_counters_record_seen_new_updated(service, source):
             )
         ),
     )
-    assert (second.new_items, second.new_revisions) == (0, 1)
+    assert (second.new_items, second.new_revisions) == (0, 0)
 
     async with service.uow.pool.connection() as conn:
         cursor = await conn.execute(
@@ -468,7 +502,7 @@ async def test_run_counters_record_seen_new_updated(service, source):
             (second.collection_run_id,),
         )
         row = await cursor.fetchone()
-    assert row == (2, 0, 1)
+    assert row == (2, 0, 0)
 
 
 @pytest.mark.postgres
