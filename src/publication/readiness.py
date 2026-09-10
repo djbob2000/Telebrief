@@ -266,20 +266,20 @@ class PublicationReadinessService:
                     processing_ready_at=processing_ready_at,
                     now=now,
                 )
+                if hasattr(self.repo, "freeze_knowledge_snapshot"):
+                    await self.repo.freeze_knowledge_snapshot(
+                        conn, refresh_run_id=refresh.id, snapshot_at=evaluation_at
+                    )
                 if refresh.trigger == "scheduled" and now < refresh.slot_at:
                     await self._transition(
                         conn,
                         refresh.id,
                         status="ready_waiting_slot",
-                        collection_ready_at=refresh.collection_ready_at or now,
-                        processing_ready_at=now,
+                        collection_ready_at=refresh.collection_ready_at or processing_ready_at,
+                        processing_ready_at=processing_ready_at,
                         now=now,
                     )
                     return PublicationReadinessDecision("ready_waiting_slot", None)
-                if hasattr(self.repo, "freeze_knowledge_snapshot"):
-                    await self.repo.freeze_knowledge_snapshot(
-                        conn, refresh_run_id=refresh.id, snapshot_at=evaluation_at
-                    )
                 return self._normal_decision(refresh)
             await self._transition(
                 conn,

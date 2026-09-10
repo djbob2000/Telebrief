@@ -349,7 +349,7 @@ async def _process_cluster_unit_with_retry(
     active_window_hours: int,
     max_cluster_candidates: int,
 ) -> None:
-    """Retry only a short cluster transaction after a PostgreSQL deadlock."""
+    """Retry only a short cluster transaction after a retryable serialization error."""
     for attempt in range(_CLUSTER_UNIT_MAX_RETRIES):
         try:
             async with runtime.uow.transaction() as conn:
@@ -374,7 +374,7 @@ async def _process_cluster_unit_with_retry(
                     max_cluster_candidates=max_cluster_candidates,
                 )
             return
-        except psycopg.errors.DeadlockDetected:
+        except (psycopg.errors.DeadlockDetected, psycopg.errors.SerializationFailure):
             if attempt + 1 >= _CLUSTER_UNIT_MAX_RETRIES:
                 raise
             await asyncio.sleep(0.05 * (attempt + 1))

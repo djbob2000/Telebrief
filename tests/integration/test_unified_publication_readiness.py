@@ -187,6 +187,12 @@ async def test_scheduled_ready_early_waits_then_prepares_at_slot(
         now=TARGET - dt.timedelta(minutes=1),
     )
     assert early.readiness_status == "ready_waiting_slot"
+    cur = await conn.execute(
+        "SELECT knowledge_snapshot_at FROM publication_refresh_runs WHERE id = %s",
+        (early.intent_id,),
+    )
+    early_snapshot = (await cur.fetchone())[0]
+    assert early_snapshot == TARGET - dt.timedelta(minutes=1)
     cur = await conn.execute("SELECT count(*) FROM publication_runs")
     assert (await cur.fetchone())[0] == 0
 
@@ -196,6 +202,17 @@ async def test_scheduled_ready_early_waits_then_prepares_at_slot(
         "SELECT status FROM publication_refresh_runs WHERE id = %s", (early.intent_id,)
     )
     assert (await cur.fetchone())[0] == "preparing"
+    cur = await conn.execute(
+        "SELECT publication_run_id FROM publication_refresh_runs WHERE id = %s",
+        (early.intent_id,),
+    )
+    publication_run_id = (await cur.fetchone())[0]
+    assert publication_run_id is not None
+    cur = await conn.execute(
+        "SELECT snapshot_at FROM publication_runs WHERE id = %s",
+        (publication_run_id,),
+    )
+    assert (await cur.fetchone())[0] == early_snapshot
 
     # A late scheduler tick may submit the same stable key again after the
     # preparation handoff. It must be an idempotent no-op, not a readiness

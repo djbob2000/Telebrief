@@ -16,7 +16,15 @@ from src.jobs.event_processing import _process_cluster_unit_with_retry
 
 
 @pytest.mark.unit
-async def test_deadlock_retries_only_the_cluster_unit(monkeypatch):
+@pytest.mark.parametrize(
+    "failure",
+    [
+        psycopg.errors.DeadlockDetected("cluster deadlock"),
+        psycopg.errors.SerializationFailure("cluster serialization failure"),
+    ],
+    ids=["deadlock", "serialization_failure"],
+)
+async def test_cluster_serialization_errors_retry_only_the_cluster_unit(monkeypatch, failure):
     connections = object()
     calls = 0
 
@@ -31,7 +39,7 @@ async def test_deadlock_retries_only_the_cluster_unit(monkeypatch):
             assert conn is connections
             calls += 1
             if calls == 1:
-                raise psycopg.errors.DeadlockDetected("cluster deadlock")
+                raise failure
 
     class FakeProcessingRepository:
         async def claims_owned(self, conn, revision_ids, *, claim_token):

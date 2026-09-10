@@ -67,7 +67,8 @@ class FakeReadinessRepository:
         return self.sources
 
     async def freeze_knowledge_snapshot(self, conn, *, refresh_run_id, snapshot_at):
-        self.refresh = replace(self.refresh, knowledge_snapshot_at=snapshot_at)
+        if self.refresh.knowledge_snapshot_at is None:
+            self.refresh = replace(self.refresh, knowledge_snapshot_at=snapshot_at)
         return self.refresh
 
     async def count_unprocessed_refresh_revisions(self, conn, refresh_run_id):
@@ -212,10 +213,27 @@ async def test_no_bound_sources_is_immediately_ready():
 @pytest.mark.asyncio
 async def test_scheduled_ready_before_slot_waits():
     repo = FakeReadinessRepository(_refresh(), [_source()])
-    decision = await PublicationReadinessService(repo).reconcile(
-        None, 10, now=NOW - dt.timedelta(minutes=1)
-    )
+    ready_at = NOW - dt.timedelta(minutes=1)
+    decision = await PublicationReadinessService(repo).reconcile(None, 10, now=ready_at)
     assert decision.status == "ready_waiting_slot"
+    assert repo.refresh.knowledge_snapshot_at == ready_at
+    assert repo.refresh.processing_ready_at == NOW
+
+
+@pytest.mark.asyncio
+async def test_scheduled_ready_snapshot_is_not_moved_when_slot_opens():
+    repo = FakeReadinessRepository(_refresh(), [_source()])
+    service = PublicationReadinessService(repo)
+    first = await service.reconcile(None, 10, now=NOW - dt.timedelta(minutes=1))
+
+    assert first.status == "ready_waiting_slot"
+    frozen = repo.refresh.knowledge_snapshot_at
+
+    repo.refresh = replace(repo.refresh, slot_at=NOW - dt.timedelta(seconds=1))
+    second = await service.reconcile(None, 10, now=NOW)
+
+    assert second.status == "ready_for_preparation"
+    assert repo.refresh.knowledge_snapshot_at == frozen
 
 
 @pytest.mark.asyncio
