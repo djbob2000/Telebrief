@@ -266,7 +266,9 @@ class PublicationReadinessService:
                     processing_ready_at=processing_ready_at,
                     now=now,
                 )
-                if hasattr(self.repo, "freeze_knowledge_snapshot"):
+                if refresh.knowledge_snapshot_at is None and hasattr(
+                    self.repo, "freeze_knowledge_snapshot"
+                ):
                     await self.repo.freeze_knowledge_snapshot(
                         conn, refresh_run_id=refresh.id, snapshot_at=evaluation_at
                     )
