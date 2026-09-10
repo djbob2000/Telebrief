@@ -31,9 +31,10 @@ if TYPE_CHECKING:
 # version 26, execution guards land version 27, publication readiness lands
 # version 28, semantic Event-First reuse lands version 29, unified
 # publication intents land version 30, observation barriers/lookback
-# persistence land version 31, and the legacy lookback repair lands version 32.
+# persistence land version 31, the legacy lookback repair lands version 32,
+# and frozen publication knowledge snapshots land version 33.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 32
+SCHEMA_VERSION_MAXIMUM = 33
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]

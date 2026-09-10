@@ -29,9 +29,24 @@ PROBE_NT_REBUILD = 900031
 @pytest.mark.postgres
 async def test_migrate_applies_each_version_once(pg_conn):
     version = await migrate(pg_conn, MIGRATIONS_DIR)
-    assert version >= 32
+    assert version >= 33
     again = await migrate(pg_conn, MIGRATIONS_DIR)
     assert again == version
+
+
+@pytest.mark.postgres
+async def test_publication_refresh_has_frozen_knowledge_snapshot(pg_conn):
+    await migrate(pg_conn, MIGRATIONS_DIR)
+    cursor = await pg_conn.execute(
+        """
+        SELECT data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'publication_refresh_runs'
+          AND column_name = 'knowledge_snapshot_at'
+        """
+    )
+    assert await cursor.fetchone() == ("timestamp with time zone", "YES")
 
 
 @pytest.mark.postgres

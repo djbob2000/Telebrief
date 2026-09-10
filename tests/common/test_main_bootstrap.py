@@ -44,6 +44,10 @@ requires_test_db = pytest.mark.skipif(
 )
 
 
+def test_schema_compatibility_maximum_is_current():
+    assert bootstrap_module.SCHEMA_VERSION_MAXIMUM == 33
+
+
 class FakeProcrastinateApp:
     """Duck-typed procrastinate.App recording open/close calls."""
 
