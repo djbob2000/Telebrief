@@ -286,10 +286,14 @@ async def test_gate_v10_backfill_stagnation_guard(
         "UPDATE stories SET current_revision_id = %s WHERE id = %s", (srev_id, story_id)
     )
     cursor = await conn.execute(
-        "INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind) VALUES (%s, %s, %s, 'new_story') RETURNING id",
-        (story_id, frag_id, sfe_id),
+        "INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at) VALUES (%s, %s, %s, 'new_story', %s) RETURNING id",
+        (story_id, frag_id, sfe_id, now),
     )
     aid = (await cursor.fetchone())[0]
+    await conn.execute(
+        "UPDATE story_revisions SET event_assignment_id = %s WHERE id = %s",
+        (aid, srev_id),
+    )
     await conn.execute(
         "INSERT INTO story_cluster_state (story_id, centroid, model, dimensions, fragment_count, unique_source_count, first_seen_at, last_seen_at, latest_assignment_id, analysis_dirty) VALUES (%s, '[1, 0]'::vector, 'm', 2, 1, 1, %s, %s, %s, FALSE)",
         (story_id, now, now, aid),
