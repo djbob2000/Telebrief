@@ -134,7 +134,7 @@ class EventRevisionProcessingRepository:
               )
             RETURNING source_item_revision_id
             """,
-            (claim_token, lease_seconds, allow_succeeded, list(revision_ids)),
+            (claim_token, lease_seconds, list(revision_ids), allow_succeeded),
         )
         claimed = {int(row[0]) for row in await cursor.fetchall()}
         return [revision_id for revision_id in revision_ids if revision_id in claimed]
