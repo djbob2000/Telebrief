@@ -102,6 +102,24 @@ async def test_event_clustering_workflow(conn, edition, revision):
     assert state1.fragment_count == 1
     assert state1.analysis_dirty is True
 
+    # Replaying a revision after its job-level completion must not count the
+    # same fragment twice.
+    replay = await service.process_fragment(
+        conn,
+        frag1,
+        edition_id=edition.id,
+        fragment_embedding_id=4001,
+        vector=[1.0, 0.0, 0.0, 0.0],
+        model="test-model",
+        dimensions=dim,
+        item_timestamp=now,
+        join_similarity=0.84,
+    )
+    assert replay.story_id == res1.story_id
+    replayed_state = await cluster_repo.get_cluster_state(conn, res1.story_id)
+    assert replayed_state is not None
+    assert replayed_state.fragment_count == 1
+
     # 2. Process frag2 (cosine sim ~ 0.99 with frag1) -> Should join frag1's story
     res2 = await service.process_fragment(
         conn,

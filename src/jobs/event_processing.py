@@ -18,7 +18,7 @@ from src.embedding_providers import create_embedding_provider
 from src.jobs.app import procrastinate_app
 from src.processing.edition_scope import resolve_edition_scope, scope_config_hash
 from src.processing.embeddings import EmbeddingService
-from src.processing.errors import classify_processing_failure
+from src.processing.errors import RevisionClaimLostError, classify_processing_failure
 from src.processing.event_analysis import EventAnalysisService
 from src.processing.event_brief import EventBriefService
 from src.processing.event_clustering import EventClusteringService
@@ -77,8 +77,36 @@ async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int
     if not pending_ids:
         return {"revisions": 0, "fragments": 0, "candidates": 0, "assignments": 0}
 
+    claim_lost = asyncio.Event()
+    heartbeat_task = asyncio.create_task(
+        _revision_claim_heartbeat(
+            runtime,
+            processing_repo,
+            pending_ids,
+            claim_token,
+            config.settings.event_pipeline.revision_claim_lease_seconds,
+            claim_lost,
+        )
+    )
     try:
-        stats = await _process_event_revisions(pending_ids)
+        stats = await _process_event_revisions(
+            pending_ids,
+            claim_token=claim_token,
+            claim_lost=claim_lost,
+        )
+        if claim_lost.is_set():
+            raise RevisionClaimLostError("revision claim was lost after processing")
+        async with runtime.uow.transaction() as state_conn:
+            if not await processing_repo.claims_owned(
+                state_conn, pending_ids, claim_token=claim_token
+            ):
+                raise RevisionClaimLostError("revision claim was lost before completion")
+            await processing_repo.mark_succeeded(
+                state_conn,
+                pending_ids,
+                claim_token=claim_token,
+            )
+        return stats
     except Exception as exc:
         async with runtime.uow.transaction() as state_conn:
             await processing_repo.mark_failed(
@@ -88,16 +116,58 @@ async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int
                 error_kind=classify_processing_failure(exc),
             )
         raise
-    async with runtime.uow.transaction() as state_conn:
-        await processing_repo.mark_succeeded(
-            state_conn,
-            pending_ids,
-            claim_token=claim_token,
-        )
-    return stats
+    finally:
+        heartbeat_task.cancel()
+        await asyncio.gather(heartbeat_task, return_exceptions=True)
 
 
-async def _process_event_revisions(revision_ids: list[int]) -> dict[str, int]:
+async def _revision_claim_heartbeat(
+    runtime: Any,
+    repository: EventRevisionProcessingRepository,
+    revision_ids: list[int],
+    claim_token: uuid.UUID,
+    lease_seconds: int,
+    claim_lost: asyncio.Event,
+) -> None:
+    """Renew a revision lease while provider or clustering work is running."""
+    interval = max(1.0, lease_seconds / 3)
+    try:
+        while True:
+            await asyncio.sleep(interval)
+            async with runtime.uow.transaction() as conn:
+                renewed = await repository.renew_claims(
+                    conn,
+                    revision_ids,
+                    claim_token=claim_token,
+                    lease_seconds=lease_seconds,
+                )
+            if len(renewed) != len(revision_ids):
+                claim_lost.set()
+                return
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        logger.exception("revision claim heartbeat failed; fencing processing phases")
+        claim_lost.set()
+
+
+async def _require_revision_claim(
+    conn: Any,
+    repository: EventRevisionProcessingRepository,
+    revision_ids: list[int],
+    claim_token: uuid.UUID,
+    claim_lost: asyncio.Event,
+) -> None:
+    if claim_lost.is_set() or not await repository.claims_owned(
+        conn, revision_ids, claim_token=claim_token
+    ):
+        claim_lost.set()
+        raise RevisionClaimLostError("revision claim is no longer owned")
+
+
+async def _process_event_revisions(
+    revision_ids: list[int], *, claim_token: uuid.UUID, claim_lost: asyncio.Event
+) -> dict[str, int]:
     """Ingest and cluster a batch of source item revisions."""
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
@@ -116,6 +186,9 @@ async def _process_event_revisions(revision_ids: list[int]) -> dict[str, int]:
 
     # 1. Load revisions and create deterministic fragments in a short transaction.
     async with runtime.uow.transaction() as conn:
+        await _require_revision_claim(
+            conn, EventRevisionProcessingRepository(), revision_ids, claim_token, claim_lost
+        )
         cursor = await conn.execute(
             """
             SELECT sir.id, sir.text_content, COALESCE(si.first_collected_at, now()), COALESCE(se.edition_id, 1)
@@ -159,6 +232,9 @@ async def _process_event_revisions(revision_ids: list[int]) -> dict[str, int]:
     # 2. Read cache state and create audit rows in a short transaction. The
     # transaction is closed before any provider/network await below.
     async with runtime.uow.transaction() as conn:
+        await _require_revision_claim(
+            conn, EventRevisionProcessingRepository(), revision_ids, claim_token, claim_lost
+        )
         prepared = await emb_service.prepare_embedding_batches(
             conn,
             all_candidate_frags,
@@ -187,6 +263,9 @@ async def _process_event_revisions(revision_ids: list[int]) -> dict[str, int]:
                 )
             raise
         async with runtime.uow.transaction() as conn:
+            await _require_revision_claim(
+                conn, EventRevisionProcessingRepository(), revision_ids, claim_token, claim_lost
+            )
             await emb_service.persist_embedding_batch(
                 conn,
                 prepared,
@@ -197,6 +276,9 @@ async def _process_event_revisions(revision_ids: list[int]) -> dict[str, int]:
             )
 
     async with runtime.uow.transaction() as conn:
+        await _require_revision_claim(
+            conn, EventRevisionProcessingRepository(), revision_ids, claim_token, claim_lost
+        )
         await emb_service.persist_cached_fragment_links(conn, prepared)
         embeddings_map = await emb_service.get_fragment_embeddings_map(
             conn, [f.id for f in prepared.candidates]
@@ -214,6 +296,10 @@ async def _process_event_revisions(revision_ids: list[int]) -> dict[str, int]:
             runtime,
             clustering_service,
             f,
+            processing_repo=EventRevisionProcessingRepository(),
+            revision_ids=revision_ids,
+            claim_token=claim_token,
+            claim_lost=claim_lost,
             edition_id=edition_id,
             fragment_embedding_id=sfe_id,
             vector=vec,
@@ -249,6 +335,10 @@ async def _process_cluster_unit_with_retry(
     clustering_service: EventClusteringService,
     fragment: Any,
     *,
+    processing_repo: EventRevisionProcessingRepository,
+    revision_ids: list[int],
+    claim_token: uuid.UUID,
+    claim_lost: asyncio.Event,
     edition_id: int,
     fragment_embedding_id: int,
     vector: list[float],
@@ -263,6 +353,13 @@ async def _process_cluster_unit_with_retry(
     for attempt in range(_CLUSTER_UNIT_MAX_RETRIES):
         try:
             async with runtime.uow.transaction() as conn:
+                await _require_revision_claim(
+                    conn,
+                    processing_repo,
+                    revision_ids,
+                    claim_token,
+                    claim_lost,
+                )
                 await clustering_service.process_fragment(
                     conn,
                     fragment,

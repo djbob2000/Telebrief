@@ -190,6 +190,13 @@ jobs:
             echo "==> Pulling images..."
             docker compose pull telebrief-app telebrief-worker telebrief-processing-worker
 
+            # Migration 0034 changes ownership semantics for legacy running
+            # revisions. Quiesce the processing owner before expiring those
+            # leases so an old worker cannot continue side effects while a new
+            # worker reclaims the same revision.
+            echo "==> Stopping processing worker before ownership migration..."
+            docker compose stop telebrief-processing-worker
+
             # Run database migrations
             echo "==> Running database migrations..."
             docker compose run --rm --interactive=false -T telebrief-app python scripts/migrate.py </dev/null

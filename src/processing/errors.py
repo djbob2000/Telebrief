@@ -8,6 +8,10 @@ from psycopg_pool import PoolTimeout
 from src.ai_providers import classify_provider_failure
 
 
+class RevisionClaimLostError(RuntimeError):
+    """The worker no longer owns a revision before a durable processing phase."""
+
+
 def classify_processing_failure(exc: BaseException) -> str:
     """Classify database contention separately from provider failures."""
     if isinstance(exc, PoolTimeout):

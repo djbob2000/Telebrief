@@ -12,6 +12,9 @@ def test_dev_deploy_is_immutable_noninteractive_and_verifies_all_runtime_service
         "docker compose run --rm --interactive=false -T telebrief-app python scripts/migrate.py </dev/null"
         in text
     )
+    assert text.index("docker compose stop telebrief-processing-worker") < text.index(
+        "docker compose run --rm --interactive=false -T telebrief-app python scripts/migrate.py"
+    )
     assert "telebrief-app telebrief-worker telebrief-processing-worker" in text
     assert "org.opencontainers.image.revision" in text
     assert (

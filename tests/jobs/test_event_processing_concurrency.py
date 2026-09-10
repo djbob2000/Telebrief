@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
+import uuid
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -31,6 +33,10 @@ async def test_deadlock_retries_only_the_cluster_unit(monkeypatch):
             if calls == 1:
                 raise psycopg.errors.DeadlockDetected("cluster deadlock")
 
+    class FakeProcessingRepository:
+        async def claims_owned(self, conn, revision_ids, *, claim_token):
+            return True
+
     sleep = AsyncMock()
     monkeypatch.setattr("src.jobs.event_processing.asyncio.sleep", sleep)
 
@@ -39,6 +45,10 @@ async def test_deadlock_retries_only_the_cluster_unit(monkeypatch):
         FakeClusteringService(),
         SimpleNamespace(id=1),
         edition_id=1,
+        processing_repo=FakeProcessingRepository(),
+        revision_ids=[1],
+        claim_token=uuid.uuid4(),
+        claim_lost=asyncio.Event(),
         fragment_embedding_id=1,
         vector=[1.0, 0.0],
         model="test",

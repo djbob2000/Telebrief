@@ -156,6 +156,56 @@ class EventRevisionProcessingRepository:
             allow_succeeded=True,
         )
 
+    async def renew_claims(
+        self,
+        conn: psycopg.AsyncConnection,
+        revision_ids: Sequence[int],
+        *,
+        claim_token: UUID,
+        lease_seconds: int,
+    ) -> list[int]:
+        """Extend live claims owned by this worker; never revive another owner."""
+        if not revision_ids:
+            return []
+        cursor = await conn.execute(
+            """
+            UPDATE event_revision_processing_state
+            SET claim_expires_at = now() + (%s * interval '1 second'),
+                updated_at = now()
+            WHERE source_item_revision_id = ANY(%s)
+              AND status = 'running'
+              AND claim_token = %s
+            RETURNING source_item_revision_id
+            """,
+            (lease_seconds, list(revision_ids), claim_token),
+        )
+        renewed = {int(row[0]) for row in await cursor.fetchall()}
+        return [revision_id for revision_id in revision_ids if revision_id in renewed]
+
+    async def claims_owned(
+        self,
+        conn: psycopg.AsyncConnection,
+        revision_ids: Sequence[int],
+        *,
+        claim_token: UUID,
+    ) -> bool:
+        """Check ownership and lease validity for a durable processing phase."""
+        if not revision_ids:
+            return True
+        cursor = await conn.execute(
+            """
+            SELECT count(*)
+            FROM event_revision_processing_state
+            WHERE source_item_revision_id = ANY(%s)
+              AND status = 'running'
+              AND claim_token = %s
+              AND claim_expires_at > now()
+            """,
+            (list(revision_ids), claim_token),
+        )
+        row = await cursor.fetchone()
+        return row is not None and int(row[0]) == len(set(revision_ids))
+
     async def mark_succeeded(
         self,
         conn: psycopg.AsyncConnection,

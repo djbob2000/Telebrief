@@ -198,6 +198,23 @@ class EventClusterRepository:
             raise RuntimeError("assign_fragment_to_story produced no row")
         return int(row[0])
 
+    async def get_fragment_assignment(
+        self, conn: psycopg.AsyncConnection, fragment_id: int
+    ) -> tuple[int, int, str, float | None] | None:
+        """Return the durable assignment for a fragment, if already applied."""
+        cursor = await conn.execute(
+            """
+            SELECT id, story_id, assignment_kind, similarity
+            FROM story_fragments
+            WHERE fragment_id = %s
+            """,
+            (fragment_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return int(row[0]), int(row[1]), str(row[2]), row[3]
+
     async def upsert_cluster_state(
         self,
         conn: psycopg.AsyncConnection,

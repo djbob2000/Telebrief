@@ -162,6 +162,12 @@ async def test_live_revision_claim_is_exclusive_and_expired_claim_is_reclaimable
         claim_token=first_token,
         lease_seconds=300,
     ) == [revision_id]
+    assert await repository.renew_claims(
+        repo_conn,
+        [revision_id],
+        claim_token=first_token,
+        lease_seconds=300,
+    ) == [revision_id]
     assert (
         await repository.claim_revision_ids(
             repo_conn,

@@ -6,6 +6,7 @@ import datetime as dt
 import logging
 import math
 from collections.abc import Sequence
+from typing import Literal, cast
 
 import psycopg
 
@@ -67,6 +68,23 @@ class EventClusteringService:
         """Assign one candidate fragment to an existing active story cluster or seed a new one."""
         norm_vec = normalize_vector(vector)
         active_since = item_timestamp - dt.timedelta(hours=active_window_hours)
+
+        # A revision retry may arrive after this fragment's assignment and
+        # cluster-state update already committed. The unique fragment
+        # assignment is the durable idempotency key; replaying it must not
+        # increment the centroid/count a second time.
+        existing_assignment = await self.cluster_repo.get_fragment_assignment(conn, fragment.id)
+        if existing_assignment is not None:
+            assignment_id, story_id, assignment_kind, similarity = existing_assignment
+            return ClusterAssignmentResult(
+                fragment_id=fragment.id,
+                story_id=story_id,
+                assignment_kind=cast(
+                    Literal["new_story", "vector_join", "manual"], assignment_kind
+                ),
+                similarity=similarity,
+                assignment_id=assignment_id,
+            )
 
         # 1. Search candidate clusters
         candidates = await self.cluster_repo.find_candidate_clusters(
