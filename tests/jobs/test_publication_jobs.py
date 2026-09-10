@@ -265,6 +265,10 @@ async def test_prepare_publication_from_intent_does_not_drain_authority_gap(monk
 
     mock_service.drain_authority_gap.assert_not_awaited()
     mock_service.repo.find_authority_gap_story_ids.assert_awaited_once()
+    assert (
+        mock_service.repo.find_authority_gap_story_ids.await_args.kwargs["snapshot_at"]
+        == mock_service.create_run.await_args.kwargs["snapshot_at"]
+    )
     assert seal_called == [10]
 
 

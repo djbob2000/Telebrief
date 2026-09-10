@@ -168,11 +168,12 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
             return
         if current_refresh.status != "preparing":
             raise ValueError(f"refresh run {refresh.id} is not preparing")
+        candidate_snapshot_at = dt.datetime.now(dt.timezone.utc)
         gap_story_ids = await service.repo.find_authority_gap_story_ids(
             conn,
             edition_id=current_refresh.edition_id,
             source_cutoff_at=current_refresh.normal_source_cutoff_at,
-            snapshot_at=dt.datetime.now(dt.timezone.utc),
+            snapshot_at=candidate_snapshot_at,
             eligibility_policy_id=policy_set.eligibility_policy_id,
         )
         if gap_story_ids:
@@ -198,7 +199,7 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
                 },
             )
             return
-        knowledge_snapshot_at = dt.datetime.now(dt.timezone.utc)
+        knowledge_snapshot_at = candidate_snapshot_at
         run = await service.create_run(
             edition_id=refresh.edition_id,
             publication_type=refresh.publication_type,

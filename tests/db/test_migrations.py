@@ -214,6 +214,7 @@ async def test_publication_lookback_repair_only_updates_legacy_open_rows(
         status: str,
         created_at: dt.datetime,
         request_key: str,
+        slot_at: dt.datetime,
     ) -> int:
         cursor = await isolated_pg_conn.execute(
             """
@@ -228,7 +229,7 @@ async def test_publication_lookback_repair_only_updates_legacy_open_rows(
             (
                 edition_id,
                 publication_type,
-                boundary,
+                slot_at,
                 boundary,
                 boundary,
                 boundary,
@@ -243,19 +244,39 @@ async def test_publication_lookback_repair_only_updates_legacy_open_rows(
         return int((await cursor.fetchone())[0])
 
     weekly_legacy = await insert_run(
-        "weekly_article", "collecting", boundary - dt.timedelta(hours=1), "repair:weekly"
+        "weekly_article",
+        "collecting",
+        boundary - dt.timedelta(hours=1),
+        "repair:weekly",
+        boundary,
     )
     monthly_legacy = await insert_run(
-        "monthly_article", "preparing", boundary - dt.timedelta(hours=1), "repair:monthly"
+        "monthly_article",
+        "preparing",
+        boundary - dt.timedelta(hours=1),
+        "repair:monthly",
+        boundary,
     )
     terminal_legacy = await insert_run(
-        "weekly_article", "failed", boundary - dt.timedelta(hours=1), "repair:terminal"
+        "weekly_article",
+        "failed",
+        boundary - dt.timedelta(hours=1),
+        "repair:terminal",
+        boundary + dt.timedelta(hours=1),
     )
     queued_legacy = await insert_run(
-        "monthly_article", "publication_queued", boundary - dt.timedelta(hours=1), "repair:queued"
+        "monthly_article",
+        "publication_queued",
+        boundary - dt.timedelta(hours=1),
+        "repair:queued",
+        boundary + dt.timedelta(hours=1),
     )
     post_migration_override = await insert_run(
-        "weekly_article", "collecting", boundary + dt.timedelta(seconds=1), "repair:override"
+        "weekly_article",
+        "collecting",
+        boundary + dt.timedelta(seconds=1),
+        "repair:override",
+        boundary + dt.timedelta(hours=2),
     )
 
     await isolated_pg_conn.execute(
