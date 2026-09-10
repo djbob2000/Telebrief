@@ -163,6 +163,41 @@ async def test_repeated_request_key_does_not_expand_frozen_source_set(conn, edit
     assert [source.source_id for source in await repo.list_refresh_sources(conn, first.id)] == [
         first_source
     ]
+    assert first.knowledge_snapshot_at is None
+
+
+@pytest.mark.postgres
+async def test_freeze_knowledge_snapshot_sets_once(conn, edition):
+    repo = PublicationReadinessRepository()
+    refresh_run = await repo.get_or_create_refresh_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        slot_at=TARGET,
+        requested_at=CUTOFF,
+        trigger="manual",
+        request_key="manual:freeze-knowledge-snapshot",
+        freshness_cutoff_at=CUTOFF,
+        deadline_at=TARGET + dt.timedelta(minutes=20),
+        requested_by_user_id=123,
+        source_ids=[],
+    )
+    t1 = refresh_run.deadline_at - dt.timedelta(seconds=5)
+
+    frozen = await repo.freeze_knowledge_snapshot(
+        conn, refresh_run_id=refresh_run.id, snapshot_at=t1
+    )
+    assert frozen.knowledge_snapshot_at == t1
+
+    same = await repo.freeze_knowledge_snapshot(conn, refresh_run_id=refresh_run.id, snapshot_at=t1)
+    assert same.knowledge_snapshot_at == t1
+
+    with pytest.raises(ValueError, match="knowledge_snapshot_at"):
+        await repo.freeze_knowledge_snapshot(
+            conn,
+            refresh_run_id=refresh_run.id,
+            snapshot_at=t1 + dt.timedelta(seconds=1),
+        )
 
 
 @pytest.mark.postgres

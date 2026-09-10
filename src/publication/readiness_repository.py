@@ -35,6 +35,7 @@ class PublicationRefreshRun:
     freshness_cutoff_at: dt.datetime | None = None
     requested_by_user_id: int | None = None
     lookback_hours: int = 24
+    knowledge_snapshot_at: dt.datetime | None = None
 
     @classmethod
     def from_row(cls, row: Any) -> PublicationRefreshRun:
@@ -60,6 +61,7 @@ class PublicationRefreshRun:
             freshness_cutoff_at=row[18],
             requested_by_user_id=int(row[19]) if row[19] is not None else None,
             lookback_hours=int(row[20]),
+            knowledge_snapshot_at=row[21],
         )
 
 
@@ -117,7 +119,7 @@ class PublicationReadinessRepository:
         collection_ready_at, processing_ready_at, prepared_at,
         publication_run_id, fallback_used, error_kind, metadata,
         trigger, request_key, freshness_cutoff_at, requested_by_user_id,
-        lookback_hours
+        lookback_hours, knowledge_snapshot_at
         FROM publication_refresh_runs
     """
     _SOURCE_SELECT = """
@@ -160,7 +162,7 @@ class PublicationReadinessRepository:
                       status, collection_ready_at, processing_ready_at, prepared_at,
                       publication_run_id, fallback_used, error_kind, metadata,
                       trigger, request_key, freshness_cutoff_at, requested_by_user_id,
-                      lookback_hours
+                      lookback_hours, knowledge_snapshot_at
             """,
             (
                 edition_id,
@@ -217,6 +219,38 @@ class PublicationReadinessRepository:
         cursor = await conn.execute(query, (refresh_run_id,))
         row = await cursor.fetchone()
         return PublicationRefreshRun.from_row(row) if row is not None else None
+
+    async def freeze_knowledge_snapshot(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        refresh_run_id: int,
+        snapshot_at: dt.datetime,
+    ) -> PublicationRefreshRun:
+        """Persist the readiness snapshot once and reject conflicting rewrites."""
+        cursor = await conn.execute(
+            """
+            UPDATE publication_refresh_runs
+            SET knowledge_snapshot_at = COALESCE(knowledge_snapshot_at, %s),
+                updated_at = now()
+            WHERE id = %s
+              AND (knowledge_snapshot_at IS NULL OR knowledge_snapshot_at = %s)
+            RETURNING id
+            """,
+            (snapshot_at, refresh_run_id, snapshot_at),
+        )
+        if await cursor.fetchone() is None:
+            current = await self.get_refresh_run(conn, refresh_run_id)
+            if current is None:
+                raise ValueError(f"refresh run {refresh_run_id} not found")
+            raise ValueError(
+                f"refresh run {refresh_run_id} knowledge_snapshot_at is already "
+                f"{current.knowledge_snapshot_at!r}, cannot change to {snapshot_at!r}"
+            )
+        frozen = await self.get_refresh_run(conn, refresh_run_id)
+        if frozen is None:
+            raise ValueError(f"refresh run {refresh_run_id} not found")
+        return frozen
 
     async def list_reconcilable_refresh_runs(
         self, conn: psycopg.AsyncConnection
@@ -498,7 +532,7 @@ class PublicationReadinessRepository:
                    status, collection_ready_at, processing_ready_at, prepared_at,
                    publication_run_id, fallback_used, error_kind, metadata,
                    trigger, request_key, freshness_cutoff_at, requested_by_user_id,
-                   lookback_hours
+                   lookback_hours, knowledge_snapshot_at
             FROM publication_refresh_runs
             WHERE id = %s
               AND status = 'ready_for_preparation'
