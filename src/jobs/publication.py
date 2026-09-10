@@ -122,7 +122,7 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
     from src.config_loader import load_config
     from src.publication.policies import PublicationPolicyService
     from src.publication.readiness_repository import PublicationReadinessRepository
-    from src.publication.snapshot import IncompleteTriageError, PublicationSnapshotService
+    from src.publication.snapshot import PublicationSnapshotService
     from src.repositories.editions import EditionRepository
 
     runtime = get_runtime()
@@ -150,32 +150,7 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
             lookback_hours_override=refresh.lookback_hours,
         )
 
-    source_cutoff_at = refresh.slot_at
-    knowledge_snapshot_at: dt.datetime | None = None
-    remaining = 1
-    for _ in range(3):
-        candidate_at = dt.datetime.now(dt.timezone.utc)
-        await service.drain_authority_gap(
-            edition_id=refresh.edition_id,
-            source_cutoff_at=source_cutoff_at,
-            snapshot_at=candidate_at,
-            eligibility_policy_id=policy_set.eligibility_policy_id,
-            max_rounds=1,
-        )
-        knowledge_snapshot_at = dt.datetime.now(dt.timezone.utc)
-        remaining = await service.count_authority_gap(
-            edition_id=refresh.edition_id,
-            source_cutoff_at=source_cutoff_at,
-            snapshot_at=knowledge_snapshot_at,
-            eligibility_policy_id=policy_set.eligibility_policy_id,
-        )
-        if remaining == 0:
-            break
-    if knowledge_snapshot_at is None or remaining != 0:
-        raise IncompleteTriageError("authority gap did not converge")
-
-    if knowledge_snapshot_at is None:
-        raise IncompleteTriageError("authority gap did not produce a snapshot")
+    source_cutoff_at = refresh.normal_source_cutoff_at
     slot_key = refresh.slot_at.astimezone(dt.timezone.utc).isoformat()
     req_key = f"publication-intent:{refresh.request_key}"
     run_metadata = {
@@ -193,6 +168,37 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
             return
         if current_refresh.status != "preparing":
             raise ValueError(f"refresh run {refresh.id} is not preparing")
+        gap_story_ids = await service.repo.find_authority_gap_story_ids(
+            conn,
+            edition_id=current_refresh.edition_id,
+            source_cutoff_at=current_refresh.normal_source_cutoff_at,
+            snapshot_at=dt.datetime.now(dt.timezone.utc),
+            eligibility_policy_id=policy_set.eligibility_policy_id,
+        )
+        if gap_story_ids:
+            await conn.execute(
+                """
+                UPDATE story_cluster_state
+                SET analysis_dirty = TRUE, updated_at = now()
+                WHERE story_id = ANY(%s)
+                """,
+                (gap_story_ids,),
+            )
+            await readiness_repo.transition_refresh(
+                conn,
+                current_refresh.id,
+                status="processing",
+            )
+            logger.warning(
+                "publication_preparation_deferred_for_authority_gap",
+                extra={
+                    "edition_id": current_refresh.edition_id,
+                    "refresh_run_id": current_refresh.id,
+                    "story_count": len(gap_story_ids),
+                },
+            )
+            return
+        knowledge_snapshot_at = dt.datetime.now(dt.timezone.utc)
         run = await service.create_run(
             edition_id=refresh.edition_id,
             publication_type=refresh.publication_type,

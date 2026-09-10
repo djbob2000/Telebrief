@@ -1,6 +1,7 @@
 """Tests for periodic maintenance jobs (Plan 5 Task 10)."""
 
 import datetime as dt
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,3 +30,16 @@ class TestMaintenanceJobs:
             called_now = mock_cleanup.call_args.kwargs.get("now") or mock_cleanup.call_args[0][0]
             assert called_now.hour == 3
             assert called_now.minute == 15
+
+    @pytest.mark.asyncio
+    async def test_retry_stalled_jobs_requeues_every_stalled_job(self):
+        stalled = [MagicMock(id=60642), MagicMock(id=60643)]
+        fake_app = MagicMock()
+        fake_app.job_manager.get_stalled_jobs = AsyncMock(return_value=stalled)
+        fake_app.job_manager.retry_job = AsyncMock()
+
+        with patch("src.jobs.maintenance.procrastinate_app", fake_app):
+            await retry_stalled_jobs(context=SimpleNamespace(), timestamp=0)
+
+        assert fake_app.job_manager.retry_job.await_args_list[0].args == (stalled[0],)
+        assert fake_app.job_manager.retry_job.await_args_list[1].args == (stalled[1],)

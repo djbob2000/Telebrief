@@ -89,6 +89,63 @@ async def test_all_sources_success_and_no_new_revisions_is_ready():
     assert decision.source_cutoff_at == NOW
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_authority_gap_keeps_fully_revision_processed_intent_in_processing():
+    repo = FakeReadinessRepository(_refresh(), [_source()])
+
+    async def authority_gap_checker(conn, refresh, now):
+        assert refresh.id == 10
+        assert now == NOW
+        return [9001]
+
+    decision = await PublicationReadinessService(
+        repo,
+        authority_gap_checker=authority_gap_checker,
+    ).reconcile(None, 10, now=NOW)
+
+    assert decision.status == "processing"
+    assert decision.source_cutoff_at is None
+    assert decision.authority_gap_story_ids == (9001,)
+    assert repo.refresh.status == "processing"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_authority_gap_can_converge_before_deadline():
+    repo = FakeReadinessRepository(_refresh(), [_source()])
+    calls = 0
+
+    async def authority_gap_checker(conn, refresh, now):
+        nonlocal calls
+        calls += 1
+        return [9001] if calls == 1 else []
+
+    service = PublicationReadinessService(repo, authority_gap_checker=authority_gap_checker)
+    first = await service.reconcile(None, 10, now=NOW)
+    second = await service.reconcile(None, 10, now=NOW + dt.timedelta(minutes=7))
+
+    assert first.status == "processing"
+    assert second.status == "ready_for_preparation"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_authority_gap_fails_closed_at_deadline():
+    repo = FakeReadinessRepository(_refresh(deadline_at=NOW - dt.timedelta(seconds=1)), [_source()])
+
+    async def authority_gap_checker(conn, refresh, now):
+        raise AssertionError("deadline must be checked before authority-gap work")
+
+    decision = await PublicationReadinessService(
+        repo,
+        authority_gap_checker=authority_gap_checker,
+    ).reconcile(None, 10, now=NOW)
+
+    assert decision.status == "failed"
+    assert decision.failure_kind == "readiness_deadline"
+
+
 @pytest.mark.asyncio
 async def test_processed_barrier_keeps_refresh_in_processing():
     repo = FakeReadinessRepository(_refresh(), [_source()], unprocessed=1)

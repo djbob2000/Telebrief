@@ -796,6 +796,15 @@ async def coalesce_dirty_stories_task(
                 },
             )
 
+    logger.info(
+        "event_first_coalesce_complete",
+        extra={
+            "edition_id": edition_id,
+            "requested_story_count": len(story_ids or ()),
+            "force_settled": force_settled,
+            **stats,
+        },
+    )
     return stats
 
 

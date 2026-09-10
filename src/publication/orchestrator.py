@@ -28,6 +28,7 @@ from src.publication.readiness_repository import (
     PublicationRefreshRun,
     PublicationSourceDiagnostic,
 )
+from src.publication.repository import PublicationRepository
 from src.repositories.editions import EditionRepository
 
 logger = logging.getLogger(__name__)
@@ -94,7 +95,9 @@ class PublicationOrchestrator:
     ) -> None:
         self.uow = uow
         self.config = config
-        self.readiness = readiness or PublicationReadinessService()
+        self.readiness = readiness or PublicationReadinessService(
+            authority_gap_checker=self._find_authority_gap_story_ids
+        )
         self.readiness_repo = readiness_repo or self.readiness.repo
         self.enqueue_source = enqueue_source or self._default_enqueue_source
         self.pre_publish_priority = pre_publish_priority
@@ -225,6 +228,13 @@ class PublicationOrchestrator:
             await self._enqueue_failure_notification(conn, intent, decision.failure_kind)
             return decision, []
 
+        if decision.authority_gap_story_ids:
+            await self._defer_event_processing(
+                conn,
+                edition_id=intent.edition_id,
+                story_ids=decision.authority_gap_story_ids,
+            )
+
         if decision.status == "ready_for_preparation":
             claimed = await self.readiness_repo.mark_preparing(conn, refresh_run_id=intent.id)
             if claimed is not None:
@@ -261,6 +271,61 @@ class PublicationOrchestrator:
             )
 
         return decision, source_ids
+
+    async def _find_authority_gap_story_ids(
+        self,
+        conn: psycopg.AsyncConnection,
+        intent: PublicationRefreshRun,
+        now: dt.datetime,
+    ) -> Sequence[int]:
+        from src.publication.policies import PublicationPolicyService
+
+        policy_set = await PublicationPolicyService().ensure_current(
+            conn,
+            edition_id=intent.edition_id,
+            publication_type=intent.publication_type,
+            config=self.config,
+            lookback_hours_override=intent.lookback_hours,
+        )
+        return await PublicationRepository().find_authority_gap_story_ids(
+            conn,
+            edition_id=intent.edition_id,
+            source_cutoff_at=intent.normal_source_cutoff_at,
+            snapshot_at=now,
+            eligibility_policy_id=policy_set.eligibility_policy_id,
+        )
+
+    async def _defer_event_processing(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        story_ids: Sequence[int],
+    ) -> None:
+        if not story_ids:
+            return
+        await conn.execute(
+            """
+            UPDATE story_cluster_state
+            SET analysis_dirty = TRUE, updated_at = now()
+            WHERE story_id = ANY(%s)
+            """,
+            (list(story_ids),),
+        )
+        from procrastinate.exceptions import AlreadyEnqueued
+
+        from src.jobs.event_processing import coalesce_dirty_stories_task
+
+        try:
+            await coalesce_dirty_stories_task.configure(
+                connection=conn,
+                queueing_lock="coalesce_dirty_stories",
+            ).defer_async(edition_id=edition_id, story_ids=list(story_ids))
+        except AlreadyEnqueued:
+            logger.debug(
+                "Event-First coalesce already queued for authority gap",
+                extra={"edition_id": edition_id, "story_count": len(story_ids)},
+            )
 
     async def _enqueue_failure_notification(
         self,

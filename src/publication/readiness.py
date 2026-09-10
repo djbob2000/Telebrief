@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
@@ -31,13 +31,26 @@ class PublicationReadinessDecision:
     status: ReadinessStatus
     source_cutoff_at: dt.datetime | None
     failure_kind: str | None = None
+    authority_gap_story_ids: tuple[int, ...] = ()
+
+
+AuthorityGapChecker = Callable[
+    [psycopg.AsyncConnection, PublicationRefreshRun, dt.datetime],
+    Awaitable[Sequence[int]],
+]
 
 
 class PublicationReadinessService:
     """Coordinate durable collection and Event-First processing barriers."""
 
-    def __init__(self, repo: PublicationReadinessRepository | None = None) -> None:
+    def __init__(
+        self,
+        repo: PublicationReadinessRepository | None = None,
+        *,
+        authority_gap_checker: AuthorityGapChecker | None = None,
+    ) -> None:
         self.repo = repo or PublicationReadinessRepository()
+        self.authority_gap_checker = authority_gap_checker
 
     async def create_refresh(
         self,
@@ -133,6 +146,25 @@ class PublicationReadinessService:
         if all_sources_succeeded:
             unprocessed = await self.repo.count_unprocessed_refresh_revisions(conn, refresh.id)
             if unprocessed == 0:
+                authority_gap_story_ids: tuple[int, ...] = ()
+                if self.authority_gap_checker is not None:
+                    authority_gap_story_ids = tuple(
+                        int(story_id)
+                        for story_id in await self.authority_gap_checker(conn, refresh, now)
+                    )
+                if authority_gap_story_ids:
+                    await self._transition(
+                        conn,
+                        refresh.id,
+                        status="processing",
+                        collection_ready_at=refresh.collection_ready_at or now,
+                        now=now,
+                    )
+                    return PublicationReadinessDecision(
+                        "processing",
+                        None,
+                        authority_gap_story_ids=authority_gap_story_ids,
+                    )
                 await self._transition(
                     conn,
                     refresh.id,

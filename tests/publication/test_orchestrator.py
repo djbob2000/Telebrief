@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 
@@ -168,6 +169,94 @@ async def test_reconcile_enqueues_only_unresolved_retryable_sources():
     assert [source_id for source_id, _, _ in queued] == [1, 2]
     assert all(trigger == CollectionTrigger.PRE_PUBLISH for _, trigger, _ in queued)
     assert [item["source_id"] for item in repo.attempts] == [1, 2]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_authority_gap_uses_assignment_at_source_cutoff_and_current_snapshot(monkeypatch):
+    """Readiness must use the publication temporal contract, not current story state."""
+    intent = _intent(status="processing")
+    orchestrator = PublicationOrchestrator(
+        uow=FakeUow(),
+        config=SimpleNamespace(settings=SimpleNamespace()),
+        readiness=FakeReadiness(
+            FakeRepo(intent, []), PublicationReadinessDecision("processing", None)
+        ),
+    )
+    reconciliation_now = TARGET + dt.timedelta(minutes=7)
+    policy_calls = []
+    gap_calls = []
+
+    async def ensure_current(_service, conn, **kwargs):
+        policy_calls.append((conn, kwargs))
+        return SimpleNamespace(eligibility_policy_id=73)
+
+    async def find_gap(_repository, conn, **kwargs):
+        gap_calls.append((conn, kwargs))
+        return [9001]
+
+    monkeypatch.setattr(
+        "src.publication.policies.PublicationPolicyService.ensure_current",
+        ensure_current,
+    )
+    monkeypatch.setattr(
+        "src.publication.repository.PublicationRepository.find_authority_gap_story_ids",
+        find_gap,
+    )
+
+    result = await orchestrator._find_authority_gap_story_ids(
+        "connection",
+        intent,
+        reconciliation_now,
+    )
+
+    assert result == [9001]
+    assert policy_calls[0][1]["edition_id"] == intent.edition_id
+    assert policy_calls[0][1]["publication_type"] == intent.publication_type
+    assert policy_calls[0][1]["lookback_hours_override"] == intent.lookback_hours
+    assert gap_calls == [
+        (
+            "connection",
+            {
+                "edition_id": intent.edition_id,
+                "source_cutoff_at": intent.normal_source_cutoff_at,
+                "snapshot_at": reconciliation_now,
+                "eligibility_policy_id": 73,
+            },
+        )
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_authority_gap_requeues_processing_without_preparing():
+    repo = FakeRepo(_intent(status="processing"), [])
+    readiness = FakeReadiness(
+        repo,
+        PublicationReadinessDecision(
+            "processing",
+            None,
+            authority_gap_story_ids=(9001, 9002),
+        ),
+    )
+    orchestrator = PublicationOrchestrator(
+        uow=FakeUow(),
+        config=SimpleNamespace(settings=SimpleNamespace()),
+        readiness=readiness,
+        readiness_repo=repo,
+    )
+    defer_event_processing = AsyncMock()
+    orchestrator._defer_event_processing = defer_event_processing
+
+    decision = await orchestrator.reconcile(7, now=TARGET)
+
+    assert decision.status == "processing"
+    assert repo.preparing == 0
+    defer_event_processing.assert_awaited_once_with(
+        ANY,
+        edition_id=1,
+        story_ids=(9001, 9002),
+    )
 
 
 @pytest.mark.asyncio
