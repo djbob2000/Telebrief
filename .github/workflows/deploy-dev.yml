@@ -175,9 +175,9 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           WORK_DIR: ${{ secrets.WORK_DIR }}
-          DEPLOY_TAG: ${{ github.event.inputs.tag || 'dev' }}
+          DEPLOY_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' && github.event.inputs.tag || format('dev-{0}', github.sha) }}
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "WORK_DIR=\"$WORK_DIR\" DEPLOY_TAG=\"$DEPLOY_TAG\" bash -s" << 'EOF'
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "WORK_DIR=\"$WORK_DIR\" DEPLOY_TAG=\"$DEPLOY_TAG\" GITHUB_REPOSITORY=\"$GITHUB_REPOSITORY\" GITHUB_SHA=\"$GITHUB_SHA\" bash -s" << 'EOF'
             set -euo pipefail
             cd "$WORK_DIR"
             export IMAGE_TAG="$DEPLOY_TAG"
@@ -188,16 +188,34 @@ jobs:
 
             # Pull latest images
             echo "==> Pulling images..."
-            docker compose pull
+            docker compose pull telebrief-app telebrief-worker telebrief-processing-worker
 
             # Run database migrations
             echo "==> Running database migrations..."
-            docker compose run --rm telebrief-app python scripts/migrate.py
+            docker compose run --rm --interactive=false -T telebrief-app python scripts/migrate.py </dev/null
 
             # Start all services with force recreate for application containers
             echo "==> Starting services with force recreate..."
-            docker compose up -d --force-recreate telebrief-app telebrief-worker
+            docker compose up -d --force-recreate --no-deps telebrief-app telebrief-worker telebrief-processing-worker
             docker compose up -d --remove-orphans
+
+            # Verify that every application container uses the exact image
+            # revision that was pulled and that the image supports the DB schema.
+            expected_revision="$(docker image inspect "ghcr.io/${GITHUB_REPOSITORY}:${IMAGE_TAG}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+            test -n "$expected_revision"
+            if [[ "$IMAGE_TAG" == dev-* ]]; then
+              test "$expected_revision" = "${IMAGE_TAG#dev-}"
+            fi
+            for service in telebrief-app telebrief-worker telebrief-processing-worker; do
+              container_id="$(docker compose ps -q "$service")"
+              test -n "$container_id"
+              container_status="$(docker inspect "$container_id" --format '{{.State.Status}}')"
+              container_revision="$(docker inspect "$container_id" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+              test "$container_status" = "running"
+              test "$container_revision" = "$expected_revision"
+            done
+            runtime_schema="$(docker compose run --rm --interactive=false -T --no-deps telebrief-app python -c 'from src.bootstrap import SCHEMA_VERSION_MAXIMUM; print(SCHEMA_VERSION_MAXIMUM)' </dev/null)"
+            test "$runtime_schema" = "33"
 
             # Clean up old unused images to save disk space
             echo "==> Pruning dangling images..."

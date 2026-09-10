@@ -121,6 +121,7 @@ settings:
     analysis_min_interval_seconds: 600
     event_processing_cycle_lease_seconds: 600
     event_processing_stage_lease_seconds: 600
+    authority_provider_timeout_seconds: 540
     triage_split_max_extra_calls_per_cycle: 8
 
 

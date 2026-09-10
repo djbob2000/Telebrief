@@ -14,7 +14,10 @@ import logging
 
 from src.bootstrap import build_infrastructure
 from src.config_loader import load_config, load_database_config
-from src.jobs.event_processing import coalesce_dirty_stories_task, process_event_revisions_task
+from src.jobs.event_processing import (
+    process_event_revisions_task,
+    run_legacy_coalesce_dirty_stories,
+)
 from src.processing.fragments import FRAGMENTER_VERSION
 from src.runtime import clear_runtime, install_runtime
 
@@ -91,7 +94,7 @@ async def run_migration(*, batch_size: int = 32) -> tuple[int, int]:
         coalesce_round = 0
         while True:
             coalesce_round += 1
-            coalesce_stats = await coalesce_dirty_stories_task.func(edition_id=None)
+            coalesce_stats = await run_legacy_coalesce_dirty_stories(edition_id=None)
             logger.info("Coalesce round %d: %s", coalesce_round, coalesce_stats)
             if coalesce_stats.get("scanned", 0) == 0 or coalesce_stats.get("settled", 0) == 0:
                 break

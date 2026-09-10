@@ -199,6 +199,8 @@ async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions
     assert [(target.story_id, target.assignment_id) for target in gaps] == [
         (story_id, old_assignment)
     ]
+    assert gaps[0].source_cutoff_at == SOURCE_CUTOFF
+    assert gaps[0].snapshot_at == SNAPSHOT
 
 
 @pytest.mark.postgres

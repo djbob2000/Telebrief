@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.bootstrap import build_infrastructure
 from src.config_loader import load_config, load_database_config
-from src.jobs.event_processing import coalesce_dirty_stories_task
+from src.jobs.event_processing import run_legacy_coalesce_dirty_stories
 from src.publication.policies import PublicationPolicyService
 from src.publication.repository import PublicationRepository
 from src.runtime import clear_runtime, install_runtime
@@ -120,7 +120,7 @@ async def run_gate_v10_backfill(
                 len(gap_story_ids),
             )
 
-            coalesce_stats = await coalesce_dirty_stories_task.func(
+            coalesce_stats = await run_legacy_coalesce_dirty_stories(
                 edition_id=edition_id,
                 force_settled=True,
             )

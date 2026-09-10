@@ -170,6 +170,15 @@ class PublicationReadinessService:
                         else None
                     ),
                 )
+            if revision_barrier.unprocessed_count > 0 and now >= refresh.deadline_at:
+                await self._transition(
+                    conn,
+                    refresh.id,
+                    status="failed",
+                    error_kind="readiness_deadline",
+                    now=now,
+                )
+                return PublicationReadinessDecision("failed", None, "readiness_deadline")
             if revision_barrier.unprocessed_count == 0:
                 authority_gap_story_ids: tuple[int, ...] = ()
                 authority_completed_at: dt.datetime | None = None

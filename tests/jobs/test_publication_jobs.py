@@ -154,7 +154,7 @@ async def test_drain_authority_gap_loops_and_drains():
     service = PublicationSnapshotService(uow=mock_uow, repo=mock_repo)
 
     coalesce_mock = AsyncMock()
-    with patch("src.jobs.event_processing.coalesce_dirty_stories_task.func", coalesce_mock):
+    with patch("src.jobs.event_processing.run_legacy_coalesce_dirty_stories", coalesce_mock):
         remaining = await service.drain_authority_gap(
             edition_id=1,
             snapshot_at=initial_snapshot,
@@ -188,7 +188,7 @@ async def test_run_drain_keeps_frozen_snapshot_after_coalesce():
     mock_repo.find_authority_gap_story_ids = AsyncMock(side_effect=find_gap)
     service = PublicationSnapshotService(uow=mock_uow, repo=mock_repo)
 
-    with patch("src.jobs.event_processing.coalesce_dirty_stories_task.func", AsyncMock()):
+    with patch("src.jobs.event_processing.run_legacy_coalesce_dirty_stories", AsyncMock()):
         remaining = await service.drain_authority_gap(run_id=42, max_rounds=1)
 
     assert remaining == 1
@@ -381,7 +381,7 @@ async def test_prepare_defense_returns_to_processing_without_event_first_work(mo
     )
     coalesce = AsyncMock(side_effect=AssertionError("preparation must not enqueue coalesce"))
     monkeypatch.setattr(
-        "src.jobs.event_processing.coalesce_dirty_stories_task.configure",
+        "src.jobs.event_authority.process_publication_authority_gap.configure",
         lambda **kwargs: SimpleNamespace(defer_async=coalesce),
     )
 

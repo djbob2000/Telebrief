@@ -95,6 +95,22 @@ async def test_all_sources_success_and_no_new_revisions_is_ready():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_late_revision_barrier_fails_closed_at_deadline():
+    repo = FakeReadinessRepository(
+        _refresh(deadline_at=NOW - dt.timedelta(seconds=1)),
+        [_source()],
+        unprocessed=1,
+    )
+
+    decision = await PublicationReadinessService(repo).reconcile(None, 10, now=NOW)
+
+    assert decision.status == "failed"
+    assert decision.failure_kind == "readiness_deadline"
+    assert repo.refresh.status == "failed"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_authority_gap_keeps_fully_revision_processed_intent_in_processing():
     repo = FakeReadinessRepository(_refresh(), [_source()])
 

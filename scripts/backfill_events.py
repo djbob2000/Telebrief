@@ -13,7 +13,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.bootstrap import build_infrastructure
 from src.config_loader import load_config, load_database_config
-from src.jobs.event_processing import coalesce_dirty_stories_task, process_event_revisions_task
+from src.jobs.event_processing import (
+    process_event_revisions_task,
+    run_legacy_coalesce_dirty_stories,
+)
 from src.runtime import clear_runtime, install_runtime
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -108,7 +111,7 @@ async def run_backfill(
         total_coalesce = {"scanned": 0, "settled": 0, "triaged": 0, "analyzed": 0}
         while True:
             coalesce_round += 1
-            coalesce_stats = await coalesce_dirty_stories_task.func(edition_id=None)
+            coalesce_stats = await run_legacy_coalesce_dirty_stories(edition_id=None)
             for k, v in coalesce_stats.items():
                 total_coalesce[k] = total_coalesce.get(k, 0) + v
             logger.info("Coalesce round %d: %s", coalesce_round, coalesce_stats)

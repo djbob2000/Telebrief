@@ -18,15 +18,50 @@ from src.repositories.stories import StoryRepository
 @pytest.mark.postgres
 async def test_gate_target_excludes_post_assignment_evidence(conn, edition, revision):
     now = dt.datetime.now(dt.timezone.utc)
-    old_at = now - dt.timedelta(minutes=5)
-    new_at = now - dt.timedelta(minutes=1)
+    old_source_at = now - dt.timedelta(minutes=10)
+    cutoff_at = now - dt.timedelta(minutes=5)
+    target_assignment_at = now - dt.timedelta(minutes=5)
+    post_cutoff_source_at = now - dt.timedelta(minutes=1)
+    post_cutoff_assignment_at = now - dt.timedelta(minutes=6)
     story_id = await StoryRepository().create_story_shell(
         conn, edition_id=edition.id, knowledge_source="event_first"
     )
     cluster_repo = EventClusterRepository()
+
+    await conn.execute(
+        "UPDATE source_items SET published_at = %s WHERE id = %s",
+        (old_source_at, revision.source_item_id),
+    )
+    source_cursor = await conn.execute(
+        "SELECT source_id FROM source_items WHERE id = %s", (revision.source_item_id,)
+    )
+    source_id = int((await source_cursor.fetchone())[0])
+    item_cursor = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'message', %s, %s)
+        RETURNING id
+        """,
+        (source_id, "authority-post-cutoff-item", post_cutoff_source_at),
+    )
+    post_item_id = int((await item_cursor.fetchone())[0])
+    post_revision_cursor = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (
+            source_item_id, revision_no, collected_at, content_hash, text_content
+        ) VALUES (%s, 1, %s, %s, 'post-cutoff revision')
+        RETURNING id
+        """,
+        (post_item_id, post_cutoff_source_at, "authority-post-cutoff-revision"),
+    )
+    post_revision_id = int((await post_revision_cursor.fetchone())[0])
+
     assignments: list[tuple[int, str]] = []
     fragment_ids: list[int] = []
-    for suffix, assigned_at in (("old", old_at), ("new", new_at)):
+    for suffix, assigned_at, revision_id in (
+        ("old", target_assignment_at, revision.id),
+        ("new", post_cutoff_assignment_at, post_revision_id),
+    ):
         cursor = await conn.execute(
             """
             INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions)
@@ -43,7 +78,7 @@ async def test_gate_target_excludes_post_assignment_evidence(conn, edition, revi
             ) VALUES (%s, %s, %s, %s, 'v1', TRUE, %s) RETURNING id
             """,
             (
-                revision.id,
+                revision_id,
                 len(assignments),
                 f"fragment {suffix}",
                 f"authority-{suffix}",
@@ -81,8 +116,8 @@ async def test_gate_target_excludes_post_assignment_evidence(conn, edition, revi
         dimensions=2,
         fragment_count=2,
         unique_source_count=1,
-        first_seen_at=old_at,
-        last_seen_at=new_at,
+        first_seen_at=post_cutoff_assignment_at,
+        last_seen_at=target_assignment_at,
         latest_assignment_id=assignments[-1][0],
         analysis_dirty=True,
     )
@@ -133,6 +168,7 @@ async def test_gate_target_excludes_post_assignment_evidence(conn, edition, revi
         scope_config=scope,
         scope_hash=scope_config_hash(scope),
         assignment_id_by_story={story_id: assignments[0][0]},
+        source_cutoff_at=cutoff_at,
     )
 
     assert result.deferred_story_ids == ()

@@ -133,6 +133,7 @@ class EventPipelineConfig:
     event_processing_cycle_lease_seconds: int = 600
     authority_coordination_lease_seconds: int = 10
     event_processing_stage_lease_seconds: int = 600
+    authority_provider_timeout_seconds: int = 540
     triage_split_max_extra_calls_per_cycle: int = 8
     live_batch_size: int = 100
     backfill_batch_size: int = 500
@@ -147,6 +148,7 @@ class EventPipelineConfig:
             "event_processing_cycle_lease_seconds",
             "authority_coordination_lease_seconds",
             "event_processing_stage_lease_seconds",
+            "authority_provider_timeout_seconds",
             "triage_split_max_extra_calls_per_cycle",
         ):
             if getattr(self, field_name) <= 0:
@@ -157,6 +159,11 @@ class EventPipelineConfig:
                 raise ValueError(
                     f"{field_name} must be one of {sorted(ALLOWED_REASONING_EFFORTS)} or null"
                 )
+        if self.authority_provider_timeout_seconds >= self.event_processing_stage_lease_seconds:
+            raise ValueError(
+                "authority_provider_timeout_seconds must be strictly below "
+                "event_processing_stage_lease_seconds"
+            )
 
 
 @dataclass(frozen=True)

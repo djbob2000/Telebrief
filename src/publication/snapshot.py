@@ -124,7 +124,7 @@ class PublicationSnapshotService:
             run_id,
         )
 
-        from src.jobs.event_processing import coalesce_dirty_stories_task
+        from src.jobs.event_processing import run_legacy_coalesce_dirty_stories
 
         rounds = 0
         # A PublicationRun is a frozen knowledge boundary. Candidate drains
@@ -144,11 +144,14 @@ class PublicationSnapshotService:
                     """,
                     (gap_story_ids,),
                 )
-            await coalesce_dirty_stories_task.func(
-                edition_id=edition_id,
-                force_settled=True,
-                story_ids=gap_story_ids,
-            )
+            drain_kwargs = {
+                "edition_id": edition_id,
+                "force_settled": True,
+                "story_ids": gap_story_ids,
+            }
+            if source_cutoff_at is not None:
+                drain_kwargs["source_cutoff_at"] = source_cutoff_at
+            await run_legacy_coalesce_dirty_stories(**drain_kwargs)
             # A drain is allowed to make newly-created knowledge eligible for
             # the candidate snapshot. Historical PublicationRun reads remain
             # fenced by their saved snapshot_at; only this pre-publication

@@ -37,6 +37,19 @@ def test_schema_instantiation_defaults():
     assert pipeline.mode == "event_first"
     assert pipeline.fragment_max_chars == 1200
     assert pipeline.authority_coordination_lease_seconds == 10
+    assert pipeline.authority_provider_timeout_seconds == 540
+
+
+def test_authority_provider_timeout_is_strictly_below_stage_lease():
+    try:
+        EventPipelineConfig(
+            event_processing_stage_lease_seconds=600,
+            authority_provider_timeout_seconds=600,
+        )
+    except ValueError as exc:
+        assert "authority_provider_timeout_seconds" in str(exc)
+    else:
+        raise AssertionError("authority provider timeout must be below the stage lease")
 
     from src.config.schemas.root import Settings
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import logging
@@ -342,6 +343,7 @@ class StoryTriageService:
         min_ignore_confidence: float = 0.95,
         max_gate_fragments: int = 6,
         assignment_id_by_story: Mapping[int, int] | None = None,
+        source_cutoff_at: dt.datetime | None = None,
         decision_fence: DecisionFence | None = None,
         before_decision_persist: DecisionPersistHook | None = None,
     ) -> StoryGateBatchResult:
@@ -388,8 +390,14 @@ class StoryTriageService:
                 )
 
             # 1. Lookup cached Gate V2 results
-            cached_results = await self._lookup_cached_decisions(
-                read_conn, effective_stories, scope_hash
+            # Background cache rows do not persist the full fragment set used
+            # for scope reasoning. A publication cutoff therefore requires a
+            # fresh exact Gate snapshot; otherwise an older cache could have
+            # incorporated a post-cutoff source item assigned before the target.
+            cached_results = (
+                {}
+                if source_cutoff_at is not None
+                else await self._lookup_cached_decisions(read_conn, effective_stories, scope_hash)
             )
             uncached_stories = [s for s in effective_stories if s.story_id not in cached_results]
 
@@ -402,9 +410,31 @@ class StoryTriageService:
             fence_lost_ids: set[int] = set()
 
             if not uncached_stories:
+                if before_decision_persist is not None:
+                    async with _get_conn() as write_conn:
+                        for story in effective_stories:
+                            cached = cached_results[story.story_id]
+                            if cached.retention != "KEEP":
+                                continue
+                            assignment_id = (
+                                assignment_id_by_story.get(
+                                    story.story_id, story.latest_assignment_id
+                                )
+                                if assignment_id_by_story is not None
+                                else story.latest_assignment_id
+                            )
+                            if decision_fence is not None and not await decision_fence(
+                                write_conn, story.story_id, assignment_id
+                            ):
+                                fence_lost_ids.add(story.story_id)
+                                continue
+                            await before_decision_persist(write_conn, cached, assignment_id)
                 return StoryGateBatchResult(
-                    results=tuple(valid_results),
+                    results=tuple(
+                        result for result in valid_results if result.story_id not in fence_lost_ids
+                    ),
                     deferred_story_ids=(),
+                    fence_lost_story_ids=tuple(sorted(fence_lost_ids)),
                 )
 
             # 2. Fetch fragment metadata for uncached stories
@@ -450,9 +480,19 @@ class StoryTriageService:
                     JOIN source_items si ON si.id = sir.source_item_id
                     JOIN sources s ON s.id = si.source_id
                     WHERE (sf.assigned_at, sf.id) <= (ta.assigned_at, ta.assignment_id)
+                      AND (
+                          %s::timestamptz IS NULL
+                          OR COALESCE(si.published_at, si.first_collected_at, f.created_at)
+                             <= %s
+                      )
                     ORDER BY sf.story_id, sf.id DESC
                     """,
-                    (target_story_ids, target_assignment_ids),
+                    (
+                        target_story_ids,
+                        target_assignment_ids,
+                        source_cutoff_at,
+                        source_cutoff_at,
+                    ),
                 )
 
             story_fragments_map: dict[int, list[dict[str, Any]]] = {sid: [] for sid in story_ids}
@@ -1074,7 +1114,21 @@ class StoryTriageService:
             conf = float(row[7])
             reason = str(row[8])
             raw_brief = row[9]
-            brief_payload = parse_event_payload(raw_brief) if raw_brief else None
+            try:
+                brief_payload = parse_event_payload(raw_brief) if raw_brief else None
+            except (TypeError, ValueError):
+                # A malformed legacy cache must be re-evaluated by Gate rather
+                # than becoming an apparently satisfied authority target.
+                continue
+
+            if retention == "KEEP" and (
+                brief_payload is None
+                or brief_payload.publishability not in {"news", "brief"}
+                or not any(
+                    item.publication_use == "PUBLISH" for item in brief_payload.evidence_items
+                )
+            ):
+                continue
 
             cached[sid] = StoryGateResult(
                 story_id=sid,

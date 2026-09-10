@@ -7,6 +7,7 @@ job after this service returns.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 import os
@@ -20,7 +21,7 @@ from src.domain.event_authority import AuthorityTarget
 from src.domain.event_clusters import StoryClusterState
 from src.processing.edition_scope import resolve_edition_scope
 from src.processing.event_brief import EventBriefService
-from src.processing.event_triage import StoryTriageService
+from src.processing.event_triage import StoryGateBatchResult, StoryTriageService
 from src.processing.retry_policy import decide_retry
 from src.repositories.event_authority import EventAuthorityRepository
 from src.repositories.event_clusters import EventClusterRepository
@@ -192,10 +193,14 @@ class EventAuthorityService:
 
         try:
             async with self.runtime.uow.transaction() as conn:
+                snapshot_at = next(
+                    (target.snapshot_at for target in batch if target.snapshot_at is not None),
+                    dt.datetime.now(dt.timezone.utc),
+                )
                 unsatisfied = await self.authority_repo.filter_unsatisfied_targets(
                     conn,
                     targets=[item.target for item in claimed],
-                    snapshot_at=dt.datetime.now(dt.timezone.utc),
+                    snapshot_at=snapshot_at,
                 )
             unsatisfied_keys = {(target.story_id, target.assignment_id) for target in unsatisfied}
             already_satisfied = [
@@ -237,18 +242,58 @@ class EventAuthorityService:
                         exact_assignment=True,
                     )
 
-            result = await self.triage_service.triage_stories_batch(
-                None,
-                [item.state for item in claimed],
-                edition_id=edition_id,
-                scope_config=scope_config,
-                scope_hash=batch[0].scope_config_hash,
-                excerpt_chars=cfg.triage_excerpt_chars,
-                min_ignore_confidence=cfg.triage_min_ignore_confidence,
-                assignment_id_by_story=assignment_map,
-                decision_fence=decision_fence,
-                before_decision_persist=before_decision_persist,
-            )
+            heartbeat_stop = asyncio.Event()
+
+            async def renew_claims() -> None:
+                interval = max(1.0, cfg.event_processing_stage_lease_seconds / 3)
+                while True:
+                    try:
+                        await asyncio.wait_for(heartbeat_stop.wait(), timeout=interval)
+                        return
+                    except asyncio.TimeoutError:
+                        async with self.runtime.uow.transaction() as heartbeat_conn:
+                            for item in claimed:
+                                await self.claim_repo.renew_stage(
+                                    heartbeat_conn,
+                                    item.claim,
+                                    ttl_seconds=cfg.event_processing_stage_lease_seconds,
+                                )
+
+            heartbeat_task = asyncio.create_task(renew_claims())
+            try:
+                try:
+                    result = await asyncio.wait_for(
+                        self.triage_service.triage_stories_batch(
+                            None,
+                            [item.state for item in claimed],
+                            edition_id=edition_id,
+                            scope_config=scope_config,
+                            scope_hash=batch[0].scope_config_hash,
+                            excerpt_chars=cfg.triage_excerpt_chars,
+                            min_ignore_confidence=cfg.triage_min_ignore_confidence,
+                            assignment_id_by_story=assignment_map,
+                            source_cutoff_at=next(
+                                (
+                                    target.source_cutoff_at
+                                    for target in (item.target for item in claimed)
+                                    if target.source_cutoff_at is not None
+                                ),
+                                None,
+                            ),
+                            decision_fence=decision_fence,
+                            before_decision_persist=before_decision_persist,
+                        ),
+                        timeout=cfg.authority_provider_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    result = StoryGateBatchResult(
+                        results=(),
+                        deferred_story_ids=tuple(item.target.story_id for item in claimed),
+                        batch_error_kind="timeout",
+                    )
+            finally:
+                heartbeat_stop.set()
+                await heartbeat_task
             stats.triaged += len(result.results)
             if result.batch_error_kind is not None:
                 stats.provider_failures += len(result.deferred_story_ids)

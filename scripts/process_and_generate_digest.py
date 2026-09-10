@@ -19,7 +19,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.bootstrap import build_infrastructure
 from src.config_loader import load_config
-from src.jobs.event_processing import coalesce_dirty_stories_task, process_event_revisions_task
+from src.jobs.event_processing import (
+    process_event_revisions_task,
+    run_legacy_coalesce_dirty_stories,
+)
 from src.publication.event_editorial_adapter import EventEditorialAdapter
 from src.publication.generation import PublicationGenerationService
 from src.publication.repository import PublicationRepository
@@ -147,7 +150,7 @@ async def main():
     infra.config = config
 
     for pass_num in range(1, 20):
-        stats = await coalesce_dirty_stories_task(edition_id=edition.id)
+        stats = await run_legacy_coalesce_dirty_stories(edition_id=edition.id)
         logger.info("Coalesce pass %d: %s", pass_num, stats)
         if stats.get("scanned", 0) == 0 or stats.get("gated", 0) == 0:
             logger.info("Coalesce complete.")

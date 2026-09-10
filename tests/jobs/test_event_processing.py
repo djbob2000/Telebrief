@@ -6,7 +6,10 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from src.config_loader import EditionScopeConfig
-from src.jobs.event_processing import coalesce_dirty_stories_task, process_event_revisions_task
+from src.jobs.event_processing import (
+    process_event_revisions_task,
+    run_legacy_coalesce_dirty_stories,
+)
 from src.repositories.event_clusters import EventClusterRepository
 from src.repositories.stories import StoryRepository
 from src.runtime import install_runtime
@@ -281,7 +284,7 @@ async def test_coalesce_dirty_stories_task_end_to_end(conn, pool, uow, sample_co
     )
     install_runtime(runtime)
 
-    stats = await coalesce_dirty_stories_task.func(edition_id=edition_id)
+    stats = await run_legacy_coalesce_dirty_stories(edition_id=edition_id)
     assert stats["scanned"] >= 1
     assert stats["settled"] >= 1
     assert stats["gated"] >= 1
@@ -426,7 +429,7 @@ async def test_coalesce_dirty_stories_out_of_scope_marks_analyzed(conn, pool, uo
     )
     install_runtime(runtime)
 
-    stats = await coalesce_dirty_stories_task.func(edition_id=edition_id)
+    stats = await run_legacy_coalesce_dirty_stories(edition_id=edition_id)
     assert stats["scanned"] >= 1
     assert stats["gated"] >= 1
     assert stats["scope_out_of_scope"] == 1
@@ -570,7 +573,7 @@ async def test_coalesce_dirty_stories_uncertain_marks_analyzed(conn, pool, uow, 
     )
     install_runtime(runtime)
 
-    stats = await coalesce_dirty_stories_task.func(edition_id=edition_id)
+    stats = await run_legacy_coalesce_dirty_stories(edition_id=edition_id)
     assert stats["scanned"] >= 1
     assert stats["gated"] >= 1
     assert stats["scope_uncertain"] == 1
@@ -736,7 +739,7 @@ async def test_coalesce_retry_cache_cost(conn, pool, uow, sample_config):
     )
     install_runtime(runtime)
 
-    stats1 = await coalesce_dirty_stories_task.func(edition_id=edition_id)
+    stats1 = await run_legacy_coalesce_dirty_stories(edition_id=edition_id)
     assert stats1["analyzed"] == 0
 
     # Story remains dirty because rich analysis failed
@@ -762,7 +765,7 @@ async def test_coalesce_retry_cache_cost(conn, pool, uow, sample_config):
 
     runtime.provider_cascade = mock_ai_2
 
-    stats2 = await coalesce_dirty_stories_task.func(edition_id=edition_id)
+    stats2 = await run_legacy_coalesce_dirty_stories(edition_id=edition_id)
     assert stats2["analyzed"] == 1
 
     # In Cycle 2, mock_ai_2.generate_text was called ONLY ONCE (for rich analysis, not for gate)!

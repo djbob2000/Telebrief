@@ -194,11 +194,11 @@ async def _process_event_revisions_in_transaction(revision_ids: list[int]) -> di
     return stats
 
 
-@procrastinate_app.task(queue="processing", name="coalesce_dirty_stories")
-async def coalesce_dirty_stories_task(
+async def run_legacy_coalesce_dirty_stories(
     edition_id: int | None = None,
     force_settled: bool = False,
     story_ids: list[int] | None = None,
+    source_cutoff_at: dt.datetime | None = None,
 ) -> dict[str, int]:
     """Coalesce dirty story clusters, triage/scope them in batches, and route to brief or rich analysis."""
     runtime = get_runtime()
@@ -359,6 +359,7 @@ async def coalesce_dirty_stories_task(
                     scope_hash=sc_hsh,
                     excerpt_chars=cfg.triage_excerpt_chars,
                     min_ignore_confidence=cfg.triage_min_ignore_confidence,
+                    source_cutoff_at=source_cutoff_at,
                 )
             failed_ids = set(result.deferred_story_ids)
             if not allow_split or not _should_split_gate(result.batch_error_kind, len(batch)):
@@ -815,3 +816,34 @@ async def coalesce_dirty_stories_task(
         },
     )
     return stats
+
+
+@procrastinate_app.task(queue="processing", name="coalesce_dirty_stories")
+async def coalesce_dirty_stories_task(
+    edition_id: int | None = None,
+    force_settled: bool = False,
+    story_ids: list[int] | None = None,
+) -> dict[str, int]:
+    """Compatibility wrapper for durable rows created by the retired task.
+
+    New Event-First production work is dispatched through bounded revision and
+    authority jobs. Existing durable ``coalesce_dirty_stories`` rows must not
+    revive the old edition-wide all-in-one Gate/Analysis cycle, so they are
+    converted into one bounded background authority batch. Explicit scripts
+    that need a synchronous candidate drain call
+    ``run_legacy_coalesce_dirty_stories`` directly.
+    """
+    del force_settled, story_ids
+    from src.jobs.event_authority import process_background_authority_batch
+
+    if edition_id is None:
+        runtime = get_runtime()
+        async with runtime.uow.transaction() as conn:
+            cursor = await conn.execute("SELECT id FROM editions ORDER BY id")
+            edition_ids = [int(row[0]) for row in await cursor.fetchall()]
+    else:
+        edition_ids = [edition_id]
+
+    for current_edition_id in edition_ids:
+        await process_background_authority_batch.func(current_edition_id)
+    return {"delegated": len(edition_ids)}

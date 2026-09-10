@@ -185,16 +185,17 @@ async def process_publication_authority_gap(intent_id: int) -> None:
         result = await EventAuthorityService.from_runtime(runtime, config).process_batch(
             targets, mode="publication"
         )
+        observed_at = dt.datetime.now(dt.timezone.utc)
         async with runtime.uow.transaction() as conn:
             remaining = await orchestrator.find_authority_gap_targets(
-                conn, intent, evaluation_at=min(now, intent.deadline_at)
+                conn, intent, evaluation_at=min(observed_at, intent.deadline_at)
             )
             remaining_gap = len(remaining)
             if hasattr(orchestrator.readiness_repo, "update_authority_diagnostics"):
                 await orchestrator.readiness_repo.update_authority_diagnostics(
                     conn,
                     refresh_run_id=intent_id,
-                    observed_at=now,
+                    observed_at=observed_at,
                     gap_count=remaining_gap,
                     block_reason=authority_block_reason(result.stats, remaining_gap),
                     terminal_count=result.stats.terminal,

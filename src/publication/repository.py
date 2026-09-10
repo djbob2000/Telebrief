@@ -1071,6 +1071,8 @@ class PublicationRepository:
                 triage_version=triage_version,
                 scope_version=scope_version,
                 scope_config_hash=scope_config_hash,
+                source_cutoff_at=effective_source_cutoff_at,
+                snapshot_at=snapshot_at,
             )
             for row in await cursor.fetchall()
         ]
@@ -1147,6 +1149,8 @@ class PublicationRepository:
                 triage_version=triage_version,
                 scope_version=scope_version,
                 scope_config_hash=scope_config_hash,
+                source_cutoff_at=effective_source_cutoff_at,
+                snapshot_at=snapshot_at,
             )
             for row in await cursor.fetchall()
         ]

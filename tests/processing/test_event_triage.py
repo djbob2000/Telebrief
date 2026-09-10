@@ -395,8 +395,20 @@ async def test_story_triage_service_cache_lookup_avoids_llm_call(conn, edition, 
     assert len(res1.results) == 1
     assert mock_ai.generate_text.call_count == 1
 
-    # 2. Second run: cached! AI should NOT be called at all
+    # Simulate a legacy partial row: Gate/scope survived, but the exact brief
+    # revision payload was never persisted.
+    await conn.execute(
+        """
+        UPDATE story_event_triage_decisions
+        SET brief_payload = NULL
+        WHERE story_id = %s AND latest_assignment_id = %s
+        """,
+        (sid, aid),
+    )
+
+    # 2. A cached KEEP without a brief must be reprocessed by Gate.
     mock_ai_second = AsyncMock()
+    mock_ai_second.generate_text.return_value = mock_ai.generate_text.return_value
     service_second = StoryTriageService(ai_cascade=mock_ai_second, cluster_repo=cluster_repo)
     res2 = await service_second.triage_stories_batch(
         conn, [st], edition_id=edition.id, scope_config=scope_config, scope_hash=scope_hash
@@ -405,7 +417,22 @@ async def test_story_triage_service_cache_lookup_avoids_llm_call(conn, edition, 
     assert res2.results[0].story_id == sid
     assert res2.results[0].brief_payload is not None
     assert res2.results[0].brief_payload.headline == "Cached Headline"
-    assert mock_ai_second.generate_text.call_count == 0
+    assert mock_ai_second.generate_text.call_count == 1
+
+    materialize_hook = AsyncMock()
+    mock_ai_third = AsyncMock()
+    service_third = StoryTriageService(ai_cascade=mock_ai_third, cluster_repo=cluster_repo)
+    res3 = await service_third.triage_stories_batch(
+        conn,
+        [st],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+        before_decision_persist=materialize_hook,
+    )
+    assert len(res3.results) == 1
+    assert mock_ai_third.generate_text.call_count == 0
+    materialize_hook.assert_awaited_once()
 
 
 @pytest.mark.postgres

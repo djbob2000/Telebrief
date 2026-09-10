@@ -16,6 +16,8 @@ class AuthorityTarget:
     triage_version: str
     scope_version: str
     scope_config_hash: str
+    source_cutoff_at: dt.datetime | None = None
+    snapshot_at: dt.datetime | None = None
 
 
 @dataclass(frozen=True)

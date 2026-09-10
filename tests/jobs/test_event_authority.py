@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.jobs import event_authority as authority_jobs
 from src.jobs.event_authority import (
     AuthorityCoordinationBusy,
     authority_block_reason,
@@ -51,3 +54,64 @@ def test_authority_completion_log_contains_semantic_counters(caplog):
 @pytest.mark.unit
 def test_contention_error_is_distinct_from_provider_failure():
     assert issubclass(AuthorityCoordinationBusy, RuntimeError)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_authority_records_progress_after_provider_batch(monkeypatch):
+    started_at = authority_jobs.dt.datetime(2026, 9, 10, 10, 0, tzinfo=authority_jobs.dt.timezone.utc)
+    observed_at = started_at + authority_jobs.dt.timedelta(seconds=5)
+    deadline_at = started_at + authority_jobs.dt.timedelta(minutes=20)
+
+    class Clock(authority_jobs.dt.datetime):
+        calls = 0
+
+        @classmethod
+        def now(cls, tz=None):
+            del tz
+            cls.calls += 1
+            return started_at if cls.calls == 1 else observed_at
+
+    intent = SimpleNamespace(status="processing", deadline_at=deadline_at, edition_id=1)
+    target = SimpleNamespace(story_id=10, assignment_id=20)
+    diagnostics_repo = SimpleNamespace(
+        get_refresh_run=AsyncMock(return_value=intent),
+        update_authority_diagnostics=AsyncMock(),
+    )
+    orchestrator = SimpleNamespace(
+        readiness_repo=diagnostics_repo,
+        find_authority_gap_targets=AsyncMock(side_effect=[[target], []]),
+    )
+    authority_service = SimpleNamespace(
+        process_batch=AsyncMock(
+            return_value=SimpleNamespace(stats=AuthorityBatchStats(triaged=1), enrichment_targets=())
+        )
+    )
+    runtime = SimpleNamespace(uow=MagicMock(), config=SimpleNamespace())
+    runtime.uow.transaction.return_value.__aenter__.return_value = AsyncMock()
+
+    monkeypatch.setattr(authority_jobs.dt, "datetime", Clock)
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(authority_jobs, "PublicationOrchestrator", lambda **kwargs: orchestrator)
+    monkeypatch.setattr(
+        authority_jobs.EventAuthorityService,
+        "from_runtime",
+        lambda runtime, config: authority_service,
+    )
+    defer_reconcile = AsyncMock()
+    monkeypatch.setattr(authority_jobs, "_defer_publication_reconcile", defer_reconcile)
+
+    await authority_jobs.process_publication_authority_gap(68)
+
+    assert orchestrator.find_authority_gap_targets.await_args_list[1].kwargs[
+        "evaluation_at"
+    ] == observed_at
+    diagnostics_repo.update_authority_diagnostics.assert_awaited_once_with(
+        runtime.uow.transaction.return_value.__aenter__.return_value,
+        refresh_run_id=68,
+        observed_at=observed_at,
+        gap_count=0,
+        block_reason=None,
+        terminal_count=0,
+    )
+    defer_reconcile.assert_awaited_once_with(68)

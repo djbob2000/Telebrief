@@ -307,9 +307,9 @@ async def test_gate_v10_backfill_stagnation_guard(
         close=AsyncMock(),
     )
 
-    # Mock coalesce_dirty_stories_task to do nothing so gap doesn't reduce
+    # Mock the explicit synchronous legacy drain to do nothing so gap doesn't reduce
     with patch(
-        "scripts.backfill_gate_v10.coalesce_dirty_stories_task.func",
+        "scripts.backfill_gate_v10.run_legacy_coalesce_dirty_stories",
         new=AsyncMock(return_value={"scanned": 0}),
     ):
         with pytest.raises(RuntimeError, match="Backfill stagnation detected"):
