@@ -298,7 +298,7 @@ async def test_publication_lookback_repair_only_updates_legacy_open_rows(
         "UPDATE telebrief_schema_migrations SET applied_at = %s WHERE version = 31",
         (boundary,),
     )
-    assert await migrate(isolated_pg_conn, MIGRATIONS_DIR) == 32
+    assert await migrate(isolated_pg_conn, MIGRATIONS_DIR) == 33
 
     cursor = await isolated_pg_conn.execute(
         "SELECT id, lookback_hours FROM publication_refresh_runs WHERE id = ANY(%s)",
