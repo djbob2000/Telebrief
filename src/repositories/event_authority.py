@@ -158,3 +158,39 @@ class EventAuthorityRepository:
             ),
         )
         return [AuthorityTarget(*row) for row in await cursor.fetchall()]
+
+    async def list_due_enrichment_assignments(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        now: dt.datetime,
+        limit: int = 100,
+    ) -> list[tuple[int, int]]:
+        """Find dirty assignments whose optional Rich Analysis is due."""
+        cursor = await conn.execute(
+            """
+            SELECT DISTINCT sc.story_id, sc.latest_assignment_id
+            FROM story_cluster_state sc
+            JOIN story_event_triage_decisions setd
+              ON setd.story_id = sc.story_id
+             AND setd.latest_assignment_id = sc.latest_assignment_id
+            JOIN story_edition_scope_decisions sesd
+              ON sesd.story_id = setd.story_id
+             AND sesd.latest_assignment_id = setd.latest_assignment_id
+             AND sesd.scope_config_hash = setd.scope_config_hash
+            LEFT JOIN story_event_processing_retries retry
+              ON retry.story_id = sc.story_id
+             AND retry.latest_assignment_id = sc.latest_assignment_id
+             AND retry.stage = 'analysis'
+            WHERE sc.analysis_dirty = TRUE
+              AND setd.retention = 'KEEP'
+              AND setd.enrichment = 'ANALYZE'
+              AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
+              AND retry.exhausted_at IS NULL
+              AND (retry.next_retry_at IS NULL OR retry.next_retry_at <= %s)
+            ORDER BY sc.last_seen_at ASC, sc.story_id ASC
+            LIMIT %s
+            """,
+            (now, limit),
+        )
+        return [(int(row[0]), int(row[1])) for row in await cursor.fetchall()]
