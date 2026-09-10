@@ -30,10 +30,10 @@ async def test_gate_target_excludes_post_assignment_evidence(conn, edition, revi
 
     await conn.execute(
         "UPDATE source_items SET published_at = %s WHERE id = %s",
-        (old_source_at, revision.source_item_id),
+        (old_source_at, revision.item_id),
     )
     source_cursor = await conn.execute(
-        "SELECT source_id FROM source_items WHERE id = %s", (revision.source_item_id,)
+        "SELECT source_id FROM source_items WHERE id = %s", (revision.item_id,)
     )
     source_id = int((await source_cursor.fetchone())[0])
     item_cursor = await conn.execute(
