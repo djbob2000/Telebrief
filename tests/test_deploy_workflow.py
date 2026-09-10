@@ -14,5 +14,7 @@ def test_dev_deploy_is_immutable_noninteractive_and_verifies_all_runtime_service
     )
     assert "telebrief-app telebrief-worker telebrief-processing-worker" in text
     assert "org.opencontainers.image.revision" in text
-    assert 'repository="$(printf \'%s\' "$GITHUB_REPOSITORY" | tr \'[:upper:]\' \'[:lower:]\')"' in text
+    assert (
+        "repository=\"$(printf '%s' \"$GITHUB_REPOSITORY\" | tr '[:upper:]' '[:lower:]')\"" in text
+    )
     assert "SCHEMA_VERSION_MAXIMUM" in text

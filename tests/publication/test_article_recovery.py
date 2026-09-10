@@ -1054,9 +1054,9 @@ def test_theme_first_fallback_packing_and_deduplication():
             for i in range(len(sentences) - 1):
                 s1_attr = sentences[i].startswith("По сообщениям жителей")
                 s2_attr = sentences[i + 1].startswith("По сообщениям жителей")
-                assert not (
-                    s1_attr and s2_attr
-                ), f"Consecutive duplicate attribution in paragraph: {p.text}"
+                assert not (s1_attr and s2_attr), (
+                    f"Consecutive duplicate attribution in paragraph: {p.text}"
+                )
 
 
 @pytest.mark.unit

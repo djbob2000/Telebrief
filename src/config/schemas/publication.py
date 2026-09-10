@@ -131,6 +131,7 @@ class EventPipelineConfig:
     representative_fragment_limit: int = 16
     rich_analysis_max_calls_per_cycle: int = 40
     event_processing_cycle_lease_seconds: int = 600
+    revision_claim_lease_seconds: int = 1_800
     authority_coordination_lease_seconds: int = 10
     event_processing_stage_lease_seconds: int = 600
     authority_provider_timeout_seconds: int = 540

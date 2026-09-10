@@ -361,9 +361,9 @@ def test_merge_forbidden_for_case_1_water_light_traffic() -> None:
     groups = _compute_merge_groups([c78, c498, c441])
     # Must NOT all merge into one group!
     assert groups[c78.id] != groups[c441.id], "Water and power must not merge"
-    assert (
-        groups[c78.id] != groups[c498.id]
-    ), "Unambiguous water must not merge with multi-service card"
+    assert groups[c78.id] != groups[c498.id], (
+        "Unambiguous water must not merge with multi-service card"
+    )
     assert groups[c498.id] != groups[c441.id], "Multi-service card must not merge with power"
 
 
@@ -413,9 +413,9 @@ def test_merge_forbidden_for_case_3_water_delivery_vs_jupiter_ticket() -> None:
     )
 
     groups = _compute_merge_groups([c672, c531])
-    assert (
-        groups[c672.id] != groups[c531.id]
-    ), "Drinking water delivery and telecom ticket must not merge"
+    assert groups[c672.id] != groups[c531.id], (
+        "Drinking water delivery and telecom ticket must not merge"
+    )
 
 
 def test_complete_link_prevents_transitive_bridging() -> None:

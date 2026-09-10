@@ -209,7 +209,7 @@ class IngestionService:
         from src.repositories.event_revision_processing import EventRevisionProcessingRepository
 
         processing_repo = EventRevisionProcessingRepository()
-        incomplete_revision_ids = await processing_repo.list_incomplete(conn, observed_revision_ids)
+        incomplete_revision_ids = await processing_repo.list_queueable(conn, observed_revision_ids)
         if not incomplete_revision_ids:
             return
         await processing_repo.mark_pending(conn, incomplete_revision_ids)

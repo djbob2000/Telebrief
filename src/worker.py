@@ -29,6 +29,18 @@ import asyncio
 # publication (snapshot -> delivery), enrichment (Facebook comment refresh).
 WORKER_QUEUES = ("publication", "collection", "maintenance", "processing", "enrichment", "default")
 DEFAULT_CONCURRENCY = 2
+MAX_SAFE_PROCESSING_CONCURRENCY = 2
+
+
+def validate_worker_configuration(concurrency: int, queues: list[str]) -> None:
+    """Reject the known-unsafe processing burst before opening infrastructure."""
+    if concurrency < 1:
+        raise ValueError("concurrency must be >= 1")
+    if "processing" in queues and concurrency > MAX_SAFE_PROCESSING_CONCURRENCY:
+        raise ValueError(
+            "processing worker concurrency must be <= "
+            f"{MAX_SAFE_PROCESSING_CONCURRENCY} until cluster updates are fully serialized"
+        )
 
 
 async def run_worker(
@@ -37,8 +49,8 @@ async def run_worker(
     queues: tuple[str, ...] | list[str] | None = None,
 ) -> None:
     """Open infrastructure, install the runtime, and serve jobs until stopped."""
-    if concurrency < 1:
-        raise ValueError("concurrency must be >= 1")
+    selected_queues = list(queues) if queues is not None else list(WORKER_QUEUES)
+    validate_worker_configuration(concurrency, selected_queues)
     import logging
     import os
 
@@ -48,7 +60,6 @@ async def run_worker(
     from src.runtime import clear_runtime, install_runtime
     from src.utils import setup_logging
 
-    selected_queues = list(queues) if queues is not None else list(WORKER_QUEUES)
     setup_logging(os.getenv("LOG_LEVEL", "INFO"))
     logger = logging.getLogger("telebrief.worker")
     logger.info("Initializing Procrastinate worker infrastructure (concurrency=%d)...", concurrency)

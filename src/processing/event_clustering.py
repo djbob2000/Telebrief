@@ -85,6 +85,11 @@ class EventClusteringService:
             target_story_id = best.story_id
             similarity = best.similarity
 
+            # Lock exactly the target row before assignment and centroid
+            # read-modify-write. The task owns the surrounding short
+            # transaction, so concurrent workers cannot lose an increment.
+            old_state = await self.cluster_repo.lock_cluster_state(conn, target_story_id)
+
             assignment_id = await self.cluster_repo.assign_fragment_to_story(
                 conn,
                 story_id=target_story_id,
@@ -95,7 +100,6 @@ class EventClusteringService:
             )
 
             # Update centroid and cluster state
-            old_state = await self.cluster_repo.get_cluster_state(conn, target_story_id)
             if old_state is not None:
                 new_centroid = combine_centroids(
                     old_state.centroid, old_state.fragment_count, norm_vec

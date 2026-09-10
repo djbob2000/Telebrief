@@ -89,9 +89,9 @@ def test_golden_temporal_cases_classification() -> None:
             support_kind="operational" if (ef or eu) else "evidence",
             window=window,
         )
-        assert (
-            role == tc["expected_role"]
-        ), f"Mismatch for case {tc['id']}: {role} != {tc['expected_role']}"
+        assert role == tc["expected_role"], (
+            f"Mismatch for case {tc['id']}: {role} != {tc['expected_role']}"
+        )
 
     # 3. Unsupported soft claims
     soft_claims = data.get("unsupported_soft_claims", [])

@@ -1124,9 +1124,9 @@ def test_publication_modules_forbid_legacy_storage_and_collector_imports():
     ):
         mod = importlib.import_module(modname)
         for attr in dir(mod):
-            assert (
-                attr not in forbidden_symbols
-            ), f"Module {modname} imports forbidden legacy symbol {attr}"
+            assert attr not in forbidden_symbols, (
+                f"Module {modname} imports forbidden legacy symbol {attr}"
+            )
 
 
 def test_production_sources_forbid_legacy_clock_and_collector():
@@ -1139,9 +1139,9 @@ def test_production_sources_forbid_legacy_clock_and_collector():
         if path not in interactive_bootstrap:
             # Interactive Telegram session bootstrap may stay in src/collector.py;
             # every other production module must not build a live collector.
-            assert (
-                "MessageCollector(" not in text
-            ), f"{path} still instantiates the retired live collector"
+            assert "MessageCollector(" not in text, (
+                f"{path} still instantiates the retired live collector"
+            )
 
 
 def test_scheduler_dependency_removed_from_manifests():

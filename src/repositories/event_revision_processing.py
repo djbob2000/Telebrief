@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from collections.abc import Sequence
 from dataclasses import dataclass
+from uuid import UUID
 
 import psycopg
 
@@ -62,11 +63,42 @@ class EventRevisionProcessingRepository:
         )
         return [int(row[0]) for row in await cursor.fetchall()]
 
-    async def mark_running(
+    async def list_queueable(
         self, conn: psycopg.AsyncConnection, revision_ids: Sequence[int]
-    ) -> None:
+    ) -> list[int]:
+        """Return revisions that may be queued without stealing a live claim."""
         if not revision_ids:
-            return
+            return []
+        cursor = await conn.execute(
+            """
+            WITH requested AS (
+                SELECT revision_id, ordinal
+                FROM unnest(%s::bigint[]) WITH ORDINALITY AS items(revision_id, ordinal)
+            )
+            SELECT requested.revision_id
+            FROM requested
+            LEFT JOIN event_revision_processing_state state
+              ON state.source_item_revision_id = requested.revision_id
+            WHERE state.source_item_revision_id IS NULL
+               OR state.status IN ('pending', 'failed')
+               OR (state.status = 'running' AND state.claim_expires_at <= now())
+            ORDER BY requested.ordinal
+            """,
+            (list(revision_ids),),
+        )
+        return [int(row[0]) for row in await cursor.fetchall()]
+
+    async def claim_revision_ids(
+        self,
+        conn: psycopg.AsyncConnection,
+        revision_ids: Sequence[int],
+        *,
+        claim_token: UUID,
+        lease_seconds: int,
+    ) -> list[int]:
+        """Atomically acquire only revisions without a live processing owner."""
+        if not revision_ids:
+            return []
         await conn.execute(
             """
             INSERT INTO event_revision_processing_state (
@@ -74,23 +106,59 @@ class EventRevisionProcessingRepository:
                 completed_at, last_error_kind, processing_mode,
                 reused_from_revision_id, updated_at
             )
-            SELECT revision_id, 'running', 1, now(), NULL, NULL, 'full', NULL, now()
+            SELECT revision_id, 'pending', 0, NULL, NULL, NULL, 'full', NULL, now()
             FROM unnest(%s::bigint[]) AS revision_id
-            ON CONFLICT (source_item_revision_id) DO UPDATE SET
-                status = 'running',
-                attempt_count = event_revision_processing_state.attempt_count + 1,
+            ON CONFLICT (source_item_revision_id) DO NOTHING
+            """,
+            (list(revision_ids),),
+        )
+        cursor = await conn.execute(
+            """
+            UPDATE event_revision_processing_state
+            SET status = 'running',
+                attempt_count = attempt_count + 1,
                 last_error_kind = NULL,
                 started_at = now(),
                 completed_at = NULL,
                 processing_mode = 'full',
                 reused_from_revision_id = NULL,
+                claim_token = %s,
+                claim_expires_at = now() + (%s * interval '1 second'),
                 updated_at = now()
+            WHERE source_item_revision_id = ANY(%s)
+              AND (
+                  status IN ('pending', 'failed')
+                  OR (status = 'running' AND claim_expires_at <= now())
+              )
+            RETURNING source_item_revision_id
             """,
-            (list(revision_ids),),
+            (claim_token, lease_seconds, list(revision_ids)),
+        )
+        claimed = {int(row[0]) for row in await cursor.fetchall()}
+        return [revision_id for revision_id in revision_ids if revision_id in claimed]
+
+    async def mark_running(
+        self,
+        conn: psycopg.AsyncConnection,
+        revision_ids: Sequence[int],
+        *,
+        claim_token: UUID,
+        lease_seconds: int,
+    ) -> list[int]:
+        """Compatibility name for callers migrating to the atomic claim API."""
+        return await self.claim_revision_ids(
+            conn,
+            revision_ids,
+            claim_token=claim_token,
+            lease_seconds=lease_seconds,
         )
 
     async def mark_succeeded(
-        self, conn: psycopg.AsyncConnection, revision_ids: Sequence[int]
+        self,
+        conn: psycopg.AsyncConnection,
+        revision_ids: Sequence[int],
+        *,
+        claim_token: UUID,
     ) -> None:
         if not revision_ids:
             return
@@ -99,10 +167,12 @@ class EventRevisionProcessingRepository:
             UPDATE event_revision_processing_state
             SET status = 'succeeded', completed_at = now(),
                 last_error_kind = NULL, processing_mode = 'full',
-                reused_from_revision_id = NULL, updated_at = now()
+                reused_from_revision_id = NULL, claim_token = NULL,
+                claim_expires_at = NULL, updated_at = now()
             WHERE source_item_revision_id = ANY(%s)
+              AND claim_token = %s
             """,
-            (list(revision_ids),),
+            (list(revision_ids), claim_token),
         )
 
     async def mark_failed(
@@ -110,6 +180,7 @@ class EventRevisionProcessingRepository:
         conn: psycopg.AsyncConnection,
         revision_ids: Sequence[int],
         *,
+        claim_token: UUID,
         error_kind: str,
     ) -> None:
         if not revision_ids:
@@ -118,10 +189,12 @@ class EventRevisionProcessingRepository:
             """
             UPDATE event_revision_processing_state
             SET status = 'failed', last_error_kind = %s,
-                completed_at = now(), updated_at = now()
+                completed_at = now(), claim_token = NULL,
+                claim_expires_at = NULL, updated_at = now()
             WHERE source_item_revision_id = ANY(%s)
+              AND claim_token = %s
             """,
-            (error_kind, list(revision_ids)),
+            (error_kind, list(revision_ids), claim_token),
         )
 
     async def mark_reused(
@@ -146,6 +219,8 @@ class EventRevisionProcessingRepository:
                 completed_at = now(),
                 processing_mode = 'reused',
                 reused_from_revision_id = EXCLUDED.reused_from_revision_id,
+                claim_token = NULL,
+                claim_expires_at = NULL,
                 updated_at = now()
             """,
             (revision_id, reused_from_revision_id),

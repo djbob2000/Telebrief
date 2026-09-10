@@ -78,6 +78,27 @@ class EventClusterRepository:
         vec = _vec_to_list(row[1])
         return StoryClusterState.from_row(row, vec)
 
+    async def lock_cluster_state(
+        self, conn: psycopg.AsyncConnection, story_id: int
+    ) -> StoryClusterState | None:
+        """Read one state while serializing its read-modify-write update."""
+        cursor = await conn.execute(
+            """
+            SELECT story_id, centroid, model, dimensions, fragment_count,
+                   unique_source_count, first_seen_at, last_seen_at,
+                   latest_assignment_id, last_analyzed_assignment_id,
+                   last_analyzed_at, analysis_dirty, updated_at
+            FROM story_cluster_state
+            WHERE story_id = %s
+            FOR UPDATE
+            """,
+            (story_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return StoryClusterState.from_row(row, _vec_to_list(row[1]))
+
     async def is_current_assignment(
         self,
         conn: psycopg.AsyncConnection,

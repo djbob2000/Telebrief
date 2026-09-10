@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 
 from src.repositories.event_revision_processing import EventRevisionProcessingRepository
@@ -52,8 +54,14 @@ async def test_revision_processing_state_is_idempotent_and_ordered(repo_conn):
         revision_ids[0],
     ]
 
-    await repository.mark_running(repo_conn, [revision_ids[0]])
-    await repository.mark_succeeded(repo_conn, [revision_ids[0]])
+    claim_token = uuid.uuid4()
+    assert await repository.mark_running(
+        repo_conn,
+        [revision_ids[0]],
+        claim_token=claim_token,
+        lease_seconds=300,
+    ) == [revision_ids[0]]
+    await repository.mark_succeeded(repo_conn, [revision_ids[0]], claim_token=claim_token)
     assert await repository.list_incomplete(repo_conn, revision_ids) == revision_ids[1:]
 
 
@@ -89,8 +97,19 @@ async def test_mark_running_supports_replayed_revision_and_failed_state(repo_con
     revision_id = int((await cursor.fetchone())[0])
 
     repository = EventRevisionProcessingRepository()
-    await repository.mark_running(repo_conn, [revision_id])
-    await repository.mark_failed(repo_conn, [revision_id], error_kind="server")
+    claim_token = uuid.uuid4()
+    assert await repository.claim_revision_ids(
+        repo_conn,
+        [revision_id],
+        claim_token=claim_token,
+        lease_seconds=300,
+    ) == [revision_id]
+    await repository.mark_failed(
+        repo_conn,
+        [revision_id],
+        claim_token=claim_token,
+        error_kind="server",
+    )
     cursor = await repo_conn.execute(
         """
         SELECT status, attempt_count, last_error_kind
@@ -100,6 +119,91 @@ async def test_mark_running_supports_replayed_revision_and_failed_state(repo_con
         (revision_id,),
     )
     assert await cursor.fetchone() == ("failed", 1, "server")
+    del edition_id
+
+
+@pytest.mark.postgres
+async def test_live_revision_claim_is_exclusive_and_expired_claim_is_reclaimable(repo_conn):
+    cursor = await repo_conn.execute(
+        "INSERT INTO editions (slug, name) VALUES ('processing-claim', 'Processing Claim') RETURNING id"
+    )
+    edition_id = int((await cursor.fetchone())[0])
+    cursor = await repo_conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, name)
+        VALUES ('telegram', 'channel', 'processing-claim-source', 'Processing Claim Source')
+        RETURNING id
+        """
+    )
+    source_id = int((await cursor.fetchone())[0])
+    cursor = await repo_conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+        VALUES (%s, 'message', 'processing-claim-item', now()) RETURNING id
+        """,
+        (source_id,),
+    )
+    item_id = int((await cursor.fetchone())[0])
+    cursor = await repo_conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
+        VALUES (%s, 1, 'processing-claim-revision', 'processing text') RETURNING id
+        """,
+        (item_id,),
+    )
+    revision_id = int((await cursor.fetchone())[0])
+
+    repository = EventRevisionProcessingRepository()
+    first_token = uuid.uuid4()
+    second_token = uuid.uuid4()
+    assert await repository.claim_revision_ids(
+        repo_conn,
+        [revision_id],
+        claim_token=first_token,
+        lease_seconds=300,
+    ) == [revision_id]
+    assert (
+        await repository.claim_revision_ids(
+            repo_conn,
+            [revision_id],
+            claim_token=second_token,
+            lease_seconds=300,
+        )
+        == []
+    )
+
+    await repo_conn.execute(
+        """
+        UPDATE event_revision_processing_state
+        SET claim_expires_at = now() - interval '1 second'
+        WHERE source_item_revision_id = %s
+        """,
+        (revision_id,),
+    )
+    assert await repository.claim_revision_ids(
+        repo_conn,
+        [revision_id],
+        claim_token=second_token,
+        lease_seconds=300,
+    ) == [revision_id]
+
+    await repository.mark_succeeded(
+        repo_conn,
+        [revision_id],
+        claim_token=first_token,
+    )
+    state = await repository.get_state(repo_conn, revision_id)
+    assert state is not None
+    assert state.status == "running"
+
+    await repository.mark_succeeded(
+        repo_conn,
+        [revision_id],
+        claim_token=second_token,
+    )
+    state = await repository.get_state(repo_conn, revision_id)
+    assert state is not None
+    assert state.status == "succeeded"
     del edition_id
 
 
@@ -154,8 +258,14 @@ async def test_mark_reused_is_idempotent_and_normal_processing_clears_provenance
     assert state.reused_from_revision_id == revision_ids[0]
     assert state.completed_at is not None
 
-    await repository.mark_running(repo_conn, [revision_ids[1]])
-    await repository.mark_succeeded(repo_conn, [revision_ids[1]])
+    claim_token = uuid.uuid4()
+    assert await repository.mark_running(
+        repo_conn,
+        [revision_ids[1]],
+        claim_token=claim_token,
+        lease_seconds=300,
+    ) == [revision_ids[1]]
+    await repository.mark_succeeded(repo_conn, [revision_ids[1]], claim_token=claim_token)
     state = await repository.get_state(repo_conn, revision_ids[1])
     assert state is not None
     assert state.processing_mode == "full"

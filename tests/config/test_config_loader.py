@@ -2263,6 +2263,7 @@ def test_event_pipeline_config_defaults(tmp_path, mock_env_vars):
     assert ep.provider_retry_backoff_max_seconds == 3_600
     assert ep.analysis_max_input_chars == 24000
     assert ep.representative_fragment_limit == 16
+    assert ep.revision_claim_lease_seconds == 1_800
     assert ep.live_batch_size == 100
     assert ep.backfill_batch_size == 500
 
@@ -2289,6 +2290,7 @@ def test_event_pipeline_config_custom(tmp_path, mock_env_vars):
         "provider_retry_backoff_seconds": 120,
         "analysis_max_input_chars": 16000,
         "representative_fragment_limit": 12,
+        "revision_claim_lease_seconds": 900,
         "live_batch_size": 50,
         "backfill_batch_size": 200,
     }
@@ -2303,6 +2305,7 @@ def test_event_pipeline_config_custom(tmp_path, mock_env_vars):
     assert ep.join_similarity == 0.88
     assert ep.fragment_max_chars == 1500
     assert ep.embedding_batch_size == 64
+    assert ep.revision_claim_lease_seconds == 900
 
 
 @pytest.mark.unit

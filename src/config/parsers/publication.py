@@ -584,6 +584,7 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
         event_processing_cycle_lease_seconds=_val_pos_int(
             "event_processing_cycle_lease_seconds", 600
         ),
+        revision_claim_lease_seconds=_val_pos_int("revision_claim_lease_seconds", 1_800),
         event_processing_stage_lease_seconds=_val_pos_int(
             "event_processing_stage_lease_seconds", 600
         ),

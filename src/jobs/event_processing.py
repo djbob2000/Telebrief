@@ -10,13 +10,15 @@ import uuid
 from typing import Any
 
 import procrastinate
+import psycopg
 
-from src.ai_providers import classify_provider_failure, create_provider
+from src.ai_providers import create_provider
 from src.config_loader import load_config
 from src.embedding_providers import create_embedding_provider
 from src.jobs.app import procrastinate_app
 from src.processing.edition_scope import resolve_edition_scope, scope_config_hash
 from src.processing.embeddings import EmbeddingService
+from src.processing.errors import classify_processing_failure
 from src.processing.event_analysis import EventAnalysisService
 from src.processing.event_brief import EventBriefService
 from src.processing.event_clustering import EventClusteringService
@@ -38,6 +40,7 @@ from src.runtime import get_runtime
 logger = logging.getLogger(__name__)
 
 _GATE_SPLIT_ERROR_KINDS = frozenset({"token_budget", "context_size", "other"})
+_CLUSTER_UNIT_MAX_RETRIES = 3
 
 
 def _should_split_gate(error_kind: str | None, batch_size: int) -> bool:
@@ -61,30 +64,40 @@ async def process_event_revisions_task(revision_ids: list[int]) -> dict[str, int
     """Run Event-First processing with durable revision-state transitions."""
     runtime = get_runtime()
     processing_repo = EventRevisionProcessingRepository()
+    config = getattr(runtime, "config", None) or load_config()
+    claim_token = uuid.uuid4()
     async with runtime.uow.transaction() as state_conn:
-        pending_ids = await processing_repo.list_incomplete(state_conn, revision_ids)
-        if pending_ids:
-            await processing_repo.mark_running(state_conn, pending_ids)
+        pending_ids = await processing_repo.claim_revision_ids(
+            state_conn,
+            revision_ids,
+            claim_token=claim_token,
+            lease_seconds=config.settings.event_pipeline.revision_claim_lease_seconds,
+        )
 
     if not pending_ids:
         return {"revisions": 0, "fragments": 0, "candidates": 0, "assignments": 0}
 
     try:
-        stats = await _process_event_revisions_in_transaction(pending_ids)
+        stats = await _process_event_revisions(pending_ids)
     except Exception as exc:
         async with runtime.uow.transaction() as state_conn:
             await processing_repo.mark_failed(
                 state_conn,
                 pending_ids,
-                error_kind=classify_provider_failure(exc),
+                claim_token=claim_token,
+                error_kind=classify_processing_failure(exc),
             )
         raise
     async with runtime.uow.transaction() as state_conn:
-        await processing_repo.mark_succeeded(state_conn, pending_ids)
+        await processing_repo.mark_succeeded(
+            state_conn,
+            pending_ids,
+            claim_token=claim_token,
+        )
     return stats
 
 
-async def _process_event_revisions_in_transaction(revision_ids: list[int]) -> dict[str, int]:
+async def _process_event_revisions(revision_ids: list[int]) -> dict[str, int]:
     """Ingest and cluster a batch of source item revisions."""
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
@@ -101,8 +114,8 @@ async def _process_event_revisions_in_transaction(revision_ids: list[int]) -> di
 
     stats = {"revisions": len(revision_ids), "fragments": 0, "candidates": 0, "assignments": 0}
 
+    # 1. Load revisions and create deterministic fragments in a short transaction.
     async with runtime.uow.transaction() as conn:
-        # 1. Load revisions
         cursor = await conn.execute(
             """
             SELECT sir.id, sir.text_content, COALESCE(si.first_collected_at, now()), COALESCE(se.edition_id, 1)
@@ -140,41 +153,78 @@ async def _process_event_revisions_in_transaction(revision_ids: list[int]) -> di
                     all_candidate_frags.append(f)
                     frag_meta[f.id] = (edition_id, collected_at)
 
-        if not all_candidate_frags:
-            return stats
+    if not all_candidate_frags:
+        return stats
 
-        # 2. Embed candidate fragments with deduplication
-        embeddings_map = await emb_service.ensure_fragment_embeddings(
+    # 2. Read cache state and create audit rows in a short transaction. The
+    # transaction is closed before any provider/network await below.
+    async with runtime.uow.transaction() as conn:
+        prepared = await emb_service.prepare_embedding_batches(
             conn,
             all_candidate_frags,
-            provider=emb_provider,
             provider_name=emb_cfg.provider,
             model=emb_cfg.model,
             dimensions=emb_cfg.dimensions,
             batch_size=cfg.embedding_batch_size,
         )
 
-        # 3. Stream each candidate fragment into story clustering
-        for f in all_candidate_frags:
-            if f.id not in embeddings_map:
-                continue
-            sfe_id, vec = embeddings_map[f.id]
-            edition_id, collected_at = frag_meta[f.id]
-
-            await clustering_service.process_fragment(
-                conn,
-                f,
-                edition_id=edition_id,
-                fragment_embedding_id=sfe_id,
-                vector=vec,
+    # 3. Provider calls are deliberately outside every pooled transaction.
+    for batch in prepared.batches:
+        try:
+            vectors = await emb_provider.embed_many(
+                list(batch.texts),
+                purpose="story_document",
                 model=emb_cfg.model,
                 dimensions=emb_cfg.dimensions,
-                item_timestamp=collected_at,
-                join_similarity=cfg.join_similarity,
-                active_window_hours=cfg.active_window_hours,
-                max_cluster_candidates=cfg.max_cluster_candidates,
             )
-            stats["assignments"] += 1
+        except Exception as exc:
+            async with runtime.uow.transaction() as conn:
+                await emb_service.record_batch_completion(
+                    conn,
+                    batch.audit_id,
+                    status="failed",
+                    error_kind=type(exc).__name__,
+                )
+            raise
+        async with runtime.uow.transaction() as conn:
+            await emb_service.persist_embedding_batch(
+                conn,
+                prepared,
+                batch,
+                vectors,
+                model=emb_cfg.model,
+                dimensions=emb_cfg.dimensions,
+            )
+
+    async with runtime.uow.transaction() as conn:
+        await emb_service.persist_cached_fragment_links(conn, prepared)
+        embeddings_map = await emb_service.get_fragment_embeddings_map(
+            conn, [f.id for f in prepared.candidates]
+        )
+
+    # 4. Each cluster assignment owns only one short transaction. A failure
+    # cannot roll back earlier embedding checkpoints or cluster units.
+    for f in prepared.candidates:
+        if f.id not in embeddings_map:
+            continue
+        sfe_id, vec = embeddings_map[f.id]
+        edition_id, collected_at = frag_meta[f.id]
+
+        await _process_cluster_unit_with_retry(
+            runtime,
+            clustering_service,
+            f,
+            edition_id=edition_id,
+            fragment_embedding_id=sfe_id,
+            vector=vec,
+            model=emb_cfg.model,
+            dimensions=emb_cfg.dimensions,
+            item_timestamp=collected_at,
+            join_similarity=cfg.join_similarity,
+            active_window_hours=cfg.active_window_hours,
+            max_cluster_candidates=cfg.max_cluster_candidates,
+        )
+        stats["assignments"] += 1
 
     if stats["assignments"] > 0:
         from src.jobs.event_authority import request_background_authority_dispatch
@@ -192,6 +242,45 @@ async def _process_event_revisions_in_transaction(revision_ids: list[int]) -> di
                 )
 
     return stats
+
+
+async def _process_cluster_unit_with_retry(
+    runtime: Any,
+    clustering_service: EventClusteringService,
+    fragment: Any,
+    *,
+    edition_id: int,
+    fragment_embedding_id: int,
+    vector: list[float],
+    model: str,
+    dimensions: int,
+    item_timestamp: dt.datetime,
+    join_similarity: float,
+    active_window_hours: int,
+    max_cluster_candidates: int,
+) -> None:
+    """Retry only a short cluster transaction after a PostgreSQL deadlock."""
+    for attempt in range(_CLUSTER_UNIT_MAX_RETRIES):
+        try:
+            async with runtime.uow.transaction() as conn:
+                await clustering_service.process_fragment(
+                    conn,
+                    fragment,
+                    edition_id=edition_id,
+                    fragment_embedding_id=fragment_embedding_id,
+                    vector=vector,
+                    model=model,
+                    dimensions=dimensions,
+                    item_timestamp=item_timestamp,
+                    join_similarity=join_similarity,
+                    active_window_hours=active_window_hours,
+                    max_cluster_candidates=max_cluster_candidates,
+                )
+            return
+        except psycopg.errors.DeadlockDetected:
+            if attempt + 1 >= _CLUSTER_UNIT_MAX_RETRIES:
+                raise
+            await asyncio.sleep(0.05 * (attempt + 1))
 
 
 async def run_legacy_coalesce_dirty_stories(

@@ -39,9 +39,9 @@ def test_question_only_preserved_for_gate_triage():
     for text in question_cases:
         assert is_question_only(text), f"Expected is_question_only for: {text!r}"
         is_noise, _ = is_obvious_noise(text)
-        assert (
-            not is_noise
-        ), f"Questions must reach Gate triage for context handling, not dropped: {text!r}"
+        assert not is_noise, (
+            f"Questions must reach Gate triage for context handling, not dropped: {text!r}"
+        )
         is_ex, _ = classify_text_noise_or_exclusion(text)
         assert not is_ex, f"Questions must not be hard-excluded deterministically: {text!r}"
 
