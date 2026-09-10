@@ -201,7 +201,9 @@ jobs:
 
             # Verify that every application container uses the exact image
             # revision that was pulled and that the image supports the DB schema.
-            expected_revision="$(docker image inspect "ghcr.io/${GITHUB_REPOSITORY}:${IMAGE_TAG}" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+            repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+            image_ref="ghcr.io/${repository}:${IMAGE_TAG}"
+            expected_revision="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
             test -n "$expected_revision"
             if [[ "$IMAGE_TAG" == dev-* ]]; then
               test "$expected_revision" = "${IMAGE_TAG#dev-}"

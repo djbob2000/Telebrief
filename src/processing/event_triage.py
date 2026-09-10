@@ -378,6 +378,7 @@ class StoryTriageService:
                     read_conn,
                     story_id=story.story_id,
                     assignment_id=target_assignment,
+                    source_cutoff_at=source_cutoff_at,
                 )
                 effective_stories.append(
                     replace(

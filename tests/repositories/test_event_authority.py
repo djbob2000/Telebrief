@@ -10,6 +10,7 @@ import pytest
 from src.domain.event_authority import AuthorityTarget
 from src.publication.repository import PublicationPolicyRepository, PublicationRepository
 from src.repositories.event_authority import EventAuthorityRepository
+from src.repositories.event_clusters import EventClusterRepository
 
 UTC = dt.timezone.utc
 SNAPSHOT = dt.datetime(2026, 9, 10, 9, 0, tzinfo=UTC)
@@ -201,6 +202,14 @@ async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions
     ]
     assert gaps[0].source_cutoff_at == SOURCE_CUTOFF
     assert gaps[0].snapshot_at == SNAPSHOT
+
+    metrics = await EventClusterRepository().get_assignment_snapshot_metrics(
+        conn,
+        story_id=story_id,
+        assignment_id=new_assignment,
+        source_cutoff_at=SOURCE_CUTOFF,
+    )
+    assert metrics == (1, 1, SOURCE_CUTOFF - dt.timedelta(minutes=5))
 
 
 @pytest.mark.postgres

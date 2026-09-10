@@ -206,6 +206,10 @@ async def test_event_brief_service_merges_into_rich_revision_without_downgrading
         fragment_embedding_id=7022,
         assignment_kind="new_story",
     )
+    await conn.execute(
+        "UPDATE story_revisions SET event_assignment_id = %s WHERE story_id = %s",
+        (aid, story_id),
+    )
     await cluster_repo.upsert_cluster_state(
         conn,
         story_id=story_id,
@@ -259,6 +263,20 @@ async def test_event_brief_service_merges_into_rich_revision_without_downgrading
         "Excavators on site",
     ]  # preserved!
     assert len(merged_rev.event_payload["evidence_items"]) == 2
+
+    exact_rev = await service.persist_brief(
+        conn,
+        story_id=story_id,
+        assignment_id=aid,
+        payload=new_brief,
+        exact_assignment=True,
+        merge_existing_analysis=False,
+    )
+
+    assert exact_rev is not None
+    assert exact_rev.event_payload["enrichment_level"] == "brief"
+    assert exact_rev.event_payload.get("key_facts", []) == []
+    assert len(exact_rev.event_payload["evidence_items"]) == 1
 
 
 @pytest.mark.postgres

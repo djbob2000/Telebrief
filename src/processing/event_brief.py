@@ -114,8 +114,15 @@ class EventBriefService:
         assignment_id: int,
         payload: EventPayload | None,
         exact_assignment: bool = False,
+        merge_existing_analysis: bool = True,
     ) -> StoryRevision | None:
-        """Create or update a StoryRevision using the already-computed brief payload."""
+        """Create or update a StoryRevision using the already-computed brief payload.
+
+        Exact publication snapshots must pass ``merge_existing_analysis=False`` so
+        a rich revision produced from a larger, newer source universe cannot leak
+        into the frozen publication payload. Background authority may retain the
+        default merge behavior for ordinary enrichment.
+        """
         if payload is None:
             return None
 
@@ -162,7 +169,8 @@ class EventBriefService:
         final_payload: EventPayload
         reason: str
         if (
-            existing_rev is not None
+            merge_existing_analysis
+            and existing_rev is not None
             and existing_rev.event_payload
             and existing_rev.event_payload.get("enrichment_level") == "analysis"
         ):

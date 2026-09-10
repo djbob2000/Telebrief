@@ -123,7 +123,7 @@ class EventAuthorityService:
         *,
         mode: Literal["background", "publication"],
     ) -> AuthorityBatchResult:
-        del mode  # priority is chosen by the caller; processing semantics are shared
+        publication_mode = mode == "publication"
         cfg = self.config.settings.event_pipeline
         batch = list(targets[: cfg.triage_batch_size])
         stats = AuthorityBatchStats(requested=len(batch))
@@ -240,6 +240,7 @@ class EventAuthorityService:
                         assignment_id=assignment_id,
                         payload=result.brief_payload,
                         exact_assignment=True,
+                        merge_existing_analysis=not publication_mode,
                     )
 
             heartbeat_stop = asyncio.Event()

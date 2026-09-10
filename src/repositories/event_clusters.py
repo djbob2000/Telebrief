@@ -307,8 +307,9 @@ class EventClusterRepository:
         *,
         story_id: int,
         assignment_id: int,
+        source_cutoff_at: dt.datetime | None = None,
     ) -> tuple[int, int, dt.datetime]:
-        """Return fragment/source metrics visible through one assignment boundary."""
+        """Return metrics visible through assignment and optional source-time boundaries."""
         cursor = await conn.execute(
             """
             WITH target AS (
@@ -325,8 +326,13 @@ class EventClusterRepository:
             JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
             JOIN source_items si ON si.id = sir.source_item_id
             WHERE (sf.assigned_at, sf.id) <= (t.assigned_at, t.id)
+              AND (
+                  %s::timestamptz IS NULL
+                  OR COALESCE(si.published_at, si.first_collected_at, f.created_at)
+                     <= %s
+              )
             """,
-            (story_id, assignment_id, story_id),
+            (story_id, assignment_id, story_id, source_cutoff_at, source_cutoff_at),
         )
         row = await cursor.fetchone()
         if row is None or row[2] is None:
