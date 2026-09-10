@@ -17,9 +17,9 @@ def test_connection_budget_within_postgres_max_connections():
     procrastinate_max_pool = PROCASTINATE_POOL_MAX_SIZE
 
     assert domain_max_pool == 3, f"Expected default domain pool max_size=3, got {domain_max_pool}"
-    assert procrastinate_max_pool == 1, (
-        f"Expected Procrastinate pool max_size=1, got {procrastinate_max_pool}"
-    )
+    assert (
+        procrastinate_max_pool == 1
+    ), f"Expected Procrastinate pool max_size=1, got {procrastinate_max_pool}"
 
     # 2 processes: telebrief-app and telebrief-worker
     num_processes = 2
@@ -27,9 +27,9 @@ def test_connection_budget_within_postgres_max_connections():
     total_connections = num_processes * per_process_connections
 
     assert total_connections == 8
-    assert total_connections <= 10, (
-        f"Total connections {total_connections} exceeds PostgreSQL max_connections=10"
-    )
+    assert (
+        total_connections <= 10
+    ), f"Total connections {total_connections} exceeds PostgreSQL max_connections=10"
 
 
 def test_build_app_configures_procrastinate_connector():

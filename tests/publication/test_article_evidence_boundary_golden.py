@@ -98,15 +98,15 @@ def test_article_evidence_boundary_golden_suite() -> None:
         )
 
         result = validate_article_draft(draft, ctx, config)
-        assert result.is_valid == expected_valid, (
-            f"Case '{case_id}' expected is_valid={expected_valid}, got {result.is_valid}. Issues: {result.issues}"
-        )
+        assert (
+            result.is_valid == expected_valid
+        ), f"Case '{case_id}' expected is_valid={expected_valid}, got {result.is_valid}. Issues: {result.issues}"
 
         if not expected_valid and expected_code:
             issue_codes = [iss.code for iss in result.issues]
-            assert expected_code in issue_codes, (
-                f"Case '{case_id}' expected code '{expected_code}' in {issue_codes}"
-            )
+            assert (
+                expected_code in issue_codes
+            ), f"Case '{case_id}' expected code '{expected_code}' in {issue_codes}"
 
 
 @pytest.mark.unit

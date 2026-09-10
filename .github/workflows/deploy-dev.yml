@@ -217,7 +217,7 @@ jobs:
               test "$container_revision" = "$expected_revision"
             done
             runtime_schema="$(docker compose run --rm --interactive=false -T --no-deps telebrief-app python -c 'from src.bootstrap import SCHEMA_VERSION_MAXIMUM; print(SCHEMA_VERSION_MAXIMUM)' </dev/null)"
-            test "$runtime_schema" = "33"
+            test "$runtime_schema" = "34"
 
             # Clean up old unused images to save disk space
             echo "==> Pruning dangling images..."
