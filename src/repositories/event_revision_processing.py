@@ -126,7 +126,7 @@ class EventRevisionProcessingRepository:
                 claim_token = %s,
                 claim_expires_at = now() + (%s * interval '1 second'),
                 updated_at = now()
-            WHERE source_item_revision_id = ANY(%s)
+            WHERE source_item_revision_id = ANY(%s::bigint[])
               AND (
                   status IN ('pending', 'failed')
                   OR (%s AND status = 'succeeded')
@@ -172,7 +172,7 @@ class EventRevisionProcessingRepository:
             UPDATE event_revision_processing_state
             SET claim_expires_at = now() + (%s * interval '1 second'),
                 updated_at = now()
-            WHERE source_item_revision_id = ANY(%s)
+            WHERE source_item_revision_id = ANY(%s::bigint[])
               AND status = 'running'
               AND claim_token = %s
             RETURNING source_item_revision_id
@@ -196,7 +196,7 @@ class EventRevisionProcessingRepository:
             """
             SELECT count(*)
             FROM event_revision_processing_state
-            WHERE source_item_revision_id = ANY(%s)
+            WHERE source_item_revision_id = ANY(%s::bigint[])
               AND status = 'running'
               AND claim_token = %s
               AND claim_expires_at > now()
@@ -222,7 +222,7 @@ class EventRevisionProcessingRepository:
                 last_error_kind = NULL, processing_mode = 'full',
                 reused_from_revision_id = NULL, claim_token = NULL,
                 claim_expires_at = NULL, updated_at = now()
-            WHERE source_item_revision_id = ANY(%s)
+            WHERE source_item_revision_id = ANY(%s::bigint[])
               AND claim_token = %s
             """,
             (list(revision_ids), claim_token),
@@ -244,7 +244,7 @@ class EventRevisionProcessingRepository:
             SET status = 'failed', last_error_kind = %s,
                 completed_at = now(), claim_token = NULL,
                 claim_expires_at = NULL, updated_at = now()
-            WHERE source_item_revision_id = ANY(%s)
+            WHERE source_item_revision_id = ANY(%s::bigint[])
               AND claim_token = %s
             """,
             (error_kind, list(revision_ids), claim_token),
