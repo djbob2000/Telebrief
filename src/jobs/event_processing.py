@@ -815,14 +815,3 @@ async def coalesce_dirty_stories_task(
         },
     )
     return stats
-
-
-@procrastinate_app.periodic(cron="*/5 * * * *", periodic_id="periodic-coalesce-dirty-stories")
-@procrastinate_app.task(queue="maintenance", queueing_lock="coalesce_dirty_stories")
-async def periodic_coalesce_dirty_stories(timestamp: int) -> None:
-    """Periodically coalesce settled dirty stories every 5 minutes."""
-    del timestamp
-    try:
-        await coalesce_dirty_stories_task.defer_async()
-    except Exception as exc:
-        logger.warning("periodic coalesce_dirty_stories deferral failed: %s", exc)
