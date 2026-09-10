@@ -84,17 +84,21 @@ async def test_authority_targets_use_assignment_at_cutoff_and_temporal_decisions
             (f"authority-main-vector-{suffix}",),
         )
         vector_id = int((await cursor.fetchone())[0])
-        await conn.execute(
-            "INSERT INTO source_fragment_embeddings (fragment_id, vector_id) VALUES (%s, %s)",
+        cursor = await conn.execute(
+            """
+            INSERT INTO source_fragment_embeddings (fragment_id, vector_id)
+            VALUES (%s, %s) RETURNING id
+            """,
             (fragment_id, vector_id),
         )
+        fragment_embedding_id = int((await cursor.fetchone())[0])
         cursor = await conn.execute(
             """
             INSERT INTO story_fragments (
                 story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at
             ) VALUES (%s, %s, %s, 'new_story', %s) RETURNING id
             """,
-            (story_id, fragment_id, vector_id, observed_at),
+            (story_id, fragment_id, fragment_embedding_id, observed_at),
         )
         assignment_ids.append(int((await cursor.fetchone())[0]))
 
