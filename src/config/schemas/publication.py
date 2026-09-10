@@ -8,7 +8,7 @@ from typing import Literal
 
 _DIGEST_RUBRIC_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 EVENT_PIPELINE_MODES = ("event_first",)
-ALLOWED_REASONING_EFFORTS = {"low", "medium", "high"}
+ALLOWED_REASONING_EFFORTS = {"none", "low", "medium", "high"}
 
 
 @dataclass

@@ -109,8 +109,8 @@ settings:
     max_cluster_candidates: 20
     embedding_batch_size: 128
     triage_batch_size: 25
-    triage_max_output_tokens: 12288
-    triage_reasoning_effort: "low"
+    triage_max_output_tokens: 32768
+    triage_reasoning_effort: "none"
     analysis_max_output_tokens: 8192
     analysis_reasoning_effort: "low"
     triage_max_attempts_per_assignment: 2

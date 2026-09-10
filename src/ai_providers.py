@@ -634,22 +634,25 @@ class OpenAIProvider(AIProvider):
         if is_openrouter:
             if thinking is not False:
                 extra = create_kwargs.setdefault("extra_body", {})
-                env_effort = (os.environ.get("OPENROUTER_REASONING_EFFORT") or "").strip()
-                raw_max_reasoning = (
-                    os.environ.get("OPENROUTER_REASONING_MAX_TOKENS") or ""
-                ).strip()
-                reasoning: dict[str, Any]
-                if reasoning_effort is not None:
-                    reasoning = {"effort": reasoning_effort}
-                elif env_effort:
-                    reasoning = {"effort": env_effort}
-                elif raw_max_reasoning.isdigit() and int(raw_max_reasoning) > 0:
-                    reasoning = {"max_tokens": int(raw_max_reasoning)}
+                if reasoning_effort == "none":
+                    extra["reasoning"] = {"effort": "none"}
                 else:
-                    reasoning = {"effort": "low"}
-                extra["reasoning"] = reasoning
+                    env_effort = (os.environ.get("OPENROUTER_REASONING_EFFORT") or "").strip()
+                    raw_max_reasoning = (
+                        os.environ.get("OPENROUTER_REASONING_MAX_TOKENS") or ""
+                    ).strip()
+                    reasoning: dict[str, Any]
+                    if reasoning_effort is not None:
+                        reasoning = {"effort": reasoning_effort}
+                    elif env_effort:
+                        reasoning = {"effort": env_effort}
+                    elif raw_max_reasoning.isdigit() and int(raw_max_reasoning) > 0:
+                        reasoning = {"max_tokens": int(raw_max_reasoning)}
+                    else:
+                        reasoning = {"effort": "low"}
+                    extra["reasoning"] = reasoning
         else:
-            if reasoning_effort is not None:
+            if reasoning_effort is not None and reasoning_effort != "none":
                 create_kwargs["reasoning_effort"] = reasoning_effort
         if thinking is not None:
             create_kwargs.setdefault("extra_body", {})["thinking"] = {
