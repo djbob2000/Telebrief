@@ -131,6 +131,7 @@ class EventPipelineConfig:
     representative_fragment_limit: int = 16
     rich_analysis_max_calls_per_cycle: int = 40
     event_processing_cycle_lease_seconds: int = 600
+    authority_coordination_lease_seconds: int = 10
     event_processing_stage_lease_seconds: int = 600
     triage_split_max_extra_calls_per_cycle: int = 8
     live_batch_size: int = 100
@@ -144,6 +145,7 @@ class EventPipelineConfig:
             "analysis_max_attempts_per_assignment",
             "provider_retry_backoff_max_seconds",
             "event_processing_cycle_lease_seconds",
+            "authority_coordination_lease_seconds",
             "event_processing_stage_lease_seconds",
             "triage_split_max_extra_calls_per_cycle",
         ):
