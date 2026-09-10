@@ -11,6 +11,14 @@ import psycopg
 
 
 @dataclass(frozen=True)
+class RevisionBarrierState:
+    """Completion aggregate for all revisions observed by a refresh run."""
+
+    unprocessed_count: int
+    completed_at: dt.datetime | None
+
+
+@dataclass(frozen=True)
 class PublicationRefreshRun:
     """A durable readiness barrier for one edition/publication slot."""
 
@@ -297,7 +305,11 @@ class PublicationReadinessRepository:
         )
 
     async def reconcile_qualifying_collection_runs(
-        self, conn: psycopg.AsyncConnection, refresh_run_id: int
+        self,
+        conn: psycopg.AsyncConnection,
+        refresh_run_id: int,
+        *,
+        evaluation_at: dt.datetime | None = None,
     ) -> list[PublicationRefreshSource]:
         """Attach the best qualifying scan, retaining success over later failures."""
         sources = await self.list_refresh_sources(conn, refresh_run_id)
@@ -308,12 +320,13 @@ class PublicationReadinessRepository:
                 FROM collection_runs
                 WHERE source_id = %s
                   AND completed_at >= %s
+                  AND (%s::timestamptz IS NULL OR completed_at <= %s)
                   AND status = 'success'
                   AND completed_at IS NOT NULL
                 ORDER BY completed_at DESC, id DESC
                 LIMIT 1
                 """,
-                (source.source_id, source.required_since_at),
+                (source.source_id, source.required_since_at, evaluation_at, evaluation_at),
             )
             success = await success_cursor.fetchone()
             if success is not None:
@@ -340,11 +353,12 @@ class PublicationReadinessRepository:
                 FROM collection_runs
                 WHERE source_id = %s
                   AND completed_at >= %s
+                  AND (%s::timestamptz IS NULL OR completed_at <= %s)
                   AND completed_at IS NOT NULL
                 ORDER BY completed_at DESC, id DESC
                 LIMIT 1
                 """,
-                (source.source_id, source.required_since_at),
+                (source.source_id, source.required_since_at, evaluation_at, evaluation_at),
             )
             latest = await latest_cursor.fetchone()
             if latest is not None:
@@ -390,6 +404,51 @@ class PublicationReadinessRepository:
         )
         row = await cursor.fetchone()
         return int(row[0]) if row is not None else 0
+
+    async def get_revision_barrier_state(
+        self,
+        conn: psycopg.AsyncConnection,
+        refresh_run_id: int,
+        *,
+        evaluation_at: dt.datetime,
+    ) -> RevisionBarrierState:
+        """Return revision readiness and durable completion as of a boundary."""
+        cursor = await conn.execute(
+            """
+            WITH required AS (
+                SELECT DISTINCT sir.id AS revision_id
+                FROM publication_refresh_sources prs
+                JOIN collection_run_revision_observations cro
+                  ON cro.collection_run_id = prs.collection_run_id
+                JOIN source_item_revisions sir
+                  ON sir.id = cro.source_item_revision_id
+                WHERE prs.refresh_run_id = %s
+                  AND prs.status = 'succeeded'
+            ), states AS (
+                SELECT required.revision_id, erps.status, erps.completed_at
+                FROM required
+                LEFT JOIN event_revision_processing_state erps
+                  ON erps.source_item_revision_id = required.revision_id
+            ), aggregate AS (
+                SELECT
+                    COUNT(*) FILTER (
+                        WHERE status IS DISTINCT FROM 'succeeded'
+                           OR completed_at IS NULL
+                           OR completed_at > %s
+                    ) AS unprocessed_count,
+                    MAX(completed_at) AS max_completed_at
+                FROM states
+            )
+            SELECT unprocessed_count,
+                   CASE WHEN unprocessed_count = 0 THEN max_completed_at END
+            FROM aggregate
+            """,
+            (refresh_run_id, evaluation_at),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return RevisionBarrierState(unprocessed_count=0, completed_at=None)
+        return RevisionBarrierState(unprocessed_count=int(row[0]), completed_at=row[1])
 
     async def list_unready_source_diagnostics(
         self, conn: psycopg.AsyncConnection, refresh_run_id: int

@@ -152,6 +152,7 @@ async def test_mark_reused_is_idempotent_and_normal_processing_clears_provenance
     assert state.status == "succeeded"
     assert state.processing_mode == "reused"
     assert state.reused_from_revision_id == revision_ids[0]
+    assert state.completed_at is not None
 
     await repository.mark_running(repo_conn, [revision_ids[1]])
     await repository.mark_succeeded(repo_conn, [revision_ids[1]])
@@ -159,4 +160,5 @@ async def test_mark_reused_is_idempotent_and_normal_processing_clears_provenance
     assert state is not None
     assert state.processing_mode == "full"
     assert state.reused_from_revision_id is None
+    assert state.completed_at is not None
     del edition_id
