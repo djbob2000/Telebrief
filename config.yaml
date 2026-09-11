@@ -155,7 +155,7 @@ settings:
     article_min_words: 1000
     article_max_words: 2400
     article_max_sections: 6
-    digest_narrative_mode: "journalistic"
+    digest_narrative_mode: "deterministic"
     digest_narrative_max_cards_per_block: 6
     digest_narrative_max_output_tokens: 4096
     selection_max_output_tokens: 4096

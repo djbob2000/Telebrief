@@ -1,6 +1,7 @@
 """Tests for config_loader module."""
 
 import logging
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -2467,6 +2468,17 @@ def test_publication_editorial_config_defaults(temp_config_file, mock_env_vars):
     assert pub_edit.digest_narrative_max_output_tokens == 4096
     assert pub_edit.selection_max_output_tokens == 4096
     assert pub_edit.selection_reasoning_effort == "low"
+
+
+@pytest.mark.unit
+def test_production_config_uses_contract_safe_digest_mode():
+    """The checked-in production config must not enable the legacy journalistic bypass."""
+    config_path = Path(__file__).parents[2] / "config.yaml"
+    raw_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    assert raw_config["settings"]["publication_editorial"]["digest_narrative_mode"] == (
+        "deterministic"
+    )
 
 
 @pytest.mark.unit
