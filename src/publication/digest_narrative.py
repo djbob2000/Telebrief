@@ -631,6 +631,65 @@ _RECOMMENDATION_MODALITY_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 
+_ADVICE_GENERIC_STOPWORDS: frozenset[str] = frozenset(
+    {
+        "рекомендуется",
+        "рекомендуем",
+        "рекомендуют",
+        "советуют",
+        "советуем",
+        "следует",
+        "необходимо",
+        "нужно",
+        "постарайтесь",
+        "пожалуйста",
+        "заранее",
+        "жителям",
+        "горожанам",
+        "гражданам",
+        "людям",
+        "населению",
+        "сделать",
+        "подготовить",
+        "иметь",
+        "быть",
+        "также",
+        "чтобы",
+        "внимание",
+        "памятка",
+        "инструкция",
+        "просьба",
+        "просим",
+        "время",
+        "период",
+        "случае",
+        "момент",
+        "сообщают",
+        "передают",
+    }
+)
+
+
+def _extract_advice_content_stems(sentence_text: str) -> set[str]:
+    """Extract non-stopword content stems representing the subject/action of an advice sentence."""
+    clean = sentence_text
+    for pat in _RECOMMENDATION_MODALITY_PATTERNS:
+        clean = pat.sub(" ", clean)
+    words = [w for w in re.split(r"\W+", clean.lower()) if len(w) >= 3]
+    stems: set[str] = set()
+    for w in words:
+        if w in _ADVICE_GENERIC_STOPWORDS:
+            continue
+        stem = re.sub(
+            r"(?:овать|ывать|ивать|ение|ения|ению|нием|ами|ями|ов|ев|ей|ом|ем|ам|ям|ах|ях|ую|юю|ое|ее|ые|ие|ый|ий|ой|ая|яя|ть|ти|ся|сь)$",
+            "",
+            w,
+        )
+        if len(stem) >= 3 and stem not in _ADVICE_GENERIC_STOPWORDS:
+            stems.add(stem)
+    return stems
+
+
 def find_unsupported_digest_recommendations(
     text: str,
     cited_supports: Sequence[str] | str,
@@ -638,7 +697,8 @@ def find_unsupported_digest_recommendations(
     """Find reader advice / calls-to-action that are not grounded in cited supports.
 
     Requires that at least one specific cited support simultaneously contains
-    the recommendation modality and sufficient semantic overlap with the advice subject.
+    the recommendation modality and >= 2 unique content stems overlapping with
+    the advice subject (excluding generic modality words and stopwords).
     """
     if not text or not cited_supports:
         return []
@@ -651,14 +711,14 @@ def find_unsupported_digest_recommendations(
     violations: list[str] = []
     for match in _RECOMMENDATION_SENTENCE_PATTERN.finditer(text):
         matched_text = match.group(0).strip()
-        matched_tokens = [w for w in re.split(r"\W+", matched_text.lower()) if len(w) >= 5]
+        advice_stems = _extract_advice_content_stems(matched_text)
         is_supported_in_single_source = False
         for s_lower in support_lowers:
             has_modality = any(pat.search(s_lower) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
             if not has_modality:
                 continue
-            supported_count = sum(1 for tok in matched_tokens if tok in s_lower)
-            if supported_count >= 2:
+            support_stems = _extract_advice_content_stems(s_lower)
+            if len(advice_stems & support_stems) >= 2:
                 is_supported_in_single_source = True
                 break
         if not is_supported_in_single_source:
@@ -676,12 +736,13 @@ def strip_unsupported_recommendations(text: str, source_content: str) -> str:
 
     def _replace_if_unsupported(match: re.Match[str]) -> str:
         matched_text = match.group(0).strip()
-        matched_tokens = [w for w in re.split(r"\W+", matched_text.lower()) if len(w) >= 5]
+        advice_stems = _extract_advice_content_stems(matched_text)
         for b_lower in support_blocks:
             has_mod = any(pat.search(b_lower) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
             if not has_mod:
                 continue
-            if sum(1 for tok in matched_tokens if tok in b_lower) >= 2:
+            b_stems = _extract_advice_content_stems(b_lower)
+            if len(advice_stems & b_stems) >= 2:
                 return match.group(0)
         return ""
 

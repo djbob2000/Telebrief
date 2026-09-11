@@ -559,6 +559,13 @@ async def test_case_6_valid_draft_covering_1_of_17_forbids_supplement_and_fails_
     assert exc_info.value.reason == "global_incompleteness"
     assert "deterministic_supplement" not in observer.started_kinds
 
+    # Writer attempt must be closed as failed with global_incompleteness (never left running)
+    assert writer_id in observer.finished_attempts
+    att = observer.finished_attempts[writer_id]
+    assert att["status"] == "failed"
+    assert att["kwargs"]["error_kind"] == "global_incompleteness"
+    assert att["kwargs"]["metadata"]["ai_story_coverage"] == pytest.approx(1 / 17, abs=1e-3)
+
 
 @pytest.mark.unit
 @pytest.mark.asyncio
@@ -783,3 +790,87 @@ async def test_case_9_grounding_path_preserves_writer_coverage_and_triggers_rege
     assert att_1["kwargs"]["metadata"]["retry_scheduled"] is True
     assert att_1["kwargs"]["metadata"]["next_attempt"] == 2
     assert att_1["kwargs"]["metadata"]["covered_story_count"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_case_10_attempt_2_valid_but_globally_incomplete_closes_all_attempts() -> None:
+    """Case 10: Attempt 2 is structurally and evidence valid (200+ words, 3 sections), but covers 1/17 stories.
+    After rejection, ALL started attempts must have a finished record (no attempt left running).
+    """
+    context, plan = _make_17_story_setup()
+    generator = _make_article_generator(
+        article_editor_enabled=True,
+        article_allow_deterministic_fallback=False,
+    )
+
+    sup_1 = list(context.support_index)[0]
+    t = sup_1.text
+
+    headings = [
+        "Восстановление электросетей",
+        "Ход восстановительных работ",
+        "Итоги восстановительных работ",
+    ]
+    sections = []
+    for h in headings:
+        paras = []
+        for _ in range(4):
+            p_text = (
+                f"{t} Специалисты в Бердянске завершили восстановление электросетей на подстанции."
+            )
+            paras.append(
+                {
+                    "text": p_text,
+                    "cited_support_ids": [sup_1.support_id],
+                    "claims": [{"text": p_text, "cited_support_ids": [sup_1.support_id]}],
+                }
+            )
+        sections.append(
+            {
+                "heading": h,
+                "heading_support_ids": [sup_1.support_id],
+                "paragraphs": paras,
+            }
+        )
+
+    valid_1_story_dict = {
+        "title": "Восстановление сетей в микрорайоне 1 Бердянска",
+        "title_support_ids": [sup_1.support_id],
+        "lead": t,
+        "lead_support_ids": [sup_1.support_id],
+        "lead_claims": [{"text": t, "cited_support_ids": [sup_1.support_id]}],
+        "sections": sections,
+    }
+
+    resp_attempt_1 = _build_incomplete_79_word_response(list(context.support_index))
+    resp_attempt_2 = json.dumps(valid_1_story_dict)
+    generator.provider.chat_completion.side_effect = [resp_attempt_1, resp_attempt_2]
+
+    observer = RecordingAttemptObserver()
+    with pytest.raises(ArticlePublicationRejected) as exc_info:
+        await generator.generate_from_event_article_context(
+            context,
+            coverage_plan=plan,
+            attempt_observer=observer,
+        )
+
+    assert exc_info.value.reason == "global_incompleteness"
+
+    # Both attempt 1 and attempt 2 were started
+    started_ids = [att["id"] for att in observer.started_attempts]
+    assert len(started_ids) == 2
+    att1_id, att2_id = started_ids[0], started_ids[1]
+
+    # ALL started attempts MUST have a finished record in finished_attempts (none left running!)
+    assert att1_id in observer.finished_attempts
+    assert att2_id in observer.finished_attempts
+
+    finished_1 = observer.finished_attempts[att1_id]
+    assert finished_1["status"] == "failed"
+    assert finished_1["kwargs"]["error_kind"] == "global_incompleteness_retry"
+
+    finished_2 = observer.finished_attempts[att2_id]
+    assert finished_2["status"] == "failed"
+    assert finished_2["kwargs"]["error_kind"] == "global_incompleteness"
+    assert finished_2["kwargs"]["metadata"]["ai_story_coverage"] == pytest.approx(1 / 17, abs=1e-3)

@@ -210,3 +210,153 @@ def test_diagnose_article_coverage_explicit_story_coverage():
     assert diag.covered_story_ids == ("story:1",)
     assert diag.uncovered_story_ids == ("story:2",)
     assert diag.story_coverage == 0.5
+
+
+def test_diagnose_article_coverage_adversarial_paragraph_overcitation():
+    # Test A: Paragraph cites all 17 supports, but its claim only cites/supports Story 1.
+    # Story coverage must be 1/17, NOT 17/17!
+    stories = []
+    all_17_supports = []
+    for i in range(1, 18):
+        sid = f"story:{i}:1"
+        all_17_supports.append(sid)
+        stories.append(
+            ArticleStoryCoverage(
+                story_id=f"story:{i}",
+                topic=f"Topic {i}",
+                rank=i,
+                prominence="DEVELOP" if i == 1 else "WEAVE",
+                support_ids=(sid,),
+                detail_support_ids=(sid,),
+            )
+        )
+    plan = ArticleCoveragePlan(stories=tuple(stories))
+
+    # Paragraph cited_support_ids has ALL 17 supports!
+    # But claim only cites support 1!
+    claim1 = ArticleClaimAtom(
+        text="Текст только про первую историю",
+        cited_support_ids=("story:1:1",),
+    )
+    para = ArticleParagraph(
+        text="Текст только про первую историю",
+        cited_support_ids=tuple(all_17_supports),
+        claims=(claim1,),
+    )
+    sec = ArticleSection(
+        heading="Раздел",
+        heading_support_ids=("story:1:1",),
+        paragraphs=(para,),
+    )
+    draft = StructuredArticleDraft(
+        title="Заголовок статьи",
+        title_support_ids=("story:1:1",),
+        title_claims=(),
+        lead="Лид статьи",
+        lead_support_ids=("story:1:1",),
+        lead_claims=(),
+        sections=(sec,),
+        word_count=50,
+    )
+
+    diag = diagnose_article_coverage(draft, plan)
+    assert diag.covered_story_count == 1
+    assert diag.covered_story_ids == ("story:1",)
+    assert len(diag.uncovered_story_ids) == 16
+    assert abs(diag.story_coverage - (1 / 17)) < 1e-6
+
+
+def test_diagnose_article_coverage_adversarial_title_lead_provenance_repair_does_not_credit_omitted_story():
+    # Test B: Raw writer omits Story 1 DEVELOP, writing only about Story 2.
+    # Even if title/lead provenance repair inserts Story 1 support into title/lead,
+    # Story 1 remains uncovered unless a validated claim covers it!
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    s1_sup = ArticleSupport(
+        support_id="story:1:1",
+        text="Света нет на Горе уже сутки",
+        source_text="Света нет на Горе уже сутки",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=now,
+        story_id="story:1",
+    )
+    s2_sup = ArticleSupport(
+        support_id="story:2:1",
+        text="Автобусы в Бердянске ходят по обычному расписанию",
+        source_text="Автобусы в Бердянске ходят по обычному расписанию",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-2",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=now,
+        story_id="story:2",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Городские новости",),
+        support_index=(s1_sup, s2_sup),
+        support_by_id={s1_sup.support_id: s1_sup, s2_sup.support_id: s2_sup},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Свет",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=("story:1:1",),
+                detail_support_ids=("story:1:1",),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:2",
+                topic="Транспорт",
+                rank=2,
+                prominence="WEAVE",
+                support_ids=("story:2:1",),
+                detail_support_ids=("story:2:1",),
+            ),
+        )
+    )
+
+    # Draft where title/lead wrapper has Story 1 support,
+    # but the text is only about transport (Story 2)
+    p2_claim = ArticleClaimAtom(
+        text="Автобусы в Бердянске ходят по обычному расписанию",
+        cited_support_ids=("story:2:1",),
+    )
+    p2 = ArticleParagraph(
+        text="Автобусы в Бердянске ходят по обычному расписанию",
+        cited_support_ids=("story:2:1",),
+        claims=(p2_claim,),
+    )
+    sec2 = ArticleSection(
+        heading="Транспорт",
+        heading_support_ids=("story:2:1",),
+        paragraphs=(p2,),
+    )
+    lead_claim_transport = ArticleClaimAtom(
+        text="Городской транспорт продолжает работу в штатном режиме.",
+        cited_support_ids=("story:1:1",),  # inserted by flawed provenance repair!
+    )
+    draft = StructuredArticleDraft(
+        title="Новости транспорта Бердянска",
+        title_support_ids=("story:1:1",),  # inserted by title provenance repair!
+        title_claims=(),
+        lead="Городской транспорт продолжает работу в штатном режиме.",
+        lead_support_ids=("story:1:1",),  # inserted by lead provenance repair!
+        lead_claims=(lead_claim_transport,),
+        sections=(sec2,),
+        word_count=40,
+    )
+
+    diag = diagnose_article_coverage(draft, plan, context=context)
+    # Story 1 DEVELOP was omitted by writer and not validated by any claim:
+    assert "story:1" in diag.uncovered_story_ids
+    assert diag.develop_story_coverage == 0.0
+    assert "story:2" in diag.covered_story_ids
+    assert diag.covered_story_count == 1
+    assert diag.story_coverage == 0.5

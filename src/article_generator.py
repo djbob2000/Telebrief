@@ -137,30 +137,35 @@ def _ground_draft_in_coverage_plan(
             words = tok_re.findall(full_t)
             support_stems[sid] = {_stem(w.lower()) for w in words if len(w) >= 3}
 
-    # 1. Title & lead support IDs (guarantee at least one PUBLISH CURRENT_WINDOW support)
-    top_story_sups: list[str] = []
-    stories = getattr(coverage_plan, "stories", ()) or ()
-    for s in stories:
-        prom = getattr(s, "prominence", "")
-        if prom in ("DEVELOP", "lead_develop"):
-            top_story_sups.extend(list(getattr(s, "support_ids", ()))[:5])
-    if not top_story_sups and stories:
-        top_story_sups = list(getattr(stories[0], "support_ids", ()))[:5]
+    # 1. Title & lead support IDs (rely only on writer-provided or lexical match)
+    if parsed.get("title_support_ids"):
+        parsed["title_support_ids"] = [
+            sid for sid in parsed.get("title_support_ids", ()) if sid in support_by_id
+        ]
+    else:
+        matched_t_sups: list[str] = []
+        if support_stems and parsed.get("title"):
+            t_text = str(parsed["title"])
+            t_words = tok_re.findall(t_text)
+            t_stems = {_stem(w.lower()) for w in t_words if len(w) >= 3}
+            t_nums = set(re.findall(r"\b\d+\b", t_text))
+            for sid, s_stems in support_stems.items():
+                shared_st = t_stems & s_stems
+                s_text = getattr(support_by_id.get(sid), "text", "")
+                s_nums_sup = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
+                shared_nums = t_nums & s_nums_sup
+                if len(shared_st) >= 2 or (shared_st and shared_nums) or len(shared_nums) >= 2:
+                    matched_t_sups.append(sid)
+        parsed["title_support_ids"] = [
+            sid for sid in dict.fromkeys(matched_t_sups) if sid in support_by_id
+        ]
 
-    lead_sups = [sid for sid in top_story_sups if sid in curr_pub_sups]
-    if not lead_sups:
-        lead_sups = curr_pub_sups[:3] or top_story_sups[:3]
-
-    if not parsed.get("title_support_ids") or not any(
-        sid in curr_pub_sups for sid in parsed.get("title_support_ids", ())
-    ):
-        parsed["title_support_ids"] = lead_sups[:3]
     if support_stems and parsed.get("lead"):
         l_text = str(parsed["lead"])
         l_words = tok_re.findall(l_text)
         l_stems = {_stem(w.lower()) for w in l_words if len(w) >= 3}
         l_nums = set(re.findall(r"\b\d+\b", l_text))
-        matched_lead_sups = []
+        matched_lead_sups: list[str] = []
         for sid in curr_pub_sups:
             s_stems = support_stems.get(sid, set())
             shared_st = l_stems & s_stems
@@ -173,8 +178,6 @@ def _ground_draft_in_coverage_plan(
             sid for sid in (parsed.get("lead_support_ids") or ()) if sid in support_by_id
         ]
         all_l_sups = existing_l_sups if existing_l_sups else list(dict.fromkeys(matched_lead_sups))
-        if not all_l_sups and lead_sups:
-            all_l_sups = lead_sups[:1]
         parsed["lead_support_ids"] = all_l_sups
         if not parsed.get("lead_claims"):
             l_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", l_text) if s.strip()]
@@ -195,14 +198,16 @@ def _ground_draft_in_coverage_plan(
                 lead_claims_list.append(
                     {
                         "text": sent,
-                        "cited_support_ids": matched_sent_sups or all_l_sups,
+                        "cited_support_ids": matched_sent_sups,
                     }
                 )
             parsed["lead_claims"] = lead_claims_list
-    elif not parsed.get("lead_support_ids") or not any(
-        sid in curr_pub_sups for sid in parsed.get("lead_support_ids", ())
-    ):
-        parsed["lead_support_ids"] = lead_sups[:1]
+    elif parsed.get("lead_support_ids"):
+        parsed["lead_support_ids"] = [
+            sid for sid in parsed.get("lead_support_ids", ()) if sid in support_by_id
+        ]
+    else:
+        parsed["lead_support_ids"] = []
 
     # 2. Sections & paragraphs
     raw_sections = parsed.get("sections") or []
@@ -1179,7 +1184,9 @@ class ArticleGenerator:
                 config=editorial_config,
                 length_profile=length_profile,
             )
-            candidate_diag = diagnose_article_coverage(candidate_draft, coverage_plan)
+            candidate_diag = diagnose_article_coverage(
+                candidate_draft, coverage_plan, context=article_ctx
+            )
 
             is_incomplete = _is_globally_incomplete(candidate_val, candidate_diag)
             attempt_1_meta = _build_writer_attempt_metadata(
@@ -1251,7 +1258,9 @@ class ArticleGenerator:
                     config=editorial_config,
                     length_profile=length_profile,
                 )
-                candidate_diag = diagnose_article_coverage(candidate_draft, coverage_plan)
+                candidate_diag = diagnose_article_coverage(
+                    candidate_draft, coverage_plan, context=article_ctx
+                )
                 is_incomplete = _is_globally_incomplete(candidate_val, candidate_diag)
                 attempt_2_meta = _build_writer_attempt_metadata(
                     attempt_number=2,

@@ -318,7 +318,7 @@ class ArticleFinalizer:
             )
 
         # 3. Writer draft is valid; diagnose its coverage
-        ai_diag = diagnose_article_coverage(writer_draft, coverage_plan)
+        ai_diag = diagnose_article_coverage(writer_draft, coverage_plan, context=context)
         ai_covered = tuple(ai_diag.covered_story_ids)
 
         if set(ai_covered) == set(coverage_plan.story_ids):
@@ -370,6 +370,21 @@ class ArticleFinalizer:
                 len(ai_diag.uncovered_story_ids),
                 ai_diag.develop_story_coverage,
             )
+            if attempt_observer:
+                fail_meta: dict[str, Any] = {
+                    "writer_status": "rejected",
+                    "ai_story_coverage": ai_diag.story_coverage,
+                    "uncovered_story_ids": list(ai_diag.uncovered_story_ids),
+                    "develop_story_coverage": ai_diag.develop_story_coverage,
+                }
+                if writer_metadata:
+                    fail_meta.update(writer_metadata)
+                await attempt_observer.attempt_finished(
+                    writer_attempt_id,
+                    status="failed",
+                    error_kind="global_incompleteness",
+                    metadata=fail_meta,
+                )
             if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
                 raise ArticlePublicationRejected(
                     reason="global_incompleteness",
@@ -434,7 +449,7 @@ class ArticleFinalizer:
                 )
 
             trace = build_article_claim_trace(supplemented, context)
-            final_diag = diagnose_article_coverage(supplemented, coverage_plan)
+            final_diag = diagnose_article_coverage(supplemented, coverage_plan, context=context)
             final_covered = tuple(final_diag.covered_story_ids)
 
             if (
@@ -533,7 +548,7 @@ class ArticleFinalizer:
                 )
 
             trace = build_article_claim_trace(fallback, context)
-            final_diag = diagnose_article_coverage(fallback, coverage_plan)
+            final_diag = diagnose_article_coverage(fallback, coverage_plan, context=context)
             final_covered = tuple(final_diag.covered_story_ids)
 
             if (

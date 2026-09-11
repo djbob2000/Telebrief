@@ -2238,3 +2238,16 @@ def test_recommendation_requires_modality_and_subject_in_same_support():
     )
     issues_valid = find_unsupported_digest_recommendations(text_advice, [sup1, sup2, sup_valid])
     assert len(issues_valid) == 0
+
+
+def test_recommendation_modality_and_generic_stopwords_overlap_rejected():
+    from src.publication.digest_narrative import find_unsupported_digest_recommendations
+
+    # Support has recommendation modality and generic stopwords ('заранее'), but subject is 'закрыть окна'
+    support = "МЧС: Рекомендуется заранее закрыть окна при сильном ветре."
+    # Generated has recommendation modality and 'заранее', but subject is 'сделать запас питьевой воды'
+    generated = "Рекомендуется заранее сделать запас питьевой воды."
+
+    issues = find_unsupported_digest_recommendations(generated, [support])
+    assert len(issues) == 1
+    assert "Рекомендуется заранее сделать запас питьевой воды" in issues[0]

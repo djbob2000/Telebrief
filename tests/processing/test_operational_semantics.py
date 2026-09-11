@@ -570,3 +570,31 @@ def test_scheduled_temporal_grounding_strips_ungrounded_time_component_to_date_o
     assert audit.rejected_count == 0
     assert norm.evidence_items[0].service_state is not None
     assert norm.evidence_items[0].service_state.effective_from == "2026-09-20"
+
+
+def test_has_grounded_time_value_strict_minute_and_clock_context():
+    from src.processing.operational_semantics import _has_grounded_time_value
+
+    # When minute != 0 (e.g. 09:30), bare hour references or durations must be rejected
+    assert not _has_grounded_time_value("20 сентября в 9 часов", "2026-09-20T09:30")
+    assert not _has_grounded_time_value("работы продлятся 9 часов", "2026-09-20T09:30")
+    assert _has_grounded_time_value("отключение в 09:30", "2026-09-20T09:30")
+    assert _has_grounded_time_value("отключение в 9.30", "2026-09-20T09:30")
+
+    # When minute == 0 (e.g. 09:00), bare duration '9 часов' must be rejected
+    assert not _has_grounded_time_value("работы продлятся 9 часов", "2026-09-20T09:00")
+    assert _has_grounded_time_value("отключение в 9:00", "2026-09-20T09:00")
+    assert _has_grounded_time_value("отключение с 9 утра", "2026-09-20T09:00")
+    assert _has_grounded_time_value("отключение в 9 часов", "2026-09-20T09:00")
+
+
+def test_has_grounded_temporal_value_may_calendar_matching():
+    from src.processing.operational_semantics import _has_grounded_temporal_value
+
+    # "20 мая" contains May (month 5), must reject projected date in September (month 9)
+    assert not _has_grounded_temporal_value("20 мая плановые работы", "2026-09-20")
+    assert not _has_grounded_temporal_value("20 травня планові роботи", "2026-09-20")
+
+    # Matching month passes
+    assert _has_grounded_temporal_value("20 сентября плановые работы", "2026-09-20")
+    assert _has_grounded_temporal_value("20 вересня планові роботи", "2026-09-20")

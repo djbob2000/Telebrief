@@ -189,19 +189,19 @@ _SPECULATION_RUMOR_PATTERNS: tuple[re.Pattern[str], ...] = (
     ),
 )
 
-_RU_MONTH_STEMS: dict[int, str] = {
-    1: "январ",
-    2: "феврал",
-    3: "март",
-    4: "апрел",
-    5: "ма",
-    6: "июн",
-    7: "июл",
-    8: "август",
-    9: "сентябр",
-    10: "октябр",
-    11: "ноябр",
-    12: "декабр",
+_MONTH_PATTERNS: dict[int, re.Pattern[str]] = {
+    1: re.compile(r"\b(?:январ[яеьюи]?|січ(?:ень|ня|ні|нем)?)\b", re.IGNORECASE),
+    2: re.compile(r"\b(?:феврал[яеьюи]?|лют(?:ий|ого|ому|им)?)\b", re.IGNORECASE),
+    3: re.compile(r"\b(?:март[аеуом]?|берез(?:ень|ня|ні|нем)?)\b", re.IGNORECASE),
+    4: re.compile(r"\b(?:апрел[яеьюи]?|квіт(?:ень|ня|ні|нем)?)\b", re.IGNORECASE),
+    5: re.compile(r"\b(?:ма[яйе]|трав(?:ень|ня|ні|нем)?)\b", re.IGNORECASE),
+    6: re.compile(r"\b(?:июн[яеьюи]?|черв(?:ень|ня|ні|нем)?)\b", re.IGNORECASE),
+    7: re.compile(r"\b(?:июл[яеьюи]?|лип(?:ень|ня|ні|нем)?)\b", re.IGNORECASE),
+    8: re.compile(r"\b(?:август[аеуом]?|серп(?:ень|ня|ні|нем)?)\b", re.IGNORECASE),
+    9: re.compile(r"\b(?:сентябр[яеьюи]?|верес(?:ень|ня|ні|нем)?)\b", re.IGNORECASE),
+    10: re.compile(r"\b(?:октябр[яеьюи]?|жовт(?:ень|ня|ні|нем)?)\b", re.IGNORECASE),
+    11: re.compile(r"\b(?:ноябр[яеьюи]?|листопад(?:а|і|ом)?)\b", re.IGNORECASE),
+    12: re.compile(r"\b(?:декабр[яеьюи]?|груд(?:ень|ня|ні|нем)?)\b", re.IGNORECASE),
 }
 
 
@@ -224,15 +224,21 @@ def _has_grounded_time_value(text: str, effective_from: str) -> bool:
         return True
     hour, minute = int(m_time.group(1)), int(m_time.group(2))
     text_lower = text.lower()
-    time_patterns = [
-        rf"\b0?{hour}[:.-]{minute:02d}\b",
-        rf"\b0?{hour}\s*(?:часов|час|ч\b|утр|вечер|дня|ноч)",
-    ]
-    if minute == 0:
-        time_patterns.append(rf"(?:в|с|до|к)\s+0?{hour}\b")
-        time_patterns.append(rf"\b0?{hour}:00\b")
-        time_patterns.append(rf"\b0?{hour}-00\b")
-        time_patterns.append(rf"\b0?{hour}\.00\b")
+    if minute != 0:
+        # Require explicit minute-bearing expression
+        time_patterns = [
+            rf"\b0?{hour}[:.-]{minute:02d}\b",
+            rf"\b0?{hour}\s+{minute:02d}\b",
+        ]
+    else:
+        # For minute == 0, require clock-time context:
+        # e.g., '09:00', '9.00', 'в 9', 'с 9', 'до 9', 'к 9', '9 утра', '9 вечера'
+        # NOT bare duration '9 часов' or bare counter
+        time_patterns = [
+            rf"\b0?{hour}[:.-]00\b",
+            rf"(?:в|с|до|к|после|около)\s+0?{hour}(?:\s*(?:часов|час|ч\b|утр[ае]?|вечер[ае]?|дня|ноч[ие]?))?\b",
+            rf"\b0?{hour}\s*(?:утр[ае]?|вечер[ае]?|дня|ноч[ие]?)\b",
+        ]
     return any(re.search(p, text_lower) for p in time_patterns)
 
 
@@ -258,11 +264,8 @@ def _has_grounded_temporal_value(text: str, effective_from: str | None) -> bool:
         ):
             return False
 
-        month_stem = _RU_MONTH_STEMS.get(month_num)
-        has_any_month = any(
-            m_stem in text_lower for m_stem in _RU_MONTH_STEMS.values() if len(m_stem) > 2
-        )
-        if has_any_month and month_stem and month_stem not in text_lower:
+        detected_months = {m for m, pat in _MONTH_PATTERNS.items() if pat.search(text_lower)}
+        if detected_months and month_num not in detected_months:
             return False
     else:
         eff_tokens = [t for t in re.split(r"[^\w\d]+", date_part.lower()) if len(t) >= 2]
