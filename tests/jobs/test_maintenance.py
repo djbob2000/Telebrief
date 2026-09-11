@@ -50,13 +50,13 @@ class TestMaintenanceJobs:
         stalled = SimpleNamespace(
             id=66832,
             task_name="process_background_authority_batch",
-            lock="authority-background:1",
+            lock="authority-background:{edition_id}",
             queueing_lock="authority-background:1",
         )
         successor = SimpleNamespace(
             id=66839,
             task_name="process_background_authority_batch",
-            lock="authority-background:1",
+            lock="authority-background:{edition_id}",
             queueing_lock="authority-background:1",
             status="todo",
         )

@@ -35,7 +35,6 @@ async def retry_stalled_jobs(context: JobContext, timestamp: int) -> None:
                     if blocker.id != job.id
                     and blocker.task_name == job.task_name
                     and blocker.lock == job.lock
-                    and job.lock == exc.queueing_lock
                 ]
                 if len(recoverable) == 1:
                     blocker = recoverable[0]
