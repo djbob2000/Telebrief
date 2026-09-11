@@ -538,3 +538,35 @@ def test_scheduled_three_part_proof_negative_and_positive_cases():
     assert audit4.accepted_count == 1
     assert audit4.rejected_count == 0
     assert norm4.evidence_items[0].service_state is not None
+    assert norm4.evidence_items[0].service_state.effective_from == "2026-09-20T09:00:00"
+
+
+def test_scheduled_temporal_grounding_strips_ungrounded_time_component_to_date_only():
+    from src.processing.operational_semantics import _has_grounded_temporal_value
+
+    # Direct function test: time present vs missing in text
+    assert not _has_grounded_temporal_value("РЭС: 20 сентября плановые работы", "2026-09-20T09:00")
+    assert _has_grounded_temporal_value(
+        "РЭС: 20 сентября с 09:00 плановые работы", "2026-09-20T09:00"
+    )
+
+    # Normalization test: when date is grounded but time is ungrounded,
+    # time component is stripped and date-only is preserved.
+    item_ungrounded_time = _service_item(
+        text="РЭС сообщает: 20 сентября плановое отключение электроэнергии",
+        fid=10,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="SCHEDULED",
+        expected_now=False,
+        basis="scheduled_change",
+        effective_from="2026-09-20T09:00",
+    )
+    norm, audit = normalize_service_state_evidence(
+        EventPayload(evidence_items=(item_ungrounded_time,)),
+        {10: "РЭС сообщает: 20 сентября плановое отключение электроэнергии"},
+    )
+    assert audit.accepted_count == 1
+    assert audit.rejected_count == 0
+    assert norm.evidence_items[0].service_state is not None
+    assert norm.evidence_items[0].service_state.effective_from == "2026-09-20"

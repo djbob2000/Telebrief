@@ -298,9 +298,12 @@ async def test_case_1_globally_incomplete_draft_triggers_regeneration_not_editor
     # Chat completion must be called at least twice (Attempt 1 + Attempt 2 regeneration)
     assert generator.provider.chat_completion.call_count == 2
 
-    # Attempt 1 was marked retried due to global incompleteness
+    # Attempt 1 was marked failed due to global incompleteness with retry scheduled
     finished_att_1 = observer.finished_attempts[1]
-    assert finished_att_1["status"] == "retried"
+    assert finished_att_1["status"] == "failed"
+    assert finished_att_1["kwargs"]["error_kind"] == "global_incompleteness_retry"
+    assert finished_att_1["kwargs"]["metadata"]["retry_scheduled"] is True
+    assert finished_att_1["kwargs"]["metadata"]["next_attempt"] == 2
     assert finished_att_1["kwargs"]["metadata"]["regeneration_reason"] == "global_incompleteness"
 
     # ArticleEditor was NOT called between attempt 1 and 2
@@ -651,3 +654,132 @@ async def test_case_8_final_article_enforces_evidence_boundary() -> None:
     assert exc_info.value.reason == "validation_failed"
     violations = exc_info.value.metadata.get("violations", [])
     assert any("UNSUPPORTED_" in v for v in violations)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_case_9_grounding_path_preserves_writer_coverage_and_triggers_regeneration_for_long_single_story_draft() -> (
+    None
+):
+    """Regression test: raw writer output has 250 words about only Story 1.
+
+    Ensures that _ground_draft_in_coverage_plan does NOT artificially inject
+    supports from Stories 2..17, diagnosing true 1/17 coverage and triggering
+    full AI regeneration.
+    """
+    from src.article_generator import _ground_draft_in_coverage_plan, _is_globally_incomplete
+    from src.publication.article_coverage_diagnostics import diagnose_article_coverage
+    from src.publication.article_validator import validate_article_draft
+
+    context, plan = _make_17_story_setup()
+    assert len(plan.stories) == 17
+    sup_1 = list(context.support_index)[0].support_id
+
+    # Raw model output: ~160 words strictly about Story 1 (power blackout)
+    p1 = (
+        "В Бердянске в районе Гора продолжаются перебои с электроснабжением из-за повреждения линии. "
+        "Энергетики аварийных бригад ведут восстановительные работы на трансформаторной подстанции. "
+        "По предварительным данным ремонтников, подачу электроэнергии планируют возобновить к вечеру. "
+        "Жители микрорайона отмечают временное отключение света в жилых домах и на прилегающих улицах."
+    )
+    p2 = (
+        "Специалисты продолжают устранять локальные повреждения сетей в жилом массиве на Горе. "
+        "По информации дежурных служб, на объекте задействованы две бригады монтеров и спецтехника. "
+        "Основная задача бригад состоит в замене вышедшего из строя кабельного участка и изоляторов. "
+        "Районная администрация держит ситуацию с электроснабжением жилого сектора на постоянном контроле."
+    )
+    p3 = (
+        "Местные жители сообщают о перепадах напряжения в электросети перед окончательным отключением света. "
+        "Аварийные службы заверяют, что все необходимые комплектующие уже доставлены на место аварии. "
+        "После завершения монтажных работ начнется постепенное подключение абонентов к питающей сети подстанции. "
+        "Ремонтные подразделения планируют полностью закрыть заявку до наступления ночного времени суток."
+    )
+    single_story_raw_dict = {
+        "title": "Электроснабжение на Горе восстанавливают после аварии",
+        "title_support_ids": [sup_1],
+        "lead": "В районе Гора ремонтные бригады ведут срочные работы по восстановлению электроснабжения после аварии на сетях.",
+        "lead_support_ids": [sup_1],
+        "lead_claims": [
+            {
+                "text": "В районе Гора ремонтные бригады ведут срочные работы по восстановлению электроснабжения после аварии на сетях.",
+                "cited_support_ids": [sup_1],
+            }
+        ],
+        "sections": [
+            {
+                "heading": "Ход ремонтных работ на энергосетях",
+                "heading_support_ids": [sup_1],
+                "paragraphs": [
+                    {
+                        "text": p1,
+                        "cited_support_ids": [sup_1],
+                        "claims": [{"text": p1, "cited_support_ids": [sup_1]}],
+                    },
+                    {
+                        "text": p2,
+                        "cited_support_ids": [sup_1],
+                        "claims": [{"text": p2, "cited_support_ids": [sup_1]}],
+                    },
+                ],
+            },
+            {
+                "heading": "Сроки завершения подключения",
+                "heading_support_ids": [sup_1],
+                "paragraphs": [
+                    {
+                        "text": p3,
+                        "cited_support_ids": [sup_1],
+                        "claims": [{"text": p3, "cited_support_ids": [sup_1]}],
+                    },
+                ],
+            },
+        ],
+    }
+
+    # 1. Grounding must NOT inject support IDs from stories 2..17
+    grounded_dict = _ground_draft_in_coverage_plan(single_story_raw_dict, plan, context)
+    grounded_draft = StructuredArticleDraft.from_dict(grounded_dict)
+
+    # Verify length is long enough to exceed word count minimum (>= 150 words)
+    assert (
+        grounded_draft.word_count >= 150
+    ), f"Expected >= 150 words, got {grounded_draft.word_count}"
+
+    # Verify coverage diagnostics on grounded draft
+    diag = diagnose_article_coverage(grounded_draft, plan)
+    assert diag.covered_story_count == 1
+    assert list(diag.covered_story_ids) == ["story:1"]
+    assert diag.story_coverage == pytest.approx(1 / 17, abs=1e-3)
+    assert len(diag.uncovered_story_ids) == 16
+
+    val = validate_article_draft(grounded_draft, context)
+    is_incomplete = _is_globally_incomplete(val, diag)
+    assert (
+        is_incomplete is True
+    ), "Draft covering only 1 of 17 stories must be classified as globally incomplete"
+
+    # 2. Generator must trigger AI regeneration and record attempt 1 with retry metadata
+    generator = _make_article_generator(
+        article_editor_enabled=True,
+        article_allow_deterministic_fallback=False,
+    )
+    resp_attempt_1 = json.dumps(single_story_raw_dict)
+    resp_attempt_2 = _build_complete_longread_response(list(context.support_index))
+    generator.provider.chat_completion.side_effect = [resp_attempt_1, resp_attempt_2]
+    observer = RecordingAttemptObserver()
+    title, lead, body = await generator.generate_from_event_article_context(
+        context, plan, attempt_observer=observer
+    )
+
+    assert title
+    assert body
+    # Chat completion was called twice (Attempt 1 + Attempt 2 regeneration)
+    assert generator.provider.chat_completion.call_count == 2
+
+    # Attempt 1 was recorded failed with global_incompleteness_retry
+    att_1 = observer.finished_attempts[1]
+    assert att_1["status"] == "failed"
+    assert att_1["kwargs"]["error_kind"] == "global_incompleteness_retry"
+    assert att_1["kwargs"]["metadata"]["retry_scheduled"] is True
+    assert att_1["kwargs"]["metadata"]["next_attempt"] == 2
+    assert att_1["kwargs"]["metadata"]["covered_story_count"] == 1

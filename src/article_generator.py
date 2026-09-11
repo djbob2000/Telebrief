@@ -172,7 +172,9 @@ def _ground_draft_in_coverage_plan(
         existing_l_sups = [
             sid for sid in (parsed.get("lead_support_ids") or ()) if sid in support_by_id
         ]
-        all_l_sups = list(dict.fromkeys(existing_l_sups + lead_sups[:3] + matched_lead_sups))
+        all_l_sups = existing_l_sups if existing_l_sups else list(dict.fromkeys(matched_lead_sups))
+        if not all_l_sups and lead_sups:
+            all_l_sups = lead_sups[:1]
         parsed["lead_support_ids"] = all_l_sups
         if not parsed.get("lead_claims"):
             l_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", l_text) if s.strip()]
@@ -193,60 +195,46 @@ def _ground_draft_in_coverage_plan(
                 lead_claims_list.append(
                     {
                         "text": sent,
-                        "cited_support_ids": all_l_sups,
+                        "cited_support_ids": matched_sent_sups or all_l_sups,
                     }
                 )
             parsed["lead_claims"] = lead_claims_list
     elif not parsed.get("lead_support_ids") or not any(
         sid in curr_pub_sups for sid in parsed.get("lead_support_ids", ())
     ):
-        parsed["lead_support_ids"] = lead_sups[:3]
+        parsed["lead_support_ids"] = lead_sups[:1]
 
     # 2. Sections & paragraphs
     raw_sections = parsed.get("sections") or []
-    plan_sections = list(getattr(coverage_plan, "sections", ()))
 
-    for idx, sec in enumerate(raw_sections):
+    for sec in raw_sections:
         if not isinstance(sec, dict):
             continue
-        matched_plan = plan_sections[idx] if idx < len(plan_sections) else None
-        sec_sups: list[str] = []
-        if matched_plan:
-            sec_story_ids = {
-                getattr(a, "story_id", "") for a in getattr(matched_plan, "story_assignments", ())
-            }
-            for s in stories:
-                if getattr(s, "story_id", "") in sec_story_ids:
-                    sec_sups.extend(getattr(s, "support_ids", ()))
-            for a in getattr(matched_plan, "story_assignments", ()):
-                sec_sups.extend(getattr(a, "primary_evidence_ids", ()))
-                sec_sups.extend(getattr(a, "concrete_details", ()))
-        if not sec_sups and stories:
-            sec_sups = [sup for s in stories for sup in list(getattr(s, "support_ids", ()))]
-
-        if support_by_id:
-            sec_sups = [sid for sid in sec_sups if sid in support_by_id]
-        sec_sups = list(dict.fromkeys(sec_sups))
-
-        # Match heading supports based on heading text stems and numbers
-        h_text = str(sec.get("heading") or "")
-        matched_h_sups = []
-        if support_stems and h_text:
-            h_words = tok_re.findall(h_text)
-            h_stems = {_stem(w.lower()) for w in h_words if len(w) >= 3}
-            h_nums = set(re.findall(r"\b\d+\b", h_text))
-            for sid, s_stems in support_stems.items():
-                shared_st = h_stems & s_stems
-                s_text = getattr(support_by_id.get(sid), "text", "")
-                s_nums = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
-                shared_nums = h_nums & s_nums
-                if len(shared_st) >= 2 or (shared_st and shared_nums) or (h_nums and shared_nums):
-                    matched_h_sups.append(sid)
 
         existing_h_sups = list(sec.get("heading_support_ids") or [])
-        combined_h_sups = list(
-            dict.fromkeys(existing_h_sups + matched_h_sups + sec_sups[:5] or lead_sups[:3])
-        )
+        if existing_h_sups:
+            combined_h_sups = list(dict.fromkeys(existing_h_sups))
+        else:
+            # Match heading supports based on heading text stems and numbers
+            h_text = str(sec.get("heading") or "")
+            matched_h_sups = []
+            if support_stems and h_text:
+                h_words = tok_re.findall(h_text)
+                h_stems = {_stem(w.lower()) for w in h_words if len(w) >= 3}
+                h_nums = set(re.findall(r"\b\d+\b", h_text))
+                for sid, s_stems in support_stems.items():
+                    shared_st = h_stems & s_stems
+                    s_text = getattr(support_by_id.get(sid), "text", "")
+                    s_nums = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
+                    shared_nums = h_nums & s_nums
+                    if (
+                        len(shared_st) >= 2
+                        or (shared_st and shared_nums)
+                        or (h_nums and shared_nums)
+                    ):
+                        matched_h_sups.append(sid)
+            combined_h_sups = list(dict.fromkeys(matched_h_sups))
+
         if support_by_id:
             combined_h_sups = [sid for sid in combined_h_sups if sid in support_by_id]
         sec["heading_support_ids"] = combined_h_sups
@@ -257,26 +245,27 @@ def _ground_draft_in_coverage_plan(
             p_text = p if isinstance(p, str) else p.get("text", "")
             existing_cited = [] if isinstance(p, str) else list(p.get("cited_support_ids") or [])
 
-            if support_stems:
-                p_words = tok_re.findall(p_text)
-                p_stems = {_stem(w.lower()) for w in p_words if len(w) >= 3}
-                p_nums = set(re.findall(r"\b\d+\b", p_text))
-                # Match supports that share at least 2 content stems, or share numbers + stem
-                matched_sups = []
-                for sid, s_stems in support_stems.items():
-                    shared_stems = p_stems & s_stems
-                    s_text = getattr(support_by_id.get(sid), "text", "")
-                    s_nums = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
-                    shared_nums = p_nums & s_nums
-                    if (
-                        len(shared_stems) >= 2
-                        or (shared_stems and shared_nums)
-                        or len(shared_nums) >= 2
-                    ):
-                        matched_sups.append(sid)
-                combined_sups = list(dict.fromkeys(existing_cited + matched_sups + sec_sups))
+            if existing_cited:
+                combined_sups = list(dict.fromkeys(existing_cited))
             else:
-                combined_sups = list(dict.fromkeys(existing_cited + sec_sups))
+                matched_sups = []
+                if support_stems:
+                    p_words = tok_re.findall(p_text)
+                    p_stems = {_stem(w.lower()) for w in p_words if len(w) >= 3}
+                    p_nums = set(re.findall(r"\b\d+\b", p_text))
+                    # Match supports that share at least 2 content stems, or share numbers + stem
+                    for sid, s_stems in support_stems.items():
+                        shared_stems = p_stems & s_stems
+                        s_text = getattr(support_by_id.get(sid), "text", "")
+                        s_nums = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
+                        shared_nums = p_nums & s_nums
+                        if (
+                            len(shared_stems) >= 2
+                            or (shared_stems and shared_nums)
+                            or len(shared_nums) >= 2
+                        ):
+                            matched_sups.append(sid)
+                combined_sups = list(dict.fromkeys(matched_sups))
 
             if support_by_id:
                 combined_sups = [sid for sid in combined_sups if sid in support_by_id]
@@ -1214,9 +1203,12 @@ class ArticleGenerator:
                     candidate_diag.planned_story_count,
                 )
                 if attempt_observer is not None:
+                    attempt_1_meta["retry_scheduled"] = True
+                    attempt_1_meta["next_attempt"] = 2
                     await attempt_observer.attempt_finished(
                         writer_attempt_id,
-                        status="retried",
+                        status="failed",
+                        error_kind="global_incompleteness_retry",
                         metadata=attempt_1_meta,
                     )
                     writer_attempt_id = await attempt_observer.attempt_started(
@@ -1261,6 +1253,18 @@ class ArticleGenerator:
                 )
                 candidate_diag = diagnose_article_coverage(candidate_draft, coverage_plan)
                 is_incomplete = _is_globally_incomplete(candidate_val, candidate_diag)
+                attempt_2_meta = _build_writer_attempt_metadata(
+                    attempt_number=2,
+                    provider_name=getattr(self.config.settings, "ai_provider", "unknown"),
+                    model_name=self.model,
+                    response_text=regen_response,
+                    val=candidate_val,
+                    diag=candidate_diag,
+                    provider_obj=self.provider,
+                )
+                writer_meta = attempt_2_meta
+            else:
+                writer_meta = attempt_1_meta
 
             if candidate_val.is_valid and not is_incomplete:
                 writer_draft = candidate_draft
@@ -1313,6 +1317,7 @@ class ArticleGenerator:
             if isinstance(exc, ProviderCascadeError):
                 raise
             writer_error = exc
+            writer_meta = None
 
         finalization_result = await ArticleFinalizer().finalize(
             writer_draft=writer_draft,
@@ -1323,6 +1328,7 @@ class ArticleGenerator:
             editorial_config=editorial_config,
             length_profile=length_profile,
             attempt_observer=attempt_observer,
+            writer_metadata=writer_meta,
         )
 
         body = finalization_result.draft.render_markdown()

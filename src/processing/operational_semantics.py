@@ -217,6 +217,25 @@ def _has_valid_schedule_intent(text: str) -> bool:
     return True
 
 
+def _has_grounded_time_value(text: str, effective_from: str) -> bool:
+    """Check if the HH:MM time in effective_from is grounded in raw text."""
+    m_time = re.search(r"[T\s](\d{1,2}):(\d{2})", effective_from)
+    if not m_time:
+        return True
+    hour, minute = int(m_time.group(1)), int(m_time.group(2))
+    text_lower = text.lower()
+    time_patterns = [
+        rf"\b0?{hour}[:.-]{minute:02d}\b",
+        rf"\b0?{hour}\s*(?:часов|час|ч\b|утр|вечер|дня|ноч)",
+    ]
+    if minute == 0:
+        time_patterns.append(rf"(?:в|с|до|к)\s+0?{hour}\b")
+        time_patterns.append(rf"\b0?{hour}:00\b")
+        time_patterns.append(rf"\b0?{hour}-00\b")
+        time_patterns.append(rf"\b0?{hour}\.00\b")
+    return any(re.search(p, text_lower) for p in time_patterns)
+
+
 def _has_grounded_temporal_value(text: str, effective_from: str | None) -> bool:
     """Verify that the projected date/time value is grounded in raw evidence."""
     if not effective_from:
@@ -245,10 +264,12 @@ def _has_grounded_temporal_value(text: str, effective_from: str | None) -> bool:
         )
         if has_any_month and month_stem and month_stem not in text_lower:
             return False
-        return True
+    else:
+        eff_tokens = [t for t in re.split(r"[^\w\d]+", date_part.lower()) if len(t) >= 2]
+        if not any(tok in text_lower for tok in eff_tokens):
+            return False
 
-    eff_tokens = [t for t in re.split(r"[^\w\d]+", effective_from.lower()) if len(t) >= 2]
-    return any(tok in text_lower for tok in eff_tokens)
+    return _has_grounded_time_value(text, effective_from)
 
 
 def _has_valid_schedule_grounding(text: str, effective_from: str | None = None) -> bool:
@@ -381,6 +402,12 @@ def normalize_service_state_evidence(
         # 2. Schedule intent grounded (requires explicit schedule terms, no rumors)
         # 3. Projected temporal value grounded (date/time in raw evidence)
         if state.state == "SCHEDULED" or state.basis == "scheduled_change":
+            if state.effective_from and re.search(r"[T\s]\d{1,2}:\d{2}", state.effective_from):
+                if not _has_grounded_time_value(grounding_text, state.effective_from):
+                    date_part = state.effective_from.split("T")[0].split(" ")[0]
+                    state = replace(state, effective_from=date_part)
+                    item = replace(item, service_state=state)
+
             if not _has_valid_schedule_grounding(grounding_text, state.effective_from):
                 normalized_items.append(
                     replace(

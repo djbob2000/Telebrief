@@ -2215,3 +2215,26 @@ def test_expanded_advice_detection_forms():
         text = f"В городе тревога. {form}"
         issues = find_unsupported_digest_recommendations(text, [source_plain])
         assert len(issues) >= 1, f"Failed to detect advice in: {form}"
+
+
+def test_recommendation_requires_modality_and_subject_in_same_support():
+    from src.publication.digest_narrative import find_unsupported_digest_recommendations
+
+    # Support 1: Modality only, different subject
+    sup1 = "Администрация города: рекомендуется сохранять спокойствие и доверять официальным источникам."
+    # Support 2: Subject only, no recommendation modality
+    sup2 = "В магазинах микрорайона наблюдается дефицит питьевой воды и свечей."
+
+    text_advice = "Рекомендуется сделать запасы питьевой воды на несколько дней вперед."
+
+    # When modality and subject come from separate supports, it must be rejected!
+    issues = find_unsupported_digest_recommendations(text_advice, [sup1, sup2])
+    assert len(issues) == 1
+    assert "Рекомендуется сделать запасы питьевой воды" in issues[0]
+
+    # When both are co-present in one single support, it is accepted
+    sup_valid = (
+        "Водоканал обратился к жителям: рекомендуется сделать запасы питьевой воды перед ремонтом."
+    )
+    issues_valid = find_unsupported_digest_recommendations(text_advice, [sup1, sup2, sup_valid])
+    assert len(issues_valid) == 0

@@ -208,19 +208,23 @@ class ArticleFinalizer:
         editorial_config: PublicationEditorialConfig,
         length_profile: ArticleLengthProfile | None = None,
         attempt_observer: GenerationAttemptObserver | None = None,
+        writer_metadata: dict[str, Any] | None = None,
     ) -> ArticleFinalizationResult:
         """Validate writer output, trigger recovery if needed, and assert final invariants."""
         # 1. Handle writer failure / error
         if writer_error is not None or writer_draft is None:
             if attempt_observer:
+                err_meta: dict[str, Any] = {
+                    "writer_status": "failed",
+                    "error": str(writer_error) if writer_error else "empty writer response",
+                }
+                if writer_metadata:
+                    err_meta.update(writer_metadata)
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
                     status="failed",
                     error_kind="article_writer_rejected",
-                    metadata={
-                        "writer_status": "failed",
-                        "error": str(writer_error) if writer_error else "empty writer response",
-                    },
+                    metadata=err_meta,
                 )
             if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
                 raise ArticlePublicationRejected(
@@ -280,15 +284,18 @@ class ArticleFinalizer:
                 list(writer_validation.violations),
             )
             if attempt_observer:
+                val_meta: dict[str, Any] = {
+                    "writer_status": "rejected",
+                    "violations": list(writer_validation.violations),
+                    "draft": writer_draft.to_dict(),
+                }
+                if writer_metadata:
+                    val_meta.update(writer_metadata)
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
                     status="failed",
                     error_kind="article_validation_rejected",
-                    metadata={
-                        "writer_status": "rejected",
-                        "violations": list(writer_validation.violations),
-                        "draft": writer_draft.to_dict(),
-                    },
+                    metadata=val_meta,
                 )
             if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
                 raise ArticlePublicationRejected(
@@ -330,6 +337,8 @@ class ArticleFinalizer:
                 final_diag=final_diag,
                 trace=trace,
             )
+            if writer_metadata:
+                meta.update(writer_metadata)
             if attempt_observer:
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
@@ -389,14 +398,17 @@ class ArticleFinalizer:
             )
 
         if attempt_observer:
+            succ_meta: dict[str, Any] = {
+                "writer_status": "passed",
+                "ai_covered_story_ids": list(ai_covered),
+                "ai_story_coverage": ai_diag.story_coverage,
+            }
+            if writer_metadata:
+                succ_meta.update(writer_metadata)
             await attempt_observer.attempt_finished(
                 writer_attempt_id,
                 status="succeeded",
-                metadata={
-                    "writer_status": "passed",
-                    "ai_covered_story_ids": list(ai_covered),
-                    "ai_story_coverage": ai_diag.story_coverage,
-                },
+                metadata=succ_meta,
             )
 
         supp_attempt_id = 0

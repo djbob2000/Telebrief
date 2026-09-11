@@ -635,39 +635,54 @@ def find_unsupported_digest_recommendations(
     text: str,
     cited_supports: Sequence[str] | str,
 ) -> list[str]:
-    """Find reader advice / calls-to-action that are not grounded in cited supports."""
+    """Find reader advice / calls-to-action that are not grounded in cited supports.
+
+    Requires that at least one specific cited support simultaneously contains
+    the recommendation modality and sufficient semantic overlap with the advice subject.
+    """
     if not text or not cited_supports:
         return []
     if isinstance(cited_supports, str):
-        cited_supports = [cited_supports]
-    combined_support = " ".join(cited_supports).lower()
-    has_modality = any(pat.search(combined_support) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
+        support_list = [cited_supports]
+    else:
+        support_list = list(cited_supports)
+    support_lowers = [s.lower() for s in support_list if s]
+
     violations: list[str] = []
     for match in _RECOMMENDATION_SENTENCE_PATTERN.finditer(text):
         matched_text = match.group(0).strip()
-        if not has_modality:
-            violations.append(matched_text)
-            continue
         matched_tokens = [w for w in re.split(r"\W+", matched_text.lower()) if len(w) >= 5]
-        supported_count = sum(1 for tok in matched_tokens if tok in combined_support)
-        if supported_count < 2:
+        is_supported_in_single_source = False
+        for s_lower in support_lowers:
+            has_modality = any(pat.search(s_lower) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
+            if not has_modality:
+                continue
+            supported_count = sum(1 for tok in matched_tokens if tok in s_lower)
+            if supported_count >= 2:
+                is_supported_in_single_source = True
+                break
+        if not is_supported_in_single_source:
             violations.append(matched_text)
     return violations
 
 
 def strip_unsupported_recommendations(text: str, source_content: str) -> str:
     """Strip fabricated reader advice/calls-to-action unless explicitly supported by source content."""
-    source_lower = source_content.lower()
-    has_modality = any(pat.search(source_lower) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
+    support_blocks = [
+        b.lower().strip() for b in re.split(r"\n\s*\n|\n(?=[•\-\*])", source_content) if b.strip()
+    ]
+    if not support_blocks:
+        support_blocks = [source_content.lower()]
 
     def _replace_if_unsupported(match: re.Match[str]) -> str:
         matched_text = match.group(0).strip()
-        if not has_modality:
-            return ""
         matched_tokens = [w for w in re.split(r"\W+", matched_text.lower()) if len(w) >= 5]
-        supported_count = sum(1 for tok in matched_tokens if tok in source_lower)
-        if supported_count >= 2:
-            return match.group(0)
+        for b_lower in support_blocks:
+            has_mod = any(pat.search(b_lower) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
+            if not has_mod:
+                continue
+            if sum(1 for tok in matched_tokens if tok in b_lower) >= 2:
+                return match.group(0)
         return ""
 
     cleaned = _RECOMMENDATION_SENTENCE_PATTERN.sub(_replace_if_unsupported, text)
