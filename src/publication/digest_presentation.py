@@ -1,25 +1,18 @@
-"""Digest presentation planning for layered city-life short-read digests."""
+"""Digest presentation planning for thematic city-life short-read digests."""
 
 from __future__ import annotations
 
-import datetime as dt
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Literal, Mapping, Sequence
+from typing import Any, Literal
 
 from src.publication.city_situation import (
     CitySituationItem,
     CitySituationRollup,
-    city_situation_icon,
-    city_situation_severity,
 )
+from src.publication.errors import DigestCoverageInvariantError
 
-DigestDetailRole = Literal["SUPPRESS", "DRILL_DOWN", "NORMAL"]
-DigestPresentationMode = Literal[
-    "DASHBOARD_ONLY",
-    "DETAIL_ONLY",
-    "DASHBOARD_AND_DRILLDOWN",
-]
 DigestPresentationUnitKind = Literal["SYNTHESIS", "NORMAL", "BRIEF_ROLLUP"]
 
 
@@ -37,51 +30,77 @@ class DigestPresentationUnit:
 
 
 @dataclass(frozen=True)
-class RequiredSituationFact:
-    """A discrete material operational proposition required for lossless situation coverage."""
+class RequiredDigestFact:
+    """A discrete material operational proposition required for lossless digest coverage."""
 
     fact_id: str
+    rubric_id: str
+    subject_key: str
+    subject_label: str
     story_ids: tuple[str, ...]
-    support_ids: tuple[str, ...]  # alternative supports for this single fact
+    support_ids: tuple[str, ...]
     text: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "fact_id": self.fact_id,
+            "rubric_id": self.rubric_id,
+            "subject_key": self.subject_key,
+            "subject_label": self.subject_label,
             "story_ids": list(self.story_ids),
             "support_ids": list(self.support_ids),
             "text": self.text,
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> RequiredSituationFact:
+    def from_dict(cls, data: Mapping[str, Any]) -> RequiredDigestFact:
         return cls(
             fact_id=str(data.get("fact_id", "")),
+            rubric_id=str(data.get("rubric_id", "")),
+            subject_key=str(data.get("subject_key", "")),
+            subject_label=str(data.get("subject_label", "")),
             story_ids=tuple(str(s) for s in data.get("story_ids", [])),
             support_ids=tuple(str(s) for s in data.get("support_ids", [])),
             text=str(data.get("text", "")),
         )
 
 
-@dataclass(frozen=True)
-class CitySituationPresentationGroup:
-    group_id: str
-    group_kind: str  # "subject_status" | "available_services"
-    subject_key: str
-    subject_label: str
-    state: str
-    source_refs: tuple[str, ...]
-    detail_lines: tuple[str, ...]
-    covered_story_ids: tuple[str, ...] = ()
-    cited_support_ids: tuple[str, ...] = ()
-    all_detail_lines: tuple[str, ...] = ()
-    required_facts: tuple[RequiredSituationFact, ...] = ()
+# Backward compatibility alias
+RequiredSituationFact = RequiredDigestFact
 
 
 @dataclass(frozen=True)
-class CitySituationPresentationPlan:
-    groups: tuple[CitySituationPresentationGroup, ...]
-    covered_source_refs: tuple[str, ...]
+class _CompatibilitySituationPlan:
+    groups: tuple[Any, ...] = ()
+    covered_source_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DigestPresentationPlan:
+    story_ids: tuple[str, ...]
+    required_facts: tuple[RequiredDigestFact, ...]
+
+    @property
+    def detail_story_ids(self) -> tuple[str, ...]:
+        return self.story_ids
+
+    @property
+    def city_situation(self) -> Any:
+        return _CompatibilitySituationPlan()
+
+    @property
+    def story_presentations(self) -> tuple[Any, ...]:
+        return ()
+
+    @property
+    def story_hints(self) -> tuple[Any, ...]:
+        return ()
+
+    def to_audit_dict(self) -> dict[str, Any]:
+        return {
+            "story_ids": list(self.story_ids),
+            "required_facts": [fact.to_dict() for fact in self.required_facts],
+        }
 
 
 def _norm_key(value: str) -> str:
@@ -101,18 +120,6 @@ def _detail_line(item: CitySituationItem) -> str:
         return f"{location}: {detail}"
     return detail or item.subject_label or item.subject_key
 
-
-def _positive_detail_line(item: CitySituationItem) -> str:
-    label = item.subject_label.strip() or item.subject_key.strip()
-    detail = item.detail.strip()
-    if detail and label.casefold() in detail.casefold():
-        return detail
-    if detail:
-        return f"{label}: {detail}"
-    return label
-
-
-_POSITIVE_STATES = frozenset({"AVAILABLE", "RESOLVED"})
 
 _CITY_SITUATION_SUBJECT_ALIASES: tuple[tuple[str, frozenset[str]], ...] = (
     (
@@ -205,10 +212,10 @@ _CITY_SITUATION_SUBJECT_ALIASES: tuple[tuple[str, frozenset[str]], ...] = (
 
 def _canonical_city_situation_subject(item: CitySituationItem) -> str | None:
     combined_text = f"{item.subject_label} {item.detail}"
-    # Reject retail product sales (e.g. bottled water, 3 rub/l) from City Situation dashboard
+    # Reject retail product sales (e.g. bottled water, 3 rub/l) from operational facts
     if re.search(r"\b(?:розлив|розничн|руб/л|₽/л|3\s*₽/литр)\b", combined_text, re.IGNORECASE):
         return None
-    # Reject long-distance/intercity transport from City Situation dashboard (placed in narrative mobility)
+    # Reject long-distance/intercity transport from operational facts
     if re.search(
         r"\b(?:междугородн|межгород|ростов|тбилиси|москва|симферополь|донецк|луганск|таганрог)\b",
         combined_text,
@@ -224,75 +231,6 @@ def _canonical_city_situation_subject(item: CitySituationItem) -> str | None:
     return None
 
 
-def _city_situation_group_id(item: CitySituationItem) -> str | None:
-    root = _canonical_city_situation_subject(item)
-    return f"situation:{root}" if root is not None else None
-
-
-def _presentation_state(items: Sequence[CitySituationItem]) -> str:
-    states = {item.state.upper() for item in items}
-    has_positive = bool(states & _POSITIVE_STATES)
-    has_non_positive = bool(states - _POSITIVE_STATES)
-    if has_positive and has_non_positive:
-        # Distinguish true conflict (contradictory reports for the exact same location/scope)
-        # from mixed geographic state (different locations/sub-areas report different states).
-        by_target: dict[tuple[str, str], set[str]] = {}
-        for it in items:
-            loc = _norm_key(it.location)
-            ent = _norm_key(it.entity)
-            by_target.setdefault((loc, ent), set()).add(it.state.upper())
-
-        has_direct_conflict = any(
-            bool(t_states & _POSITIVE_STATES) and bool(t_states - _POSITIVE_STATES)
-            for (loc, ent), t_states in by_target.items()
-            if loc or ent
-        )
-        if has_direct_conflict:
-            return "CONFLICTING"
-        if len(by_target) == 1:
-            return "CONFLICTING"
-        return "MIXED"
-    return min(items, key=lambda item: city_situation_severity(item.state)).state
-
-
-def _all_group_details(items: Sequence[CitySituationItem]) -> tuple[str, ...]:
-    lines: list[str] = []
-    seen: set[str] = set()
-    for item in items:
-        line = _detail_line(item)
-        key = line.casefold()
-        if line and key not in seen:
-            seen.add(key)
-            lines.append(line)
-    return tuple(lines)
-
-
-def _select_group_details(
-    items: Sequence[CitySituationItem],
-    *,
-    limit: int,
-) -> tuple[str, ...]:
-    positive = [item for item in items if item.state.upper() in _POSITIVE_STATES]
-    non_positive = [item for item in items if item.state.upper() not in _POSITIVE_STATES]
-    ordered: list[CitySituationItem] = []
-    if positive and non_positive:
-        ordered.extend([non_positive[0], positive[0]])
-    for item in items:
-        if item not in ordered:
-            ordered.append(item)
-    lines: list[str] = []
-    seen: set[str] = set()
-    for item in ordered:
-        line = _detail_line(item)
-        key = line.casefold()
-        if line and key not in seen:
-            seen.add(key)
-            lines.append(line)
-        if len(lines) >= limit:
-            break
-    return tuple(lines)
-
-
 def _derive_situation_fact_id(group_id: str, item: CitySituationItem, idx: int) -> str:
     if getattr(item, "fact_id", None):
         return str(item.fact_id).strip()
@@ -300,7 +238,6 @@ def _derive_situation_fact_id(group_id: str, item: CitySituationItem, idx: int) 
     detail = (item.detail or "").strip()
     if "центр" in loc.casefold() and ("170" in detail or "напряжен" in detail.casefold()):
         return "center_voltage"
-    import re
 
     if loc:
         slug = re.sub(r"[^\w]+", "_", loc.casefold()).strip("_")
@@ -314,397 +251,152 @@ def _derive_situation_fact_id(group_id: str, item: CitySituationItem, idx: int) 
     return f"{clean_grp}_fact_{idx + 1}"
 
 
-def build_city_situation_presentation_plan(
-    rollup: CitySituationRollup | None,
+def _matches_card(card_id: str, evi: Any, eid: str) -> bool:
+    evi_sid = getattr(evi, "story_id", None)
+    if str(evi_sid) == card_id or f"story:{evi_sid}" == card_id:
+        return True
+    if eid.startswith(f"{card_id}:"):
+        return True
+    num_part = card_id.split(":", 1)[1] if card_id.startswith("story:") else None
+    if num_part and num_part.isdigit() and evi_sid is not None:
+        try:
+            if int(evi_sid) == int(num_part):
+                return True
+        except (ValueError, TypeError):
+            pass
+    return False
+
+
+def build_required_digest_facts(
     *,
-    max_items: int = 7,
-    max_details_per_item: int = 2,
-    max_positive_items: int = 2,
-) -> CitySituationPresentationPlan:
-    """Build the city situation presentation plan with mixed/pure group consolidation."""
-    if not rollup or not rollup.items:
-        return CitySituationPresentationPlan(groups=(), covered_source_refs=())
+    cards: Sequence[Any],
+    city_situation: CitySituationRollup | None,
+    evidence: Mapping[str, Any],
+) -> tuple[RequiredDigestFact, ...]:
+    if not city_situation or not city_situation.items:
+        return ()
 
-    # Group all items by canonical subject
-    grouped: dict[str, list[CitySituationItem]] = {}
-    for item in rollup.items:
-        key = _canonical_city_situation_subject(item)
-        if key is None:
+    card_by_id = {c.id: c for c in cards}
+
+    # Precompute card references and lineage
+    card_refs_map: dict[str, set[str]] = {}
+    for card in cards:
+        refs: set[str] = set()
+        all_refs_fn = getattr(card, "all_source_refs", None)
+        if callable(all_refs_fn):
+            refs.update(r for r in all_refs_fn() if r)
+        else:
+            refs.update(r for r in getattr(card, "representative_source_refs", []) or [] if r)
+        for elem_list in (
+            getattr(card, "hard_facts", []) or [],
+            getattr(card, "community_observations", []) or [],
+            getattr(card, "useful_details", []) or [],
+            getattr(card, "operational_observations", []) or [],
+        ):
+            for elem in elem_list:
+                refs.update(r for r in getattr(elem, "source_refs", []) or [] if r)
+        card_refs_map[card.id] = refs
+
+    required_facts: list[RequiredDigestFact] = []
+
+    for f_idx, item in enumerate(city_situation.items):
+        canonical_subj = _canonical_city_situation_subject(item)
+        if canonical_subj is None:
             continue
-        grouped.setdefault(key, []).append(item)
-
-    candidate_groups: list[
-        tuple[
-            CitySituationPresentationGroup,
-            int,  # worst severity
-            dt.datetime,  # latest ts
-            int,  # observation count
-        ]
-    ] = []
-
-    for canonical_subj, group_items in grouped.items():
-        pres_state = _presentation_state(group_items)
-
-        first_item = group_items[0]
-        subject_label = next(
-            (it.subject_label for it in group_items if it.subject_label),
-            first_item.subject_key,
-        )
-        worst_sev = city_situation_severity(pres_state)
-
-        # Merge source refs preserving order / uniqueness
-        seen_refs: set[str] = set()
-        merged_refs: list[str] = []
-        for it in group_items:
-            for r in it.source_refs:
-                if r and r not in seen_refs:
-                    seen_refs.add(r)
-                    merged_refs.append(r)
-
-        all_detail_lines = _all_group_details(group_items)
-        detail_lines = _select_group_details(group_items, limit=max_details_per_item)
-        latest_ts = max(it.last_observed_at for it in group_items)
-        obs_count = sum(it.observation_count for it in group_items)
 
         group_id = f"situation:{canonical_subj}"
-        req_facts = []
-        for f_idx, it in enumerate(group_items):
-            fid = _derive_situation_fact_id(group_id, it, f_idx)
-            it_refs = tuple(
-                dict.fromkeys(
-                    r for r in (getattr(it, "current_source_refs", ()) or it.source_refs) if r
-                )
+        fact_id = _derive_situation_fact_id(group_id, item, f_idx)
+
+        # 3. resolve allowed support IDs from current_source_refs / source_refs
+        # plus matching PublicationEvidence.evidence_id
+        item_refs = tuple(
+            dict.fromkeys(
+                r for r in (getattr(item, "current_source_refs", ()) or item.source_refs) if r
             )
-            f_text = _detail_line(it)
-            req_facts.append(
-                RequiredSituationFact(
-                    fact_id=fid,
-                    story_ids=(),
-                    support_ids=it_refs,
-                    text=f_text,
-                )
+        )
+        fact_supports: list[str] = list(item_refs)
+        fact_stories: list[str] = []
+
+        # Match via direct card source refs
+        item_ref_set = set(item_refs)
+        for card in cards:
+            if bool(item_ref_set & card_refs_map.get(card.id, set())):
+                if card.id not in fact_stories:
+                    fact_stories.append(card.id)
+
+        # Match via PublicationEvidence
+        for evi in evidence.values():
+            if getattr(evi, "publication_use", "PUBLISH") != "PUBLISH":
+                continue
+            e_ref = getattr(evi, "source_ref", None)
+            eid = getattr(evi, "evidence_id", "")
+            if (e_ref and e_ref in item_ref_set) or (eid and eid in item_ref_set):
+                if eid and eid not in fact_supports:
+                    fact_supports.append(eid)
+                # match card via evidence
+                for card in cards:
+                    if _matches_card(card.id, evi, eid):
+                        if card.id not in fact_stories:
+                            fact_stories.append(card.id)
+                # match card via story_id on evidence
+                evi_sid = getattr(evi, "story_id", None)
+                if evi_sid is not None:
+                    st_str = (
+                        f"story:{evi_sid}"
+                        if not str(evi_sid).startswith("story:")
+                        else str(evi_sid)
+                    )
+                    if st_str in card_by_id and st_str not in fact_stories:
+                        fact_stories.append(st_str)
+
+        # Fail closed if unmapped to any selected story
+        if not fact_stories:
+            raise DigestCoverageInvariantError(f"UNMAPPED_REQUIRED_FACT:{fact_id}")
+
+        # 5. derive rubric_id from the first owning StoryCard
+        first_owning_card = card_by_id.get(fact_stories[0])
+        rubric_id = getattr(first_owning_card, "rubric_id", "") or "infrastructure"
+
+        # 6. preserve subject_key, subject_label, and sanitized reader fact text
+        fact_text = _detail_line(item)
+
+        required_facts.append(
+            RequiredDigestFact(
+                fact_id=fact_id,
+                rubric_id=rubric_id,
+                subject_key=item.subject_key or canonical_subj,
+                subject_label=item.subject_label or canonical_subj.title(),
+                story_ids=tuple(fact_stories),
+                support_ids=tuple(dict.fromkeys(fact_supports)),
+                text=fact_text,
             )
-
-        presentation_group = CitySituationPresentationGroup(
-            group_id=group_id,
-            group_kind="subject_status",
-            subject_key=canonical_subj,
-            subject_label=subject_label,
-            state=pres_state,
-            source_refs=tuple(merged_refs),
-            detail_lines=detail_lines,
-            all_detail_lines=all_detail_lines,
-            required_facts=tuple(req_facts),
         )
-        candidate_groups.append((presentation_group, worst_sev, latest_ts, obs_count))
 
-    positive = [row for row in candidate_groups if row[0].state.upper() in _POSITIVE_STATES]
-    non_positive = [row for row in candidate_groups if row[0].state.upper() not in _POSITIVE_STATES]
-
-    positive.sort(
-        key=lambda entry: (
-            entry[1],
-            -entry[2].timestamp(),
-            -entry[3],
-            entry[0].subject_label.casefold(),
-        )
-    )
-    non_positive.sort(
-        key=lambda entry: (
-            entry[1],
-            -entry[2].timestamp(),
-            -entry[3],
-            entry[0].subject_label.casefold(),
-        )
-    )
-
-    reserve_positive = 1 if positive and non_positive and max_items >= 2 else 0
-    negative_limit = max_items - reserve_positive
-
-    selected_groups: list[CitySituationPresentationGroup] = [
-        row[0] for row in non_positive[:negative_limit]
-    ]
-    remaining = max_items - len(selected_groups)
-
-    selected_groups.extend(row[0] for row in positive[: min(max_positive_items, remaining)])
-
-    # covered_source_refs = union of source refs of selected groups only
-    seen_covered: set[str] = set()
-    covered_refs: list[str] = []
-    for g in selected_groups:
-        for r in g.source_refs:
-            if r and r not in seen_covered:
-                seen_covered.add(r)
-                covered_refs.append(r)
-
-    return CitySituationPresentationPlan(
-        groups=tuple(selected_groups),
-        covered_source_refs=tuple(covered_refs),
-    )
+    return tuple(required_facts)
 
 
-plan_city_situation_presentation = build_city_situation_presentation_plan
-
-
-def city_situation_group_reader_text(group: CitySituationPresentationGroup) -> str:
-    lines = group.all_detail_lines or group.detail_lines
-    body = "; ".join(line.strip() for line in lines if line.strip())
-    return f"{group.subject_label}: {body}" if body else group.subject_label
-
-
-def render_city_situation_presentation(
-    plan: CitySituationPresentationPlan | None,
+def build_digest_presentation_plan(
     *,
-    use_emojis: bool = True,
-) -> str:
-    if not plan or not plan.groups:
-        return ""
-    lines = ["*🏙 Городская обстановка*" if use_emojis else "*Городская обстановка*"]
-    for group in plan.groups:
-        icon = city_situation_icon(group.state) if use_emojis else ""
-        prefix = f"{icon} " if icon else ""
-        body = "; ".join(line.strip() for line in group.detail_lines if line.strip())
-        if body:
-            lines.append(f"• {prefix}**{group.subject_label}**: {body}")
-        else:
-            lines.append(f"• {prefix}**{group.subject_label}**")
-    return "\n".join(lines)
+    cards: Sequence[Any],
+    city_situation: CitySituationRollup | None,
+    evidence: Mapping[str, Any] | None = None,
+    **kwargs: Any,
+) -> DigestPresentationPlan:
+    """Build the reader-independent presentation plan containing selected story IDs and required facts."""
+    evidence_map = evidence if isinstance(evidence, Mapping) else {}
+    return DigestPresentationPlan(
+        story_ids=tuple(card.id for card in cards),
+        required_facts=build_required_digest_facts(
+            cards=cards,
+            city_situation=city_situation,
+            evidence=evidence_map,
+        ),
+    )
 
 
-@dataclass(frozen=True)
-class DigestStoryPresentation:
-    story_id: str
-    mode: DigestPresentationMode = "DETAIL_ONLY"
-    city_situation_group_ids: tuple[str, ...] = ()
-    detail_support_ids: tuple[str, ...] = ()
-    merge_group_id: str = ""
-
-    def __init__(
-        self,
-        story_id: str,
-        mode: DigestPresentationMode | None = None,
-        city_situation_group_ids: tuple[str, ...] = (),
-        detail_support_ids: tuple[str, ...] = (),
-        merge_group_id: str = "",
-        *,
-        detail_role: str | None = None,
-    ) -> None:
-        if mode is None:
-            if detail_role == "SUPPRESS":
-                mode = "DASHBOARD_ONLY"
-            elif detail_role == "DRILL_DOWN":
-                mode = "DASHBOARD_AND_DRILLDOWN"
-            else:
-                mode = "DETAIL_ONLY"
-        object.__setattr__(self, "story_id", str(story_id))
-        object.__setattr__(self, "mode", mode)
-        object.__setattr__(self, "city_situation_group_ids", tuple(city_situation_group_ids))
-        object.__setattr__(self, "detail_support_ids", tuple(detail_support_ids))
-        object.__setattr__(self, "merge_group_id", str(merge_group_id or story_id))
-
-    @property
-    def detail_role(self) -> DigestDetailRole:
-        if self.mode == "DASHBOARD_ONLY":
-            return "SUPPRESS"
-        if self.mode == "DASHBOARD_AND_DRILLDOWN":
-            return "DRILL_DOWN"
-        return "NORMAL"
-
-
-DigestStoryPresentationHint = DigestStoryPresentation
-
-
-@dataclass(frozen=True)
-class DigestPresentationPlan:
-    city_situation: CitySituationPresentationPlan
-    story_presentations: tuple[DigestStoryPresentation, ...]
-
-    def __init__(
-        self,
-        city_situation: CitySituationPresentationPlan,
-        story_presentations: tuple[DigestStoryPresentation, ...] | None = None,
-        *,
-        detail_story_ids: tuple[str, ...] | None = None,
-        story_hints: tuple[DigestStoryPresentation, ...] | None = None,
-    ) -> None:
-        if story_presentations is not None:
-            object.__setattr__(self, "story_presentations", tuple(story_presentations))
-        elif story_hints is not None:
-            object.__setattr__(self, "story_presentations", tuple(story_hints))
-        else:
-            object.__setattr__(self, "story_presentations", ())
-        object.__setattr__(self, "city_situation", city_situation)
-
-    @property
-    def story_ids(self) -> tuple[str, ...]:
-        return tuple(item.story_id for item in self.story_presentations)
-
-    @property
-    def detail_story_ids(self) -> tuple[str, ...]:
-        detail_modes = {"DETAIL_ONLY", "DASHBOARD_AND_DRILLDOWN"}
-        return tuple(
-            item.story_id for item in self.story_presentations if item.mode in detail_modes
-        )
-
-    @property
-    def story_hints(self) -> tuple[DigestStoryPresentation, ...]:
-        return self.story_presentations
-
-    def to_audit_dict(self) -> dict[str, Any]:
-        return {
-            "story_ids": list(self.story_ids),
-            "stories": [
-                {
-                    "story_id": p.story_id,
-                    "mode": p.mode,
-                    "city_situation_group_ids": list(p.city_situation_group_ids),
-                    "detail_support_ids": list(p.detail_support_ids),
-                    "merge_group_id": p.merge_group_id,
-                }
-                for p in self.story_presentations
-            ],
-            "city_situation_groups": [
-                {
-                    "group_id": g.group_id,
-                    "covered_story_ids": list(g.covered_story_ids),
-                    "cited_support_ids": list(g.cited_support_ids),
-                    "required_facts": [
-                        {
-                            "fact_id": f.fact_id,
-                            "story_ids": list(f.story_ids),
-                            "support_ids": list(f.support_ids),
-                            "text": f.text,
-                        }
-                        for f in getattr(g, "required_facts", ())
-                    ],
-                }
-                for g in (self.city_situation.groups if self.city_situation else ())
-            ],
-        }
-
-
-def score_digest_detail_evidence(evi: Any) -> int:
-    """Score evidence for microdetail richness (concrete numbers, dates, times, amounts, quotes)."""
-    from src.publication.article_claims import extract_concrete_claims
-
-    text = " ".join(
-        part for part in (getattr(evi, "text", ""), getattr(evi, "source_text", "")) if part
-    ).strip()
-    if not text:
-        return 0
-    score = 0
-    if extract_concrete_claims(text):
-        score += 3
-    if getattr(evi, "kind", "") in {"community_report", "service_access", "official_statement"}:
-        score += 2
-    src_text = getattr(evi, "source_text", "") or ""
-    if len(src_text.split()) >= 8:
-        score += 1
-    if any(mark in src_text for mark in ("«", "»", '"')):
-        score += 1
-    return score
-
-
-_DETAIL_TOKEN_RE = re.compile(r"[\w]+", re.UNICODE)
-_DETAIL_STOPWORDS = frozenset(
-    {
-        "the",
-        "a",
-        "an",
-        "in",
-        "on",
-        "at",
-        "to",
-        "for",
-        "of",
-        "with",
-        "from",
-        "that",
-        "this",
-        "these",
-        "those",
-        "have",
-        "has",
-        "had",
-        "been",
-        "still",
-        "also",
-        "were",
-        "will",
-        "would",
-        "there",
-        "their",
-        "they",
-        "about",
-        "which",
-        "city",
-        "resident",
-        "residents",
-        "report",
-        "reports",
-        "reported",
-        "message",
-        "messages",
-        "город",
-        "города",
-        "городе",
-        "житель",
-        "жители",
-        "жителей",
-        "жителям",
-        "сообщают",
-        "сообщает",
-        "сообщению",
-        "сообщения",
-        "также",
-        "тоже",
-        "было",
-        "были",
-        "будет",
-        "будут",
-        "есть",
-        "нет",
-        "информация",
-        "информации",
-    }
-)
-
-
-def _digest_detail_tokens(text: str) -> set[str]:
-    from src.publication.article_claims import normalize_support_text
-
-    normalized = normalize_support_text(text)
-    return {
-        token
-        for token in _DETAIL_TOKEN_RE.findall(normalized)
-        if len(token) >= 4 and token not in _DETAIL_STOPWORDS
-    }
-
-
-def _is_material_digest_detail(evi: Any, dashboard_texts: Sequence[str]) -> bool:
-    from src.publication.article_claims import extract_concrete_claims, normalize_support_text
-
-    text = " ".join(
-        part for part in (getattr(evi, "text", ""), getattr(evi, "source_text", "")) if part
-    ).strip()
-    if not text:
-        return False
-
-    dashboard_text = " ".join(dashboard_texts)
-    dashboard_normalized = normalize_support_text(dashboard_text)
-
-    concrete_claims = [
-        claim
-        for claim in extract_concrete_claims(text)
-        if claim.kind != "phone" and normalize_support_text(claim.raw) not in dashboard_normalized
-    ]
-    if concrete_claims:
-        return True
-
-    detail_tokens = _digest_detail_tokens(text)
-    dashboard_tokens = _digest_detail_tokens(dashboard_text)
-    novel_tokens = detail_tokens - dashboard_tokens
-    return len(novel_tokens) >= 3
+def render_city_situation_presentation(*args: Any, **kwargs: Any) -> str:
+    """Deprecated: no reader-facing dashboard rendering exists in thematic digest synthesis."""
+    return ""
 
 
 _GENERIC_STOP_TAGS = frozenset(
@@ -731,7 +423,6 @@ _GENERIC_STOP_TAGS = frozenset(
         "resident",
         "local",
         "info",
-        # Administrative & utility generic terms
         "жкх",
         "коммуналка",
         "коммунальные_услуги",
@@ -761,7 +452,6 @@ _GENERIC_STOP_TAGS = frozenset(
         "работы",
         "ситуация",
         "состояние",
-        # City and service family terms (must never act as specific merge tags)
         "бердянск",
         "бердянске",
         "бердянска",
@@ -780,7 +470,6 @@ _GENERIC_STOP_TAGS = frozenset(
     }
 )
 
-
 _EDITION_LEVEL_AREAS = frozenset(
     {
         "бердянск",
@@ -797,7 +486,6 @@ _EDITION_LEVEL_AREAS = frozenset(
 
 
 def _compute_batch_frequent_tags(cards: Sequence[Any], threshold: float = 0.30) -> set[str]:
-    """Detect dataset-wide / city-wide tags dynamically without hardcoding city names."""
     from collections import Counter
 
     if len(cards) < 8:
@@ -815,7 +503,6 @@ def _compute_batch_frequent_tags(cards: Sequence[Any], threshold: float = 0.30) 
                 tag_rubrics.setdefault(norm, set()).add(rid)
 
     cutoff = max(5, int(len(cards) * threshold))
-    # A generic dataset-wide tag appears in at least 3 distinct rubrics AND exceeds frequency threshold
     return {
         tag
         for tag, count in tag_counts.items()
@@ -871,7 +558,6 @@ def _card_source_lineage(card: Any) -> set[str]:
 
     for r in raw_refs:
         s = str(r).strip()
-        # Require specific numeric ID or post reference, not coarse channel name
         if s and any(c.isdigit() for c in s):
             refs.add(s)
     return refs
@@ -896,7 +582,6 @@ def _card_service_families(card: Any) -> frozenset[str]:
 
 
 def _detect_presentation_kind(card: Any) -> str:
-    """Detect presentation kind: status, schedule, repair, damage, workaround, official_position, incident, other."""
     text_parts = [
         getattr(card, "topic", "") or "",
         getattr(card, "summary", "") or "",
@@ -948,7 +633,6 @@ def _are_cards_merge_compatible(
     card_b: Any,
     batch_stop_tags: set[str] | None = None,
 ) -> bool:
-    """Determine if two cards in the same rubric are pairwise compatible for synthesis merging."""
     fams_a = _card_service_families(card_a)
     fams_b = _card_service_families(card_b)
     kind_a = _detect_presentation_kind(card_a)
@@ -965,7 +649,6 @@ def _are_cards_merge_compatible(
     tags_b = _card_specific_tags(card_b, batch_stop_tags)
     shared_tags = bool(tags_a & tags_b)
 
-    # Workarounds (coping, private plumber ads) cannot merge with operational statuses
     if (kind_a == "workaround" or kind_b == "workaround") and kind_a != kind_b:
         return False
 
@@ -973,31 +656,22 @@ def _are_cards_merge_compatible(
         if not (is_op_a and is_op_b):
             return False
 
-        # Multi-family stories rule:
-        # Cannot bridge different families. Must have IDENTICAL family set.
         if len(fams_a) > 1 or len(fams_b) > 1:
             if fams_a != fams_b:
                 return False
-            # Multi-family stories with same families require shared specific area or lineage or tags
             return (kind_a == kind_b) and (shared_areas or shared_lineage or shared_tags)
 
-        # Mono-family stories rule:
         if fams_a != fams_b:
             return False
 
-        # If both are same kind (e.g. status + status):
         if kind_a == kind_b:
             return True
 
-        # Cross-kind merge (e.g. status + repair or status + schedule):
-        # Requires shared specific micro-area or shared entity relation (shared specific tag or lineage)
         if {kind_a, kind_b} <= {"status", "repair", "schedule", "other"}:
             return shared_areas or shared_lineage or shared_tags
 
         return False
 
-    # Non-operational stories:
-    # >= 2 shared specific tags OR shared strong evidence/source lineage OR (1 shared tag AND shared area)
     shared_specific_count = len(tags_a & tags_b)
     return (
         shared_specific_count >= 2
@@ -1007,13 +681,11 @@ def _are_cards_merge_compatible(
 
 
 def _compute_merge_groups(cards: Sequence[Any]) -> dict[str, str]:
-    """Group cards in the same rubric using complete-link (clique) clustering with max group size 6."""
     if not cards:
         return {}
 
     batch_stop_tags = _compute_batch_frequent_tags(cards)
 
-    # Group by rubric_id
     by_rubric: dict[str, list[Any]] = {}
     for c in cards:
         rid = getattr(c, "rubric_id", "") or ""
@@ -1025,8 +697,6 @@ def _compute_merge_groups(cards: Sequence[Any]) -> dict[str, str]:
         for card in r_cards:
             placed = False
             for g in groups:
-                # Complete-link: must be compatible with EVERY card in the group
-                # and group size is capped at 6
                 if len(g) < 6 and all(
                     _are_cards_merge_compatible(card, member, batch_stop_tags) for member in g
                 ):
@@ -1115,15 +785,7 @@ def build_digest_presentation_units(
     if not cards:
         return ()
 
-    presentations_by_id = {}
-    if presentation_plan is not None and getattr(presentation_plan, "story_presentations", None):
-        presentations_by_id = {p.story_id: p for p in presentation_plan.story_presentations}
-    elif presentation_plan is not None and getattr(presentation_plan, "story_hints", None):
-        presentations_by_id = {h.story_id: h for h in presentation_plan.story_hints}
-
-    fallback_merge_groups: dict[str, str] = {}
-    if not presentations_by_id and cards:
-        fallback_merge_groups = _compute_merge_groups(cards)
+    fallback_merge_groups = _compute_merge_groups(cards)
 
     by_rubric: dict[str, list[Any]] = {}
     for c in cards:
@@ -1134,17 +796,13 @@ def build_digest_presentation_units(
     unit_counter = 0
 
     for rid, r_cards in by_rubric.items():
-        # Partition cards by group key preserving first appearance order
         groups_by_key: dict[str, list[Any]] = {}
         for c in r_cards:
-            if c.id in presentations_by_id:
-                gid = presentations_by_id[c.id].merge_group_id
+            fam = _canonical_service_family(c)
+            if fam:
+                gid = f"service:{fam}"
             else:
-                fam = _canonical_service_family(c)
-                if fam:
-                    gid = f"service:{fam}"
-                else:
-                    gid = fallback_merge_groups.get(c.id, c.id)
+                gid = fallback_merge_groups.get(c.id, c.id)
             groups_by_key.setdefault(gid, []).append(c)
 
         for gid, g_cards in groups_by_key.items():
@@ -1169,283 +827,3 @@ def build_digest_presentation_units(
                 )
 
     return tuple(units)
-
-
-def _dashboard_supports_for_items(
-    items: Sequence[CitySituationItem],
-    evidence: Mapping[str, Any],
-) -> tuple[Any, ...]:
-    current_refs = {
-        ref
-        for item in items
-        for ref in (getattr(item, "current_source_refs", ()) or item.source_refs)
-        if ref
-    }
-    return tuple(
-        evi
-        for evi in evidence.values()
-        if getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
-        and getattr(evi, "kind", "") in {"service_access", "established_fact", "official_statement"}
-        and getattr(evi, "source_ref", None) in current_refs
-    )
-
-
-def _matches_card(card_id: str, evi: Any, eid: str) -> bool:
-    evi_sid = getattr(evi, "story_id", None)
-    if str(evi_sid) == card_id or f"story:{evi_sid}" == card_id:
-        return True
-    if eid.startswith(f"{card_id}:"):
-        return True
-    num_part = card_id.split(":", 1)[1] if card_id.startswith("story:") else None
-    if num_part and num_part.isdigit() and evi_sid is not None:
-        try:
-            if int(evi_sid) == int(num_part):
-                return True
-        except (ValueError, TypeError):
-            pass
-    return False
-
-
-def build_digest_presentation_plan(
-    *,
-    cards: Sequence[Any],
-    city_situation: CitySituationRollup | None,
-    evidence: Any = None,
-    max_city_situation_items: int = 7,
-    max_details_per_item: int = 2,
-    max_positive_items: int = 2,
-    max_city_situation_details: int | None = None,
-    max_city_situation_positive_items: int | None = None,
-) -> DigestPresentationPlan:
-    """Build the comprehensive presentation plan for a digest run."""
-    from dataclasses import replace
-
-    if max_city_situation_details is not None:
-        max_details_per_item = max_city_situation_details
-    if max_city_situation_positive_items is not None:
-        max_positive_items = max_city_situation_positive_items
-
-    city_plan = plan_city_situation_presentation(
-        city_situation,
-        max_items=max_city_situation_items,
-        max_details_per_item=max_details_per_item,
-        max_positive_items=max_positive_items,
-    )
-
-    evidence_map = evidence if isinstance(evidence, Mapping) else {}
-
-    # Group rollup items by group_id
-    items_by_group_id: dict[str, list[CitySituationItem]] = {}
-    for item in city_situation.items if city_situation else ():
-        group_id = _city_situation_group_id(item)
-        if group_id is not None:
-            items_by_group_id.setdefault(group_id, []).append(item)
-
-    enriched_groups: list[CitySituationPresentationGroup] = []
-    for group in city_plan.groups:
-        dashboard_evidence = _dashboard_supports_for_items(
-            items_by_group_id.get(group.group_id, []),
-            evidence_map,
-        )
-        cited_support_ids = tuple(
-            dict.fromkeys(
-                getattr(evi, "evidence_id", "")
-                for evi in dashboard_evidence
-                if getattr(evi, "evidence_id", "")
-            )
-        )
-        covered_story_ids_set: list[str] = []
-        for evi in dashboard_evidence:
-            eid = getattr(evi, "evidence_id", "")
-            matched = False
-            for card in cards:
-                if _matches_card(card.id, evi, eid):
-                    if card.id not in covered_story_ids_set:
-                        covered_story_ids_set.append(card.id)
-                    matched = True
-            if not matched and getattr(evi, "story_id", None) is not None:
-                st_str = (
-                    f"story:{evi.story_id}"
-                    if not str(evi.story_id).startswith("story:")
-                    else str(evi.story_id)
-                )
-                if st_str not in covered_story_ids_set:
-                    covered_story_ids_set.append(st_str)
-
-        grp_items = items_by_group_id.get(group.group_id, [])
-        enriched_facts: list[RequiredSituationFact] = []
-        for f_idx, rf in enumerate(group.required_facts):
-            sit_item = grp_items[f_idx] if f_idx < len(grp_items) else None
-            item_refs = (
-                set(getattr(sit_item, "current_source_refs", ()) or sit_item.source_refs)
-                if sit_item
-                else set(rf.support_ids)
-            )
-            item_evis = [
-                evi
-                for evi in dashboard_evidence
-                if getattr(evi, "source_ref", None) in item_refs
-                or getattr(evi, "evidence_id", None) in item_refs
-                or getattr(evi, "evidence_id", None) in rf.support_ids
-            ]
-            fact_supports: list[str] = list(rf.support_ids)
-            for evi in item_evis:
-                eid = getattr(evi, "evidence_id", "")
-                if eid and eid not in fact_supports:
-                    fact_supports.append(eid)
-            fact_stories: list[str] = list(rf.story_ids)
-            for evi in item_evis:
-                eid = getattr(evi, "evidence_id", "")
-                for card in cards:
-                    if _matches_card(card.id, evi, eid):
-                        if card.id not in fact_stories:
-                            fact_stories.append(card.id)
-                if getattr(evi, "story_id", None) is not None:
-                    st_str = (
-                        f"story:{evi.story_id}"
-                        if not str(evi.story_id).startswith("story:")
-                        else str(evi.story_id)
-                    )
-                    if st_str not in fact_stories:
-                        fact_stories.append(st_str)
-            enriched_facts.append(
-                replace(
-                    rf,
-                    story_ids=tuple(fact_stories),
-                    support_ids=tuple(fact_supports),
-                )
-            )
-
-        enriched_groups.append(
-            replace(
-                group,
-                covered_story_ids=tuple(covered_story_ids_set),
-                cited_support_ids=cited_support_ids,
-                required_facts=tuple(enriched_facts),
-            )
-        )
-
-    city_plan = CitySituationPresentationPlan(
-        groups=tuple(enriched_groups),
-        covered_source_refs=city_plan.covered_source_refs,
-    )
-
-    dashboard_groups_by_story: dict[str, list[str]] = {}
-    dashboard_supports_by_story: dict[str, set[str]] = {}
-    for group in city_plan.groups:
-        for sid in group.covered_story_ids:
-            dashboard_groups_by_story.setdefault(sid, []).append(group.group_id)
-        for supp_id in group.cited_support_ids:
-            evi = evidence_map.get(supp_id)
-            if evi is not None:
-                for card in cards:
-                    if _matches_card(card.id, evi, supp_id):
-                        dashboard_supports_by_story.setdefault(card.id, set()).add(supp_id)
-
-    card_modes: dict[str, DigestPresentationMode] = {}
-    card_detail_supports: dict[str, tuple[str, ...]] = {}
-    card_group_ids: dict[str, tuple[str, ...]] = {}
-
-    for card in cards:
-        sid = card.id
-        group_ids = tuple(dashboard_groups_by_story.get(sid, ()))
-        card_group_ids[sid] = group_ids
-
-        if not evidence_map:
-            all_refs_fn = getattr(card, "all_source_refs", None)
-            if callable(all_refs_fn):
-                card_refs = {ref for ref in all_refs_fn() if ref}
-            else:
-                card_refs = {ref for ref in getattr(card, "representative_source_refs", []) if ref}
-            is_operational = getattr(card, "story_kind", "") == "operational_status"
-            covered_refs = set(city_plan.covered_source_refs)
-            overlaps_dashboard = (
-                bool(card_refs)
-                and bool(card_refs & covered_refs)
-                and (is_operational or (card_refs <= covered_refs))
-            )
-            if overlaps_dashboard:
-                card_modes[sid] = "DASHBOARD_ONLY"
-                card_detail_supports[sid] = ()
-            else:
-                card_modes[sid] = "DETAIL_ONLY"
-                card_detail_supports[sid] = ()
-            continue
-
-        candidate_evi: list[Any] = []
-        for eid, evi in evidence_map.items():
-            if _matches_card(sid, evi, eid):
-                if (
-                    getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
-                    and getattr(evi, "kind", "") != "resident_question"
-                ):
-                    candidate_evi.append(evi)
-
-        dash_supp_ids = dashboard_supports_by_story.get(sid, set())
-
-        non_dash_evi = [
-            evi for evi in candidate_evi if getattr(evi, "evidence_id", "") not in dash_supp_ids
-        ]
-        scored_non_dash = [
-            (score_digest_detail_evidence(evi), getattr(evi, "evidence_id", ""))
-            for evi in non_dash_evi
-            if getattr(evi, "evidence_id", "")
-        ]
-        scored_non_dash.sort(key=lambda x: (-x[0], x[1]))
-
-        if not dash_supp_ids:
-            card_modes[sid] = "DETAIL_ONLY"
-            pos_sups = [eid for score, eid in scored_non_dash if score > 0][:2]
-            if pos_sups:
-                card_detail_supports[sid] = tuple(pos_sups)
-            elif scored_non_dash:
-                card_detail_supports[sid] = (scored_non_dash[0][1],)
-            else:
-                card_detail_supports[sid] = ()
-        else:
-            story_dashboard_texts = [
-                city_situation_group_reader_text(group)
-                for group in city_plan.groups
-                if sid in group.covered_story_ids
-            ]
-            material_non_dash = [
-                evi
-                for evi in non_dash_evi
-                if _is_material_digest_detail(evi, story_dashboard_texts)
-            ]
-            scored_material_non_dash = [
-                (score_digest_detail_evidence(evi), getattr(evi, "evidence_id", ""))
-                for evi in material_non_dash
-                if getattr(evi, "evidence_id", "")
-            ]
-            scored_material_non_dash.sort(key=lambda x: (-x[0], x[1]))
-            drilldown_sups = [eid for _, eid in scored_material_non_dash][:2]
-            if drilldown_sups:
-                card_modes[sid] = "DASHBOARD_AND_DRILLDOWN"
-                card_detail_supports[sid] = tuple(drilldown_sups)
-            else:
-                card_modes[sid] = "DASHBOARD_ONLY"
-                card_detail_supports[sid] = ()
-
-    detail_cards = [
-        card for card in cards if card_modes[card.id] in {"DETAIL_ONLY", "DASHBOARD_AND_DRILLDOWN"}
-    ]
-    merge_groups = _compute_merge_groups(detail_cards)
-
-    story_presentations: list[DigestStoryPresentation] = []
-    for card in cards:
-        sid = card.id
-        story_presentations.append(
-            DigestStoryPresentation(
-                story_id=sid,
-                mode=card_modes[sid],
-                city_situation_group_ids=card_group_ids[sid],
-                detail_support_ids=card_detail_supports[sid],
-                merge_group_id=merge_groups.get(sid, sid),
-            )
-        )
-
-    return DigestPresentationPlan(
-        city_situation=city_plan,
-        story_presentations=tuple(story_presentations),
-    )
