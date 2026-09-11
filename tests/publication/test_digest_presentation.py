@@ -136,7 +136,7 @@ def test_plan_city_situation_consolidates_mixed_availability_into_conflicting_gr
     assert len(plan.groups) == 1
     group = plan.groups[0]
     assert group.subject_key == "water"
-    assert group.state == "CONFLICTING"
+    assert group.state == "MIXED"
     assert set(group.source_refs) == {"ref-water-red", "ref-water-green"}
     assert any("Гора" in line for line in group.detail_lines)
     assert any("Залив" in line for line in group.detail_lines)
@@ -249,7 +249,7 @@ def test_city_situation_consolidates_cross_dimension_mixed_states_into_conflicti
     assert len(plan.groups) == 1
     water = plan.groups[0]
     assert water.subject_key == "water"
-    assert water.state == "CONFLICTING"
+    assert water.state == "MIXED"
     assert set(water.source_refs) == {"ref-water-ok", "ref-water-bad"}
     assert len(water.detail_lines) == 2
 
@@ -1681,3 +1681,80 @@ def test_digest_compression_units_power_cluster_becomes_synthesis_unit() -> None
     all_story_ids = [sid for u in units for sid in u.story_ids]
     assert set(all_story_ids) == {c.id for c in cards}
     assert len(all_story_ids) == len(cards)
+
+
+def test_city_situation_distinguishes_true_conflicting_for_same_location() -> None:
+    import datetime as dt
+
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import plan_city_situation_presentation
+
+    now = dt.datetime.now(dt.timezone.utc)
+    rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="water",
+                subject_label="Водоснабжение",
+                dimension="availability",
+                location="Слободка",
+                entity="",
+                state="UNAVAILABLE",
+                detail="Нет воды",
+                source_refs=("ref-1",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+            ),
+            CitySituationItem(
+                subject_key="water",
+                subject_label="Водоснабжение",
+                dimension="availability",
+                location="Слободка",
+                entity="",
+                state="AVAILABLE",
+                detail="Вода есть",
+                source_refs=("ref-2",),
+                first_observed_at=now,
+                last_observed_at=now,
+                observation_count=1,
+            ),
+        )
+    )
+    plan = plan_city_situation_presentation(rollup, max_items=7, max_details_per_item=2)
+    assert len(plan.groups) == 1
+    assert plan.groups[0].state == "CONFLICTING"
+
+
+def test_city_situation_presentation_lossless_all_detail_lines() -> None:
+    import datetime as dt
+
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import plan_city_situation_presentation
+
+    now = dt.datetime.now(dt.timezone.utc)
+    items = tuple(
+        CitySituationItem(
+            subject_key="electricity",
+            subject_label="Электроснабжение",
+            dimension="power_supply",
+            location=f"Район {i}",
+            entity="",
+            state="UNAVAILABLE" if i % 2 == 0 else "AVAILABLE",
+            detail=f"Отключение в районе {i}",
+            source_refs=(f"ref-{i}",),
+            first_observed_at=now,
+            last_observed_at=now,
+            observation_count=1,
+        )
+        for i in range(1, 6)
+    )
+    rollup = CitySituationRollup(items=items)
+    plan = plan_city_situation_presentation(rollup, max_items=7, max_details_per_item=2)
+    assert len(plan.groups) == 1
+    group = plan.groups[0]
+    # Display limit is respected
+    assert len(group.detail_lines) == 2
+    # But semantic knowledge is lossless: all 5 facts are retained
+    assert len(group.all_detail_lines) == 5
+    for i in range(1, 6):
+        assert any(f"Район {i}" in line for line in group.all_detail_lines)

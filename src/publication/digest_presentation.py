@@ -47,6 +47,7 @@ class CitySituationPresentationGroup:
     detail_lines: tuple[str, ...]
     covered_story_ids: tuple[str, ...] = ()
     cited_support_ids: tuple[str, ...] = ()
+    all_detail_lines: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -205,8 +206,37 @@ def _presentation_state(items: Sequence[CitySituationItem]) -> str:
     has_positive = bool(states & _POSITIVE_STATES)
     has_non_positive = bool(states - _POSITIVE_STATES)
     if has_positive and has_non_positive:
-        return "CONFLICTING"
+        # Distinguish true conflict (contradictory reports for the exact same location/scope)
+        # from mixed geographic state (different locations/sub-areas report different states).
+        by_target: dict[tuple[str, str], set[str]] = {}
+        for it in items:
+            loc = _norm_key(it.location)
+            ent = _norm_key(it.entity)
+            by_target.setdefault((loc, ent), set()).add(it.state.upper())
+
+        has_direct_conflict = any(
+            bool(t_states & _POSITIVE_STATES) and bool(t_states - _POSITIVE_STATES)
+            for (loc, ent), t_states in by_target.items()
+            if loc or ent
+        )
+        if has_direct_conflict:
+            return "CONFLICTING"
+        if len(by_target) == 1:
+            return "CONFLICTING"
+        return "MIXED"
     return min(items, key=lambda item: city_situation_severity(item.state)).state
+
+
+def _all_group_details(items: Sequence[CitySituationItem]) -> tuple[str, ...]:
+    lines: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        line = _detail_line(item)
+        key = line.casefold()
+        if line and key not in seen:
+            seen.add(key)
+            lines.append(line)
+    return tuple(lines)
 
 
 def _select_group_details(
@@ -282,6 +312,7 @@ def plan_city_situation_presentation(
                     seen_refs.add(r)
                     merged_refs.append(r)
 
+        all_detail_lines = _all_group_details(group_items)
         detail_lines = _select_group_details(group_items, limit=max_details_per_item)
         latest_ts = max(it.last_observed_at for it in group_items)
         obs_count = sum(it.observation_count for it in group_items)
@@ -295,6 +326,7 @@ def plan_city_situation_presentation(
             state=pres_state,
             source_refs=tuple(merged_refs),
             detail_lines=detail_lines,
+            all_detail_lines=all_detail_lines,
         )
         candidate_groups.append((presentation_group, worst_sev, latest_ts, obs_count))
 
@@ -344,7 +376,8 @@ def plan_city_situation_presentation(
 
 
 def city_situation_group_reader_text(group: CitySituationPresentationGroup) -> str:
-    body = "; ".join(line.strip() for line in group.detail_lines if line.strip())
+    lines = group.all_detail_lines or group.detail_lines
+    body = "; ".join(line.strip() for line in lines if line.strip())
     return f"{group.subject_label}: {body}" if body else group.subject_label
 
 
@@ -1224,16 +1257,6 @@ def build_digest_presentation_plan(
                     candidate_evi.append(evi)
 
         dash_supp_ids = dashboard_supports_by_story.get(sid, set())
-
-        is_pure_operational = (
-            getattr(card, "story_kind", "") == "operational_status"
-            and bool(candidate_evi)
-            and all(getattr(evi, "kind", "") == "service_access" for evi in candidate_evi)
-        )
-        if group_ids and is_pure_operational:
-            card_modes[sid] = "DASHBOARD_ONLY"
-            card_detail_supports[sid] = ()
-            continue
 
         non_dash_evi = [
             evi for evi in candidate_evi if getattr(evi, "evidence_id", "") not in dash_supp_ids

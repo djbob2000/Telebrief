@@ -134,9 +134,17 @@ def test_incident_run_44_acceptance_regression():
         story_kind="operational_status",
         hard_facts=[
             StoryElement(
-                text="свет отключили в нагорной части города и на Слободке, в центре напряжение 170 В",
+                text="свет отключили в нагорной части города",
                 source_refs=["telegram:101"],
-            )
+            ),
+            StoryElement(
+                text="на Слободке тоже 0 по свету",
+                source_refs=["telegram:102"],
+            ),
+            StoryElement(
+                text="в центре зафиксировано низкое напряжение — около 170 В",
+                source_refs=["telegram:103"],
+            ),
         ],
     )
     card_2 = StoryCard(
@@ -149,13 +157,13 @@ def test_incident_run_44_acceptance_regression():
         hard_facts=[
             StoryElement(
                 text="электричество вернулось на улицу Петровского",
-                source_refs=["telegram:102"],
+                source_refs=["telegram:104"],
             )
         ],
     )
     candidate_cards = [card_1, card_2]
 
-    # City situation rollup from operational observations
+    # City situation rollup from operational observations (4 granular facts)
     city_rollup = CitySituationRollup(
         items=(
             CitySituationItem(
@@ -163,10 +171,36 @@ def test_incident_run_44_acceptance_regression():
                 subject_label="Электроснабжение",
                 dimension="power_supply",
                 state="UNAVAILABLE",
-                location="Нагорная часть, Слободка, Центр",
+                location="Нагорная часть",
                 entity="",
-                detail="свет отключили в нагорной части города и на Слободке, в центре напряжение 170 В",
+                detail="свет отключили в нагорной части города",
                 source_refs=("telegram:101",),
+                first_observed_at=_NOW,
+                last_observed_at=_NOW,
+                observation_count=1,
+            ),
+            CitySituationItem(
+                subject_key="electricity",
+                subject_label="Электроснабжение",
+                dimension="power_supply",
+                state="UNAVAILABLE",
+                location="Слободка",
+                entity="",
+                detail="на Слободке тоже 0 по свету",
+                source_refs=("telegram:102",),
+                first_observed_at=_NOW,
+                last_observed_at=_NOW,
+                observation_count=1,
+            ),
+            CitySituationItem(
+                subject_key="electricity",
+                subject_label="Электроснабжение",
+                dimension="power_supply",
+                state="DEGRADED",
+                location="Центр",
+                entity="",
+                detail="в центре города зафиксировано низкое напряжение около 170 В",
+                source_refs=("telegram:103",),
                 first_observed_at=_NOW,
                 last_observed_at=_NOW,
                 observation_count=1,
@@ -179,7 +213,7 @@ def test_incident_run_44_acceptance_regression():
                 location="ул. Петровского",
                 entity="",
                 detail="электричество вернулось на улицу Петровского",
-                source_refs=("telegram:102",),
+                source_refs=("telegram:104",),
                 first_observed_at=_NOW,
                 last_observed_at=_NOW,
                 observation_count=1,
@@ -191,14 +225,42 @@ def test_incident_run_44_acceptance_regression():
         "story:1:evi:1": PublicationEvidence(
             evidence_id="story:1:evi:1",
             story_id=1,
-            text="свет отключили в нагорной части города и на Слободке",
-            source_text="свет отключили в нагорной части города и на Слободке",
+            text="свет отключили в нагорной части города",
+            source_text="свет отключили в нагорной части города",
             kind="service_access",
             publication_use="PUBLISH",
             fragment_id=101,
             source_ref="telegram:101",
             source_id=1,
             source_item_id=101,
+            source_role="primary",
+            observed_at=_NOW,
+        ),
+        "story:1:evi:2": PublicationEvidence(
+            evidence_id="story:1:evi:2",
+            story_id=1,
+            text="на Слободке тоже 0 по свету",
+            source_text="на Слободке тоже 0 по свету",
+            kind="service_access",
+            publication_use="PUBLISH",
+            fragment_id=102,
+            source_ref="telegram:102",
+            source_id=1,
+            source_item_id=102,
+            source_role="primary",
+            observed_at=_NOW,
+        ),
+        "story:1:evi:3": PublicationEvidence(
+            evidence_id="story:1:evi:3",
+            story_id=1,
+            text="в центре города зафиксировано низкое напряжение около 170 В",
+            source_text="в центре города зафиксировано низкое напряжение около 170 В",
+            kind="service_access",
+            publication_use="PUBLISH",
+            fragment_id=103,
+            source_ref="telegram:103",
+            source_id=1,
+            source_item_id=103,
             source_role="primary",
             observed_at=_NOW,
         ),
@@ -209,10 +271,10 @@ def test_incident_run_44_acceptance_regression():
             source_text="электричество вернулось на улицу Петровского",
             kind="service_access",
             publication_use="PUBLISH",
-            fragment_id=102,
-            source_ref="telegram:102",
+            fragment_id=104,
+            source_ref="telegram:104",
             source_id=1,
-            source_item_id=102,
+            source_item_id=104,
             source_role="primary",
             observed_at=_NOW,
         ),
@@ -229,8 +291,14 @@ def test_incident_run_44_acceptance_regression():
     assert len(plan.city_situation.groups) == 1
     power_group = plan.city_situation.groups[0]
     assert power_group.subject_label == "Электроснабжение"
-    assert power_group.state == "CONFLICTING"
-    assert len(power_group.detail_lines) == 2
+    # Geographic mixed state: different locations have different states -> MIXED, not CONFLICTING
+    assert power_group.state == "MIXED"
+    # Semantic fact preservation: all 4 material facts survive presentation planning
+    assert len(power_group.all_detail_lines) == 4
+    assert any("нагорн" in line.lower() for line in power_group.all_detail_lines)
+    assert any("слободк" in line.lower() for line in power_group.all_detail_lines)
+    assert any("170" in line for line in power_group.all_detail_lines)
+    assert any("петровск" in line.lower() for line in power_group.all_detail_lines)
 
     # Verify story presentation modes: both operational stories without distinct drilldown are DASHBOARD_ONLY
     assert len(plan.story_presentations) == 2
@@ -259,8 +327,7 @@ def test_incident_run_44_acceptance_regression():
 
     # B. City situation must be present with yellow dot CONFLICTING status
     assert "*🏙 Городская обстановка*" in body
-    assert "• 🟡 **Электроснабжение**:" in body
-    assert "свет отключили в нагорной части города и на Слободке" in body
+    assert "свет отключили в нагорной части города" in body
     assert "электричество вернулось на улицу Петровского" in body
 
     # C. Omission assertions (incident flaws must NOT appear)

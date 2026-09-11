@@ -93,6 +93,7 @@ _SEVERITY_ORDER: dict[str, int] = {
     "RESTRICTED": 2,
     "DEGRADED": 2,
     "CONFLICTING": 2,
+    "MIXED": 2,
     "SCHEDULED": 3,
     "UNKNOWN": 3,
     "AVAILABLE": 4,
@@ -112,7 +113,7 @@ def city_situation_icon(state: str) -> str:
         return "🟢"
     if state_upper in ("UNAVAILABLE", "DISRUPTED"):
         return "🔴"
-    if state_upper in ("RESTRICTED", "DEGRADED", "CONFLICTING"):
+    if state_upper in ("RESTRICTED", "DEGRADED", "CONFLICTING", "MIXED"):
         return "🟡"
     if state_upper in ("SCHEDULED", "UNKNOWN"):
         return "⚪"

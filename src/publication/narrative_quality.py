@@ -13,7 +13,7 @@ from src.publication.article_models import StructuredArticleDraft
 from src.publication.digest_narrative import DigestNarrativeDraft, DigestNarrativePlan
 
 _TECHNICAL_TOKENS_RE = re.compile(
-    r"\b(?:AVAILABLE|UNAVAILABLE|DEGRADED|RESTRICTED|SCHEDULED|CONFLICTING)\b|\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]",
+    r"\b(?:AVAILABLE|UNAVAILABLE|DEGRADED|RESTRICTED|SCHEDULED|CONFLICTING|MIXED)\b|\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]",
     re.IGNORECASE,
 )
 _INTERNAL_HANDLES_RE = re.compile(
