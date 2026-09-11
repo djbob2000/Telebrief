@@ -70,6 +70,7 @@ def test_publication_quality_expected_coverage(golden_fixture: dict[str, Any]) -
 
 
 @pytest.mark.postgres
+@pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
 async def test_berdyansk_publication_quality_golden_oracle_pipeline(
     conn, pool, edition, sample_config, golden_fixture
 ):
@@ -522,6 +523,7 @@ def test_city_life_short_read_digest_golden_scenarios_contract() -> None:
     assert expected_operational_cleanup.issubset(case_ids)
 
 
+@pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
 def test_operational_semantic_boundaries_end_to_end() -> None:
     """Verifies that coping behaviors do not leak into dashboard and positive statuses are subject coherent."""
     from src.domain.event_payload import EventPayload

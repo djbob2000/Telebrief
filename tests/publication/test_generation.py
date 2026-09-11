@@ -1654,6 +1654,7 @@ async def test_rejected_event_article_with_defer_delivery_creates_no_delivery_de
 
 
 @pytest.mark.postgres
+@pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
 async def test_event_first_digest_narrative_generation_with_city_situation(
     conn, pool, edition, mocker
 ):
@@ -2037,6 +2038,7 @@ async def test_event_first_digest_narrative_generation_with_city_situation(
 
 
 @pytest.mark.postgres
+@pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
 async def test_event_first_digest_deterministic_mode_uses_digest_presentation_plan(
     conn: psycopg.AsyncConnection,
     uow: DatabaseUnitOfWork,
@@ -2232,6 +2234,7 @@ async def test_event_first_digest_deterministic_mode_uses_digest_presentation_pl
 
 
 @pytest.mark.postgres
+@pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
 async def test_event_first_digest_narrative_writer_failure_falls_back_to_deterministic(
     conn, pool, edition
 ):

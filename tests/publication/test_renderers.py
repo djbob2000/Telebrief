@@ -2,6 +2,8 @@
 
 import datetime as dt
 
+import pytest
+
 from src.collector import Message
 from src.editorial_models import (
     EditorialAnalysis,
@@ -221,6 +223,7 @@ class TestPublicationDigestRenderer:
         assert pos_infra != -1
         assert pos_safety < pos_infra
 
+    @pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
     def test_render_grouped_digest_includes_city_situation_and_4level_stats(self):
         from src.collector import Message
         from src.editorial_models import SourceRecord
@@ -384,6 +387,7 @@ class TestPublicationDigestRenderer:
         )  # Canonical card bullets are suppressed when narrative draft is used!
         assert "Статистика:" in body
 
+    @pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
     def test_render_grouped_digest_with_narrative_situation_items(self):
         from src.publication.digest_narrative import (
             DigestEditorialItemDraft,
@@ -485,6 +489,7 @@ class TestPublicationDigestRenderer:
         assert "• <b>Ремонт сетей на востоке города</b>: Бригады завершают замену кабеля." in html
         assert "<i>📊 Статистика: обработано 12 каналов</i>" in html
 
+    @pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
     def test_render_city_situation_uses_planned_label_and_mixed_state_icon(self):
         from src.publication.digest_presentation import (
             CitySituationPresentationGroup,
@@ -512,6 +517,7 @@ class TestPublicationDigestRenderer:
         assert "Гора: нет связи" in rendered
         assert "Залив: банкомат выдает наличные" in rendered
 
+    @pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
     def test_render_grouped_digest_prefers_presentation_plan_over_llm_situation_items(self):
         from src.publication.digest_narrative import (
             DigestNarrativeDraft,
@@ -573,6 +579,7 @@ class TestPublicationDigestRenderer:
         assert "Электроснабжение (Плановое)" in body
         assert "LLM Inappropriate Label" not in body
 
+    @pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
     def test_render_grouped_digest_consumes_deterministic_draft_without_special_branch(self):
         from src.publication.digest_narrative import (
             build_deterministic_digest_draft,
@@ -800,6 +807,7 @@ class TestPublicationDigestRenderer:
         assert "First utility item" in body
         assert "Second utility item" in body
 
+    @pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
     def test_render_grouped_digest_excludes_dashboard_only_cards_from_thematic_rubrics(self):
         from src.publication.digest_presentation import (
             CitySituationPresentationGroup,

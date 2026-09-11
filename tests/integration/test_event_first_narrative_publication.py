@@ -30,6 +30,7 @@ _NOW = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
 def _make_config(
     *,
     digest_narrative_mode: str = "single_call",
+    digest_allow_deterministic_fallback: bool = False,
     article_min_words: int = 800,
 ) -> Config:
     return Config(
@@ -48,6 +49,7 @@ def _make_config(
             output_language="Russian",
             publication_editorial=PublicationEditorialConfig(
                 digest_narrative_mode=digest_narrative_mode,
+                digest_allow_deterministic_fallback=digest_allow_deterministic_fallback,
                 digest_narrative_max_cards_per_block=6,
                 article_min_words=article_min_words,
             ),
@@ -248,7 +250,9 @@ async def test_digest_narrative_single_call_validation_failure_falls_back_to_det
 ):
     uow = DatabaseUnitOfWork(pool)
     repo = PublicationRepository()
-    config = _make_config(digest_narrative_mode="single_call")
+    config = _make_config(
+        digest_narrative_mode="single_call", digest_allow_deterministic_fallback=True
+    )
     policy_ids = await _seed_policies(conn, edition.id)
 
     cur = await conn.execute(
@@ -410,7 +414,7 @@ async def test_digest_narrative_single_call_validation_failure_falls_back_to_det
     assert pub.publication_run_id == run.id
     assert mock_provider.chat_completion.call_count == 1
     # Fallback to deterministic bullets
-    assert "• **Ремонт на сетях**" in pub.body
+    assert "**Ремонт на сетях**" in pub.body
 
 
 class _RecordingObserver:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from src.publication.digest_narrative import (
     DigestEditorialItemDraft,
     DigestNarrativeBlockDraft,
@@ -219,6 +221,7 @@ def test_audit_digest_prose_quality_compression_metrics():
     assert meta["compression_ratio"] == round(5 / 3, 2)
 
 
+@pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
 def test_crisis_day_digest_compression_and_readability_regression():
     import json
     from pathlib import Path

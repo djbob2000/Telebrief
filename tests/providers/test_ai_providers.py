@@ -611,7 +611,10 @@ async def test_openrouter_provider_uses_thinking_and_native_max_tokens(mock_logg
         call_kwargs = provider.client.chat.completions.create.call_args.kwargs
         assert call_kwargs["max_tokens"] == 500
         assert "max_completion_tokens" not in call_kwargs
-        assert call_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert call_kwargs["extra_body"] == {
+            "thinking": {"type": "disabled"},
+            "reasoning": {"effort": "none"},
+        }
         assert call_kwargs["response_format"] == {"type": "json_object"}
 
 

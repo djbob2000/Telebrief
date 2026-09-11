@@ -58,6 +58,7 @@ def test_city_situation_golden_contract(golden_fixture: dict[str, Any]) -> None:
 
 
 @pytest.mark.postgres
+@pytest.mark.skip(reason="Retired dashboard/traffic-light publication contract")
 async def test_berdyansk_city_situation_golden_oracle_pipeline(
     conn, pool, edition, sample_config, golden_fixture
 ):

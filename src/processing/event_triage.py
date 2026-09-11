@@ -522,7 +522,9 @@ class StoryTriageService:
                 source_name = str(row[4])
                 source_role = str(row[5])
                 obs_time = row[6]
-                parent_item_id = int(row[7]) if row[7] is not None else None
+                # Some unit-test/fake cursors and pre-parent_item_id query
+                # adapters still provide the original seven-column row.
+                parent_item_id = int(row[7]) if len(row) > 7 and row[7] is not None else None
                 if parent_item_id is not None:
                     all_parent_item_ids.add(parent_item_id)
                 story_fragments_map[sid].append(

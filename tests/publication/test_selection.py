@@ -490,7 +490,7 @@ class TestEditorialSelection:
         assert proposals[1].story_id == 20
         assert proposals[1].decision == "OMIT"
         call_kwargs = mock_provider.chat_completion.call_args.kwargs
-        assert call_kwargs["max_tokens"] == 4096
+        assert call_kwargs["max_tokens"] == 8192
         assert call_kwargs["reasoning_effort"] == "low"
 
         # 2. Missing candidate 20
