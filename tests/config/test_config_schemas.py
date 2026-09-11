@@ -1,4 +1,4 @@
-"""Unit tests verifying src.config.schemas exports and invariants."""
+import pytest
 
 from src.config.schemas.common import (
     CollectionConfig,
@@ -38,6 +38,16 @@ def test_schema_instantiation_defaults():
     assert pipeline.fragment_max_chars == 1200
     assert pipeline.authority_coordination_lease_seconds == 10
     assert pipeline.authority_provider_timeout_seconds == 540
+
+
+def test_event_pipeline_uses_safe_gate_batch_default():
+    assert EventPipelineConfig().triage_batch_size == 10
+
+
+@pytest.mark.parametrize("value", [0, 11, 80])
+def test_event_pipeline_rejects_unsafe_gate_batch_size(value):
+    with pytest.raises(ValueError, match="triage_batch_size"):
+        EventPipelineConfig(triage_batch_size=value)
 
 
 def test_authority_provider_timeout_is_strictly_below_stage_lease():

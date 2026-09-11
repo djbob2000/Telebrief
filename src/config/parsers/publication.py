@@ -521,6 +521,14 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
             raise ValueError(f"settings.event_pipeline.{key} must be a positive integer, got {v!r}")
         return int(v)
 
+    def _val_range_int(key: str, default: int, min_val: int, max_val: int) -> int:
+        v = raw.get(key, default)
+        if isinstance(v, bool) or not isinstance(v, int) or not (min_val <= v <= max_val):
+            raise ValueError(
+                f"settings.event_pipeline.{key} must be between {min_val} and {max_val}, got {v!r}"
+            )
+        return int(v)
+
     def _val_nonneg_int(key: str, default: int) -> int:
         v = raw.get(key, default)
         if isinstance(v, bool) or not isinstance(v, int) or v < 0:
@@ -557,7 +565,7 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
         embedding_batch_size=_val_pos_int("embedding_batch_size", 128),
         direct_analysis_min_fragments=_val_pos_int("direct_analysis_min_fragments", 3),
         direct_analysis_min_unique_sources=_val_pos_int("direct_analysis_min_unique_sources", 2),
-        triage_batch_size=_val_pos_int("triage_batch_size", 25),
+        triage_batch_size=_val_range_int("triage_batch_size", 10, 1, 10),
         triage_max_output_tokens=_val_pos_int("triage_max_output_tokens", 12_288),
         triage_reasoning_effort=_val_reasoning_effort("triage_reasoning_effort", "low"),
         analysis_max_output_tokens=_val_pos_int("analysis_max_output_tokens", 8_192),

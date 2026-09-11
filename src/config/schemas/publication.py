@@ -112,7 +112,7 @@ class EventPipelineConfig:
     embedding_batch_size: int = 128
     direct_analysis_min_fragments: int = 3
     direct_analysis_min_unique_sources: int = 2
-    triage_batch_size: int = 25
+    triage_batch_size: int = 10
     triage_max_output_tokens: int = 12_288
     triage_reasoning_effort: str | None = "low"
     analysis_max_output_tokens: int = 8_192
@@ -140,6 +140,8 @@ class EventPipelineConfig:
     backfill_batch_size: int = 500
 
     def __post_init__(self) -> None:
+        if not 1 <= self.triage_batch_size <= 10:
+            raise ValueError("triage_batch_size must be between 1 and 10")
         for field_name in (
             "triage_max_output_tokens",
             "analysis_max_output_tokens",

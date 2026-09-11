@@ -108,7 +108,7 @@ settings:
     join_similarity: 0.84
     max_cluster_candidates: 20
     embedding_batch_size: 128
-    triage_batch_size: 25
+    triage_batch_size: 10
     triage_max_output_tokens: 32768
     triage_reasoning_effort: "none"
     analysis_max_output_tokens: 8192

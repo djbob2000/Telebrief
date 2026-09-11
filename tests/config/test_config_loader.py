@@ -2246,7 +2246,7 @@ def test_event_pipeline_config_defaults(tmp_path, mock_env_vars):
     assert ep.embedding_batch_size == 128
     assert ep.direct_analysis_min_fragments == 3
     assert ep.direct_analysis_min_unique_sources == 2
-    assert ep.triage_batch_size == 25
+    assert ep.triage_batch_size == 10
     assert ep.triage_max_output_tokens == 12_288
     assert ep.triage_reasoning_effort == "low"
     assert ep.analysis_max_output_tokens == 8_192
@@ -2280,7 +2280,7 @@ def test_event_pipeline_config_custom(tmp_path, mock_env_vars):
         "embedding_batch_size": 64,
         "direct_analysis_min_fragments": 2,
         "direct_analysis_min_unique_sources": 1,
-        "triage_batch_size": 50,
+        "triage_batch_size": 5,
         "triage_excerpt_chars": 200,
         "triage_min_ignore_confidence": 0.90,
         "analysis_quiet_seconds": 60,
@@ -2305,6 +2305,7 @@ def test_event_pipeline_config_custom(tmp_path, mock_env_vars):
     assert ep.join_similarity == 0.88
     assert ep.fragment_max_chars == 1500
     assert ep.embedding_batch_size == 64
+    assert ep.triage_batch_size == 5
     assert ep.revision_claim_lease_seconds == 900
 
 
@@ -2327,6 +2328,9 @@ def test_event_pipeline_config_rejects_invalid_mode(tmp_path, mock_env_vars, bad
         ("join_similarity", 0.0, "join_similarity must be between 0.0 and 1.0"),
         ("join_similarity", 1.5, "join_similarity must be between 0.0 and 1.0"),
         ("join_similarity", -0.1, "join_similarity must be between 0.0 and 1.0"),
+        ("triage_batch_size", 0, "triage_batch_size must be between 1 and 10"),
+        ("triage_batch_size", 11, "triage_batch_size must be between 1 and 10"),
+        ("triage_batch_size", 50, "triage_batch_size must be between 1 and 10"),
         (
             "triage_min_ignore_confidence",
             0.0,
