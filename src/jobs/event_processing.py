@@ -312,7 +312,7 @@ async def _process_event_revisions(
         )
         stats["assignments"] += 1
 
-    if stats["assignments"] > 0:
+    if stats["assignments"] > 0 and getattr(cfg, "background_authority_enabled", False):
         from src.jobs.event_authority import request_background_authority_dispatch
 
         async with runtime.uow.transaction() as conn:

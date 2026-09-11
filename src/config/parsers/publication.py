@@ -554,10 +554,17 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
             )
         return v
 
+    def _val_bool(key: str, default: bool) -> bool:
+        v = raw.get(key, default)
+        if not isinstance(v, bool):
+            raise ValueError(f"settings.event_pipeline.{key} must be a boolean, got {v!r}")
+        return bool(v)
+
     typed_mode = cast(Literal["event_first"], raw_mode)
 
     return EventPipelineConfig(
         mode=typed_mode,
+        background_authority_enabled=_val_bool("background_authority_enabled", False),
         fragment_max_chars=_val_pos_int("fragment_max_chars", 1200),
         active_window_hours=_val_pos_int("active_window_hours", 72),
         join_similarity=_val_unit_float("join_similarity", 0.84),

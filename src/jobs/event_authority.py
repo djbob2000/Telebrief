@@ -103,6 +103,9 @@ async def _load_background_targets(edition_id: int, *, limit: int):
 async def process_background_authority_batch(edition_id: int) -> None:
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
+    cfg = getattr(config.settings, "event_pipeline", None)
+    if not getattr(cfg, "background_authority_enabled", False):
+        return
     targets = await _load_background_targets(
         edition_id, limit=config.settings.event_pipeline.triage_batch_size
     )
@@ -128,6 +131,12 @@ async def process_background_authority_batch(edition_id: int) -> None:
 async def request_background_authority_dispatch(edition_id: int) -> None:
     from procrastinate.exceptions import AlreadyEnqueued
 
+    runtime = get_runtime()
+    config = getattr(runtime, "config", None) or load_config()
+    cfg = getattr(config.settings, "event_pipeline", None)
+    if not getattr(cfg, "background_authority_enabled", False):
+        return
+
     try:
         await dispatch_background_authority.configure(
             priority=BACKGROUND_AUTHORITY_PRIORITY,
@@ -143,6 +152,11 @@ async def request_background_authority_dispatch(edition_id: int) -> None:
     lock="authority-background-dispatch:{edition_id}",
 )
 async def dispatch_background_authority(edition_id: int) -> None:
+    runtime = get_runtime()
+    config = getattr(runtime, "config", None) or load_config()
+    cfg = getattr(config.settings, "event_pipeline", None)
+    if not getattr(cfg, "background_authority_enabled", False):
+        return
     targets = await _load_background_targets(edition_id, limit=1)
     if not targets:
         return
@@ -257,6 +271,10 @@ async def reconcile_publication_intent(intent_id: int) -> None:
 async def periodic_background_authority_dispatch(timestamp: int) -> None:
     del timestamp
     runtime = get_runtime()
+    config = getattr(runtime, "config", None) or load_config()
+    cfg = getattr(config.settings, "event_pipeline", None)
+    if not getattr(cfg, "background_authority_enabled", False):
+        return
     async with runtime.uow.transaction() as conn:
         cursor = await conn.execute("SELECT id FROM editions ORDER BY id")
         edition_ids = [int(row[0]) for row in await cursor.fetchall()]

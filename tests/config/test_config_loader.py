@@ -2239,6 +2239,7 @@ def test_event_pipeline_config_defaults(tmp_path, mock_env_vars):
 
     ep = config.settings.event_pipeline
     assert ep.mode == "event_first"
+    assert ep.background_authority_enabled is False
     assert ep.fragment_max_chars == 1200
     assert ep.active_window_hours == 72
     assert ep.join_similarity == 0.84

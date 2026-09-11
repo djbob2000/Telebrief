@@ -137,6 +137,14 @@ async def test_background_dispatch_does_not_queueing_lock_execution_locked_batch
         "_load_background_targets",
         AsyncMock(return_value=[SimpleNamespace(story_id=1)]),
     )
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(
+            settings=SimpleNamespace(
+                event_pipeline=SimpleNamespace(background_authority_enabled=True)
+            )
+        )
+    )
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
     monkeypatch.setattr(
         authority_jobs.process_background_authority_batch,
         "configure",
@@ -166,7 +174,11 @@ async def test_process_background_authority_batch_does_not_retrigger_dispatch(mo
         uow=MagicMock(),
         config=SimpleNamespace(
             settings=SimpleNamespace(
-                event_pipeline=SimpleNamespace(triage_batch_size=10, active_window_hours=72)
+                event_pipeline=SimpleNamespace(
+                    background_authority_enabled=True,
+                    triage_batch_size=10,
+                    active_window_hours=72,
+                )
             )
         ),
     )
@@ -289,3 +301,113 @@ async def test_defer_event_processing_savepoint_handles_already_enqueued(monkeyp
 
     assert savepoint_entered is True
     assert savepoint_exited is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_background_authority_disabled_by_default_prevents_dispatch(monkeypatch):
+    configured = MagicMock()
+    configured.defer_async = AsyncMock()
+    configure = MagicMock(return_value=configured)
+    monkeypatch.setattr(
+        authority_jobs.dispatch_background_authority,
+        "configure",
+        configure,
+    )
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(
+            settings=SimpleNamespace(
+                event_pipeline=SimpleNamespace(background_authority_enabled=False)
+            )
+        )
+    )
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+
+    await authority_jobs.request_background_authority_dispatch(1)
+
+    configure.assert_not_called()
+    configured.defer_async.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_queued_background_authority_batch_is_noop_when_disabled(monkeypatch):
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(
+            settings=SimpleNamespace(
+                event_pipeline=SimpleNamespace(
+                    background_authority_enabled=False,
+                    triage_batch_size=10,
+                )
+            )
+        )
+    )
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+    load_targets = AsyncMock()
+    load_targets.return_value = [SimpleNamespace(story_id=1, assignment_id=2)]
+    monkeypatch.setattr(authority_jobs, "_load_background_targets", load_targets)
+    authority_service = SimpleNamespace(process_batch=AsyncMock())
+    monkeypatch.setattr(
+        authority_jobs.EventAuthorityService,
+        "from_runtime",
+        authority_service,
+    )
+
+    await authority_jobs.process_background_authority_batch(edition_id=1)
+
+    load_targets.assert_not_awaited()
+    authority_service.process_batch.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_direct_background_authority_dispatch_is_noop_when_disabled(monkeypatch):
+    runtime = SimpleNamespace(
+        config=SimpleNamespace(
+            settings=SimpleNamespace(
+                event_pipeline=SimpleNamespace(background_authority_enabled=False)
+            )
+        )
+    )
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+    load_targets = AsyncMock()
+    load_targets.return_value = [SimpleNamespace(story_id=1)]
+    monkeypatch.setattr(authority_jobs, "_load_background_targets", load_targets)
+    configured = SimpleNamespace(defer_async=AsyncMock())
+    process_batch = MagicMock(return_value=configured)
+    monkeypatch.setattr(
+        authority_jobs.process_background_authority_batch,
+        "configure",
+        process_batch,
+    )
+
+    await authority_jobs.dispatch_background_authority(edition_id=1)
+
+    load_targets.assert_not_awaited()
+    process_batch.assert_not_called()
+    configured.defer_async.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_periodic_background_authority_dispatch_skipped_when_disabled(monkeypatch):
+    request_mock = AsyncMock()
+    monkeypatch.setattr(
+        authority_jobs,
+        "request_background_authority_dispatch",
+        request_mock,
+    )
+    runtime = SimpleNamespace(
+        uow=MagicMock(),
+        config=SimpleNamespace(
+            settings=SimpleNamespace(
+                event_pipeline=SimpleNamespace(background_authority_enabled=False)
+            )
+        ),
+    )
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+
+    await authority_jobs.periodic_background_authority_dispatch(12345)
+
+    request_mock.assert_not_awaited()
+    runtime.uow.transaction.assert_not_called()

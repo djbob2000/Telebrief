@@ -104,6 +104,7 @@ class EventPipelineConfig:
     """Cost-bounded event-first processing pipeline configuration."""
 
     mode: Literal["event_first"] = "event_first"
+    background_authority_enabled: bool = False
 
     fragment_max_chars: int = 1200
     active_window_hours: int = 72

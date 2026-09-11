@@ -199,6 +199,9 @@ async def periodic_event_enrichment_dispatch(timestamp: int) -> None:
     del timestamp
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
+    cfg = getattr(config.settings, "event_pipeline", None)
+    if not getattr(cfg, "background_authority_enabled", False):
+        return
     now = dt.datetime.now(dt.timezone.utc)
     async with runtime.uow.transaction() as conn:
         due = await EventAuthorityRepository().list_due_enrichment_assignments(

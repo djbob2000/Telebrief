@@ -103,6 +103,7 @@ settings:
 
   event_pipeline:
     mode: "event_first"
+    background_authority_enabled: false
     fragment_max_chars: 1200
     active_window_hours: 72
     join_similarity: 0.84
