@@ -127,7 +127,7 @@ async def prepare_publication_from_intent(context: Any, intent_id: int) -> None:
 
 
 async def _prepare_publication_from_intent_once(
-    intent_id: int, *, defer_selection: bool = True
+    intent_id: int, *, defer_selection: bool = True, config: Any | None = None
 ) -> int | None:
     """Create a PublicationRun only after a durable intent is ready."""
     from src.config_loader import load_config
@@ -137,7 +137,7 @@ async def _prepare_publication_from_intent_once(
     from src.repositories.editions import EditionRepository
 
     runtime = get_runtime()
-    config = load_config()
+    config = config or load_config()
 
     readiness_repo = PublicationReadinessRepository()
     service = PublicationSnapshotService(uow=runtime.uow)

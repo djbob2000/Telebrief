@@ -193,11 +193,14 @@ async def test_live_revision_claim_is_exclusive_and_expired_claim_is_reclaimable
         lease_seconds=300,
     ) == [revision_id]
 
-    await repository.mark_succeeded(
-        repo_conn,
-        [revision_id],
-        claim_token=first_token,
-    )
+    from src.processing.errors import RevisionClaimLostError
+
+    with pytest.raises(RevisionClaimLostError):
+        await repository.mark_succeeded(
+            repo_conn,
+            [revision_id],
+            claim_token=first_token,
+        )
     state = await repository.get_state(repo_conn, revision_id)
     assert state is not None
     assert state.status == "running"

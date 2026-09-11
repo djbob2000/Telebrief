@@ -157,6 +157,34 @@ class TestPublicationFacade:
         """Preview generation propagates ArticlePublicationRejected when article generation fails."""
         from src.publication.errors import ArticlePublicationRejected
 
+        now = dt.datetime.now(dt.timezone.utc)
+        cur = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, name)
+            VALUES ('telegram', 'channel', 'preview-article-source', 'Preview Article Source')
+            RETURNING id
+            """
+        )
+        source_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+            (source_id, edition.id),
+        )
+        await conn.execute(
+            """
+            INSERT INTO collection_checkpoints (source_id, last_success_at, last_scan_at)
+            VALUES (%s, %s, %s)
+            """,
+            (source_id, now, now),
+        )
+        await conn.execute(
+            """
+            INSERT INTO collection_runs (source_id, trigger, started_at, completed_at, status)
+            VALUES (%s, 'manual', %s, %s, 'success')
+            """,
+            (source_id, now - dt.timedelta(seconds=1), now),
+        )
+
         async def reject(*args, **kwargs):
             assert kwargs["defer_delivery"] is False
             assert kwargs["publication_metadata"] == {

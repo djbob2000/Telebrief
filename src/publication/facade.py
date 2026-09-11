@@ -190,7 +190,11 @@ async def build_publication_preview(
             f"preview readiness did not complete: {intent.readiness_status}"
         )
 
-    run_id = await _prepare_publication_from_intent_once(intent.intent_id, defer_selection=False)
+    run_id = await _prepare_publication_from_intent_once(
+        intent.intent_id,
+        defer_selection=False,
+        config=config,
+    )
     if run_id is None:
         raise RuntimeError(f"preview intent {intent.intent_id} did not create a PublicationRun")
 
