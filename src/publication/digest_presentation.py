@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Literal
 
 from src.publication.city_situation import (
@@ -14,6 +15,16 @@ from src.publication.city_situation import (
 from src.publication.errors import DigestCoverageInvariantError
 
 DigestPresentationUnitKind = Literal["SYNTHESIS", "NORMAL", "BRIEF_ROLLUP"]
+
+
+class DigestPresentationMode(str, Enum):
+    DASHBOARD_ONLY = "DASHBOARD_ONLY"
+    DETAIL_ONLY = "DETAIL_ONLY"
+    DASHBOARD_AND_DRILLDOWN = "DASHBOARD_AND_DRILLDOWN"
+
+
+def city_situation_group_reader_text(group: Any) -> str:
+    return getattr(group, "reader_text", "") or ""
 
 
 @dataclass(frozen=True)
@@ -75,32 +86,136 @@ class _CompatibilitySituationPlan:
     covered_source_refs: tuple[str, ...] = ()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class DigestPresentationPlan:
     story_ids: tuple[str, ...]
     required_facts: tuple[RequiredDigestFact, ...]
+    _city_situation: Any
+    _story_presentations: tuple[Any, ...]
+
+    def __init__(
+        self,
+        story_ids: Sequence[str] = (),
+        required_facts: Sequence[RequiredDigestFact] = (),
+        city_situation: Any = None,
+        story_presentations: Sequence[Any] = (),
+        **kwargs: Any,
+    ) -> None:
+        # Accept story_hints as alias for story_presentations (backward compat)
+        story_hints = kwargs.pop("story_hints", None)
+        if story_hints and not story_presentations:
+            story_presentations = story_hints
+        # Accept detail_story_ids as alias for story_ids (backward compat)
+        detail_story_ids = kwargs.pop("detail_story_ids", None)
+
+        s_ids = tuple(story_ids)
+        if not s_ids and detail_story_ids:
+            s_ids = tuple(detail_story_ids)
+        if not s_ids and story_presentations:
+            s_ids = tuple(p.story_id for p in story_presentations if getattr(p, "story_id", None))
+        object.__setattr__(self, "story_ids", s_ids)
+        object.__setattr__(self, "required_facts", tuple(required_facts))
+        object.__setattr__(
+            self,
+            "_city_situation",
+            city_situation if city_situation is not None else _CompatibilitySituationPlan(),
+        )
+        object.__setattr__(self, "_story_presentations", tuple(story_presentations))
 
     @property
     def detail_story_ids(self) -> tuple[str, ...]:
-        return self.story_ids
+        """Story IDs eligible for thematic (detail) blocks — excludes DASHBOARD_ONLY stories."""
+        if not self._story_presentations:
+            return self.story_ids
+        return tuple(
+            p.story_id
+            for p in self._story_presentations
+            if getattr(p, "story_id", None)
+            and getattr(p, "mode", "DETAIL_ONLY") != "DASHBOARD_ONLY"
+        )
 
     @property
     def city_situation(self) -> Any:
-        return _CompatibilitySituationPlan()
+        return self._city_situation
 
     @property
     def story_presentations(self) -> tuple[Any, ...]:
-        return ()
+        return self._story_presentations
 
     @property
     def story_hints(self) -> tuple[Any, ...]:
-        return ()
+        return self._story_presentations
 
     def to_audit_dict(self) -> dict[str, Any]:
         return {
             "story_ids": list(self.story_ids),
             "required_facts": [fact.to_dict() for fact in self.required_facts],
         }
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatible stub types for legacy tests / code that still imports
+# dashboard-era presentation classes.  These are intentionally thin so that
+# the consuming code can call getattr() on them safely.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CitySituationPresentationGroup:
+    """Legacy city-situation group stub (kept for backward compatibility)."""
+
+    group_id: str = ""
+    group_kind: str = ""
+    subject_key: str = ""
+    subject_label: str = ""
+    state: str = ""
+    source_refs: tuple[str, ...] = ()
+    detail_lines: tuple[str, ...] = ()
+    covered_story_ids: tuple[str, ...] = ()
+    cited_support_ids: tuple[str, ...] = ()
+
+    @property
+    def reader_text(self) -> str:
+        parts = list(self.detail_lines)
+        return "; ".join(parts) if parts else self.subject_label
+
+    @property
+    def all_detail_lines(self) -> tuple[str, ...]:
+        return self.detail_lines
+
+
+@dataclass(frozen=True)
+class CitySituationPresentationPlan:
+    """Legacy city-situation plan stub (kept for backward compatibility)."""
+
+    groups: tuple[CitySituationPresentationGroup, ...] = ()
+    covered_source_refs: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DigestStoryPresentation:
+    """Legacy per-story presentation descriptor (kept for backward compatibility)."""
+
+    story_id: str = ""
+    mode: str = "DETAIL_ONLY"
+    detail_support_ids: tuple[str, ...] = ()
+    merge_group_id: str = ""
+    city_situation_group_ids: tuple[str, ...] = ()
+
+    # detail_role is derived from mode for backward compatibility
+    @property
+    def detail_role(self) -> str:
+        return "DRILL_DOWN" if self.mode == "DASHBOARD_AND_DRILLDOWN" else "NORMAL"
+
+
+@dataclass(frozen=True)
+class DigestStoryPresentationHint:
+    """Hint variant of DigestStoryPresentation with explicit detail_role."""
+
+    story_id: str = ""
+    detail_support_ids: tuple[str, ...] = ()
+    merge_group_id: str = ""
+    detail_role: str = "NORMAL"
 
 
 def _norm_key(value: str) -> str:

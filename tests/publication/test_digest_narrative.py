@@ -307,24 +307,6 @@ def test_digest_narrative_draft_parser_valid():
                         "block_id": "b1",
                         "items": [
                             {
-                                "headline": "",
-                                "body": "b1",
-                                "covered_story_ids": ["s1"],
-                                "cited_support_ids": ["sup1"],
-                            }
-                        ],
-                    }
-                ]
-            },
-            "digest editorial item requires headline, body, stories and supports",
-        ),
-        (
-            {
-                "blocks": [
-                    {
-                        "block_id": "b1",
-                        "items": [
-                            {
                                 "headline": "h1",
                                 "body": "",
                                 "covered_story_ids": ["s1"],
@@ -334,7 +316,7 @@ def test_digest_narrative_draft_parser_valid():
                     }
                 ]
             },
-            "digest editorial item requires headline, body, stories and supports",
+            "digest editorial item requires body, stories and supports",
         ),
         (
             {
@@ -352,7 +334,7 @@ def test_digest_narrative_draft_parser_valid():
                     }
                 ]
             },
-            "digest editorial item requires headline, body, stories and supports",
+            "digest editorial item requires body, stories and supports",
         ),
         (
             {
@@ -370,7 +352,7 @@ def test_digest_narrative_draft_parser_valid():
                     }
                 ]
             },
-            "digest editorial item requires headline, body, stories and supports",
+            "digest editorial item requires body, stories and supports",
         ),
     ],
 )
@@ -383,6 +365,7 @@ def test_digest_narrative_draft_parser_rejections(invalid_data, error):
 
 def test_validate_digest_narrative_valid():
     from src.publication.digest_narrative import (
+        DigestClaimAtom,
         DigestEditorialItemDraft,
         DigestNarrativeBlock,
         DigestNarrativeBlockDraft,
@@ -414,12 +397,26 @@ def test_validate_digest_narrative_valid():
                         body="В центральной части города устранили аварию на водоводе.",
                         cited_support_ids=("sup:1",),
                         covered_story_ids=("story:1",),
+                        claims=(
+                            DigestClaimAtom(
+                                text="В центральной части города устранили аварию на водоводе.",
+                                covered_story_ids=("story:1",),
+                                cited_support_ids=("sup:1",),
+                            ),
+                        ),
                     ),
                     DigestEditorialItemDraft(
                         headline="На подстанции продолжается ремонт",
                         body="На подстанции продолжается ремонт сетей.",
                         cited_support_ids=("sup:2",),
                         covered_story_ids=("story:2",),
+                        claims=(
+                            DigestClaimAtom(
+                                text="На подстанции продолжается ремонт сетей.",
+                                covered_story_ids=("story:2",),
+                                cited_support_ids=("sup:2",),
+                            ),
+                        ),
                     ),
                 ),
             ),
@@ -728,8 +725,8 @@ async def test_digest_narrative_writer_with_situation_plan(mocker):
     )
 
     assert isinstance(draft, DigestNarrativeDraft)
-    assert len(draft.situation_items) == 1
-    assert draft.situation_items[0].group_id == "situation:water:avail"
+    # situation_items are no longer stored (backward compat: ignored by from_dict)
+    assert draft.situation_items == ()
 
     # Verify user prompt excludes situation_items
     call_args = mock_provider.chat_completion.call_args[1]
@@ -869,8 +866,10 @@ def test_validate_digest_narrative_rejects_unrelated_story_grouping():
 
 
 def test_digest_narrative_draft_parser_situation_items() -> None:
-    from src.publication.digest_narrative import DigestNarrativeDraft, DigestSituationItemDraft
+    from src.publication.digest_narrative import DigestNarrativeDraft
 
+    # Legacy situation_items data is silently accepted for backward compatibility;
+    # from_dict no longer stores or validates them — the draft parses cleanly.
     data = {
         "situation_items": [
             {
@@ -895,11 +894,9 @@ def test_digest_narrative_draft_parser_situation_items() -> None:
         ],
     }
     draft = DigestNarrativeDraft.from_dict(data)
-    assert len(draft.situation_items) == 1
-    assert isinstance(draft.situation_items[0], DigestSituationItemDraft)
-    assert draft.situation_items[0].group_id == "situation:water_supply:availability"
-    assert draft.situation_items[0].label == "Водоснабжение"
-    assert "ref-water-1" in draft.situation_items[0].cited_support_ids
+    # situation_items are ignored; the draft is valid with 0 situation items
+    assert draft.situation_items == ()
+    assert len(draft.blocks) == 1
 
 
 def test_digest_narrative_draft_parser_backward_compatible_no_situation() -> None:
@@ -925,6 +922,8 @@ def test_digest_narrative_draft_parser_backward_compatible_no_situation() -> Non
 
 
 def test_validate_digest_narrative_checks_situation_group_set_mismatch() -> None:
+    """Per plan §3, situation group set validation is removed from the thematic digest validator.
+    Providing a situation_plan argument is accepted but no longer enforces group coverage."""
     from src.publication.digest_narrative import (
         DigestNarrativeBlock,
         DigestNarrativeDraft,
@@ -969,7 +968,8 @@ def test_validate_digest_narrative_checks_situation_group_set_mismatch() -> None
     )
     plan = DigestNarrativePlan(blocks=(block,))
 
-    # Draft omits sit_grp_2
+    # Draft omits sit_grp_2 — previously this raised SITUATION_GROUP_SET_MISMATCH,
+    # but that validation has been removed (situation data is thematic-only now).
     raw = {
         "situation_items": [
             {
@@ -1000,11 +1000,14 @@ def test_validate_digest_narrative_checks_situation_group_set_mismatch() -> None
         "ref-1": "Бригады работают на объектах.",
     }
     result = validate_digest_narrative(draft, plan, support_index, situation_plan=sit_plan)
-    assert not result.is_valid
-    assert any("SITUATION_GROUP_SET_MISMATCH" in v for v in result.violations)
+    # Situation group set mismatch is no longer enforced; draft is valid
+    assert result.is_valid
+    assert not any("SITUATION_GROUP_SET_MISMATCH" in v for v in result.violations)
 
 
 def test_validate_digest_narrative_checks_unsupported_situation_claims() -> None:
+    """Per plan §3, situation-level claim validation is removed. The thematic block
+    validator checks evidence at the item level, not situation item level."""
     from src.publication.digest_narrative import (
         DigestNarrativeBlock,
         DigestNarrativeDraft,
@@ -1039,7 +1042,10 @@ def test_validate_digest_narrative_checks_unsupported_situation_claims() -> None
     )
     plan = DigestNarrativePlan(blocks=(block,))
 
-    # Body claims invented deadline 18:30 not in ref-w-1
+    # The body in situation_items claims an invented deadline (18:30)
+    # not supported by ref-w-1. Previously this triggered UNSUPPORTED_CONCRETE_CLAIM
+    # at the situation level. Now situation_items are ignored by the validator;
+    # the draft (which has a valid thematic block item) passes validation.
     raw = {
         "situation_items": [
             {
@@ -1069,8 +1075,8 @@ def test_validate_digest_narrative_checks_unsupported_situation_claims() -> None
         "ref-1": "Бригады работают на объектах.",
     }
     result = validate_digest_narrative(draft, plan, support_index, situation_plan=sit_plan)
-    assert not result.is_valid
-    assert any("UNSUPPORTED_CONCRETE_CLAIM" in v for v in result.violations)
+    # Situation-level validation removed; only thematic block item is validated
+    assert result.is_valid
 
 
 @pytest.mark.asyncio
@@ -1828,8 +1834,11 @@ def test_validate_digest_narrative_synthesis_group_partition_mismatch() -> None:
 
     support_map = {"sup:1": "Fact 1", "sup:2": "Fact 2", "sup:3": "Fact 3"}
     res = validate_digest_narrative(draft, plan, support_map)
-    assert not res.is_valid
-    assert any("SYNTHESIS_GROUP_PARTITION_MISMATCH" in v for v in res.violations)
+    # Per plan §3, SYNTHESIS_GROUP_PARTITION_MISMATCH is removed;
+    # the writer is free to split a required_story_group into multiple items.
+    # Story coverage is the enforced invariant, not grouping.
+    assert res.is_valid
+    assert not any("SYNTHESIS_GROUP_PARTITION_MISMATCH" in v for v in res.violations)
 
 
 def test_validate_digest_narrative_story_support_missing() -> None:

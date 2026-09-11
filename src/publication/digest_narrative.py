@@ -10,6 +10,8 @@ from typing import Any, Mapping, Sequence
 
 from src.editorial_models import StoryCard
 from src.publication.article_claims import ConcreteClaim, find_unsupported_claims
+from src.publication.digest_presentation import RequiredDigestFact
+from src.publication.errors import DigestCoverageInvariantError
 from src.publication.evidence import PublicationEvidence
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,7 @@ class DigestNarrativeBlock:
     story_ids: tuple[str, ...]
     support_ids: tuple[str, ...]
     canonical_notes: tuple[str, ...]
+    required_facts: tuple[RequiredDigestFact, ...] = ()
     detail_support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
     merge_group_by_story: tuple[tuple[str, str], ...] = ()
     detail_roles_by_story: tuple[tuple[str, str], ...] = ()
@@ -183,10 +186,10 @@ class DigestClaimAtom:
 class DigestEditorialItemDraft:
     """A single scan-first editorial item within a narrative digest block."""
 
-    headline: str
-    body: str
-    covered_story_ids: tuple[str, ...]
-    cited_support_ids: tuple[str, ...]
+    headline: str = ""
+    body: str = ""
+    covered_story_ids: tuple[str, ...] = ()
+    cited_support_ids: tuple[str, ...] = ()
     claims: tuple[DigestClaimAtom, ...] = ()
     emoji: str = ""
 
@@ -233,8 +236,8 @@ class DigestEditorialItemDraft:
                 if isinstance(rc, Mapping):
                     claims.append(DigestClaimAtom.from_dict(rc))
 
-        if not headline or not body or not story_ids or not support_ids:
-            raise ValueError("digest editorial item requires headline, body, stories and supports")
+        if not body or not story_ids or not support_ids:
+            raise ValueError("digest editorial item requires body, stories and supports")
         return cls(
             headline=headline,
             body=body,
@@ -268,7 +271,7 @@ class DigestNarrativeDraft:
     """Complete output draft from the single-call narrative digest writer."""
 
     blocks: tuple[DigestNarrativeBlockDraft, ...]
-    situation_items: tuple[DigestSituationItemDraft, ...] = ()
+    situation_items: tuple[Any, ...] = ()
 
     @classmethod
     def from_dict(cls, data: Any) -> DigestNarrativeDraft:
@@ -276,20 +279,7 @@ class DigestNarrativeDraft:
         if not isinstance(data, Mapping):
             raise ValueError("root must be a mapping")
 
-        raw_situation = data.get("situation_items", [])
-        if raw_situation is None:
-            raw_situation = []
-        if not isinstance(raw_situation, list):
-            raise ValueError("'situation_items' must be a list")
-
-        seen_sit_ids: set[str] = set()
-        situation_drafts: list[DigestSituationItemDraft] = []
-        for s_raw in raw_situation:
-            item = DigestSituationItemDraft.from_dict(s_raw)
-            if item.group_id in seen_sit_ids:
-                raise ValueError(f"duplicate situation group_id: {item.group_id}")
-            seen_sit_ids.add(item.group_id)
-            situation_drafts.append(item)
+        # Legacy situation_items are silently accepted but not stored — backward compat.
 
         raw_blocks = data.get("blocks")
         if raw_blocks is None:
@@ -326,7 +316,7 @@ class DigestNarrativeDraft:
                 )
             )
 
-        return cls(blocks=tuple(block_drafts), situation_items=tuple(situation_drafts))
+        return cls(blocks=tuple(block_drafts), situation_items=())
 
 
 def plan_digest_narrative_blocks(
@@ -430,7 +420,18 @@ def plan_digest_narrative_blocks(
             chunk = [card_by_id[sid] for u in block_units for sid in u.story_ids]
             block_id = f"block:{rid}:{chunk_idx}"
             story_ids = tuple(c.id for c in chunk)
-            req_story_groups = tuple(tuple(u.story_ids) for u in block_units)
+
+            # If presentation_plan provides explicit merge_group_ids, build
+            # required_story_groups from them (preserving first-seen order).
+            # Otherwise fall back to unit-level grouping.
+            if presentations_by_id:
+                mg_seen: dict[str, list[str]] = {}
+                for c in chunk:
+                    mgid = getattr(presentations_by_id.get(c.id), "merge_group_id", None) or c.id
+                    mg_seen.setdefault(mgid, []).append(c.id)
+                req_story_groups = tuple(tuple(v) for v in mg_seen.values())
+            else:
+                req_story_groups = tuple(tuple(u.story_ids) for u in block_units)
 
             # Collect canonical notes from cards and track support ownership per story
             notes: list[str] = []
@@ -520,6 +521,14 @@ def plan_digest_narrative_blocks(
                 if c.id in dashboard_supports_by_story_map
             )
 
+            # Assign required facts matching this block
+            block_req_facts: list[RequiredDigestFact] = []
+            if presentation_plan is not None and getattr(presentation_plan, "required_facts", None):
+                story_id_set = set(story_ids)
+                for rf in presentation_plan.required_facts:
+                    if rf.rubric_id == rid and bool(set(rf.story_ids) & story_id_set):
+                        block_req_facts.append(rf)
+
             blocks.append(
                 DigestNarrativeBlock(
                     block_id=block_id,
@@ -528,6 +537,7 @@ def plan_digest_narrative_blocks(
                     story_ids=story_ids,
                     support_ids=tuple(block_support_ids),
                     canonical_notes=tuple(notes),
+                    required_facts=tuple(block_req_facts),
                     detail_support_ids_by_story=detail_supports,
                     merge_group_by_story=merge_groups,
                     detail_roles_by_story=detail_roles,
@@ -538,12 +548,22 @@ def plan_digest_narrative_blocks(
                 )
             )
 
+    expected_fact_ids = (
+        {rf.fact_id for rf in getattr(presentation_plan, "required_facts", ())}
+        if presentation_plan is not None
+        else set()
+    )
+    assigned_fact_ids = {rf.fact_id for b in blocks for rf in b.required_facts}
+    if assigned_fact_ids != expected_fact_ids:
+        raise DigestCoverageInvariantError(
+            f"UNASSIGNED_REQUIRED_FACTS: {expected_fact_ids - assigned_fact_ids}"
+        )
+
     return DigestNarrativePlan(blocks=tuple(blocks))
 
 
 DIGEST_ITEM_HEADLINE_MAX_CHARS = 140
-DIGEST_ITEM_BODY_MAX_CHARS = 900
-DIGEST_ITEM_MAX_STORIES = 6
+DIGEST_ITEM_BODY_MAX_CHARS = 1200
 DIGEST_SITUATION_BODY_MAX_CHARS = 360
 
 
@@ -568,158 +588,6 @@ def validate_digest_narrative(
     unsupported_claims: list[Any] = []
     support_map = support_index if support_index is not None else (support_text_by_id or {})
 
-    # Validate City Situation items if situation_plan is supplied
-    if situation_plan is not None and (
-        draft.situation_items or getattr(situation_plan, "groups", ())
-    ):
-        plan_groups = getattr(situation_plan, "groups", ()) or ()
-        plan_group_ids = [g.group_id for g in plan_groups]
-        draft_group_ids = [s.group_id for s in draft.situation_items]
-        plan_groups_by_id = {g.group_id: g for g in plan_groups}
-
-        if len(draft.situation_items) != len(plan_groups):
-            violations.append(
-                f"SITUATION_GROUP_SET_MISMATCH: expected {len(plan_groups)} groups, got {len(draft.situation_items)}"
-            )
-        elif draft_group_ids != plan_group_ids:
-            violations.append(
-                f"SITUATION_GROUP_SET_MISMATCH: expected {plan_group_ids}, got {draft_group_ids}"
-            )
-
-        for sit_item in draft.situation_items:
-            plan_grp = plan_groups_by_id.get(sit_item.group_id)
-            if plan_grp is None:
-                violations.append(f"UNKNOWN_SITUATION_GROUP_ID: {sit_item.group_id}")
-                continue
-
-            if sit_item.label.casefold() != plan_grp.subject_label.casefold():
-                violations.append(
-                    f"SITUATION_LABEL_MISMATCH: expected '{plan_grp.subject_label}', got '{sit_item.label}' in {sit_item.group_id}"
-                )
-
-            if len(sit_item.body) > DIGEST_SITUATION_BODY_MAX_CHARS:
-                violations.append(
-                    f"SITUATION_BODY_TOO_LONG: body exceeds {DIGEST_SITUATION_BODY_MAX_CHARS} chars in {sit_item.group_id}"
-                )
-
-            if _INTERNAL_LEAKAGE_RE.search(sit_item.label) or _INTERNAL_LEAKAGE_RE.search(
-                sit_item.body
-            ):
-                violations.append(
-                    f"INTERNAL_ID_LEAK: found internal identifier in situation item {sit_item.group_id}"
-                )
-
-            if not sit_item.cited_support_ids:
-                violations.append(
-                    f"MISSING_SUPPORT_CITATION: situation item {sit_item.group_id} cites no supports"
-                )
-
-            allowed_sit_supports = set(getattr(plan_grp, "source_refs", ())) | set(
-                getattr(plan_grp, "cited_support_ids", ())
-            )
-            for sup_id in sit_item.cited_support_ids:
-                if sup_id not in allowed_sit_supports and allowed_sit_supports:
-                    violations.append(
-                        f"SUPPORT_OUTSIDE_GROUP: {sup_id} not allowed in situation group {sit_item.group_id}"
-                    )
-                if sup_id not in support_map:
-                    violations.append(
-                        f"UNKNOWN_SUPPORT_ID: {sup_id} not found in support text index"
-                    )
-
-            c_supports = [support_map[s] for s in sit_item.cited_support_ids if s in support_map]
-            for unc in find_unsupported_claims(
-                sit_item.label,
-                c_supports,
-                allowed_context_terms=ctx_terms,
-                all_known_draft_supports=known_supports,
-            ):
-                unsupported_claims.append(unc)
-                violations.append(
-                    f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in situation label {sit_item.group_id}"
-                )
-            for unc in find_unsupported_claims(
-                sit_item.body,
-                c_supports,
-                allowed_context_terms=ctx_terms,
-                all_known_draft_supports=known_supports,
-            ):
-                unsupported_claims.append(unc)
-                violations.append(
-                    f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in situation body {sit_item.group_id}"
-                )
-            for rel in find_unsupported_digest_relations(sit_item.label, c_supports):
-                violations.append(
-                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in situation label {sit_item.group_id}"
-                )
-            for rel in find_unsupported_digest_relations(sit_item.body, c_supports):
-                violations.append(
-                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in situation body {sit_item.group_id}"
-                )
-
-            # Validate claims and required operational facts coverage
-            plan_req_facts = getattr(plan_grp, "required_facts", ()) or ()
-            if plan_req_facts:
-                if not sit_item.claims:
-                    for rf in plan_req_facts:
-                        violations.append(f"SITUATION_FACT_COVERAGE_MISSING:{rf.fact_id}")
-                else:
-                    for c in sit_item.claims:
-                        if not c.cited_support_ids:
-                            violations.append(
-                                f"CLAIM_WITHOUT_SUPPORT: claim '{c.text[:30]}' in {sit_item.group_id} cites no supports"
-                            )
-                        for sup_id in c.cited_support_ids:
-                            if sup_id not in sit_item.cited_support_ids:
-                                violations.append(
-                                    f"CLAIM_SUPPORT_OUTSIDE_ITEM: {sup_id} in situation item {sit_item.group_id}"
-                                )
-                            if allowed_sit_supports and sup_id not in allowed_sit_supports:
-                                violations.append(
-                                    f"SUPPORT_OUTSIDE_GROUP: {sup_id} not allowed in situation group {sit_item.group_id}"
-                                )
-                        c_claim_supports = [
-                            support_map[s] for s in c.cited_support_ids if s in support_map
-                        ]
-                        for unc in find_unsupported_claims(
-                            c.text,
-                            c_claim_supports,
-                            allowed_context_terms=ctx_terms,
-                            all_known_draft_supports=known_supports,
-                        ):
-                            unsupported_claims.append(unc)
-                            violations.append(
-                                f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in situation claim {sit_item.group_id}"
-                            )
-                        for rel in find_unsupported_digest_relations(c.text, c_claim_supports):
-                            violations.append(
-                                f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in situation claim {sit_item.group_id}"
-                            )
-
-                    # Strict coverage check: every required fact must be covered by at least one claim
-                    for rf in plan_req_facts:
-                        rf_covered = False
-                        rf_allowed_supports = set(rf.support_ids)
-                        for c in sit_item.claims:
-                            claim_sups = set(c.cited_support_ids)
-                            if rf_allowed_supports and (claim_sups & rf_allowed_supports):
-                                if not c.covered_fact_ids or rf.fact_id in c.covered_fact_ids:
-                                    rf_covered = True
-                                    break
-                            elif c.covered_fact_ids and rf.fact_id in c.covered_fact_ids:
-                                if claim_sups & allowed_sit_supports:
-                                    rf_covered = True
-                                    break
-                        if not rf_covered:
-                            violations.append(f"SITUATION_FACT_COVERAGE_MISSING:{rf.fact_id}")
-            elif sit_item.claims:
-                for c in sit_item.claims:
-                    for sup_id in c.cited_support_ids:
-                        if sup_id not in sit_item.cited_support_ids:
-                            violations.append(
-                                f"CLAIM_SUPPORT_OUTSIDE_ITEM: {sup_id} in situation item {sit_item.group_id}"
-                            )
-
     plan_blocks_by_id = {b.block_id: b for b in plan.blocks}
     draft_block_ids = [b.block_id for b in draft.blocks]
     plan_block_ids = [b.block_id for b in plan.blocks]
@@ -741,10 +609,6 @@ def validate_digest_narrative(
         allowed_supports = set(plan_block.support_ids)
         expected_story_ids = set(plan_block.story_ids)
         merge_group_map = dict(plan_block.merge_group_by_story)
-        detail_roles_map = dict(plan_block.detail_roles_by_story)
-        detail_supports_map = dict(plan_block.detail_support_ids_by_story)
-        modes_map = dict(getattr(plan_block, "presentation_modes_by_story", ()))
-        dashboard_supports_map = dict(getattr(plan_block, "dashboard_support_ids_by_story", ()))
 
         flat_story_ids = [sid for item in out_block.items for sid in item.covered_story_ids]
         if len(flat_story_ids) != len(set(flat_story_ids)):
@@ -757,12 +621,6 @@ def validate_digest_narrative(
         if set(flat_story_ids) != expected_story_ids:
             violations.append(f"STORY_PARTITION_MISMATCH: {out_block.block_id}")
 
-        if plan_block.required_story_groups:
-            expected_groups = [tuple(group) for group in plan_block.required_story_groups]
-            actual_groups = [tuple(item.covered_story_ids) for item in out_block.items]
-            if actual_groups != expected_groups:
-                violations.append(f"SYNTHESIS_GROUP_PARTITION_MISMATCH: {out_block.block_id}")
-
         allowed_by_story = dict(plan_block.support_ids_by_story)
 
         for item in out_block.items:
@@ -773,11 +631,16 @@ def validate_digest_narrative(
                         f"STORY_SUPPORT_MISSING: story {sid} in block {out_block.block_id}"
                     )
 
+            # Require structured claims only when the block carries required_facts to cover
+            if not item.claims and plan_block.required_facts:
+                violations.append(f"ITEM_CLAIMS_MISSING: item in block {out_block.block_id}")
+
             if item.claims:
                 claimed_story_ids = {sid for c in item.claims for sid in c.covered_story_ids}
                 for sid in item.covered_story_ids:
                     if sid not in claimed_story_ids:
                         violations.append(f"STORY_CLAIM_COVERAGE_MISSING:{sid}")
+
                 for claim in item.claims:
                     for sid in claim.covered_story_ids:
                         if sid not in item.covered_story_ids:
@@ -789,30 +652,91 @@ def validate_digest_narrative(
                             violations.append(
                                 f"STORY_SUPPORT_MISSING: story {sid} in claim of block {out_block.block_id}"
                             )
+                    if not claim.cited_support_ids:
+                        violations.append(
+                            f"CLAIM_WITHOUT_SUPPORT: claim '{claim.text[:30]}' in block {out_block.block_id} cites no supports"
+                        )
                     for sup_id in claim.cited_support_ids:
                         if sup_id not in item.cited_support_ids:
                             violations.append(
                                 f"CLAIM_SUPPORT_OUTSIDE_ITEM: {sup_id} in block {out_block.block_id}"
                             )
+                        if sup_id not in allowed_supports and allowed_supports:
+                            violations.append(
+                                f"SUPPORT_OUTSIDE_BLOCK: {sup_id} not allowed in block {out_block.block_id}"
+                            )
+                        if sup_id not in support_map:
+                            violations.append(
+                                f"UNKNOWN_SUPPORT_ID: {sup_id} not found in support text index"
+                            )
 
-            if len(item.covered_story_ids) > DIGEST_ITEM_MAX_STORIES:
-                violations.append(
-                    f"ITEM_TOO_MANY_STORIES: item in block {out_block.block_id} covers {len(item.covered_story_ids)} stories (max {DIGEST_ITEM_MAX_STORIES})"
-                )
+                    c_claim_supports = [
+                        support_map[s] for s in claim.cited_support_ids if s in support_map
+                    ]
+                    for unc in find_unsupported_claims(
+                        claim.text,
+                        c_claim_supports,
+                        allowed_context_terms=ctx_terms,
+                        all_known_draft_supports=known_supports,
+                    ):
+                        unsupported_claims.append(unc)
+                        violations.append(
+                            f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in claim of block {out_block.block_id}"
+                        )
+                    for rel in find_unsupported_digest_relations(claim.text, c_claim_supports):
+                        violations.append(
+                            f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in claim of block {out_block.block_id}"
+                        )
+
+                    # Validate material fact references within the claim
+                    block_req_facts_by_id = {rf.fact_id: rf for rf in plan_block.required_facts}
+                    for fid in claim.covered_fact_ids:
+                        if fid not in block_req_facts_by_id:
+                            violations.append(f"UNKNOWN_DIGEST_FACT_ID:{fid}")
+                        else:
+                            rf = block_req_facts_by_id[fid]
+                            rf_allowed_sups = set(rf.support_ids)
+                            story_sups: set[str] = set()
+                            for sid in rf.story_ids:
+                                story_sups.update(allowed_by_story.get(sid, ()))
+                            allowed_fact_sups = rf_allowed_sups | story_sups
+                            if allowed_fact_sups and not (
+                                set(claim.cited_support_ids) & allowed_fact_sups
+                            ):
+                                violations.append(f"DIGEST_FACT_SUPPORT_MISSING:{fid}")
+
             if len(item.covered_story_ids) > 1 and merge_group_map:
                 m_groups = {merge_group_map.get(sid, sid) for sid in item.covered_story_ids}
                 if len(m_groups) > 1:
                     violations.append(f"UNRELATED_STORY_GROUPING: {out_block.block_id}")
-            if len(item.headline) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
-                violations.append(
-                    f"HEADLINE_TOO_LONG: headline exceeds {DIGEST_ITEM_HEADLINE_MAX_CHARS} chars in block {out_block.block_id}"
-                )
+
+            # DRILL_DOWN enforcement: items covering a DRILL_DOWN story must cite
+            # at least one of that story's designated detail support IDs.
+            drill_roles = dict(plan_block.detail_roles_by_story)
+            detail_sups_map = dict(plan_block.detail_support_ids_by_story)
+            for sid in item.covered_story_ids:
+                if drill_roles.get(sid) == "DRILL_DOWN":
+                    drill_sups = set(detail_sups_map.get(sid, ()))
+                    if drill_sups and not (set(item.cited_support_ids) & drill_sups):
+                        violations.append(
+                            f"DRILL_DOWN_MISSING_DISTINCT_SUPPORT: story {sid} in block {out_block.block_id}"
+                        )
+
+            if item.headline:
+                if len(item.headline) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
+                    violations.append(
+                        f"HEADLINE_TOO_LONG: headline exceeds {DIGEST_ITEM_HEADLINE_MAX_CHARS} chars in block {out_block.block_id}"
+                    )
+                if _INTERNAL_LEAKAGE_RE.search(item.headline):
+                    violations.append(
+                        f"INTERNAL_ID_LEAK: found internal identifier in block {out_block.block_id}"
+                    )
+
             if len(item.body) > DIGEST_ITEM_BODY_MAX_CHARS:
                 violations.append(
                     f"BODY_TOO_LONG: body exceeds {DIGEST_ITEM_BODY_MAX_CHARS} chars in block {out_block.block_id}"
                 )
-
-            if _INTERNAL_LEAKAGE_RE.search(item.headline) or _INTERNAL_LEAKAGE_RE.search(item.body):
+            if _INTERNAL_LEAKAGE_RE.search(item.body):
                 violations.append(
                     f"INTERNAL_ID_LEAK: found internal identifier in block {out_block.block_id}"
                 )
@@ -821,26 +745,6 @@ def validate_digest_narrative(
                 violations.append(
                     f"MISSING_SUPPORT_CITATION: item in block {out_block.block_id} cites no supports"
                 )
-
-            for sid in item.covered_story_ids:
-                mode = modes_map.get(sid)
-                role = detail_roles_map.get(sid)
-                if mode == "DASHBOARD_AND_DRILLDOWN" or role == "DRILL_DOWN":
-                    dashboard_ids = set(dashboard_supports_map.get(sid, ()))
-                    story_detail_ids = set(detail_supports_map.get(sid, ()))
-                    item_ids = set(item.cited_support_ids)
-                    if story_detail_ids and not (item_ids & story_detail_ids):
-                        violations.append(
-                            f"DRILL_DOWN_MISSING_DISTINCT_SUPPORT: drill-down story {sid} in block {out_block.block_id} must cite at least one non-dashboard PUBLISH support"
-                        )
-                    elif (
-                        dashboard_ids
-                        and not ((item_ids & story_detail_ids) - dashboard_ids)
-                        and not (item_ids - dashboard_ids)
-                    ):
-                        violations.append(
-                            f"DRILL_DOWN_MISSING_DISTINCT_SUPPORT: drill-down story {sid} in block {out_block.block_id} must cite at least one non-dashboard PUBLISH support"
-                        )
 
             for sup_id in item.cited_support_ids:
                 if sup_id not in allowed_supports and allowed_supports:
@@ -854,16 +758,21 @@ def validate_digest_narrative(
 
             # Validate concrete claims against cited support texts
             c_supports = [support_map[s] for s in item.cited_support_ids if s in support_map]
-            for unc in find_unsupported_claims(
-                item.headline,
-                c_supports,
-                allowed_context_terms=ctx_terms,
-                all_known_draft_supports=known_supports,
-            ):
-                unsupported_claims.append(unc)
-                violations.append(
-                    f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in headline of block {out_block.block_id}"
-                )
+            if item.headline:
+                for unc in find_unsupported_claims(
+                    item.headline,
+                    c_supports,
+                    allowed_context_terms=ctx_terms,
+                    all_known_draft_supports=known_supports,
+                ):
+                    unsupported_claims.append(unc)
+                    violations.append(
+                        f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in headline of block {out_block.block_id}"
+                    )
+                for rel in find_unsupported_digest_relations(item.headline, c_supports):
+                    violations.append(
+                        f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in headline of block {out_block.block_id}"
+                    )
             for unc in find_unsupported_claims(
                 item.body,
                 c_supports,
@@ -874,14 +783,35 @@ def validate_digest_narrative(
                 violations.append(
                     f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in body of block {out_block.block_id}"
                 )
-            for rel in find_unsupported_digest_relations(item.headline, c_supports):
-                violations.append(
-                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in headline of block {out_block.block_id}"
-                )
             for rel in find_unsupported_digest_relations(item.body, c_supports):
                 violations.append(
                     f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in body of block {out_block.block_id}"
                 )
+
+        # Block-level strict required material facts coverage check
+        for rf in plan_block.required_facts:
+            rf_covered = False
+            rf_allowed_supports = set(rf.support_ids)
+            story_sups = set()
+            for sid in rf.story_ids:
+                story_sups.update(allowed_by_story.get(sid, ()))
+            allowed_fact_sups = rf_allowed_supports | story_sups
+
+            for item in out_block.items:
+                for c in item.claims:
+                    claim_sups = set(c.cited_support_ids)
+                    if rf_allowed_supports and (claim_sups & rf_allowed_supports):
+                        if not c.covered_fact_ids or rf.fact_id in c.covered_fact_ids:
+                            rf_covered = True
+                            break
+                    elif c.covered_fact_ids and rf.fact_id in c.covered_fact_ids:
+                        if not allowed_fact_sups or (claim_sups & allowed_fact_sups):
+                            rf_covered = True
+                            break
+                if rf_covered:
+                    break
+            if not rf_covered:
+                violations.append(f"DIGEST_FACT_COVERAGE_MISSING:{rf.fact_id}")
 
     is_valid = len(violations) == 0 and len(unsupported_claims) == 0
     return DigestNarrativeValidationResult(
