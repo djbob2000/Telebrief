@@ -292,24 +292,86 @@ class EventAuthorityService:
                         deferred_story_ids=tuple(item.target.story_id for item in claimed),
                         batch_error_kind="timeout",
                     )
+
+                stats.triaged += len(result.results)
+                result_by_id = {gate.story_id: gate for gate in result.results}
+                fence_lost = set(result.fence_lost_story_ids)
+                deferred = set(result.deferred_story_ids) - fence_lost
+                missing = set(result.missing_story_ids) - fence_lost
+
+                singleton_failures: dict[int, StoryGateBatchResult] = {}
+                partial_targets = [item for item in claimed if item.target.story_id in missing]
+                extra_calls_budget = cfg.triage_split_max_extra_calls_per_cycle
+                for item in partial_targets:
+                    if extra_calls_budget <= 0:
+                        break
+                    extra_calls_budget -= 1
+                    try:
+                        singleton_result = await asyncio.wait_for(
+                            self.triage_service.triage_stories_batch(
+                                None,
+                                [item.state],
+                                edition_id=edition_id,
+                                scope_config=scope_config,
+                                scope_hash=batch[0].scope_config_hash,
+                                excerpt_chars=cfg.triage_excerpt_chars,
+                                min_ignore_confidence=cfg.triage_min_ignore_confidence,
+                                assignment_id_by_story={
+                                    item.target.story_id: item.target.assignment_id
+                                },
+                                source_cutoff_at=item.target.source_cutoff_at,
+                                decision_fence=decision_fence,
+                                before_decision_persist=before_decision_persist,
+                            ),
+                            timeout=cfg.authority_provider_timeout_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        singleton_result = StoryGateBatchResult(
+                            results=(),
+                            deferred_story_ids=(item.target.story_id,),
+                            batch_error_kind="timeout",
+                        )
+
+                    if singleton_result.results:
+                        recovered_gate = singleton_result.results[0]
+                        result_by_id[recovered_gate.story_id] = recovered_gate
+                        deferred.discard(recovered_gate.story_id)
+                        missing.discard(recovered_gate.story_id)
+                        stats.triaged += 1
+                    elif singleton_result.fence_lost_story_ids:
+                        for fid in singleton_result.fence_lost_story_ids:
+                            fence_lost.add(fid)
+                            deferred.discard(fid)
+                            missing.discard(fid)
+                    else:
+                        missing.discard(item.target.story_id)
+                        singleton_failures[item.target.story_id] = singleton_result
             finally:
                 heartbeat_stop.set()
                 await heartbeat_task
-            stats.triaged += len(result.results)
-            if result.batch_error_kind is not None:
-                stats.provider_failures += len(result.deferred_story_ids)
-            fence_lost = set(result.fence_lost_story_ids)
-            deferred = set(result.deferred_story_ids) - fence_lost
-            if deferred:
+
+            durable_failure_ids = deferred - missing
+            if result.batch_error_kind is not None or singleton_failures:
+                stats.provider_failures += len(durable_failure_ids)
+            if durable_failure_ids:
                 async with self.runtime.uow.transaction() as conn:
                     for item in claimed:
-                        if item.target.story_id not in deferred:
+                        if item.target.story_id not in durable_failure_ids:
                             continue
                         previous = retry_states.get(
                             (item.target.story_id, item.target.assignment_id)
                         )
+                        failure_res = singleton_failures.get(item.target.story_id)
+                        error_kind = (
+                            (failure_res.batch_error_kind if failure_res else None)
+                            or result.batch_error_kind
+                            or "other"
+                        )
+                        prompt_hash = (
+                            failure_res.prompt_hash if failure_res else None
+                        ) or result.prompt_hash
                         retry_decision = decide_retry(
-                            result.batch_error_kind or "other",
+                            error_kind,
                             attempt_count=(previous.attempt_count if previous else 0) + 1,
                             max_attempts=cfg.triage_max_attempts_per_assignment,
                             base_backoff_seconds=cfg.provider_retry_backoff_seconds,
@@ -321,14 +383,13 @@ class EventAuthorityService:
                             story_id=item.target.story_id,
                             latest_assignment_id=item.target.assignment_id,
                             stage="triage",
-                            error_kind=result.batch_error_kind or "other",
+                            error_kind=error_kind,
                             next_retry_at=retry_decision.next_retry_at,
                             exhausted=retry_decision.exhausted,
-                            prompt_hash=result.prompt_hash,
+                            prompt_hash=prompt_hash,
                         )
 
             enrichment: list[AuthorityTarget] = []
-            result_by_id = {item.story_id: item for item in result.results}
             async with self.runtime.uow.transaction() as conn:
                 for item in claimed:
                     if item.target.story_id in deferred or item.target.story_id in fence_lost:
