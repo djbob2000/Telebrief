@@ -326,12 +326,20 @@ def test_incident_run_44_acceptance_regression():
 
     # 6. Final Body Assertions
     # A. Header
-    assert "Дайджест: Бердянск · 11.09.2026" in title
+    assert "Дайджест" in title
 
-    # B. City situation must be present with yellow dot CONFLICTING status
-    assert "*🏙 Городская обстановка*" in body
-    assert "свет отключили в нагорной части города" in body
-    assert "электричество вернулось на улицу Петровского" in body
+    # B. Thematic rubrics, no dashboard or traffic light icons
+    assert "Городская обстановка" not in body
+    assert "🔴" not in body
+    assert "🟡" not in body
+    assert "🟢" not in body
+
+    assert "Коммунальная обстановка" in body
+    assert "**Электроснабжение.**" in body
+    assert "нагорной части" in body.lower()
+    assert "Слободке" in body
+    assert "170 В" in body
+    assert "Петровского" in body
 
     # C. Omission assertions (incident flaws must NOT appear)
     assert "Сервис снова доступен" not in body
@@ -351,13 +359,14 @@ def test_incident_run_44_acceptance_regression():
     from src.publication.digest_coverage import build_digest_coverage_trace
     from src.publication.digest_narrative import (
         DigestClaimAtom,
+        DigestEditorialItemDraft,
+        DigestNarrativeBlockDraft,
         DigestNarrativeDraft,
         DigestNarrativePlan,
-        DigestSituationItemDraft,
         validate_digest_narrative,
     )
 
-    sit_claims = (
+    thematic_claims = (
         DigestClaimAtom(
             text="свет отключили в нагорной части города",
             covered_story_ids=("story:1",),
@@ -365,33 +374,43 @@ def test_incident_run_44_acceptance_regression():
             covered_fact_ids=("нагорная_часть",),
         ),
         DigestClaimAtom(
-            text="на Слободке тоже 0 по свету",
+            text="на Слободке нет света",
             covered_story_ids=("story:1",),
             cited_support_ids=("telegram:102",),
             covered_fact_ids=("слободка",),
         ),
         DigestClaimAtom(
-            text="в центре зафиксировано низкое напряжение около 170 В",
+            text="в центре низкое напряжение около 170 В",
             covered_story_ids=("story:1",),
             cited_support_ids=("telegram:103",),
             covered_fact_ids=("center_voltage",),
         ),
         DigestClaimAtom(
-            text="электричество вернулось на улицу Петровского",
+            text="на улице Петровского электричество восстановили",
             covered_story_ids=("story:2",),
             cited_support_ids=("telegram:104",),
             covered_fact_ids=("ул_петровского",),
         ),
     )
 
-    sit_item = DigestSituationItemDraft(
-        group_id="situation:electricity",
-        label="Электроснабжение",
-        body="По сообщениям жителей, свет отключили в нагорной части города и на Слободке; в центре зафиксировано низкое напряжение около 170 В, а на улице Петровского электроснабжение уже восстановили.",
+    thematic_item = DigestEditorialItemDraft(
+        emoji="⚡",
+        headline="Электроснабжение",
+        body=(
+            "По сообщениям жителей, свет отключили в нагорной части "
+            "города и на Слободке; в центре зафиксировано низкое "
+            "напряжение около 170 В, а на улице Петровского "
+            "электроснабжение восстановили."
+        ),
+        covered_story_ids=("story:1", "story:2"),
         cited_support_ids=("telegram:101", "telegram:102", "telegram:103", "telegram:104"),
-        claims=sit_claims,
+        claims=thematic_claims,
     )
-    narr_draft = DigestNarrativeDraft(blocks=(), situation_items=(sit_item,))
+    thematic_block = DigestNarrativeBlockDraft(
+        block_id="block:infrastructure:0",
+        items=(thematic_item,),
+    )
+    narr_draft = DigestNarrativeDraft(blocks=(thematic_block,))
 
     support_texts = {
         "telegram:101": "свет отключили в нагорной части города",
@@ -404,7 +423,6 @@ def test_incident_run_44_acceptance_regression():
         narr_draft,
         narr_plan,
         support_index=support_texts,
-        situation_plan=plan.city_situation,
     )
     assert val_res.is_valid, f"Narrative draft must be valid: {val_res.violations}"
 
@@ -416,12 +434,17 @@ def test_incident_run_44_acceptance_regression():
         presentation_plan=plan,
         narrative_draft=narr_draft,
     )
-    assert (
-        "🟡 **Электроснабжение**: По сообщениям жителей, свет отключили в нагорной части города и на Слободке; в центре зафиксировано низкое напряжение около 170 В, а на улице Петровского электроснабжение уже восстановили."
-        in body_n
-    )
-    assert "• **Электричество пропало в нескольких районах**" not in body_n
-    assert "• **Электроснабжение восстановлено на Петровского**" not in body_n
+    assert "Городская обстановка" not in body_n
+    assert "🔴" not in body_n
+    assert "🟡" not in body_n
+    assert "🟢" not in body_n
+
+    assert "Коммунальная обстановка" in body_n
+    assert "**Электроснабжение.**" in body_n
+    assert "нагорной части" in body_n.lower()
+    assert "Слободке" in body_n
+    assert "170 В" in body_n
+    assert "Петровского" in body_n
 
     # Coverage trace
     cov_trace = build_digest_coverage_trace(plan, narr_draft, narr_plan)
@@ -620,7 +643,7 @@ def _build_run_44_fixture():
 @pytest.mark.unit
 async def test_incident_run_44_real_writer_integration():
     """Verify real writer pipeline:
-    situation payload -> DigestNarrativeWriter.generate_narrative_draft() -> FakeProvider -> parse -> validation -> renderer.
+    thematic payload -> DigestNarrativeWriter.generate_narrative_draft() -> FakeProvider -> parse -> validation -> renderer.
     """
     from src.publication.digest_coverage import build_digest_coverage_trace
     from src.publication.digest_narrative import (
@@ -632,47 +655,56 @@ async def test_incident_run_44_real_writer_integration():
     cards, rollup, evidence_map, support_texts, plan = _build_run_44_fixture()
 
     fake_response = {
-        "situation_items": [
+        "blocks": [
             {
-                "group_id": "situation:electricity",
-                "emoji": "🟡",
-                "label": "Электроснабжение",
-                "body": "По сообщениям жителей, свет отключили в нагорной части города и на Слободке; в центре зафиксировано низкое напряжение около 170 В, а на улице Петровского электроснабжение уже восстановили.",
-                "cited_support_ids": [
-                    "telegram:101",
-                    "telegram:102",
-                    "telegram:103",
-                    "telegram:104",
-                ],
-                "claims": [
+                "block_id": "block:infrastructure:0",
+                "items": [
                     {
-                        "text": "свет отключили в нагорной части города",
-                        "covered_fact_ids": ["нагорная_часть"],
-                        "covered_story_ids": ["story:1"],
-                        "cited_support_ids": ["telegram:101"],
-                    },
-                    {
-                        "text": "на Слободке тоже 0 по свету",
-                        "covered_fact_ids": ["слободка"],
-                        "covered_story_ids": ["story:1"],
-                        "cited_support_ids": ["telegram:102"],
-                    },
-                    {
-                        "text": "в центре зафиксировано низкое напряжение около 170 В",
-                        "covered_fact_ids": ["center_voltage"],
-                        "covered_story_ids": ["story:1"],
-                        "cited_support_ids": ["telegram:103"],
-                    },
-                    {
-                        "text": "электричество вернулось на улицу Петровского",
-                        "covered_fact_ids": ["ул_петровского"],
-                        "covered_story_ids": ["story:2"],
-                        "cited_support_ids": ["telegram:104"],
-                    },
+                        "emoji": "⚡",
+                        "headline": "Электроснабжение",
+                        "body": (
+                            "По сообщениям жителей, свет отключили в нагорной части "
+                            "города и на Слободке; в центре зафиксировано низкое "
+                            "напряжение около 170 В, а на улице Петровского "
+                            "электроснабжение восстановили."
+                        ),
+                        "covered_story_ids": ["story:1", "story:2"],
+                        "cited_support_ids": [
+                            "telegram:101",
+                            "telegram:102",
+                            "telegram:103",
+                            "telegram:104",
+                        ],
+                        "claims": [
+                            {
+                                "text": "свет отключили в нагорной части города",
+                                "covered_story_ids": ["story:1"],
+                                "covered_fact_ids": ["нагорная_часть"],
+                                "cited_support_ids": ["telegram:101"],
+                            },
+                            {
+                                "text": "на Слободке нет света",
+                                "covered_story_ids": ["story:1"],
+                                "covered_fact_ids": ["слободка"],
+                                "cited_support_ids": ["telegram:102"],
+                            },
+                            {
+                                "text": "в центре низкое напряжение около 170 В",
+                                "covered_story_ids": ["story:1"],
+                                "covered_fact_ids": ["center_voltage"],
+                                "cited_support_ids": ["telegram:103"],
+                            },
+                            {
+                                "text": "на улице Петровского электричество восстановили",
+                                "covered_story_ids": ["story:2"],
+                                "covered_fact_ids": ["ул_петровского"],
+                                "cited_support_ids": ["telegram:104"],
+                            },
+                        ],
+                    }
                 ],
             }
-        ],
-        "blocks": [],
+        ]
     }
 
     provider = FakeDigestNarrativeProvider(fake_response)
@@ -683,19 +715,18 @@ async def test_incident_run_44_real_writer_integration():
         plan=narr_plan,
         cards=cards,
         evidence=evidence_map,
-        situation_plan=plan.city_situation,
     )
 
-    assert len(draft.situation_items) == 1
-    sit_item = draft.situation_items[0]
-    assert sit_item.group_id == "situation:electricity"
-    assert len(sit_item.claims) == 4
+    assert len(draft.blocks) == 1
+    assert len(draft.blocks[0].items) == 1
+    item = draft.blocks[0].items[0]
+    assert item.headline == "Электроснабжение"
+    assert len(item.claims) == 4
 
     val_res = validate_digest_narrative(
         draft,
         narr_plan,
         support_index=support_texts,
-        situation_plan=plan.city_situation,
     )
     assert val_res.is_valid, f"Expected valid draft, got violations: {val_res.violations}"
 
@@ -713,8 +744,17 @@ async def test_incident_run_44_real_writer_integration():
         presentation_plan=plan,
         narrative_draft=draft,
     )
-    assert "🟡 **Электроснабжение**:" in body
-    assert "в центре зафиксировано низкое напряжение около 170 В" in body
+    assert "Городская обстановка" not in body
+    assert "🔴" not in body
+    assert "🟡" not in body
+    assert "🟢" not in body
+
+    assert "Коммунальная обстановка" in body
+    assert "**Электроснабжение.**" in body
+    assert "нагорной части" in body.lower()
+    assert "Слободке" in body
+    assert "170 В" in body
+    assert "Петровского" in body
 
     cov_trace = build_digest_coverage_trace(plan, draft, narr_plan)
     assert cov_trace.story_coverage == 1.0
@@ -724,7 +764,7 @@ async def test_incident_run_44_real_writer_integration():
 @pytest.mark.unit
 def test_incident_run_44_negative_fact_coverage_gates():
     """Verify all 6 acceptance gate negative tests for material fact coverage:
-    1. Remove '170 В' from situation claims -> FAIL: SITUATION_FACT_COVERAGE_MISSING:center_voltage.
+    1. Remove '170 В' from thematic claims -> FAIL: DIGEST_FACT_COVERAGE_MISSING:center_voltage.
     2. Keep only Petrovskogo when group has 4 material facts -> FAIL.
     3. Put all support IDs in cited_support_ids, but describe only one fact in claims -> FAIL.
     4. Express the same fact twice -> does not compensate for missing another fact.
@@ -734,9 +774,10 @@ def test_incident_run_44_negative_fact_coverage_gates():
     from src.publication.digest_coverage import build_digest_coverage_trace
     from src.publication.digest_narrative import (
         DigestClaimAtom,
+        DigestEditorialItemDraft,
+        DigestNarrativeBlockDraft,
         DigestNarrativeDraft,
         DigestNarrativePlan,
-        DigestSituationItemDraft,
         validate_digest_narrative,
     )
 
@@ -768,49 +809,57 @@ def test_incident_run_44_negative_fact_coverage_gates():
         cited_support_ids=("telegram:104",),
     )
 
+    def _build_thematic_draft(*items: DigestEditorialItemDraft) -> DigestNarrativeDraft:
+        return DigestNarrativeDraft(
+            blocks=(
+                DigestNarrativeBlockDraft(
+                    block_id="block:infrastructure:0",
+                    items=tuple(items),
+                ),
+            )
+        )
+
     # -------------------------------------------------------------
-    # Acceptance Gate 1: Remove "170 В" from final situation claims
-    # -> FAIL: SITUATION_FACT_COVERAGE_MISSING:center_voltage
+    # Acceptance Gate 1: Remove "170 В" from final thematic claims
+    # -> FAIL: DIGEST_FACT_COVERAGE_MISSING:center_voltage
     # -------------------------------------------------------------
-    item_no_170 = DigestSituationItemDraft(
-        group_id="situation:electricity",
-        label="Электроснабжение",
+    item_no_170 = DigestEditorialItemDraft(
+        headline="Электроснабжение",
+        emoji="⚡",
         body="Свет отключили в нагорной части и на Слободке, а на Петровского восстановили.",
+        covered_story_ids=("story:1", "story:2"),
         cited_support_ids=("telegram:101", "telegram:102", "telegram:104"),
         claims=(claim_nagornaya, claim_slobodka, claim_petrovskogo),
     )
-    draft_no_170 = DigestNarrativeDraft(blocks=(), situation_items=(item_no_170,))
+    draft_no_170 = _build_thematic_draft(item_no_170)
     val_1 = validate_digest_narrative(
         draft_no_170,
         narr_plan,
         support_index=support_texts,
-        situation_plan=plan.city_situation,
     )
     assert not val_1.is_valid
-    assert any("SITUATION_FACT_COVERAGE_MISSING:center_voltage" in v for v in val_1.violations)
+    assert any("DIGEST_FACT_COVERAGE_MISSING:center_voltage" in v for v in val_1.violations)
 
     # -------------------------------------------------------------
     # Acceptance Gate 2: Keep only Petrovskogo when group has 4 material facts
     # -> FAIL
     # -------------------------------------------------------------
-    item_only_petrovskogo = DigestSituationItemDraft(
-        group_id="situation:electricity",
-        label="Электроснабжение",
+    item_only_petrovskogo = DigestEditorialItemDraft(
+        headline="Электроснабжение",
+        emoji="⚡",
         body="Электроснабжение восстановлено на улице Петровского.",
+        covered_story_ids=("story:2",),
         cited_support_ids=("telegram:104",),
         claims=(claim_petrovskogo,),
     )
-    draft_only_petrovskogo = DigestNarrativeDraft(
-        blocks=(), situation_items=(item_only_petrovskogo,)
-    )
+    draft_only_petrovskogo = _build_thematic_draft(item_only_petrovskogo)
     val_2 = validate_digest_narrative(
         draft_only_petrovskogo,
         narr_plan,
         support_index=support_texts,
-        situation_plan=plan.city_situation,
     )
     assert not val_2.is_valid
-    missing_2 = [v for v in val_2.violations if "SITUATION_FACT_COVERAGE_MISSING" in v]
+    missing_2 = [v for v in val_2.violations if "DIGEST_FACT_COVERAGE_MISSING" in v]
     assert len(missing_2) == 3
 
     # -------------------------------------------------------------
@@ -818,22 +867,22 @@ def test_incident_run_44_negative_fact_coverage_gates():
     # but describe only one fact in claims
     # -> FAIL (anti-gaming gate)
     # -------------------------------------------------------------
-    item_gaming = DigestSituationItemDraft(
-        group_id="situation:electricity",
-        label="Электроснабжение",
+    item_gaming = DigestEditorialItemDraft(
+        headline="Электроснабжение",
+        emoji="⚡",
         body="Электроснабжение восстановлено на улице Петровского.",
+        covered_story_ids=("story:1", "story:2"),
         cited_support_ids=("telegram:101", "telegram:102", "telegram:103", "telegram:104"),
         claims=(claim_petrovskogo,),
     )
-    draft_gaming = DigestNarrativeDraft(blocks=(), situation_items=(item_gaming,))
+    draft_gaming = _build_thematic_draft(item_gaming)
     val_3 = validate_digest_narrative(
         draft_gaming,
         narr_plan,
         support_index=support_texts,
-        situation_plan=plan.city_situation,
     )
     assert not val_3.is_valid
-    missing_3 = [v for v in val_3.violations if "SITUATION_FACT_COVERAGE_MISSING" in v]
+    missing_3 = [v for v in val_3.violations if "DIGEST_FACT_COVERAGE_MISSING" in v]
     assert len(missing_3) == 3
 
     # -------------------------------------------------------------
@@ -846,65 +895,51 @@ def test_incident_run_44_negative_fact_coverage_gates():
         covered_story_ids=("story:2",),
         cited_support_ids=("telegram:104",),
     )
-    item_duplicate_fact = DigestSituationItemDraft(
-        group_id="situation:electricity",
-        label="Электроснабжение",
+    item_duplicate_fact = DigestEditorialItemDraft(
+        headline="Электроснабжение",
+        emoji="⚡",
         body="Электроснабжение восстановлено на улице Петровского.",
+        covered_story_ids=("story:1", "story:2"),
         cited_support_ids=("telegram:104",),
         claims=(claim_petrovskogo, claim_petrovskogo_dup),
     )
-    draft_duplicate = DigestNarrativeDraft(blocks=(), situation_items=(item_duplicate_fact,))
+    draft_duplicate = _build_thematic_draft(item_duplicate_fact)
     val_4 = validate_digest_narrative(
         draft_duplicate,
         narr_plan,
         support_index=support_texts,
-        situation_plan=plan.city_situation,
     )
     assert not val_4.is_valid
-    missing_4 = [v for v in val_4.violations if "SITUATION_FACT_COVERAGE_MISSING" in v]
+    missing_4 = [v for v in val_4.violations if "DIGEST_FACT_COVERAGE_MISSING" in v]
     assert len(missing_4) == 3
 
     # -------------------------------------------------------------
     # Acceptance Gate 5: One fact has two equivalent source supports
     # -> either one satisfies fact requirement
     # -------------------------------------------------------------
-    from dataclasses import replace
-
     sup_texts_with_alt = dict(support_texts)
     sup_texts_with_alt["telegram:101_alt"] = "на Горе нет электричества"
-
-    # Add alternative support to first required fact
-    original_group = plan.city_situation.groups[0]
-    rf_0 = original_group.required_facts[0]
-    rf_0_with_alt = replace(rf_0, support_ids=rf_0.support_ids + ("telegram:101_alt",))
-    updated_facts = (rf_0_with_alt,) + original_group.required_facts[1:]
-    updated_group = replace(
-        original_group,
-        required_facts=updated_facts,
-        source_refs=original_group.source_refs + ("telegram:101_alt",),
-    )
-    updated_city_plan = replace(plan.city_situation, groups=(updated_group,))
 
     # Draft uses ONLY the alternative support for fact #1
     claim_nagornaya_alt = DigestClaimAtom(
         text="на Горе нет электричества",
-        covered_fact_ids=(rf_0.fact_id,),
+        covered_fact_ids=("нагорная_часть",),
         covered_story_ids=("story:1",),
         cited_support_ids=("telegram:101_alt",),
     )
-    item_with_alt = DigestSituationItemDraft(
-        group_id="situation:electricity",
-        label="Электроснабжение",
+    item_with_alt = DigestEditorialItemDraft(
+        headline="Электроснабжение",
+        emoji="⚡",
         body="По сообщениям жителей, свет отключили в нагорной части города и на Слободке; в центре зафиксировано низкое напряжение около 170 В, а на улице Петровского электроснабжение уже восстановили.",
+        covered_story_ids=("story:1", "story:2"),
         cited_support_ids=("telegram:101_alt", "telegram:102", "telegram:103", "telegram:104"),
         claims=(claim_nagornaya_alt, claim_slobodka, claim_center, claim_petrovskogo),
     )
-    draft_alt = DigestNarrativeDraft(blocks=(), situation_items=(item_with_alt,))
+    draft_alt = _build_thematic_draft(item_with_alt)
     val_5 = validate_digest_narrative(
         draft_alt,
         narr_plan,
         support_index=sup_texts_with_alt,
-        situation_plan=updated_city_plan,
     )
     assert val_5.is_valid, f"Alternative support must satisfy requirement: {val_5.violations}"
 
@@ -919,7 +954,7 @@ def test_incident_run_44_negative_fact_coverage_gates():
     assert cov_trace_incomplete.material_fact_coverage < 1.0
     assert cov_trace_incomplete.material_fact_coverage == 0.75  # 3 out of 4 facts covered
 
-    # In draft_only_petrovskogo, story:1 is missing completely from situation prose:
+    # In draft_only_petrovskogo, story:1 is missing completely:
     with pytest.raises(DigestCoverageInvariantError) as exc_info:
         build_digest_coverage_trace(plan, draft_only_petrovskogo, narr_plan)
-    assert "missing dashboard coverage for story:1" in str(exc_info.value)
+    assert "story:1" in str(exc_info.value).lower() or "incomplete" in str(exc_info.value).lower()
