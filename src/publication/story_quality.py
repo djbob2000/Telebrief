@@ -52,17 +52,22 @@ _GENERIC_ENTITY_PATTERN = re.compile(
 )
 
 _ATTRIBUTION_PREFIX_RE = re.compile(
-    r"^(?:по\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев)|"
-    r"(?:жители|горожане|очевидцы)\s+(?:сообщают|пишут|отмечают)|"
-    r"в\s+(?:местных\s+чатах|соцсетях|сетях|пабликах)(?:\s+(?:жители|горожане))?(?:\s+(?:подтверждают|сообщают|пишут))?|"
-    r"несколько\s+горожан\s+сообщают)[,:\s]+",
+    r"^(?:по\s+(?:сообщениям|сообщению|словам|информации|данным)\s+(?:жителей|жителя|горожан|горожанина|очевидцев|очевидца)|"
+    r"(?:жители|житель|горожане|горожанин|очевидцы|очевидец)\s+(?:сообщают|сообщает|пишут|пишет|отмечают|отмечает)|"
+    r"в\s+(?:местных\s+чатах|соцсетях|сетях|пабликах)(?:\s+(?:жители|житель|горожане|горожанин))?(?:\s+(?:подтверждают|подтверждает|сообщают|сообщает|пишут|пишет))?|"
+    r"(?:несколько\s+)?(?:горожан|жителей)\s+(?:сообщают|сообщает|пишут|пишет|подтверждают|подтверждает))[,:\s]+",
     re.IGNORECASE,
 )
 
 _CHATTER_META_RE = re.compile(
-    r"\b(?:(?:жители|горожане|в\s+соцсетях|в\s+чатах)\s+)?(?:обсуждают(?:\s+текущую)?\s+ситуацию|"
+    r"\b(?:"
+    r"(?:(?:жители|житель|горожане|горожанин|в\s+соцсетях|в\s+чатах)\s+)?"
+    r"(?:обсуждают|выясняют|интересуются|сообщают\s+о|сообщает\s+о|сообщени[ея]\s+о)?(?:\s+текущ\w*)?\s+ситуаци[июей]\w*|"
     r"подробности\s+уточняются|информация\s+уточняется|ситуация\s+уточняется|"
-    r"выясняют\s+обстоятельства|жители\s+интересуются)\b",
+    r"выясняют\s+обстоятельства|жители\s+интересуются|"
+    r"конкретный\s+вид\s+сервиса\s+(?:в\s+сообщениях\s+)?не\s+уточняется|"
+    r"вид\s+сервиса\s+(?:в\s+сообщениях\s+)?не\s+уточняется"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -86,6 +91,7 @@ _CIVIC_EVENT_TOKENS_RE = re.compile(
     r"заверш\w*|оконч\w*|нач[ая]\w*|продолж\w*|"
     r"произош\w*|происход\w*|случи\w*|обнаруж\w*|установ\w*|постро\w*|сдела\w*|"
     r"огранич\w*|перенес\w*|достав\w*|привез\w*|"
+    r"прибы\w*|приезжа\w*|приеха\w*|дела\w*|сдела\w*|сто[яи]\w*|появи\w*|появля\w*|"
     r"вед\w*|выполн\w*|осуществл\w*|производ\w*|обеспеч\w*|организов\w*|заяв\w*|предупред\w*|опубликов\w*|планиру\w*|оста[её]тся|сохран\w*|"
     # Event / state nouns
     r"авари[яи]|прорыв\w*|ремонт\w*|отключени[ея]|перебо[яев]|восстановлени[ея]|возобновлени[ея]|"
@@ -95,6 +101,7 @@ _CIVIC_EVENT_TOKENS_RE = re.compile(
     # Predicates / states
     r"нет|нету|есть|доступен|доступна|доступно|доступны|недоступен|недоступна|недоступно|недоступны|"
     r"отсутству\w*|восстановлен\w*|отключен\w*|перекрыт\w*|открыт\w*|закрыт\w*|завершен\w*|поврежден\w*|"
+    r"0\s+по\s+(?:свету|воде|газу)|"
     # General Russian verb morphology fallback (verbs ending in -лся, -лась, -лось, -лись, -ется, -ются, -ится, -ятся)
     r"[а-яё]{3,}(?:лся|лась|лось|лись|ется|ются|ится|ятся)|"
     # Quantitative facts / measurements
@@ -193,7 +200,47 @@ def validate_story_publication_eligibility(
     if not non_question_items:
         return False, "resident_question_only"
 
-    # Rule 2: service_access requires concrete named entity or recognized utility
+    # Rule 2: Generic anonymous service check
+    all_story_text = " ".join(
+        [
+            getattr(payload, "headline", "") or "",
+            getattr(payload, "digest_summary", "") or getattr(payload, "summary", "") or "",
+        ]
+        + [getattr(item, "text", "") for item in non_question_items]
+    ).lower()
+
+    cat = getattr(payload, "category", "") or ""
+    tags = {str(t).lower() for t in (getattr(payload, "tags", ()) or ())}
+    has_recognized_domain = cat.lower() in RECOGNIZED_CORE_SERVICE_KEYS or bool(
+        tags.intersection(RECOGNIZED_CORE_SERVICE_KEYS)
+    )
+
+    if not has_recognized_domain:
+        if ("вид сервиса" in all_story_text and "не уточняется" in all_story_text) or re.search(
+            r"\b(?:проблемный\s+сервис|сторонний\s+сервис|городской\s+сервис)\b",
+            all_story_text,
+        ):
+            return False, "service_access_without_concrete_entity"
+
+        hl = getattr(payload, "headline", "") or ""
+        if re.search(r"\bсервис\b", hl, re.IGNORECASE):
+            named_tokens = {
+                "водоканал",
+                "горгаз",
+                "россети",
+                "банк",
+                "связь",
+                "интернет",
+                "провайдер",
+                "телеком",
+                "автобус",
+                "такси",
+                "почта",
+                "нотариус",
+            }
+            if not any(token in all_story_text for token in named_tokens):
+                return False, "service_access_without_concrete_entity"
+
     service_items = [
         item for item in non_question_items if getattr(item, "kind", "") == "service_access"
     ]
@@ -209,7 +256,6 @@ def validate_story_publication_eligibility(
                     all_generic = False
                     break
             else:
-                # Check top-level operational observations on payload if present
                 op_obs = getattr(payload, "operational_observations", ()) or ()
                 found_valid_op = False
                 for obs in op_obs:
@@ -223,16 +269,10 @@ def validate_story_publication_eligibility(
                     all_generic = False
                     break
 
-                # If no operational observations, check category and tags
-                cat = getattr(payload, "category", "") or ""
-                tags = {str(t).lower() for t in (getattr(payload, "tags", ()) or ())}
-                if cat.lower() in RECOGNIZED_CORE_SERVICE_KEYS or tags.intersection(
-                    RECOGNIZED_CORE_SERVICE_KEYS
-                ):
+                if has_recognized_domain:
                     all_generic = False
                     break
 
-                # Check if evidence text or headline itself mentions concrete service / entity
                 text_to_test = getattr(s_item, "text", "") or ""
                 hl = getattr(payload, "headline", "") or ""
                 combined = f"{hl} {text_to_test}".lower()
@@ -244,9 +284,14 @@ def validate_story_publication_eligibility(
         if all_generic:
             return False, "service_access_without_concrete_entity"
 
-    # Rule 3: at least one substantive evidence item or story summary must have a meaningful predicate
+    # Rule 3: at least one substantive evidence item or story summary must contain a meaningful predicate
     has_predicate = any(
-        has_meaningful_predicate(getattr(item, "text", "")) for item in non_question_items
+        has_meaningful_predicate(getattr(item, "text", ""))
+        or (
+            getattr(getattr(item, "service_state", None), "state", "").upper()
+            in {"AVAILABLE", "UNAVAILABLE", "DEGRADED", "RESTRICTED"}
+        )
+        for item in non_question_items
     )
     if not has_predicate:
         hl = getattr(payload, "headline", "") or ""

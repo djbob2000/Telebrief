@@ -1225,6 +1225,16 @@ def build_digest_presentation_plan(
 
         dash_supp_ids = dashboard_supports_by_story.get(sid, set())
 
+        is_pure_operational = (
+            getattr(card, "story_kind", "") == "operational_status"
+            and bool(candidate_evi)
+            and all(getattr(evi, "kind", "") == "service_access" for evi in candidate_evi)
+        )
+        if group_ids and is_pure_operational:
+            card_modes[sid] = "DASHBOARD_ONLY"
+            card_detail_supports[sid] = ()
+            continue
+
         non_dash_evi = [
             evi for evi in candidate_evi if getattr(evi, "evidence_id", "") not in dash_supp_ids
         ]

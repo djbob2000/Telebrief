@@ -59,6 +59,9 @@ def test_has_meaningful_predicate():
         is True
     )
 
+    # A publication label such as "Сообщение о ситуации" is metadata, not an event.
+    assert has_meaningful_predicate("Сообщение о ситуации в районе Водоканала") is False
+
 
 def test_validate_story_publication_eligibility_rejects_resident_question_only():
     payload = EventPayload(
@@ -118,6 +121,25 @@ def test_validate_story_publication_eligibility_rejects_predicateless_fragment()
     is_valid, reason = validate_story_publication_eligibility(payload)
     assert is_valid is False
     assert reason == "lacks_meaningful_predicate"
+
+
+def test_validate_story_publication_eligibility_rejects_generic_service_community_report():
+    """The run-44 service card was persisted as a community report, not service_access."""
+    payload = EventPayload(
+        headline="Жители Бердянска подтверждают, что сервис работает",
+        digest_summary="Несколько жителей Бердянска подтверждают, что сервис работает.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Несколько жителей Бердянска подтверждают, что сервис работает.",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(5,),
+            ),
+        ),
+    )
+    is_valid, reason = validate_story_publication_eligibility(payload)
+    assert is_valid is False
+    assert reason == "service_access_without_concrete_entity"
 
 
 def test_validate_story_publication_eligibility_accepts_valid_story():
