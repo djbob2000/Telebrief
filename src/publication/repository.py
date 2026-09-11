@@ -279,11 +279,6 @@ def _candidate_universe_sql() -> str:
                           <= %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                 ),
-                (
-                    SELECT scst.fragment_count
-                    FROM story_cluster_state scst
-                    WHERE scst.story_id = lr.story_id
-                ),
                 0
             ) AS claim_count,
             COALESCE(
@@ -302,15 +297,6 @@ def _candidate_universe_sql() -> str:
                           <= %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                 ),
-                (
-                    SELECT CASE
-                        WHEN scst.last_seen_at >= %(window_start)s AND scst.last_seen_at <= %(snapshot_at)s
-                        THEN scst.fragment_count
-                        ELSE 0
-                    END
-                    FROM story_cluster_state scst
-                    WHERE scst.story_id = lr.story_id
-                ),
                 0
             ) AS new_claims_count,
             COALESCE(
@@ -327,11 +313,6 @@ def _candidate_universe_sql() -> str:
                       AND COALESCE(si.published_at, si.first_collected_at, c.created_at)
                           <= %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
-                ),
-                (
-                    SELECT scst.unique_source_count
-                    FROM story_cluster_state scst
-                    WHERE scst.story_id = lr.story_id
                 ),
                 0
             ) AS source_count,
@@ -350,11 +331,7 @@ def _candidate_universe_sql() -> str:
                           <= %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                 ),
-                (
-                    SELECT scst.last_seen_at
-                    FROM story_cluster_state scst
-                    WHERE scst.story_id = lr.story_id
-                )
+                NULL
             ) AS newest_source_published_at,
             (
                 SELECT si.metadata->>'temporal_fidelity'
@@ -386,11 +363,6 @@ def _candidate_universe_sql() -> str:
                       )
                       AND lr.reason NOT LIKE 'event_%%'
                     UNION ALL
-                    SELECT scst.last_seen_at AS event_time
-                    FROM story_cluster_state scst
-                    WHERE scst.story_id = lr.story_id
-                      AND scst.last_seen_at <= %(snapshot_at)s
-                    UNION ALL
                     SELECT MAX(sc.attached_at) AS event_time
                     FROM story_claims sc
                     JOIN claims c ON c.id = sc.claim_id
@@ -408,6 +380,7 @@ def _candidate_universe_sql() -> str:
                     FROM story_state_events sse
                     WHERE sse.story_id = lr.story_id
                       AND sse.observed_at <= %(snapshot_at)s
+                      AND sse.observed_at <= %(source_cutoff_at)s
                 ) t
             ) AS last_activity_at,
             (
@@ -430,10 +403,17 @@ def _candidate_universe_sql() -> str:
             ) AS has_recent_revision,
             EXISTS (
                 SELECT 1
-                FROM story_cluster_state scst2
-                WHERE scst2.story_id = lr.story_id
-                  AND scst2.last_seen_at >= %(window_start)s
-                  AND scst2.last_seen_at <= %(snapshot_at)s
+                FROM story_fragments sf2
+                JOIN source_fragments f2 ON f2.id = sf2.fragment_id
+                JOIN source_item_revisions sir2 ON sir2.id = f2.source_item_revision_id
+                JOIN source_items si2 ON si2.id = sir2.source_item_id
+                JOIN sources src2 ON src2.id = si2.source_id
+                WHERE sf2.story_id = lr.story_id
+                  AND sf2.assigned_at >= %(window_start)s
+                  AND sf2.assigned_at <= %(snapshot_at)s
+                  AND COALESCE(si2.published_at, si2.first_collected_at, f2.created_at)
+                      <= %(source_cutoff_at)s
+                  AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src2.platform <> ALL(%(excluded_platforms)s::text[]))
             ) AS has_recent_fragment,
             EXISTS (
                 SELECT 1
@@ -456,6 +436,7 @@ def _candidate_universe_sql() -> str:
                 WHERE sse2.story_id = lr.story_id
                   AND sse2.observed_at >= %(window_start)s
                   AND sse2.observed_at <= %(snapshot_at)s
+                  AND sse2.observed_at <= %(source_cutoff_at)s
             ) AS has_recent_event
         FROM latest_revs lr
         JOIN stories s ON s.id = lr.story_id
@@ -835,9 +816,9 @@ class PublicationRepository:
 
         # Single knowledge source isolation: if event_first stories with rich analysis exist, prioritize them
         has_rich_event_first = any(
-            r[16] == "event_first"
-            and isinstance(r[17], dict)
-            and r[17].get("publishability") in ("news", "brief")
+            r[17] == "event_first"
+            and isinstance(r[18], dict)
+            and r[18].get("publishability") in ("news", "brief")
             for r in rows
         )
 
@@ -845,9 +826,9 @@ class PublicationRepository:
             rows = [
                 r
                 for r in rows
-                if r[16] == "event_first"
-                and isinstance(r[17], dict)
-                and r[17].get("publishability") in ("news", "brief")
+                if r[17] == "event_first"
+                and isinstance(r[18], dict)
+                and r[18].get("publishability") in ("news", "brief")
             ]
 
         # If platforms are excluded, derive filtered editorial text for snapshot features

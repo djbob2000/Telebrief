@@ -150,11 +150,21 @@ async def test_drain_authority_gap_loops_and_drains():
         return []
 
     mock_repo.find_authority_gap_story_ids = AsyncMock(side_effect=find_gap)
+    mock_repo.find_authority_gap_targets = AsyncMock(
+        return_value=[SimpleNamespace(story_id=101, assignment_id=1)]
+    )
 
     service = PublicationSnapshotService(uow=mock_uow, repo=mock_repo)
 
-    coalesce_mock = AsyncMock()
-    with patch("src.jobs.event_processing.run_legacy_coalesce_dirty_stories", coalesce_mock):
+    authority_mock = MagicMock()
+    authority_mock.process_batch = AsyncMock()
+    with (
+        patch(
+            "src.publication.snapshot.EventAuthorityService.from_runtime",
+            return_value=authority_mock,
+        ),
+        patch("src.publication.snapshot.get_runtime", return_value=SimpleNamespace()),
+    ):
         remaining = await service.drain_authority_gap(
             edition_id=1,
             snapshot_at=initial_snapshot,
@@ -162,8 +172,7 @@ async def test_drain_authority_gap_loops_and_drains():
         )
 
     assert remaining == 0
-    assert coalesce_mock.await_count == 1
-    coalesce_mock.assert_awaited_with(edition_id=1, force_settled=True, story_ids=[101])
+    authority_mock.process_batch.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -186,9 +195,20 @@ async def test_run_drain_keeps_frozen_snapshot_after_coalesce():
         return [101]
 
     mock_repo.find_authority_gap_story_ids = AsyncMock(side_effect=find_gap)
+    mock_repo.find_authority_gap_targets = AsyncMock(
+        return_value=[SimpleNamespace(story_id=101, assignment_id=1)]
+    )
     service = PublicationSnapshotService(uow=mock_uow, repo=mock_repo)
 
-    with patch("src.jobs.event_processing.run_legacy_coalesce_dirty_stories", AsyncMock()):
+    authority_mock = MagicMock()
+    authority_mock.process_batch = AsyncMock()
+    with (
+        patch(
+            "src.publication.snapshot.EventAuthorityService.from_runtime",
+            return_value=authority_mock,
+        ),
+        patch("src.publication.snapshot.get_runtime", return_value=SimpleNamespace()),
+    ):
         remaining = await service.drain_authority_gap(run_id=42, max_rounds=1)
 
     assert remaining == 1

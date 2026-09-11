@@ -151,10 +151,9 @@ async def build_publication_preview(
 ) -> PublicationPreviewResult:
     """Generate a full publication preview in-process without delivery side effects.
 
-    Executes the canonical production publication pipeline: drain candidate
-    knowledge -> freeze a PublicationRun -> seal_candidates -> select ->
-    generate -> Publication, with explicit flags to suppress queueing
-    selection, generation, and delivery jobs.
+    Executes the canonical production intent/readiness pipeline, then runs
+    selection and generation synchronously with delivery and durable follow-up
+    jobs disabled.
 
     Raises:
         ArticlePublicationRejected: the one-call Event-First article writer did not
@@ -166,72 +165,41 @@ async def build_publication_preview(
         config = load_config()
     validate_publication_config(config)
 
+    from src.jobs.publication import _prepare_publication_from_intent_once
     from src.publication.generation import PublicationGenerationService
-    from src.publication.policies import PublicationPolicyService
+    from src.publication.orchestrator import PublicationOrchestrator
     from src.publication.selection import EditorialSelectionService
-    from src.publication.snapshot import IncompleteTriageError, PublicationSnapshotService
-    from src.repositories.editions import EditionRepository
+    from src.publication.snapshot import IncompleteTriageError
     from src.runtime import get_runtime
 
     runtime = get_runtime()
     snap = snapshot_at or dt.datetime.now(dt.timezone.utc)
     key = f"preview:{edition_slug}:{publication_type}:{uuid.uuid4().hex}"
 
-    async with runtime.uow.transaction() as conn:
-        edition = await EditionRepository().get_by_slug(conn, edition_slug)
-        if edition is None:
-            raise ValueError(f"edition slug {edition_slug!r} not found")
-        policy_set = await PublicationPolicyService().ensure_current(
-            conn,
-            edition_id=edition.id,
-            publication_type=publication_type,
-            config=config,
-            lookback_hours_override=lookback_hours,
-        )
-
-    service = PublicationSnapshotService(uow=runtime.uow)
-    knowledge_snapshot_at: dt.datetime | None = None
-    remaining = 1
-    for _ in range(3):
-        candidate_at = dt.datetime.now(dt.timezone.utc)
-        await service.drain_authority_gap(
-            edition_id=edition.id,
-            source_cutoff_at=snap,
-            snapshot_at=candidate_at,
-            eligibility_policy_id=policy_set.eligibility_policy_id,
-            max_rounds=1,
-        )
-        knowledge_snapshot_at = dt.datetime.now(dt.timezone.utc)
-        remaining = await service.count_authority_gap(
-            edition_id=edition.id,
-            source_cutoff_at=snap,
-            snapshot_at=knowledge_snapshot_at,
-            eligibility_policy_id=policy_set.eligibility_policy_id,
-        )
-        if remaining == 0:
-            break
-    if knowledge_snapshot_at is None or remaining != 0:
-        raise IncompleteTriageError("authority gap did not converge for preview")
-
-    run = await service.create_run(
-        edition_id=edition.id,
+    intent = await PublicationOrchestrator(uow=runtime.uow, config=config).request(
+        edition_slug=edition_slug,
         publication_type=publication_type,
-        source_cutoff_at=snap,
-        snapshot_at=knowledge_snapshot_at,
+        trigger="manual",
+        target_at=snap,
         request_key=key,
-        policy_ids=policy_set,
-        metadata={"preview": True},
+        lookback_hours=lookback_hours,
+        defer_preparation=False,
     )
+    if intent.readiness_status != "ready_for_preparation":
+        raise IncompleteTriageError(
+            f"preview readiness did not complete: {intent.readiness_status}"
+        )
 
-    async with runtime.uow.transaction() as conn:
-        await service.seal_candidates(run.id, conn=conn)
+    run_id = await _prepare_publication_from_intent_once(intent.intent_id, defer_selection=False)
+    if run_id is None:
+        raise RuntimeError(f"preview intent {intent.intent_id} did not create a PublicationRun")
 
     selector = EditorialSelectionService(uow=runtime.uow, config=config)
-    await selector.select(run.id, defer_generation=False)
+    await selector.select(run_id, defer_generation=False)
 
     generator = PublicationGenerationService(uow=runtime.uow, config=config)
     pub = await generator.generate(
-        run.id,
+        run_id,
         defer_delivery=False,
         publication_metadata={"preview": True, "preview_mode": "no_delivery"},
     )
@@ -240,15 +208,15 @@ async def build_publication_preview(
         "generated preview %s publication %s (run=%s, edition=%s)",
         publication_type,
         pub.id,
-        run.id,
+        run_id,
         edition_slug,
     )
     return PublicationPreviewResult(
-        run_id=run.id,
+        run_id=run_id,
         publication_id=pub.id,
         title=pub.title,
         lead=pub.lead or "",
         body=pub.body,
         publication_type=pub.publication_type,
-        snapshot_at=knowledge_snapshot_at,
+        snapshot_at=intent.target_at,
     )

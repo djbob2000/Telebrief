@@ -16,7 +16,7 @@ from src.config_loader import Config
 from src.core import (
     MAX_CHANNEL_MESSAGES,
     MAX_DIGEST_HOURS,
-    build_digest,
+    build_digest,  # noqa: F401 — compatibility export for integrations that patch the retired fallback
     collect_channel_messages,
     read_last_digest_async,
     validate_hours,
@@ -117,11 +117,8 @@ def build_server(config: Config, logger: logging.Logger) -> MCPServer:
                 else f"No messages found in the last {hours} hours."
             )
         except Exception as exc:
-            logger.warning(
-                "Unified publication preview failed in MCP: %s; falling back to build_digest", exc
-            )
-            digest = await build_digest(config, logger, hours)
-            return digest or f"No messages found in the last {hours} hours."
+            logger.warning("Unified publication preview failed in MCP: %s", exc)
+            raise
 
     @mcp.tool()
     async def get_last_digest() -> str:

@@ -224,6 +224,13 @@ async def test_scheduled_ready_before_slot_waits():
 async def test_scheduled_ready_snapshot_is_not_moved_when_slot_opens():
     repo = FakeReadinessRepository(_refresh(), [_source()])
     service = PublicationReadinessService(repo)
+    authority_checks: list[dt.datetime] = []
+
+    async def authority_gap_checker(conn, refresh, evaluation_at):
+        authority_checks.append(evaluation_at)
+        return [] if len(authority_checks) == 1 else [9001]
+
+    service = PublicationReadinessService(repo, authority_gap_checker=authority_gap_checker)
     first = await service.reconcile(None, 10, now=NOW - dt.timedelta(minutes=1))
 
     assert first.status == "ready_waiting_slot"
@@ -234,6 +241,7 @@ async def test_scheduled_ready_snapshot_is_not_moved_when_slot_opens():
 
     assert second.status == "ready_for_preparation"
     assert repo.refresh.knowledge_snapshot_at == frozen
+    assert len(authority_checks) == 1
 
 
 @pytest.mark.asyncio

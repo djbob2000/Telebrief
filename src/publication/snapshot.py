@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from src.db.uow import DatabaseUnitOfWork
+from src.processing.event_authority import EventAuthorityService
 from src.publication.models import (
     PublicationCandidate,
     PublicationPolicySet,
@@ -15,6 +16,7 @@ from src.publication.models import (
 )
 from src.publication.policies import PublicationPolicyService
 from src.publication.repository import PublicationRepository
+from src.runtime import get_runtime
 
 logger = logging.getLogger(__name__)
 
@@ -124,8 +126,6 @@ class PublicationSnapshotService:
             run_id,
         )
 
-        from src.jobs.event_processing import run_legacy_coalesce_dirty_stories
-
         rounds = 0
         # A PublicationRun is a frozen knowledge boundary. Candidate drains
         # may move their cutoff forward, but a run-specific drain must keep
@@ -136,27 +136,19 @@ class PublicationSnapshotService:
         while gap_story_ids and rounds < max_rounds:
             rounds += 1
             async with self.uow.transaction() as conn:
-                await conn.execute(
-                    """
-                    UPDATE story_cluster_state
-                    SET analysis_dirty = TRUE
-                    WHERE story_id = ANY(%s)
-                    """,
-                    (gap_story_ids,),
-                )
-            if source_cutoff_at is None:
-                await run_legacy_coalesce_dirty_stories(
+                targets = await self.repo.find_authority_gap_targets(
+                    conn,
                     edition_id=edition_id,
-                    force_settled=True,
-                    story_ids=gap_story_ids,
-                )
-            else:
-                await run_legacy_coalesce_dirty_stories(
-                    edition_id=edition_id,
-                    force_settled=True,
-                    story_ids=gap_story_ids,
                     source_cutoff_at=source_cutoff_at,
+                    snapshot_at=candidate_snapshot_at,
+                    eligibility_policy_id=eligibility_policy_id,
                 )
+            # Use the bounded assignment-scoped authority service.  The old
+            # synchronous coalesce helper holds an edition-wide cycle claim
+            # across Gate/Analysis provider calls and is not safe here.
+            runtime = get_runtime()
+            authority = EventAuthorityService.from_runtime(runtime)
+            await authority.process_batch(targets, mode="publication")
             # A drain is allowed to make newly-created knowledge eligible for
             # the candidate snapshot. Historical PublicationRun reads remain
             # fenced by their saved snapshot_at; only this pre-publication

@@ -126,7 +126,9 @@ async def prepare_publication_from_intent(context: Any, intent_id: int) -> None:
         raise
 
 
-async def _prepare_publication_from_intent_once(intent_id: int) -> None:
+async def _prepare_publication_from_intent_once(
+    intent_id: int, *, defer_selection: bool = True
+) -> int | None:
     """Create a PublicationRun only after a durable intent is ready."""
     from src.config_loader import load_config
     from src.publication.policies import PublicationPolicyService
@@ -145,7 +147,7 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
         if refresh is None:
             raise ValueError(f"publication intent {intent_id} not found")
         if refresh.status == "publication_queued":
-            return
+            return refresh.publication_run_id
         if refresh.status != "preparing":
             raise ValueError(f"publication intent {intent_id} is not preparing: {refresh.status}")
         edition = await EditionRepository().get_by_id(conn, refresh.edition_id)
@@ -174,7 +176,7 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
         if current_refresh is None:
             raise ValueError(f"refresh run {refresh.id} not found")
         if current_refresh.status == "publication_queued":
-            return
+            return current_refresh.publication_run_id
         if current_refresh.status != "preparing":
             raise ValueError(f"refresh run {refresh.id} is not preparing")
         legacy_refresh = not hasattr(current_refresh, "knowledge_snapshot_at")
@@ -211,7 +213,7 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
                 await readiness_repo.transition_refresh(
                     conn, current_refresh.id, status="processing"
                 )
-                return
+                return None
             raise PreparationContractChangedError(
                 f"refresh run {current_refresh.id} has {gap_count} authority gaps "
                 f"at frozen snapshot {knowledge_snapshot_at.isoformat()}"
@@ -248,7 +250,11 @@ async def _prepare_publication_from_intent_once(intent_id: int) -> None:
                 ),
             },
         )
-        await select_stories_for_publication.configure(connection=conn).defer_async(run_id=run.id)
+        if defer_selection:
+            await select_stories_for_publication.configure(connection=conn).defer_async(
+                run_id=run.id
+            )
+        return run.id
 
 
 def _is_final_publication_attempt(context: Any) -> bool:

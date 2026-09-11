@@ -121,8 +121,24 @@ class PublicationReadinessService:
             return PublicationReadinessDecision("failed", None, refresh.error_kind)
         if refresh.status in {"preparing", "publication_queued"}:
             raise ValueError(f"refresh run {refresh.id} is not reconcilable: {refresh.status}")
-        if refresh.status == "ready_waiting_slot" and now < refresh.slot_at:
-            return PublicationReadinessDecision("ready_waiting_slot", None)
+        if refresh.status == "ready_waiting_slot":
+            if now < refresh.slot_at:
+                return PublicationReadinessDecision("ready_waiting_slot", None)
+            # Once readiness has been proven and the knowledge boundary has
+            # been frozen, the slot is only a scheduling barrier.  Re-running
+            # collection/authority checks here would evaluate a newer
+            # knowledge universe while the eventual PublicationRun still
+            # reads the earlier frozen snapshot.
+            if refresh.knowledge_snapshot_at is not None:
+                await self._transition(
+                    conn,
+                    refresh.id,
+                    status="ready_for_preparation",
+                    collection_ready_at=refresh.collection_ready_at,
+                    processing_ready_at=refresh.processing_ready_at,
+                    now=now,
+                )
+                return self._normal_decision(refresh)
 
         evaluation_at = min(now, refresh.deadline_at)
         try:

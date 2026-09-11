@@ -186,6 +186,27 @@ async def seed_claim_for_story(
         (platform, f"ext-{story_id}-{now.timestamp()}", f"https://t.me/c{story_id}"),
     )
     source_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (source_id, edition_id),
+    )
+    await conn.execute(
+        """
+        INSERT INTO collection_checkpoints (source_id, last_success_at, last_scan_at)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (source_id) DO UPDATE SET
+            last_success_at = EXCLUDED.last_success_at,
+            last_scan_at = EXCLUDED.last_scan_at
+        """,
+        (source_id, now, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO collection_runs (source_id, trigger, started_at, completed_at, status)
+        VALUES (%s, 'manual', %s, %s, 'success')
+        """,
+        (source_id, now - dt.timedelta(seconds=1), now),
+    )
     cur = await conn.execute(
         "INSERT INTO source_items (source_id, kind, external_id, first_collected_at, published_at) VALUES (%s, 'msg', %s, %s, %s) RETURNING id",
         (source_id, f"item-{story_id}-{now.timestamp()}", now, now),

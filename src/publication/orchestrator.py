@@ -114,6 +114,7 @@ class PublicationOrchestrator:
         request_key: str | None = None,
         lookback_hours: int | None = None,
         now: dt.datetime | None = None,
+        defer_preparation: bool = True,
     ) -> PublicationIntentResult:
         """Create/get and immediately reconcile one publication intent."""
         target_at = _utc(target_at)
@@ -159,7 +160,11 @@ class PublicationOrchestrator:
             else:
                 decision = await self.readiness.reconcile(conn, intent.id, now=now)
                 decision, source_ids_to_enqueue = await self._prepare_decision(
-                    conn, intent, decision, now=now
+                    conn,
+                    intent,
+                    decision,
+                    now=now,
+                    defer_preparation=defer_preparation,
                 )
                 edition_slug_result = edition.slug
 
@@ -196,7 +201,7 @@ class PublicationOrchestrator:
                 raise ValueError(f"publication intent {intent_id} not found")
             decision = await self.readiness.reconcile(conn, intent.id, now=now)
             decision, source_ids_to_enqueue = await self._prepare_decision(
-                conn, intent, decision, now=now
+                conn, intent, decision, now=now, defer_preparation=True
             )
         await self._enqueue_sources(source_ids_to_enqueue)
         logger.info(
@@ -223,6 +228,7 @@ class PublicationOrchestrator:
         decision: PublicationReadinessDecision,
         *,
         now: dt.datetime,
+        defer_preparation: bool,
     ) -> tuple[PublicationReadinessDecision, list[int]]:
         """Apply retry/claim policy while the intent transaction is held."""
         if decision.status == "failed":
@@ -239,7 +245,7 @@ class PublicationOrchestrator:
 
         if decision.status == "ready_for_preparation":
             claimed = await self.readiness_repo.mark_preparing(conn, refresh_run_id=intent.id)
-            if claimed is not None:
+            if claimed is not None and defer_preparation:
                 await self._defer_preparation(conn, intent.id)
             return decision, []
 

@@ -9,6 +9,8 @@ from uuid import UUID
 
 import psycopg
 
+from src.processing.errors import RevisionClaimLostError
+
 
 @dataclass(frozen=True)
 class RevisionProcessingState:
@@ -215,7 +217,7 @@ class EventRevisionProcessingRepository:
     ) -> None:
         if not revision_ids:
             return
-        await conn.execute(
+        cursor = await conn.execute(
             """
             UPDATE event_revision_processing_state
             SET status = 'succeeded', completed_at = now(),
@@ -223,10 +225,20 @@ class EventRevisionProcessingRepository:
                 reused_from_revision_id = NULL, claim_token = NULL,
                 claim_expires_at = NULL, updated_at = now()
             WHERE source_item_revision_id = ANY(%s::bigint[])
+              AND status = 'running'
               AND claim_token = %s
+              AND claim_expires_at > now()
+            RETURNING source_item_revision_id
             """,
             (list(revision_ids), claim_token),
         )
+        updated = {int(row[0]) for row in await cursor.fetchall()}
+        expected = {int(revision_id) for revision_id in revision_ids}
+        if updated != expected:
+            raise RevisionClaimLostError(
+                f"claim lost while marking succeeded: expected={sorted(expected)}, "
+                f"updated={sorted(updated)}"
+            )
 
     async def mark_failed(
         self,
@@ -238,17 +250,27 @@ class EventRevisionProcessingRepository:
     ) -> None:
         if not revision_ids:
             return
-        await conn.execute(
+        cursor = await conn.execute(
             """
             UPDATE event_revision_processing_state
             SET status = 'failed', last_error_kind = %s,
                 completed_at = now(), claim_token = NULL,
                 claim_expires_at = NULL, updated_at = now()
             WHERE source_item_revision_id = ANY(%s::bigint[])
+              AND status = 'running'
               AND claim_token = %s
+              AND claim_expires_at > now()
+            RETURNING source_item_revision_id
             """,
             (error_kind, list(revision_ids), claim_token),
         )
+        updated = {int(row[0]) for row in await cursor.fetchall()}
+        expected = {int(revision_id) for revision_id in revision_ids}
+        if updated != expected:
+            raise RevisionClaimLostError(
+                f"claim lost while marking failed: expected={sorted(expected)}, "
+                f"updated={sorted(updated)}"
+            )
 
     async def mark_reused(
         self,
