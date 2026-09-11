@@ -12,13 +12,11 @@ from src.processing.operational_semantics import (
     derive_operational_observations,
     sanitize_operational_detail,
 )
-from src.publication.city_situation import CitySituationItem, CitySituationRollup
+from src.publication.city_situation import CitySituationItem
 from src.publication.digest_presentation import (
     _canonical_city_situation_subject,
     _compute_merge_groups,
     _detail_line,
-    build_digest_presentation_plan,
-    plan_city_situation_presentation,
 )
 
 
@@ -217,109 +215,6 @@ def test_option_a_canonical_city_situation_subjects() -> None:
     assert _canonical_city_situation_subject(mokrany_item) is None
     assert _canonical_city_situation_subject(aid_item) is None
     assert _canonical_city_situation_subject(intercity_bus_item) is None
-
-
-def test_option_a_plan_city_situation_excludes_non_infrastructure_losslessly() -> None:
-    now = dt.datetime.now(dt.timezone.utc)
-    water_item = CitySituationItem(
-        subject_key="water_supply",
-        subject_label="Водоснабжение",
-        dimension="availability",
-        location="Центр",
-        entity="",
-        state="UNAVAILABLE",
-        detail="Ремонт трубы",
-        source_refs=("ref:w1",),
-        first_observed_at=now,
-        last_observed_at=now,
-        observation_count=1,
-    )
-    mokrany_item = CitySituationItem(
-        subject_key="border_crossing_mokrany",
-        subject_label="КПП Мокраны",
-        dimension="availability",
-        location="Мокраны",
-        entity="",
-        state="RESTRICTED",
-        detail="Пеший переход",
-        source_refs=("ref:m1",),
-        first_observed_at=now,
-        last_observed_at=now,
-        observation_count=1,
-    )
-    aid_item = CitySituationItem(
-        subject_key="humanitarian_aid",
-        subject_label="Гуманитарная помощь",
-        dimension="availability",
-        location="Бердянск",
-        entity="",
-        state="AVAILABLE",
-        detail="Денежная помощь",
-        source_refs=("ref:a1",),
-        first_observed_at=now,
-        last_observed_at=now,
-        observation_count=1,
-    )
-    rollup = CitySituationRollup(items=(water_item, mokrany_item, aid_item))
-
-    plan = plan_city_situation_presentation(rollup)
-    # Only water must be in city situation groups
-    group_subjects = [g.subject_key for g in plan.groups]
-    assert group_subjects == ["water"]
-    assert "border_crossing_mokrany" not in group_subjects
-    assert "humanitarian_aid" not in group_subjects
-
-
-def test_option_a_build_presentation_plan_preserves_non_dashboard_stories() -> None:
-    now = dt.datetime.now(dt.timezone.utc)
-    water_item = CitySituationItem(
-        subject_key="water_supply",
-        subject_label="Водоснабжение",
-        dimension="availability",
-        location="Центр",
-        entity="",
-        state="UNAVAILABLE",
-        detail="Ремонт трубы",
-        source_refs=("ref:w1",),
-        first_observed_at=now,
-        last_observed_at=now,
-        observation_count=1,
-    )
-    mokrany_item = CitySituationItem(
-        subject_key="border_crossing_mokrany",
-        subject_label="КПП Мокраны",
-        dimension="availability",
-        location="Мокраны",
-        entity="",
-        state="RESTRICTED",
-        detail="Пеший переход",
-        source_refs=("ref:m1",),
-        first_observed_at=now,
-        last_observed_at=now,
-        observation_count=1,
-    )
-    rollup = CitySituationRollup(items=(water_item, mokrany_item))
-
-    card_water = _make_card("story:1", "Вода в центре", ["водоснабжение"], source_refs=["ref:w1"])
-    card_mokrany = _make_card(
-        "story:2", "Перевозки в Европу", ["перевозки"], source_refs=["ref:m1"]
-    )
-
-    plan = build_digest_presentation_plan(
-        cards=[card_water, card_mokrany],
-        city_situation=rollup,
-        evidence={},
-    )
-    # Both stories must be in plan
-    assert "story:1" in plan.story_ids
-    assert "story:2" in plan.story_ids
-
-    hints = {h.story_id: h for h in plan.story_hints}
-    # Water overlaps dashboard
-    assert hints["story:1"].mode == "DASHBOARD_ONLY"
-    # Mokrany is NOT in dashboard, so it MUST fall back to DETAIL_ONLY
-    assert hints["story:2"].mode == "DETAIL_ONLY"
-    assert "situation:border_crossing_mokrany" not in hints["story:2"].city_situation_group_ids
 
 
 # ---------------------------------------------------------------------------

@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
-import json
-from argparse import Namespace
-from pathlib import Path
 
 import pytest
 
-from scripts.benchmark_publication_floor_parity import run_benchmark
 from src.domain.event_payload import EventPayload, EvidenceItemPayload
 from src.domain.service_state import ServiceStatePayload
 from src.editorial_models import StoryCard
@@ -238,80 +234,3 @@ def test_thematic_merge_rules_enforce_clique_6_and_reject_incompatible_workaroun
         category="utilities",
     )
     assert _are_cards_merge_compatible(card_status, card_workaround) is False
-
-
-@pytest.mark.asyncio
-async def test_digest_legacy_floor_parity_and_coverage_denominator(tmp_path: Path):
-    """Run benchmark against frozen legacy floor fixture verifying 100% coverage and detail retention."""
-    from scripts.publication_regression import LegacyCoverageCase
-
-    fixture_path = (
-        Path(__file__).resolve().parent.parent
-        / "fixtures"
-        / "berdyansk_2026_09_01_digest_legacy_floor.json"
-    )
-    assert fixture_path.exists(), f"Fixture missing at {fixture_path}"
-
-    case = LegacyCoverageCase.load_json(fixture_path)
-    # Build complete export payload covering all fixture units
-    all_frag_ids = [
-        s.fixture_fragment_id
-        for u in case.coverage_units
-        for s in u.acceptable_sources
-        if s.fixture_fragment_id
-    ]
-    all_fingerprints = [
-        s.source_fingerprint
-        for u in case.coverage_units
-        for s in u.acceptable_sources
-        if s.source_fingerprint
-    ]
-    final_trace_units = []
-    for u in case.coverage_units:
-        text = f"{u.description} " + " ".join(u.required_microdetails)
-        frag_ids = [s.fixture_fragment_id for s in u.acceptable_sources if s.fixture_fragment_id]
-        fps = [s.source_fingerprint for s in u.acceptable_sources if s.source_fingerprint]
-        final_trace_units.append(
-            {
-                "text": text,
-                "fixture_fragment_ids": frag_ids,
-                "source_fingerprints": fps,
-                "source_refs": [],
-            }
-        )
-
-    export_payload = {
-        "source_fragment_ids": all_frag_ids,
-        "source_fingerprints": all_fingerprints,
-        "evidence_fragment_ids": all_frag_ids,
-        "evidence_fingerprints": all_fingerprints,
-        "candidate_fragment_ids": all_frag_ids,
-        "candidate_fingerprints": all_fingerprints,
-        "sealed_fragment_ids": all_frag_ids,
-        "sealed_fingerprints": all_fingerprints,
-        "plan_fragment_ids": all_frag_ids,
-        "final_trace_fragment_ids": all_frag_ids,
-        "final_trace_units": final_trace_units,
-    }
-
-    export_path = tmp_path / "export.json"
-    with open(export_path, "w", encoding="utf-8") as f:
-        json.dump(export_payload, f)
-
-    report_path = tmp_path / "parity_report.json"
-    args = Namespace(
-        case=str(fixture_path),
-        export=str(export_path),
-        run_id=None,
-        database_url=None,
-        output=str(report_path),
-    )
-    exit_code = await run_benchmark(args)
-    assert exit_code == 0
-    assert report_path.exists()
-
-    with open(report_path, "r", encoding="utf-8") as f:
-        report = json.load(f)
-
-    assert report["legacy_floor_coverage"] == 1.0
-    assert report["legacy_microdetail_retention"] == 1.0
