@@ -262,6 +262,12 @@ class EventAuthorityService:
 
             heartbeat_task = asyncio.create_task(renew_claims())
             try:
+                loop = asyncio.get_running_loop()
+                provider_deadline = loop.time() + cfg.authority_provider_timeout_seconds
+
+                def remaining_provider_time() -> float:
+                    return float(provider_deadline - loop.time())
+
                 try:
                     result = await asyncio.wait_for(
                         self.triage_service.triage_stories_batch(
@@ -284,7 +290,7 @@ class EventAuthorityService:
                             decision_fence=decision_fence,
                             before_decision_persist=before_decision_persist,
                         ),
-                        timeout=cfg.authority_provider_timeout_seconds,
+                        timeout=max(0.0, remaining_provider_time()),
                     )
                 except asyncio.TimeoutError:
                     result = StoryGateBatchResult(
@@ -297,13 +303,20 @@ class EventAuthorityService:
                 result_by_id = {gate.story_id: gate for gate in result.results}
                 fence_lost = set(result.fence_lost_story_ids)
                 deferred = set(result.deferred_story_ids) - fence_lost
-                missing = set(result.missing_story_ids) - fence_lost
+                recoverable = (
+                    set(result.missing_story_ids) | set(result.invalid_story_ids)
+                ) - fence_lost
 
                 singleton_failures: dict[int, StoryGateBatchResult] = {}
-                partial_targets = [item for item in claimed if item.target.story_id in missing]
+                recoverable_targets = [
+                    item for item in claimed if item.target.story_id in recoverable
+                ]
                 extra_calls_budget = cfg.triage_split_max_extra_calls_per_cycle
-                for item in partial_targets:
+                for item in recoverable_targets:
                     if extra_calls_budget <= 0:
+                        break
+                    remaining = remaining_provider_time()
+                    if remaining <= 0:
                         break
                     extra_calls_budget -= 1
                     try:
@@ -323,7 +336,7 @@ class EventAuthorityService:
                                 decision_fence=decision_fence,
                                 before_decision_persist=before_decision_persist,
                             ),
-                            timeout=cfg.authority_provider_timeout_seconds,
+                            timeout=max(0.0, remaining),
                         )
                     except asyncio.TimeoutError:
                         singleton_result = StoryGateBatchResult(
@@ -336,21 +349,21 @@ class EventAuthorityService:
                         recovered_gate = singleton_result.results[0]
                         result_by_id[recovered_gate.story_id] = recovered_gate
                         deferred.discard(recovered_gate.story_id)
-                        missing.discard(recovered_gate.story_id)
+                        recoverable.discard(recovered_gate.story_id)
                         stats.triaged += 1
                     elif singleton_result.fence_lost_story_ids:
                         for fid in singleton_result.fence_lost_story_ids:
                             fence_lost.add(fid)
                             deferred.discard(fid)
-                            missing.discard(fid)
+                            recoverable.discard(fid)
                     else:
-                        missing.discard(item.target.story_id)
+                        recoverable.discard(item.target.story_id)
                         singleton_failures[item.target.story_id] = singleton_result
             finally:
                 heartbeat_stop.set()
                 await heartbeat_task
 
-            durable_failure_ids = deferred - missing
+            durable_failure_ids = deferred - recoverable
             if result.batch_error_kind is not None or singleton_failures:
                 stats.provider_failures += len(durable_failure_ids)
             if durable_failure_ids:

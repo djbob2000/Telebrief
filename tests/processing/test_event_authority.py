@@ -232,16 +232,13 @@ def _create_test_authority_service(
         acquire_cycle=AsyncMock(return_value=SimpleNamespace(edition_id=1)),
         release_cycle=AsyncMock(),
         try_claim_stage=AsyncMock(
-            side_effect=lambda conn,
-            story_id,
-            latest_assignment_id,
-            stage,
-            owner_id,
-            ttl_seconds: SimpleNamespace(
-                story_id=story_id,
-                latest_assignment_id=latest_assignment_id,
-                stage=stage,
-                claim_token="token",
+            side_effect=lambda conn, story_id, latest_assignment_id, stage, owner_id, ttl_seconds: (
+                SimpleNamespace(
+                    story_id=story_id,
+                    latest_assignment_id=latest_assignment_id,
+                    stage=stage,
+                    claim_token="token",
+                )
             )
         ),
         release_stage=AsyncMock(),
@@ -278,8 +275,8 @@ async def test_process_batch_partial_gate_recovers_missing_story_via_singleton()
 
     state1 = SimpleNamespace(story_id=1, latest_assignment_id=10)
     state2 = SimpleNamespace(story_id=2, latest_assignment_id=20)
-    service.cluster_repo.get_cluster_state.side_effect = (
-        lambda conn, sid: state1 if sid == 1 else state2
+    service.cluster_repo.get_cluster_state.side_effect = lambda conn, sid: (
+        state1 if sid == 1 else state2
     )
 
     gate1 = StoryGateResult(
@@ -375,8 +372,8 @@ async def test_process_batch_partial_gate_budget_exhausted_leaves_pending_withou
 
     state1 = SimpleNamespace(story_id=1, latest_assignment_id=10)
     state2 = SimpleNamespace(story_id=2, latest_assignment_id=20)
-    service.cluster_repo.get_cluster_state.side_effect = (
-        lambda conn, sid: state1 if sid == 1 else state2
+    service.cluster_repo.get_cluster_state.side_effect = lambda conn, sid: (
+        state1 if sid == 1 else state2
     )
 
     gate1 = StoryGateResult(
@@ -448,8 +445,8 @@ async def test_process_batch_partial_gate_singleton_failure_records_durable_fail
 
     state1 = SimpleNamespace(story_id=1, latest_assignment_id=10)
     state2 = SimpleNamespace(story_id=2, latest_assignment_id=20)
-    service.cluster_repo.get_cluster_state.side_effect = (
-        lambda conn, sid: state1 if sid == 1 else state2
+    service.cluster_repo.get_cluster_state.side_effect = lambda conn, sid: (
+        state1 if sid == 1 else state2
     )
 
     gate1 = StoryGateResult(
@@ -535,8 +532,8 @@ async def test_heartbeat_remains_active_across_singleton_recovery():
 
     state1 = SimpleNamespace(story_id=1, latest_assignment_id=10)
     state2 = SimpleNamespace(story_id=2, latest_assignment_id=20)
-    service.cluster_repo.get_cluster_state.side_effect = (
-        lambda conn, sid: state1 if sid == 1 else state2
+    service.cluster_repo.get_cluster_state.side_effect = lambda conn, sid: (
+        state1 if sid == 1 else state2
     )
 
     gate1 = StoryGateResult(
@@ -620,3 +617,312 @@ async def test_heartbeat_remains_active_across_singleton_recovery():
     assert result.stats.triaged == 2
     # Verify renew_stage was called by heartbeat during slow recovery
     assert service.claim_repo.renew_stage.await_count >= 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_process_batch_shared_provider_deadline_halts_recovery_when_time_exhausted(
+    monkeypatch,
+):
+    from src.processing.event_authority import AuthorityTarget
+    from src.processing.event_triage import StoryGateBatchResult, StoryGateResult
+
+    service = _create_test_authority_service(triage_split_max_extra_calls_per_cycle=8)
+
+    state1 = SimpleNamespace(story_id=1, latest_assignment_id=10)
+    state2 = SimpleNamespace(story_id=2, latest_assignment_id=20)
+    service.cluster_repo.get_cluster_state.side_effect = lambda conn, sid: (
+        state1 if sid == 1 else state2
+    )
+
+    gate1 = StoryGateResult(
+        story_id=1,
+        scope="LOCAL",
+        scope_confidence=0.99,
+        scope_reason="ok",
+        retention="KEEP",
+        enrichment="BRIEF",
+        exclusion_reason=None,
+        confidence=0.95,
+        reason="ok",
+        brief_payload=None,
+    )
+
+    initial_res = StoryGateBatchResult(
+        results=(gate1,),
+        deferred_story_ids=(2,),
+        missing_story_ids=(2,),
+        batch_error_kind="partial_response",
+        prompt_hash="p1",
+    )
+
+    loop = asyncio.get_running_loop()
+    current_time = 1000.0
+
+    def fake_time():
+        return current_time
+
+    monkeypatch.setattr(loop, "time", fake_time)
+
+    async def mock_triage(*args, **kwargs):
+        nonlocal current_time
+        # Initial call consumes the entire 540s budget
+        current_time += 540.0
+        return initial_res
+
+    service.triage_service.triage_stories_batch.side_effect = mock_triage
+
+    targets = [
+        AuthorityTarget(
+            edition_id=1,
+            story_id=1,
+            assignment_id=10,
+            scope_config_hash="h1",
+            triage_version="v2",
+            scope_version="v1",
+            source_cutoff_at=None,
+        ),
+        AuthorityTarget(
+            edition_id=1,
+            story_id=2,
+            assignment_id=20,
+            scope_config_hash="h1",
+            triage_version="v2",
+            scope_version="v1",
+            source_cutoff_at=None,
+        ),
+    ]
+
+    with patch(
+        "src.processing.event_authority.resolve_edition_scope",
+        AsyncMock(return_value=("berdyansk", SimpleNamespace(focus_places=("Бердянск",)))),
+    ):
+        result = await service.process_batch(targets, mode="background")
+
+    from unittest.mock import ANY
+
+    # Only 1 story triaged
+    assert result.stats.triaged == 1
+    # Only initial batch triage was called; singleton recovery was skipped because remaining time <= 0
+    assert service.triage_service.triage_stories_batch.await_count == 1
+    # Story 1 cleared
+    service.retry_repo.clear.assert_awaited_once_with(
+        ANY, story_id=1, latest_assignment_id=10, stage="triage"
+    )
+    # Story 2 was NOT attempted in recovery and was NOT recorded as a durable failure
+    service.retry_repo.record_failure.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_process_batch_singleton_isolated_timeout_consumes_durable_attempt_and_halts_further_singletons(
+    monkeypatch,
+):
+    from src.processing.event_authority import AuthorityTarget
+    from src.processing.event_triage import StoryGateBatchResult, StoryGateResult
+
+    service = _create_test_authority_service(triage_split_max_extra_calls_per_cycle=8)
+
+    state1 = SimpleNamespace(story_id=1, latest_assignment_id=10)
+    state2 = SimpleNamespace(story_id=2, latest_assignment_id=20)
+    state3 = SimpleNamespace(story_id=3, latest_assignment_id=30)
+    service.cluster_repo.get_cluster_state.side_effect = lambda conn, sid: {
+        1: state1,
+        2: state2,
+        3: state3,
+    }[sid]
+
+    gate1 = StoryGateResult(
+        story_id=1,
+        scope="LOCAL",
+        scope_confidence=0.99,
+        scope_reason="ok",
+        retention="KEEP",
+        enrichment="BRIEF",
+        exclusion_reason=None,
+        confidence=0.95,
+        reason="ok",
+        brief_payload=None,
+    )
+
+    initial_res = StoryGateBatchResult(
+        results=(gate1,),
+        deferred_story_ids=(2, 3),
+        missing_story_ids=(2, 3),
+        batch_error_kind="partial_response",
+        prompt_hash="p1",
+    )
+
+    loop = asyncio.get_running_loop()
+    current_time = 1000.0
+
+    def fake_time():
+        return current_time
+
+    monkeypatch.setattr(loop, "time", fake_time)
+
+    call_count = 0
+
+    async def mock_triage(*args, **kwargs):
+        nonlocal current_time, call_count
+        call_count += 1
+        if call_count == 1:
+            # Initial call takes 530s, leaving 10s
+            current_time += 530.0
+            return initial_res
+        elif call_count == 2:
+            # Singleton for story 2: advances time by 15s (exceeds remaining 10s budget)
+            current_time += 15.0
+            raise asyncio.TimeoutError()
+        raise AssertionError("Story 3 should not be called")
+
+    service.triage_service.triage_stories_batch.side_effect = mock_triage
+
+    targets = [
+        AuthorityTarget(
+            edition_id=1,
+            story_id=1,
+            assignment_id=10,
+            scope_config_hash="h1",
+            triage_version="v2",
+            scope_version="v1",
+            source_cutoff_at=None,
+        ),
+        AuthorityTarget(
+            edition_id=1,
+            story_id=2,
+            assignment_id=20,
+            scope_config_hash="h1",
+            triage_version="v2",
+            scope_version="v1",
+            source_cutoff_at=None,
+        ),
+        AuthorityTarget(
+            edition_id=1,
+            story_id=3,
+            assignment_id=30,
+            scope_config_hash="h1",
+            triage_version="v2",
+            scope_version="v1",
+            source_cutoff_at=None,
+        ),
+    ]
+
+    with patch(
+        "src.processing.event_authority.resolve_edition_scope",
+        AsyncMock(return_value=("berdyansk", SimpleNamespace(focus_places=("Бердянск",)))),
+    ):
+        result = await service.process_batch(targets, mode="background")
+
+    assert result.stats.triaged == 1
+    assert service.triage_service.triage_stories_batch.await_count == 2
+
+    # Story 2 (which started and timed out) gets durable failure with error_kind="timeout"
+    service.retry_repo.record_failure.assert_awaited_once()
+    record_call = service.retry_repo.record_failure.await_args
+    assert record_call.kwargs["story_id"] == 2
+    assert record_call.kwargs["latest_assignment_id"] == 20
+    assert record_call.kwargs["stage"] == "triage"
+    assert record_call.kwargs["error_kind"] == "timeout"
+    assert record_call.kwargs["exhausted"] is False
+
+    # Story 3 was never started and was not recorded as failure
+    assert 3 not in [
+        call.kwargs["story_id"] for call in service.retry_repo.record_failure.await_args_list
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_process_batch_invalid_response_triggers_singleton_recovery():
+    from src.processing.event_authority import AuthorityTarget
+    from src.processing.event_triage import StoryGateBatchResult, StoryGateResult
+
+    service = _create_test_authority_service(triage_split_max_extra_calls_per_cycle=8)
+
+    state1 = SimpleNamespace(story_id=1, latest_assignment_id=10)
+    state2 = SimpleNamespace(story_id=2, latest_assignment_id=20)
+    service.cluster_repo.get_cluster_state.side_effect = lambda conn, sid: (
+        state1 if sid == 1 else state2
+    )
+
+    gate1 = StoryGateResult(
+        story_id=1,
+        scope="LOCAL",
+        scope_confidence=0.99,
+        scope_reason="ok",
+        retention="KEEP",
+        enrichment="BRIEF",
+        exclusion_reason=None,
+        confidence=0.95,
+        reason="ok",
+        brief_payload=None,
+    )
+    gate2 = StoryGateResult(
+        story_id=2,
+        scope="LOCAL",
+        scope_confidence=0.99,
+        scope_reason="ok",
+        retention="KEEP",
+        enrichment="BRIEF",
+        exclusion_reason=None,
+        confidence=0.95,
+        reason="ok",
+        brief_payload=None,
+    )
+
+    # Initial call returns story 1 valid, story 2 schema-invalid (not missing, but invalid)
+    initial_res = StoryGateBatchResult(
+        results=(gate1,),
+        deferred_story_ids=(2,),
+        missing_story_ids=(),
+        invalid_story_ids=(2,),
+        batch_error_kind="invalid_response",
+        prompt_hash="p1",
+    )
+    # Singleton recovery succeeds for story 2
+    recovery_res = StoryGateBatchResult(
+        results=(gate2,),
+        deferred_story_ids=(),
+        missing_story_ids=(),
+        invalid_story_ids=(),
+        prompt_hash="p2",
+    )
+    service.triage_service.triage_stories_batch.side_effect = [initial_res, recovery_res]
+
+    targets = [
+        AuthorityTarget(
+            edition_id=1,
+            story_id=1,
+            assignment_id=10,
+            scope_config_hash="h1",
+            triage_version="v2",
+            scope_version="v1",
+            source_cutoff_at=None,
+        ),
+        AuthorityTarget(
+            edition_id=1,
+            story_id=2,
+            assignment_id=20,
+            scope_config_hash="h1",
+            triage_version="v2",
+            scope_version="v1",
+            source_cutoff_at=None,
+        ),
+    ]
+
+    with patch(
+        "src.processing.event_authority.resolve_edition_scope",
+        AsyncMock(return_value=("berdyansk", SimpleNamespace(focus_places=("Бердянск",)))),
+    ):
+        result = await service.process_batch(targets, mode="background")
+
+    assert result.stats.triaged == 2
+    assert service.triage_service.triage_stories_batch.await_count == 2
+    # Second call was for story 2
+    assert service.triage_service.triage_stories_batch.await_args_list[1].args[1] == [state2]
+
+    # Both stories cleared, 0 durable failures
+    cleared = {call.kwargs["story_id"] for call in service.retry_repo.clear.await_args_list}
+    assert cleared == {1, 2}
+    service.retry_repo.record_failure.assert_not_awaited()

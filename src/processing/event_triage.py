@@ -300,6 +300,7 @@ class StoryGateBatchResult:
     prompt_hash: str | None = None
     fence_lost_story_ids: tuple[int, ...] = ()
     missing_story_ids: tuple[int, ...] = ()
+    invalid_story_ids: tuple[int, ...] = ()
 
 
 DecisionFence = Callable[[psycopg.AsyncConnection, int, int], Awaitable[bool]]
@@ -636,7 +637,44 @@ class StoryTriageService:
                     )
                 else:
                     raise TypeError(f"Unsupported AI provider type: {type(self.ai)}")
+        except Exception as exc:
+            provider_kind = classify_provider_failure(exc)
+            try:
+                async with _get_conn() as err_conn:
+                    await err_conn.execute(
+                        """
+                        INSERT INTO story_event_triage_runs (
+                            triage_version, provider, model, prompt_hash, story_count, input_chars, status, error_kind, completed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, 'failed', %s, now())
+                        """,
+                        (
+                            TRIAGE_VERSION,
+                            str(provider_name),
+                            str(model_name),
+                            prompt_hash,
+                            len(uncached_stories),
+                            len(user_prompt),
+                            provider_kind,
+                        ),
+                    )
+            except Exception as log_exc:
+                self.logger.warning("Failed to record failed triage run: %s", log_exc)
+            self.logger.warning("Story triage AI call failed: %s; deferring stories", exc)
+            recoverable_ids = (
+                tuple(s.story_id for s in uncached_stories)
+                if provider_kind in ("context_size", "token_budget")
+                else ()
+            )
+            return StoryGateBatchResult(
+                results=tuple(valid_results),
+                deferred_story_ids=tuple(s.story_id for s in uncached_stories),
+                batch_error_kind=provider_kind,
+                prompt_hash=prompt_hash,
+                fence_lost_story_ids=tuple(sorted(fence_lost_ids)),
+                invalid_story_ids=recoverable_ids,
+            )
 
+        try:
             from src.utils import robust_extract_json
 
             payload = robust_extract_json(raw_response)
@@ -645,199 +683,215 @@ class StoryTriageService:
             raw_items = payload.get("results")
             if not isinstance(raw_items, list):
                 raise ValueError("gate response missing results list")
-
-            items_by_id: dict[int, dict[str, Any]] = {}
-            for item in raw_items:
-                if isinstance(item, dict) and isinstance(item.get("story_id"), int):
-                    items_by_id[item["story_id"]] = item
-
-            expected_story_ids = {story.story_id for story in uncached_stories}
-            returned_story_ids = set(items_by_id) & expected_story_ids
-            missing_story_ids = tuple(
-                story.story_id
-                for story in uncached_stories
-                if story.story_id not in returned_story_ids
+        except Exception as exc:
+            try:
+                async with _get_conn() as err_conn:
+                    await err_conn.execute(
+                        """
+                        INSERT INTO story_event_triage_runs (
+                            triage_version, provider, model, prompt_hash, story_count, input_chars, output_chars, status, error_kind, completed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'failed', 'invalid_response', now())
+                        """,
+                        (
+                            TRIAGE_VERSION,
+                            str(provider_name),
+                            str(model_name),
+                            prompt_hash,
+                            len(uncached_stories),
+                            len(user_prompt),
+                            len(raw_response),
+                        ),
+                    )
+            except Exception as log_exc:
+                self.logger.warning("Failed to record failed triage run: %s", log_exc)
+            self.logger.warning(
+                "Story triage response parse failed: %s; deferring stories as invalid_response",
+                exc,
+            )
+            return StoryGateBatchResult(
+                results=tuple(valid_results),
+                deferred_story_ids=tuple(s.story_id for s in uncached_stories),
+                batch_error_kind="invalid_response",
+                prompt_hash=prompt_hash,
+                fence_lost_story_ids=tuple(sorted(fence_lost_ids)),
+                invalid_story_ids=tuple(s.story_id for s in uncached_stories),
             )
 
-            new_valid_results: list[StoryGateResult] = []
+        items_by_id: dict[int, dict[str, Any]] = {}
+        for item in raw_items:
+            if isinstance(item, dict) and isinstance(item.get("story_id"), int):
+                items_by_id[item["story_id"]] = item
 
-            for s in uncached_stories:
-                item = items_by_id.get(s.story_id)
-                if item is None or not isinstance(item, dict):
-                    deferred_ids.append(s.story_id)
-                    continue
+        expected_story_ids = {story.story_id for story in uncached_stories}
+        returned_story_ids = set(items_by_id) & expected_story_ids
+        missing_story_ids = tuple(
+            story.story_id for story in uncached_stories if story.story_id not in returned_story_ids
+        )
 
-                scope_raw = str(item.get("scope", "")).strip()
-                if scope_raw not in {"LOCAL", "DIRECT_IMPACT", "OUT_OF_SCOPE", "UNCERTAIN"}:
-                    deferred_ids.append(s.story_id)
-                    continue
-                scope: EditionScopeClass = scope_raw  # type: ignore[assignment]
+        invalid_ids: list[int] = []
+        new_valid_results: list[StoryGateResult] = []
 
-                scope_conf = item.get("scope_confidence")
-                if (
-                    isinstance(scope_conf, bool)
-                    or not isinstance(scope_conf, (int, float))
-                    or not (0.0 <= float(scope_conf) <= 1.0)
+        for s in uncached_stories:
+            item = items_by_id.get(s.story_id)
+            if item is None or not isinstance(item, dict):
+                deferred_ids.append(s.story_id)
+                if s.story_id in returned_story_ids:
+                    invalid_ids.append(s.story_id)
+                continue
+
+            scope_raw = str(item.get("scope", "")).strip()
+            if scope_raw not in {"LOCAL", "DIRECT_IMPACT", "OUT_OF_SCOPE", "UNCERTAIN"}:
+                deferred_ids.append(s.story_id)
+                invalid_ids.append(s.story_id)
+                continue
+            scope: EditionScopeClass = scope_raw  # type: ignore[assignment]
+
+            scope_conf = item.get("scope_confidence")
+            if (
+                isinstance(scope_conf, bool)
+                or not isinstance(scope_conf, (int, float))
+                or not (0.0 <= float(scope_conf) <= 1.0)
+            ):
+                deferred_ids.append(s.story_id)
+                invalid_ids.append(s.story_id)
+                continue
+            scope_confidence = float(scope_conf)
+
+            scope_reason = item.get("scope_reason")
+            if not isinstance(scope_reason, str) or not scope_reason.strip():
+                deferred_ids.append(s.story_id)
+                invalid_ids.append(s.story_id)
+                continue
+
+            conf = item.get("confidence")
+            if (
+                isinstance(conf, bool)
+                or not isinstance(conf, (int, float))
+                or not (0.0 <= float(conf) <= 1.0)
+            ):
+                deferred_ids.append(s.story_id)
+                invalid_ids.append(s.story_id)
+                continue
+            confidence = float(conf)
+
+            reason = str(item.get("reason", "")).strip()
+            retention_raw = str(item.get("retention", "")).strip().upper()
+            enrichment_raw = str(item.get("enrichment", "")).strip().upper()
+            ex_reason_raw = item.get("exclusion_reason")
+            ex_reason = (
+                str(ex_reason_raw).strip() if ex_reason_raw in _ALLOWED_EXCLUSION_REASONS else None
+            )
+
+            allowed_fids = all_story_frag_ids.get(s.story_id, set())
+
+            raw_scope_basis = item.get("scope_basis_fragment_ids", [])
+            if isinstance(raw_scope_basis, (list, tuple)):
+                scope_basis_ids = tuple(
+                    int(x)
+                    for x in raw_scope_basis
+                    if isinstance(x, (int, str)) and str(x).isdigit()
+                )
+            else:
+                scope_basis_ids = ()
+
+            if set(scope_basis_ids) - allowed_fids:
+                deferred_ids.append(s.story_id)
+                invalid_ids.append(s.story_id)
+                continue
+
+            if scope in {"LOCAL", "DIRECT_IMPACT"} and not scope_basis_ids:
+                deferred_ids.append(s.story_id)
+                invalid_ids.append(s.story_id)
+                continue
+
+            basis_texts = tuple(
+                sf["text"]
+                for sf in story_fragments_map.get(s.story_id, [])
+                if sf["fragment_id"] in scope_basis_ids
+            )
+            story_frags = story_fragments_map.get(s.story_id, [])
+            story_all_texts = tuple(
+                str(sf.get("text") or sf.get("text_content", "")) for sf in story_frags
+            )
+            if scope in {"LOCAL", "DIRECT_IMPACT"}:
+                if broad_region_without_focus_impact(
+                    basis_texts=basis_texts,
+                    scope=scope_config,
+                    geo_context=geo_context,
                 ):
-                    deferred_ids.append(s.story_id)
-                    continue
-                scope_confidence = float(scope_conf)
-
-                scope_reason = item.get("scope_reason")
-                if not isinstance(scope_reason, str) or not scope_reason.strip():
-                    deferred_ids.append(s.story_id)
-                    continue
-
-                conf = item.get("confidence")
-                if (
-                    isinstance(conf, bool)
-                    or not isinstance(conf, (int, float))
-                    or not (0.0 <= float(conf) <= 1.0)
-                ):
-                    deferred_ids.append(s.story_id)
-                    continue
-                confidence = float(conf)
-
-                reason = str(item.get("reason", "")).strip()
-                retention_raw = str(item.get("retention", "")).strip().upper()
-                enrichment_raw = str(item.get("enrichment", "")).strip().upper()
-                ex_reason_raw = item.get("exclusion_reason")
-                ex_reason = (
-                    str(ex_reason_raw).strip()
-                    if ex_reason_raw in _ALLOWED_EXCLUSION_REASONS
-                    else None
-                )
-
-                allowed_fids = all_story_frag_ids.get(s.story_id, set())
-
-                raw_scope_basis = item.get("scope_basis_fragment_ids", [])
-                if isinstance(raw_scope_basis, (list, tuple)):
-                    scope_basis_ids = tuple(
-                        int(x)
-                        for x in raw_scope_basis
-                        if isinstance(x, (int, str)) and str(x).isdigit()
+                    scope = "OUT_OF_SCOPE"
+                    scope_confidence = max(scope_confidence, 0.95)
+                    scope_reason = (
+                        "Broad regional summary without explicit configured focus-area consequence"
                     )
-                else:
-                    scope_basis_ids = ()
+                elif external_relocated_idp_event(basis_texts=(*basis_texts, *story_all_texts)):
+                    scope = "OUT_OF_SCOPE"
+                    scope_confidence = max(scope_confidence, 0.95)
+                    scope_reason = "Displaced persons (IDP) or relocated administration activity outside the focus area"
 
-                if set(scope_basis_ids) - allowed_fids:
-                    deferred_ids.append(s.story_id)
-                    continue
-
-                if scope in {"LOCAL", "DIRECT_IMPACT"} and not scope_basis_ids:
-                    deferred_ids.append(s.story_id)
-                    continue
-
-                basis_texts = tuple(
-                    sf["text"]
-                    for sf in story_fragments_map.get(s.story_id, [])
-                    if sf["fragment_id"] in scope_basis_ids
+            # Hard exclusion audit on story fragments
+            story_frag_texts = {
+                int(sf.get("fragment_id") or sf.get("id", 0)): str(
+                    sf.get("text") or sf.get("text_content", "")
                 )
-                story_frags = story_fragments_map.get(s.story_id, [])
-                story_all_texts = tuple(
-                    str(sf.get("text") or sf.get("text_content", "")) for sf in story_frags
-                )
-                if scope in {"LOCAL", "DIRECT_IMPACT"}:
-                    if broad_region_without_focus_impact(
-                        basis_texts=basis_texts,
-                        scope=scope_config,
-                        geo_context=geo_context,
-                    ):
-                        scope = "OUT_OF_SCOPE"
-                        scope_confidence = max(scope_confidence, 0.95)
-                        scope_reason = "Broad regional summary without explicit configured focus-area consequence"
-                    elif external_relocated_idp_event(basis_texts=(*basis_texts, *story_all_texts)):
-                        scope = "OUT_OF_SCOPE"
-                        scope_confidence = max(scope_confidence, 0.95)
-                        scope_reason = "Displaced persons (IDP) or relocated administration activity outside the focus area"
+                for sf in story_frags
+            }
+            hard_audit = evaluate_story_hard_exclusion(story_frags)
 
-                # Hard exclusion audit on story fragments
-                story_frag_texts = {
-                    int(sf.get("fragment_id") or sf.get("id", 0)): str(
-                        sf.get("text") or sf.get("text_content", "")
+            # Parse brief_payload if present
+            raw_brief = item.get("brief_payload")
+            brief_payload: EventPayload | None = None
+            if isinstance(raw_brief, dict):
+                try:
+                    parsed_payload = parse_event_payload(
+                        raw_brief, allowed_fragment_ids=allowed_fids
                     )
-                    for sf in story_frags
-                }
-                hard_audit = evaluate_story_hard_exclusion(story_frags)
-
-                # Parse brief_payload if present
-                raw_brief = item.get("brief_payload")
-                brief_payload: EventPayload | None = None
-                if isinstance(raw_brief, dict):
-                    try:
-                        parsed_payload = parse_event_payload(
-                            raw_brief, allowed_fragment_ids=allowed_fids
-                        )
-                        decomposed = decompose_mixed_outage_evidence(
-                            parsed_payload, story_frag_texts
-                        )
-                        brief_payload = normalize_question_evidence(decomposed)
-                        brief_payload, service_audit = normalize_service_state_evidence(
-                            brief_payload
-                        )
-                        if service_audit.rejected_count > 0:
-                            self.logger.debug(
-                                "Gate rejected %s invalid service states for story %s: %s",
-                                service_audit.rejected_count,
-                                s.story_id,
-                                service_audit.rejection_reasons,
-                            )
-                        if has_unstructured_publish_service_access(brief_payload):
-                            self.logger.debug(
-                                "Gate story %s has unstructured publish service_access evidence",
-                                s.story_id,
-                            )
-                    except Exception as e:
+                    decomposed = decompose_mixed_outage_evidence(parsed_payload, story_frag_texts)
+                    brief_payload = normalize_question_evidence(decomposed)
+                    brief_payload, service_audit = normalize_service_state_evidence(brief_payload)
+                    if service_audit.rejected_count > 0:
                         self.logger.debug(
-                            "Brief payload parsing error for story %s: %s", s.story_id, e
+                            "Gate rejected %s invalid service states for story %s: %s",
+                            service_audit.rejected_count,
+                            s.story_id,
+                            service_audit.rejection_reasons,
                         )
-                        brief_payload = None
-
-                # Normalization rules
-                if scope in {"OUT_OF_SCOPE", "UNCERTAIN"}:
-                    retention: Literal["KEEP", "DROP"] = "DROP"
-                    enrichment: Literal["NONE", "BRIEF", "ANALYZE"] = "NONE"
-                    ex_reason = None
+                    if has_unstructured_publish_service_access(brief_payload):
+                        self.logger.debug(
+                            "Gate story %s has unstructured publish service_access evidence",
+                            s.story_id,
+                        )
+                except Exception as e:
+                    self.logger.debug("Brief payload parsing error for story %s: %s", s.story_id, e)
                     brief_payload = None
-                elif scope in {"LOCAL", "DIRECT_IMPACT"}:
-                    if hard_audit.drop_story:
-                        # Deterministic hard-exclusion override: all substantive fragments are noise/commercial
+
+            # Normalization rules
+            if scope in {"OUT_OF_SCOPE", "UNCERTAIN"}:
+                retention: Literal["KEEP", "DROP"] = "DROP"
+                enrichment: Literal["NONE", "BRIEF", "ANALYZE"] = "NONE"
+                ex_reason = None
+                brief_payload = None
+            elif scope in {"LOCAL", "DIRECT_IMPACT"}:
+                if hard_audit.drop_story:
+                    # Deterministic hard-exclusion override: all substantive fragments are noise/commercial
+                    retention = "DROP"
+                    enrichment = "NONE"
+                    ex_reason = hard_audit.story_exclusion_reason or "commercial_classified"
+                    brief_payload = None
+                elif retention_raw == "DROP":
+                    # High-confidence LLM hard exclusions
+                    if (
+                        enrichment_raw == "NONE"
+                        and ex_reason in _ALLOWED_EXCLUSION_REASONS
+                        and confidence >= min_ignore_confidence
+                    ):
                         retention = "DROP"
                         enrichment = "NONE"
-                        ex_reason = hard_audit.story_exclusion_reason or "commercial_classified"
                         brief_payload = None
-                    elif retention_raw == "DROP":
-                        # High-confidence LLM hard exclusions
-                        if (
-                            enrichment_raw == "NONE"
-                            and ex_reason in _ALLOWED_EXCLUSION_REASONS
-                            and confidence >= min_ignore_confidence
-                        ):
-                            retention = "DROP"
-                            enrichment = "NONE"
-                            brief_payload = None
-                        elif brief_payload is not None:
-                            # Unsafe drop normalized to KEEP+BRIEF
-                            retention = "KEEP"
-                            enrichment = "BRIEF"
-                            ex_reason = None
-                            decomposed = decompose_mixed_outage_evidence(
-                                brief_payload, story_frag_texts
-                            )
-                            brief_payload = ensure_keep_publishability(
-                                normalize_question_evidence(decomposed), default="brief"
-                            )
-                            brief_payload, _ = normalize_service_state_evidence(brief_payload)
-                        else:
-                            # Unsafe drop without a valid brief must defer
-                            deferred_ids.append(s.story_id)
-                            continue
-                    elif retention_raw == "KEEP":
-                        if enrichment_raw not in ("BRIEF", "ANALYZE") or brief_payload is None:
-                            deferred_ids.append(s.story_id)
-                            continue
+                    elif brief_payload is not None:
+                        # Unsafe drop normalized to KEEP+BRIEF
                         retention = "KEEP"
-                        enrichment = enrichment_raw  # type: ignore[assignment]
+                        enrichment = "BRIEF"
                         ex_reason = None
                         decomposed = decompose_mixed_outage_evidence(
                             brief_payload, story_frag_texts
@@ -847,88 +901,125 @@ class StoryTriageService:
                         )
                         brief_payload, _ = normalize_service_state_evidence(brief_payload)
                     else:
+                        # Unsafe drop without a valid brief must defer
                         deferred_ids.append(s.story_id)
+                        invalid_ids.append(s.story_id)
                         continue
-
-                    # If retention is KEEP and story is mixed (has excluded fragments),
-                    # normalize evidence items deriving from excluded fragments to EXCLUDE
-                    if (
-                        retention == "KEEP"
-                        and brief_payload is not None
-                        and hard_audit.excluded_fragment_ids
-                    ):
-                        excluded_set = set(hard_audit.excluded_fragment_ids)
-                        cleaned_items = []
-                        for evi in brief_payload.evidence_items:
-                            if evi.source_fragment_ids and set(evi.source_fragment_ids).issubset(
-                                excluded_set
-                            ):
-                                cleaned_items.append(
-                                    replace(evi, publication_use="EXCLUDE", service_state=None)
-                                )
-                            else:
-                                cleaned_items.append(evi)
-                        brief_payload = replace(brief_payload, evidence_items=tuple(cleaned_items))
-
-                    # Invariant: A KEEP story must contain at least 1 legitimate PUBLISH evidence item
-                    if retention == "KEEP" and brief_payload is not None:
-                        has_publish = any(
-                            evi.publication_use == "PUBLISH" for evi in brief_payload.evidence_items
-                        )
-                        if not has_publish:
-                            all_context_or_noise = all(
-                                evi.kind in ("resident_question", "commercial_offer")
-                                or evi.publication_use in ("CONTEXT", "EXCLUDE")
-                                for evi in brief_payload.evidence_items
-                            )
-                            if all_context_or_noise:
-                                self.logger.info(
-                                    "Story %s has 0 PUBLISH items (pure context/questions/noise); normalizing to DROP / obvious_noise",
-                                    s.story_id,
-                                )
-                                retention = "DROP"
-                                enrichment = "NONE"
-                                ex_reason = "obvious_noise"
-                                brief_payload = None
-                            else:
-                                self.logger.warning(
-                                    "Story %s has 0 PUBLISH items unexpectedly; deferring for re-analysis",
-                                    s.story_id,
-                                )
-                                deferred_ids.append(s.story_id)
-                                continue
+                elif retention_raw == "KEEP":
+                    if enrichment_raw not in ("BRIEF", "ANALYZE") or brief_payload is None:
+                        deferred_ids.append(s.story_id)
+                        invalid_ids.append(s.story_id)
+                        continue
+                    retention = "KEEP"
+                    enrichment = enrichment_raw  # type: ignore[assignment]
+                    ex_reason = None
+                    decomposed = decompose_mixed_outage_evidence(brief_payload, story_frag_texts)
+                    brief_payload = ensure_keep_publishability(
+                        normalize_question_evidence(decomposed), default="brief"
+                    )
+                    brief_payload, _ = normalize_service_state_evidence(brief_payload)
                 else:
                     deferred_ids.append(s.story_id)
+                    invalid_ids.append(s.story_id)
                     continue
 
-                gate_res = StoryGateResult(
-                    story_id=s.story_id,
-                    scope=scope,
-                    scope_confidence=scope_confidence,
-                    scope_reason=scope_reason.strip(),
-                    retention=retention,
-                    enrichment=enrichment,
-                    exclusion_reason=ex_reason,
-                    confidence=confidence,
-                    reason=reason,
-                    brief_payload=brief_payload,
-                    scope_basis_fragment_ids=scope_basis_ids,
-                )
-                new_valid_results.append(gate_res)
+                # If retention is KEEP and story is mixed (has excluded fragments),
+                # normalize evidence items deriving from excluded fragments to EXCLUDE
+                if (
+                    retention == "KEEP"
+                    and brief_payload is not None
+                    and hard_audit.excluded_fragment_ids
+                ):
+                    excluded_set = set(hard_audit.excluded_fragment_ids)
+                    cleaned_items = []
+                    for evi in brief_payload.evidence_items:
+                        if evi.source_fragment_ids and set(evi.source_fragment_ids).issubset(
+                            excluded_set
+                        ):
+                            cleaned_items.append(
+                                replace(evi, publication_use="EXCLUDE", service_state=None)
+                            )
+                        else:
+                            cleaned_items.append(evi)
+                    brief_payload = replace(brief_payload, evidence_items=tuple(cleaned_items))
 
+                # Invariant: A KEEP story must contain at least 1 legitimate PUBLISH evidence item
+                if retention == "KEEP" and brief_payload is not None:
+                    has_publish = any(
+                        evi.publication_use == "PUBLISH" for evi in brief_payload.evidence_items
+                    )
+                    if not has_publish:
+                        all_context_or_noise = all(
+                            evi.kind in ("resident_question", "commercial_offer")
+                            or evi.publication_use in ("CONTEXT", "EXCLUDE")
+                            for evi in brief_payload.evidence_items
+                        )
+                        if all_context_or_noise:
+                            self.logger.info(
+                                "Story %s has 0 PUBLISH items (pure context/questions/noise); normalizing to DROP / obvious_noise",
+                                s.story_id,
+                            )
+                            retention = "DROP"
+                            enrichment = "NONE"
+                            ex_reason = "obvious_noise"
+                            brief_payload = None
+                        else:
+                            self.logger.warning(
+                                "Story %s has 0 PUBLISH items unexpectedly; deferring for re-analysis",
+                                s.story_id,
+                            )
+                            deferred_ids.append(s.story_id)
+                            invalid_ids.append(s.story_id)
+                            continue
+            else:
+                deferred_ids.append(s.story_id)
+                invalid_ids.append(s.story_id)
+                continue
+
+            gate_res = StoryGateResult(
+                story_id=s.story_id,
+                scope=scope,
+                scope_confidence=scope_confidence,
+                scope_reason=scope_reason.strip(),
+                retention=retention,
+                enrichment=enrichment,
+                exclusion_reason=ex_reason,
+                confidence=confidence,
+                reason=reason,
+                brief_payload=brief_payload,
+                scope_basis_fragment_ids=scope_basis_ids,
+            )
+            new_valid_results.append(gate_res)
+
+        invalid_story_ids = tuple(invalid_ids)
+        try:
             async with _get_conn() as write_conn:
-                run_status = "failed" if missing_story_ids else "succeeded"
-                run_error_kind = "partial_response" if missing_story_ids else None
-                if missing_story_ids:
+                has_missing = bool(missing_story_ids)
+                has_invalid = bool(invalid_story_ids)
+                run_status = "failed" if (has_missing or has_invalid) else "succeeded"
+                run_error_kind = (
+                    "partial_response"
+                    if (has_missing and not has_invalid)
+                    else ("invalid_response" if has_invalid else None)
+                )
+                if has_missing or has_invalid:
+                    log_event = (
+                        "event_first_gate_partial_response"
+                        if (has_missing and not has_invalid)
+                        else "event_first_gate_invalid_response"
+                    )
                     self.logger.warning(
-                        "event_first_gate_partial_response",
+                        log_event,
                         extra={
                             "requested_count": len(uncached_stories),
                             "valid_count": len(new_valid_results),
                             "deferred_count": len(deferred_ids),
                             "missing_count": len(missing_story_ids),
                             "missing_story_ids": missing_story_ids,
+                            "invalid_count": len(invalid_story_ids),
+                            "invalid_story_ids": invalid_story_ids,
                             "prompt_hash": prompt_hash,
+                            "error_kind": run_error_kind,
                         },
                     )
                 cursor = await write_conn.execute(
@@ -1082,13 +1173,20 @@ class StoryTriageService:
             if s.story_id in all_results_by_id
         ]
 
+        batch_error_kind = (
+            "partial_response"
+            if (missing_story_ids and not invalid_story_ids)
+            else ("invalid_response" if invalid_story_ids else None)
+        )
+
         return StoryGateBatchResult(
             results=tuple(final_results),
             deferred_story_ids=tuple(deferred_ids),
-            batch_error_kind="partial_response" if missing_story_ids else None,
+            batch_error_kind=batch_error_kind,
             prompt_hash=prompt_hash,
             fence_lost_story_ids=tuple(sorted(fence_lost_ids)),
             missing_story_ids=missing_story_ids,
+            invalid_story_ids=invalid_story_ids,
         )
 
     async def _lookup_cached_decisions(

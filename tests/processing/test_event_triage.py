@@ -728,6 +728,9 @@ async def test_story_triage_service_missing_and_invalid_results_deferred(conn, e
     assert len(result.results) == 1
     assert result.results[0].story_id == sids[0]
     assert set(result.deferred_story_ids) == {sids[1], sids[2], sids[3], sids[4]}
+    assert result.missing_story_ids == (sids[1],)
+    assert set(result.invalid_story_ids) == {sids[2], sids[3], sids[4]}
+    assert result.batch_error_kind == "invalid_response"
 
 
 @pytest.mark.postgres
@@ -2729,3 +2732,349 @@ async def test_story_triage_service_partial_response_classifies_and_records_fail
     )
     decision_rows = await cursor.fetchall()
     assert [row[0] for row in decision_rows] == [sid_1]
+
+
+@pytest.mark.postgres
+async def test_story_triage_service_schema_invalid_result_classified_as_invalid_response(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid_1 = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+    sid_2 = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8201, 'hash_inv1', '[1, 0]'::vector, 'test-model', 2),
+        (8202, 'hash_inv2', '[0, 1]'::vector, 'test-model', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9201, %s, 0, 'Valid municipal repair in Berdyansk', 'hash_inv1', 'v1', TRUE, NULL, %s),
+        (9202, %s, 1, 'Event with invalid scope schema', 'hash_inv2', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now, revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10201, 9201, 8201),
+        (10202, 9202, 8202)
+        """
+    )
+
+    aid1 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid_1,
+        fragment_id=9201,
+        fragment_embedding_id=10201,
+        assignment_kind="new_story",
+    )
+    aid2 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid_2,
+        fragment_id=9202,
+        fragment_embedding_id=10202,
+        assignment_kind="new_story",
+    )
+
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid_1,
+        centroid=[1.0, 0.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid1,
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid_2,
+        centroid=[0.0, 1.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid2,
+    )
+
+    s1 = await cluster_repo.get_cluster_state(conn, sid_1)
+    s2 = await cluster_repo.get_cluster_state(conn, sid_2)
+    assert s1 is not None and s2 is not None
+
+    scope_config = EditionScopeConfig(
+        name="Бердянск",
+        focus_places=("Бердянск",),
+    )
+    scope_hash = scope_config_hash(scope_config)
+
+    # sid_1 is valid; sid_2 has invalid scope "SOLAR_SYSTEM"
+    mock_ai = AsyncMock()
+    mock_ai.model = "test-model"
+    mock_ai.provider = "test-provider"
+    triage_response = {
+        "results": [
+            {
+                "story_id": sid_1,
+                "scope": "LOCAL",
+                "scope_confidence": 0.99,
+                "scope_reason": "Berdyansk repair",
+                "scope_basis_fragment_ids": [9201],
+                "retention": "KEEP",
+                "enrichment": "BRIEF",
+                "exclusion_reason": None,
+                "confidence": 0.95,
+                "reason": "Water repair update",
+                "brief_payload": {
+                    "topic": "Водоснабжение",
+                    "evidence_items": [
+                        {
+                            "text": "Ремонт водопровода",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
+                            "source_fragment_ids": [9201],
+                        }
+                    ],
+                },
+            },
+            {
+                "story_id": sid_2,
+                "scope": "SOLAR_SYSTEM",  # invalid scope class!
+                "scope_confidence": 0.99,
+                "scope_reason": "Space",
+                "scope_basis_fragment_ids": [9202],
+                "retention": "KEEP",
+                "enrichment": "BRIEF",
+                "exclusion_reason": None,
+                "confidence": 0.95,
+                "reason": "Space report",
+            },
+        ]
+    }
+    mock_ai.generate_text.return_value = json.dumps(triage_response)
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    result = await service.triage_stories_batch(
+        conn,
+        [s1, s2],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert [r.story_id for r in result.results] == [sid_1]
+    assert result.deferred_story_ids == (sid_2,)
+    assert result.invalid_story_ids == (sid_2,)
+    assert result.missing_story_ids == ()
+    assert result.batch_error_kind == "invalid_response"
+
+    # Verify story_event_triage_runs marked as failed with invalid_response
+    cursor = await conn.execute(
+        """
+        SELECT status, error_kind, story_count
+        FROM story_event_triage_runs
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+    run_row = await cursor.fetchone()
+    assert run_row is not None
+    assert run_row[0] == "failed"
+    assert run_row[1] == "invalid_response"
+    assert run_row[2] == 2
+
+
+@pytest.mark.postgres
+async def test_story_triage_service_malformed_json_response_classified_as_invalid_response(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid_1 = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8301, 'hash_mal1', '[1, 0]'::vector, 'test-model', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9301, %s, 0, 'Test text', 'hash_mal1', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10301, 9301, 8301)
+        """
+    )
+
+    aid1 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid_1,
+        fragment_id=9301,
+        fragment_embedding_id=10301,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid_1,
+        centroid=[1.0, 0.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid1,
+    )
+    s1 = await cluster_repo.get_cluster_state(conn, sid_1)
+    assert s1 is not None
+
+    scope_config = EditionScopeConfig(name="Бердянск", focus_places=("Бердянск",))
+    scope_hash = scope_config_hash(scope_config)
+
+    mock_ai = AsyncMock()
+    mock_ai.model = "test-model"
+    mock_ai.provider = "test-provider"
+    mock_ai.generate_text.return_value = "This is not json at all {"
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    result = await service.triage_stories_batch(
+        conn,
+        [s1],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert result.results == ()
+    assert result.deferred_story_ids == (sid_1,)
+    assert result.invalid_story_ids == (sid_1,)
+    assert result.batch_error_kind == "invalid_response"
+
+    cursor = await conn.execute(
+        """
+        SELECT status, error_kind
+        FROM story_event_triage_runs
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+    run_row = await cursor.fetchone()
+    assert run_row is not None
+    assert run_row[0] == "failed"
+    assert run_row[1] == "invalid_response"
+
+
+@pytest.mark.postgres
+async def test_story_triage_service_context_size_classified_as_recoverable_for_split(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    sid_1 = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8401, 'hash_ctx1', '[1, 0]'::vector, 'test-model', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9401, %s, 0, 'Test text', 'hash_ctx1', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10401, 9401, 8401)
+        """
+    )
+
+    aid1 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid_1,
+        fragment_id=9401,
+        fragment_embedding_id=10401,
+        assignment_kind="new_story",
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid_1,
+        centroid=[1.0, 0.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid1,
+    )
+    s1 = await cluster_repo.get_cluster_state(conn, sid_1)
+    assert s1 is not None
+
+    scope_config = EditionScopeConfig(name="Бердянск", focus_places=("Бердянск",))
+    scope_hash = scope_config_hash(scope_config)
+
+    mock_ai = AsyncMock()
+    mock_ai.model = "test-model"
+    mock_ai.provider = "test-provider"
+    mock_ai.generate_text.side_effect = Exception("context_length exceeded maximum context window")
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    result = await service.triage_stories_batch(
+        conn,
+        [s1],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert result.results == ()
+    assert result.deferred_story_ids == (sid_1,)
+    assert result.invalid_story_ids == (sid_1,)
+    assert result.batch_error_kind == "context_size"
