@@ -214,8 +214,17 @@ def validate_story_publication_eligibility(
     has_recognized_domain = cat.lower() in RECOGNIZED_CORE_SERVICE_KEYS or bool(
         tags.intersection(RECOGNIZED_CORE_SERVICE_KEYS)
     )
+    has_concrete_service_state = any(
+        getattr(item, "kind", "") == "service_access"
+        and not is_generic_service_entity(
+            getattr(getattr(item, "service_state", None), "entity", ""),
+            getattr(getattr(item, "service_state", None), "subject_label", ""),
+            getattr(getattr(item, "service_state", None), "subject_key", ""),
+        )
+        for item in non_question_items
+    )
 
-    if not has_recognized_domain:
+    if not has_recognized_domain and not has_concrete_service_state:
         if ("вид сервиса" in all_story_text and "не уточняется" in all_story_text) or re.search(
             r"\b(?:проблемный\s+сервис|сторонний\s+сервис|городской\s+сервис)\b",
             all_story_text,

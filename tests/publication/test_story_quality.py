@@ -105,6 +105,31 @@ def test_validate_story_publication_eligibility_rejects_generic_service():
     assert reason == "service_access_without_concrete_entity"
 
 
+def test_validate_story_publication_eligibility_accepts_named_service():
+    payload = EventPayload(
+        headline="Сервис Юпитер снова доступен",
+        digest_summary="Пользователи сообщают, что сервис Юпитер снова работает.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Пользователи сообщают, что сервис Юпитер снова работает.",
+                kind="service_access",
+                publication_use="PUBLISH",
+                source_fragment_ids=(6,),
+                service_state=ServiceStatePayload(
+                    subject_key="service",
+                    subject_label="Сервис",
+                    dimension="access",
+                    state="AVAILABLE",
+                    entity="Юпитер",
+                ),
+            ),
+        ),
+    )
+    is_valid, reason = validate_story_publication_eligibility(payload)
+    assert is_valid is True
+    assert reason is None
+
+
 def test_validate_story_publication_eligibility_rejects_predicateless_fragment():
     payload = EventPayload(
         headline="В районе Водоканала",
