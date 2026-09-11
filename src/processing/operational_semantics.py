@@ -166,58 +166,97 @@ class ServiceStateAudit:
     rejection_reasons: tuple[str, ...] = ()
 
 
-_SCHEDULE_INDICATOR_STEMS: frozenset[str] = frozenset(
+_SCHEDULE_INTENT_STEMS: frozenset[str] = frozenset(
     {
         "график",
         "планов",
         "расписан",
         "предупрежд",
         "уведомлен",
-        "сообща",
-        "сообщил",
-        "заявлен",
-        "объявлен",
         "анонс",
-        "ремонтн",
         "профилактик",
-        "рэс",
-        "горсвет",
-        "водоканал",
-        "горгаз",
-        "теплосеть",
-        "администраци",
-        "мэрия",
-        "коммунальн",
-        "диспетчер",
+        "планиру",
         "schedule",
         "scheduled",
         "planned",
-        "maintenance",
     }
 )
 
 _SPECULATION_RUMOR_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"\b(?:говорят|слышал[аи]?|по\s+слухам|вроде|как\s+бы|обещают|увидите|вангую|вырубят\s+всё|отрубят\s+всё|заберут|закроют\s+всё)\b",
+        r"\b(?:говорят|слышал[аи]?|по\s+слухам|вроде|как\s+бы|обещают|увидите|вангую|вырубят\s+всё|отрубят\s+всё|заберут|закроют\s+всё|после\s+\d+[-—]?(?:го|е)?\s+(?:выруб|отруб|отключ))\b",
         re.IGNORECASE,
     ),
 )
 
+_RU_MONTH_STEMS: dict[int, str] = {
+    1: "январ",
+    2: "феврал",
+    3: "март",
+    4: "апрел",
+    5: "ма",
+    6: "июн",
+    7: "июл",
+    8: "август",
+    9: "сентябр",
+    10: "октябр",
+    11: "ноябр",
+    12: "декабр",
+}
 
-def _has_valid_schedule_grounding(text: str) -> bool:
-    """Check if evidence contains authoritative plan/schedule indicators and not pure speculation."""
+
+def _has_valid_schedule_intent(text: str) -> bool:
+    """Check if evidence contains explicit schedule intent stems and not pure speculation/rumor."""
     tokens = _semantic_tokens(text)
-    has_indicator = _matches_any_stem(tokens, _SCHEDULE_INDICATOR_STEMS)
-    if not has_indicator:
+    has_intent = _matches_any_stem(tokens, _SCHEDULE_INTENT_STEMS)
+    if not has_intent:
         return False
     for pat in _SPECULATION_RUMOR_PATTERNS:
         if pat.search(text):
-            has_official = _matches_any_stem(
-                tokens,
-                frozenset({"рэс", "водоканал", "горгаз", "администраци", "мэрия", "горсвет"}),
-            )
-            if not has_official:
-                return False
+            return False
+    return True
+
+
+def _has_grounded_temporal_value(text: str, effective_from: str | None) -> bool:
+    """Verify that the projected date/time value is grounded in raw evidence."""
+    if not effective_from:
+        return False
+    text_lower = text.lower()
+    date_part = effective_from.split("T")[0].split(" ")[0]
+    m_date = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", date_part)
+    if m_date:
+        _, month_num, day_num = int(m_date.group(1)), int(m_date.group(2)), int(m_date.group(3))
+        day_str = str(day_num)
+        day_zero_str = f"{day_num:02d}"
+        day_pattern = re.compile(
+            rf"(?:^|\D){day_num}(?:-?(?:го|е|й|м|х|я)?\b|[.\/]\d{{1,2}}|\b)",
+            re.IGNORECASE,
+        )
+        if not (
+            day_pattern.search(text_lower)
+            or f" {day_str} " in f" {text_lower} "
+            or f" {day_zero_str} " in f" {text_lower} "
+        ):
+            return False
+
+        month_stem = _RU_MONTH_STEMS.get(month_num)
+        has_any_month = any(
+            m_stem in text_lower for m_stem in _RU_MONTH_STEMS.values() if len(m_stem) > 2
+        )
+        if has_any_month and month_stem and month_stem not in text_lower:
+            return False
+        return True
+
+    eff_tokens = [t for t in re.split(r"[^\w\d]+", effective_from.lower()) if len(t) >= 2]
+    return any(tok in text_lower for tok in eff_tokens)
+
+
+def _has_valid_schedule_grounding(text: str, effective_from: str | None = None) -> bool:
+    """Check schedule intent and projected temporal grounding."""
+    if not _has_valid_schedule_intent(text):
+        return False
+    if effective_from is not None and not _has_grounded_temporal_value(text, effective_from):
+        return False
     return True
 
 
@@ -243,13 +282,30 @@ def normalize_service_state_evidence(
             rejection_reasons.append("non_publish_service_access_state")
             continue
 
-        # Determine raw grounding text: prefer source fragments if available
-        raw_texts: list[str] = []
-        if fragment_texts and item.source_fragment_ids:
-            for fid in item.source_fragment_ids:
-                if fid in fragment_texts:
-                    raw_texts.append(fragment_texts[fid])
-        grounding_text = " ".join(raw_texts) if raw_texts else item.text
+        # Determine raw grounding text:
+        # When fragment_texts is provided, missing fragment IDs fail-closed.
+        # Legacy fallback to item.text is only permitted when fragment_texts is None.
+        if fragment_texts is not None:
+            raw_texts: list[str] = []
+            if item.source_fragment_ids:
+                for fid in item.source_fragment_ids:
+                    if fid in fragment_texts:
+                        raw_texts.append(fragment_texts[fid])
+            if not raw_texts:
+                normalized_items.append(
+                    replace(
+                        item,
+                        kind="community_report",
+                        publication_use="CONTEXT",
+                        service_state=None,
+                    )
+                )
+                rejected_indexes.append(index)
+                rejection_reasons.append("missing_raw_grounding")
+                continue
+            grounding_text = " ".join(raw_texts)
+        else:
+            grounding_text = item.text
 
         state = item.service_state
 
@@ -320,9 +376,12 @@ def normalize_service_state_evidence(
                 rejection_reasons.append("subject_family_conflict")
                 continue
 
-        # Check high-bar SCHEDULED grounding
+        # Check 3-part proof for SCHEDULED:
+        # 1. Service family grounded (checked above)
+        # 2. Schedule intent grounded (requires explicit schedule terms, no rumors)
+        # 3. Projected temporal value grounded (date/time in raw evidence)
         if state.state == "SCHEDULED" or state.basis == "scheduled_change":
-            if not _has_valid_schedule_grounding(grounding_text):
+            if not _has_valid_schedule_grounding(grounding_text, state.effective_from):
                 normalized_items.append(
                     replace(
                         item,

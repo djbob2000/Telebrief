@@ -9,6 +9,8 @@ from src.processing.operational_semantics import (
     normalize_service_state_evidence,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _service_item(
     *,
@@ -419,3 +421,120 @@ def test_dependent_reply_inherits_family_from_parent_but_rejects_scheduled_witho
     assert normalized.evidence_items[0].service_state is None
     assert normalized.evidence_items[0].kind == "community_report"
     assert normalized.evidence_items[0].publication_use == "CONTEXT"
+
+
+def test_missing_raw_grounding_fails_closed_when_fragment_texts_provided():
+    # When fragment_texts mapping is provided but referenced fragment ID is missing,
+    # it must fail-closed: service_state=None, community_report / CONTEXT, reason="missing_raw_grounding"
+    item = _service_item(
+        text="В Бердянске нет воды из-за аварии на водоводе",
+        fid=999,  # Not in fragment_texts
+        subject_key="water_supply",
+        subject_label="Водоснабжение",
+        state="UNAVAILABLE",
+        expected_now=True,
+        basis="direct_failure",
+    )
+    fragment_texts = {100: "Совершенно другой фрагмент"}
+    normalized, audit = normalize_service_state_evidence(
+        EventPayload(evidence_items=(item,)), fragment_texts
+    )
+    assert audit.rejected_count == 1
+    assert "missing_raw_grounding" in audit.rejection_reasons
+    assert normalized.evidence_items[0].service_state is None
+    assert normalized.evidence_items[0].kind == "community_report"
+    assert normalized.evidence_items[0].publication_use == "CONTEXT"
+
+
+def test_legacy_fallback_allowed_when_fragment_texts_is_none():
+    # Legacy fallback to item.text is only permitted when fragment_texts is None
+    item = _service_item(
+        text="В Бердянске нет воды из-за аварии на водоводе",
+        fid=101,
+        subject_key="water_supply",
+        subject_label="Водоснабжение",
+        state="UNAVAILABLE",
+        expected_now=True,
+        basis="direct_failure",
+    )
+    normalized, audit = normalize_service_state_evidence(
+        EventPayload(evidence_items=(item,)), fragment_texts=None
+    )
+    assert audit.accepted_count == 1
+    assert audit.rejected_count == 0
+    assert normalized.evidence_items[0].service_state is not None
+
+
+def test_scheduled_three_part_proof_negative_and_positive_cases():
+    # Negative Case 1: raw: "Жители сообщают, что сейчас нет света", model effective_from: 2026-09-20 => reject
+    item_neg1 = _service_item(
+        text="Жители сообщают, что сейчас нет света",
+        fid=1,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="SCHEDULED",
+        expected_now=False,
+        basis="scheduled_change",
+        effective_from="2026-09-20",
+    )
+    norm1, audit1 = normalize_service_state_evidence(
+        EventPayload(evidence_items=(item_neg1,)), {1: "Жители сообщают, что сейчас нет света"}
+    )
+    assert audit1.rejected_count == 1
+    assert "unsupported_scheduled_change" in audit1.rejection_reasons
+    assert norm1.evidence_items[0].service_state is None
+
+    # Negative Case 2: raw: "Говорят, РЭС после 20-го выключит свет" => reject
+    item_neg2 = _service_item(
+        text="Говорят, РЭС после 20-го выключит свет",
+        fid=2,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="SCHEDULED",
+        expected_now=False,
+        basis="scheduled_change",
+        effective_from="2026-09-20",
+    )
+    norm2, audit2 = normalize_service_state_evidence(
+        EventPayload(evidence_items=(item_neg2,)), {2: "Говорят, РЭС после 20-го выключит свет"}
+    )
+    assert audit2.rejected_count == 1
+    assert "unsupported_scheduled_change" in audit2.rejection_reasons
+    assert norm2.evidence_items[0].service_state is None
+
+    # Negative Case 3: raw: "РЭС сообщает о ремонтных работах", model effective_from: 2026-09-20 => reject (20 сентября missing)
+    item_neg3 = _service_item(
+        text="РЭС сообщает о ремонтных работах",
+        fid=3,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="SCHEDULED",
+        expected_now=False,
+        basis="scheduled_change",
+        effective_from="2026-09-20",
+    )
+    norm3, audit3 = normalize_service_state_evidence(
+        EventPayload(evidence_items=(item_neg3,)), {3: "РЭС сообщает о ремонтных работах"}
+    )
+    assert audit3.rejected_count == 1
+    assert "unsupported_scheduled_change" in audit3.rejection_reasons
+    assert norm3.evidence_items[0].service_state is None
+
+    # Positive Case: "РЭС предупреждает: 20 сентября с 09:00 плановое отключение электроэнергии" => SCHEDULED accepted
+    item_pos = _service_item(
+        text="РЭС предупреждает: 20 сентября с 09:00 плановое отключение электроэнергии",
+        fid=4,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="SCHEDULED",
+        expected_now=False,
+        basis="scheduled_change",
+        effective_from="2026-09-20T09:00:00",
+    )
+    norm4, audit4 = normalize_service_state_evidence(
+        EventPayload(evidence_items=(item_pos,)),
+        {4: "РЭС предупреждает: 20 сентября с 09:00 плановое отключение электроэнергии"},
+    )
+    assert audit4.accepted_count == 1
+    assert audit4.rejected_count == 0
+    assert norm4.evidence_items[0].service_state is not None

@@ -347,7 +347,47 @@ class ArticleFinalizer:
                 metadata=meta,
             )
 
-        # 4. Safe incomplete writer draft: attempt deterministic supplement
+        # 4. Incomplete writer draft: check safety gate before deterministic supplement
+        is_safe_for_supplement = (
+            ai_diag.story_coverage >= 0.80
+            and len(ai_diag.uncovered_story_ids) <= 3
+            and ai_diag.develop_story_coverage >= 1.0
+        )
+        if not is_safe_for_supplement:
+            logger.warning(
+                "Writer draft is not safe for deterministic supplement "
+                "(coverage=%.2f, missing=%d, develop_coverage=%.2f); supplement forbidden",
+                ai_diag.story_coverage,
+                len(ai_diag.uncovered_story_ids),
+                ai_diag.develop_story_coverage,
+            )
+            if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
+                raise ArticlePublicationRejected(
+                    reason="global_incompleteness",
+                    message=(
+                        f"Writer draft is too incomplete for deterministic supplement: "
+                        f"coverage={ai_diag.story_coverage:.2f} (required >= 0.80), "
+                        f"missing={len(ai_diag.uncovered_story_ids)} (max 3), "
+                        f"develop_coverage={ai_diag.develop_story_coverage:.2f} (required 1.0)"
+                    ),
+                    metadata={
+                        "ai_story_coverage": ai_diag.story_coverage,
+                        "uncovered_story_ids": list(ai_diag.uncovered_story_ids),
+                        "develop_story_coverage": ai_diag.develop_story_coverage,
+                        "draft": writer_draft.to_dict(),
+                    },
+                )
+            return await self._run_full_fallback(
+                writer_status="rejected",
+                ai_diag=ai_diag,
+                ai_covered_story_ids=ai_covered,
+                context=context,
+                coverage_plan=coverage_plan,
+                editorial_config=editorial_config,
+                length_profile=length_profile,
+                attempt_observer=attempt_observer,
+            )
+
         if attempt_observer:
             await attempt_observer.attempt_finished(
                 writer_attempt_id,

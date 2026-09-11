@@ -18,6 +18,8 @@ SERVICE_FAMILY_STEMS: dict[str, frozenset[str]] = {
             "обесточ",
             "подстанци",
             "трансформатор",
+            "рэс",
+            "горсвет",
             "power",
             "electric",
             "electricity",

@@ -10,7 +10,9 @@ import pytest
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 from src.publication.article_coverage import (
     ArticleCoveragePlan,
+    ArticleStoryAssignment,
     ArticleStoryCoverage,
+    ArticleThematicSection,
 )
 from src.publication.article_models import (
     ArticleClaimAtom,
@@ -100,6 +102,159 @@ def _make_plan_and_context() -> tuple[ArticleCoveragePlan, ArticleEditorialConte
                 detail_support_ids=(sup3.support_id,),
             ),
         )
+    )
+    return plan, context
+
+
+def _make_5_story_plan_and_context() -> tuple[ArticleCoveragePlan, ArticleEditorialContext]:
+    sup1 = _make_support(
+        "story:1:evidence:0:frag:101",
+        "story:1",
+        "В микрорайоне восстановили подачу электроэнергии.",
+        evidence_kind="established_fact",
+    )
+    sup2 = _make_support(
+        "story:2:evidence:0:frag:202",
+        "story:2",
+        "Автобус №4 курсирует с интервалом в 30 минут.",
+        evidence_kind="community_report",
+    )
+    sup3 = _make_support(
+        "story:3:evidence:0:frag:303",
+        "story:3",
+        "В спорткомплексе открылся набор в секцию плавания.",
+        evidence_kind="established_fact",
+    )
+    sup4 = _make_support(
+        "story:4:evidence:0:frag:404",
+        "story:4",
+        "Библиотека перешла на летний график работы.",
+        evidence_kind="established_fact",
+    )
+    sup5 = _make_support(
+        "story:5:evidence:0:frag:505",
+        "story:5",
+        "В городском парке высадили новые деревья.",
+        evidence_kind="established_fact",
+    )
+
+    supports = (sup1, sup2, sup3, sup4, sup5)
+    context = ArticleEditorialContext(
+        headline_candidates=(
+            "Электроснабжение",
+            "Городской транспорт",
+            "Спорт",
+            "Культура",
+            "Парки",
+        ),
+        support_index=supports,
+        support_by_id={s.support_id: s for s in supports},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(sup1.support_id,),
+                detail_support_ids=(sup1.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:2",
+                topic="Городской транспорт",
+                rank=2,
+                prominence="DEVELOP",
+                support_ids=(sup2.support_id,),
+                detail_support_ids=(sup2.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:3",
+                topic="Спорт",
+                rank=3,
+                prominence="BRIEF",
+                support_ids=(sup3.support_id,),
+                detail_support_ids=(sup3.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:4",
+                topic="Культура",
+                rank=4,
+                prominence="BRIEF",
+                support_ids=(sup4.support_id,),
+                detail_support_ids=(sup4.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:5",
+                topic="Парки",
+                rank=5,
+                prominence="BRIEF",
+                support_ids=(sup5.support_id,),
+                detail_support_ids=(sup5.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleThematicSection(
+                section_id="sec1",
+                title="Энергетика и транспорт",
+                lead_story_id="story:1",
+                story_assignments=(
+                    ArticleStoryAssignment(
+                        story_id="story:1",
+                        section_id="sec1",
+                        depth="DEVELOP",
+                        rank=1,
+                        primary_evidence_ids=(sup1.support_id,),
+                    ),
+                    ArticleStoryAssignment(
+                        story_id="story:2",
+                        section_id="sec1",
+                        depth="DEVELOP",
+                        rank=2,
+                        primary_evidence_ids=(sup2.support_id,),
+                    ),
+                ),
+                narrative_intent="develop",
+            ),
+            ArticleThematicSection(
+                section_id="sec2",
+                title="Спорт и культура",
+                lead_story_id="story:3",
+                story_assignments=(
+                    ArticleStoryAssignment(
+                        story_id="story:3",
+                        section_id="sec2",
+                        depth="BRIEF",
+                        rank=3,
+                        primary_evidence_ids=(sup3.support_id,),
+                    ),
+                    ArticleStoryAssignment(
+                        story_id="story:4",
+                        section_id="sec2",
+                        depth="BRIEF",
+                        rank=4,
+                        primary_evidence_ids=(sup4.support_id,),
+                    ),
+                ),
+                narrative_intent="brief",
+            ),
+            ArticleThematicSection(
+                section_id="sec3",
+                title="Парки",
+                lead_story_id="story:5",
+                story_assignments=(
+                    ArticleStoryAssignment(
+                        story_id="story:5",
+                        section_id="sec3",
+                        depth="BRIEF",
+                        rank=5,
+                        primary_evidence_ids=(sup5.support_id,),
+                    ),
+                ),
+                narrative_intent="brief",
+            ),
+        ),
     )
     return plan, context
 
@@ -301,8 +456,11 @@ async def test_finalizer_safe_incomplete_writer_supplements() -> None:
     from src.config_loader import PublicationEditorialConfig
     from src.publication.article_finalization import ArticleFinalizer
 
-    plan, context = _make_plan_and_context()
+    plan, context = _make_5_story_plan_and_context()
     sup1 = context.support_by_id["story:1:evidence:0:frag:101"]
+    sup2 = context.support_by_id["story:2:evidence:0:frag:202"]
+    sup3 = context.support_by_id["story:3:evidence:0:frag:303"]
+    sup4 = context.support_by_id["story:4:evidence:0:frag:404"]
 
     writer_draft = StructuredArticleDraft(
         title="В городе восстанавливают электроснабжение",
@@ -345,6 +503,30 @@ async def test_finalizer_safe_incomplete_writer_supplements() -> None:
                         ),
                         generation_origin="AI",
                     ),
+                    ArticleParagraph(
+                        text=sup2.text,
+                        cited_support_ids=(sup2.support_id,),
+                        claims=(
+                            ArticleClaimAtom(text=sup2.text, cited_support_ids=(sup2.support_id,)),
+                        ),
+                        generation_origin="AI",
+                    ),
+                    ArticleParagraph(
+                        text=sup3.text,
+                        cited_support_ids=(sup3.support_id,),
+                        claims=(
+                            ArticleClaimAtom(text=sup3.text, cited_support_ids=(sup3.support_id,)),
+                        ),
+                        generation_origin="AI",
+                    ),
+                    ArticleParagraph(
+                        text=sup4.text,
+                        cited_support_ids=(sup4.support_id,),
+                        claims=(
+                            ArticleClaimAtom(text=sup4.text, cited_support_ids=(sup4.support_id,)),
+                        ),
+                        generation_origin="AI",
+                    ),
                 ),
                 heading_generation_origin="AI",
             ),
@@ -370,9 +552,15 @@ async def test_finalizer_safe_incomplete_writer_supplements() -> None:
 
     assert result.writer_status == "passed"
     assert result.recovery_mode == "supplement"
-    assert result.ai_covered_story_ids == ("story:1",)
-    assert set(result.supplemented_story_ids) == {"story:2", "story:3"}
-    assert set(result.final_covered_story_ids) == {"story:1", "story:2", "story:3"}
+    assert result.ai_covered_story_ids == ("story:1", "story:2", "story:3", "story:4")
+    assert result.supplemented_story_ids == ("story:5",)
+    assert set(result.final_covered_story_ids) == {
+        "story:1",
+        "story:2",
+        "story:3",
+        "story:4",
+        "story:5",
+    }
     assert result.metadata["final_story_coverage"] == 1.0
     assert observer.started_kinds == ["writer", "deterministic_supplement"]
     assert observer.finished_attempts[writer_id]["status"] == "succeeded"
@@ -472,8 +660,11 @@ async def test_finalizer_supplement_escalation_to_fallback() -> None:
     from src.config_loader import PublicationEditorialConfig
     from src.publication.article_finalization import ArticleFinalizer
 
-    plan, context = _make_plan_and_context()
+    plan, context = _make_5_story_plan_and_context()
     sup1 = context.support_by_id["story:1:evidence:0:frag:101"]
+    sup2 = context.support_by_id["story:2:evidence:0:frag:202"]
+    sup3 = context.support_by_id["story:3:evidence:0:frag:303"]
+    sup4 = context.support_by_id["story:4:evidence:0:frag:404"]
 
     writer_draft = StructuredArticleDraft(
         title="В городе восстанавливают электроснабжение",
@@ -505,6 +696,27 @@ async def test_finalizer_supplement_escalation_to_fallback() -> None:
                                 text="В микрорайоне восстановили подачу электроэнергии",
                                 cited_support_ids=(sup1.support_id,),
                             ),
+                        ),
+                    ),
+                    ArticleParagraph(
+                        text=sup2.text,
+                        cited_support_ids=(sup2.support_id,),
+                        claims=(
+                            ArticleClaimAtom(text=sup2.text, cited_support_ids=(sup2.support_id,)),
+                        ),
+                    ),
+                    ArticleParagraph(
+                        text=sup3.text,
+                        cited_support_ids=(sup3.support_id,),
+                        claims=(
+                            ArticleClaimAtom(text=sup3.text, cited_support_ids=(sup3.support_id,)),
+                        ),
+                    ),
+                    ArticleParagraph(
+                        text=sup4.text,
+                        cited_support_ids=(sup4.support_id,),
+                        claims=(
+                            ArticleClaimAtom(text=sup4.text, cited_support_ids=(sup4.support_id,)),
                         ),
                     ),
                 ),
@@ -732,7 +944,7 @@ async def test_event_article_validation_failure_uses_full_fallback(
 
     assert title
     assert body
-    assert article_generator.provider.chat_completion.call_count == 1
+    assert article_generator.provider.chat_completion.call_count == 2
     assert "writer" in observer.started_kinds
     assert "deterministic_fallback" in observer.started_kinds
 
@@ -741,47 +953,68 @@ async def test_event_article_validation_failure_uses_full_fallback(
 @pytest.mark.asyncio
 async def test_event_article_safe_incomplete_uses_supplement(
     article_generator,
-    multi_story_context,
 ) -> None:
     import json
 
-    sup_id = "story:1:evidence:0:frag:101"
+    plan, context = _make_5_story_plan_and_context()
+    sup1 = context.support_by_id["story:1:evidence:0:frag:101"]
+    sup2 = context.support_by_id["story:2:evidence:0:frag:202"]
+    sup3 = context.support_by_id["story:3:evidence:0:frag:303"]
+    sup4 = context.support_by_id["story:4:evidence:0:frag:404"]
+
     valid_incomplete_json = json.dumps(
         {
             "title": "В микрорайоне восстановили подачу электроэнергии",
-            "title_support_ids": [sup_id],
+            "title_support_ids": [sup1.support_id],
             "title_claims": [
                 {
                     "text": "В микрорайоне восстановили подачу электроэнергии",
-                    "cited_support_ids": [sup_id],
+                    "cited_support_ids": [sup1.support_id],
                 }
             ],
             "lead": "В микрорайоне восстановили подачу электроэнергии.",
-            "lead_support_ids": [sup_id],
+            "lead_support_ids": [sup1.support_id],
             "lead_claims": [
                 {
                     "text": "В микрорайоне восстановили подачу электроэнергии",
-                    "cited_support_ids": [sup_id],
+                    "cited_support_ids": [sup1.support_id],
                 }
             ],
             "sections": [
                 {
-                    "heading": "Электроснабжение",
-                    "heading_support_ids": [sup_id],
+                    "heading": "Энергетика и транспорт",
+                    "heading_support_ids": [sup1.support_id],
                     "heading_claims": [],
                     "paragraphs": [
                         {
-                            "text": "В микрорайоне восстановили подачу электроэнергии.",
-                            "cited_support_ids": [sup_id],
-                            "claims": [
-                                {
-                                    "text": "В микрорайоне восстановили подачу электроэнергии",
-                                    "cited_support_ids": [sup_id],
-                                }
-                            ],
-                        }
+                            "text": sup1.text,
+                            "cited_support_ids": [sup1.support_id],
+                            "claims": [{"text": sup1.text, "cited_support_ids": [sup1.support_id]}],
+                        },
+                        {
+                            "text": sup2.text,
+                            "cited_support_ids": [sup2.support_id],
+                            "claims": [{"text": sup2.text, "cited_support_ids": [sup2.support_id]}],
+                        },
                     ],
-                }
+                },
+                {
+                    "heading": "Спорт и культура",
+                    "heading_support_ids": [sup3.support_id],
+                    "heading_claims": [],
+                    "paragraphs": [
+                        {
+                            "text": sup3.text,
+                            "cited_support_ids": [sup3.support_id],
+                            "claims": [{"text": sup3.text, "cited_support_ids": [sup3.support_id]}],
+                        },
+                        {
+                            "text": sup4.text,
+                            "cited_support_ids": [sup4.support_id],
+                            "claims": [{"text": sup4.text, "cited_support_ids": [sup4.support_id]}],
+                        },
+                    ],
+                },
             ],
         }
     )
@@ -789,7 +1022,8 @@ async def test_event_article_safe_incomplete_uses_supplement(
     observer = RecordingAttemptObserver()
 
     title, lead, body = await article_generator.generate_from_event_article_context(
-        multi_story_context,
+        context,
+        coverage_plan=plan,
         attempt_observer=observer,
     )
 

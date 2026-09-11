@@ -39,13 +39,21 @@ from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, EditorialWriter
 from src.publication.article_context import ArticleEditorialContext
+from src.publication.article_coverage import ArticleCoveragePlan
+from src.publication.article_coverage_diagnostics import (
+    ArticleCoverageDiagnostics,
+    diagnose_article_coverage,
+)
 from src.publication.article_length import (
     ArticleLengthProfile,
     derive_article_length_profile,
 )
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_quote_allowlist import build_article_quote_allowlist
-from src.publication.article_validator import validate_article_draft
+from src.publication.article_validator import (
+    ArticleValidationResult,
+    validate_article_draft,
+)
 from src.publication.narrative_contract import build_article_narrative_contract
 
 
@@ -161,7 +169,10 @@ def _ground_draft_in_coverage_plan(
             shared_nums = l_nums & s_nums_sup
             if len(shared_st) >= 2 or (shared_st and shared_nums) or len(shared_nums) >= 2:
                 matched_lead_sups.append(sid)
-        all_l_sups = list(dict.fromkeys(lead_sups[:3] + matched_lead_sups))
+        existing_l_sups = [
+            sid for sid in (parsed.get("lead_support_ids") or ()) if sid in support_by_id
+        ]
+        all_l_sups = list(dict.fromkeys(existing_l_sups + lead_sups[:3] + matched_lead_sups))
         parsed["lead_support_ids"] = all_l_sups
         if not parsed.get("lead_claims"):
             l_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", l_text) if s.strip()]
@@ -280,6 +291,109 @@ def _ground_draft_in_coverage_plan(
         sec["paragraphs"] = grounded_paras
 
     return parsed
+
+
+def _is_globally_incomplete(
+    validation_result: ArticleValidationResult,
+    diagnostics: ArticleCoverageDiagnostics,
+) -> bool:
+    """Classify whether a draft suffers from global incompleteness requiring full AI regeneration."""
+    has_draft_blocking = any(
+        iss.blocking and iss.unit_id in ("DRAFT", "") for iss in validation_result.issues
+    )
+    all_develop_covered = diagnostics.develop_story_coverage >= 1.0
+    low_coverage = diagnostics.story_coverage < 0.80
+    many_missing = len(diagnostics.uncovered_story_ids) > 3
+    return has_draft_blocking or (not all_develop_covered) or low_coverage or many_missing
+
+
+def _build_regeneration_feedback(
+    candidate_draft: StructuredArticleDraft,
+    candidate_val: ArticleValidationResult,
+    candidate_diag: ArticleCoverageDiagnostics,
+    coverage_plan: ArticleCoveragePlan,
+    editorial_config: Any,
+    length_profile: Any | None,
+) -> str:
+    hard_min = (
+        length_profile.hard_min_words
+        if length_profile is not None
+        else getattr(editorial_config, "article_min_words", 500)
+    )
+    target_min = (
+        length_profile.target_min_words
+        if length_profile is not None
+        else getattr(editorial_config, "article_target_words", 1200)
+    )
+    target_max = (
+        length_profile.target_max_words
+        if length_profile is not None
+        else getattr(editorial_config, "article_target_words", 1600)
+    )
+
+    uncovered_set = set(candidate_diag.uncovered_story_ids)
+    missing_by_depth: list[str] = []
+    for prominence in ("DEVELOP", "WEAVE", "BRIEF"):
+        subset = [
+            s.story_id
+            for s in coverage_plan.stories
+            if s.prominence == prominence and s.story_id in uncovered_set
+        ]
+        if subset:
+            missing_by_depth.append(f"- {prominence}: {', '.join(subset)}")
+    missing_str = "\n".join(missing_by_depth) if missing_by_depth else "- None"
+
+    return (
+        "Previous draft was rejected as globally incomplete.\n\n"
+        "Actual:\n"
+        f"- {candidate_val.word_count} words\n"
+        f"- {candidate_val.section_count} section(s)\n"
+        f"- {candidate_diag.covered_story_count}/{candidate_diag.planned_story_count} planned stories covered\n\n"
+        "Required:\n"
+        f"- hard minimum words: {hard_min}\n"
+        f"- target range: {target_min}–{target_max} words\n"
+        "- all DEVELOP stories\n"
+        "- at least 80% AI story coverage before deterministic supplement is allowed\n"
+        "- every ArticleCoveragePlan story must ultimately be represented\n\n"
+        "Missing stories:\n"
+        f"{missing_str}\n\n"
+        "Rewrite the COMPLETE article from scratch.\n"
+        "Do not patch or extend only the previous lead.\n"
+        "Use only supplied support IDs/evidence."
+    )
+
+
+def _build_writer_attempt_metadata(
+    attempt_number: int,
+    provider_name: str,
+    model_name: str,
+    response_text: str,
+    val: ArticleValidationResult,
+    diag: ArticleCoverageDiagnostics,
+    provider_obj: Any = None,
+    regeneration_reason: str | None = None,
+) -> dict[str, Any]:
+    meta: dict[str, Any] = {
+        "attempt_number": attempt_number,
+        "provider": provider_name,
+        "model": model_name,
+        "response_chars": len(response_text),
+        "parsed_word_count": val.word_count,
+        "parsed_section_count": val.section_count,
+        "planned_story_count": diag.planned_story_count,
+        "covered_story_count": diag.covered_story_count,
+        "story_coverage": diag.story_coverage,
+        "uncovered_story_ids": list(diag.uncovered_story_ids),
+        "validation_violations": list(val.violations),
+    }
+    if regeneration_reason:
+        meta["regeneration_reason"] = regeneration_reason
+    prov_meta = getattr(provider_obj, "last_metadata", None)
+    if isinstance(prov_meta, dict):
+        for k in ("finish_reason", "completion_tokens", "reasoning_tokens", "total_tokens"):
+            if k in prov_meta:
+                meta[k] = prov_meta[k]
+    return meta
 
 
 class ArticleGenerator:
@@ -1052,14 +1166,16 @@ class ArticleGenerator:
             article_temp = getattr(
                 getattr(self.config.settings, "article", None), "temperature", 0.3
             )
+            writer_max_tokens = self.config.settings.article.editorial_writer_max_output_tokens
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ]
             response = await self.provider.chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                messages=messages,
                 model=self.model,
                 temperature=article_temp,
-                max_tokens=self.config.settings.article.editorial_writer_max_output_tokens,
+                max_tokens=writer_max_tokens,
                 reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
                 response_format={"type": "json_object"},
             )
@@ -1074,18 +1190,90 @@ class ArticleGenerator:
                 config=editorial_config,
                 length_profile=length_profile,
             )
-            if candidate_val.is_valid:
+            candidate_diag = diagnose_article_coverage(candidate_draft, coverage_plan)
+
+            is_incomplete = _is_globally_incomplete(candidate_val, candidate_diag)
+            attempt_1_meta = _build_writer_attempt_metadata(
+                attempt_number=1,
+                provider_name=getattr(self.config.settings, "ai_provider", "unknown"),
+                model_name=self.model,
+                response_text=response,
+                val=candidate_val,
+                diag=candidate_diag,
+                provider_obj=self.provider,
+                regeneration_reason="global_incompleteness" if is_incomplete else None,
+            )
+
+            # Check if candidate draft is globally incomplete -> trigger full AI regeneration
+            if is_incomplete:
+                self.logger.warning(
+                    "Writer attempt 1 is globally incomplete (%d words, %d/%d stories covered); "
+                    "requesting full AI regeneration",
+                    candidate_val.word_count,
+                    candidate_diag.covered_story_count,
+                    candidate_diag.planned_story_count,
+                )
+                if attempt_observer is not None:
+                    await attempt_observer.attempt_finished(
+                        writer_attempt_id,
+                        status="retried",
+                        metadata=attempt_1_meta,
+                    )
+                    writer_attempt_id = await attempt_observer.attempt_started(
+                        "writer",
+                        provider=self.config.settings.ai_provider,
+                        model=self.model,
+                        metadata={"attempt": 2},
+                    )
+
+                feedback_prompt = _build_regeneration_feedback(
+                    candidate_draft=candidate_draft,
+                    candidate_val=candidate_val,
+                    candidate_diag=candidate_diag,
+                    coverage_plan=coverage_plan,
+                    editorial_config=editorial_config,
+                    length_profile=length_profile,
+                )
+                regen_messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                    {"role": "assistant", "content": response},
+                    {"role": "user", "content": feedback_prompt},
+                ]
+                regen_response = await self.provider.chat_completion(
+                    messages=regen_messages,
+                    model=self.model,
+                    temperature=article_temp,
+                    max_tokens=writer_max_tokens,
+                    reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
+                    response_format={"type": "json_object"},
+                )
+                raw_parsed = self._parse_event_article_response_json(regen_response)
+                parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
+                candidate_draft = StructuredArticleDraft.from_dict(
+                    parsed, quote_allowlist=quote_allowlist
+                )
+                candidate_val = validate_article_draft(
+                    candidate_draft,
+                    article_ctx,
+                    config=editorial_config,
+                    length_profile=length_profile,
+                )
+                candidate_diag = diagnose_article_coverage(candidate_draft, coverage_plan)
+                is_incomplete = _is_globally_incomplete(candidate_val, candidate_diag)
+
+            if candidate_val.is_valid and not is_incomplete:
                 writer_draft = candidate_draft
                 writer_error = None
             else:
                 self.logger.warning(
-                    "Writer attempt produced invalid draft: %s",
+                    "Writer produced invalid/incomplete draft: %s",
                     list(candidate_val.violations)[:5],
                 )
                 writer_draft = candidate_draft
 
-                # Targeted copy-editor / fact-checker pass
-                if getattr(editorial_config, "article_editor_enabled", False):
+                # Targeted copy-editor / fact-checker pass ONLY when not globally incomplete
+                if not is_incomplete and getattr(editorial_config, "article_editor_enabled", False):
                     from src.publication.article_editor import ArticleEditor
 
                     editor_max_tokens = getattr(

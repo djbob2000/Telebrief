@@ -457,7 +457,8 @@ class StoryTriageService:
                 """
                 SELECT sf.story_id, f.id, f.text_content, s.id, s.name,
                        COALESCE(s.role, s.kind, 'unknown'),
-                       COALESCE(si.published_at, si.first_collected_at, f.created_at)
+                       COALESCE(si.published_at, si.first_collected_at, f.created_at),
+                       si.parent_item_id
                 FROM story_fragments sf
                 JOIN source_fragments f ON f.id = sf.fragment_id
                 JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
@@ -541,7 +542,7 @@ class StoryTriageService:
                 )
                 all_story_frag_ids[sid].add(fid)
 
-            # Load reply parent texts if present
+            # Load reply parent texts if present (as-of source_cutoff_at)
             parent_texts: dict[int, str] = {}
             if all_parent_item_ids:
                 cur_parents = await read_conn.execute(
@@ -552,10 +553,11 @@ class StoryTriageService:
                         SELECT source_item_id, MAX(revision_no) as max_rev
                         FROM source_item_revisions
                         WHERE source_item_id = ANY(%s)
+                          AND (%s::timestamptz IS NULL OR collected_at <= %s)
                         GROUP BY source_item_id
                     ) latest ON latest.source_item_id = sir.source_item_id AND latest.max_rev = sir.revision_no
                     """,
-                    (list(all_parent_item_ids),),
+                    (list(all_parent_item_ids), source_cutoff_at, source_cutoff_at),
                 )
                 async for p_row in cur_parents:
                     parent_texts[int(p_row[0])] = str(p_row[1])[:200]

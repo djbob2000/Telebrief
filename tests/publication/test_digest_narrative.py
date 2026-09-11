@@ -2177,3 +2177,41 @@ def test_find_and_strip_unsupported_digest_recommendations():
         strip_unsupported_recommendations(text_with_grounded_advice, source_with_official_advice)
         == text_with_grounded_advice
     )
+
+
+def test_recommendation_requires_modality_not_mere_word_overlap():
+    from src.publication.digest_narrative import (
+        find_unsupported_digest_recommendations,
+        strip_unsupported_recommendations,
+    )
+
+    # Source discussing topic without advice/instruction modality must NOT support reader advice
+    source_discussion = "Жители активно обсуждают запасы воды и альтернативные источники питания."
+    text_with_advice = (
+        "В районе перебои. Стоит заранее позаботиться о запасах воды и альтернативных источниках."
+    )
+
+    issues = find_unsupported_digest_recommendations(text_with_advice, [source_discussion])
+    assert len(issues) == 1
+    assert "Стоит заранее позаботиться" in issues[0]
+    cleaned = strip_unsupported_recommendations(text_with_advice, source_discussion)
+    assert "Стоит заранее позаботиться" not in cleaned
+
+
+def test_expanded_advice_detection_forms():
+    from src.publication.digest_narrative import find_unsupported_digest_recommendations
+
+    source_plain = "В городе объявлена воздушная тревога."
+    forms = [
+        "Нужно оставаться в безопасных местах.",
+        "Жителям советуют не выходить из дома.",
+        "Постарайтесь ограничить поездки.",
+        "Запаситесь питьевой водой.",
+        "Зарядите свои телефоны и павербанки.",
+        "Не выходите на улицу во время тревоги.",
+        "Воздержитесь от поездок по городу.",
+    ]
+    for form in forms:
+        text = f"В городе тревога. {form}"
+        issues = find_unsupported_digest_recommendations(text, [source_plain])
+        assert len(issues) >= 1, f"Failed to detect advice in: {form}"

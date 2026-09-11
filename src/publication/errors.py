@@ -6,11 +6,13 @@ from typing import Any, Literal
 ArticleRejectionReason = Literal[
     "validation_failed",
     "writer_failed",
+    "global_incompleteness",
 ]
 
 _ERROR_KIND_BY_REASON: dict[ArticleRejectionReason, str] = {
     "validation_failed": "article_validation_rejected",
     "writer_failed": "article_writer_rejected",
+    "global_incompleteness": "article_global_incompleteness_rejected",
 }
 
 

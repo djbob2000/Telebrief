@@ -3078,3 +3078,122 @@ async def test_story_triage_service_context_size_classified_as_recoverable_for_s
     assert result.deferred_story_ids == (sid_1,)
     assert result.invalid_story_ids == (sid_1,)
     assert result.batch_error_kind == "context_size"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_uncached_triage_without_assignment_mapping_loads_parent_item_id_regression():
+    """Verify that uncached triage query (assignment_id_by_story=None) selects si.parent_item_id (row[7]),
+    loads reply parent texts as-of source_cutoff_at, and passes in_reply_to into the prompt.
+    """
+    from unittest.mock import MagicMock
+
+    from src.domain.event_clusters import StoryClusterState
+
+    now = dt.datetime(2026, 9, 10, 12, 0, tzinfo=dt.timezone.utc)
+    cutoff = dt.datetime(2026, 9, 10, 11, 0, tzinfo=dt.timezone.utc)
+    story = StoryClusterState(
+        story_id=555,
+        centroid=[1.0, 0.0],
+        model="m",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=900,
+        last_analyzed_assignment_id=None,
+        last_analyzed_at=None,
+        analysis_dirty=True,
+        updated_at=now,
+    )
+
+    class AsyncFakeCursor:
+        def __init__(self, rows):
+            self.rows = rows
+            self.idx = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.idx < len(self.rows):
+                val = self.rows[self.idx]
+                self.idx += 1
+                return val
+            raise StopAsyncIteration
+
+        async def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+        async def close(self):
+            pass
+
+    executed_queries = []
+    executed_params = []
+
+    async def fake_execute(query, params=None):
+        executed_queries.append(query)
+        executed_params.append(params)
+        q = query.strip()
+        if "FROM story_fragments" in q:
+            assert "si.parent_item_id" in q
+            return AsyncFakeCursor(
+                [(555, 1001, "Да, минут десять назад", 1, "Chat", "community", now, 42)]
+            )
+        if "FROM source_item_revisions" in q:
+            assert "collected_at <= %s" in q or "max_rev" in q
+            return AsyncFakeCursor([(42, "Свет пропал на Горе?")])
+        if "SELECT slug FROM editions" in q:
+            return AsyncFakeCursor([("berdyansk",)])
+        if "INSERT INTO story_event_triage_runs" in q:
+            return AsyncFakeCursor([(1,)])
+        if "FROM story_gate_audit_runs" in q or "recent" in q:
+            return AsyncFakeCursor([])
+        return AsyncFakeCursor([])
+
+    conn = MagicMock()
+    conn.execute.side_effect = fake_execute
+
+    mock_ai = AsyncMock()
+    mock_ai.model = "test-model"
+    mock_ai.provider = "test-provider"
+    mock_ai.generate_text.return_value = json.dumps(
+        {
+            "results": [
+                {
+                    "story_id": 555,
+                    "scope": "OUT_OF_SCOPE",
+                    "scope_confidence": 0.9,
+                    "scope_reason": "Outside area",
+                    "confidence": 0.95,
+                    "reason": "Outside area",
+                    "scope_basis_fragment_ids": [1001],
+                    "retention": "DROP",
+                    "enrichment": "NONE",
+                    "exclusion_reason": "obvious_noise",
+                    "subject_key": "power_supply",
+                    "subject_label": "Электроснабжение",
+                    "brief_payload": None,
+                }
+            ]
+        }
+    )
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=MagicMock())
+    scope_config = EditionScopeConfig(name="Бердянск", focus_places=("Бердянск",))
+    scope_hash = scope_config_hash(scope_config)
+
+    res = await service.triage_stories_batch(
+        conn,
+        [story],
+        edition_id=1,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+        assignment_id_by_story=None,
+        source_cutoff_at=cutoff,
+    )
+
+    assert len(res.results) == 1
+    prompt_text = mock_ai.generate_text.call_args.kwargs["prompt"]
+    assert 'in_reply_to: "Свет пропал на Горе?"' in prompt_text

@@ -611,22 +611,43 @@ DIGEST_ITEM_BODY_MAX_CHARS = 1200
 DIGEST_SITUATION_BODY_MAX_CHARS = 360
 
 _RECOMMENDATION_SENTENCE_PATTERN = re.compile(
-    r"(?:^|\s+)(?:Стоит|Следует|Рекомендуется|Необходимо|Лучше)\s+(?:заранее\s+)?(?:позаботиться|запастись|сделать\s+запас\w*|подготовить|подзарядить|иметь\s+в\s+виду)[^.!?\n]*[.!?]",
+    r"(?:^|\s+)(?:"
+    r"(?:Стоит|Следует|Рекомендуется|Необходимо|Лучше|Нужно)\s+(?:заранее\s+)?(?:позаботиться|запастись|сделать\s+запас\w*|подготовить|подзарядить|иметь\s+в\s+виду|оставаться|воздержаться|не\s+выходить)[^.!?\n]*[.!?]"
+    r"|Жителям\s+советуют\s+[^.!?\n]*[.!?]"
+    r"|Постарайтесь\s+[^.!?\n]*[.!?]"
+    r"|Запаситесь\s+[^.!?\n]*[.!?]"
+    r"|Зарядите\s+[^.!?\n]*[.!?]"
+    r"|Не\s+выходите\s+[^.!?\n]*[.!?]"
+    r"|Воздержитесь\s+[^.!?\n]*[.!?]"
+    r")",
     re.IGNORECASE,
+)
+
+_RECOMMENDATION_MODALITY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:рекоменду(?:ется|ем|ют)?|совету(?:ют|ем)?|следует|необходимо|нужно|постарайтесь|запаситесь|зарядите|не\s+выходите|воздержи(?:тесь|тесь)?|просят\s+(?:жителей|горожан|не)|памятка|инструкция)\b",
+        re.IGNORECASE,
+    ),
 )
 
 
 def find_unsupported_digest_recommendations(
     text: str,
-    cited_supports: Sequence[str],
+    cited_supports: Sequence[str] | str,
 ) -> list[str]:
     """Find reader advice / calls-to-action that are not grounded in cited supports."""
     if not text or not cited_supports:
         return []
+    if isinstance(cited_supports, str):
+        cited_supports = [cited_supports]
     combined_support = " ".join(cited_supports).lower()
+    has_modality = any(pat.search(combined_support) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
     violations: list[str] = []
     for match in _RECOMMENDATION_SENTENCE_PATTERN.finditer(text):
         matched_text = match.group(0).strip()
+        if not has_modality:
+            violations.append(matched_text)
+            continue
         matched_tokens = [w for w in re.split(r"\W+", matched_text.lower()) if len(w) >= 5]
         supported_count = sum(1 for tok in matched_tokens if tok in combined_support)
         if supported_count < 2:
@@ -637,9 +658,12 @@ def find_unsupported_digest_recommendations(
 def strip_unsupported_recommendations(text: str, source_content: str) -> str:
     """Strip fabricated reader advice/calls-to-action unless explicitly supported by source content."""
     source_lower = source_content.lower()
+    has_modality = any(pat.search(source_lower) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
 
     def _replace_if_unsupported(match: re.Match[str]) -> str:
         matched_text = match.group(0).strip()
+        if not has_modality:
+            return ""
         matched_tokens = [w for w in re.split(r"\W+", matched_text.lower()) if len(w) >= 5]
         supported_count = sum(1 for tok in matched_tokens if tok in source_lower)
         if supported_count >= 2:
