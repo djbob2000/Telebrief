@@ -428,6 +428,7 @@ class PublicationGenerationService:
                                 from src.publication.digest_quality_diagnostics import (
                                     audit_digest_prose_quality,
                                 )
+                                from src.publication.errors import DigestCoverageInvariantError
 
                                 quality_audit = audit_digest_prose_quality(
                                     draft_cand,
@@ -439,6 +440,10 @@ class PublicationGenerationService:
                                     final_digest_draft,
                                     plan,
                                 )
+                                if coverage_trace.material_fact_coverage < 1.0:
+                                    raise DigestCoverageInvariantError(
+                                        f"material fact coverage incomplete: {coverage_trace.material_fact_coverage:.2f} < 1.0"
+                                    )
                                 presentations = presentation_plan.story_presentations
                                 coverage_meta = {
                                     "planned_story_count": len(presentation_plan.story_ids),
@@ -453,6 +458,7 @@ class PublicationGenerationService:
                                     ),
                                     "final_covered_story_count": len(coverage_trace.story_ids),
                                     "final_digest_story_coverage": coverage_trace.story_coverage,
+                                    "final_digest_material_fact_coverage": coverage_trace.material_fact_coverage,
                                     "deterministic_digest_fallback_used": False,
                                     "digest_presentation_plan": presentation_plan.to_audit_dict(),
                                     "digest_coverage_trace": coverage_trace.to_dict(),
@@ -608,6 +614,7 @@ class PublicationGenerationService:
                             ),
                             "final_covered_story_count": len(coverage_trace.story_ids),
                             "final_digest_story_coverage": coverage_trace.story_coverage,
+                            "final_digest_material_fact_coverage": coverage_trace.material_fact_coverage,
                             "deterministic_digest_fallback_used": True,
                             "digest_presentation_plan": presentation_plan.to_audit_dict(),
                             "digest_coverage_trace": coverage_trace.to_dict(),

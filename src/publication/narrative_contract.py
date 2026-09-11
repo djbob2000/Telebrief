@@ -144,9 +144,15 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 - Attribution & Tone: Attribute community reports naturally at most once («По сообщениям жителей...»). Avoid chat-log rolls and quotation dumps.
 - Every situation item must cite the exact support IDs from `supports` that ground its statements.
 
-3. Thematic Detail & Dashboard Overlap Rules (blocks):
+3. Thematic Detail & Visual Presentation Standards (blocks):
 - Write thematic detail items for the assigned stories in each block.
-- Every detail editorial item must have one short scan headline and one compact explanatory body.
+- For each item, choose an accurate semantic emoji matching the theme (`emoji`).
+- Clean Visual Presentation: Never output bullet points ('•') or dashes ('—') at item start. Items are formatted cleanly with their thematic emoji and separated by blank lines.
+- Storytelling Depth (3-Part Narrative):
+  * Major and multi-source items should be crafted as 2–3 sentence cohesive narratives:
+    1. What happened + concrete micro-locations/streets/districts (in parentheses if listing multiple).
+    2. Explanation, cause, or technical background from specialists/authorities (if grounded in evidence).
+    3. Practical consequences, resident adaptations, or status of hotlines/emergency services.
 - The headline must be fact-first / answer-first: a bold mini-summary answering "what happened?".
 - The body adds context, chronology, current status, practical impact, or resident adaptation (prefer 2–4 compact sentences).
 - Do not repeat the headline verbatim in the body.

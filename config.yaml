@@ -174,28 +174,33 @@ settings:
   digest_rubrics:
     min_similarity: 0.38
     items:
+      - id: focus
+        name: "В фокусе внимания"
+        description: "Главные резонансные события дня, ключевые происшествия и темы с наибольшим влиянием на город"
+        emoji: "🎯"
+
       - id: infrastructure
-        name: "Инфраструктура и ЖКХ"
+        name: "Коммунальная обстановка"
         description: "Электричество, вода, газ, тепло, аварии и городские инженерные сети"
         emoji: "⚡️"
 
       - id: safety
-        name: "Безопасность"
+        name: "Безопасность и чрезвычайные ситуации"
         description: "Пожары, аварии, угрозы, чрезвычайные происшествия и риски для жителей"
         emoji: "💥"
 
       - id: mobility
-        name: "Транспорт"
+        name: "Транспорт и дороги"
         description: "Автобусы, маршруты, дороги, перекрытия и транспортная доступность"
         emoji: "🚌"
 
       - id: communications
-        name: "Связь"
+        name: "Связь и интернет"
         description: "Мобильная связь, интернет, операторы и доступность коммуникаций"
-        emoji: "📶"
+        emoji: "🌐"
 
       - id: health
-        name: "Здоровье"
+        name: "Медицина и здоровье"
         description: "Больницы, поликлиники, аптеки, медицинская помощь и здоровье жителей"
         emoji: "🏥"
 
@@ -210,9 +215,9 @@ settings:
         emoji: "🎓"
 
       - id: society
-        name: "Общество"
+        name: "Социальная помощь"
         description: "Социальная помощь, выплаты, волонтёрство и повседневные вопросы жителей"
-        emoji: "🤝"
+        emoji: "🏢"
 
       - id: environment
         name: "Погода и экология"
@@ -253,7 +258,7 @@ settings:
 
   output_language: "Russian"
   use_emojis: true
-  include_statistics: true
+  include_statistics: false
   target_user_id: 291027785
   target_chat_id: "@berdiansk_news"
   auto_cleanup_old_digests: false

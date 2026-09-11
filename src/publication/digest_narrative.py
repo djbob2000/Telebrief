@@ -60,6 +60,8 @@ class DigestSituationItemDraft:
     label: str
     body: str
     cited_support_ids: tuple[str, ...]
+    emoji: str = ""
+    claims: tuple[DigestClaimAtom, ...] = ()
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> DigestSituationItemDraft:
@@ -68,6 +70,7 @@ class DigestSituationItemDraft:
         group_id = str(raw.get("group_id", "")).strip()
         label = str(raw.get("label", "")).strip()
         body = str(raw.get("body", "")).strip()
+        emoji = str(raw.get("emoji", "")).strip()
         raw_supports = raw.get("cited_support_ids", [])
         if isinstance(raw_supports, (str, int)):
             raw_supports = [raw_supports]
@@ -82,12 +85,30 @@ class DigestSituationItemDraft:
         )
         if not group_id or not label or not body or not support_ids:
             raise ValueError("situation item requires group_id, label, body and cited_support_ids")
+        raw_claims = raw.get("claims", [])
+        if raw_claims is None:
+            raw_claims = []
+        if not isinstance(raw_claims, list):
+            raise ValueError("claims must be a list")
+        claims_list = [DigestClaimAtom.from_dict(c) for c in raw_claims]
         return cls(
             group_id=group_id,
             label=label,
             body=body,
             cited_support_ids=support_ids,
+            emoji=emoji,
+            claims=tuple(claims_list),
         )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "group_id": self.group_id,
+            "label": self.label,
+            "body": self.body,
+            "cited_support_ids": list(self.cited_support_ids),
+            "emoji": self.emoji,
+            "claims": [c.to_dict() for c in self.claims],
+        }
 
 
 @dataclass(frozen=True)
@@ -95,8 +116,9 @@ class DigestClaimAtom:
     """A single supported claim atom within a digest editorial item."""
 
     text: str
-    covered_story_ids: tuple[str, ...]
-    cited_support_ids: tuple[str, ...]
+    covered_story_ids: tuple[str, ...] = ()
+    cited_support_ids: tuple[str, ...] = ()
+    covered_fact_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> DigestClaimAtom:
@@ -127,18 +149,34 @@ class DigestClaimAtom:
                 if x and isinstance(x, (str, int)) and str(x).strip()
             )
         )
+        raw_facts = raw.get("covered_fact_ids", [])
+        if isinstance(raw_facts, (str, int)):
+            raw_facts = [raw_facts]
+        if not isinstance(raw_facts, list):
+            raise ValueError("covered_fact_ids must be a list")
+        fact_ids = tuple(
+            dict.fromkeys(
+                str(x).strip()
+                for x in raw_facts
+                if x and isinstance(x, (str, int)) and str(x).strip()
+            )
+        )
         return cls(
             text=text,
             covered_story_ids=story_ids,
             cited_support_ids=support_ids,
+            covered_fact_ids=fact_ids,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "text": self.text,
             "covered_story_ids": list(self.covered_story_ids),
             "cited_support_ids": list(self.cited_support_ids),
         }
+        if self.covered_fact_ids:
+            d["covered_fact_ids"] = list(self.covered_fact_ids)
+        return d
 
 
 @dataclass(frozen=True)
@@ -150,6 +188,7 @@ class DigestEditorialItemDraft:
     covered_story_ids: tuple[str, ...]
     cited_support_ids: tuple[str, ...]
     claims: tuple[DigestClaimAtom, ...] = ()
+    emoji: str = ""
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> DigestEditorialItemDraft:
@@ -157,6 +196,7 @@ class DigestEditorialItemDraft:
             raise ValueError("digest item must be a mapping")
         headline = str(raw.get("headline", "")).strip()
         body = str(raw.get("body", "")).strip()
+        emoji = str(raw.get("emoji", "")).strip()
         raw_stories = raw.get("covered_story_ids", [])
         if isinstance(raw_stories, (str, int)):
             raw_stories = [raw_stories]
@@ -201,6 +241,7 @@ class DigestEditorialItemDraft:
             covered_story_ids=story_ids,
             cited_support_ids=support_ids,
             claims=tuple(claims),
+            emoji=emoji,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -210,6 +251,7 @@ class DigestEditorialItemDraft:
             "covered_story_ids": list(self.covered_story_ids),
             "cited_support_ids": list(self.cited_support_ids),
             "claims": [c.to_dict() for c in self.claims],
+            "emoji": self.emoji,
         }
 
 
@@ -614,6 +656,69 @@ def validate_digest_narrative(
                 violations.append(
                     f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in situation body {sit_item.group_id}"
                 )
+
+            # Validate claims and required operational facts coverage
+            plan_req_facts = getattr(plan_grp, "required_facts", ()) or ()
+            if plan_req_facts:
+                if not sit_item.claims:
+                    for rf in plan_req_facts:
+                        violations.append(f"SITUATION_FACT_COVERAGE_MISSING:{rf.fact_id}")
+                else:
+                    for c in sit_item.claims:
+                        if not c.cited_support_ids:
+                            violations.append(
+                                f"CLAIM_WITHOUT_SUPPORT: claim '{c.text[:30]}' in {sit_item.group_id} cites no supports"
+                            )
+                        for sup_id in c.cited_support_ids:
+                            if sup_id not in sit_item.cited_support_ids:
+                                violations.append(
+                                    f"CLAIM_SUPPORT_OUTSIDE_ITEM: {sup_id} in situation item {sit_item.group_id}"
+                                )
+                            if allowed_sit_supports and sup_id not in allowed_sit_supports:
+                                violations.append(
+                                    f"SUPPORT_OUTSIDE_GROUP: {sup_id} not allowed in situation group {sit_item.group_id}"
+                                )
+                        c_claim_supports = [
+                            support_map[s] for s in c.cited_support_ids if s in support_map
+                        ]
+                        for unc in find_unsupported_claims(
+                            c.text,
+                            c_claim_supports,
+                            allowed_context_terms=ctx_terms,
+                            all_known_draft_supports=known_supports,
+                        ):
+                            unsupported_claims.append(unc)
+                            violations.append(
+                                f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in situation claim {sit_item.group_id}"
+                            )
+                        for rel in find_unsupported_digest_relations(c.text, c_claim_supports):
+                            violations.append(
+                                f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in situation claim {sit_item.group_id}"
+                            )
+
+                    # Strict coverage check: every required fact must be covered by at least one claim
+                    for rf in plan_req_facts:
+                        rf_covered = False
+                        rf_allowed_supports = set(rf.support_ids)
+                        for c in sit_item.claims:
+                            claim_sups = set(c.cited_support_ids)
+                            if rf_allowed_supports and (claim_sups & rf_allowed_supports):
+                                if not c.covered_fact_ids or rf.fact_id in c.covered_fact_ids:
+                                    rf_covered = True
+                                    break
+                            elif c.covered_fact_ids and rf.fact_id in c.covered_fact_ids:
+                                if claim_sups & allowed_sit_supports:
+                                    rf_covered = True
+                                    break
+                        if not rf_covered:
+                            violations.append(f"SITUATION_FACT_COVERAGE_MISSING:{rf.fact_id}")
+            elif sit_item.claims:
+                for c in sit_item.claims:
+                    for sup_id in c.cited_support_ids:
+                        if sup_id not in sit_item.cited_support_ids:
+                            violations.append(
+                                f"CLAIM_SUPPORT_OUTSIDE_ITEM: {sup_id} in situation item {sit_item.group_id}"
+                            )
 
     plan_blocks_by_id = {b.block_id: b for b in plan.blocks}
     draft_block_ids = [b.block_id for b in draft.blocks]
@@ -1474,6 +1579,7 @@ def parse_journalistic_markdown_to_draft(
             continue
 
         m_marker = re_leading_marker.match(stripped)
+        marker_emoji = m_marker.group(0).strip() if m_marker else ""
         rest = stripped[m_marker.end() :].strip() if m_marker else stripped
         rest = rest.lstrip("\ufe0f").strip()
 
@@ -1523,6 +1629,7 @@ def parse_journalistic_markdown_to_draft(
                     body=body,
                     covered_story_ids=tuple(covered_sids),
                     cited_support_ids=tuple(cited_sups[:5]),
+                    emoji=marker_emoji,
                 )
             )
     _flush()
@@ -1735,12 +1842,21 @@ class DigestNarrativeWriter:
                                 "publication_use": evi.publication_use,
                             }
                         )
+                req_facts_payload = [
+                    {
+                        "fact_id": rf.fact_id,
+                        "text": rf.text,
+                        "support_ids": list(rf.support_ids),
+                    }
+                    for rf in getattr(grp, "required_facts", ())
+                ]
                 situation_payload.append(
                     {
                         "group_id": grp.group_id,
                         "label": grp.subject_label,
                         "state": grp.state,
                         "facts": list(grp.all_detail_lines or grp.detail_lines),
+                        "required_facts": req_facts_payload,
                         "allowed_support_ids": list(all_grp_refs),
                         "supports": grp_supports,
                     }
@@ -1753,9 +1869,18 @@ class DigestNarrativeWriter:
                 '  "situation_items": [\n'
                 "    {\n"
                 '      "group_id": "string (must match input group_id exactly)",\n'
-                '      "label": "string (subject label matching input group label, e.g. \'Электричество\')",\n'
-                '      "body": "string (1-3 sentences of cohesive, scan-first editorial prose synthesizing the operational facts)",\n'
-                '      "cited_support_ids": ["string (support IDs cited)"]\n'
+                "      \"emoji\": \"string (semantic emoji, e.g. '⚡️' for power, '💧' for water, '💨' for gas, '🚌' for transport)\",\n"
+                '      "label": "string (subject label matching input group label, e.g. \'Электроснабжение\')",\n'
+                '      "body": "string (1-3 sentences of cohesive editorial prose synthesizing the operational facts)",\n'
+                '      "cited_support_ids": ["string (support IDs cited)"],\n'
+                '      "claims": [\n'
+                "        {\n"
+                '          "text": "string (atomic factual claim in Russian)",\n'
+                '          "covered_fact_ids": ["string (fact IDs this claim covers)"],\n'
+                '          "covered_story_ids": ["string (story IDs this claim covers)"],\n'
+                '          "cited_support_ids": ["string (support IDs supporting this claim)"]\n'
+                "        }\n"
+                "      ]\n"
                 "    }\n"
                 "  ],\n"
             )
@@ -1770,8 +1895,9 @@ class DigestNarrativeWriter:
             '      "block_id": "string (must match input block_id exactly)",\n'
             '      "items": [\n'
             "        {\n"
+            "          \"emoji\": \"string (thematic semantic emoji, e.g. '⚡️', '💨', '💥', '🛡', '🌐', '🚌', '🏢', '🚫', '📚', '📌')\",\n"
             '          "headline": "string (bold mini-summary answer to what happened)",\n'
-            '          "body": "string (compact 2-4 sentences adding context/chronology/status/microdetails)",\n'
+            '          "body": "string (cohesive 2-4 sentence narrative covering what happened, micro-locations in parentheses, explanations, and practical consequences)",\n'
             '          "covered_story_ids": ["string (story IDs covered)"],\n'
             '          "cited_support_ids": ["string (support IDs cited)"],\n'
             '          "claims": [\n'
@@ -1792,9 +1918,15 @@ class DigestNarrativeWriter:
             "You are a professional regional newsroom editor and journalist.\n"
             "Your task is to write a cohesive, scan-first, and strictly factual daily news digest in Russian.\n\n"
             "EDITORIAL AND LANGUAGE RULES:\n"
-            "- Write in professional Russian regional news style.\n"
+            "- Write in professional Russian regional news style matching top Telegram channels.\n"
+            "- Never output bullet points ('•') or dashes ('—') at the beginning of items.\n"
+            "- For each item, select an accurate thematic semantic emoji (e.g. '⚡️', '💨', '💥', '🛡', '🌐', '🚌', '🏢', '🚫', '📚', '📌') in 'emoji'.\n"
+            "- Craft rich, 2-3 sentence journalistic paragraphs following a cohesive storytelling structure:\n"
+            "  1. What occurred + concrete micro-locations/districts/streets (in parentheses if listing multiple).\n"
+            "  2. Cause or official/specialist explanation (if supported in evidence, e.g. technical works, scheduled maintenance, odorant markers).\n"
+            "  3. Practical civic consequences or advice for residents (contacts, workarounds, billing procedures).\n"
             "- If source facts or notes are in Ukrainian, accurately translate and paraphrase them into Russian.\n"
-            "- If 'situation_groups' are provided, synthesize each operational group in 'situation_items'. Use natural chronology and geographical clarity (e.g. outages, low voltage, and restored sections). Never invent ungrounded numbers or causes. Cite the exact support IDs.\n"
+            "- If 'situation_groups' are provided, synthesize each operational group in 'situation_items'. Every required fact in 'required_facts' must be covered in 'claims' and reflected in the narrative body. Use natural chronology and geographical clarity (e.g. outages, low voltage, and restored sections). Never invent ungrounded numbers or causes. Cite the exact support IDs.\n"
             "- In thematic 'blocks', never repeat the headline in the first sentence of the body text.\n"
             "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
             "- Attribute source role naturally ('По сообщениям жителей', 'По данным коммунальных служб') at most once per item.\n"
@@ -1820,6 +1952,8 @@ class DigestNarrativeWriter:
         }
         if model:
             chat_kwargs["model"] = model
+        if max_output_tokens:
+            chat_kwargs["max_tokens"] = max_output_tokens
 
         raw_response = await self._provider.chat_completion(**chat_kwargs)
 

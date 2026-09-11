@@ -370,17 +370,17 @@ class TestPublicationDigestRenderer:
         )
 
         assert (
-            "• **Подтвержденных сроков восстановления света пока нет**: Сообщения об отключениях поступали в разные дни."
+            "⚡️ **Подтвержденных сроков восстановления света пока нет**: Сообщения об отключениях поступали в разные дни."
             in body
         )
         assert (
-            "• **На Горе банкоматы без связи, но карты в магазинах принимают**: Безналичная оплата в торговых точках города проходит без сбоев."
+            "⚡️ **На Горе банкоматы без связи, но карты в магазинах принимают**: Безналичная оплата в торговых точках города проходит без сбоев."
             in body
         )
         assert "story:" not in body
         assert "sup:" not in body
         assert (
-            "• **Водоснабжение**" not in body
+            "Водоснабжение" not in body
         )  # Canonical card bullets are suppressed when narrative draft is used!
         assert "Статистика:" in body
 
@@ -437,8 +437,8 @@ class TestPublicationDigestRenderer:
         )
 
         assert "Городская обстановка" in body
-        assert "• **Электроснабжение**: Без света: Центр и Колония." in body
-        assert "• **Ремонт продолжается**: Аварийные бригады работают на подстанциях." in body
+        assert "⚡️ **Электроснабжение**: Без света: Центр и Колония." in body
+        assert "⚡️ **Ремонт продолжается**: Аварийные бригады работают на подстанциях." in body
 
     def test_render_layered_short_read_telegram_html(self):
         from src.publication.digest_narrative import (

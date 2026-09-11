@@ -358,26 +358,39 @@ class PublicationDigestRenderer:
             sit_plan = getattr(presentation_plan, "city_situation", presentation_plan)
 
         if narrative_draft is not None and getattr(narrative_draft, "situation_items", None):
-            from src.publication.city_situation import city_situation_icon
-
-            emoji = "🏙 " if self.use_emojis else ""
-            sit_lines = [f"*{emoji}Городская обстановка*"]
+            sit_lines = ["Городская обстановка"]
             for s_item in narrative_draft.situation_items:
-                icon = ""
                 grp = None
                 if sit_plan is not None and getattr(sit_plan, "groups", None):
                     grp = next((g for g in sit_plan.groups if g.group_id == s_item.group_id), None)
-                    if grp and self.use_emojis:
-                        icon = city_situation_icon(grp.state)
-                prefix = f"{icon} " if icon else ""
+                item_emoji = getattr(s_item, "emoji", "") or ""
+                if not item_emoji:
+                    subj = (grp.subject_key if grp else f"{s_item.group_id} {s_item.label}").lower()
+                    if any(k in subj for k in ("power", "свет", "электр")):
+                        item_emoji = "⚡️"
+                    elif any(k in subj for k in ("water", "вод")):
+                        item_emoji = "💧"
+                    elif any(k in subj for k in ("gas", "газ")):
+                        item_emoji = "💨"
+                    elif any(k in subj for k in ("heat", "тепл")):
+                        item_emoji = "♨️"
+                    elif "transport" in subj:
+                        item_emoji = "🚌"
+                    elif any(k in subj for k in ("telecom", "связь", "интернет")):
+                        item_emoji = "🌐"
+                    elif grp and self.use_emojis:
+                        from src.publication.city_situation import city_situation_icon
+
+                        item_emoji = city_situation_icon(grp.state)
+                prefix = f"{item_emoji} " if item_emoji else ""
                 label = grp.subject_label if grp else s_item.label.strip()
                 body = s_item.body.strip()
                 if body:
-                    sit_lines.append(f"• {prefix}**{label}**: {body}")
+                    sit_lines.append(f"{prefix}**{label}**: {body}")
                 else:
-                    sit_lines.append(f"• {prefix}**{label}**")
+                    sit_lines.append(f"{prefix}**{label}**")
             if len(sit_lines) > 1:
-                sections.append("\n".join(sit_lines))
+                sections.append(f"{sit_lines[0]}\n\n" + "\n\n".join(sit_lines[1:]))
         elif sit_plan is not None:
             from src.publication.digest_presentation import render_city_situation_presentation
 
@@ -400,14 +413,8 @@ class PublicationDigestRenderer:
                     rubric = next(
                         (r for r in self.rubrics if r.get("id") == current_rubric_id), None
                     )
-                    emoji = (
-                        f"{rubric['emoji']} "
-                        if (rubric and self.use_emojis and rubric.get("emoji"))
-                        else ""
-                    )
                     heading = rubric["title"] if rubric else "Разное"
-                    header = f"*{emoji}{heading}*"
-                    sections.append(f"{header}\n" + "\n".join(current_rubric_items))
+                    sections.append(f"{heading}\n\n" + "\n\n".join(current_rubric_items))
 
             for block_draft in narrative_draft.blocks:
                 rubric_id = (
@@ -415,11 +422,27 @@ class PublicationDigestRenderer:
                     if ":" in block_draft.block_id
                     else block_draft.block_id
                 )
-                item_lines = [
-                    f"• **{item.headline.strip()}**: {item.body.strip()}"
-                    for item in block_draft.items
-                    if item.headline.strip() and item.body.strip()
-                ]
+                item_lines = []
+                for item in block_draft.items:
+                    h_text = item.headline.strip()
+                    b_text = item.body.strip()
+                    if not h_text and not b_text:
+                        continue
+                    item_emoji = getattr(item, "emoji", "") or ""
+                    if not item_emoji:
+                        rubric = next((r for r in self.rubrics if r.get("id") == rubric_id), None)
+                        if rubric and rubric.get("emoji"):
+                            item_emoji = rubric["emoji"]
+                    prefix = f"{item_emoji} " if item_emoji else ""
+                    if h_text and b_text:
+                        clean_h = h_text.strip("*").rstrip(".:;, ")
+                        item_lines.append(f"{prefix}**{clean_h}**: {b_text}")
+                    elif h_text:
+                        clean_h = h_text.strip("*").rstrip(".:;, ")
+                        item_lines.append(f"{prefix}**{clean_h}**")
+                    else:
+                        item_lines.append(f"{prefix}{b_text}")
+
                 if not item_lines:
                     continue
 

@@ -30,8 +30,20 @@ class DigestStoryCoverageTrace:
 
 
 @dataclass(frozen=True)
+class DigestFactCoverageTrace:
+    fact_id: str
+    group_id: str
+    story_ids: tuple[str, ...]
+    required_support_ids: tuple[str, ...]
+    covered: bool
+    cited_support_ids: tuple[str, ...]
+    text: str
+
+
+@dataclass(frozen=True)
 class DigestCoverageTrace:
     stories: tuple[DigestStoryCoverageTrace, ...]
+    facts: tuple[DigestFactCoverageTrace, ...] = ()
 
     @property
     def story_ids(self) -> tuple[str, ...]:
@@ -53,6 +65,13 @@ class DigestCoverageTrace:
                 covered += 1
         return covered / len(self.stories)
 
+    @property
+    def material_fact_coverage(self) -> float:
+        if not self.facts:
+            return 1.0
+        covered = sum(1 for f in self.facts if f.covered)
+        return covered / len(self.facts)
+
     def to_dict(self) -> list[dict[str, Any]]:
         return [
             {
@@ -68,6 +87,20 @@ class DigestCoverageTrace:
             for s in self.stories
         ]
 
+    def facts_to_dict(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "fact_id": f.fact_id,
+                "group_id": f.group_id,
+                "story_ids": list(f.story_ids),
+                "required_support_ids": list(f.required_support_ids),
+                "covered": f.covered,
+                "cited_support_ids": list(f.cited_support_ids),
+                "text": f.text,
+            }
+            for f in self.facts
+        ]
+
 
 def build_digest_coverage_trace(
     plan: DigestPresentationPlan,
@@ -80,31 +113,119 @@ def build_digest_coverage_trace(
     dashboard_supports_by_story: dict[str, list[str]] = {}
     dashboard_texts_by_story: dict[str, list[str]] = {}
 
-    if plan.city_situation and plan.city_situation.groups:
-        for group in plan.city_situation.groups:
-            group_text = city_situation_group_reader_text(group)
-            for sid in group.covered_story_ids:
-                if group.group_id not in dashboard_groups_by_story.setdefault(sid, []):
-                    dashboard_groups_by_story[sid].append(group.group_id)
-                if group_text not in dashboard_texts_by_story.setdefault(sid, []):
-                    dashboard_texts_by_story[sid].append(group_text)
-                for sup_id in group.cited_support_ids:
-                    if sup_id not in dashboard_supports_by_story.setdefault(sid, []):
-                        dashboard_supports_by_story[sid].append(sup_id)
+    has_situation_draft = bool(final_draft and getattr(final_draft, "situation_items", None))
 
-        if final_draft and getattr(final_draft, "situation_items", None):
+    if plan.city_situation and plan.city_situation.groups:
+        if not has_situation_draft:
+            # Deterministic template rendering mode: plan groups are rendered directly
+            for group in plan.city_situation.groups:
+                group_text = city_situation_group_reader_text(group)
+                for sid in group.covered_story_ids:
+                    if group.group_id not in dashboard_groups_by_story.setdefault(sid, []):
+                        dashboard_groups_by_story[sid].append(group.group_id)
+                    if group_text not in dashboard_texts_by_story.setdefault(sid, []):
+                        dashboard_texts_by_story[sid].append(group_text)
+                    for sup_id in group.cited_support_ids:
+                        if sup_id not in dashboard_supports_by_story.setdefault(sid, []):
+                            dashboard_supports_by_story[sid].append(sup_id)
+        else:
+            # Narrative single_call mode: ONLY credit what situation_items actually express!
             for s_item in final_draft.situation_items:
                 s_group = next(
                     (g for g in plan.city_situation.groups if g.group_id == s_item.group_id), None
                 )
-                if s_group:
-                    sit_text = f"{s_item.label}: {s_item.body}"
+                if not s_group:
+                    continue
+                sit_text = f"{s_item.label}: {s_item.body}"
+                if s_item.claims:
+                    for claim in s_item.claims:
+                        c_text = claim.text.strip()
+                        c_supports = tuple(claim.cited_support_ids)
+                        claim_stories: set[str] = set(claim.covered_story_ids)
+                        for rf in getattr(s_group, "required_facts", ()):
+                            if (set(c_supports) & set(rf.support_ids)) or (
+                                claim.covered_fact_ids and rf.fact_id in claim.covered_fact_ids
+                            ):
+                                claim_stories.update(rf.story_ids)
+                        for sid in claim_stories:
+                            if s_group.group_id not in dashboard_groups_by_story.setdefault(
+                                sid, []
+                            ):
+                                dashboard_groups_by_story[sid].append(s_group.group_id)
+                            if c_text and c_text not in dashboard_texts_by_story.setdefault(
+                                sid, []
+                            ):
+                                dashboard_texts_by_story[sid].append(c_text)
+                            elif sit_text not in dashboard_texts_by_story.setdefault(sid, []):
+                                dashboard_texts_by_story[sid].append(sit_text)
+                            for sup_id in c_supports:
+                                if sup_id not in dashboard_supports_by_story.setdefault(sid, []):
+                                    dashboard_supports_by_story[sid].append(sup_id)
+                else:
                     for sid in s_group.covered_story_ids:
-                        if sit_text not in dashboard_texts_by_story.setdefault(sid, []):
-                            dashboard_texts_by_story[sid].append(sit_text)
-                        for sup_id in s_item.cited_support_ids:
-                            if sup_id not in dashboard_supports_by_story.setdefault(sid, []):
-                                dashboard_supports_by_story[sid].append(sup_id)
+                        for rf in getattr(s_group, "required_facts", ()):
+                            if sid in rf.story_ids and (
+                                set(s_item.cited_support_ids) & set(rf.support_ids)
+                            ):
+                                if s_group.group_id not in dashboard_groups_by_story.setdefault(
+                                    sid, []
+                                ):
+                                    dashboard_groups_by_story[sid].append(s_group.group_id)
+                                if sit_text not in dashboard_texts_by_story.setdefault(sid, []):
+                                    dashboard_texts_by_story[sid].append(sit_text)
+                                for sup_id in set(s_item.cited_support_ids) & set(rf.support_ids):
+                                    if sup_id not in dashboard_supports_by_story.setdefault(
+                                        sid, []
+                                    ):
+                                        dashboard_supports_by_story[sid].append(sup_id)
+
+    # Audit material operational facts
+    fact_traces: list[DigestFactCoverageTrace] = []
+    if plan.city_situation and plan.city_situation.groups:
+        for group in plan.city_situation.groups:
+            matched_sit_item: Any = None
+            if final_draft and getattr(final_draft, "situation_items", None):
+                matched_sit_item = next(
+                    (it for it in final_draft.situation_items if it.group_id == group.group_id),
+                    None,
+                )
+            for rf in getattr(group, "required_facts", ()):
+                covered = False
+                cited_sups: list[str] = []
+                if matched_sit_item is not None:
+                    if matched_sit_item.claims:
+                        for c in matched_sit_item.claims:
+                            c_sups = set(c.cited_support_ids)
+                            if (set(rf.support_ids) & c_sups) or (
+                                c.covered_fact_ids and rf.fact_id in c.covered_fact_ids
+                            ):
+                                covered = True
+                                for s in c.cited_support_ids:
+                                    if s not in cited_sups:
+                                        cited_sups.append(s)
+                    else:
+                        if set(rf.support_ids) & set(matched_sit_item.cited_support_ids):
+                            covered = True
+                            cited_sups.extend(
+                                s
+                                for s in matched_sit_item.cited_support_ids
+                                if s in set(rf.support_ids)
+                            )
+                elif not has_situation_draft:
+                    covered = True
+                    cited_sups.extend(rf.support_ids)
+
+                fact_traces.append(
+                    DigestFactCoverageTrace(
+                        fact_id=rf.fact_id,
+                        group_id=group.group_id,
+                        story_ids=rf.story_ids,
+                        required_support_ids=rf.support_ids,
+                        covered=covered,
+                        cited_support_ids=tuple(cited_sups),
+                        text=rf.text,
+                    )
+                )
 
     # Build story-to-allowed-supports mapping from narrative_plan if provided
     story_to_allowed_supports: dict[str, set[str]] = {}
@@ -193,7 +314,7 @@ def build_digest_coverage_trace(
             )
         )
 
-    trace = DigestCoverageTrace(stories=tuple(story_traces))
+    trace = DigestCoverageTrace(stories=tuple(story_traces), facts=tuple(fact_traces))
     if set(trace.story_ids) != set(plan.story_ids):
         raise DigestCoverageInvariantError(
             f"trace story set mismatch: {trace.story_ids} vs {plan.story_ids}"

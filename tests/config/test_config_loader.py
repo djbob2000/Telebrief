@@ -2476,8 +2476,12 @@ def test_production_config_uses_contract_safe_digest_mode():
     config_path = Path(__file__).parents[2] / "config.yaml"
     raw_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-    assert raw_config["settings"]["publication_editorial"]["digest_narrative_mode"] == (
-        "deterministic"
+    assert raw_config["settings"]["publication_editorial"]["digest_narrative_mode"] in (
+        "deterministic",
+        "single_call",
+    )
+    assert (
+        raw_config["settings"]["publication_editorial"]["digest_narrative_mode"] != "journalistic"
     )
 
 

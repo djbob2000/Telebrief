@@ -25,6 +25,7 @@ class CitySituationItem:
     last_observed_at: dt.datetime
     observation_count: int
     current_source_refs: tuple[str, ...] = ()
+    fact_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,7 @@ class CitySituationRollup:
                     "first_observed_at": item.first_observed_at.isoformat(),
                     "last_observed_at": item.last_observed_at.isoformat(),
                     "observation_count": item.observation_count,
+                    "fact_id": item.fact_id,
                 }
                 for item in self.items
             ]
@@ -82,6 +84,7 @@ class CitySituationRollup:
                     last_observed_at=l_ts,
                     observation_count=int(d.get("observation_count", 1)),
                     current_source_refs=tuple(str(r) for r in d.get("current_source_refs", [])),
+                    fact_id=str(d.get("fact_id", "")),
                 )
             )
         return cls(items=tuple(items))

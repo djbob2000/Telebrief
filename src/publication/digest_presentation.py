@@ -37,6 +37,33 @@ class DigestPresentationUnit:
 
 
 @dataclass(frozen=True)
+class RequiredSituationFact:
+    """A discrete material operational proposition required for lossless situation coverage."""
+
+    fact_id: str
+    story_ids: tuple[str, ...]
+    support_ids: tuple[str, ...]  # alternative supports for this single fact
+    text: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "fact_id": self.fact_id,
+            "story_ids": list(self.story_ids),
+            "support_ids": list(self.support_ids),
+            "text": self.text,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RequiredSituationFact:
+        return cls(
+            fact_id=str(data.get("fact_id", "")),
+            story_ids=tuple(str(s) for s in data.get("story_ids", [])),
+            support_ids=tuple(str(s) for s in data.get("support_ids", [])),
+            text=str(data.get("text", "")),
+        )
+
+
+@dataclass(frozen=True)
 class CitySituationPresentationGroup:
     group_id: str
     group_kind: str  # "subject_status" | "available_services"
@@ -48,6 +75,7 @@ class CitySituationPresentationGroup:
     covered_story_ids: tuple[str, ...] = ()
     cited_support_ids: tuple[str, ...] = ()
     all_detail_lines: tuple[str, ...] = ()
+    required_facts: tuple[RequiredSituationFact, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -265,14 +293,35 @@ def _select_group_details(
     return tuple(lines)
 
 
-def plan_city_situation_presentation(
+def _derive_situation_fact_id(group_id: str, item: CitySituationItem, idx: int) -> str:
+    if getattr(item, "fact_id", None):
+        return str(item.fact_id).strip()
+    loc = (item.location or "").strip()
+    detail = (item.detail or "").strip()
+    if "центр" in loc.casefold() and ("170" in detail or "напряжен" in detail.casefold()):
+        return "center_voltage"
+    import re
+
+    if loc:
+        slug = re.sub(r"[^\w]+", "_", loc.casefold()).strip("_")
+        if slug:
+            return slug
+    if detail:
+        slug = re.sub(r"[^\w]+", "_", detail[:30].casefold()).strip("_")
+        if slug:
+            return slug
+    clean_grp = group_id.split(":", 1)[-1] if ":" in group_id else group_id
+    return f"{clean_grp}_fact_{idx + 1}"
+
+
+def build_city_situation_presentation_plan(
     rollup: CitySituationRollup | None,
     *,
     max_items: int = 7,
     max_details_per_item: int = 2,
     max_positive_items: int = 2,
 ) -> CitySituationPresentationPlan:
-    """Consolidate and cap operational observations into a structured dashboard plan."""
+    """Build the city situation presentation plan with mixed/pure group consolidation."""
     if not rollup or not rollup.items:
         return CitySituationPresentationPlan(groups=(), covered_source_refs=())
 
@@ -318,6 +367,24 @@ def plan_city_situation_presentation(
         obs_count = sum(it.observation_count for it in group_items)
 
         group_id = f"situation:{canonical_subj}"
+        req_facts = []
+        for f_idx, it in enumerate(group_items):
+            fid = _derive_situation_fact_id(group_id, it, f_idx)
+            it_refs = tuple(
+                dict.fromkeys(
+                    r for r in (getattr(it, "current_source_refs", ()) or it.source_refs) if r
+                )
+            )
+            f_text = _detail_line(it)
+            req_facts.append(
+                RequiredSituationFact(
+                    fact_id=fid,
+                    story_ids=(),
+                    support_ids=it_refs,
+                    text=f_text,
+                )
+            )
+
         presentation_group = CitySituationPresentationGroup(
             group_id=group_id,
             group_kind="subject_status",
@@ -327,6 +394,7 @@ def plan_city_situation_presentation(
             source_refs=tuple(merged_refs),
             detail_lines=detail_lines,
             all_detail_lines=all_detail_lines,
+            required_facts=tuple(req_facts),
         )
         candidate_groups.append((presentation_group, worst_sev, latest_ts, obs_count))
 
@@ -373,6 +441,9 @@ def plan_city_situation_presentation(
         groups=tuple(selected_groups),
         covered_source_refs=tuple(covered_refs),
     )
+
+
+plan_city_situation_presentation = build_city_situation_presentation_plan
 
 
 def city_situation_group_reader_text(group: CitySituationPresentationGroup) -> str:
@@ -497,6 +568,15 @@ class DigestPresentationPlan:
                     "group_id": g.group_id,
                     "covered_story_ids": list(g.covered_story_ids),
                     "cited_support_ids": list(g.cited_support_ids),
+                    "required_facts": [
+                        {
+                            "fact_id": f.fact_id,
+                            "story_ids": list(f.story_ids),
+                            "support_ids": list(f.support_ids),
+                            "text": f.text,
+                        }
+                        for f in getattr(g, "required_facts", ())
+                    ],
                 }
                 for g in (self.city_situation.groups if self.city_situation else ())
             ],
@@ -1192,11 +1272,56 @@ def build_digest_presentation_plan(
                 if st_str not in covered_story_ids_set:
                     covered_story_ids_set.append(st_str)
 
+        grp_items = items_by_group_id.get(group.group_id, [])
+        enriched_facts: list[RequiredSituationFact] = []
+        for f_idx, rf in enumerate(group.required_facts):
+            sit_item = grp_items[f_idx] if f_idx < len(grp_items) else None
+            item_refs = (
+                set(getattr(sit_item, "current_source_refs", ()) or sit_item.source_refs)
+                if sit_item
+                else set(rf.support_ids)
+            )
+            item_evis = [
+                evi
+                for evi in dashboard_evidence
+                if getattr(evi, "source_ref", None) in item_refs
+                or getattr(evi, "evidence_id", None) in item_refs
+                or getattr(evi, "evidence_id", None) in rf.support_ids
+            ]
+            fact_supports: list[str] = list(rf.support_ids)
+            for evi in item_evis:
+                eid = getattr(evi, "evidence_id", "")
+                if eid and eid not in fact_supports:
+                    fact_supports.append(eid)
+            fact_stories: list[str] = list(rf.story_ids)
+            for evi in item_evis:
+                eid = getattr(evi, "evidence_id", "")
+                for card in cards:
+                    if _matches_card(card.id, evi, eid):
+                        if card.id not in fact_stories:
+                            fact_stories.append(card.id)
+                if getattr(evi, "story_id", None) is not None:
+                    st_str = (
+                        f"story:{evi.story_id}"
+                        if not str(evi.story_id).startswith("story:")
+                        else str(evi.story_id)
+                    )
+                    if st_str not in fact_stories:
+                        fact_stories.append(st_str)
+            enriched_facts.append(
+                replace(
+                    rf,
+                    story_ids=tuple(fact_stories),
+                    support_ids=tuple(fact_supports),
+                )
+            )
+
         enriched_groups.append(
             replace(
                 group,
                 covered_story_ids=tuple(covered_story_ids_set),
                 cited_support_ids=cited_support_ids,
+                required_facts=tuple(enriched_facts),
             )
         )
 
