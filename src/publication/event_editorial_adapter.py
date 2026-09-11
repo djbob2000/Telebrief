@@ -427,15 +427,19 @@ class EventEditorialAdapter:
                 if is_utility_domain and not has_non_op_evidence:
                     pure_op_story_ids.add(inp.story_id)
 
-            if payload and payload.evidence_items:
-                has_publishable_evidence = any(
-                    evi.publication_use == "PUBLISH" and evi.kind != "resident_question"
-                    for evi in payload.evidence_items
+            from src.publication.story_quality import validate_story_publication_eligibility
+
+            fallback_text = row[1] or row[2] or row[3] or ""
+            is_eligible, reject_reason = validate_story_publication_eligibility(
+                payload, fallback_text=fallback_text
+            )
+            should_emit_card = is_eligible
+            if not should_emit_card:
+                logger.info(
+                    "Story %s excluded from publication cards: %s",
+                    inp.story_id,
+                    reject_reason,
                 )
-                has_valid_operational = bool(effective_observations)
-                should_emit_card = has_publishable_evidence or has_valid_operational
-            else:
-                should_emit_card = True
 
             if should_emit_card:
                 story_kind = "operational_status" if inp.story_id in pure_op_story_ids else ""

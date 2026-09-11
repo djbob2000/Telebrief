@@ -368,6 +368,11 @@ def derive_operational_observations(
         clean_loc, clean_ent = normalize_operational_location_and_entity(
             state.location, state.entity
         )
+        from src.publication.story_quality import is_generic_service_entity
+
+        if is_generic_service_entity(clean_ent, state.subject_label, state.subject_key):
+            continue
+
         observations.append(
             OperationalObservationPayload(
                 subject_key=state.subject_key,
