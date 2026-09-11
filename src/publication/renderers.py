@@ -418,9 +418,15 @@ class PublicationDigestRenderer:
 
             _flush_rubric_section()
         else:
-            # Group cards by classified rubric
+            # Group cards by classified rubric.
+            # Exclude DASHBOARD_ONLY cards that are already represented in City Situation.
+            thematic_cards = cards
+            if presentation_plan is not None and hasattr(presentation_plan, "detail_story_ids"):
+                detail_ids = set(presentation_plan.detail_story_ids)
+                thematic_cards = [c for c in cards if c.id in detail_ids]
+
             grouped_cards: dict[str, list[StoryCard]] = {}
-            for card in cards:
+            for card in thematic_cards:
                 if card.rubric_id and any(r["id"] == card.rubric_id for r in self.rubrics):
                     rubric_id = card.rubric_id
                 elif self.rubrics_config is not None:

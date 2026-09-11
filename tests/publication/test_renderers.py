@@ -799,3 +799,66 @@ class TestPublicationDigestRenderer:
         assert body.count("Коммунальная обстановка") == 1
         assert "First utility item" in body
         assert "Second utility item" in body
+
+    def test_render_grouped_digest_excludes_dashboard_only_cards_from_thematic_rubrics(self):
+        from src.publication.digest_presentation import (
+            CitySituationPresentationGroup,
+            CitySituationPresentationPlan,
+            DigestPresentationPlan,
+            DigestStoryPresentation,
+        )
+
+        renderer = PublicationDigestRenderer(use_emojis=True)
+        # story-1 is DASHBOARD_ONLY (represented in City Situation)
+        # story-2 is DETAIL_ONLY (belongs in thematic rubrics)
+        card1 = StoryCard(
+            id="story-1",
+            topic="Отключение света",
+            importance="high",
+            summary="Света нет на Слободке",
+        )
+        card2 = StoryCard(
+            id="story-2",
+            topic="Ремонт школы",
+            importance="medium",
+            summary="В школе №3 завершен ремонт",
+        )
+        frozen = FrozenEditorialInput(
+            analysis=EditorialAnalysis(cards=[card1, card2]),
+            writer_bundle=PreparedBundle(
+                records={}, prompt_text="", total_messages=2, candidate_count=2
+            ),
+        )
+        plan = DigestPresentationPlan(
+            city_situation=CitySituationPresentationPlan(
+                groups=(
+                    CitySituationPresentationGroup(
+                        group_id="power",
+                        group_kind="subject_status",
+                        subject_key="electricity",
+                        subject_label="Электроснабжение",
+                        state="UNAVAILABLE",
+                        source_refs=(),
+                        detail_lines=("Света нет на Слободке",),
+                        covered_story_ids=("story-1",),
+                        cited_support_ids=(),
+                    ),
+                ),
+                covered_source_refs=(),
+            ),
+            story_presentations=(
+                DigestStoryPresentation(story_id="story-1", mode="DASHBOARD_ONLY"),
+                DigestStoryPresentation(story_id="story-2", mode="DETAIL_ONLY"),
+            ),
+        )
+
+        title, lead, body = renderer.render_grouped_digest(
+            frozen,
+            snapshot_at=_NOW,
+            presentation_plan=plan,
+        )
+
+        assert "Электроснабжение" in body
+        assert "Света нет на Слободке" in body
+        assert "Ремонт школы" in body
+        assert "• **Отключение света**" not in body
