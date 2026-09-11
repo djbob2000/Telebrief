@@ -2563,3 +2563,169 @@ def test_normalize_question_evidence_shared_fragment():
     # The operational observation MUST be preserved because fragment 9001 also supports service_access!
     assert len(normalized.operational_observations) == 1
     assert normalized.operational_observations[0].subject_key == "water_supply"
+
+
+@pytest.mark.postgres
+async def test_story_triage_service_partial_response_classifies_and_records_failed_run(
+    conn, edition, revision
+):
+    now = dt.datetime.now(dt.timezone.utc)
+    story_repo = StoryRepository()
+    cluster_repo = EventClusterRepository()
+
+    # Create 2 story shells
+    sid_1 = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+    sid_2 = await story_repo.create_story_shell(
+        conn, edition_id=edition.id, knowledge_source="event_first"
+    )
+
+    # Insert fragments & cluster states
+    await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (id, normalized_hash, embedding, model, dimensions)
+        OVERRIDING SYSTEM VALUE VALUES
+        (8101, 'hash_pr1', '[1, 0]'::vector, 'test-model', 2),
+        (8102, 'hash_pr2', '[0, 1]'::vector, 'test-model', 2)
+        """
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            id, source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, drop_reason, created_at
+        ) OVERRIDING SYSTEM VALUE VALUES
+        (9101, %s, 0, 'Municipal water repair in Berdyansk on main street', 'hash_pr1', 'v1', TRUE, NULL, %s),
+        (9102, %s, 1, 'Power outage reported in Berdyansk on mountain', 'hash_pr2', 'v1', TRUE, NULL, %s)
+        """,
+        (revision.id, now, revision.id, now),
+    )
+    await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (id, fragment_id, vector_id)
+        OVERRIDING SYSTEM VALUE VALUES
+        (10101, 9101, 8101),
+        (10102, 9102, 8102)
+        """
+    )
+
+    aid1 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid_1,
+        fragment_id=9101,
+        fragment_embedding_id=10101,
+        assignment_kind="new_story",
+    )
+    aid2 = await cluster_repo.assign_fragment_to_story(
+        conn,
+        story_id=sid_2,
+        fragment_id=9102,
+        fragment_embedding_id=10102,
+        assignment_kind="new_story",
+    )
+
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid_1,
+        centroid=[1.0, 0.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid1,
+    )
+    await cluster_repo.upsert_cluster_state(
+        conn,
+        story_id=sid_2,
+        centroid=[0.0, 1.0],
+        model="test-model",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=aid2,
+    )
+
+    s1 = await cluster_repo.get_cluster_state(conn, sid_1)
+    s2 = await cluster_repo.get_cluster_state(conn, sid_2)
+    assert s1 is not None and s2 is not None
+
+    scope_config = EditionScopeConfig(
+        name="Бердянск",
+        focus_places=("Бердянск",),
+    )
+    scope_hash = scope_config_hash(scope_config)
+
+    # Mock AI returning ONLY sid_1 (sid_2 is missing!)
+    mock_ai = AsyncMock()
+    mock_ai.model = "test-model"
+    mock_ai.provider = "test-provider"
+    triage_response = {
+        "results": [
+            {
+                "story_id": sid_1,
+                "scope": "LOCAL",
+                "scope_confidence": 0.99,
+                "scope_reason": "Berdyansk repair",
+                "scope_basis_fragment_ids": [9101],
+                "retention": "KEEP",
+                "enrichment": "BRIEF",
+                "exclusion_reason": None,
+                "confidence": 0.95,
+                "reason": "Water repair update",
+                "brief_payload": {
+                    "topic": "Водоснабжение",
+                    "evidence_items": [
+                        {
+                            "text": "Ремонт водопровода на главной улице",
+                            "kind": "service_access",
+                            "publication_use": "PUBLISH",
+                            "source_fragment_ids": [9101],
+                        }
+                    ],
+                },
+            }
+        ]
+    }
+    mock_ai.generate_text.return_value = json.dumps(triage_response)
+
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=cluster_repo)
+    result = await service.triage_stories_batch(
+        conn,
+        [s1, s2],
+        edition_id=edition.id,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+    )
+
+    assert [r.story_id for r in result.results] == [sid_1]
+    assert result.deferred_story_ids == (sid_2,)
+    assert result.missing_story_ids == (sid_2,)
+    assert result.batch_error_kind == "partial_response"
+
+    # Verify story_event_triage_runs
+    cursor = await conn.execute(
+        """
+        SELECT status, error_kind, story_count
+        FROM story_event_triage_runs
+        ORDER BY id DESC
+        LIMIT 1
+        """
+    )
+    run_row = await cursor.fetchone()
+    assert run_row is not None
+    assert run_row[0] == "failed"
+    assert run_row[1] == "partial_response"
+    assert run_row[2] == 2
+
+    # Verify decision exists for sid_1 and does NOT exist for sid_2
+    cursor = await conn.execute(
+        "SELECT story_id FROM story_event_triage_decisions WHERE story_id IN (%s, %s)",
+        (sid_1, sid_2),
+    )
+    decision_rows = await cursor.fetchall()
+    assert [row[0] for row in decision_rows] == [sid_1]

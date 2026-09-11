@@ -299,6 +299,7 @@ class StoryGateBatchResult:
     batch_error_kind: str | None = None
     prompt_hash: str | None = None
     fence_lost_story_ids: tuple[int, ...] = ()
+    missing_story_ids: tuple[int, ...] = ()
 
 
 DecisionFence = Callable[[psycopg.AsyncConnection, int, int], Awaitable[bool]]
@@ -650,6 +651,14 @@ class StoryTriageService:
                 if isinstance(item, dict) and isinstance(item.get("story_id"), int):
                     items_by_id[item["story_id"]] = item
 
+            expected_story_ids = {story.story_id for story in uncached_stories}
+            returned_story_ids = set(items_by_id) & expected_story_ids
+            missing_story_ids = tuple(
+                story.story_id
+                for story in uncached_stories
+                if story.story_id not in returned_story_ids
+            )
+
             new_valid_results: list[StoryGateResult] = []
 
             for s in uncached_stories:
@@ -908,11 +917,25 @@ class StoryTriageService:
                 new_valid_results.append(gate_res)
 
             async with _get_conn() as write_conn:
+                run_status = "failed" if missing_story_ids else "succeeded"
+                run_error_kind = "partial_response" if missing_story_ids else None
+                if missing_story_ids:
+                    self.logger.warning(
+                        "event_first_gate_partial_response",
+                        extra={
+                            "requested_count": len(uncached_stories),
+                            "valid_count": len(new_valid_results),
+                            "deferred_count": len(deferred_ids),
+                            "missing_count": len(missing_story_ids),
+                            "missing_story_ids": missing_story_ids,
+                            "prompt_hash": prompt_hash,
+                        },
+                    )
                 cursor = await write_conn.execute(
                     """
                     INSERT INTO story_event_triage_runs (
-                        triage_version, provider, model, prompt_hash, story_count, input_chars, output_chars, status, completed_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'succeeded', now())
+                        triage_version, provider, model, prompt_hash, story_count, input_chars, output_chars, status, error_kind, completed_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                     RETURNING id
                     """,
                     (
@@ -923,6 +946,8 @@ class StoryTriageService:
                         len(uncached_stories),
                         len(user_prompt),
                         len(raw_response),
+                        run_status,
+                        run_error_kind,
                     ),
                 )
                 run_row = await cursor.fetchone()
@@ -1060,8 +1085,10 @@ class StoryTriageService:
         return StoryGateBatchResult(
             results=tuple(final_results),
             deferred_story_ids=tuple(deferred_ids),
+            batch_error_kind="partial_response" if missing_story_ids else None,
             prompt_hash=prompt_hash,
             fence_lost_story_ids=tuple(sorted(fence_lost_ids)),
+            missing_story_ids=missing_story_ids,
         )
 
     async def _lookup_cached_decisions(
