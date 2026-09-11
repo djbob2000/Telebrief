@@ -100,15 +100,23 @@ async def main():
             "Processing %d new revisions (fragmentation, embeddings, clustering)...", len(rev_ids)
         )
         batch_size = 64
-        for i in range(0, len(rev_ids), batch_size):
-            batch = rev_ids[i : i + batch_size]
-            logger.info(
-                "Processing revision batch %d-%d of %d...",
-                i + 1,
-                min(i + batch_size, len(rev_ids)),
-                len(rev_ids),
-            )
-            await process_event_revisions_task(batch)
+        sem = asyncio.Semaphore(3)
+
+        async def _process_batch(start_idx: int, b: list[int]) -> None:
+            async with sem:
+                logger.info(
+                    "Processing revision batch %d-%d of %d...",
+                    start_idx + 1,
+                    min(start_idx + batch_size, len(rev_ids)),
+                    len(rev_ids),
+                )
+                await process_event_revisions_task(b)
+
+        batches = [
+            (i, rev_ids[i : i + batch_size])
+            for i in range(0, len(rev_ids), batch_size)
+        ]
+        await asyncio.gather(*[_process_batch(idx, b) for idx, b in batches])
 
     # 4. Coalesce dirty story clusters (Gate triage and analysis)
     logger.info("4. Coalescing dirty story clusters (Gate triage and analysis)...")
