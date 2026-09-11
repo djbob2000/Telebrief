@@ -23,6 +23,33 @@ async def retry_stalled_jobs(context: JobContext, timestamp: int) -> None:
             await procrastinate_app.job_manager.retry_job(job)
         except procrastinate.exceptions.UniqueViolation as exc:
             if exc.queueing_lock and exc.constraint_name and "queueing_lock" in exc.constraint_name:
+                blockers = list(
+                    await procrastinate_app.job_manager.list_jobs_async(
+                        status="todo",
+                        queueing_lock=exc.queueing_lock,
+                    )
+                )
+                recoverable = [
+                    blocker
+                    for blocker in blockers
+                    if blocker.id != job.id
+                    and blocker.task_name == job.task_name
+                    and blocker.lock == job.lock
+                    and job.lock == exc.queueing_lock
+                ]
+                if len(recoverable) == 1:
+                    blocker = recoverable[0]
+                    await procrastinate_app.job_manager.cancel_job_by_id_async(blocker.id)
+                    try:
+                        await procrastinate_app.job_manager.retry_job(job)
+                        continue
+                    except procrastinate.exceptions.UniqueViolation:
+                        logger.error(
+                            "stalled job %s still cannot be retried after cancelling blocker %s",
+                            job.id,
+                            blocker.id,
+                        )
+                        continue
                 logger.info(
                     "stalled job %s was not retried because queueing_lock=%s is already occupied",
                     job.id,
