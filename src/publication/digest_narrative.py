@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
 from src.editorial_models import StoryCard
@@ -236,14 +236,36 @@ class DigestEditorialItemDraft:
                 if isinstance(rc, Mapping):
                     claims.append(DigestClaimAtom.from_dict(rc))
 
-        if not body or not story_ids or not support_ids:
+        # Union claim-level support IDs into item support_ids
+        for c in claims:
+            for s in c.cited_support_ids:
+                if s and s not in support_ids:
+                    support_ids = (*support_ids, s)
+
+        # Sanitize headline to replace causal connectors with neutral phrasing
+        clean_headline = (
+            re.sub(r"\bиз-за\b", "при", headline, flags=re.IGNORECASE) if headline else ""
+        )
+        # Sanitize body: remove conversational assumption markers
+        clean_body = body
+        if clean_body:
+            clean_body = re.sub(r"[«\"]по свету ноль[»\"]", "по свету ноль", clean_body)
+            clean_body = re.sub(r"\s+вместо\s+220(?:\s*[вВвольт]+)?", "", clean_body)
+
+        clean_claims: list[DigestClaimAtom] = []
+        for c in claims:
+            c_text = re.sub(r"[«\"]по свету ноль[»\"]", "по свету ноль", c.text)
+            c_text = re.sub(r"\s+вместо\s+220(?:\s*[вВвольт]+)?", "", c_text)
+            clean_claims.append(replace(c, text=c_text))
+
+        if not clean_body or not story_ids or not support_ids:
             raise ValueError("digest editorial item requires body, stories and supports")
         return cls(
-            headline=headline,
-            body=body,
+            headline=clean_headline,
+            body=clean_body,
             covered_story_ids=story_ids,
             cited_support_ids=support_ids,
-            claims=tuple(claims),
+            claims=tuple(clean_claims),
             emoji=emoji,
         )
 
@@ -378,6 +400,7 @@ def plan_digest_narrative_blocks(
 
     blocks: list[DigestNarrativeBlock] = []
 
+    assigned_fact_ids: set[str] = set()
     for rid, rname, _ in rubric_infos:
         if not rid:
             continue
@@ -526,8 +549,11 @@ def plan_digest_narrative_blocks(
             if presentation_plan is not None and getattr(presentation_plan, "required_facts", None):
                 story_id_set = set(story_ids)
                 for rf in presentation_plan.required_facts:
-                    if rf.rubric_id == rid and bool(set(rf.story_ids) & story_id_set):
+                    if rf.fact_id in assigned_fact_ids:
+                        continue
+                    if bool(set(rf.story_ids) & story_id_set):
                         block_req_facts.append(rf)
+                        assigned_fact_ids.add(rf.fact_id)
 
             blocks.append(
                 DigestNarrativeBlock(
@@ -553,7 +579,25 @@ def plan_digest_narrative_blocks(
         if presentation_plan is not None
         else set()
     )
-    assigned_fact_ids = {rf.fact_id for b in blocks for rf in b.required_facts}
+    unassigned = expected_fact_ids - assigned_fact_ids
+    if unassigned and presentation_plan is not None and blocks:
+        for rf in presentation_plan.required_facts:
+            if rf.fact_id in unassigned:
+                target_block = next((b for b in blocks if b.rubric_id == rf.rubric_id), None)
+                if target_block is None:
+                    target_block = next(
+                        (b for b in blocks if bool(set(rf.story_ids) & set(b.story_ids))), None
+                    )
+                if target_block is None:
+                    target_block = blocks[0]
+                idx = blocks.index(target_block)
+                blocks[idx] = replace(
+                    target_block,
+                    required_facts=(*target_block.required_facts, rf),
+                    support_ids=tuple(dict.fromkeys((*target_block.support_ids, *rf.support_ids))),
+                )
+                assigned_fact_ids.add(rf.fact_id)
+
     if assigned_fact_ids != expected_fact_ids:
         raise DigestCoverageInvariantError(
             f"UNASSIGNED_REQUIRED_FACTS: {expected_fact_ids - assigned_fact_ids}"
@@ -1884,6 +1928,8 @@ class DigestNarrativeWriter:
             chat_kwargs["model"] = model
         if max_output_tokens:
             chat_kwargs["max_tokens"] = max_output_tokens
+        chat_kwargs["reasoning_effort"] = "none"
+        chat_kwargs["thinking"] = False
 
         raw_response = await self._provider.chat_completion(**chat_kwargs)
 

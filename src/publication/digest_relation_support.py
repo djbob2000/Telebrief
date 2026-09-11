@@ -119,6 +119,14 @@ def _stem_bilingual(w: str) -> str:
         return "связ"
     if folded.startswith("свитл") or folded.startswith("свет"):
         return "свет"
+    if folded.startswith("напруг") or folded.startswith("напряж"):
+        return "напряж"
+    if folded.startswith("низьк") or folded.startswith("низк"):
+        return "низк"
+    if folded.startswith("тиск") or folded.startswith("давлен"):
+        return "давлен"
+    if folded.startswith("видключ") or folded.startswith("отключ"):
+        return "отключ"
     return _stem(folded)
 
 

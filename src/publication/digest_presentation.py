@@ -127,7 +127,11 @@ class DigestPresentationPlan:
         """Story IDs eligible for thematic (detail) blocks — excludes DASHBOARD_ONLY stories."""
         if not self._story_presentations:
             return self.story_ids
-        return tuple(p.story_id for p in self._story_presentations if getattr(p, "story_id", None))
+        return tuple(
+            p.story_id
+            for p in self._story_presentations
+            if getattr(p, "mode", "DETAIL_ONLY") != "DASHBOARD_ONLY"
+        )
 
     @property
     def city_situation(self) -> Any:

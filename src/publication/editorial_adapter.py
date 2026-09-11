@@ -113,9 +113,16 @@ class DatabaseGenerationAttemptObserver:
         prompt_hash: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> int:
-        self._attempt_counter += 1
-        attempt_no = self._attempt_counter
         async with self.uow.transaction() as conn:
+            if self._attempt_counter == 0:
+                cur = await conn.execute(
+                    "SELECT COALESCE(MAX(attempt_no), 0) FROM publication_generation_attempts WHERE publication_run_id = %s",
+                    (self.run_id,),
+                )
+                row = await cur.fetchone()
+                self._attempt_counter = int(row[0]) if row else 0
+            self._attempt_counter += 1
+            attempt_no = self._attempt_counter
             attempt = await self.repo.insert_generation_attempt(
                 conn,
                 run_id=self.run_id,

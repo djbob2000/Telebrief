@@ -651,6 +651,15 @@ class OpenAIProvider(AIProvider):
                     else:
                         reasoning = {"effort": "low"}
                     extra["reasoning"] = reasoning
+                    if (
+                        "max_tokens" in reasoning
+                        and isinstance(reasoning["max_tokens"], int)
+                        and reasoning["max_tokens"] > 0
+                    ):
+                        needed_tokens = reasoning["max_tokens"] + 4096
+                        if effective_max_tokens < needed_tokens:
+                            effective_max_tokens = needed_tokens
+                            create_kwargs["max_tokens"] = effective_max_tokens
         else:
             if reasoning_effort is not None and reasoning_effort != "none":
                 create_kwargs["reasoning_effort"] = reasoning_effort
