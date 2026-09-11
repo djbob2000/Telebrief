@@ -1928,8 +1928,6 @@ class DigestNarrativeWriter:
             chat_kwargs["model"] = model
         if max_output_tokens:
             chat_kwargs["max_tokens"] = max_output_tokens
-        chat_kwargs["reasoning_effort"] = "none"
-        chat_kwargs["thinking"] = False
 
         raw_response = await self._provider.chat_completion(**chat_kwargs)
 

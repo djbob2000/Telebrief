@@ -120,6 +120,10 @@ class DigestPresentationPlan:
             "_city_situation",
             city_situation if city_situation is not None else _CompatibilitySituationPlan(),
         )
+        if not story_presentations and s_ids:
+            story_presentations = tuple(
+                DigestStoryPresentation(story_id=sid, mode="DETAIL_ONLY") for sid in s_ids
+            )
         object.__setattr__(self, "_story_presentations", tuple(story_presentations))
 
     @property
