@@ -357,19 +357,33 @@ class PublicationDigestRenderer:
         if presentation_plan is not None:
             sit_plan = getattr(presentation_plan, "city_situation", presentation_plan)
 
-        if sit_plan is not None:
+        if narrative_draft is not None and getattr(narrative_draft, "situation_items", None):
+            from src.publication.city_situation import city_situation_icon
+
+            emoji = "🏙 " if self.use_emojis else ""
+            sit_lines = [f"*{emoji}Городская обстановка*"]
+            for s_item in narrative_draft.situation_items:
+                icon = ""
+                grp = None
+                if sit_plan is not None and getattr(sit_plan, "groups", None):
+                    grp = next((g for g in sit_plan.groups if g.group_id == s_item.group_id), None)
+                    if grp and self.use_emojis:
+                        icon = city_situation_icon(grp.state)
+                prefix = f"{icon} " if icon else ""
+                label = grp.subject_label if grp else s_item.label.strip()
+                body = s_item.body.strip()
+                if body:
+                    sit_lines.append(f"• {prefix}**{label}**: {body}")
+                else:
+                    sit_lines.append(f"• {prefix}**{label}**")
+            if len(sit_lines) > 1:
+                sections.append("\n".join(sit_lines))
+        elif sit_plan is not None:
             from src.publication.digest_presentation import render_city_situation_presentation
 
             sit_text = render_city_situation_presentation(sit_plan, use_emojis=self.use_emojis)
             if sit_text:
                 sections.append(sit_text)
-        elif narrative_draft is not None and getattr(narrative_draft, "situation_items", None):
-            emoji = "🏙 " if self.use_emojis else ""
-            sit_lines = [f"*{emoji}Городская обстановка*"]
-            for s_item in narrative_draft.situation_items:
-                sit_lines.append(f"• **{s_item.label.strip()}**: {s_item.body.strip()}")
-            if len(sit_lines) > 1:
-                sections.append("\n".join(sit_lines))
         elif frozen_input.analysis.city_situation:
             from src.publication.city_situation import render_city_situation_section
 

@@ -392,6 +392,7 @@ class PublicationGenerationService:
                                 max_output_tokens=max_tokens,
                                 model=getattr(self.config.settings, "openai_model", None)
                                 or getattr(self.config.settings, "ai_model", None),
+                                situation_plan=presentation_plan.city_situation,
                             )
                             support_text_index = build_digest_support_text_index(
                                 evidence=evidence_dict,
@@ -469,6 +470,9 @@ class PublicationGenerationService:
                                 )
 
                             else:
+                                logger.warning(
+                                    "digest narrative validation failed: %s", val_res.violations
+                                )
                                 await observer.attempt_finished(
                                     att_id,
                                     "failed",
@@ -492,15 +496,33 @@ class PublicationGenerationService:
                             error_kind="digest_narrative_synthesis_failed",
                             metadata={"error_message": str(exc)},
                         )
+                        allow_fallback = getattr(
+                            pub_edit,
+                            "digest_allow_deterministic_fallback",
+                            False,
+                        )
                         if narrative_mode == "journalistic":
                             raise PublicationGenerationError(
                                 f"Journalistic digest generation failed: {exc}"
                             ) from exc
+                        if not allow_fallback and narrative_mode == "single_call":
+                            raise PublicationGenerationError(
+                                f"Digest narrative generation failed: {exc}"
+                            ) from exc
 
+                allow_fallback = getattr(
+                    pub_edit,
+                    "digest_allow_deterministic_fallback",
+                    False,
+                )
                 if narrative_draft is None:
                     if narrative_mode == "journalistic":
                         raise PublicationGenerationError(
                             "Journalistic digest generation failed: AI writer was unable to produce a valid draft"
+                        )
+                    if not allow_fallback and narrative_mode == "single_call":
+                        raise PublicationGenerationError(
+                            "Digest narrative generation failed: AI writer was unable to produce a valid draft"
                         )
                     att_id = await observer.attempt_started(
                         "story_renderer_fallback", metadata={"renderer": run.publication_type}

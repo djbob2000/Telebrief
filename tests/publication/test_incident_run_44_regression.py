@@ -343,3 +343,54 @@ def test_incident_run_44_acceptance_regression():
 
     # E. Statistics footer must be present
     assert "Статистика:" in body
+
+    # 7. Test grounded single_call narrative synthesis for Run 44
+    from src.publication.digest_coverage import build_digest_coverage_trace
+    from src.publication.digest_narrative import (
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        DigestSituationItemDraft,
+        validate_digest_narrative,
+    )
+
+    sit_item = DigestSituationItemDraft(
+        group_id="situation:electricity",
+        label="Электроснабжение",
+        body="По сообщениям жителей, свет отключили в нагорной части города и на Слободке; в центре зафиксировано низкое напряжение около 170 В, а на улице Петровского электроснабжение уже восстановили.",
+        cited_support_ids=("telegram:101", "telegram:102", "telegram:103", "telegram:104"),
+    )
+    narr_draft = DigestNarrativeDraft(blocks=(), situation_items=(sit_item,))
+
+    support_texts = {
+        "telegram:101": "свет отключили в нагорной части города",
+        "telegram:102": "на Слободке тоже 0 по свету",
+        "telegram:103": "в центре зафиксировано низкое напряжение около 170 В",
+        "telegram:104": "электричество вернулось на улицу Петровского",
+    }
+    narr_plan = DigestNarrativePlan(blocks=())
+    val_res = validate_digest_narrative(
+        narr_draft,
+        narr_plan,
+        support_index=support_texts,
+        situation_plan=plan.city_situation,
+    )
+    assert val_res.is_valid, f"Narrative draft must be valid: {val_res.violations}"
+
+    # Render with narrative draft
+    title_n, lead_n, body_n = renderer.render_grouped_digest(
+        frozen,
+        edition_name="Бердянск",
+        snapshot_at=_NOW,
+        presentation_plan=plan,
+        narrative_draft=narr_draft,
+    )
+    assert (
+        "• 🟡 **Электроснабжение**: По сообщениям жителей, свет отключили в нагорной части города и на Слободке; в центре зафиксировано низкое напряжение около 170 В, а на улице Петровского электроснабжение уже восстановили."
+        in body_n
+    )
+    assert "• **Электричество пропало в нескольких районах**" not in body_n
+    assert "• **Электроснабжение восстановлено на Петровского**" not in body_n
+
+    # Coverage trace
+    cov_trace = build_digest_coverage_trace(plan, narr_draft, narr_plan)
+    assert cov_trace.story_coverage == 1.0

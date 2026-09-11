@@ -92,6 +92,20 @@ def build_digest_coverage_trace(
                     if sup_id not in dashboard_supports_by_story.setdefault(sid, []):
                         dashboard_supports_by_story[sid].append(sup_id)
 
+        if final_draft and getattr(final_draft, "situation_items", None):
+            for s_item in final_draft.situation_items:
+                s_group = next(
+                    (g for g in plan.city_situation.groups if g.group_id == s_item.group_id), None
+                )
+                if s_group:
+                    sit_text = f"{s_item.label}: {s_item.body}"
+                    for sid in s_group.covered_story_ids:
+                        if sit_text not in dashboard_texts_by_story.setdefault(sid, []):
+                            dashboard_texts_by_story[sid].append(sit_text)
+                        for sup_id in s_item.cited_support_ids:
+                            if sup_id not in dashboard_supports_by_story.setdefault(sid, []):
+                                dashboard_supports_by_story[sid].append(sup_id)
+
     # Build story-to-allowed-supports mapping from narrative_plan if provided
     story_to_allowed_supports: dict[str, set[str]] = {}
     if narrative_plan is not None:

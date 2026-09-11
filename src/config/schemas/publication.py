@@ -192,6 +192,7 @@ class PublicationEditorialConfig:
     digest_city_situation_max_details_per_item: int = 2
     digest_city_situation_max_positive_items: int = 2
     article_allow_deterministic_fallback: bool = False
+    digest_allow_deterministic_fallback: bool = False
     article_editor_enabled: bool = False
     article_editor_max_attempts: int = 2
 

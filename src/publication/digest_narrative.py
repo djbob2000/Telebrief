@@ -527,7 +527,9 @@ def validate_digest_narrative(
     support_map = support_index if support_index is not None else (support_text_by_id or {})
 
     # Validate City Situation items if situation_plan is supplied
-    if situation_plan is not None and draft.situation_items:
+    if situation_plan is not None and (
+        draft.situation_items or getattr(situation_plan, "groups", ())
+    ):
         plan_groups = getattr(situation_plan, "groups", ()) or ()
         plan_group_ids = [g.group_id for g in plan_groups]
         draft_group_ids = [s.group_id for s in draft.situation_items]
@@ -548,6 +550,11 @@ def validate_digest_narrative(
                 violations.append(f"UNKNOWN_SITUATION_GROUP_ID: {sit_item.group_id}")
                 continue
 
+            if sit_item.label.casefold() != plan_grp.subject_label.casefold():
+                violations.append(
+                    f"SITUATION_LABEL_MISMATCH: expected '{plan_grp.subject_label}', got '{sit_item.label}' in {sit_item.group_id}"
+                )
+
             if len(sit_item.body) > DIGEST_SITUATION_BODY_MAX_CHARS:
                 violations.append(
                     f"SITUATION_BODY_TOO_LONG: body exceeds {DIGEST_SITUATION_BODY_MAX_CHARS} chars in {sit_item.group_id}"
@@ -565,7 +572,9 @@ def validate_digest_narrative(
                     f"MISSING_SUPPORT_CITATION: situation item {sit_item.group_id} cites no supports"
                 )
 
-            allowed_sit_supports = set(getattr(plan_grp, "source_refs", ()))
+            allowed_sit_supports = set(getattr(plan_grp, "source_refs", ())) | set(
+                getattr(plan_grp, "cited_support_ids", ())
+            )
             for sup_id in sit_item.cited_support_ids:
                 if sup_id not in allowed_sit_supports and allowed_sit_supports:
                     violations.append(
@@ -1704,9 +1713,58 @@ class DigestNarrativeWriter:
                 ]
             blocks_payload.append(block_dict)
 
+        situation_payload = []
+        if situation_plan is not None and getattr(situation_plan, "groups", None):
+            for grp in situation_plan.groups:
+                grp_supports = []
+                all_grp_refs = tuple(
+                    dict.fromkeys(
+                        list(getattr(grp, "source_refs", ()))
+                        + list(getattr(grp, "cited_support_ids", ()))
+                    )
+                )
+                for ref in all_grp_refs:
+                    if ref in evidence:
+                        evi = evidence[ref]
+                        grp_supports.append(
+                            {
+                                "id": ref,
+                                "text": evi.text,
+                                "role": evi.source_role,
+                                "evidence_kind": evi.kind,
+                                "publication_use": evi.publication_use,
+                            }
+                        )
+                situation_payload.append(
+                    {
+                        "group_id": grp.group_id,
+                        "label": grp.subject_label,
+                        "state": grp.state,
+                        "facts": list(grp.all_detail_lines or grp.detail_lines),
+                        "allowed_support_ids": list(all_grp_refs),
+                        "supports": grp_supports,
+                    }
+                )
+
         narrative_contract = build_digest_narrative_contract(output_language=language)
+        situation_schema = ""
+        if situation_payload:
+            situation_schema = (
+                '  "situation_items": [\n'
+                "    {\n"
+                '      "group_id": "string (must match input group_id exactly)",\n'
+                '      "label": "string (subject label matching input group label, e.g. \'Электричество\')",\n'
+                '      "body": "string (1-3 sentences of cohesive, scan-first editorial prose synthesizing the operational facts)",\n'
+                '      "cited_support_ids": ["string (support IDs cited)"]\n'
+                "    }\n"
+                "  ],\n"
+            )
+        else:
+            situation_schema = '  "situation_items": [],\n'
+
         schema_desc = (
             "{\n"
+            f"{situation_schema}"
             '  "blocks": [\n'
             "    {\n"
             '      "block_id": "string (must match input block_id exactly)",\n'
@@ -1736,10 +1794,11 @@ class DigestNarrativeWriter:
             "EDITORIAL AND LANGUAGE RULES:\n"
             "- Write in professional Russian regional news style.\n"
             "- If source facts or notes are in Ukrainian, accurately translate and paraphrase them into Russian.\n"
-            "- Never repeat the headline in the first sentence of the body text.\n"
+            "- If 'situation_groups' are provided, synthesize each operational group in 'situation_items'. Use natural chronology and geographical clarity (e.g. outages, low voltage, and restored sections). Never invent ungrounded numbers or causes. Cite the exact support IDs.\n"
+            "- In thematic 'blocks', never repeat the headline in the first sentence of the body text.\n"
             "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
             "- Attribute source role naturally ('По сообщениям жителей', 'По данным коммунальных служб') at most once per item.\n"
-            "- For each item, provide atomic claims in 'claims'. Every story in the item's covered_story_ids must be covered by at least one claim atom.\n"
+            "- For each thematic item, provide atomic claims in 'claims'. Every story in the item's covered_story_ids must be covered by at least one claim atom.\n"
             "- Claims must be short atomic factual statements supported by cited_support_ids.\n\n"
             f"{narrative_contract}\n\n"
             "OUTPUT FORMAT REQUIREMENTS:\n"
@@ -1747,7 +1806,9 @@ class DigestNarrativeWriter:
             f"{schema_desc}"
         )
 
-        user_dict = {"blocks": blocks_payload}
+        user_dict: dict[str, Any] = {"blocks": blocks_payload}
+        if situation_payload:
+            user_dict["situation_groups"] = situation_payload
         user_prompt = json.dumps(user_dict, ensure_ascii=False, indent=2)
 
         chat_kwargs: dict[str, Any] = {

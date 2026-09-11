@@ -1941,6 +1941,14 @@ async def test_event_first_digest_narrative_generation_with_city_situation(
     mock_provider = AsyncMock()
     mock_provider.chat_completion.return_value = json.dumps(
         {
+            "situation_items": [
+                {
+                    "group_id": "situation:water",
+                    "label": "Водоснабжение",
+                    "body": "Водоканал завершил ремонт на водоводе в Центре.",
+                    "cited_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
+                }
+            ],
             "blocks": [
                 {
                     "block_id": "block:other:0",
@@ -2370,6 +2378,7 @@ async def test_event_first_digest_narrative_writer_failure_falls_back_to_determi
         digest_narrative_mode="single_call",
         digest_city_situation_max_items=5,
         digest_city_situation_max_details_per_item=2,
+        digest_allow_deterministic_fallback=True,
     )
     settings = Settings(
         schedule_time="09:00",
@@ -2405,3 +2414,190 @@ async def test_event_first_digest_narrative_writer_failure_falls_back_to_determi
     assert pub.metadata["final_digest_story_coverage"] == 1.0
     assert pub.metadata["planned_story_count"] == 1
     assert pub.metadata["final_covered_story_count"] == 1
+
+
+@pytest.mark.postgres
+async def test_event_first_digest_narrative_writer_failure_fails_closed_by_default(
+    conn, pool, edition
+):
+    import datetime as dt
+    import json
+    import logging
+    from unittest.mock import AsyncMock
+
+    import pytest
+
+    from src.article_generator import ArticleGenerator
+    from src.config_loader import Config, PublicationEditorialConfig, Settings
+    from src.db.uow import DatabaseUnitOfWork
+    from src.publication.errors import PublicationGenerationError
+    from src.publication.generation import PublicationGenerationService
+    from src.publication.models import PublicationSelectionDecision
+    from src.publication.repository import PublicationRepository
+
+    uow = DatabaseUnitOfWork(pool)
+    repo = PublicationRepository()
+    policy_ids = await _seed_policies(conn, edition.id)
+
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    cur = await conn.execute(
+        "INSERT INTO sources (platform, kind, external_id, url, name, role) VALUES ('telegram', 'channel', 'c1-fail2', 'https://t.me/c1', 'Chan', 'official') RETURNING id"
+    )
+    source_id = (await cur.fetchone())[0]
+    await conn.execute(
+        "INSERT INTO source_editions (source_id, edition_id) VALUES (%s, %s)",
+        (source_id, edition.id),
+    )
+
+    cur = await conn.execute(
+        "INSERT INTO source_items (source_id, kind, external_id, first_collected_at) VALUES (%s, 'msg', 'm2', %s) RETURNING id",
+        (source_id, now),
+    )
+    item_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        "INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content) VALUES (%s, 1, 'h2', 'Отключение света в центре') RETURNING id",
+        (item_id,),
+    )
+    sir_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        "INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at) VALUES (%s, 0, 'Отключение света в центре', 'hf2', 'v1', TRUE, %s) RETURNING id",
+        (sir_id, now),
+    )
+    frag_id = (await cur.fetchone())[0]
+    cur = await conn.execute(
+        "INSERT INTO stories (edition_id, lifecycle_state, knowledge_source, created_at) VALUES (%s, 'active', 'event_first', %s) RETURNING id",
+        (edition.id, now),
+    )
+    sid = (await cur.fetchone())[0]
+
+    payload = {
+        "event_id": f"story:{sid}",
+        "schema_version": "v3",
+        "story_id": sid,
+        "headline": "Отключение света",
+        "digest_summary": "Света нет в центре.",
+        "category": "utilities",
+        "tags": ["жкх", "свет"],
+        "evidence_items": [
+            {
+                "evidence_id": f"story:{sid}:evidence:0:frag:{frag_id}",
+                "source_fragment_ids": [frag_id],
+                "kind": "service_access",
+                "text": "Отключение света в центре",
+                "source_text": "Отключение света в центре",
+                "publication_use": "PUBLISH",
+            }
+        ],
+        "operational_observations": [
+            {
+                "subject_key": "power",
+                "subject_label": "Электроснабжение",
+                "dimension": "availability",
+                "state": "UNAVAILABLE",
+                "detail": "Отключение света в центре",
+                "location": "Центр",
+                "source_fragment_ids": [frag_id],
+                "observed_at": now.isoformat(),
+            }
+        ],
+    }
+
+    cur = await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, current_state, semantic_text, content_hash,
+            title, summary, event_payload, created_at
+        ) VALUES (%s, 1, 'open', %s, 'h-rev-f2', %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            sid,
+            payload["digest_summary"],
+            payload["headline"],
+            payload["digest_summary"],
+            json.dumps(payload),
+            now,
+        ),
+    )
+    rev_id = (await cur.fetchone())[0]
+
+    run = await repo.get_or_create_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        request_key="test-key-fail-fc-def",
+        snapshot_at=now,
+        policy_ids=policy_ids,
+    )
+    cand = await repo.insert_candidate(
+        conn,
+        run.id,
+        story_id=sid,
+        story_revision_id=rev_id,
+        deterministic_rank=1,
+    )
+    dec = await repo.insert_selection_decision(
+        conn,
+        run.id,
+        PublicationSelectionDecision(
+            id=0,
+            publication_run_id=run.id,
+            candidate_id=cand.id,
+            decision="INCLUDE",
+            presentation_intent="lead",
+            confidence=0.95,
+            reason="Power update",
+            rank=1,
+            metadata={},
+            created_at=now,
+        ),
+    )
+    await repo.freeze_selected_input(
+        conn,
+        run.id,
+        story_id=sid,
+        story_revision_id=rev_id,
+        selection_decision_id=dec.id,
+        presentation_intent="lead",
+        rank=1,
+        fragment_ids=[frag_id],
+    )
+    await repo.transition_run(conn, run.id, "selected_inputs_sealed")
+
+    mock_provider = AsyncMock()
+    mock_provider.chat_completion.side_effect = RuntimeError("OpenAI rate limit")
+
+    editorial_cfg = PublicationEditorialConfig(
+        digest_narrative_mode="single_call",
+        digest_city_situation_max_items=5,
+        digest_city_situation_max_details_per_item=2,
+        # digest_allow_deterministic_fallback=False by default!
+    )
+    settings = Settings(
+        schedule_time="09:00",
+        timezone="UTC",
+        lookback_hours=24,
+        openai_model="gpt-4",
+        openai_temperature=0.7,
+        publication_editorial=editorial_cfg,
+    )
+    config = Config(
+        channels=[],
+        telegram_api_id=1,
+        telegram_api_hash="hash",
+        telegram_bot_token="token",
+        openai_api_key="key",
+        log_level="INFO",
+        settings=settings,
+    )
+    generator = ArticleGenerator(config=config, logger=logging.getLogger("test"))
+    generator.provider = mock_provider
+    service = PublicationGenerationService(
+        uow=uow,
+        config=config,
+        repo=repo,
+        generator=generator,
+    )
+
+    with pytest.raises(PublicationGenerationError, match="Digest narrative generation failed"):
+        await service.generate(run.id, defer_delivery=True)

@@ -737,6 +737,9 @@ async def test_digest_narrative_writer_with_situation_plan(mocker):
     user_content = next(m["content"] for m in messages if m["role"] == "user")
     user_data = json.loads(user_content)
     assert "situation_items" not in user_data
+    assert "situation_groups" in user_data
+    assert len(user_data["situation_groups"]) == 1
+    assert user_data["situation_groups"][0]["group_id"] == "situation:water:avail"
     assert "blocks" in user_data
 
     assert draft.blocks[0].block_id == "block:utilities:0"
