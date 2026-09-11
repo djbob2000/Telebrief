@@ -365,6 +365,8 @@ class PublicationOrchestrator:
     ) -> None:
         if not story_ids:
             return
+        import contextlib
+
         from procrastinate.exceptions import AlreadyEnqueued
 
         from src.jobs.event_authority import (
@@ -372,12 +374,14 @@ class PublicationOrchestrator:
             process_publication_authority_gap,
         )
 
+        savepoint = conn.transaction() if hasattr(conn, "transaction") else contextlib.nullcontext()
         try:
-            await process_publication_authority_gap.configure(
-                connection=conn,
-                priority=PUBLICATION_AUTHORITY_PRIORITY,
-                queueing_lock=f"publication-authority:{intent_id}",
-            ).defer_async(intent_id=intent_id)
+            async with savepoint:
+                await process_publication_authority_gap.configure(
+                    connection=conn,
+                    priority=PUBLICATION_AUTHORITY_PRIORITY,
+                    queueing_lock=f"publication-authority:{intent_id}",
+                ).defer_async(intent_id=intent_id)
         except AlreadyEnqueued:
             logger.debug(
                 "publication authority already queued for authority gap",

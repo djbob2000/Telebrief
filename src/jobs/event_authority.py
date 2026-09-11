@@ -80,6 +80,7 @@ def authority_block_reason(stats: AuthorityBatchStats, remaining_gap: int) -> st
 async def _load_background_targets(edition_id: int, *, limit: int):
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
+    cfg = config.settings.event_pipeline
     async with runtime.uow.transaction() as conn:
         _slug, scope_config = await resolve_edition_scope(conn, config, edition_id)
         return await EventAuthorityRepository().list_background_targets(
@@ -90,6 +91,7 @@ async def _load_background_targets(edition_id: int, *, limit: int):
             scope_config_hash=scope_config_hash(scope_config),
             now=dt.datetime.now(dt.timezone.utc),
             limit=limit,
+            active_window_hours=cfg.active_window_hours,
         )
 
 
@@ -121,7 +123,6 @@ async def process_background_authority_batch(edition_id: int) -> None:
 
         for target in result.enrichment_targets:
             await defer_event_enrichment(target.story_id, target.assignment_id)
-    await request_background_authority_dispatch(edition_id)
 
 
 async def request_background_authority_dispatch(edition_id: int) -> None:

@@ -125,6 +125,17 @@ def test_preparation_diagnostics_are_rendered_as_a_distinct_stage(sample_config)
 
 
 @pytest.mark.unit
+def test_notification_message_renders_readiness_deadline_when_sources_empty(sample_config):
+    service = PublicationFailureNotificationService(config=sample_config)
+    intent = replace(_intent("scheduled"), error_kind="readiness_deadline")
+    message = service.render_message(intent, [])
+    assert "not published" in message
+    assert "Reason: readiness_deadline" in message
+    assert "publication readiness timeout waiting for event processing" in message
+    assert "no enabled source completed a qualifying scan" not in message
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_redrive_requeues_durable_pending_notification(monkeypatch, sample_config):
     from src import runtime

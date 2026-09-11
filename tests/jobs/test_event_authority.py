@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -148,3 +149,143 @@ async def test_background_dispatch_does_not_queueing_lock_execution_locked_batch
         priority=authority_jobs.BACKGROUND_AUTHORITY_PRIORITY,
     )
     configured.defer_async.assert_awaited_once_with(edition_id=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_process_background_authority_batch_does_not_retrigger_dispatch(monkeypatch):
+    target = SimpleNamespace(story_id=10, assignment_id=20)
+    authority_service = SimpleNamespace(
+        process_batch=AsyncMock(
+            return_value=SimpleNamespace(
+                stats=AuthorityBatchStats(triaged=1), enrichment_targets=()
+            )
+        )
+    )
+    runtime = SimpleNamespace(
+        uow=MagicMock(),
+        config=SimpleNamespace(
+            settings=SimpleNamespace(
+                event_pipeline=SimpleNamespace(triage_batch_size=10, active_window_hours=72)
+            )
+        ),
+    )
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        authority_jobs,
+        "_load_background_targets",
+        AsyncMock(return_value=[target]),
+    )
+    monkeypatch.setattr(
+        authority_jobs.EventAuthorityService,
+        "from_runtime",
+        lambda runtime, config: authority_service,
+    )
+    request_dispatch = AsyncMock()
+    monkeypatch.setattr(authority_jobs, "request_background_authority_dispatch", request_dispatch)
+
+    await authority_jobs.process_background_authority_batch(edition_id=1)
+
+    authority_service.process_batch.assert_awaited_once()
+    # It must NOT call request_background_authority_dispatch to prevent runaway loop
+    request_dispatch.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_list_background_targets_query_uses_active_cutoff_dirty_and_descending_order():
+    from src.domain.event_authority import AuthorityTarget
+    from src.repositories.event_authority import EventAuthorityRepository
+
+    class Cursor:
+        async def fetchall(self):
+            return [(12, 102)]
+
+    class Connection:
+        def __init__(self):
+            self.query = ""
+            self.params = ()
+
+        async def execute(self, query, params):
+            self.query = query
+            self.params = params
+            return Cursor()
+
+    now = authority_jobs.dt.datetime(2026, 9, 11, 12, 0, tzinfo=authority_jobs.dt.timezone.utc)
+    conn = Connection()
+    result = await EventAuthorityRepository().list_background_targets(
+        cast(Any, conn),
+        edition_id=1,
+        triage_version="v10",
+        scope_version="v1",
+        scope_config_hash="scope_hash",
+        now=now,
+        limit=10,
+        active_window_hours=72,
+    )
+
+    assert result == [
+        AuthorityTarget(
+            story_id=12,
+            assignment_id=102,
+            edition_id=1,
+            triage_version="v10",
+            scope_version="v1",
+            scope_config_hash="scope_hash",
+        )
+    ]
+    # Invariants: must be analysis_dirty, bounded by active cutoff, and ordered DESC (freshest first)
+    assert "sc.analysis_dirty = TRUE" in conn.query
+    assert "sc.last_seen_at >= %s" in conn.query
+    assert "ORDER BY sc.last_seen_at DESC, sc.story_id DESC" in conn.query
+    expected_cutoff = now - authority_jobs.dt.timedelta(hours=72)
+    assert expected_cutoff in conn.params
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_defer_event_processing_savepoint_handles_already_enqueued(monkeypatch):
+    from procrastinate.exceptions import AlreadyEnqueued
+
+    from src.publication.orchestrator import PublicationOrchestrator
+
+    savepoint_entered = False
+    savepoint_exited = False
+
+    class FakeSavepoint:
+        async def __aenter__(self):
+            nonlocal savepoint_entered
+            savepoint_entered = True
+            return self
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            nonlocal savepoint_exited
+            savepoint_exited = True
+            return False  # Let exception bubble so try/except AlreadyEnqueued catches it
+
+    class FakeConn:
+        def transaction(self):
+            return FakeSavepoint()
+
+    configured = MagicMock()
+    configured.defer_async = AsyncMock(side_effect=AlreadyEnqueued())
+    configure = MagicMock(return_value=configured)
+
+    monkeypatch.setattr(authority_jobs.process_publication_authority_gap, "configure", configure)
+
+    orchestrator = PublicationOrchestrator(
+        uow=MagicMock(),
+        config=cast(Any, SimpleNamespace(settings=SimpleNamespace())),
+    )
+    conn = FakeConn()
+
+    # Should not raise exception
+    await orchestrator._defer_event_processing(
+        cast(Any, conn),
+        intent_id=7,
+        edition_id=1,
+        story_ids=(9001,),
+    )
+
+    assert savepoint_entered is True
+    assert savepoint_exited is True

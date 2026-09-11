@@ -24,9 +24,27 @@ class EventAuthorityRepository:
         scope_config_hash: str,
         now: dt.datetime,
         limit: int,
+        active_window_hours: int | None = None,
     ) -> list[AuthorityTarget]:
+        cutoff_clause = ""
+        params: list[object] = [edition_id]
+        if active_window_hours is not None:
+            active_cutoff = now - dt.timedelta(hours=active_window_hours)
+            cutoff_clause = "AND sc.last_seen_at >= %s"
+            params.append(active_cutoff)
+        params.extend(
+            [
+                now,
+                triage_version,
+                scope_config_hash,
+                edition_id,
+                scope_version,
+                scope_config_hash,
+                limit,
+            ]
+        )
         cursor = await conn.execute(
-            """
+            f"""
             SELECT sc.story_id, sc.latest_assignment_id
             FROM story_cluster_state sc
             JOIN stories s ON s.id = sc.story_id
@@ -36,6 +54,8 @@ class EventAuthorityRepository:
              AND retry.stage = 'triage'
             WHERE s.edition_id = %s
               AND s.knowledge_source = 'event_first'
+              AND sc.analysis_dirty = TRUE
+              {cutoff_clause}
               AND retry.exhausted_at IS NULL
               AND (retry.next_retry_at IS NULL OR retry.next_retry_at <= %s)
               AND NOT EXISTS (
@@ -64,19 +84,10 @@ class EventAuthorityRepository:
                         )
                     )
               )
-            ORDER BY sc.last_seen_at ASC, sc.story_id ASC
+            ORDER BY sc.last_seen_at DESC, sc.story_id DESC
             LIMIT %s
-            """,
-            (
-                edition_id,
-                now,
-                triage_version,
-                scope_config_hash,
-                edition_id,
-                scope_version,
-                scope_config_hash,
-                limit,
-            ),
+            """,  # noqa: S608 — static predicate template; values are bound params
+            params,
         )
         return [
             AuthorityTarget(

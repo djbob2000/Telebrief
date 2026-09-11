@@ -61,11 +61,19 @@ class PublicationFailureNotificationService:
                 source_lines.append(
                     f"- {label}: {diagnostic.collection_outcome or 'no completed scan'}"
                 )
-        sources = (
-            "\n".join(source_lines)
-            if source_lines
-            else "- no enabled source completed a qualifying scan"
-        )
+        if source_lines:
+            sources = "\n".join(source_lines)
+        elif intent.error_kind in {
+            "readiness_deadline",
+            "authority_terminal",
+            "authority_retry_exceeds_deadline",
+        }:
+            sources = (
+                "- publication readiness timeout waiting for event processing"
+                f" ({intent.error_kind})"
+            )
+        else:
+            sources = "- no enabled source completed a qualifying scan"
         return (
             "❌ Publication not published.\n"
             f"Type: {intent.publication_type}; target: {intent.slot_at.isoformat()}\n"
