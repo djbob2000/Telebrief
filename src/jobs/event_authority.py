@@ -145,15 +145,9 @@ async def dispatch_background_authority(edition_id: int) -> None:
     targets = await _load_background_targets(edition_id, limit=1)
     if not targets:
         return
-    from procrastinate.exceptions import AlreadyEnqueued
-
-    try:
-        await process_background_authority_batch.configure(
-            priority=BACKGROUND_AUTHORITY_PRIORITY,
-            queueing_lock=f"authority-background:{edition_id}",
-        ).defer_async(edition_id=edition_id)
-    except AlreadyEnqueued:
-        return
+    await process_background_authority_batch.configure(
+        priority=BACKGROUND_AUTHORITY_PRIORITY,
+    ).defer_async(edition_id=edition_id)
 
 
 @procrastinate_app.task(

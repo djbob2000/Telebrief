@@ -120,3 +120,31 @@ async def test_publication_authority_records_progress_after_provider_batch(monke
         terminal_count=0,
     )
     defer_reconcile.assert_awaited_once_with(68)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_background_dispatch_does_not_queueing_lock_execution_locked_batch(
+    monkeypatch,
+):
+    configured = MagicMock()
+    configured.defer_async = AsyncMock()
+    configure = MagicMock(return_value=configured)
+
+    monkeypatch.setattr(
+        authority_jobs,
+        "_load_background_targets",
+        AsyncMock(return_value=[SimpleNamespace(story_id=1)]),
+    )
+    monkeypatch.setattr(
+        authority_jobs.process_background_authority_batch,
+        "configure",
+        configure,
+    )
+
+    await authority_jobs.dispatch_background_authority(edition_id=1)
+
+    configure.assert_called_once_with(
+        priority=authority_jobs.BACKGROUND_AUTHORITY_PRIORITY,
+    )
+    configured.defer_async.assert_awaited_once_with(edition_id=1)
