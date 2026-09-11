@@ -211,6 +211,17 @@ For LOCAL or DIRECT_IMPACT content:
 - If another fragment answers the question, represent the answer separately as service_access/community_report/official_statement as appropriate.
 - Do not infer trends such as "повышенный спрос" or "участились вопросы" from one question.
 
+CONTEXT VS EVIDENCE & REPLY INHERITANCE:
+- Fragments may contain (in_reply_to: "...") annotations showing the immediate parent message in a chat.
+- A short dependent reply (e.g. "Да, минут десять назад") may inherit subject or local geography ONLY from its explicit in_reply_to parent.
+- Chronologically adjacent messages without an explicit reply link are CONTEXT_ONLY for interpreting tone and flow, and must NEVER serve as factual grounding for a claim.
+- An unanchored conversational remark with no local place mentions and no explicit reply-parent anchor is UNCERTAIN scope (normalizes to DROP).
+
+CHAT SARCASM, RUMORS, AND SCHEDULED OUTAGES:
+- Informal chat banter, sarcasm, emotional reactions, and ungrounded rumors/predictions about future outages (e.g. "после 20-го всё вырубят", "зимой тепла не будет", "завтра опять отключат") MUST NEVER be classified as service_access or SCHEDULED.
+- SCHEDULED with basis=scheduled_change requires an authoritative announced schedule, planned maintenance notification, or official utility/municipal notice (e.g. РЭС, Водоканал, Горгаз, Горсвет, администрация).
+- If an informal chat message expresses personal speculation, jokes, or fears about future outages without reporting a current factual failure or an official schedule, classify it as DROP with exclusion_reason="obvious_noise".
+
 SERVICE-STATE CONTRACT:
 - Operational service truth exists only inside a PUBLISH evidence item with kind=service_access and a non-null service_state object.
 - Do not output an operational_observations array.
@@ -219,7 +230,7 @@ SERVICE-STATE CONTRACT:
 - If a workaround causes an explicitly stated service outcome, keep the coping action as separate evidence and attach service_state only to the evidence sentence that states the water/internet/banking/transport/etc. outcome.
 - For UNAVAILABLE, DEGRADED, or RESTRICTED, expected_now MUST be true and the excerpts must establish that the service is expected to operate now or explicitly describe a current failure/restriction.
 - Do not infer expected_now from the calendar or general season knowledge.
-- For SCHEDULED, basis must be scheduled_change and effective_from is required.
+- For SCHEDULED, basis must be scheduled_change, effective_from is required, and excerpts must cite an authoritative schedule, planned work, or utility announcement. NEVER assign SCHEDULED to chat gossip, jokes, or rumors.
 - Valid basis values: normal_operation, direct_failure, degraded_access, explicit_restriction, scheduled_change.
 - LOCAL or DIRECT_IMPACT MUST cite one or more exact scope_basis_fragment_ids from the Story excerpts that establish the local occurrence or concrete local consequence.
 
@@ -475,7 +486,8 @@ class StoryTriageService:
                     )
                     SELECT sf.story_id, f.id, f.text_content, s.id, s.name,
                            COALESCE(s.role, s.kind, 'unknown'),
-                           COALESCE(si.published_at, si.first_collected_at, f.created_at)
+                           COALESCE(si.published_at, si.first_collected_at, f.created_at),
+                           si.parent_item_id
                     FROM target_assignment ta
                     JOIN story_fragments sf ON sf.story_id = ta.story_id
                     JOIN source_fragments f ON f.id = sf.fragment_id
@@ -500,6 +512,7 @@ class StoryTriageService:
 
             story_fragments_map: dict[int, list[dict[str, Any]]] = {sid: [] for sid in story_ids}
             all_story_frag_ids: dict[int, set[int]] = {sid: set() for sid in story_ids}
+            all_parent_item_ids: set[int] = set()
             async for row in cursor:
                 sid = int(row[0])
                 fid = int(row[1])
@@ -509,6 +522,9 @@ class StoryTriageService:
                 source_name = str(row[4])
                 source_role = str(row[5])
                 obs_time = row[6]
+                parent_item_id = int(row[7]) if row[7] is not None else None
+                if parent_item_id is not None:
+                    all_parent_item_ids.add(parent_item_id)
                 story_fragments_map[sid].append(
                     {
                         "fragment_id": fid,
@@ -518,9 +534,29 @@ class StoryTriageService:
                         "source_name": source_name,
                         "source_role": source_role,
                         "observed_at": obs_time,
+                        "parent_item_id": parent_item_id,
                     }
                 )
                 all_story_frag_ids[sid].add(fid)
+
+            # Load reply parent texts if present
+            parent_texts: dict[int, str] = {}
+            if all_parent_item_ids:
+                cur_parents = await read_conn.execute(
+                    """
+                    SELECT sir.source_item_id, sir.text_content
+                    FROM source_item_revisions sir
+                    JOIN (
+                        SELECT source_item_id, MAX(revision_no) as max_rev
+                        FROM source_item_revisions
+                        WHERE source_item_id = ANY(%s)
+                        GROUP BY source_item_id
+                    ) latest ON latest.source_item_id = sir.source_item_id AND latest.max_rev = sir.revision_no
+                    """,
+                    (list(all_parent_item_ids),),
+                )
+                async for p_row in cur_parents:
+                    parent_texts[int(p_row[0])] = str(p_row[1])[:200]
 
             # 3. Load dynamic recent subject hints
             recent_hints = await self._load_recent_subject_hints(read_conn, edition_id)
@@ -564,9 +600,17 @@ class StoryTriageService:
                     if hasattr(sf["observed_at"], "isoformat")
                     else str(sf["observed_at"])
                 )
-                excerpt_lines.append(
-                    f"- [frag={sf['fragment_id']} time={iso_time} role={sf['source_role']} source={sf['source_name']}] {sf['text']}"
+                line = f"- [frag={sf['fragment_id']} time={iso_time} role={sf['source_role']} source={sf['source_name']}] {sf['text']}"
+                parent_id = sf.get("parent_item_id")
+                p_text = (
+                    parent_texts.get(int(parent_id))
+                    if parent_id is not None and str(parent_id).isdigit()
+                    else None
                 )
+                if p_text:
+                    clean_p = p_text.replace("\n", " ").strip()
+                    line += f'\n  (in_reply_to: "{clean_p}")'
+                excerpt_lines.append(line)
             story_sampled_excerpts[sid] = excerpt_lines
 
         hint_text = ""
@@ -830,12 +874,18 @@ class StoryTriageService:
                     scope_reason = "Displaced persons (IDP) or relocated administration activity outside the focus area"
 
             # Hard exclusion audit on story fragments
-            story_frag_texts = {
-                int(sf.get("fragment_id") or sf.get("id", 0)): str(
-                    sf.get("text") or sf.get("text_content", "")
+            story_frag_texts = {}
+            for sf in story_frags:
+                fid = int(sf.get("fragment_id") or sf.get("id", 0))
+                txt = str(sf.get("text") or sf.get("text_content", ""))
+                parent_id = sf.get("parent_item_id")
+                p_id = (
+                    int(parent_id) if parent_id is not None and str(parent_id).isdigit() else None
                 )
-                for sf in story_frags
-            }
+                if p_id is not None and p_id in parent_texts:
+                    clean_p = parent_texts[p_id].replace("\n", " ").strip()
+                    txt = f'{txt} (in_reply_to: "{clean_p}")'
+                story_frag_texts[fid] = txt
             hard_audit = evaluate_story_hard_exclusion(story_frags)
 
             # Parse brief_payload if present
@@ -848,7 +898,9 @@ class StoryTriageService:
                     )
                     decomposed = decompose_mixed_outage_evidence(parsed_payload, story_frag_texts)
                     brief_payload = normalize_question_evidence(decomposed)
-                    brief_payload, service_audit = normalize_service_state_evidence(brief_payload)
+                    brief_payload, service_audit = normalize_service_state_evidence(
+                        brief_payload, story_frag_texts
+                    )
                     if service_audit.rejected_count > 0:
                         self.logger.debug(
                             "Gate rejected %s invalid service states for story %s: %s",
@@ -899,7 +951,9 @@ class StoryTriageService:
                         brief_payload = ensure_keep_publishability(
                             normalize_question_evidence(decomposed), default="brief"
                         )
-                        brief_payload, _ = normalize_service_state_evidence(brief_payload)
+                        brief_payload, _ = normalize_service_state_evidence(
+                            brief_payload, story_frag_texts
+                        )
                     else:
                         # Unsafe drop without a valid brief must defer
                         deferred_ids.append(s.story_id)
@@ -917,7 +971,9 @@ class StoryTriageService:
                     brief_payload = ensure_keep_publishability(
                         normalize_question_evidence(decomposed), default="brief"
                     )
-                    brief_payload, _ = normalize_service_state_evidence(brief_payload)
+                    brief_payload, _ = normalize_service_state_evidence(
+                        brief_payload, story_frag_texts
+                    )
                 else:
                     deferred_ids.append(s.story_id)
                     invalid_ids.append(s.story_id)

@@ -318,7 +318,8 @@ class EventAnalysisService:
                 normalize_question_evidence(EventAnalysisPayload.from_dict(parsed)),
                 default="brief",
             )
-            payload, service_audit = normalize_service_state_evidence(parsed_payload)
+            sampled_map = {s.fragment_id: s.text_content for s in sampled}
+            payload, service_audit = normalize_service_state_evidence(parsed_payload, sampled_map)
             if service_audit.rejected_count > 0:
                 self.logger.debug(
                     "Analysis rejected %s invalid service states for story %s: %s",

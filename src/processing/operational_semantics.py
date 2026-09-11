@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
 from src.domain.event_payload import (
@@ -165,8 +166,64 @@ class ServiceStateAudit:
     rejection_reasons: tuple[str, ...] = ()
 
 
+_SCHEDULE_INDICATOR_STEMS: frozenset[str] = frozenset(
+    {
+        "график",
+        "планов",
+        "расписан",
+        "предупрежд",
+        "уведомлен",
+        "сообща",
+        "сообщил",
+        "заявлен",
+        "объявлен",
+        "анонс",
+        "ремонтн",
+        "профилактик",
+        "рэс",
+        "горсвет",
+        "водоканал",
+        "горгаз",
+        "теплосеть",
+        "администраци",
+        "мэрия",
+        "коммунальн",
+        "диспетчер",
+        "schedule",
+        "scheduled",
+        "planned",
+        "maintenance",
+    }
+)
+
+_SPECULATION_RUMOR_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:говорят|слышал[аи]?|по\s+слухам|вроде|как\s+бы|обещают|увидите|вангую|вырубят\s+всё|отрубят\s+всё|заберут|закроют\s+всё)\b",
+        re.IGNORECASE,
+    ),
+)
+
+
+def _has_valid_schedule_grounding(text: str) -> bool:
+    """Check if evidence contains authoritative plan/schedule indicators and not pure speculation."""
+    tokens = _semantic_tokens(text)
+    has_indicator = _matches_any_stem(tokens, _SCHEDULE_INDICATOR_STEMS)
+    if not has_indicator:
+        return False
+    for pat in _SPECULATION_RUMOR_PATTERNS:
+        if pat.search(text):
+            has_official = _matches_any_stem(
+                tokens,
+                frozenset({"рэс", "водоканал", "горгаз", "администраци", "мэрия", "горсвет"}),
+            )
+            if not has_official:
+                return False
+    return True
+
+
 def normalize_service_state_evidence(
     payload: EventPayload,
+    fragment_texts: Mapping[int, str] | None = None,
 ) -> tuple[EventPayload, ServiceStateAudit]:
     """Validate and normalize service_state projections on EvidenceItemPayloads."""
     accepted = 0
@@ -186,10 +243,18 @@ def normalize_service_state_evidence(
             rejection_reasons.append("non_publish_service_access_state")
             continue
 
+        # Determine raw grounding text: prefer source fragments if available
+        raw_texts: list[str] = []
+        if fragment_texts and item.source_fragment_ids:
+            for fid in item.source_fragment_ids:
+                if fid in fragment_texts:
+                    raw_texts.append(fragment_texts[fid])
+        grounding_text = " ".join(raw_texts) if raw_texts else item.text
+
         state = item.service_state
 
         # Check high-confidence private coping false-positive
-        if _is_high_confidence_private_coping(item.text):
+        if _is_high_confidence_private_coping(grounding_text):
             normalized_items.append(
                 replace(
                     item,
@@ -226,18 +291,49 @@ def normalize_service_state_evidence(
             rejection_reasons.append("state_basis_mismatch")
             continue
 
-        # Check subject-family conflict
+        # Check subject-family grounding: must have at least one family marker in raw evidence
         subject_families = _detect_service_families(f"{state.subject_key} {state.subject_label}")
-        evidence_families = _detect_service_families(item.text)
-        if (
-            subject_families
-            and evidence_families
-            and subject_families.isdisjoint(evidence_families)
-        ):
-            normalized_items.append(replace(item, service_state=None))
-            rejected_indexes.append(index)
-            rejection_reasons.append("subject_family_conflict")
-            continue
+        evidence_families = _detect_service_families(grounding_text)
+        if subject_families:
+            if not evidence_families:
+                normalized_items.append(
+                    replace(
+                        item,
+                        kind="community_report",
+                        publication_use="CONTEXT",
+                        service_state=None,
+                    )
+                )
+                rejected_indexes.append(index)
+                rejection_reasons.append("ungrounded_service_family")
+                continue
+            if subject_families.isdisjoint(evidence_families):
+                normalized_items.append(
+                    replace(
+                        item,
+                        kind="community_report",
+                        publication_use="CONTEXT",
+                        service_state=None,
+                    )
+                )
+                rejected_indexes.append(index)
+                rejection_reasons.append("subject_family_conflict")
+                continue
+
+        # Check high-bar SCHEDULED grounding
+        if state.state == "SCHEDULED" or state.basis == "scheduled_change":
+            if not _has_valid_schedule_grounding(grounding_text):
+                normalized_items.append(
+                    replace(
+                        item,
+                        kind="community_report",
+                        publication_use="CONTEXT",
+                        service_state=None,
+                    )
+                )
+                rejected_indexes.append(index)
+                rejection_reasons.append("unsupported_scheduled_change")
+                continue
 
         accepted += 1
         normalized_items.append(item)

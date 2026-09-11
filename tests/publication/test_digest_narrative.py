@@ -2135,3 +2135,45 @@ def test_digest_prompt_template_has_neutrality_and_advice_rules():
     assert "оккупанты" in DIGEST_PROMPT_TEMPLATE.lower()
     assert "городская администрация" in DIGEST_PROMPT_TEMPLATE.lower()
     assert "СОДЕРЖАТЕЛЬНОСТЬ" in DIGEST_PROMPT_TEMPLATE
+    assert "ВЫДУМЫВАНИЕ СОВЕТОВ" in DIGEST_PROMPT_TEMPLATE
+
+
+def test_find_and_strip_unsupported_digest_recommendations():
+    from src.publication.digest_narrative import (
+        find_unsupported_digest_recommendations,
+        strip_unsupported_recommendations,
+    )
+
+    source_text = (
+        "РЭС проводит ремонтные работы на подстанции в Центре. Света не будет с 9:00 до 17:00."
+    )
+
+    # Text with ungrounded advice invented by writer
+    text_with_advice = (
+        "В Центре проводятся ремонтные работы на подстанции, электроэнергии не будет до 17:00. "
+        "Стоит заранее позаботиться о запасах воды и альтернативных источниках питания."
+    )
+
+    issues = find_unsupported_digest_recommendations(text_with_advice, source_text)
+    assert len(issues) == 1
+    assert "Стоит заранее позаботиться о запасах воды" in issues[0]
+
+    # Stripping removes only the advice sentence
+    cleaned = strip_unsupported_recommendations(text_with_advice, source_text)
+    assert "Стоит заранее позаботиться" not in cleaned
+    assert "В Центре проводятся ремонтные работы" in cleaned
+    assert "электроэнергии не будет до 17:00." in cleaned
+
+    # Legitimate advice present in source is NOT flagged or stripped
+    source_with_official_advice = "МЧС: рекомендуется оставаться в укрытиях во время тревоги."
+    text_with_grounded_advice = "По сообщению МЧС, рекомендуется оставаться в укрытиях."
+    assert (
+        find_unsupported_digest_recommendations(
+            text_with_grounded_advice, source_with_official_advice
+        )
+        == []
+    )
+    assert (
+        strip_unsupported_recommendations(text_with_grounded_advice, source_with_official_advice)
+        == text_with_grounded_advice
+    )

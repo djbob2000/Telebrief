@@ -610,6 +610,45 @@ DIGEST_ITEM_HEADLINE_MAX_CHARS = 140
 DIGEST_ITEM_BODY_MAX_CHARS = 1200
 DIGEST_SITUATION_BODY_MAX_CHARS = 360
 
+_RECOMMENDATION_SENTENCE_PATTERN = re.compile(
+    r"(?:^|\s+)(?:Стоит|Следует|Рекомендуется|Необходимо|Лучше)\s+(?:заранее\s+)?(?:позаботиться|запастись|сделать\s+запас\w*|подготовить|подзарядить|иметь\s+в\s+виду)[^.!?\n]*[.!?]",
+    re.IGNORECASE,
+)
+
+
+def find_unsupported_digest_recommendations(
+    text: str,
+    cited_supports: Sequence[str],
+) -> list[str]:
+    """Find reader advice / calls-to-action that are not grounded in cited supports."""
+    if not text or not cited_supports:
+        return []
+    combined_support = " ".join(cited_supports).lower()
+    violations: list[str] = []
+    for match in _RECOMMENDATION_SENTENCE_PATTERN.finditer(text):
+        matched_text = match.group(0).strip()
+        matched_tokens = [w for w in re.split(r"\W+", matched_text.lower()) if len(w) >= 5]
+        supported_count = sum(1 for tok in matched_tokens if tok in combined_support)
+        if supported_count < 2:
+            violations.append(matched_text)
+    return violations
+
+
+def strip_unsupported_recommendations(text: str, source_content: str) -> str:
+    """Strip fabricated reader advice/calls-to-action unless explicitly supported by source content."""
+    source_lower = source_content.lower()
+
+    def _replace_if_unsupported(match: re.Match[str]) -> str:
+        matched_text = match.group(0).strip()
+        matched_tokens = [w for w in re.split(r"\W+", matched_text.lower()) if len(w) >= 5]
+        supported_count = sum(1 for tok in matched_tokens if tok in source_lower)
+        if supported_count >= 2:
+            return match.group(0)
+        return ""
+
+    cleaned = _RECOMMENDATION_SENTENCE_PATTERN.sub(_replace_if_unsupported, text)
+    return re.sub(r"[ \t]+", " ", cleaned).strip()
+
 
 def validate_digest_narrative(
     draft: DigestNarrativeDraft,
@@ -731,6 +770,12 @@ def validate_digest_narrative(
                         violations.append(
                             f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in claim of block {out_block.block_id}"
                         )
+                    for rec in find_unsupported_digest_recommendations(
+                        claim.text, c_claim_supports
+                    ):
+                        violations.append(
+                            f"UNSUPPORTED_DIGEST_RECOMMENDATION: '{rec}' in claim of block {out_block.block_id}"
+                        )
 
                     # Validate material fact references within the claim
                     block_req_facts_by_id = {rf.fact_id: rf for rf in plan_block.required_facts}
@@ -817,6 +862,10 @@ def validate_digest_narrative(
                     violations.append(
                         f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in headline of block {out_block.block_id}"
                     )
+                for rec in find_unsupported_digest_recommendations(item.headline, c_supports):
+                    violations.append(
+                        f"UNSUPPORTED_DIGEST_RECOMMENDATION: '{rec}' in headline of block {out_block.block_id}"
+                    )
             for unc in find_unsupported_claims(
                 item.body,
                 c_supports,
@@ -830,6 +879,10 @@ def validate_digest_narrative(
             for rel in find_unsupported_digest_relations(item.body, c_supports):
                 violations.append(
                     f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in body of block {out_block.block_id}"
+                )
+            for rec in find_unsupported_digest_recommendations(item.body, c_supports):
+                violations.append(
+                    f"UNSUPPORTED_DIGEST_RECOMMENDATION: '{rec}' in body of block {out_block.block_id}"
                 )
 
         # Block-level strict required material facts coverage check
@@ -1211,7 +1264,8 @@ DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регио�
 9. СТРОГО НЕЙТРАЛЬНАЯ ТЕРМИНОЛОГИЯ И УВАЖИТЕЛЬНЫЙ ТОН:
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать конфликтные, политизированные, оценочные или враждебные ярлыки («оккупанты», «оккупационная администрация», «оккупационные власти», «захватчики» и т.п.).
    - Всегда используйте строго нейтральные городские и институциональные формулировки: «городская администрация», «местные власти», «представители администрации», «муниципальные службы» либо пишите в нейтрально-деловом ключе («по официальным сообщениям», «согласно заявлению администрации города»).
-10. СОДЕРЖАТЕЛЬНОСТЬ И КОНТЕКСТ СОВЕТОВ:
+10. СОДЕРЖАТЕЛЬНОСТЬ И КАТЕГОРИЧЕСКИЙ ЗАПРЕТ НА ВЫДУМЫВАНИЕ СОВЕТОВ:
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО выдумывать от себя или дописывать назидательные житейские советы читателям («стоит заранее позаботиться о запасах воды», «рекомендуется зарядить пауэрбанки», «следует воздержаться от поездок»). Передавайте ТОЛЬКО факты из материалов дня. Если в исходных сообщениях нет прямого совета или инструкции от служб/жителей — выдумывать советы запрещено.
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО публиковать бессодержательные рекомендации без объяснения причин (например, писать «советуют обновить приложение» без указания того, какая именно проблема, сбой или ошибка возникли в старой версии). Если конкретная техническая причина совета в материалах дня не указана — исключайте такой совет.
 11. ЗАПРЕТ НА ВЫДУМЫВАНИЕ БУДУЩИХ ОТКЛЮЧЕНИЙ И ДОДУМЫВАНИЕ ДАТ:
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО интерпретировать обрывочные реплики жителей в чатах (например, «отключение с 9», «без света с первого») как анонсы предстоящих отключений в будущем!
@@ -1240,6 +1294,7 @@ DIGEST_CONDENSE_PROMPT_TEMPLATE = """Вы — выпускающий редак�
 6. Сохраните формат Telegram: чистые названия рубрик (без эмодзи в заголовке, без ** и ##), разделение ТОЛЬКО пустой строкой. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ разделители (---, ***) и лишняя разметка (**, ##).
 7. Верните ТОЛЬКО готовый отредактированный текст без вступительных или заключительных реплик.
 8. СТРОГО НЕЙТРАЛЬНАЯ ТЕРМИНОЛОГИЯ: используйте только нейтральные формулировки органов власти («городская администрация», «местные власти»), категорически исключая конфликтные или враждебные ярлыки («оккупанты» и т.п.).
+9. КАТЕГОРИЧЕСКИЙ ЗАПРЕТ НА ДОБАВЛЕНИЕ СОВЕТОВ: запрещено добавлять от себя назидательные советы или житейские рекомендации читателям («стоит позаботиться...», «рекомендуется запастись...»).
 
 ЧЕРНОВИК ДАЙДЖЕСТА ДЛЯ КОМПРЕССИИ:
 {draft_text}
@@ -1696,6 +1751,9 @@ class DigestNarrativeWriter:
 
         # Enforce neutral administrative terminology (fail-safe against hostile labels)
         clean_draft = sanitize_digest_terminology(clean_draft)
+
+        # Strip ungrounded reader recommendations / unsolicited advice
+        clean_draft = strip_unsupported_recommendations(clean_draft, content_for_llm)
 
         # Strip redundant leading title header or conversational preamble if generated in body
         clean_draft = re.sub(

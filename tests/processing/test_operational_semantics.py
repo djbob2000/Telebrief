@@ -101,7 +101,7 @@ def test_negative_state_without_expected_now_is_not_operational():
 )
 def test_valid_state_basis_pairs_survive(state: str, basis: str, expected_now: bool | None):
     item = _service_item(
-        text=f"Service status update for {state}",
+        text=f"Public transport status update for {state}",
         fid=10,
         subject_key="public_transport",
         subject_label="Транспорт",
@@ -309,3 +309,113 @@ def test_normalize_operational_location_and_entity_jupiter_and_plane():
 
     loc, ent = normalize_operational_location_and_entity("памятник Самолёт в селе Осипенко")
     assert "село Осипенко" in loc
+
+
+def test_raw_grounding_rejects_hallucinated_service_family():
+    # Model hallucinated power_supply from raw text with no service keywords
+    raw_texts = {101: "А после 20го вырубят всё"}
+    item = _service_item(
+        text="А после 20го вырубят всё",
+        fid=101,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="UNAVAILABLE",
+        expected_now=True,
+        basis="direct_failure",
+    )
+    payload = EventPayload(evidence_items=(item,))
+    normalized, audit = normalize_service_state_evidence(payload, raw_texts)
+
+    assert audit.rejected_count == 1
+    assert "ungrounded_service_family" in audit.rejection_reasons
+    assert normalized.evidence_items[0].service_state is None
+    assert normalized.evidence_items[0].kind == "community_report"
+    assert normalized.evidence_items[0].publication_use == "CONTEXT"
+
+
+def test_raw_grounding_uses_source_fragment_texts_over_model_item_text():
+    # Model hallucinated electricity into item.text, but raw source has no electricity
+    raw_texts = {102: "А после 20го вырубят всё"}
+    item = _service_item(
+        text="Жители сообщают, что после 20-го электроэнергию отключат полностью",
+        fid=102,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="UNAVAILABLE",
+        expected_now=True,
+        basis="direct_failure",
+    )
+    payload = EventPayload(evidence_items=(item,))
+    normalized, audit = normalize_service_state_evidence(payload, raw_texts)
+
+    assert audit.rejected_count == 1
+    assert "ungrounded_service_family" in audit.rejection_reasons
+    assert normalized.evidence_items[0].service_state is None
+
+
+def test_scheduled_requires_schedule_indicators_and_blocks_rumors():
+    raw_texts_rumor = {103: "Свет после 20-го опять всем отрубят, вот увидите"}
+    item_rumor = _service_item(
+        text="Свет после 20-го опять всем отрубят, вот увидите",
+        fid=103,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="SCHEDULED",
+        expected_now=False,
+        basis="scheduled_change",
+        effective_from="2026-09-20",
+    )
+    normalized, audit = normalize_service_state_evidence(
+        EventPayload(evidence_items=(item_rumor,)), raw_texts_rumor
+    )
+    assert audit.rejected_count == 1
+    assert "unsupported_scheduled_change" in audit.rejection_reasons
+    assert normalized.evidence_items[0].service_state is None
+
+    # Legitimate schedule notice succeeds
+    raw_texts_official = {
+        104: "РЭС предупреждает: 20 сентября с 09:00 плановое отключение электроэнергии"
+    }
+    item_official = _service_item(
+        text="РЭС предупреждает: 20 сентября с 09:00 плановое отключение электроэнергии",
+        fid=104,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="SCHEDULED",
+        expected_now=False,
+        basis="scheduled_change",
+        effective_from="2026-09-20",
+    )
+    normalized_off, audit_off = normalize_service_state_evidence(
+        EventPayload(evidence_items=(item_official,)), raw_texts_official
+    )
+    assert audit_off.accepted_count == 1
+    assert audit_off.rejected_count == 0
+    assert normalized_off.evidence_items[0].service_state is not None
+
+
+def test_dependent_reply_inherits_family_from_parent_but_rejects_scheduled_without_schedule_indicators():
+    # Context: Parent has "светится" (power), reply has "после 20го вырубят всё"
+    # Even if parent gives power family grounding, banter reply without schedule keywords cannot be SCHEDULED
+    combined_grounding = (
+        '[in reply to: "К 17.09 весь город будет светится⚡️⚡️⚡️😇"] А после 20го вырубят всё'
+    )
+    raw_texts = {201: combined_grounding}
+    item = _service_item(
+        text="По словам жителя, после 20-го числа электроэнергию отключат полностью",
+        fid=201,
+        subject_key="power_supply",
+        subject_label="Электроснабжение",
+        state="SCHEDULED",
+        expected_now=False,
+        basis="scheduled_change",
+        effective_from="2026-09-20",
+    )
+    normalized, audit = normalize_service_state_evidence(
+        EventPayload(evidence_items=(item,)), raw_texts
+    )
+    assert audit.rejected_count == 1
+    assert "unsupported_scheduled_change" in audit.rejection_reasons
+    assert normalized.evidence_items[0].service_state is None
+    assert normalized.evidence_items[0].kind == "community_report"
+    assert normalized.evidence_items[0].publication_use == "CONTEXT"
