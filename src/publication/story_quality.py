@@ -5,6 +5,30 @@ from __future__ import annotations
 import re
 from typing import Any
 
+RECOGNIZED_CORE_SERVICE_KEYS = frozenset(
+    {
+        "electricity",
+        "power",
+        "power_supply",
+        "water",
+        "water_supply",
+        "gas",
+        "gas_supply",
+        "heating",
+        "sewage",
+        "refuse",
+        "transport",
+        "connectivity",
+        "telecom",
+        "telecommunications",
+        "internet",
+        "banking",
+        "municipal_service",
+        "municipal_infrastructure",
+        "utilities",
+    }
+)
+
 _GENERIC_ENTITY_WORDS = frozenset(
     {
         "сервис",
@@ -44,20 +68,37 @@ _CHATTER_META_RE = re.compile(
 
 _CIVIC_EVENT_TOKENS_RE = re.compile(
     r"\b(?:"
-    # Verbs / participles of action, state, change
-    r"отключил\w*|пропал\w*|вернул\w*|восстановил\w*|заработал\w*|прорвал\w*|теч[её]т|"
-    r"капает|перекрыл\w*|затопил\w*|горит|потушил\w*|сбил\w*|упал\w*|взорвал\w*|повредил\w*|"
-    r"ремонтиру\w*|починил\w*|чин\w*|провод\w*|открыл\w*|закрыл\w*|запустил\w*|пода[юе]\w*|"
-    r"ход[яи]т|списал\w*|подорожал\w*|подешевел\w*|зафиксирован\w*|замечен\w*|наблюда\w*|"
-    r"снизил\w*|повысил\w*|упал\w*|вырос\w*|выплат\w*|начисл\w*|получа\w*|направля\w*|"
+    # Verbs / participles of action, state, change (past, present, future)
+    r"отключ\w*|включ\w*|пропа[лв]\w*|исчез\w*|верну\w*|возвращ\w*|"
+    r"восстанов\w*|возобнов\w*|заработа\w*|работа\w*|"
+    r"выш[ели]\w*|выход\w*|пополн\w*|поступ\w*|"
+    r"прорва\w*|прорыв\w*|теч[её]\w*|капа\w*|ут[её]к\w*|утечк\w*|"
+    r"перекры\w*|затоп\w*|гор[яеи]\w*|потуш\w*|сби\w*|упа[лд]\w*|пада\w*|"
+    r"взорв\w*|взрыв\w*|повред\w*|разруш\w*|"
+    r"ремонтир\w*|почин\w*|чин[яи]\w*|провод\w*|прове[лд]\w*|"
+    r"откры\w*|закры\w*|запуст\w*|пуск\w*|пода[юе]\w*|подач\w*|"
+    r"ход[яи]\w*|езди\w*|курсир\w*|перевоз\w*|"
+    r"списа\w*|подорож\w*|подешев\w*|зафиксир\w*|замеч\w*|наблюда\w*|"
+    r"сниз\w*|повыс\w*|вырос\w*|раст[еу]\w*|увелич\w*|уменьш\w*|"
+    r"выплат\w*|начисл\w*|получ\w*|направ\w*|"
+    r"приним\w*|приня\w*|утверд\w*|ввел\w*|ввод\w*|измен\w*|отмен\w*|"
+    r"сообщ\w*|подтверд\w*|устрани\w*|ликвиди\w*|"
+    r"заверш\w*|оконч\w*|нач[ая]\w*|продолж\w*|"
+    r"произош\w*|происход\w*|случи\w*|обнаруж\w*|установ\w*|постро\w*|сдела\w*|"
+    r"огранич\w*|перенес\w*|достав\w*|привез\w*|"
+    r"вед\w*|выполн\w*|осуществл\w*|производ\w*|обеспеч\w*|организов\w*|заяв\w*|предупред\w*|опубликов\w*|планиру\w*|оста[её]тся|сохран\w*|"
     # Event / state nouns
-    r"авари[яи]|прорыв\w*|ремонт\w*|отключени[ея]|перебо[яев]|восстановлени[ея]|взрыв\w*|"
-    r"обстрел\w*|сирен\w*|пожар\w*|дым\w*|дтп|напряжени[ея]|скачк\w*|график\w*|подвоз\w*|"
-    r"задержк\w*|отмен\w*|выплат\w*|пособи[ея]|запрет\w*|штраф\w*|при[её]м\w*|проверк\w*|"
+    r"авари[яи]|прорыв\w*|ремонт\w*|отключени[ея]|перебо[яев]|восстановлени[ея]|возобновлени[ея]|"
+    r"взрыв\w*|обстрел\w*|сирен\w*|пожар\w*|дым\w*|дтп|сбой\w*|неисправност\w*|проблем\w*|"
+    r"напряжени[ея]|скач[ок]\w*|график\w*|подвоз\w*|задержк\w*|отмен\w*|рейс\w*|маршрут\w*|"
+    r"выплат\w*|пособи[ея]|запрет\w*|штраф\w*|при[её]м\w*|проверк\w*|"
     # Predicates / states
     r"нет|нету|есть|доступен|доступна|доступно|доступны|недоступен|недоступна|недоступно|недоступны|"
-    r"отсутству\w*|восстановлен\w*|отключен\w*|перекрыт\w*|открыт\w*|закрыт\w*|"
-    r"\d+\s*(?:в|вольт|квт|руб|рублей|р\.|грн|мбит|%|процент\w*)"
+    r"отсутству\w*|восстановлен\w*|отключен\w*|перекрыт\w*|открыт\w*|закрыт\w*|завершен\w*|поврежден\w*|"
+    # General Russian verb morphology fallback (verbs ending in -лся, -лась, -лось, -лись, -ется, -ются, -ится, -ятся)
+    r"[а-яё]{3,}(?:лся|лась|лось|лись|ется|ются|ится|ятся)|"
+    # Quantitative facts / measurements
+    r"\d+\s*(?:в|вольт|квт|руб|рублей|р\.|грн|мбит|%|процент\w*|автобус\w*|рейс\w*|человек\w*|дом\w*|улиц\w*)"
     r")\b",
     re.IGNORECASE,
 )
@@ -77,12 +118,12 @@ def is_generic_service_entity(entity: str, subject_label: str = "", subject_key:
     if ent in _GENERIC_ENTITY_WORDS or _GENERIC_ENTITY_PATTERN.match(ent):
         return True
 
-    recognized_core_keys = {"electricity", "water", "gas", "heating", "sewage", "refuse"}
     if not ent:
-        if key in recognized_core_keys:
+        if key in RECOGNIZED_CORE_SERVICE_KEYS:
             return False
         if not lbl or lbl in _GENERIC_ENTITY_WORDS or _GENERIC_ENTITY_PATTERN.match(lbl):
             return True
+        return False
 
     return False
 
@@ -133,11 +174,9 @@ def validate_story_publication_eligibility(
         # Fallback to headline / summary / key facts if no evidence items
         headline = getattr(payload, "headline", "") or ""
         summary = getattr(payload, "digest_summary", "") or getattr(payload, "summary", "") or ""
-        if (
-            not has_meaningful_predicate(headline)
-            and not has_meaningful_predicate(summary)
-            and not has_meaningful_predicate(fallback_text)
-        ):
+        key_facts = getattr(payload, "key_facts", ()) or ()
+        texts = [headline, summary, fallback_text] + list(key_facts)
+        if not any(has_meaningful_predicate(t) for t in texts if t):
             return False, "lacks_meaningful_predicate"
         return True, None
 
@@ -162,12 +201,46 @@ def validate_story_publication_eligibility(
         all_generic = True
         for s_item in service_items:
             s_state = getattr(s_item, "service_state", None)
-            ent = getattr(s_state, "entity", "") if s_state else ""
-            lbl = getattr(s_state, "subject_label", "") if s_state else ""
-            key = getattr(s_state, "subject_key", "") if s_state else ""
-            if not is_generic_service_entity(ent, lbl, key):
-                all_generic = False
-                break
+            if s_state:
+                ent = getattr(s_state, "entity", "")
+                lbl = getattr(s_state, "subject_label", "")
+                key = getattr(s_state, "subject_key", "")
+                if not is_generic_service_entity(ent, lbl, key):
+                    all_generic = False
+                    break
+            else:
+                # Check top-level operational observations on payload if present
+                op_obs = getattr(payload, "operational_observations", ()) or ()
+                found_valid_op = False
+                for obs in op_obs:
+                    o_key = getattr(obs, "subject_key", "") or ""
+                    o_lbl = getattr(obs, "subject_label", "") or ""
+                    o_ent = getattr(obs, "entity", "") or ""
+                    if not is_generic_service_entity(o_ent, o_lbl, o_key):
+                        found_valid_op = True
+                        break
+                if found_valid_op:
+                    all_generic = False
+                    break
+
+                # If no operational observations, check category and tags
+                cat = getattr(payload, "category", "") or ""
+                tags = {str(t).lower() for t in (getattr(payload, "tags", ()) or ())}
+                if cat.lower() in RECOGNIZED_CORE_SERVICE_KEYS or tags.intersection(
+                    RECOGNIZED_CORE_SERVICE_KEYS
+                ):
+                    all_generic = False
+                    break
+
+                # Check if evidence text or headline itself mentions concrete service / entity
+                text_to_test = getattr(s_item, "text", "") or ""
+                hl = getattr(payload, "headline", "") or ""
+                combined = f"{hl} {text_to_test}".lower()
+                has_generic_word = any(w in combined for w in _GENERIC_ENTITY_WORDS)
+                if not has_generic_word:
+                    all_generic = False
+                    break
+
         if all_generic:
             return False, "service_access_without_concrete_entity"
 
