@@ -59,42 +59,79 @@ Its job is to let a resident understand, in seconds:
 Target structure:
 
 ```text
-Digest: <edition> · <date>
-
-City Situation
-<operational point-in-time statuses>
+Digest · <date>
 
 <Rubric>
-• **Short scan headline**: compact explanatory narrative.
-• **Short scan headline**: compact explanatory narrative.
+<compact synthesized reader items>
 
 <Rubric>
-...
+<compact synthesized reader items>
 
-Statistics
+[Statistics only when enabled by configuration]
+```
+
+Item formatting is flexible: the writer may choose a natural sentence, a compact bullet, or an optional emoji / scan-label when it aids reading:
+
+```text
+⚡ Несколько связанных фактов об электроснабжении...
+```
+
+or:
+
+```text
+📶 **Мобильная связь.** Несколько связанных фактов...
+```
+
+Example shape:
+
+```text
+Digest · 02 сентября 2026
+
+Коммунальная обстановка
+
+⚡ Related electricity reports are synthesized into one concrete,
+information-dense item covering locations, durations, current state,
+and known repair information.
+
+💧 Related water reports are synthesized into one item covering affected
+areas, cause/status where supported, and practical water-access
+information.
+
+Связь и интернет
+
+📶 **Мобильная связь.** Related connectivity observations, locations,
+time patterns, and supported tariff changes are consolidated into one
+reader item.
 ```
 
 Rules:
 
-- City Situation comes first when operational observations exist.
-- City Situation contains actual operational states, not merely topics people ask about.
+- The digest must not contain a separate dashboard, traffic-light/status panel, or mandatory synthetic `City Situation` layer.
+- Do not propose, restore, or reintroduce dashboard-style digest presentation unless the user explicitly requests it.
+- Operational facts are normal editorial inputs. They belong in the appropriate thematic synthesis together with related local reports.
+- Internal status/severity metadata may be used for reasoning, prioritization, validation, or grouping, but it must not dictate a reader-facing traffic-light UI.
+- Reader-facing item count is independent from Story count and material fact count.
+- Multiple related Stories and material facts should normally be consolidated into one coherent reader-facing item when they describe the same subject, situation, service, location pattern, or practical consequence.
+- One Story must not automatically become one headline or one bullet.
+- Coverage validation applies to the claims contained inside synthesized items, not to the number of visible items.
+- Compression should remove repetition and fragmentation, not supported facts or concrete local detail.
+- Every selected substantive digest Story must be represented in the final digest.
+- Every required material fact must be represented by at least one grounded claim in the final digest.
+- Final Story coverage and material-fact coverage must remain 100%.
+- A single reader-facing item may satisfy coverage for multiple Stories and multiple material facts.
+- Every covered Story/fact must remain traceable to valid supporting evidence.
 - `service_access` represents a concrete current or scheduled availability/access state of an external resident-facing utility or service (utilities, transport, communications, banking/municipal). Operational observations must be grounded in `service_access` evidence.
-- Resident coping behaviors (household generators, battery workarounds, neighbor assistance) are `community_report`, not dashboard states. They belong in the thematic layer.
+- Resident coping behaviors such as household generators, battery workarounds, or neighbor assistance are community reports and should be represented editorially as such rather than promoted to an operational service state.
 - `resident_question` is context, not a fact and not an operational status.
-- A question such as "Работает ли пенсионный фонд?" must not become "пенсионный фонд не работает" or create a dashboard status by itself, and must not become meta-news ("жители интересуются...") in thematic headlines.
+- A question such as "Работает ли пенсионный фонд?" must not become "пенсионный фонд не работает" or create an operational state by itself, and must not become meta-news ("жители интересуются...") in thematic headlines.
 - A useful short community report must not be discarded merely because it is conversational, single-source, or unofficial.
-- Mixed positive/negative states for the same subject/dimension consolidate into one `CONFLICTING` group rendering yellow (🟡) with both positive and non-positive detail lines.
-- Pure positive statuses render as distinct subject-coherent dashboard groups (e.g. 🟢 **Банки**, 🟢 **Транспорт**) up to `digest_city_situation_max_positive_items` (default 2), reserving at least 1 slot on mixed days. There is no global catch-all `available_services` bucket.
-- Positive stories omitted from the dashboard by the positive budget remain fully eligible for thematic rubric coverage.
-- City Situation rendering is fully deterministic; the LLM does NOT author or rename dashboard groups.
-- Overlapping thematic items use canonical presentation modes (`DASHBOARD_ONLY`, `DETAIL_ONLY`, `DASHBOARD_AND_DRILLDOWN`); `DASHBOARD_AND_DRILLDOWN` items must cite distinct detail evidence rather than duplicating dashboard status.
-- Every selected substantive digest Story must be represented in the final digest. Presentation budgets limit placement and detail, not knowledge coverage. Final digest Story coverage must be 100%. Dashboard-only coverage requires exact Story/support provenance.
 - Narrow deterministic causal relation validation rejects unsupported mechanism/cause claims with `UNSUPPORTED_DIGEST_RELATION`.
 - Related stories may be grouped for presentation inside their deterministic rubric/block, but legitimate coverage must not silently disappear.
 - Commercial classifieds, private disputes, personal accusations, phone-number spam, repetitive ad copy, and directory-style payload must not dominate the digest.
 - Community reports must preserve their epistemic status through natural attribution without duplicating attribution phrases in both headline and body.
 - The digest should be compact and easy to scan, but not so aggressively compressed that meaningful local facts disappear.
-- Grouped/channel digests render directly with title -> City Situation -> thematic blocks -> stats; the publication lead is intentionally empty (`lead = ""`) to avoid duplicating the lead story.
+- Grouped/channel digests render directly with title -> thematic blocks -> stats (when enabled); the publication lead is intentionally empty (`lead = ""`) to avoid duplicating the lead story.
+- Render statistics only when statistics are enabled by configuration. When `include_statistics: false`, the final digest must contain no statistics section or synthetic replacement footer.
 
 
 **Digest optimization target:** broad coverage + fast scanning + operational usefulness.
@@ -298,7 +335,7 @@ Agents must not make changes whose effect is to:
 - use legacy/message-based article generation as production recovery;
 - classify deterministic recovery as a correctness regression by itself;
 - require official confirmation or 2+ sources for legitimate local reports;
-- treat resident questions as established facts or City Situation statuses;
+- treat resident questions as established facts or operational service states;
 - flatten supported microdetails into generic summaries;
 - force every publishable item to receive equal article space;
 - let classified ads, price lists, phone numbers, booking links, or promotional copy dominate prose;
