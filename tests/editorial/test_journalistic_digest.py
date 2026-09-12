@@ -347,8 +347,8 @@ def test_parse_journalistic_markdown_sept_11_sample():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_generate_journalistic_digest_coverage_recovery_zerkalny():
-    # Model generates output missing the Zerkalny store
+async def test_generate_journalistic_digest_generic_coverage_recovery():
+    # Model generates output missing one of the substantive cards
     model_output = (
         "Дайджест · 11 сентября 2026\n\n"
         "Городская среда и бизнес\n\n"
@@ -374,8 +374,10 @@ async def test_generate_journalistic_digest_coverage_recovery_zerkalny():
         max_chars=3900,
     )
 
-    # Invariant: store near Zerkalny MUST be present via coverage recovery
-    assert "зеркального" in result_text.lower()
+    # Invariant: omitted card MUST be recovered generically
+    assert "зеркальн" in result_text.lower()
     assert "бывшего супермаркета «зеркальный»" in result_text.lower()
-    # Verified: not cinema
+    # Verified: toponym normalization converts colloquial phrases into proper entities
     assert "кинотеатр" not in result_text.lower()
+    assert "магазин у «зеркального»" not in result_text.lower()
+    assert "магазин возле «зеркального»" not in result_text.lower()

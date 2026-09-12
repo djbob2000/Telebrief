@@ -1475,14 +1475,14 @@ DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регио�
    - ЗАПРЕЩЕНО сливать разные события (например, свет, воду, запах газа, безопасность, больницы) в один общий абзац или связный рассказ.
    - Каждая отдельная тема/событие — это ОТДЕЛЬНЫЙ ПУНКТ списка со своим эмодзи.
 4. Журналистский стиль и местная топонимика:
-   - Чистый, энергичный русский язык хроники. Точный и грамотный перевод сообщений на украинском языке (названия памятников и ориентиров переводить строго на русский язык, например «у памятника Самолёту», а не «у «Літака»»; «ліхтарі» переводить как «фонари», а не «лихтари»).
-   - СТРОГО соблюдайте предлоги для местных микрорайонов: о Лисках писать СТРОГО «на Лисках», «на Лиски» (КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «в Лисках» или «в Лиски»!).
+   - Чистый, энергичный русский язык хроники. Точный и грамотный перевод сообщений на украинском языке (названия памятников и ориентиров переводить строго на русский язык; «ліхтарі» переводить как «фонари», а не «лихтари»).
+   - СТРОГО соблюдайте правила местной микрогеографии и предлогов, указанные в блоке топонимических правил редакции.
 5. Сохраняйте микродетали: точные улицы, микрорайоны, графики подачи, номера маршрутов, цены, важные решения жителей.
 6. Очистка от рекламы и спама: категорически исключайте коммерческие перевозки за границу ($450), разблокировку карт и счетов, прайс-листы клиник/процедур, рекламу общепита и бытовой чат-флуд («все живые», пустые реплики).
 7. Разнообразная естественная атрибуция: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО начинать каждое предложение с «По сообщениям жителей...». Используйте естественные и разнообразные обороты («По словам горожан...», «В местных чатах отмечают...», «Как рассказали жители...») либо пишите сразу от сути события.
 8. Ограничение длины и полнота охвата:
    - Итоговый текст дайджеста должен составлять от 2500 до 3700 знаков (жесткий лимит Telegram — 4096 символов).
-   - Выводите ВСЕ тематические рубрики, по которым в материалах дня есть сообщения (включая «Городская среда и бизнес», «Социальная помощь», «Безопасность и чрезвычайные ситуации», «Связь и интернет», «Другое»). КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО пропускать рубрику «Городская среда и бизнес» или любые торговые точки из неё!{toponym_rules}
+   - Выводите ВСЕ тематические рубрики, по которым в материалах дня есть сообщения (включая городскую среду, бизнес, социальную сферу, безопасность, связь и т.д.). КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО опускать отдельные рубрики или любые независимые события/заведения из них!{toponym_rules}
 9. СТРОГО НЕЙТРАЛЬНАЯ ТЕРМИНОЛОГИЯ И УВАЖИТЕЛЬНЫЙ ТОН:
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО использовать конфликтные, политизированные, оценочные или враждебные ярлыки («оккупанты», «оккупационная администрация», «оккупационные власти», «захватчики» и т.п.).
    - Всегда используйте строго нейтральные городские и институциональные формулировки: «городская администрация», «местные власти», «представители администрации», «муниципальные службы» либо пишите в нейтрально-деловом ключе («по официальным сообщениям», «согласно заявлению администрации города»).
@@ -1501,9 +1501,9 @@ DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регио�
 {content}
 
 ОБЯЗАТЕЛЬНЫЕ ИТОГОВЫЕ ТРЕБОВАНИЯ К ДАЙДЖЕСТУ:
-1. Выведите ВСЕ тематические рубрики, для которых выше предоставлены материалы (в том числе «Городская среда и бизнес», «Социальная помощь», «Безопасность и чрезвычайные ситуации», «Связь и интернет», «Другое»).
-2. В рубрике «Городская среда и бизнес»: ОБЯЗАТЕЛЬНО отразите ВСЕ торговые точки из материалов отдельными пунктами: вывоз товара из магазина возле «Зеркального»/«Дзеркального», закрытие магазина «Сакура» на пр. Ленина, ситуацию с магазинами мясокомбината. Ни одна торговая точка не должна быть утеряна!
-3. Соблюдайте точную местную топонимику: о Лисках писать строго «на Лисках», «на Лиски» (КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать «в Лисках» или «в Лиски»!).
+1. Выведите ВСЕ тематические рубрики, для которых выше предоставлены материалы.
+2. Отразите ВСЕ независимые события, предприятия, заведения и объекты из переданных материалов отдельными пунктами списка со своими эмодзи. Ни одно значимое событие или объект из материалов не должны быть утеряны!
+3. СТРОГО соблюдайте правила местной топонимики и названий ориентиров из блока правил редакции выше.
 4. Начните вывод СТРОГО с заголовка «Дайджест · {date}» или первой рубрики.
 """
 
@@ -1930,15 +1930,32 @@ class DigestNarrativeWriter:
             "Городская среда и бизнес": [],
             "Социальная помощь": [],
             "Безопасность и чрезвычайные ситуации": [],
+            "Транспорт": [],
+            "Здравоохранение": [],
+            "Образование и культура": [],
             "Другое": [],
         }
-        cards_text_blocks = []
+        from src.domain.edition_geography import (
+            normalize_edition_toponyms,
+            resolve_edition_geography,
+        )
+
+        geo_ctx = resolve_edition_geography(city.lower(), city)
+        cards_text_blocks: list[str] = []
 
         for c in cards:
             if not c.topic:
                 continue
-            clean_topic = sanitize_digest_terminology(c.topic)
-            clean_summary = sanitize_digest_terminology(c.summary) if c.summary else ""
+            clean_topic = normalize_edition_toponyms(
+                sanitize_digest_terminology(c.topic), edition_slug=geo_ctx.slug
+            )
+            clean_summary = (
+                normalize_edition_toponyms(
+                    sanitize_digest_terminology(c.summary), edition_slug=geo_ctx.slug
+                )
+                if c.summary
+                else ""
+            )
             facts = [
                 sanitize_digest_terminology(f.text) for f in getattr(c, "hard_facts", ()) if f.text
             ]
@@ -1961,44 +1978,110 @@ class DigestNarrativeWriter:
             block = f"- [{clean_topic}] {details_str}"
             cards_text_blocks.append(block)
 
+            rubric_id = (getattr(c, "rubric_id", "") or getattr(c, "category", "")).lower()
             tags = {t.lower() for t in getattr(c, "tags", ())}
             text_l = f"{clean_topic.lower()} {clean_summary.lower()}"
 
             if (
-                any(k in tags for k in ("магазин", "торговля", "бизнес"))
+                rubric_id == "urban_life"
+                or any(k in tags for k in ("магазин", "торговля", "бизнес", "предприятие"))
                 or any(
                     k in text_l
-                    for k in ("дзеркальн", "зеркальн", "сакура", "магазин", "товар", "мясокомбинат")
+                    for k in (
+                        "магазин",
+                        "супермаркет",
+                        "торгов",
+                        "бизнес",
+                        "предприяти",
+                        "вывоз товара",
+                        "закрыти",
+                    )
                 )
-                or getattr(c, "category", "") == "urban_life"
             ):
                 thematic_groups["Городская среда и бизнес"].append(block)
-            elif any(k in tags for k in ("интернет", "связь", "провайдер")) or any(
-                k in text_l for k in ("юпитер", "интернет", "провайдер")
+            elif (
+                rubric_id == "communications"
+                or any(k in tags for k in ("интернет", "связь", "провайдер", "мобильная"))
+                or any(k in text_l for k in ("интернет", "связь", "провайдер", "мобильн"))
             ):
                 thematic_groups["Связь и интернет"].append(block)
-            elif any(k in tags for k in ("пожилая женщина", "помощь")) or any(
-                k in text_l for k in ("пожилая", "бабуля", "химиков", "скорая")
+            elif (
+                rubric_id == "social"
+                or any(k in tags for k in ("помощь", "социальн", "пенсия", "выплаты"))
+                or any(
+                    k in text_l for k in ("социальн", "пожилая", "выплат", "пенси", "гуманитарн")
+                )
             ):
                 thematic_groups["Социальная помощь"].append(block)
-            elif any(k in tags for k in ("вспышка", "взрыв", "обстрел", "сирена")) or any(
-                k in text_l for k in ("вспышка", "взрыв", "сирена")
+            elif (
+                rubric_id == "safety"
+                or any(
+                    k in tags
+                    for k in (
+                        "безопасность",
+                        "вспышка",
+                        "взрыв",
+                        "обстрел",
+                        "сирена",
+                        "чп",
+                        "пожар",
+                    )
+                )
+                or any(
+                    k in text_l
+                    for k in ("безопасн", "вспышка", "взрыв", "сирена", "обстрел", "пожар")
+                )
             ):
                 thematic_groups["Безопасность и чрезвычайные ситуации"].append(block)
-            elif any(
-                k in tags
-                for k in (
-                    "электроэнергия",
-                    "свет",
-                    "электричество",
-                    "вода",
-                    "водоснабжение",
-                    "подстанция",
-                    "напряжение",
+            elif (
+                rubric_id == "transport"
+                or any(k in tags for k in ("транспорт", "автобус", "маршрутка", "поезд", "дорога"))
+                or any(k in text_l for k in ("транспорт", "автобус", "маршрут", "дорог"))
+            ):
+                thematic_groups["Транспорт"].append(block)
+            elif (
+                rubric_id == "health"
+                or any(
+                    k in tags for k in ("здравоохранение", "медицина", "больница", "аптека", "врач")
                 )
-            ) or any(
-                k in text_l
-                for k in ("свет", "электро", "напряжен", "вода", "подстанция", "азмол", "лиски")
+                or any(k in text_l for k in ("больниц", "поликлиник", "аптек", "врач", "медицин"))
+            ):
+                thematic_groups["Здравоохранение"].append(block)
+            elif (
+                rubric_id == "education"
+                or any(k in tags for k in ("образование", "школа", "детсад", "спорт", "культура"))
+                or any(k in text_l for k in ("школ", "детсад", "секц", "спорт", "обучени"))
+            ):
+                thematic_groups["Образование и культура"].append(block)
+            elif (
+                rubric_id == "infrastructure"
+                or any(
+                    k in tags
+                    for k in (
+                        "электроэнергия",
+                        "свет",
+                        "электричество",
+                        "вода",
+                        "водоснабжение",
+                        "подстанция",
+                        "напряжение",
+                        "газ",
+                        "отопление",
+                    )
+                )
+                or any(
+                    k in text_l
+                    for k in (
+                        "свет",
+                        "электро",
+                        "напряжен",
+                        "вода",
+                        "подстанция",
+                        "водопровод",
+                        "газоснабжен",
+                        "отоплен",
+                    )
+                )
             ):
                 thematic_groups["Коммунальная обстановка"].append(block)
             else:
@@ -2013,9 +2096,6 @@ class DigestNarrativeWriter:
             "\n\n".join(grouped_blocks) if grouped_blocks else "\n".join(cards_text_blocks[:45])
         )
 
-        from src.domain.edition_geography import resolve_edition_geography
-
-        geo_ctx = resolve_edition_geography(city.lower(), city)
         toponym_section = ""
         if geo_ctx.toponym_rules:
             toponym_section = "\n\nВАЖНЫЕ МЕСТНЫЕ ТОПОНИМЫ И РАЗЛИЧЕНИЕ СУЩНОСТЕЙ:\n" + "\n".join(
@@ -2061,49 +2141,86 @@ class DigestNarrativeWriter:
         if len(clean_draft) > max_chars:
             clean_draft = enforce_telegram_single_message_limit(clean_draft, max_chars=max_chars)
 
-        # Coverage recovery: ensure substantive retail/business cards are not omitted by AI writer
-        has_zerkalny_card = any(
-            "зеркальн" in (getattr(c, "topic", "") + " " + getattr(c, "summary", "")).lower()
-            or "дзеркальн" in (getattr(c, "topic", "") + " " + getattr(c, "summary", "")).lower()
-            for c in cards
-        )
-        if has_zerkalny_card and not re.search(r"\b(?:д)?зеркальн", clean_draft, re.IGNORECASE):
-            logger.info(
-                "Coverage recovery: injecting omitted item for store near Zerkalny into journalistic digest"
+        # Generic Coverage Recovery: ensure substantive StoryCards are represented in the draft
+        rubric_header_map = {
+            "infrastructure": "Коммунальная обстановка",
+            "safety": "Безопасность и чрезвычайные ситуации",
+            "communications": "Связь и интернет",
+            "urban_life": "Городская среда и бизнес",
+            "social": "Социальная помощь",
+            "transport": "Транспорт",
+            "health": "Здравоохранение",
+            "education": "Образование и культура",
+            "general": "Другое",
+        }
+
+        stop_words = {
+            "в",
+            "на",
+            "по",
+            "из",
+            "под",
+            "для",
+            "что",
+            "это",
+            "как",
+            "город",
+            "городе",
+            "жители",
+            "сообщают",
+            "бердянск",
+            "бердянске",
+        }
+
+        for c in cards:
+            clean_top = normalize_edition_toponyms(
+                sanitize_digest_terminology(c.topic), edition_slug=geo_ctx.slug
             )
-            zerkalny_bullet = (
-                "📦 **Магазин у «Зеркального» вывозит товар:** Возле бывшего супермаркета «Зеркальный» "
-                "в Бердянске местные жители заметили, что из магазина вывозят товар. Это может свидетельствовать "
-                "о скором закрытии торговой точки."
-            )
-            m_rubric = re.search(r"(?m)^Городская среда и бизнес\s*$", clean_draft)
-            if m_rubric:
-                idx = m_rubric.end()
-                clean_draft = (
-                    clean_draft[:idx]
-                    + "\n\n"
-                    + zerkalny_bullet
-                    + "\n\n"
-                    + clean_draft[idx:].lstrip("\n")
+            clean_sum = (
+                normalize_edition_toponyms(
+                    sanitize_digest_terminology(c.summary), edition_slug=geo_ctx.slug
                 )
-            else:
-                m_other = re.search(r"(?m)^Другое\s*$", clean_draft)
-                if m_other:
-                    idx = m_other.start()
+                if c.summary
+                else ""
+            )
+            # Check if key distinctive tokens from card topic appear in the draft
+            tokens = [
+                tok.lower()
+                for tok in re.findall(r"[a-zA-Zа-яА-ЯёЁ]{4,}", clean_top)
+                if tok.lower() not in stop_words
+            ]
+            is_represented = bool(tokens) and any(
+                re.search(rf"\b{re.escape(tok)}", clean_draft, re.IGNORECASE) for tok in tokens
+            )
+            if not is_represented and clean_top:
+                target_rubric = rubric_header_map.get(
+                    getattr(c, "rubric_id", "") or getattr(c, "category", ""),
+                    "Другое",
+                )
+                logger.info(
+                    "Generic coverage recovery: injecting omitted card '%s' into rubric '%s'",
+                    clean_top,
+                    target_rubric,
+                )
+                bullet_headline = clean_top.rstrip(".: ")
+                bullet_body = clean_sum or clean_top
+                bullet_text = f"• **{bullet_headline}:** {bullet_body}"
+
+                m_rub = re.search(rf"(?m)^{re.escape(target_rubric)}\s*$", clean_draft)
+                if m_rub:
+                    idx = m_rub.end()
                     clean_draft = (
                         clean_draft[:idx]
-                        + "Городская среда и бизнес\n\n"
-                        + zerkalny_bullet
                         + "\n\n"
-                        + clean_draft[idx:]
+                        + bullet_text
+                        + "\n\n"
+                        + clean_draft[idx:].lstrip("\n")
                     )
                 else:
-                    clean_draft = clean_draft + "\n\nГородская среда и бизнес\n\n" + zerkalny_bullet
+                    clean_draft = clean_draft.rstrip() + f"\n\n{target_rubric}\n\n{bullet_text}\n"
 
-        # Normalize known local toponym errors
-        from src.processing.operational_semantics import normalize_berdyansk_toponyms
-
-        clean_draft = normalize_berdyansk_toponyms(clean_draft)
+        # Normalize known local toponym errors for this edition
+        clean_draft = normalize_edition_toponyms(clean_draft, edition_slug=geo_ctx.slug)
 
         # Enforce neutral administrative terminology (fail-safe against hostile labels)
         clean_draft = sanitize_digest_terminology(clean_draft)
