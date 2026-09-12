@@ -30,26 +30,56 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             )
 
 
+_TRUNCATE_TABLES = """
+    TRUNCATE publication_delivery_attempts, publication_deliveries,
+             publication_delivery_payloads, delivery_destinations,
+             publications, publication_generation_attempts,
+             publication_input_evidence_clusters, publication_input_claims,
+             publication_input_fragments,
+             publication_inputs, publication_selection_decisions,
+             publication_candidates, publication_runs,
+             publication_policy_versions, writer_policy_versions,
+             editorial_selection_policy_versions, eligibility_policy_versions,
+             verification_assessments, verification_policy_versions,
+             evidence_cluster_members, evidence_clusters,
+             evidence_assessment_run_claims, evidence_assessment_runs,
+             evidence_assessment_policy_versions,
+             story_relation_proposals, story_match_decisions,
+             story_matching_candidates, story_matching_runs,
+             story_matching_policy_versions,
+             story_relations, story_state_events, story_claims,
+             story_revision_embeddings, story_revisions,
+             story_event_analysis_runs, story_edition_scope_decisions, story_event_triage_decisions, story_event_triage_runs,
+             story_cluster_state, story_fragments, stories,
+             source_fragment_embeddings, fragment_embedding_vectors, event_embedding_batches,
+             source_fragments,
+             claim_embeddings,
+             place_resolution_results, place_resolution_runs,
+             place_resolution_policy_versions,
+             claim_entities, claim_place_mentions, place_aliases, places,
+             claim_state_events, claim_relations, claims,
+             claim_extraction_runs, claim_extraction_policy_versions,
+             processing_attempts,
+             vision_observations, vision_analysis_runs,
+             vision_policy_versions,
+             edition_relevance_decisions, relevance_policy_versions,
+             source_items, source_item_revisions, source_assets,
+             source_item_state_events, collection_checkpoints,
+             collection_runs, source_editions, sources, editions,
+             facebook_source_configs, facebook_auth_profiles
+    RESTART IDENTITY CASCADE
+"""
+
+
 @pytest.fixture
 async def repo_conn(database_config: DatabaseConfig):
-    """Autocommit connection to a clean slice of the test database.
-
-    Autocommit keeps the connection usable after expected constraint
-    violations (the transaction never stays aborted). Only the three
-    foundation tables are truncated (never telebrief_schema_migrations or
-    collection_*); RESTART IDENTITY makes ids deterministic and every run
-    re-runnable against the persistent database.
-    """
+    """Autocommit connection to a clean slice of the test database."""
     conn: psycopg.AsyncConnection = await psycopg.AsyncConnection.connect(
         database_config.url, autocommit=True
     )
     try:
-        await conn.execute(
-            "TRUNCATE source_editions, sources, editions, facebook_source_configs, facebook_auth_profiles RESTART IDENTITY CASCADE"
-        )
+        await conn.execute(_TRUNCATE_TABLES)
         yield conn
     finally:
-        await conn.execute(
-            "TRUNCATE source_editions, sources, editions, facebook_source_configs, facebook_auth_profiles RESTART IDENTITY CASCADE"
-        )
+        await conn.execute(_TRUNCATE_TABLES)
         await conn.close()

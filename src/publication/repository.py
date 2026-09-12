@@ -209,6 +209,52 @@ class PublicationPolicyRepository:
         raise RuntimeError(f"could not resolve current policy in {table} after race retries")
 
 
+def _event_authority_candidate_sql() -> str:
+    return """
+    WITH event_story_activity_in_window AS (
+        SELECT DISTINCT sf.story_id
+        FROM story_fragments sf
+        JOIN source_fragments f
+          ON f.id = sf.fragment_id
+        JOIN source_item_revisions sir
+          ON sir.id = f.source_item_revision_id
+        JOIN source_items si
+          ON si.id = sir.source_item_id
+        JOIN sources src
+          ON src.id = si.source_id
+        JOIN stories s
+          ON s.id = sf.story_id
+        WHERE s.edition_id = %(edition_id)s
+          AND s.knowledge_source = 'event_first'
+          AND sf.assigned_at <= %(snapshot_at)s
+          AND COALESCE(si.published_at, si.first_collected_at, f.created_at)
+              BETWEEN %(window_start)s AND %(source_cutoff_at)s
+          AND (
+              cardinality(%(excluded_platforms)s::text[]) = 0
+              OR src.platform <> ALL(%(excluded_platforms)s::text[])
+          )
+    ),
+    event_assignments_at_cutoff AS (
+        SELECT DISTINCT ON (sf.story_id)
+            sf.story_id,
+            sf.id AS cutoff_assignment_id
+        FROM story_fragments sf
+        JOIN source_fragments f
+          ON f.id = sf.fragment_id
+        JOIN source_item_revisions sir
+          ON sir.id = f.source_item_revision_id
+        JOIN source_items si
+          ON si.id = sir.source_item_id
+        JOIN event_story_activity_in_window active
+          ON active.story_id = sf.story_id
+        WHERE sf.assigned_at <= %(snapshot_at)s
+          AND COALESCE(si.published_at, si.first_collected_at, f.created_at)
+              <= %(source_cutoff_at)s
+        ORDER BY sf.story_id, sf.assigned_at DESC, sf.id DESC
+    )
+    """
+
+
 def _candidate_universe_sql() -> str:
     return """
     WITH event_assignments_at_cutoff AS (
@@ -225,18 +271,19 @@ def _candidate_universe_sql() -> str:
         ORDER BY sf.story_id, sf.assigned_at DESC, sf.id DESC
     ),
     latest_revs AS (
-        SELECT DISTINCT ON (s.id)
-            s.id AS story_id,
+        SELECT DISTINCT ON (sr.story_id)
+            sr.story_id,
             sr.id AS story_revision_id,
             sr.revision_no,
-            COALESCE(sr.current_state, 'open') AS current_state,
+            sr.current_state,
             sr.semantic_text,
             sr.reason,
             sr.created_at AS revision_created_at,
             sr.event_payload
-        FROM stories s
-        LEFT JOIN event_assignments_at_cutoff ea ON ea.story_id = s.id
-        LEFT JOIN story_revisions sr ON sr.story_id = s.id
+        FROM story_revisions sr
+        JOIN stories s ON s.id = sr.story_id
+        LEFT JOIN event_assignments_at_cutoff ea ON ea.story_id = sr.story_id
+        WHERE s.edition_id = %(edition_id)s
           AND sr.created_at <= %(snapshot_at)s
           AND (
               s.knowledge_source <> 'event_first'
@@ -249,8 +296,7 @@ def _candidate_universe_sql() -> str:
               )
               OR sr.event_assignment_id = ea.cutoff_assignment_id
           )
-        WHERE s.edition_id = %(edition_id)s
-        ORDER BY s.id, sr.revision_no DESC NULLS LAST, sr.created_at DESC NULLS LAST
+        ORDER BY sr.story_id, sr.revision_no DESC, sr.created_at DESC
     ),
     story_activity AS (
         SELECT
@@ -1037,12 +1083,10 @@ class PublicationRepository:
             "window_start": effective_source_cutoff_at - dt.timedelta(hours=lookback_hours),
             "excluded_platforms": excluded_platforms,
         }
-        query = f"""{_candidate_universe_sql()}
-            SELECT cu.story_id, ea.cutoff_assignment_id
-            FROM candidate_universe cu
-            JOIN event_assignments_at_cutoff ea ON ea.story_id = cu.story_id
-            WHERE cu.knowledge_source = 'event_first'
-            ORDER BY cu.story_id ASC
+        query = f"""{_event_authority_candidate_sql()}
+            SELECT ea.story_id, ea.cutoff_assignment_id
+            FROM event_assignments_at_cutoff ea
+            ORDER BY ea.story_id ASC
         """  # noqa: S608 — static CTE template; values are bound params
         cursor = await conn.execute(query, params)
         return [
@@ -1078,39 +1122,37 @@ class PublicationRepository:
         ) = await self._load_authority_policy(conn, eligibility_policy_id)
         effective_source_cutoff_at = source_cutoff_at or snapshot_at
         window_start = effective_source_cutoff_at - dt.timedelta(hours=lookback_hours)
-        query = f"""{_candidate_universe_sql()}
-        SELECT cu.story_id, ea.cutoff_assignment_id
-        FROM candidate_universe cu
-        JOIN event_assignments_at_cutoff ea ON ea.story_id = cu.story_id
-        WHERE cu.knowledge_source = 'event_first'
-          AND NOT EXISTS (
-              SELECT 1 FROM story_edition_scope_decisions sesd
-              JOIN story_event_triage_decisions setd
-                ON setd.story_id = sesd.story_id
-               AND setd.latest_assignment_id = sesd.latest_assignment_id
-               AND setd.scope_config_hash = sesd.scope_config_hash
-              WHERE sesd.story_id = cu.story_id
-                AND sesd.latest_assignment_id = ea.cutoff_assignment_id
-                AND sesd.edition_id = %(edition_id)s
-                AND sesd.scope_version = %(scope_version)s
-                AND sesd.scope_config_hash = %(scope_config_hash)s
-                AND setd.triage_version = %(triage_version)s
-                AND setd.scope_config_hash = %(scope_config_hash)s
-                AND sesd.created_at <= %(snapshot_at)s
-                AND setd.created_at <= %(snapshot_at)s
-                AND (
-                    setd.retention <> 'KEEP'
-                    OR EXISTS (
-                        SELECT 1 FROM story_revisions sr
-                        WHERE sr.story_id = cu.story_id
-                          AND sr.event_assignment_id = ea.cutoff_assignment_id
-                          AND sr.created_at <= %(snapshot_at)s
-                          AND sr.event_payload IS NOT NULL
-                          AND sr.event_payload->>'publishability' IN ('news', 'brief')
-                    )
-                )
-          )
-        ORDER BY cu.story_id ASC
+        query = f"""{_event_authority_candidate_sql()}
+        SELECT ea.story_id, ea.cutoff_assignment_id
+        FROM event_assignments_at_cutoff ea
+        WHERE NOT EXISTS (
+            SELECT 1 FROM story_edition_scope_decisions sesd
+            JOIN story_event_triage_decisions setd
+              ON setd.story_id = sesd.story_id
+             AND setd.latest_assignment_id = sesd.latest_assignment_id
+             AND setd.scope_config_hash = sesd.scope_config_hash
+            WHERE sesd.story_id = ea.story_id
+              AND sesd.latest_assignment_id = ea.cutoff_assignment_id
+              AND sesd.edition_id = %(edition_id)s
+              AND sesd.scope_version = %(scope_version)s
+              AND sesd.scope_config_hash = %(scope_config_hash)s
+              AND setd.triage_version = %(triage_version)s
+              AND setd.scope_config_hash = %(scope_config_hash)s
+              AND sesd.created_at <= %(snapshot_at)s
+              AND setd.created_at <= %(snapshot_at)s
+              AND (
+                  setd.retention <> 'KEEP'
+                  OR EXISTS (
+                      SELECT 1 FROM story_revisions sr
+                      WHERE sr.story_id = ea.story_id
+                        AND sr.event_assignment_id = ea.cutoff_assignment_id
+                        AND sr.created_at <= %(snapshot_at)s
+                        AND sr.event_payload IS NOT NULL
+                        AND sr.event_payload->>'publishability' IN ('news', 'brief')
+                  )
+              )
+        )
+        ORDER BY ea.story_id ASC
         """  # noqa: S608 — static CTE template; values are bound params
         params = {
             "edition_id": edition_id,

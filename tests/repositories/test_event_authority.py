@@ -359,3 +359,268 @@ async def test_gap_includes_event_story_without_revision(repo_conn):
         eligibility_policy_id=policy.id,
     )
     assert [(t.story_id, t.assignment_id) for t in targets] == [(story_id, assignment_id)]
+
+
+@pytest.mark.postgres
+async def test_event_authority_gap_regressions(repo_conn):
+    conn = repo_conn
+    cursor = await conn.execute(
+        "INSERT INTO editions (slug, name) VALUES ('reg-edition', 'Regression Edition') RETURNING id"
+    )
+    edition_id = int((await cursor.fetchone())[0])
+
+    policy = await PublicationPolicyRepository().get_or_create_eligibility_policy(
+        conn,
+        edition_id=edition_id,
+        config_hash="authority-reg-policy",
+        prompt_version="v1",
+        config={
+            "lookback_hours": 24,
+            "excluded_platforms": ["excluded_plat"],
+            "triage_version": "v10",
+            "scope_version": "v1",
+            "scope_config_hash": "scope-hash",
+        },
+    )
+    repo = PublicationRepository()
+
+    # Helper to seed a story with fragment
+    async def _seed_story(plat: str, obs_at: dt.datetime, suffix: str) -> tuple[int, int]:
+        cursor = await conn.execute(
+            """
+            INSERT INTO stories (edition_id, knowledge_source, lifecycle_state, created_at)
+            VALUES (%s, 'event_first', 'active', %s)
+            RETURNING id
+            """,
+            (edition_id, obs_at),
+        )
+        s_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO sources (platform, kind, external_id, name)
+            VALUES (%s, 'channel', %s, %s)
+            RETURNING id
+            """,
+            (plat, f"src-{suffix}", f"Source {suffix}"),
+        )
+        src_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+            VALUES (%s, 'message', %s, %s) RETURNING id
+            """,
+            (src_id, f"item-{suffix}", obs_at),
+        )
+        it_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO source_item_revisions (
+                source_item_id, revision_no, collected_at, content_hash, text_content
+            ) VALUES (%s, 1, %s, %s, %s) RETURNING id
+            """,
+            (it_id, obs_at, f"hash-{suffix}", suffix),
+        )
+        rev_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO source_fragments (
+                source_item_revision_id, ordinal, text_content, normalized_hash,
+                fragmenter_version, is_candidate, created_at
+            ) VALUES (%s, 0, %s, %s, 'v1', TRUE, %s) RETURNING id
+            """,
+            (rev_id, suffix, f"frag-hash-{suffix}", obs_at),
+        )
+        frag_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO fragment_embedding_vectors (
+                normalized_hash, embedding, model, dimensions
+            ) VALUES (%s, '[1, 0]'::vector, 'test', 2) RETURNING id
+            """,
+            (f"vec-hash-{suffix}",),
+        )
+        vec_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO source_fragment_embeddings (fragment_id, vector_id)
+            VALUES (%s, %s) RETURNING id
+            """,
+            (frag_id, vec_id),
+        )
+        fe_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO story_fragments (
+                story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at
+            ) VALUES (%s, %s, %s, 'new_story', %s) RETURNING id
+            """,
+            (s_id, frag_id, fe_id, obs_at),
+        )
+        as_id = int((await cursor.fetchone())[0])
+        return s_id, as_id
+
+    # 1. Valid KEEP + matching revision/payload -> not a gap
+    s_keep, a_keep = await _seed_story("telegram", SOURCE_CUTOFF - dt.timedelta(hours=2), "keep")
+    # Decision
+    cursor = await conn.execute(
+        """
+        INSERT INTO story_event_triage_runs (
+            triage_version, provider, model, prompt_hash, story_count, input_chars, status
+        ) VALUES ('v10', 'test', 'test', 'auth-reg', 1, 1, 'succeeded') RETURNING id
+        """
+    )
+    t_run_id = int((await cursor.fetchone())[0])
+    await conn.execute(
+        """
+        INSERT INTO story_edition_scope_decisions (
+            triage_run_id, story_id, edition_id, latest_assignment_id,
+            scope_version, scope_config_hash, scope_class, confidence, reason, created_at
+        ) VALUES (%s, %s, %s, %s, 'v1', 'scope-hash', 'LOCAL', 1, 'test', %s)
+        """,
+        (t_run_id, s_keep, edition_id, a_keep, SNAPSHOT),
+    )
+    await conn.execute(
+        """
+        INSERT INTO story_event_triage_decisions (
+            run_id, story_id, latest_assignment_id, triage_version, decision,
+            confidence, reason, scope_config_hash, retention, enrichment, brief_payload, created_at
+        ) VALUES (%s, %s, %s, 'v10', 'ANALYZE', 1, 'test', 'scope-hash', 'KEEP', 'BRIEF', %s::jsonb, %s)
+        """,
+        (t_run_id, s_keep, a_keep, json.dumps({"publishability": "news"}), SNAPSHOT),
+    )
+    await conn.execute(
+        """
+        INSERT INTO story_revisions (
+            story_id, revision_no, event_assignment_id, current_state,
+            semantic_text, content_hash, event_payload, created_at
+        ) VALUES (%s, 1, %s, 'open', 'keep', 'keep-hash', %s::jsonb, %s)
+        """,
+        (s_keep, a_keep, json.dumps({"publishability": "news"}), SNAPSHOT),
+    )
+
+    # 2. Valid DROP decision -> not a gap
+    s_drop, a_drop = await _seed_story("telegram", SOURCE_CUTOFF - dt.timedelta(hours=2), "drop")
+    await conn.execute(
+        """
+        INSERT INTO story_edition_scope_decisions (
+            triage_run_id, story_id, edition_id, latest_assignment_id,
+            scope_version, scope_config_hash, scope_class, confidence, reason, created_at
+        ) VALUES (%s, %s, %s, %s, 'v1', 'scope-hash', 'OUT_OF_SCOPE', 1, 'test', %s)
+        """,
+        (t_run_id, s_drop, edition_id, a_drop, SNAPSHOT),
+    )
+    await conn.execute(
+        """
+        INSERT INTO story_event_triage_decisions (
+            run_id, story_id, latest_assignment_id, triage_version, decision,
+            confidence, reason, scope_config_hash, retention, enrichment, brief_payload, created_at
+        ) VALUES (%s, %s, %s, 'v10', 'IGNORE', 1, 'test', 'scope-hash', 'DROP', 'NONE', NULL, %s)
+        """,
+        (t_run_id, s_drop, a_drop, SNAPSHOT),
+    )
+
+    # 3. Decision exists for previous assignment -> new assignment remains a gap
+    s_reassign, a_old = await _seed_story(
+        "telegram", SOURCE_CUTOFF - dt.timedelta(hours=3), "reassign-old"
+    )
+    await conn.execute(
+        """
+        INSERT INTO story_edition_scope_decisions (
+            triage_run_id, story_id, edition_id, latest_assignment_id,
+            scope_version, scope_config_hash, scope_class, confidence, reason, created_at
+        ) VALUES (%s, %s, %s, %s, 'v1', 'scope-hash', 'LOCAL', 1, 'test', %s)
+        """,
+        (t_run_id, s_reassign, edition_id, a_old, SNAPSHOT),
+    )
+    await conn.execute(
+        """
+        INSERT INTO story_event_triage_decisions (
+            run_id, story_id, latest_assignment_id, triage_version, decision,
+            confidence, reason, scope_config_hash, retention, enrichment, brief_payload, created_at
+        ) VALUES (%s, %s, %s, 'v10', 'IGNORE', 1, 'test', 'scope-hash', 'DROP', 'NONE', NULL, %s)
+        """,
+        (t_run_id, s_reassign, a_old, SNAPSHOT),
+    )
+    # Add a second fragment/assignment on cutoff for s_reassign
+    cursor = await conn.execute(
+        """
+        INSERT INTO source_fragments (
+            source_item_revision_id, ordinal, text_content, normalized_hash,
+            fragmenter_version, is_candidate, created_at
+        ) VALUES (1, 1, 'reassign-second-frag', 'frag-hash-reassign-2', 'v1', TRUE, %s) RETURNING id
+        """,
+        (SOURCE_CUTOFF - dt.timedelta(minutes=10),),
+    )
+    frag_id_2 = int((await cursor.fetchone())[0])
+    cursor = await conn.execute(
+        """
+        INSERT INTO fragment_embedding_vectors (
+            normalized_hash, embedding, model, dimensions
+        ) VALUES ('vec-hash-reassign-2', '[1, 0]'::vector, 'test', 2) RETURNING id
+        """
+    )
+    vec_id_2 = int((await cursor.fetchone())[0])
+    cursor = await conn.execute(
+        """
+        INSERT INTO source_fragment_embeddings (fragment_id, vector_id)
+        VALUES (%s, %s) RETURNING id
+        """,
+        (frag_id_2, vec_id_2),
+    )
+    fe_id_2 = int((await cursor.fetchone())[0])
+    cursor = await conn.execute(
+        """
+        INSERT INTO story_fragments (
+            story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at
+        ) VALUES (%s, %s, %s, 'vector_join', %s) RETURNING id
+        """,
+        (s_reassign, frag_id_2, fe_id_2, SOURCE_CUTOFF - dt.timedelta(minutes=10)),
+    )
+    a_new = int((await cursor.fetchone())[0])
+
+    # 4. Fragment outside lookback -> not target
+    s_old_window, _ = await _seed_story(
+        "telegram", SOURCE_CUTOFF - dt.timedelta(hours=25), "outside-lookback"
+    )
+
+    # 5. Excluded platform -> not target
+    s_excluded, _ = await _seed_story(
+        "excluded_plat", SOURCE_CUTOFF - dt.timedelta(hours=1), "excluded"
+    )
+
+    # Query targets
+    required = await repo.list_required_authority_targets(
+        conn,
+        edition_id=edition_id,
+        snapshot_at=SNAPSHOT,
+        source_cutoff_at=SOURCE_CUTOFF,
+        eligibility_policy_id=policy.id,
+    )
+    required_sids = {t.story_id for t in required}
+    assert s_old_window not in required_sids, "Story outside lookback should not be target"
+    assert s_excluded not in required_sids, "Story on excluded platform should not be target"
+    assert s_keep in required_sids
+    assert s_drop in required_sids
+    assert s_reassign in required_sids
+
+    gaps = await repo.find_authority_gap_targets(
+        conn,
+        edition_id=edition_id,
+        snapshot_at=SNAPSHOT,
+        source_cutoff_at=SOURCE_CUTOFF,
+        eligibility_policy_id=policy.id,
+    )
+    gap_sids = {t.story_id for t in gaps}
+    assert s_keep not in gap_sids, "Valid KEEP story should not be gap"
+    assert s_drop not in gap_sids, "Valid DROP story should not be gap"
+    assert s_reassign in gap_sids, "Story with new assignment should remain gap"
+    assert [(t.story_id, t.assignment_id) for t in gaps if t.story_id == s_reassign] == [
+        (s_reassign, a_new)
+    ]
