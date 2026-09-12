@@ -181,7 +181,69 @@ def build_digest_coverage_trace(
 
     # Audit material operational facts
     fact_traces: list[DigestFactCoverageTrace] = []
-    if plan.city_situation and plan.city_situation.groups:
+    if plan.required_facts:
+        for rf in plan.required_facts:
+            covered = False
+            cited_sups: list[str] = []
+
+            # 1. Match situation items if present
+            if final_draft and getattr(final_draft, "situation_items", None):
+                for sit_item in final_draft.situation_items:
+                    if sit_item.claims:
+                        for c in sit_item.claims:
+                            c_sups = set(c.cited_support_ids)
+                            if (set(rf.support_ids) & c_sups) or (
+                                c.covered_fact_ids and rf.fact_id in c.covered_fact_ids
+                            ):
+                                covered = True
+                                for s in c.cited_support_ids:
+                                    if s not in cited_sups:
+                                        cited_sups.append(s)
+                    else:
+                        if set(rf.support_ids) & set(sit_item.cited_support_ids):
+                            covered = True
+                            for s in sit_item.cited_support_ids:
+                                if s in set(rf.support_ids) and s not in cited_sups:
+                                    cited_sups.append(s)
+
+            # 2. Match detail block items and claims
+            if final_draft and getattr(final_draft, "blocks", None):
+                for block in final_draft.blocks:
+                    for it in block.items:
+                        if getattr(it, "claims", None):
+                            for c in it.claims:
+                                c_sups = set(c.cited_support_ids)
+                                if (set(rf.support_ids) & c_sups) or (
+                                    c.covered_fact_ids and rf.fact_id in c.covered_fact_ids
+                                ):
+                                    covered = True
+                                    for s in c.cited_support_ids:
+                                        if s not in cited_sups:
+                                            cited_sups.append(s)
+                        else:
+                            if set(rf.support_ids) & set(it.cited_support_ids):
+                                covered = True
+                                for s in it.cited_support_ids:
+                                    if s in set(rf.support_ids) and s not in cited_sups:
+                                        cited_sups.append(s)
+
+            # 3. Deterministic template rendering mode fallback
+            if not covered and not has_situation_draft and not getattr(final_draft, "blocks", None):
+                covered = True
+                cited_sups.extend(rf.support_ids)
+
+            fact_traces.append(
+                DigestFactCoverageTrace(
+                    fact_id=rf.fact_id,
+                    group_id=f"situation:{rf.subject_key}",
+                    story_ids=rf.story_ids,
+                    required_support_ids=rf.support_ids,
+                    covered=covered,
+                    cited_support_ids=tuple(dict.fromkeys(cited_sups)),
+                    text=rf.text,
+                )
+            )
+    elif plan.city_situation and plan.city_situation.groups:
         for group in plan.city_situation.groups:
             matched_sit_item: Any = None
             if final_draft and getattr(final_draft, "situation_items", None):
@@ -191,7 +253,7 @@ def build_digest_coverage_trace(
                 )
             for rf in getattr(group, "required_facts", ()):
                 covered = False
-                cited_sups: list[str] = []
+                cited_sups = []
                 if matched_sit_item is not None:
                     if matched_sit_item.claims:
                         for c in matched_sit_item.claims:

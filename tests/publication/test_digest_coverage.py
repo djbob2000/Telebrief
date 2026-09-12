@@ -372,3 +372,56 @@ def test_build_digest_coverage_trace_merged_item_per_story_provenance() -> None:
 
     assert trace_by_story["story:1"].detail_support_ids == ("sup:1",)
     assert trace_by_story["story:2"].detail_support_ids == ("sup:2",)
+
+
+def test_build_digest_coverage_trace_thematic_facts_coverage() -> None:
+    """Thematic digest covers required material facts via detail blocks without a dashboard."""
+    from src.publication.digest_presentation import RequiredDigestFact
+
+    fact1 = RequiredDigestFact(
+        fact_id="power_outage_center",
+        rubric_id="infrastructure",
+        subject_key="electricity",
+        subject_label="Электроснабжение",
+        story_ids=("story:1",),
+        support_ids=("sup:1",),
+        text="В центре отключен свет",
+    )
+    fact2 = RequiredDigestFact(
+        fact_id="water_low_pressure",
+        rubric_id="infrastructure",
+        subject_key="water",
+        subject_label="Водоснабжение",
+        story_ids=("story:2",),
+        support_ids=("sup:2",),
+        text="Слабый напор воды на Самолёте",
+    )
+
+    plan = DigestPresentationPlan(
+        story_ids=("story:1", "story:2"),
+        required_facts=(fact1, fact2),
+        city_situation=None,
+    )
+
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(
+                block_id="block:infrastructure:0",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline="Коммунальная обстановка",
+                        body="В центре отключен свет, а на Самолёте наблюдается слабый напор воды.",
+                        covered_story_ids=("story:1", "story:2"),
+                        cited_support_ids=("sup:1", "sup:2"),
+                    ),
+                ),
+            ),
+        )
+    )
+
+    trace = build_digest_coverage_trace(plan, draft)
+    assert trace.story_coverage == 1.0
+    assert trace.material_fact_coverage == 1.0
+    assert len(trace.facts) == 2
+    assert all(f.covered for f in trace.facts)
+    assert {f.fact_id for f in trace.facts} == {"power_outage_center", "water_low_pressure"}

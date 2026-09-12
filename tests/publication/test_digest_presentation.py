@@ -327,3 +327,26 @@ def test_digest_compression_units_power_cluster_becomes_synthesis_unit() -> None
     all_story_ids = [sid for u in units for sid in u.story_ids]
     assert set(all_story_ids) == {c.id for c in cards}
     assert len(all_story_ids) == len(cards)
+
+
+@pytest.mark.unit
+def test_build_digest_presentation_plan_without_city_situation() -> None:
+    cards, _, evidence_map = _build_run_44_fixture()
+
+    plan = build_digest_presentation_plan(
+        cards=cards,
+        evidence=evidence_map,
+        city_situation=None,
+    )
+
+    assert plan.story_ids == ("story:1", "story:2")
+    assert len(plan.required_facts) == 4
+    assert {f.fact_id for f in plan.required_facts} == {
+        "нагорная_часть",
+        "слободка",
+        "center_voltage",
+        "ул_петровского",
+    }
+    for fact in plan.required_facts:
+        assert fact.story_ids in (("story:1",), ("story:2",))
+        assert len(fact.support_ids) > 0

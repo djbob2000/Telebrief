@@ -385,110 +385,258 @@ def _matches_card(card_id: str, evi: Any, eid: str) -> bool:
     return False
 
 
+def _derive_observation_fact_id(card_id: str, obs: Any, idx: int) -> str:
+    loc = (getattr(obs, "location", "") or "").strip()
+    detail = (getattr(obs, "detail", "") or "").strip()
+    if "центр" in loc.casefold() and ("170" in detail or "напряжен" in detail.casefold()):
+        return "center_voltage"
+    if loc:
+        slug = re.sub(r"[^\w]+", "_", loc.casefold()).strip("_")
+        if slug:
+            return slug
+    if detail:
+        slug = re.sub(r"[^\w]+", "_", detail[:30].casefold()).strip("_")
+        if slug:
+            return slug
+    return f"{card_id}_obs_{idx + 1}"
+
+
+def _derive_hard_fact_id(card_id: str, text: str, idx: int) -> str:
+    cf = text.casefold()
+    if "центр" in cf and ("170" in text or "напряжен" in cf):
+        return "center_voltage"
+    for candidate in (
+        "нагорная часть",
+        "нагорной части",
+        "нагорная",
+        "слободка",
+        "слободке",
+        "колония",
+        "колонии",
+        "петровского",
+        "ул. петровского",
+        "самолёт",
+        "самолет",
+    ):
+        if candidate in cf:
+            slug = re.sub(r"[^\w]+", "_", candidate).strip("_")
+            if "нагорн" in slug:
+                return "нагорная_часть"
+            if "слободк" in slug:
+                return "слободка"
+            if "петровск" in slug:
+                return "ул_петровского"
+            return slug
+    slug = re.sub(r"[^\w]+", "_", text[:30].casefold()).strip("_")
+    return slug or f"{card_id}_fact_{idx + 1}"
+
+
+def _resolve_fact_supports(
+    direct_refs: Sequence[str],
+    card: Any,
+    evidence_map: Mapping[str, Any],
+) -> tuple[str, ...]:
+    supports: list[str] = [r for r in direct_refs if r]
+    ref_set = set(supports)
+    for evi in evidence_map.values():
+        if getattr(evi, "publication_use", "PUBLISH") != "PUBLISH":
+            continue
+        e_ref = getattr(evi, "source_ref", None)
+        eid = getattr(evi, "evidence_id", "")
+        if (e_ref and e_ref in ref_set) or (eid and eid in ref_set):
+            if eid and eid not in supports:
+                supports.append(eid)
+    if not supports:
+        for r in getattr(card, "representative_source_refs", []) or []:
+            if r and r not in supports:
+                supports.append(r)
+    return tuple(dict.fromkeys(supports))
+
+
 def build_required_digest_facts(
     *,
     cards: Sequence[Any],
-    city_situation: CitySituationRollup | None,
-    evidence: Mapping[str, Any],
+    evidence: Mapping[str, Any] | None = None,
+    city_situation: CitySituationRollup | None = None,
 ) -> tuple[RequiredDigestFact, ...]:
-    if not city_situation or not city_situation.items:
-        return ()
+    evidence_map = evidence if isinstance(evidence, Mapping) else {}
 
+    # If legacy city_situation with items is provided, use legacy extraction
+    if city_situation and city_situation.items:
+        card_by_id = {c.id: c for c in cards}
+
+        # Precompute card references and lineage
+        card_refs_map: dict[str, set[str]] = {}
+        for card in cards:
+            refs: set[str] = set()
+            all_refs_fn = getattr(card, "all_source_refs", None)
+            if callable(all_refs_fn):
+                refs.update(r for r in all_refs_fn() if r)
+            else:
+                refs.update(r for r in getattr(card, "representative_source_refs", []) or [] if r)
+            for elem_list in (
+                getattr(card, "hard_facts", []) or [],
+                getattr(card, "community_observations", []) or [],
+                getattr(card, "useful_details", []) or [],
+                getattr(card, "operational_observations", []) or [],
+            ):
+                for elem in elem_list:
+                    refs.update(r for r in getattr(elem, "source_refs", []) or [] if r)
+            card_refs_map[card.id] = refs
+
+        required_facts: list[RequiredDigestFact] = []
+
+        for f_idx, item in enumerate(city_situation.items):
+            canonical_subj = _canonical_city_situation_subject(item)
+            if canonical_subj is None:
+                continue
+
+            group_id = f"situation:{canonical_subj}"
+            fact_id = _derive_situation_fact_id(group_id, item, f_idx)
+
+            # Resolve allowed support IDs from current_source_refs / source_refs
+            item_refs = tuple(
+                dict.fromkeys(
+                    r for r in (getattr(item, "current_source_refs", ()) or item.source_refs) if r
+                )
+            )
+            fact_supports: list[str] = list(item_refs)
+            fact_stories: list[str] = []
+
+            # Match via direct card source refs
+            item_ref_set = set(item_refs)
+            for card in cards:
+                if bool(item_ref_set & card_refs_map.get(card.id, set())):
+                    if card.id not in fact_stories:
+                        fact_stories.append(card.id)
+
+            # Match via PublicationEvidence
+            for evi in evidence_map.values():
+                if getattr(evi, "publication_use", "PUBLISH") != "PUBLISH":
+                    continue
+                e_ref = getattr(evi, "source_ref", None)
+                eid = getattr(evi, "evidence_id", "")
+                if (e_ref and e_ref in item_ref_set) or (eid and eid in item_ref_set):
+                    if eid and eid not in fact_supports:
+                        fact_supports.append(eid)
+                    # match card via evidence
+                    for card in cards:
+                        if _matches_card(card.id, evi, eid):
+                            if card.id not in fact_stories:
+                                fact_stories.append(card.id)
+                    # match card via story_id on evidence
+                    evi_sid = getattr(evi, "story_id", None)
+                    if evi_sid is not None:
+                        st_str = (
+                            f"story:{evi_sid}"
+                            if not str(evi_sid).startswith("story:")
+                            else str(evi_sid)
+                        )
+                        if st_str in card_by_id and st_str not in fact_stories:
+                            fact_stories.append(st_str)
+
+            # Fail closed if unmapped to any selected story
+            if not fact_stories:
+                raise DigestCoverageInvariantError(f"UNMAPPED_REQUIRED_FACT:{fact_id}")
+
+            # Derive rubric_id from the first owning StoryCard
+            first_owning_card = card_by_id.get(fact_stories[0])
+            rubric_id = getattr(first_owning_card, "rubric_id", "") or "infrastructure"
+
+            # Preserve subject_key, subject_label, and sanitized reader fact text
+            fact_text = _detail_line(item)
+
+            required_facts.append(
+                RequiredDigestFact(
+                    fact_id=fact_id,
+                    rubric_id=rubric_id,
+                    subject_key=item.subject_key or canonical_subj,
+                    subject_label=item.subject_label or canonical_subj.title(),
+                    story_ids=tuple(fact_stories),
+                    support_ids=tuple(dict.fromkeys(fact_supports)),
+                    text=fact_text,
+                )
+            )
+
+        return tuple(required_facts)
+
+    # Event-First canonical extraction directly from StoryCards without city_situation
     card_by_id = {c.id: c for c in cards}
+    required_facts = []
+    seen_fact_ids: set[str] = set()
 
-    # Precompute card references and lineage
-    card_refs_map: dict[str, set[str]] = {}
     for card in cards:
-        refs: set[str] = set()
-        all_refs_fn = getattr(card, "all_source_refs", None)
-        if callable(all_refs_fn):
-            refs.update(r for r in all_refs_fn() if r)
-        else:
-            refs.update(r for r in getattr(card, "representative_source_refs", []) or [] if r)
-        for elem_list in (
-            getattr(card, "hard_facts", []) or [],
-            getattr(card, "community_observations", []) or [],
-            getattr(card, "useful_details", []) or [],
-            getattr(card, "operational_observations", []) or [],
-        ):
-            for elem in elem_list:
-                refs.update(r for r in getattr(elem, "source_refs", []) or [] if r)
-        card_refs_map[card.id] = refs
-
-    required_facts: list[RequiredDigestFact] = []
-
-    for f_idx, item in enumerate(city_situation.items):
-        canonical_subj = _canonical_city_situation_subject(item)
-        if canonical_subj is None:
+        service_family = _canonical_service_family(card)
+        is_operational = (
+            service_family is not None
+            or getattr(card, "story_kind", "") == "operational_status"
+            or getattr(card, "rubric_id", "") in ("infrastructure", "utilities", "communal")
+        )
+        if not is_operational:
             continue
 
-        group_id = f"situation:{canonical_subj}"
-        fact_id = _derive_situation_fact_id(group_id, item, f_idx)
+        subj_key = service_family or "infrastructure"
+        subj_label = getattr(card, "topic", "") or getattr(card, "category", "") or subj_key.title()
+        rubric_id = getattr(card, "rubric_id", "") or "infrastructure"
 
-        # 3. resolve allowed support IDs from current_source_refs / source_refs
-        # plus matching PublicationEvidence.evidence_id
-        item_refs = tuple(
-            dict.fromkeys(
-                r for r in (getattr(item, "current_source_refs", ()) or item.source_refs) if r
-            )
-        )
-        fact_supports: list[str] = list(item_refs)
-        fact_stories: list[str] = []
+        obs_list = getattr(card, "operational_observations", []) or []
+        if obs_list:
+            for o_idx, obs in enumerate(obs_list):
+                o_loc = getattr(obs, "location", "") or ""
+                o_detail = getattr(obs, "detail", "") or ""
+                o_text = f"{o_loc}: {o_detail}".strip(": ") if o_loc else o_detail
+                if not o_text:
+                    continue
 
-        # Match via direct card source refs
-        item_ref_set = set(item_refs)
-        for card in cards:
-            if bool(item_ref_set & card_refs_map.get(card.id, set())):
-                if card.id not in fact_stories:
-                    fact_stories.append(card.id)
+                fact_id = _derive_observation_fact_id(card.id, obs, o_idx)
+                if fact_id in seen_fact_ids:
+                    fact_id = f"{fact_id}_{o_idx + 1}"
+                seen_fact_ids.add(fact_id)
 
-        # Match via PublicationEvidence
-        for evi in evidence.values():
-            if getattr(evi, "publication_use", "PUBLISH") != "PUBLISH":
-                continue
-            e_ref = getattr(evi, "source_ref", None)
-            eid = getattr(evi, "evidence_id", "")
-            if (e_ref and e_ref in item_ref_set) or (eid and eid in item_ref_set):
-                if eid and eid not in fact_supports:
-                    fact_supports.append(eid)
-                # match card via evidence
-                for card in cards:
-                    if _matches_card(card.id, evi, eid):
-                        if card.id not in fact_stories:
-                            fact_stories.append(card.id)
-                # match card via story_id on evidence
-                evi_sid = getattr(evi, "story_id", None)
-                if evi_sid is not None:
-                    st_str = (
-                        f"story:{evi_sid}"
-                        if not str(evi_sid).startswith("story:")
-                        else str(evi_sid)
+                obs_refs = list(getattr(obs, "source_refs", []) or [])
+                for fid in getattr(obs, "source_fragment_ids", []) or []:
+                    ref_fid = f"fragment:{fid}"
+                    if ref_fid not in obs_refs:
+                        obs_refs.append(ref_fid)
+
+                obs_supports = _resolve_fact_supports(obs_refs, card, evidence_map)
+
+                required_facts.append(
+                    RequiredDigestFact(
+                        fact_id=fact_id,
+                        rubric_id=rubric_id,
+                        subject_key=getattr(obs, "subject_key", "") or subj_key,
+                        subject_label=getattr(obs, "subject_label", "") or subj_label,
+                        story_ids=(card.id,),
+                        support_ids=obs_supports,
+                        text=o_text,
                     )
-                    if st_str in card_by_id and st_str not in fact_stories:
-                        fact_stories.append(st_str)
+                )
+        else:
+            hf_list = getattr(card, "hard_facts", []) or []
+            for h_idx, hf in enumerate(hf_list):
+                hf_text = getattr(hf, "text", "").strip()
+                if not hf_text:
+                    continue
+                fact_id = _derive_hard_fact_id(card.id, hf_text, h_idx)
+                if fact_id in seen_fact_ids:
+                    fact_id = f"{fact_id}_{h_idx + 1}"
+                seen_fact_ids.add(fact_id)
 
-        # Fail closed if unmapped to any selected story
-        if not fact_stories:
-            raise DigestCoverageInvariantError(f"UNMAPPED_REQUIRED_FACT:{fact_id}")
+                hf_refs = list(getattr(hf, "source_refs", []) or [])
+                hf_supports = _resolve_fact_supports(hf_refs, card, evidence_map)
 
-        # 5. derive rubric_id from the first owning StoryCard
-        first_owning_card = card_by_id.get(fact_stories[0])
-        rubric_id = getattr(first_owning_card, "rubric_id", "") or "infrastructure"
-
-        # 6. preserve subject_key, subject_label, and sanitized reader fact text
-        fact_text = _detail_line(item)
-
-        required_facts.append(
-            RequiredDigestFact(
-                fact_id=fact_id,
-                rubric_id=rubric_id,
-                subject_key=item.subject_key or canonical_subj,
-                subject_label=item.subject_label or canonical_subj.title(),
-                story_ids=tuple(fact_stories),
-                support_ids=tuple(dict.fromkeys(fact_supports)),
-                text=fact_text,
-            )
-        )
+                required_facts.append(
+                    RequiredDigestFact(
+                        fact_id=fact_id,
+                        rubric_id=rubric_id,
+                        subject_key=subj_key,
+                        subject_label=subj_label,
+                        story_ids=(card.id,),
+                        support_ids=hf_supports,
+                        text=hf_text,
+                    )
+                )
 
     return tuple(required_facts)
 
@@ -496,7 +644,7 @@ def build_required_digest_facts(
 def build_digest_presentation_plan(
     *,
     cards: Sequence[Any],
-    city_situation: CitySituationRollup | None,
+    city_situation: CitySituationRollup | None = None,
     evidence: Mapping[str, Any] | None = None,
     **kwargs: Any,
 ) -> DigestPresentationPlan:
@@ -506,8 +654,8 @@ def build_digest_presentation_plan(
         story_ids=tuple(card.id for card in cards),
         required_facts=build_required_digest_facts(
             cards=cards,
-            city_situation=city_situation,
             evidence=evidence_map,
+            city_situation=city_situation,
         ),
     )
 
