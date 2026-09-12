@@ -94,6 +94,12 @@ class ArticleClaimAtom:
             return None
         return cls(text=text, cited_support_ids=support_ids)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "text": self.text,
+            "cited_support_ids": list(self.cited_support_ids),
+        }
+
 
 def _parse_claim_atoms(raw: Any) -> tuple[ArticleClaimAtom, ...]:
     if not isinstance(raw, list):
@@ -216,7 +222,11 @@ class StructuredArticleDraft:
 
     @classmethod
     def from_dict(
-        cls, data: Mapping[str, Any], quote_allowlist: Sequence[str] | None = None
+        cls,
+        data: Mapping[str, Any],
+        quote_allowlist: Sequence[str] | None = None,
+        *,
+        allow_claim_autogen: bool = True,
     ) -> StructuredArticleDraft:
         """Parse structured article draft from model JSON dictionary."""
         title = _strip_non_allowlisted_quotes(
@@ -231,7 +241,7 @@ class StructuredArticleDraft:
             )
         )
         title_claims = _parse_claim_atoms(data.get("title_claims"))
-        if not title_claims and title and title_support_ids:
+        if not title_claims and title and title_support_ids and allow_claim_autogen:
             title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_support_ids),)
 
         lead = _strip_non_allowlisted_quotes(
@@ -246,7 +256,7 @@ class StructuredArticleDraft:
             )
         )
         lead_claims = _parse_claim_atoms(data.get("lead_claims"))
-        if not lead_claims and lead and lead_support_ids:
+        if not lead_claims and lead and lead_support_ids and allow_claim_autogen:
             lead_sentences = _split_sentences_safe(lead)
             lead_claims = tuple(
                 ArticleClaimAtom(text=s, cited_support_ids=lead_support_ids)
@@ -299,7 +309,7 @@ class StructuredArticleDraft:
                                 )
                             )
                             p_claims = _parse_claim_atoms(p.get("claims"))
-                            if not p_claims and p_text and p_support_ids:
+                            if not p_claims and p_text and p_support_ids and allow_claim_autogen:
                                 p_claims = (
                                     ArticleClaimAtom(text=p_text, cited_support_ids=p_support_ids),
                                 )
@@ -367,16 +377,20 @@ class StructuredArticleDraft:
         return {
             "title": self.title,
             "title_support_ids": list(self.title_support_ids),
+            "title_claims": [c.to_dict() for c in self.title_claims],
             "lead": self.lead,
             "lead_support_ids": list(self.lead_support_ids),
+            "lead_claims": [c.to_dict() for c in self.lead_claims],
             "sections": [
                 {
                     "heading": s.heading,
                     "heading_support_ids": list(s.heading_support_ids),
+                    "heading_claims": [c.to_dict() for c in s.heading_claims],
                     "paragraphs": [
                         {
                             "text": p.text,
                             "cited_support_ids": list(p.cited_support_ids),
+                            "claims": [c.to_dict() for c in p.claims],
                         }
                         for p in s.paragraphs
                     ],

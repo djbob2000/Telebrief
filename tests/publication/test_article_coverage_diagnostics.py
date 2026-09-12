@@ -360,3 +360,269 @@ def test_diagnose_article_coverage_adversarial_title_lead_provenance_repair_does
     assert "story:2" in diag.covered_story_ids
     assert diag.covered_story_count == 1
     assert diag.story_coverage == 0.5
+
+
+def test_diagnose_article_coverage_adversarial_claim_omitted_from_draft():
+    # Test 1: Story 1 and Story 2 are planned.
+    # Paragraph text cites Story 1 & 2 wrapper IDs, but claims list contains ONLY a claim for Story 1.
+    # Story 2 must NOT receive coverage credit.
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    s1 = ArticleSupport(
+        support_id="story:1:1",
+        text="Электроэнергия отсутствует в центре города",
+        source_text="Электроэнергия отсутствует в центре города",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=now,
+        story_id="story:1",
+    )
+    s2 = ArticleSupport(
+        support_id="story:2:1",
+        text="Водоснабжение отключено на Восточном проспекте",
+        source_text="Водоснабжение отключено на Восточном проспекте",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-2",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=now,
+        story_id="story:2",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Новости",),
+        support_index=(s1, s2),
+        support_by_id={s1.support_id: s1, s2.support_id: s2},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Свет",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=("story:1:1",),
+                detail_support_ids=("story:1:1",),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:2",
+                topic="Вода",
+                rank=2,
+                prominence="DEVELOP",
+                support_ids=("story:2:1",),
+                detail_support_ids=("story:2:1",),
+            ),
+        )
+    )
+
+    # Paragraph wrapper has both s1 and s2, but claims has ONLY s1
+    claim1 = ArticleClaimAtom(
+        text="Электроэнергия отсутствует в центре города.",
+        cited_support_ids=("story:1:1",),
+    )
+    para = ArticleParagraph(
+        text="Электроэнергия отсутствует в центре города.",
+        cited_support_ids=("story:1:1", "story:2:1"),
+        claims=(claim1,),
+    )
+    sec = ArticleSection(
+        heading="Коммунальные службы",
+        heading_support_ids=("story:1:1",),
+        paragraphs=(para,),
+    )
+    draft = StructuredArticleDraft(
+        title="Ситуация со светом и водой",
+        title_support_ids=("story:1:1",),
+        title_claims=(),
+        lead="В городе продолжаются отключения коммунальных услуг.",
+        lead_support_ids=("story:1:1",),
+        lead_claims=(),
+        sections=(sec,),
+        word_count=35,
+    )
+
+    diag = diagnose_article_coverage(draft, plan, context=context)
+    assert diag.covered_story_ids == ("story:1",)
+    assert diag.uncovered_story_ids == ("story:2",)
+    assert diag.story_coverage == 0.5
+
+
+def test_diagnose_article_coverage_adversarial_generic_overcited_claim_rejected():
+    # Test 2: Writer constructs a generic sentence ("В городе возникли сложности с подачей услуг")
+    # and attaches cited_support_ids for both Story 1 (Свет) and Story 2 (Вода).
+    # Neither story's discriminative anchors (e.g. "электроэнергия", "вода") are in the claim text.
+    # Neither story should receive coverage credit from this ungrounded generic claim!
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    s1 = ArticleSupport(
+        support_id="story:1:1",
+        text="Электроэнергия и свет отключены на подстанции",
+        source_text="Электроэнергия и свет отключены на подстанции",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=now,
+        story_id="story:1",
+    )
+    s2 = ArticleSupport(
+        support_id="story:2:1",
+        text="Водоснабжение и подача питьевой воды приостановлены",
+        source_text="Водоснабжение и подача питьевой воды приостановлены",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-2",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=now,
+        story_id="story:2",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Новости",),
+        support_index=(s1, s2),
+        support_by_id={s1.support_id: s1, s2.support_id: s2},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Свет",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=("story:1:1",),
+                detail_support_ids=("story:1:1",),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:2",
+                topic="Вода",
+                rank=2,
+                prominence="DEVELOP",
+                support_ids=("story:2:1",),
+                detail_support_ids=("story:2:1",),
+            ),
+        )
+    )
+
+    # Generic claim over-citing both stories without their discriminative anchors
+    generic_claim = ArticleClaimAtom(
+        text="В различных районах города наблюдаются определенные сложности.",
+        cited_support_ids=("story:1:1", "story:2:1"),
+    )
+    para = ArticleParagraph(
+        text="В различных районах города наблюдаются определенные сложности.",
+        cited_support_ids=("story:1:1", "story:2:1"),
+        claims=(generic_claim,),
+    )
+    sec = ArticleSection(
+        heading="Городская хроника",
+        heading_support_ids=("story:1:1",),
+        paragraphs=(para,),
+    )
+    draft = StructuredArticleDraft(
+        title="Сложности в городских районах",
+        title_support_ids=("story:1:1",),
+        title_claims=(),
+        lead="Горожане сообщают о ситуации в жилых кварталах.",
+        lead_support_ids=("story:1:1",),
+        lead_claims=(),
+        sections=(sec,),
+        word_count=30,
+    )
+
+    diag = diagnose_article_coverage(draft, plan, context=context)
+    # Neither story validated by generic claim!
+    assert diag.covered_story_count == 0
+    assert set(diag.uncovered_story_ids) == {"story:1", "story:2"}
+    assert diag.story_coverage == 0.0
+
+
+def test_diagnose_article_coverage_genuine_two_story_synthesis_claim_accepted():
+    # Test 3: Genuine synthesized claim that explicitly mentions both stories' discriminative facts:
+    # "Отключение электроэнергии нарушило работу насосов водоснабжения"
+    # Both Story 1 (Свет) and Story 2 (Вода) MUST receive coverage credit!
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    s1 = ArticleSupport(
+        support_id="story:1:1",
+        text="Отключение электроэнергии произошло на центральной подстанции",
+        source_text="Отключение электроэнергии произошло на центральной подстанции",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=now,
+        story_id="story:1",
+    )
+    s2 = ArticleSupport(
+        support_id="story:2:1",
+        text="Насосы водоснабжения остановились из-за обесточивания",
+        source_text="Насосы водоснабжения остановились из-за обесточивания",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-2",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=now,
+        story_id="story:2",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Новости",),
+        support_index=(s1, s2),
+        support_by_id={s1.support_id: s1, s2.support_id: s2},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Свет",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=("story:1:1",),
+                detail_support_ids=("story:1:1",),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:2",
+                topic="Вода",
+                rank=2,
+                prominence="DEVELOP",
+                support_ids=("story:2:1",),
+                detail_support_ids=("story:2:1",),
+            ),
+        )
+    )
+
+    synthesized_claim = ArticleClaimAtom(
+        text="Отключение электроэнергии на подстанции остановило насосы водоснабжения.",
+        cited_support_ids=("story:1:1", "story:2:1"),
+    )
+    para = ArticleParagraph(
+        text="Отключение электроэнергии на подстанции остановило насосы водоснабжения.",
+        cited_support_ids=("story:1:1", "story:2:1"),
+        claims=(synthesized_claim,),
+    )
+    sec = ArticleSection(
+        heading="Коммунальное хозяйство",
+        heading_support_ids=("story:1:1",),
+        paragraphs=(para,),
+    )
+    draft = StructuredArticleDraft(
+        title="Электроэнергия и водоснабжение",
+        title_support_ids=("story:1:1",),
+        title_claims=(),
+        lead="В городе продолжаются аварийные работы коммунальщиков.",
+        lead_support_ids=("story:1:1",),
+        lead_claims=(),
+        sections=(sec,),
+        word_count=35,
+    )
+
+    diag = diagnose_article_coverage(draft, plan, context=context)
+    assert set(diag.covered_story_ids) == {"story:1", "story:2"}
+    assert diag.covered_story_count == 2
+    assert diag.story_coverage == 1.0
+    assert diag.develop_story_coverage == 1.0

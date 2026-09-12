@@ -1240,51 +1240,21 @@ storage:
 
 
 @pytest.mark.unit
-def test_storage_config_invalid_backend_raises(tmp_path, mock_env_vars):
-    block = """
-storage:
-  backend: mysql
-"""
-    with pytest.raises(ValueError, match="storage.backend must be"):
-        load_config(_storage_config_file(tmp_path, block))
-
-
-@pytest.mark.unit
-def test_storage_config_enabled_not_bool_raises(tmp_path, mock_env_vars):
-    block = """
-storage:
-  enabled: "yes"
-"""
-    with pytest.raises(ValueError, match="storage.enabled must be a bool"):
-        load_config(_storage_config_file(tmp_path, block))
-
-
-@pytest.mark.unit
-def test_storage_config_empty_path_raises(tmp_path, mock_env_vars):
-    block = """
-storage:
-  path: ""
-"""
-    with pytest.raises(
-        ValueError, match="storage.path must be a non-empty string when backend is 'sqlite'"
-    ):
-        load_config(_storage_config_file(tmp_path, block))
-
-
-@pytest.mark.unit
-def test_storage_config_url_not_string_raises(tmp_path, mock_env_vars):
-    block = """
-storage:
-  url: 12345
-"""
-    with pytest.raises(ValueError, match="storage.url must be a string"):
-        load_config(_storage_config_file(tmp_path, block))
-
-
-@pytest.mark.unit
-def test_storage_config_not_mapping_raises(tmp_path, mock_env_vars):
-    block = "storage: true"
-    with pytest.raises(ValueError, match="'storage' must be a mapping"):
+@pytest.mark.parametrize(
+    "block,match",
+    [
+        ("storage:\n  backend: mysql\n", "storage.backend must be"),
+        ('storage:\n  enabled: "yes"\n', "storage.enabled must be a bool"),
+        (
+            'storage:\n  path: ""\n',
+            "storage.path must be a non-empty string when backend is 'sqlite'",
+        ),
+        ("storage:\n  url: 12345\n", "storage.url must be a string"),
+        ("storage: true\n", "'storage' must be a mapping"),
+    ],
+)
+def test_storage_config_invalid_raises(tmp_path, mock_env_vars, block, match):
+    with pytest.raises(ValueError, match=match):
         load_config(_storage_config_file(tmp_path, block))
 
 
@@ -1380,64 +1350,35 @@ def test_filter_spec_channel_override(tmp_path, mock_env_vars):
 
 
 @pytest.mark.unit
-def test_filter_spec_missing_class_path_raises(tmp_path, mock_env_vars):
+@pytest.mark.parametrize(
+    "yaml_body,match",
+    [
+        (
+            'channels:\n  - id: "@test"\n    name: "Test"\nsettings:\n  target_user_id: 123456789\n  filters:\n    - config:\n        min_chars: 10\n',
+            "missing required field 'class_path'",
+        ),
+        (
+            'channels:\n  - id: "@test"\n    name: "Test"\nsettings:\n  target_user_id: 123456789\n  filters:\n    - class_path: 42\n',
+            "class_path must be a non-empty string",
+        ),
+        (
+            'channels:\n  - id: "@test"\n    name: "Test"\nsettings:\n  target_user_id: 123456789\n  filters:\n    - class_path: src.extensions.filters.MinLengthFilter\n      config: not a dict\n',
+            "config must be a mapping",
+        ),
+        (
+            'channels:\n  - id: "@test"\n    name: "Test"\nsettings:\n  target_user_id: 123456789\n  filters:\n    - src.extensions.filters.MinLengthFilter\n',
+            "must be a mapping",
+        ),
+        (
+            'channels:\n  - id: "@test"\n    name: "Test"\n    filters:\n      - class_path: 99\nsettings:\n  target_user_id: 123456789\n',
+            "class_path must be a non-empty string",
+        ),
+    ],
+)
+def test_filter_spec_invalid_raises(tmp_path, mock_env_vars, yaml_body, match):
     p = tmp_path / "config.yaml"
-    p.write_text(
-        'channels:\n  - id: "@test"\n    name: "Test"\n'
-        "settings:\n  target_user_id: 123456789\n"
-        "  filters:\n    - config:\n        min_chars: 10\n"
-    )
-    with pytest.raises(ValueError, match="missing required field 'class_path'"):
-        load_config(str(p))
-
-
-@pytest.mark.unit
-def test_filter_spec_non_string_class_path_raises(tmp_path, mock_env_vars):
-    p = tmp_path / "config.yaml"
-    p.write_text(
-        'channels:\n  - id: "@test"\n    name: "Test"\n'
-        "settings:\n  target_user_id: 123456789\n"
-        "  filters:\n    - class_path: 42\n"
-    )
-    with pytest.raises(ValueError, match="class_path must be a non-empty string"):
-        load_config(str(p))
-
-
-@pytest.mark.unit
-def test_filter_spec_non_dict_config_raises(tmp_path, mock_env_vars):
-    p = tmp_path / "config.yaml"
-    p.write_text(
-        'channels:\n  - id: "@test"\n    name: "Test"\n'
-        "settings:\n  target_user_id: 123456789\n"
-        "  filters:\n"
-        "    - class_path: src.extensions.filters.MinLengthFilter\n"
-        "      config: not a dict\n"
-    )
-    with pytest.raises(ValueError, match="config must be a mapping"):
-        load_config(str(p))
-
-
-@pytest.mark.unit
-def test_filter_spec_non_mapping_item_raises(tmp_path, mock_env_vars):
-    p = tmp_path / "config.yaml"
-    p.write_text(
-        'channels:\n  - id: "@test"\n    name: "Test"\n'
-        "settings:\n  target_user_id: 123456789\n"
-        "  filters:\n    - src.extensions.filters.MinLengthFilter\n"
-    )
-    with pytest.raises(ValueError, match="must be a mapping"):
-        load_config(str(p))
-
-
-@pytest.mark.unit
-def test_filter_spec_channel_invalid_class_path_raises(tmp_path, mock_env_vars):
-    p = tmp_path / "config.yaml"
-    p.write_text(
-        'channels:\n  - id: "@test"\n    name: "Test"\n'
-        "    filters:\n      - class_path: 99\n"
-        "settings:\n  target_user_id: 123456789\n"
-    )
-    with pytest.raises(ValueError, match="class_path must be a non-empty string"):
+    p.write_text(yaml_body)
+    with pytest.raises(ValueError, match=match):
         load_config(str(p))
 
 
@@ -1687,38 +1628,27 @@ def test_prompts_config_explicit_values(tmp_path, mock_env_vars):
 
 
 @pytest.mark.unit
-def test_prompts_config_not_mapping_raises(tmp_path, mock_env_vars):
+@pytest.mark.parametrize(
+    "yaml_body,match",
+    [
+        (
+            'channels:\n  - id: "@test"\n    name: "Test"\nsettings:\n  target_user_id: 123456789\nprompts: true\n',
+            "'prompts' must be a mapping",
+        ),
+        (
+            'channels:\n  - id: "@test"\n    name: "Test"\nsettings:\n  target_user_id: 123456789\nprompts:\n  base_template: \'\'\n',
+            "base_template must be a non-empty string",
+        ),
+        (
+            'channels:\n  - id: "@test"\n    name: "Test"\nsettings:\n  target_user_id: 123456789\nprompts:\n  composer: 42\n',
+            "prompts.composer must be a string",
+        ),
+    ],
+)
+def test_prompts_config_invalid_raises(tmp_path, mock_env_vars, yaml_body, match):
     p = tmp_path / "config.yaml"
-    p.write_text(
-        'channels:\n  - id: "@test"\n    name: "Test"\n'
-        "settings:\n  target_user_id: 123456789\n"
-        "prompts: true\n"
-    )
-    with pytest.raises(ValueError, match="'prompts' must be a mapping"):
-        load_config(str(p))
-
-
-@pytest.mark.unit
-def test_prompts_config_empty_base_template_raises(tmp_path, mock_env_vars):
-    p = tmp_path / "config.yaml"
-    p.write_text(
-        'channels:\n  - id: "@test"\n    name: "Test"\n'
-        "settings:\n  target_user_id: 123456789\n"
-        "prompts:\n  base_template: ''\n"
-    )
-    with pytest.raises(ValueError, match="base_template must be a non-empty string"):
-        load_config(str(p))
-
-
-@pytest.mark.unit
-def test_prompts_config_composer_not_string_raises(tmp_path, mock_env_vars):
-    p = tmp_path / "config.yaml"
-    p.write_text(
-        'channels:\n  - id: "@test"\n    name: "Test"\n'
-        "settings:\n  target_user_id: 123456789\n"
-        "prompts:\n  composer: 42\n"
-    )
-    with pytest.raises(ValueError, match="prompts.composer must be a string"):
+    p.write_text(yaml_body)
+    with pytest.raises(ValueError, match=match):
         load_config(str(p))
 
 

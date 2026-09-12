@@ -644,6 +644,11 @@ class StoryTriageService:
                 f"Story #{s.story_id} (fragments={s.fragment_count}, sources={s.unique_source_count}):\n{excerpts_str}\n"
             )
 
+        story_ids_str = ", ".join(str(s.story_id) for s in uncached_stories)
+        prompt_lines.append(
+            f"CRITICAL INSTRUCTION: Your JSON output must contain a 'results' array with EXACTLY {len(uncached_stories)} elements, one for EACH of the requested stories ({story_ids_str}). Do NOT omit any story, do NOT stop after the first story."
+        )
+
         user_prompt = "\n".join(prompt_lines)
         prompt_hash = hashlib.sha256(
             f"{_GATE_V2_SYSTEM_PROMPT}\n{user_prompt}".encode("utf-8")

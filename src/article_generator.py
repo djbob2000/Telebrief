@@ -1324,6 +1324,13 @@ class ArticleGenerator:
                 exc,
             )
             if isinstance(exc, ProviderCascadeError):
+                if attempt_observer is not None and writer_attempt_id:
+                    await attempt_observer.attempt_finished(
+                        writer_attempt_id,
+                        status="failed",
+                        error_kind="provider_cascade_error",
+                        metadata={"error": str(exc)},
+                    )
                 raise
             writer_error = exc
             writer_meta = None

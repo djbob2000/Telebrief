@@ -401,17 +401,41 @@ def normalize_service_state_evidence(
                 continue
 
         # Check 3-part proof for SCHEDULED:
-        # 1. Service family grounded (checked above)
+        # 1. Service family grounded (checked above across grounding_text)
         # 2. Schedule intent grounded (requires explicit schedule terms, no rumors)
         # 3. Projected temporal value grounded (date/time in raw evidence)
+        # ADVERSARIAL HARDENING: All 3 parts (service family + schedule intent + date/time)
+        # must co-occur inside a SINGLE grounding unit (single fragment or item.text),
+        # preventing cross-fragment Frankenstein proofs where date comes from an unrelated event.
         if state.state == "SCHEDULED" or state.basis == "scheduled_change":
+            candidate_units = raw_texts if fragment_texts is not None else [grounding_text]
+            has_single_unit_proof = False
+            for unit_txt in candidate_units:
+                u_fam = _detect_service_families(unit_txt)
+                if subject_families and (not u_fam or subject_families.isdisjoint(u_fam)):
+                    continue
+                if not _has_valid_schedule_grounding(unit_txt, state.effective_from):
+                    continue
+                has_single_unit_proof = True
+                break
+
             if state.effective_from and re.search(r"[T\s]\d{1,2}:\d{2}", state.effective_from):
                 if not _has_grounded_time_value(grounding_text, state.effective_from):
                     date_part = state.effective_from.split("T")[0].split(" ")[0]
                     state = replace(state, effective_from=date_part)
                     item = replace(item, service_state=state)
+                    # Re-check single unit proof with updated effective_from without time
+                    has_single_unit_proof = False
+                    for unit_txt in candidate_units:
+                        u_fam = _detect_service_families(unit_txt)
+                        if subject_families and (not u_fam or subject_families.isdisjoint(u_fam)):
+                            continue
+                        if not _has_valid_schedule_grounding(unit_txt, state.effective_from):
+                            continue
+                        has_single_unit_proof = True
+                        break
 
-            if not _has_valid_schedule_grounding(grounding_text, state.effective_from):
+            if not has_single_unit_proof:
                 normalized_items.append(
                     replace(
                         item,

@@ -181,6 +181,7 @@ async def build_publication_preview(
         publication_type=publication_type,
         trigger="manual",
         target_at=snap,
+        now=snap,
         request_key=key,
         lookback_hours=lookback_hours,
         defer_preparation=False,

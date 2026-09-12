@@ -690,15 +690,30 @@ def _extract_advice_content_stems(sentence_text: str) -> set[str]:
     return stems
 
 
+_CLAUSE_SPLIT_RE = re.compile(r"[,;]|\s+(?:а\s+также|также|и)\s+", re.IGNORECASE)
+
+
+def _split_advice_actions(sentence_text: str) -> list[str]:
+    """Split a recommendation sentence into discrete action clauses."""
+    # Strip leading modality phrases to isolate actions
+    clean = sentence_text
+    for pat in _RECOMMENDATION_MODALITY_PATTERNS:
+        clean = pat.sub(" ", clean)
+    clauses = [c.strip() for c in _CLAUSE_SPLIT_RE.split(clean) if c.strip()]
+    return clauses if clauses else [sentence_text]
+
+
 def find_unsupported_digest_recommendations(
     text: str,
     cited_supports: Sequence[str] | str,
 ) -> list[str]:
     """Find reader advice / calls-to-action that are not grounded in cited supports.
 
-    Requires that at least one specific cited support simultaneously contains
-    the recommendation modality and >= 2 unique content stems overlapping with
-    the advice subject (excluding generic modality words and stopwords).
+    Adversarial trust-boundary hardening:
+    Operates at the action/clause level. If a recommendation bundles multiple actions
+    (e.g., 'запастись водой и не выходить на улицу'), EACH distinct action clause
+    with substantive content stems (>= 2 content stems) must be grounded in a cited support
+    that possesses recommendation modality.
     """
     if not text or not cited_supports:
         return []
@@ -711,17 +726,33 @@ def find_unsupported_digest_recommendations(
     violations: list[str] = []
     for match in _RECOMMENDATION_SENTENCE_PATTERN.finditer(text):
         matched_text = match.group(0).strip()
-        advice_stems = _extract_advice_content_stems(matched_text)
-        is_supported_in_single_source = False
-        for s_lower in support_lowers:
-            has_modality = any(pat.search(s_lower) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
-            if not has_modality:
+        action_clauses = _split_advice_actions(matched_text)
+
+        # Check that EVERY substantive action clause has at least one supporting source
+        sentence_has_unsupported_action = False
+        for clause in action_clauses:
+            clause_stems = _extract_advice_content_stems(clause)
+            if len(clause_stems) < 2:
+                # Small connective or empty clause; check if full sentence has stems
+                clause_stems = _extract_advice_content_stems(matched_text)
+            if not clause_stems:
                 continue
-            support_stems = _extract_advice_content_stems(s_lower)
-            if len(advice_stems & support_stems) >= 2:
-                is_supported_in_single_source = True
+
+            clause_supported = False
+            for s_lower in support_lowers:
+                has_modality = any(pat.search(s_lower) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
+                if not has_modality:
+                    continue
+                support_stems = _extract_advice_content_stems(s_lower)
+                if len(clause_stems & support_stems) >= min(2, len(clause_stems)):
+                    clause_supported = True
+                    break
+
+            if not clause_supported:
+                sentence_has_unsupported_action = True
                 break
-        if not is_supported_in_single_source:
+
+        if sentence_has_unsupported_action:
             violations.append(matched_text)
     return violations
 
@@ -736,15 +767,27 @@ def strip_unsupported_recommendations(text: str, source_content: str) -> str:
 
     def _replace_if_unsupported(match: re.Match[str]) -> str:
         matched_text = match.group(0).strip()
-        advice_stems = _extract_advice_content_stems(matched_text)
-        for b_lower in support_blocks:
-            has_mod = any(pat.search(b_lower) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
-            if not has_mod:
+        action_clauses = _split_advice_actions(matched_text)
+
+        for clause in action_clauses:
+            clause_stems = _extract_advice_content_stems(clause)
+            if len(clause_stems) < 2:
+                clause_stems = _extract_advice_content_stems(matched_text)
+            if not clause_stems:
                 continue
-            b_stems = _extract_advice_content_stems(b_lower)
-            if len(advice_stems & b_stems) >= 2:
-                return match.group(0)
-        return ""
+
+            clause_supported = False
+            for b_lower in support_blocks:
+                has_mod = any(pat.search(b_lower) for pat in _RECOMMENDATION_MODALITY_PATTERNS)
+                if not has_mod:
+                    continue
+                b_stems = _extract_advice_content_stems(b_lower)
+                if len(clause_stems & b_stems) >= min(2, len(clause_stems)):
+                    clause_supported = True
+                    break
+            if not clause_supported:
+                return ""
+        return match.group(0)
 
     cleaned = _RECOMMENDATION_SENTENCE_PATTERN.sub(_replace_if_unsupported, text)
     return re.sub(r"[ \t]+", " ", cleaned).strip()
@@ -2061,7 +2104,8 @@ class DigestNarrativeWriter:
             "- If 'situation_groups' are provided, synthesize each operational group in 'situation_items'. Every required fact in 'required_facts' must be covered in 'claims' and reflected in the narrative body. Use natural chronology and geographical clarity (e.g. outages, low voltage, and restored sections). Never invent ungrounded numbers or causes. Cite the exact support IDs.\n"
             "- In thematic 'blocks', never repeat the headline in the first sentence of the body text.\n"
             "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
-            "- Attribute source role naturally ('По сообщениям жителей', 'По данным коммунальных служб') at most once per item.\n"
+            "- State facts directly. NEVER invent or infer unverified causal relations or mechanisms (using phrases like 'из-за чего', 'по причине', 'вследствие', 'в результате') unless that causal relation is explicitly stated in the source evidence.\n"
+            "- Attribution: Attribute source role naturally ('По сообщениям жителей', 'По данным коммунальных служб') at most once per item.\n"
             "- For each thematic item, provide atomic claims in 'claims'. Every story in the item's covered_story_ids must be covered by at least one claim atom.\n"
             "- Claims must be short atomic factual statements supported by cited_support_ids.\n\n"
             f"{narrative_contract}\n\n"
@@ -2081,6 +2125,7 @@ class DigestNarrativeWriter:
                 {"role": "user", "content": user_prompt},
             ],
             "response_format": {"type": "json_object"},
+            "temperature": 0.2,
         }
         if model:
             chat_kwargs["model"] = model

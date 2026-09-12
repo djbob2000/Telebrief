@@ -598,3 +598,48 @@ def test_has_grounded_temporal_value_may_calendar_matching():
     # Matching month passes
     assert _has_grounded_temporal_value("20 сентября плановые работы", "2026-09-20")
     assert _has_grounded_temporal_value("20 вересня планові роботи", "2026-09-20")
+
+
+def test_scheduled_service_state_requires_single_unit_cooccurrence():
+    # Fragment 1 has power service family + schedule intent ("плановые работы по ремонту электросетей")
+    # Fragment 2 has an unrelated date ("встреча выпускников состоится 25 сентября")
+    # Cross-fragment Frankenstein proof must fail closed!
+    item = EvidenceItemPayload(
+        text="Плановые ремонтные работы электросетей пройдут 25 сентября",
+        kind="service_access",
+        publication_use="PUBLISH",
+        source_fragment_ids=(101, 102),
+        service_state=ServiceStatePayload(
+            subject_key="power_supply",
+            subject_label="Электроснабжение",
+            dimension="availability",
+            state="SCHEDULED",
+            expected_now=False,
+            basis="scheduled_change",
+            effective_from="2026-09-25",
+        ),
+    )
+
+    frag_texts_split = {
+        101: "Плановые ремонтные работы по восстановлению электросетей",  # no date
+        102: "Встреча выпускников школы состоится 25 сентября",  # date, but unrelated family
+    }
+    payload = EventPayload(evidence_items=(item,))
+    norm, audit = normalize_service_state_evidence(payload, frag_texts_split)
+    # Must be demoted because proof does not co-occur in a single unit
+    assert audit.accepted_count == 0
+    assert audit.rejected_count == 1
+    assert "unsupported_scheduled_change" in audit.rejection_reasons
+    assert norm.evidence_items[0].service_state is None
+    assert norm.evidence_items[0].kind == "community_report"
+
+    # Now verify that when all 3 elements co-occur in a single fragment, it is accepted
+    frag_texts_single = {
+        101: "Плановые ремонтные работы электросетей пройдут 25 сентября",
+        102: "Встреча выпускников школы состоится в пятницу",
+    }
+    norm_ok, audit_ok = normalize_service_state_evidence(payload, frag_texts_single)
+    assert audit_ok.accepted_count == 1
+    assert audit_ok.rejected_count == 0
+    assert norm_ok.evidence_items[0].service_state is not None
+    assert norm_ok.evidence_items[0].service_state.state == "SCHEDULED"

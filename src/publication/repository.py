@@ -225,19 +225,18 @@ def _candidate_universe_sql() -> str:
         ORDER BY sf.story_id, sf.assigned_at DESC, sf.id DESC
     ),
     latest_revs AS (
-        SELECT DISTINCT ON (sr.story_id)
-            sr.story_id,
+        SELECT DISTINCT ON (s.id)
+            s.id AS story_id,
             sr.id AS story_revision_id,
             sr.revision_no,
-            sr.current_state,
+            COALESCE(sr.current_state, 'open') AS current_state,
             sr.semantic_text,
             sr.reason,
             sr.created_at AS revision_created_at,
             sr.event_payload
-        FROM story_revisions sr
-        JOIN stories s ON s.id = sr.story_id
-        LEFT JOIN event_assignments_at_cutoff ea ON ea.story_id = sr.story_id
-        WHERE s.edition_id = %(edition_id)s
+        FROM stories s
+        LEFT JOIN event_assignments_at_cutoff ea ON ea.story_id = s.id
+        LEFT JOIN story_revisions sr ON sr.story_id = s.id
           AND sr.created_at <= %(snapshot_at)s
           AND (
               s.knowledge_source <> 'event_first'
@@ -250,7 +249,8 @@ def _candidate_universe_sql() -> str:
               )
               OR sr.event_assignment_id = ea.cutoff_assignment_id
           )
-        ORDER BY sr.story_id, sr.revision_no DESC, sr.created_at DESC
+        WHERE s.edition_id = %(edition_id)s
+        ORDER BY s.id, sr.revision_no DESC NULLS LAST, sr.created_at DESC NULLS LAST
     ),
     story_activity AS (
         SELECT
@@ -798,6 +798,7 @@ class PublicationRepository:
                   AND setd.retention = 'KEEP'
             )
         )
+        AND cu.story_revision_id IS NOT NULL
         ORDER BY last_activity_at DESC NULLS LAST, story_id ASC
         """  # noqa: S608 — static CTE template; values are bound params
         params = {

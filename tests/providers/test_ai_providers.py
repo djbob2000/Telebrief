@@ -248,17 +248,21 @@ def test_create_provider_unknown(mock_logger):
 
 
 @pytest.mark.unit
-def test_create_provider_openai_missing_key(mock_logger):
-    """Test error when OpenAI key is missing."""
-    with pytest.raises(ValueError, match="OPENAI_API_KEY is required"):
-        create_provider(provider_name="openai", logger=mock_logger, openai_api_key="")
-
-
-@pytest.mark.unit
-def test_create_provider_anthropic_missing_key(mock_logger):
-    """Test error when Anthropic key is missing."""
-    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY is required"):
-        create_provider(provider_name="anthropic", logger=mock_logger, anthropic_api_key="")
+@pytest.mark.parametrize(
+    "provider_name,key_name",
+    [
+        ("openai", "OPENAI_API_KEY"),
+        ("anthropic", "ANTHROPIC_API_KEY"),
+    ],
+)
+def test_create_provider_missing_key(mock_logger, provider_name, key_name):
+    """Test error when provider API key is missing."""
+    with pytest.raises(ValueError, match=f"{key_name} is required"):
+        create_provider(
+            provider_name=provider_name,
+            logger=mock_logger,
+            **{key_name.lower(): ""},
+        )
 
 
 @pytest.mark.unit
@@ -1651,31 +1655,29 @@ async def test_anthropic_provider_accepts_reasoning_effort_param(mock_logger):
 
 
 @pytest.mark.unit
-def test_redact_url_no_credentials():
-    """Test that URLs without credentials are returned unchanged."""
-    url = "http://localhost:11434/api/chat"
-    assert _redact_url(url) == url
-
-
-@pytest.mark.unit
-def test_redact_url_with_credentials():
-    """Test that URLs with embedded credentials are redacted."""
-    url = "http://user:secret@myhost:11434/api/chat"
+@pytest.mark.parametrize(
+    "url,expected_contains,expected_missing",
+    [
+        ("http://localhost:11434/api/chat", ["http://localhost:11434/api/chat"], []),
+        (
+            "http://user:secret@myhost:11434/api/chat",
+            ["***@", "myhost", "11434"],
+            ["user", "secret"],
+        ),
+        (
+            "http://admin@myhost:11434/api/chat",
+            ["***@"],
+            ["admin"],
+        ),
+    ],
+)
+def test_redact_url(url, expected_contains, expected_missing):
+    """Test URL credential redaction behavior."""
     redacted = _redact_url(url)
-    assert "user" not in redacted
-    assert "secret" not in redacted
-    assert "myhost" in redacted
-    assert "11434" in redacted
-    assert "***@" in redacted
-
-
-@pytest.mark.unit
-def test_redact_url_with_username_only():
-    """Test that URLs with only a username are redacted."""
-    url = "http://admin@myhost:11434/api/chat"
-    redacted = _redact_url(url)
-    assert "admin" not in redacted
-    assert "***@" in redacted
+    for part in expected_contains:
+        assert part in redacted
+    for part in expected_missing:
+        assert part not in redacted
 
 
 # --- Helper for async context managers ---

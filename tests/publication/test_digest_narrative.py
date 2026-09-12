@@ -2251,3 +2251,31 @@ def test_recommendation_modality_and_generic_stopwords_overlap_rejected():
     issues = find_unsupported_digest_recommendations(generated, [support])
     assert len(issues) == 1
     assert "Рекомендуется заранее сделать запас питьевой воды" in issues[0]
+
+
+def test_recommendation_action_clause_level_grounding_rejects_unsupported_bundled_action():
+    from src.publication.digest_narrative import (
+        find_unsupported_digest_recommendations,
+        strip_unsupported_recommendations,
+    )
+
+    # Support grounds ONLY water supply: "Водоканал: рекомендуется запастись питьевой водой"
+    support = "Водоканал: рекомендуется заранее запастись питьевой водой перед ремонтом."
+
+    # Generated bundles a grounded action ("запастись питьевой водой") with an ungrounded action ("не выходить на улицу")
+    bundled_text = "Рекомендуется запастись питьевой водой и не выходить на улицу."
+
+    # Must detect violation because "не выходить на улицу" is ungrounded
+    violations = find_unsupported_digest_recommendations(bundled_text, [support])
+    assert len(violations) == 1
+    assert "Рекомендуется запастись питьевой водой и не выходить на улицу" in violations[0]
+
+    # Must be stripped
+    stripped = strip_unsupported_recommendations(bundled_text, support)
+    assert "не выходить на улицу" not in stripped
+    assert "Рекомендуется" not in stripped
+
+    # When both actions are grounded in supports with modality, it passes
+    support_both = "Водоканал: рекомендуется запастись питьевой водой. МЧС: рекомендуется не выходить на улицу."
+    violations_ok = find_unsupported_digest_recommendations(bundled_text, [support_both])
+    assert len(violations_ok) == 0
