@@ -605,6 +605,7 @@ class OpenAIProvider(AIProvider):
         except (ValueError, TypeError):
             max_concurrency = 4
         self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._mandatory_reasoning_models: set[str] = set()
 
     async def chat_completion(  # pylint: disable=too-many-positional-arguments
         self,
@@ -634,7 +635,10 @@ class OpenAIProvider(AIProvider):
         if is_openrouter:
             extra = create_kwargs.setdefault("extra_body", {})
             if thinking is False or reasoning_effort == "none":
-                extra["reasoning"] = {"effort": "none"}
+                if model in self._mandatory_reasoning_models:
+                    extra["reasoning"] = {"effort": "low"}
+                else:
+                    extra["reasoning"] = {"effort": "none"}
             else:
                 env_effort = (os.environ.get("OPENROUTER_REASONING_EFFORT") or "").strip()
                 raw_max_reasoning = (
@@ -748,9 +752,23 @@ class OpenAIProvider(AIProvider):
             create_kwargs.get("model"),
             [k for k in create_kwargs if k != "messages"],
         )
-        if "openrouter" in self.base_url and _request_has_openrouter_reasoning(create_kwargs):
+        if "openrouter" in str(self.base_url).lower() and _request_has_openrouter_reasoning(
+            create_kwargs
+        ):
             reasoning_cfg = create_kwargs.get("extra_body", {}).get("reasoning", {})
-            if (
+            if "reasoning is mandatory" in str(original_exc).lower():
+                model_name = str(create_kwargs.get("model", ""))
+                self._mandatory_reasoning_models.add(model_name)
+                self.logger.info(
+                    "Model %s requires mandatory reasoning; retrying with effort='low'",
+                    model_name,
+                )
+                create_kwargs["extra_body"]["reasoning"] = {"effort": "low"}
+                try:
+                    return await self.client.chat.completions.create(**create_kwargs)
+                except OpenAIBadRequestError as exc:
+                    self.logger.warning("retry with effort='low' failed: %s", exc)
+            elif (
                 "Reasoning is mandatory" not in str(original_exc)
                 and reasoning_cfg.get("effort") != "none"
             ):

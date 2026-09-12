@@ -43,7 +43,7 @@ class ArticleEditor:
         self.provider = provider
         self.model = model
         self.temperature = temperature
-        self.max_output_tokens = max_output_tokens
+        self.max_output_tokens = min(max_output_tokens, 8192)
 
     async def edit_draft(
         self,
@@ -113,6 +113,7 @@ class ArticleEditor:
                     model=self.model,
                     temperature=self.temperature,
                     max_tokens=self.max_output_tokens,
+                    reasoning_effort="none",
                     response_format={"type": "json_object"},
                 )
                 patches = self._parse_editor_response(response)

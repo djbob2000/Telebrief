@@ -357,10 +357,19 @@ class ArticleFinalizer:
             )
 
         # 4. Incomplete writer draft: check safety gate before deterministic supplement
-        is_safe_for_supplement = (
-            ai_diag.story_coverage >= 0.80
-            and len(ai_diag.uncovered_story_ids) <= 3
-            and ai_diag.develop_story_coverage >= 1.0
+        hard_min = (
+            length_profile.hard_min_words
+            if length_profile is not None
+            else getattr(editorial_config, "article_min_words", 500)
+        )
+        is_substantial = (
+            writer_validation.word_count >= hard_min
+            and writer_validation.section_count >= 2
+            and ai_diag.covered_story_count >= 5
+        )
+        is_safe_for_supplement = ai_diag.develop_story_coverage >= 1.0 and (
+            (ai_diag.story_coverage >= 0.80 and len(ai_diag.uncovered_story_ids) <= 3)
+            or (is_substantial and ai_diag.story_coverage >= 0.65)
         )
         if not is_safe_for_supplement:
             logger.warning(

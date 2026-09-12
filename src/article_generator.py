@@ -115,8 +115,39 @@ def _ground_draft_in_coverage_plan(
     import re
 
     from src.publication.article_claims import _stem
+    from src.publication.article_semantic_support import _EDITORIAL_GLUE, _STOPWORDS
 
     tok_re = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
+
+    # Precompute glue stems and edition anchor terms
+    glue_stems = {_stem(g) for g in _EDITORIAL_GLUE}
+    if article_ctx and getattr(article_ctx, "edition_anchor_terms", None):
+        glue_stems.update(
+            {_stem(t.lower()) for t in article_ctx.edition_anchor_terms if len(t) >= 3}
+        )
+    glue_stems.update(
+        {
+            "бердян",
+            "бердянск",
+            "бердянськ",
+            "город",
+            "мисто",
+            "жител",
+            "горожан",
+            "сообщ",
+            "отмеч",
+            "рассказ",
+            "продолж",
+        }
+    )
+
+    def _extract_distinctive_stems(text: str) -> set[str]:
+        words = tok_re.findall(text)
+        return {
+            _stem(w.lower())
+            for w in words
+            if len(w) >= 3 and _stem(w.lower()) not in glue_stems and w.lower() not in _STOPWORDS
+        }
 
     # Precompute stems for all available supports in context
     support_stems: dict[str, set[str]] = {}
@@ -134,8 +165,7 @@ def _ground_draft_in_coverage_plan(
             ):
                 curr_pub_sups.append(sid)
             full_t = f"{s.text or ''} {s.source_text or ''}"
-            words = tok_re.findall(full_t)
-            support_stems[sid] = {_stem(w.lower()) for w in words if len(w) >= 3}
+            support_stems[sid] = _extract_distinctive_stems(full_t)
 
     # 1. Title & lead support IDs (rely only on writer-provided or lexical match)
     if parsed.get("title_support_ids"):
@@ -146,8 +176,7 @@ def _ground_draft_in_coverage_plan(
         matched_t_sups: list[str] = []
         if support_stems and parsed.get("title"):
             t_text = str(parsed["title"])
-            t_words = tok_re.findall(t_text)
-            t_stems = {_stem(w.lower()) for w in t_words if len(w) >= 3}
+            t_stems = _extract_distinctive_stems(t_text)
             t_nums = set(re.findall(r"\b\d+\b", t_text))
             for sid, s_stems in support_stems.items():
                 shared_st = t_stems & s_stems
@@ -162,8 +191,7 @@ def _ground_draft_in_coverage_plan(
 
     if support_stems and parsed.get("lead"):
         l_text = str(parsed["lead"])
-        l_words = tok_re.findall(l_text)
-        l_stems = {_stem(w.lower()) for w in l_words if len(w) >= 3}
+        l_stems = _extract_distinctive_stems(l_text)
         l_nums = set(re.findall(r"\b\d+\b", l_text))
         matched_lead_sups: list[str] = []
         for sid in curr_pub_sups:
@@ -183,8 +211,7 @@ def _ground_draft_in_coverage_plan(
             l_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", l_text) if s.strip()]
             lead_claims_list = []
             for sent in l_sentences:
-                s_words = tok_re.findall(sent)
-                s_stems = {_stem(w.lower()) for w in s_words if len(w) >= 3}
+                s_stems = _extract_distinctive_stems(sent)
                 s_nums = set(re.findall(r"\b\d+\b", sent))
                 matched_sent_sups = []
                 for sid in all_l_sups:
@@ -224,8 +251,7 @@ def _ground_draft_in_coverage_plan(
             h_text = str(sec.get("heading") or "")
             matched_h_sups = []
             if support_stems and h_text:
-                h_words = tok_re.findall(h_text)
-                h_stems = {_stem(w.lower()) for w in h_words if len(w) >= 3}
+                h_stems = _extract_distinctive_stems(h_text)
                 h_nums = set(re.findall(r"\b\d+\b", h_text))
                 for sid, s_stems in support_stems.items():
                     shared_st = h_stems & s_stems
@@ -242,7 +268,6 @@ def _ground_draft_in_coverage_plan(
 
         if support_by_id:
             combined_h_sups = [sid for sid in combined_h_sups if sid in support_by_id]
-        sec["heading_support_ids"] = combined_h_sups
 
         raw_paras = sec.get("paragraphs") or []
         grounded_paras: list[dict[str, Any]] = []
@@ -255,8 +280,7 @@ def _ground_draft_in_coverage_plan(
             else:
                 matched_sups = []
                 if support_stems:
-                    p_words = tok_re.findall(p_text)
-                    p_stems = {_stem(w.lower()) for w in p_words if len(w) >= 3}
+                    p_stems = _extract_distinctive_stems(p_text)
                     p_nums = set(re.findall(r"\b\d+\b", p_text))
                     # Match supports that share at least 2 content stems, or share numbers + stem
                     for sid, s_stems in support_stems.items():
@@ -279,10 +303,18 @@ def _ground_draft_in_coverage_plan(
                 "text": p_text,
                 "cited_support_ids": combined_sups,
             }
-            if isinstance(p, dict) and "claims" in p:
+            if isinstance(p, dict) and "claims" in p and p["claims"]:
                 para_dict["claims"] = p["claims"]
             grounded_paras.append(para_dict)
+
         sec["paragraphs"] = grounded_paras
+
+        # Heading supports: if empty, inherit from grounded paragraphs in this section
+        if not combined_h_sups and grounded_paras:
+            combined_h_sups = list(
+                dict.fromkeys(sid for p in grounded_paras for sid in p.get("cited_support_ids", []))
+            )
+        sec["heading_support_ids"] = combined_h_sups
 
     return parsed
 
@@ -329,12 +361,12 @@ def _build_regeneration_feedback(
     missing_by_depth: list[str] = []
     for prominence in ("DEVELOP", "WEAVE", "BRIEF"):
         subset = [
-            s.story_id
+            f"{s.story_id} ({getattr(s, 'topic', None) or getattr(s, 'headline', None) or 'no topic'})"
             for s in coverage_plan.stories
             if s.prominence == prominence and s.story_id in uncovered_set
         ]
         if subset:
-            missing_by_depth.append(f"- {prominence}: {', '.join(subset)}")
+            missing_by_depth.append(f"- {prominence}: {'; '.join(subset)}")
     missing_str = "\n".join(missing_by_depth) if missing_by_depth else "- None"
 
     return (
@@ -1019,7 +1051,7 @@ class ArticleGenerator:
 
 1. Частные перевозчики и междугородние рейсы:
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО копировать цепочки городов маршрута («Киев — Днепр — Запорожье — Кривой Рог...»), конкретные даты выезда («25 сентября», «5 октября») и брать в кавычки рекламные фразы перевозчиков («едем», «есть места»).
-   - КАК ОБЯЗАТЕЛЬНО ПИСАТЬ: Сожмите до одного краткого журналистского предложения о факте транспортного сообщения и уровне цен: «Сохраняются нерегулярные частные перевозки в сторону соседних регионов через Мариуполь и Мелитополь, стоимость мест остаётся высокой — от 400–450 долларов».
+   - КАК ОБЯЗАТЕЛЬНО ПИСАТЬ: Сожмите до одного краткого журналистского предложения о факте транспортного сообщения на основе предоставленных данных (например, отметив сохранение нерегулярных рейсов по ключевым направлениям и высокий уровень цен, без копирования списков городов и контактов).
 
 2. Посредники по банкам и пенсионным выплатам:
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО перечислять списки коммерческих банков («ПриватБанк, А-Банк, Sense Bank...») и длинные списки рутинных операций («разблокировка карт, перевод пенсии, ЕЦП, виртуальные карты, актуализация данных...»).
@@ -1027,7 +1059,7 @@ class ArticleGenerator:
 
 3. Платные медицинские центры и клиники:
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО перечислять длинные каталоги врачебных специальностей («ЛОР, кардиолог, дерматолог, терапевт, педиатр, гастроэнтеролог...») и публиковать графики работы лабораторий или забора крови.
-   - КАК ОБЯЗАТЕЛЬНО ПИСАТЬ: Ограничьтесь кратким упоминанием: «Продолжает работу частный медцентр на ул. Тверской, 49, где ведут приём профильные врачи и работает диагностика».
+   - КАК ОБЯЗАТЕЛЬНО ПИСАТЬ: Ограничьтесь кратким упоминанием профиля работы или факта приёма специалистов на основе предоставленных данных, без длинных списков врачебных специальностей и без адресов, если они не подтверждены фактами.
 
 4. ПРАВИЛО ОДНОГО ПРЕДЛОЖЕНИЯ ДЛЯ КОММЕРЧЕСКИХ ТЕМ:
    - Любая коммерческая сервисная тема (перевозчики, посредники, клиники) в статусе BRIEF должна занимать РОВНО ОДНО ёмкое журналистское предложение без перечислений и цитат.
@@ -1285,8 +1317,18 @@ class ArticleGenerator:
                 )
                 writer_draft = candidate_draft
 
-                # Targeted copy-editor / fact-checker pass ONLY when not globally incomplete
-                if not is_incomplete and getattr(editorial_config, "article_editor_enabled", False):
+                # Targeted copy-editor / fact-checker pass when not globally incomplete or when draft is substantial
+                hard_min = (
+                    length_profile.hard_min_words
+                    if length_profile is not None
+                    else getattr(editorial_config, "article_min_words", 500)
+                )
+                is_substantial = (
+                    candidate_val.word_count >= hard_min and candidate_val.section_count >= 2
+                )
+                if (not is_incomplete or is_substantial) and getattr(
+                    editorial_config, "article_editor_enabled", False
+                ):
                     from src.publication.article_editor import ArticleEditor
 
                     editor_max_tokens = getattr(

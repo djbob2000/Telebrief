@@ -339,11 +339,17 @@ def validate_article_draft(
 
         # Check missing support IDs
         if not cited_ids:
+            blocking = unit_type != "heading"
+            missing_support_severity: Literal["error", "warning"] = (
+                "error" if blocking else "warning"
+            )
             issues.append(
                 ArticleValidationIssue(
                     code=f"MISSING_SUPPORT:{unit_type}",
                     unit_id=unit_id,
                     message=f"Unit {unit_id} is missing support citation",
+                    severity=missing_support_severity,
+                    blocking=blocking,
                 )
             )
             continue
