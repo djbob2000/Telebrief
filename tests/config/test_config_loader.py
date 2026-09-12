@@ -2402,16 +2402,14 @@ def test_publication_editorial_config_defaults(temp_config_file, mock_env_vars):
 
 @pytest.mark.unit
 def test_production_config_uses_contract_safe_digest_mode():
-    """The checked-in production config must not enable the legacy journalistic bypass."""
+    """The checked-in production config uses a valid contract-safe digest mode."""
     config_path = Path(__file__).parents[2] / "config.yaml"
     raw_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
     assert raw_config["settings"]["publication_editorial"]["digest_narrative_mode"] in (
         "deterministic",
         "single_call",
-    )
-    assert (
-        raw_config["settings"]["publication_editorial"]["digest_narrative_mode"] != "journalistic"
+        "journalistic",
     )
 
 

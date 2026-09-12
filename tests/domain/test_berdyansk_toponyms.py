@@ -132,3 +132,29 @@ def test_normalize_akz_not_azmol_complex() -> None:
 
     t2 = "В Азмоловском комплексе дали свет."
     assert normalize_berdyansk_toponyms(t2) == "В АКЗ дали свет."
+
+
+@pytest.mark.unit
+def test_normalize_liski_preposition() -> None:
+    t1 = "В Лисках и на Лиепайской свет был, но позже в Лисках пропал."
+    assert (
+        normalize_berdyansk_toponyms(t1)
+        == "На Лисках и на Лиепайской свет был, но позже на Лисках пропал."
+    )
+
+    t2 = "Поехали в Лиски за покупками."
+    assert normalize_berdyansk_toponyms(t2) == "Поехали на Лиски за покупками."
+
+
+@pytest.mark.unit
+def test_normalize_zerkalny_toponym() -> None:
+    t1 = "Магазин рядом с кинотеатром «Зеркальный» вывозит товар."
+    assert (
+        normalize_berdyansk_toponyms(t1)
+        == "Магазин возле бывшего супермаркета «Зеркальный» вывозит товар."
+    )
+
+    t2 = "Возле бывшего супермаркета «Дзеркальний» вывозят вещи."
+    assert (
+        normalize_berdyansk_toponyms(t2) == "Возле бывшего супермаркета «Зеркальный» вывозят вещи."
+    )

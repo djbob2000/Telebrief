@@ -343,3 +343,39 @@ def test_parse_journalistic_markdown_sept_11_sample():
     assert draft.blocks[4].block_id.startswith("block:general:")
     assert len(draft.blocks[4].items) == 1
     assert "футбол" in draft.blocks[4].items[0].headline.lower()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generate_journalistic_digest_coverage_recovery_zerkalny():
+    # Model generates output missing the Zerkalny store
+    model_output = (
+        "Дайджест · 11 сентября 2026\n\n"
+        "Городская среда и бизнес\n\n"
+        "🏢 **Закрытие магазина «Сакура» на проспекте Ленина:** Магазин «Сакура» закрывается.\n\n"
+        "Другое\n\n"
+        "⚽️ **Набор мальчиков в секцию:** Набор детей на футбол продолжается.\n"
+    )
+    provider = FakeProvider([model_output])
+    writer = DigestNarrativeWriter(provider=provider)
+
+    card_zerkalny = StoryCard(
+        id="card_zerkalny",
+        topic="В Бердянске магазин возле «Дзеркального» вывозит товар",
+        summary="Возле бывшего супермаркета «Дзеркальний» в Бердянске магазин вывозит товар.",
+        importance="medium",
+        rubric_id="urban_life",
+    )
+
+    result_text, draft = await writer.generate_journalistic_digest(
+        city="Бердянск",
+        date_str="11 сентября 2026",
+        cards=[card_zerkalny],
+        max_chars=3900,
+    )
+
+    # Invariant: store near Zerkalny MUST be present via coverage recovery
+    assert "зеркального" in result_text.lower()
+    assert "бывшего супермаркета «зеркальный»" in result_text.lower()
+    # Verified: not cinema
+    assert "кинотеатр" not in result_text.lower()
