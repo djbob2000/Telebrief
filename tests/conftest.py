@@ -22,6 +22,14 @@ DEFAULT_TEST_ENV = {
     "LOG_LEVEL": "INFO",
 }
 
+# Force test database isolation: tests must never touch the live DATABASE_URL
+_test_db_url = os.environ.get(
+    "TELEBRIEF_TEST_DATABASE_URL",
+    "postgresql://telebrief:password@localhost:5432/telebrief_test",
+)
+os.environ["DATABASE_URL"] = _test_db_url
+os.environ["TELEBRIEF_TEST_DATABASE_URL"] = _test_db_url
+
 for _key, _val in DEFAULT_TEST_ENV.items():
     if _key not in os.environ:
         os.environ[_key] = _val

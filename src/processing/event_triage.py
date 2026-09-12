@@ -190,6 +190,7 @@ For every Story return three judgments in the same result:
 Scope is evaluated first. Source membership alone does not make an event local.
 An event in another city/region is OUT_OF_SCOPE unless the excerpts explicitly state a concrete consequence inside the configured focus area.
 Same-region, national importance, front-line direction names, and broad strategic relevance are not DIRECT_IMPACT by themselves.
+Mentions of places, districts, neighborhoods, or streets listed in the configured Focus Places or GEOGRAPHIC CONTEXT establish LOCAL scope.
 OUT_OF_SCOPE or UNCERTAIN is normalized to DROP+NONE without requiring a brief.
 
 For LOCAL or DIRECT_IMPACT content:

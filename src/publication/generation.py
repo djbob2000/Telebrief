@@ -325,61 +325,36 @@ class PublicationGenerationService:
                     )
                     try:
                         if narrative_mode == "journalistic":
-                            city_name = (
-                                getattr(self.config.settings, "edition_name", None)
-                                or getattr(frozen, "edition_name", None)
-                                or "Бердянск"
-                            )
                             from src.publication.digest_narrative import format_digest_date_ru
 
-                            snap_date = run.snapshot_at or dt.datetime.now(dt.timezone.utc)
-                            date_str_ru = format_digest_date_ru(snap_date)
-                            cards_to_synthesize = frozen.analysis.cards
-                            (
-                                journalistic_text,
-                                draft_cand,
-                            ) = await writer.generate_journalistic_digest(
+                            date_str = format_digest_date_ru(run.snapshot_at)
+                            city_name = getattr(frozen.analysis, "city_name", "Бердянск")
+                            clean_body, draft_cand = await writer.generate_journalistic_digest(
                                 city=city_name,
-                                date_str=date_str_ru,
-                                cards=cards_to_synthesize,
+                                date_str=date_str,
+                                cards=frozen.analysis.cards,
                                 evidence=evidence_dict,
-                                custom_rubrics=getattr(self.config.settings, "digest_groups", None)
-                                or getattr(renderer, "rubrics", None),
+                                custom_rubrics=renderer.rubrics,
                                 model=getattr(self.config.settings, "openai_model", None)
                                 or getattr(self.config.settings, "ai_model", None),
-                                max_chars=3900,
-                                target_chars=3500,
                             )
-                            if not journalistic_text or draft_cand is None:
+                            if draft_cand is None:
                                 raise PublicationGenerationError(
                                     "Journalistic digest generation failed: AI writer was unable to produce a valid draft"
                                 )
-
-                            title = f"Дайджест · {date_str_ru}"
-                            lead = ""
-                            body = journalistic_text
                             narrative_draft = draft_cand
                             final_digest_draft = draft_cand
-
-                            covered_sids = [
-                                sid
-                                for b in draft_cand.blocks
-                                for it in b.items
-                                for sid in it.covered_story_ids
-                            ]
-                            coverage_meta = {
-                                "mode": "journalistic",
-                                "candidate_cards_count": len(cards_to_synthesize),
-                                "total_raw_cards_count": len(frozen.analysis.cards),
-                                "block_count": len(draft_cand.blocks),
-                                "covered_story_count": len(set(covered_sids)),
-                                "final_length": len(body),
-                                "single_message_safe": len(body) <= 4096,
-                            }
+                            title = f"Дайджест · {date_str}"
+                            lead = ""
+                            body = clean_body
                             await observer.attempt_finished(
                                 att_id,
                                 "succeeded",
-                                metadata=coverage_meta,
+                                metadata={
+                                    "mode": "journalistic",
+                                    "block_count": len(draft_cand.blocks),
+                                    "chars": len(clean_body),
+                                },
                             )
                         else:
                             draft_cand = await writer.generate_narrative_draft(
@@ -567,6 +542,7 @@ class PublicationGenerationService:
                             presentation_plan=presentation_plan,
                             allowed_context_terms=allowed_digest_terms,
                             all_known_draft_supports=all_draft_support_texts,
+                            support_text_by_id=support_text_index,
                         )
 
                         detail_cards = [

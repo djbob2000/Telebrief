@@ -1078,10 +1078,17 @@ def build_deterministic_digest_draft(
     presentation_plan: Any,
     allowed_context_terms: Sequence[str] = (),
     all_known_draft_supports: Sequence[str] = (),
+    support_text_by_id: Mapping[str, str] | None = None,
 ) -> DigestNarrativeDraft:
     """Build a deterministic, provenance-bearing DigestNarrativeDraft from the presentation plan."""
     from src.publication.article_claims import find_unsupported_claims
     from src.publication.digest_relation_support import find_unsupported_digest_relations
+
+    support_map: dict[str, str] = (
+        dict(support_text_by_id)
+        if support_text_by_id is not None
+        else build_digest_support_text_index(evidence=evidence, cards=cards)
+    )
 
     ctx_terms: Sequence[str] = tuple(allowed_context_terms) if allowed_context_terms else ()
     known_supports: Sequence[str] = (
@@ -1123,6 +1130,8 @@ def build_deterministic_digest_draft(
             group_rendered_sentences: list[str] = []
             group_support_texts: list[str] = []
             lead_topic: str = ""
+            sid_chosen_supports: dict[str, list[str]] = {}
+            sid_support_texts: dict[str, list[str]] = {}
 
             for sid in story_group:
                 pres = presentations_by_id.get(sid)
@@ -1178,23 +1187,40 @@ def build_deterministic_digest_draft(
                     if not eligible_supports and card.id not in dash_supp_ids:
                         eligible_supports.append(card.id)
 
+                # Prioritize supports belonging to required facts for this story
+                story_req_facts = [rf for rf in plan_block.required_facts if sid in rf.story_ids]
+                for rf in story_req_facts:
+                    for s_id in rf.support_ids:
+                        if s_id not in dash_supp_ids and s_id not in eligible_supports:
+                            eligible_supports.append(s_id)
+
                 if not eligible_supports:
                     raise ValueError(f"no deterministic detail support for {sid}")
 
                 per_story_cap = 2 if len(story_group) == 1 else 1
                 chosen_supports = eligible_supports[:per_story_cap]
+                # Ensure at least one support for each required fact is in chosen_supports
+                for rf in story_req_facts:
+                    matching = [s for s in rf.support_ids if s in eligible_supports]
+                    if matching and not any(s in chosen_supports for s in matching):
+                        chosen_supports.append(matching[0])
+
+                sid_chosen_supports[sid] = []
+                sid_support_texts[sid] = []
 
                 for s in chosen_supports:
                     text = ""
                     kind = "established_fact"
                     actual_sup_id = s
-                    if s in evidence:
+                    if s in support_map:
+                        text = support_map[s].strip()
+                        if s in evidence:
+                            kind = getattr(evidence[s], "kind", "established_fact")
+                    elif s in evidence:
                         text = (evidence[s].text or evidence[s].source_text).strip()
                         kind = getattr(evidence[s], "kind", "established_fact")
-                    elif (
-                        s == f"{card.id}:summary"
-                        or s == card.id
-                        or s in getattr(card, "representative_source_refs", ())
+                    elif s == f"{card.id}:summary" or s in getattr(
+                        card, "representative_source_refs", ()
                     ):
                         if card.summary:
                             text = card.summary.strip()
@@ -1222,9 +1248,17 @@ def build_deterministic_digest_draft(
                                 text = card.topic.strip()
                                 actual_sup_id = card.id
 
+                    if not text:
+                        for rf in story_req_facts:
+                            if s in rf.support_ids and rf.text:
+                                text = rf.text.strip()
+                                break
+
                     if text:
                         group_chosen_supports.append(actual_sup_id)
                         group_support_texts.append(text)
+                        sid_chosen_supports[sid].append(actual_sup_id)
+                        sid_support_texts[sid].append(text)
                         if kind in {"community_report", "community_observation", "quote_assertion"}:
                             if not text.casefold().startswith(
                                 ("по сообщениям", "жители сообщают", "по словам")
@@ -1297,12 +1331,52 @@ def build_deterministic_digest_draft(
                     body_text[:DIGEST_ITEM_BODY_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ") + "."
                 )
 
+            item_claims: list[DigestClaimAtom] = []
+            for sid in story_group:
+                c_sups = sid_chosen_supports.get(sid, [])
+                c_texts = sid_support_texts.get(sid, [])
+                if not c_sups:
+                    continue
+                story_req_facts = [rf for rf in plan_block.required_facts if sid in rf.story_ids]
+                if story_req_facts:
+                    for rf in story_req_facts:
+                        best_s = None
+                        for s_id in c_sups:
+                            if s_id in rf.support_ids:
+                                best_s = s_id
+                                break
+                        if best_s is None:
+                            best_s = c_sups[0]
+                        best_t = support_map.get(best_s) or (rf.text if rf.text else "")
+                        clean_c_text = re.sub(r"\bиз-за\b", "при", best_t, flags=re.IGNORECASE)
+                        item_claims.append(
+                            DigestClaimAtom(
+                                text=clean_c_text,
+                                covered_story_ids=(sid,),
+                                cited_support_ids=(best_s,),
+                                covered_fact_ids=(rf.fact_id,),
+                            )
+                        )
+                else:
+                    best_s = c_sups[0]
+                    best_t = support_map.get(best_s) or c_texts[0]
+                    clean_c_text = re.sub(r"\bиз-за\b", "при", best_t, flags=re.IGNORECASE)
+                    item_claims.append(
+                        DigestClaimAtom(
+                            text=clean_c_text,
+                            covered_story_ids=(sid,),
+                            cited_support_ids=(best_s,),
+                            covered_fact_ids=(),
+                        )
+                    )
+
             item_drafts.append(
                 DigestEditorialItemDraft(
                     headline=headline,
                     body=body_text,
                     covered_story_ids=tuple(story_group),
                     cited_support_ids=tuple(group_chosen_supports),
+                    claims=tuple(item_claims),
                 )
             )
 
