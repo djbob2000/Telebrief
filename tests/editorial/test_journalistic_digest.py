@@ -292,3 +292,54 @@ def test_parse_journalistic_markdown_with_custom_rubrics():
     assert len(draft.blocks[0].items) == 1
     assert "Культура" in draft.blocks[1].block_id or "культура" in draft.blocks[1].block_id
     assert len(draft.blocks[1].items) == 1
+
+
+@pytest.mark.unit
+def test_parse_journalistic_markdown_sept_11_sample():
+    sample_text = (
+        "Дайджест · 11 сентября 2026\n\n"
+        "Коммунальная обстановка\n\n"
+        "💧 **Проблемы с водоснабжением в многоэтажках:** Жители Бердянска сообщают, что в многоэтажных домах вода не поднимается выше 6-7 этажа, из-за чего жители верхних этажей испытывают серьезные неудобства.\n\n"
+        "🔌 **Нестабильная подача электроэнергии в городе:** В Бердянске фиксируются перебои с электричеством. Жители сообщают, что в некоторых районах (в частности, на АЗМОЛ) света нет с ночи, при этом в других частях города (Лиски, Лиепайская) электричество присутствует, однако позже поступила информация о его отключении и там.\n\n"
+        "⚡️ **Низкое напряжение в сети:** Жители сообщают, что в электросети города фиксируется крайне низкое напряжение — порядка 130 Вольт, которое недостаточно для работы электроприборов.\n\n"
+        "Безопасность и чрезвычайные ситуации\n\n"
+        "🔥 **Пожар на подстанции в Бердянске:** По сообщениям жителей, в городе горит электроподстанция. Предположительная причина — короткое замыкание, при этом очевидцы отмечают, что хлопков и взрывов перед возгоранием слышно не было.\n\n"
+        "🔹 **Синяя вспышка в небе над городом:** Житель Бердянска сообщил о наблюдении яркой синей вспышки в одном из районов города. По словам очевидца, взрывов или других звуков за вспышкой не последовало.\n\n"
+        "Связь и интернет\n\n"
+        "🌐 **Отключение интернета от провайдера «Юпитер»:** Согласно сообщению провайдера «Юпитер», с 00:00 до 12:00 ожидается отсутствие доступа в интернет у абонентов данной сети.\n\n"
+        "Городская среда и бизнес\n\n"
+        "📦 **Магазин у «Зеркального» вывозит товар:** Возле бывшего супермаркета «Дзеркальний» в Бердянске местные жители заметили, что из магазина вывозят товар. Это может свидетельствовать о скором закрытии торговой точки.\n\n"
+        "Другое\n\n"
+        "⚽️ **Набор детей на футбол в спортивной школе:** Спортивная школа им. Назарова в Бердянске продолжает набор мальчиков 2017 и 2018 годов рождения на занятия футболом.\n"
+    )
+
+    draft = parse_journalistic_markdown_to_draft(sample_text, cards=[])
+    assert len(draft.blocks) == 5
+
+    # Block 0: Коммунальная обстановка (infrastructure)
+    assert draft.blocks[0].block_id.startswith("block:infrastructure:")
+    assert len(draft.blocks[0].items) == 3
+    assert "водоснабжением" in draft.blocks[0].items[0].headline.lower()
+    assert "электроэнергии" in draft.blocks[0].items[1].headline.lower()
+    assert "напряжение" in draft.blocks[0].items[2].headline.lower()
+
+    # Block 1: Безопасность и чрезвычайные ситуации (safety)
+    assert draft.blocks[1].block_id.startswith("block:safety:")
+    assert len(draft.blocks[1].items) == 2
+    assert "пожар" in draft.blocks[1].items[0].headline.lower()
+    assert "вспышка" in draft.blocks[1].items[1].headline.lower()
+
+    # Block 2: Связь и интернет (communications)
+    assert draft.blocks[2].block_id.startswith("block:communications:")
+    assert len(draft.blocks[2].items) == 1
+    assert "юпитер" in draft.blocks[2].items[0].headline.lower()
+
+    # Block 3: Городская среда и бизнес (urban_life)
+    assert draft.blocks[3].block_id.startswith("block:urban_life:")
+    assert len(draft.blocks[3].items) == 1
+    assert "зеркального" in draft.blocks[3].items[0].headline.lower()
+
+    # Block 4: Другое (general)
+    assert draft.blocks[4].block_id.startswith("block:general:")
+    assert len(draft.blocks[4].items) == 1
+    assert "футбол" in draft.blocks[4].items[0].headline.lower()

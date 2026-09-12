@@ -245,3 +245,6 @@ backups/
 
 # Superpowers SDD scratch
 .superpowers/
+
+# Scratch directory
+scratch/
