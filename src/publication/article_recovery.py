@@ -230,13 +230,34 @@ def _render_support_sentence(
     # When transforming into reader prose, use indirect speech and strip quotation marks.
     text = re.sub(r"[«»“”\"]", "", text)
     text = text.replace("[contact omitted]", "").replace("[url omitted]", "").strip()
+
+    # Strip internal operational labels like "Электроснабжение — Азмол: отсутствует — "
+    text = re.sub(
+        r"^(?:Электроснабжение|Водоснабжение|Газоснабжение|Связь|Теплоснабжение)\s*—\s*[^:—\n]+:\s*(?:отсутствует|в норме|авария|перебои|нестабильно)\s*—\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
+
     is_community = support.evidence_kind in {
         "community_report",
         "community_observation",
         "quote_assertion",
     }
     has_own_attr = text.casefold().startswith(
-        ("по сообщениям", "жители сообщают", "по словам", "как сообщают", "как отмечают")
+        (
+            "по сообщениям",
+            "жители сообщают",
+            "житель сообщает",
+            "горожане сообщают",
+            "по информации горожан",
+            "по словам",
+            "как сообщают",
+            "как отмечают",
+            "как рассказывают",
+            "жители отмечают",
+            "жители делятся",
+        )
     )
 
     if is_community:
@@ -250,6 +271,23 @@ def _render_support_sentence(
                 text = f"{opener}{text[:1].lower() + text[1:] if text else text}"
                 new_attributed = True
         else:
+            if already_attributed:
+                # Vary repeated attribution with a transition opener
+                for attr_prefix in (
+                    "по сообщениям жителей,",
+                    "по сообщениям жителей",
+                    "жители сообщают, что",
+                    "житель сообщает, что",
+                    "горожане сообщают, что",
+                    "по информации горожан,",
+                    "по словам жителей,",
+                    "как отмечают в местных сообществах,",
+                ):
+                    if text.casefold().startswith(attr_prefix):
+                        text = text[len(attr_prefix) :].strip()
+                        break
+                opener = _TRANSITION_OPENERS[opener_index % len(_TRANSITION_OPENERS)]
+                text = f"{opener}{text[:1].lower() + text[1:] if text else text}"
             new_attributed = True
     else:
         new_attributed = False
@@ -267,7 +305,8 @@ def _render_support_sentence(
     ):
         text = f"Запланировано: {text}"
 
-    return text.rstrip(". ") + ".", new_attributed
+    text = re.sub(r"[!?.]{2,}", ".", text)
+    return text.rstrip("!?.:; ") + ".", new_attributed
 
 
 def _resolve_story_supports(
@@ -467,7 +506,7 @@ class ArticleDeterministicComposer:
             if story_id not in uncovered_story_ids:
                 continue
             story = plan_by_id.get(story_id)
-            if story is None:
+            if story is None or story.prominence != "DEVELOP":
                 continue
 
             story_sups = _resolve_story_supports(story, context)
@@ -478,19 +517,33 @@ class ArticleDeterministicComposer:
             if not paras:
                 continue
 
-            if story.prominence == "DEVELOP":
-                heading = _safe_heading_for_story(story, story_sups)
-                sec_cited = tuple(dict.fromkeys(sid for p in paras for sid in p.cited_support_ids))
-                sec = ArticleSection(
-                    heading=heading,
-                    heading_support_ids=sec_cited,
-                    heading_claims=(),
-                    paragraphs=paras,
-                    heading_generation_origin="SUPPLEMENT",
-                )
-                new_sections.append(sec)
-            else:
-                short_paragraphs.extend(paras)
+            heading = _safe_heading_for_story(story, story_sups)
+            sec_cited = tuple(dict.fromkeys(sid for p in paras for sid in p.cited_support_ids))
+            sec = ArticleSection(
+                heading=heading,
+                heading_support_ids=sec_cited,
+                heading_claims=(),
+                paragraphs=paras,
+                heading_generation_origin="SUPPLEMENT",
+            )
+            new_sections.append(sec)
+
+        non_develop_stories = [
+            plan_by_id[sid]
+            for sid in plan.story_ids
+            if sid in uncovered_story_ids
+            and sid in plan_by_id
+            and plan_by_id[sid].prominence != "DEVELOP"
+        ]
+        if non_develop_stories:
+            grouped_paras = _build_section_paragraphs(
+                non_develop_stories,
+                context,
+                origin="SUPPLEMENT",
+                seen_dedup_keys={},
+                shared_claim_atoms=[],
+            )
+            short_paragraphs.extend(grouped_paras)
 
         if short_paragraphs:
             short_cited = tuple(

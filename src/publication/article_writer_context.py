@@ -23,8 +23,18 @@ def sanitize_writer_source_text(text: str) -> str:
 
 def _render_coverage_plan(plan: ArticleCoveragePlan) -> str:
     lines = ["ARTICLE COVERAGE PLAN"]
+    develop_stories = [s for s in plan.stories if s.prominence == "DEVELOP"]
+    if develop_stories:
+        lines.append(
+            "\nОБЯЗАТЕЛЬНЫЕ КЛЮЧЕВЫЕ ТЕМЫ (DEVELOP) — КАЖДАЯ ДОЛЖНА БЫТЬ ПОДРОБНО ОТРАЖЕНА В ТЕКСТЕ:"
+        )
+        for ds in develop_stories:
+            lines.append(f"★ DEVELOP {ds.story_id}: {ds.topic}")
+            if ds.support_ids:
+                lines.append(f"  Опорные факты: {', '.join(ds.support_ids[:4])}")
+
     if plan.sections:
-        lines.append(f"THEMATIC SECTIONS COUNT: {len(plan.sections)}")
+        lines.append(f"\nTHEMATIC SECTIONS COUNT: {len(plan.sections)}")
         plan_by_id = plan.by_story_id
         for sec in plan.sections:
             lines.append(f"\nSECTION: {sec.title}")

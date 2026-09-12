@@ -304,3 +304,123 @@ async def test_finalizer_repairs_unsupported_quote_without_full_fallback() -> No
     rendered = result.draft.render_markdown()
     assert "«свет вернулся быстро»" not in rendered
     assert "свет вернулся быстро" in rendered
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_writer_draft_repaired_by_sentence_pruning() -> None:
+    """AGENTS.md 0.7: Paragraph with speculative unsupported sentence is repaired by pruning that sentence."""
+    from src.publication.article_models import ArticleClaimAtom
+
+    sup1 = ArticleSupport(
+        support_id="story:1:evidence:0:frag:101",
+        text="В Бердянске восстановили подачу электроэнергии.",
+        source_text="В Бердянске восстановили подачу электроэнергии.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="established_fact",
+        story_id="story:1",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение",),
+        support_index=(sup1,),
+        support_by_id={sup1.support_id: sup1},
+        recurring_topics=(),
+        edition_anchor_terms=("Бердянск",),
+        story_cards=(
+            StoryCard(
+                id="story:1",
+                topic="Электроснабжение",
+                importance="high",
+                category="utilities",
+                summary="Электроснабжение",
+            ),
+        ),
+        publication_window=None,
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(sup1.support_id,),
+                detail_support_ids=(sup1.support_id,),
+            ),
+        )
+    )
+
+    draft_with_extra_sentence = StructuredArticleDraft(
+        title="Электроснабжение в городе",
+        title_support_ids=(sup1.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Электроснабжение в городе", cited_support_ids=(sup1.support_id,)
+            ),
+        ),
+        lead="В городе продолжаются восстановительные работы.",
+        lead_support_ids=(sup1.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В городе продолжаются восстановительные работы",
+                cited_support_ids=(sup1.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Коммунальные службы",
+                heading_support_ids=(sup1.support_id,),
+                heading_claims=(),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В Бердянске восстановили подачу электроэнергии. По слухам в неизвестных районах открылся космический космодром.",
+                        cited_support_ids=(sup1.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В Бердянске восстановили подачу электроэнергии",
+                                cited_support_ids=(sup1.support_id,),
+                            ),
+                            ArticleClaimAtom(
+                                text="По слухам в неизвестных районах открылся космический космодром",
+                                cited_support_ids=(sup1.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=40,
+    )
+
+    observer = RecordingAttemptObserver()
+    writer_id = await observer.attempt_started("writer")
+
+    finalizer = ArticleFinalizer()
+    editorial_config = PublicationEditorialConfig(
+        article_min_sections=1,
+        article_min_words=5,
+        article_max_sections=6,
+        article_allow_deterministic_fallback=False,  # Strict: fail-closed if not repaired
+    )
+
+    result = await finalizer.finalize(
+        writer_draft=draft_with_extra_sentence,
+        writer_error=None,
+        writer_attempt_id=writer_id,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=editorial_config,
+        length_profile=None,
+        attempt_observer=observer,
+    )
+
+    assert result.writer_status == "passed"
+    rendered = result.draft.render_markdown()
+    assert "космодром" not in rendered
+    assert "В Бердянске восстановили подачу электроэнергии" in rendered

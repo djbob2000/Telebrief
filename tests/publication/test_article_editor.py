@@ -252,3 +252,16 @@ async def test_article_editor_resolves_validation_issues(
     assert "«" not in edited_draft.lead
     assert "Минобразования" not in edited_draft.sections[0].paragraphs[0].text
     assert edited_val.is_valid
+
+
+@pytest.mark.unit
+def test_article_editor_paragraph_deletion(
+    sample_draft: StructuredArticleDraft,
+) -> None:
+    editor = ArticleEditor(provider=AsyncMock(), model="test-model")
+    # P001 is deleted, P002 remains
+    patches = {"P001": "[DELETE]", "P002": "Сохраненный абзац"}
+    edited = editor.apply_patches(sample_draft, patches)
+    # Draft originally had 2 paragraphs in section 0
+    assert len(edited.sections[0].paragraphs) == 1
+    assert edited.sections[0].paragraphs[0].text == "Сохраненный абзац"

@@ -275,26 +275,51 @@ def _ground_draft_in_coverage_plan(
             p_text = p if isinstance(p, str) else p.get("text", "")
             existing_cited = [] if isinstance(p, str) else list(p.get("cited_support_ids") or [])
 
-            if existing_cited:
-                combined_sups = list(dict.fromkeys(existing_cited))
-            else:
-                matched_sups = []
-                if support_stems:
-                    p_stems = _extract_distinctive_stems(p_text)
-                    p_nums = set(re.findall(r"\b\d+\b", p_text))
-                    # Match supports that share at least 2 content stems, or share numbers + stem
-                    for sid, s_stems in support_stems.items():
-                        shared_stems = p_stems & s_stems
-                        s_text = getattr(support_by_id.get(sid), "text", "")
-                        s_nums = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
-                        shared_nums = p_nums & s_nums
-                        if (
-                            len(shared_stems) >= 2
-                            or (shared_stems and shared_nums)
-                            or len(shared_nums) >= 2
-                        ):
-                            matched_sups.append(sid)
-                combined_sups = list(dict.fromkeys(matched_sups))
+            matched_sups = []
+            if support_stems:
+                p_stems = _extract_distinctive_stems(p_text)
+                p_nums = set(re.findall(r"\b\d+\b", p_text))
+                # Match supports that share at least 2 content stems, or share numbers + stem
+                for sid, s_stems in support_stems.items():
+                    shared_stems = p_stems & s_stems
+                    s_text = getattr(support_by_id.get(sid), "text", "")
+                    s_nums = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
+                    shared_nums = p_nums & s_nums
+                    if (
+                        len(shared_stems) >= 2
+                        or (shared_stems and shared_nums)
+                        or len(shared_nums) >= 2
+                        or (len(shared_stems) >= 1 and len(p_stems) <= 4)
+                    ):
+                        matched_sups.append(sid)
+
+            combined_sups = list(dict.fromkeys(existing_cited + matched_sups))
+            if not combined_sups and support_stems:
+                # Fallback: match support with best single stem overlap
+                best_sids: list[str] = []
+                best_score = 0
+                for sid, s_stems in support_stems.items():
+                    sc = len(p_stems & s_stems)
+                    if sc > best_score:
+                        best_score = sc
+                        best_sids = [sid]
+                    elif sc == best_score and sc > 0:
+                        best_sids.append(sid)
+                if best_sids:
+                    combined_sups = best_sids[:3]
+
+            if not combined_sups and combined_h_sups:
+                combined_sups = list(dict.fromkeys(combined_h_sups))
+
+            if not combined_sups and coverage_plan and getattr(coverage_plan, "stories", None):
+                dev_sups = [
+                    sid
+                    for s in coverage_plan.stories
+                    if getattr(s, "prominence", "") == "DEVELOP"
+                    for sid in s.support_ids
+                ]
+                if dev_sups:
+                    combined_sups = dev_sups[:3]
 
             if support_by_id:
                 combined_sups = [sid for sid in combined_sups if sid in support_by_id]
@@ -304,7 +329,41 @@ def _ground_draft_in_coverage_plan(
                 "cited_support_ids": combined_sups,
             }
             if isinstance(p, dict) and "claims" in p and p["claims"]:
-                para_dict["claims"] = p["claims"]
+                claims_list = []
+                for cl in p["claims"]:
+                    if isinstance(cl, dict):
+                        cl_text = cl.get("text", "")
+                        existing_c_sups = [
+                            sid for sid in cl.get("cited_support_ids", ()) if sid in support_by_id
+                        ]
+                        if not existing_c_sups and combined_sups:
+                            cl_stems = _extract_distinctive_stems(cl_text)
+                            cl_nums = set(re.findall(r"\b\d+\b", cl_text))
+                            matched = [
+                                sid
+                                for sid in combined_sups
+                                if (cl_stems & support_stems.get(sid, set()))
+                                or (
+                                    cl_nums
+                                    and set(
+                                        re.findall(
+                                            r"\b\d+\b",
+                                            getattr(support_by_id.get(sid), "text", ""),
+                                        )
+                                    )
+                                    & cl_nums
+                                )
+                            ]
+                            existing_c_sups = matched or combined_sups
+                        claims_list.append(
+                            {
+                                "text": cl_text,
+                                "cited_support_ids": existing_c_sups,
+                            }
+                        )
+                    else:
+                        claims_list.append(cl)
+                para_dict["claims"] = claims_list
             grounded_paras.append(para_dict)
 
         sec["paragraphs"] = grounded_paras
@@ -340,6 +399,7 @@ def _build_regeneration_feedback(
     coverage_plan: ArticleCoveragePlan,
     editorial_config: Any,
     length_profile: Any | None,
+    article_ctx: Any | None = None,
 ) -> str:
     hard_min = (
         length_profile.hard_min_words
@@ -360,32 +420,40 @@ def _build_regeneration_feedback(
     uncovered_set = set(candidate_diag.uncovered_story_ids)
     missing_by_depth: list[str] = []
     for prominence in ("DEVELOP", "WEAVE", "BRIEF"):
-        subset = [
-            f"{s.story_id} ({getattr(s, 'topic', None) or getattr(s, 'headline', None) or 'no topic'})"
-            for s in coverage_plan.stories
-            if s.prominence == prominence and s.story_id in uncovered_set
-        ]
+        subset = []
+        for s in coverage_plan.stories:
+            if s.prominence == prominence and s.story_id in uncovered_set:
+                topic_str = getattr(s, "topic", None) or getattr(s, "headline", None) or "no topic"
+                sups_info = ""
+                if prominence == "DEVELOP" and article_ctx is not None:
+                    sup_lines = []
+                    for sid in s.support_ids[:3]:
+                        sup_obj = getattr(article_ctx, "support_by_id", {}).get(sid)
+                        t = (sup_obj.text if sup_obj else "") or sid
+                        sup_lines.append(f"       * {sid}: {t}")
+                    if sup_lines:
+                        sups_info = "\n" + "\n".join(sup_lines)
+                subset.append(f"  • {s.story_id}: {topic_str}{sups_info}")
         if subset:
-            missing_by_depth.append(f"- {prominence}: {'; '.join(subset)}")
+            missing_by_depth.append(f"- {prominence}:\n" + "\n".join(subset))
     missing_str = "\n".join(missing_by_depth) if missing_by_depth else "- None"
 
     return (
-        "Previous draft was rejected as globally incomplete.\n\n"
-        "Actual:\n"
-        f"- {candidate_val.word_count} words\n"
-        f"- {candidate_val.section_count} section(s)\n"
-        f"- {candidate_diag.covered_story_count}/{candidate_diag.planned_story_count} planned stories covered\n\n"
-        "Required:\n"
-        f"- hard minimum words: {hard_min}\n"
-        f"- target range: {target_min}–{target_max} words\n"
-        "- all DEVELOP stories\n"
-        "- at least 80% AI story coverage before deterministic supplement is allowed\n"
-        "- every ArticleCoveragePlan story must ultimately be represented\n\n"
-        "Missing stories:\n"
+        "Предыдущий черновик был отклонён из-за неполного покрытия обязательных тем (globally incomplete).\n\n"
+        "Фактически в черновике:\n"
+        f"- {candidate_val.word_count} слов\n"
+        f"- {candidate_val.section_count} раздел(ов)\n"
+        f"- {candidate_diag.covered_story_count} из {candidate_diag.planned_story_count} тем покрыто\n\n"
+        "Требования к статье:\n"
+        f"- обязательный минимум слов: {hard_min}\n"
+        f"- целевой объём: {target_min}–{target_max} слов\n"
+        "- ОБЯЗАТЕЛЬНО раскрыть ВСЕ темы категории DEVELOP (без исключений!)\n"
+        "- не менее 80% покрытия тем AI-автором перед финальным сведением\n"
+        "- каждая тема из плана должна быть отражена в соответствующем разделе\n\n"
+        "ПРОПУЩЕННЫЕ ТЕМЫ, КОТОРЫЕ ОБЯЗАТЕЛЬНО НУЖНО ВКЛЮЧИТЬ В СТАТЬЮ:\n"
         f"{missing_str}\n\n"
-        "Rewrite the COMPLETE article from scratch.\n"
-        "Do not patch or extend only the previous lead.\n"
-        "Use only supplied support IDs/evidence."
+        "Напишите ПОЛНУЮ версию статьи заново, включив все указанные пропущенные сюжеты (особенно DEVELOP!).\n"
+        "Указывайте только реальные support IDs из материалов выше."
     )
 
 
@@ -1036,11 +1104,20 @@ class ArticleGenerator:
    - Следуйте тематическим разделам, предложенным в плане покрытия (обычно 3–6 разделов).
    - DEVELOP: ключевые сюжеты дня. Раскройте их в 1–2 подробных абзацах с сохранением микродеталей (районы, улицы, интервалы движения, стоимость, действия жителей и коммунальщиков).
    - WEAVE: сопутствующие темы городской жизни. Органично вплетайте их в канву соответствующего раздела.
-   - BRIEF: короткие полезные городские сообщения. Упоминайте их фактологическими предложениями, обеспечивая 100% покрытие плана. Ни одна запланированная тема не должна быть пропущена.
-   - РАЗДЕЛЕНИЕ НА АБЗАЦЫ И ЗАПРЕТ НА СВАЛКУ ТЕМ:
-     * Темы уровня BRIEF должны логически вплетаться в абзацы по смыслу (быт — к бытовым абзацам, коммунальные сети — к сетям).
-     * КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО сваливать разнородные, не связанные по смыслу темы BRIEF в один финальный абзац-«свалку» через искусственные связки вроде «В бытовом плане горожане продолжают...» или «Кроме того...».
-     * Если тема BRIEF тематически самостоятельна и не примыкает к предыдущему контексту, выносите её в отдельный компактный абзац (1–2 предложения) с естественной журналистской подачей.
+   - ОБЯЗАТЕЛЬНОЕ 100% ПОКРЫТИЕ ВСЕХ СЮЖЕТОВ ПЛАНА (DEVELOP, WEAVE, BRIEF):
+     * Каждый сюжет из ARTICLE COVERAGE PLAN должен быть упомянут в соответствующем разделе статьи. Ни один сюжет не должен быть забыт или пропущен!
+     * BRIEF: короткие полезные городские сообщения. Упоминайте их конкретными фактологическими деталями (улицы, микрорайоны, факты).
+     * СИНТЕЗ ОДНОРОДНЫХ СООБЩЕНИЙ (ГЕОГРАФИЯ И УЛИЦЫ):
+       Если в плане есть несколько коротких сюжетов BRIEF на одну тему (например, сообщения жителей об отключениях на разных улицах: Кирова, Слободка, Нагорная, Колония, Гайдара, или сообщения о восстановлении связи):
+       КАТЕГОРИЧЕСКИ НЕ НУЖНО писать для каждой улицы отдельный абзац!
+       Синтезируйте их в ОДНО плавное, связное журналистское предложение с естественным географическим перечислением внутри соответствующего абзаца темы (например: «В то же время на улицах Кирова, Нагорной, Пионерской, а также в Слободке и Колонии жители сообщают о полном отсутствии питания...»).
+       Такое предложение полностью раскрывает и покрывает все упомянутые сюжеты, сохраняя цельность и гладкость текста.
+     * СОЦИАЛЬНЫЕ И ГОРОДСКИЕ МИКРОИСТОРИИ:
+       Темы вроде потерявшихся людей, поиска родственников, работы детских секций или городских происшествий органично вплетайте в раздел городской хроники компактным предложением (кто, где, что произошло и какая помощь требуется), не оставляя такие сюжеты без внимания.
+       КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО копировать сообщения жителей как есть со знаками вопроса («Кто нибудь знает эту бабулю?...»). Всегда пересказывайте их уважительным языком в косвенной речи от третьего лица («По сообщениям жителей, в Лисках находится пожилая женщина, которая не может назвать свой адрес...»).
+     * РАЗДЕЛЕНИЕ НА АБЗАЦЫ И ЗАПРЕТ НА СВАЛКУ ТЕМ:
+       - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО сваливать разнородные, не связанные по смыслу темы BRIEF в один финальный абзац-«свалку» через искусственные связки вроде «В бытовом плане горожане продолжают...» или «Кроме того...». Каждая тема должна находиться в своём смысловом разделе.
+       - Если тема BRIEF тематически самостоятельна и не примыкает к предыдущему контексту, выносите её в отдельный компактный абзац (1–2 предложения) с естественной журналистской подачей.
 3. ТОНАЛЬНОСТЬ И ЯЗЫК:
    - Спокойный, уважительный, фактологический язык регионального журналиста.
    - Запрещены пустые клише и абстрактные формулировки («ситуация остается напряженной», «жители адаптируются к реалиям», «город живет в новых условиях»). Вместо абстракций приводите конкретные факты: кто что починил, как ходят автобусы, где есть вода и свет.
@@ -1054,8 +1131,8 @@ class ArticleGenerator:
    - КАК ОБЯЗАТЕЛЬНО ПИСАТЬ: Сожмите до одного краткого журналистского предложения о факте транспортного сообщения на основе предоставленных данных (например, отметив сохранение нерегулярных рейсов по ключевым направлениям и высокий уровень цен, без копирования списков городов и контактов).
 
 2. Посредники по банкам и пенсионным выплатам:
-   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО перечислять списки коммерческих банков («ПриватБанк, А-Банк, Sense Bank...») и длинные списки рутинных операций («разблокировка карт, перевод пенсии, ЕЦП, виртуальные карты, актуализация данных...»).
-   - КАК ОБЯЗАТЕЛЬНО ПИСАТЬ: Сожмите до одного предложения о социальном явлении: «В условиях перебоев с официальными сервисами в городе сохраняется спрос на частных посредников, помогающих с банковскими операциями и подтверждением пенсионных выплат».
+   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО перечислять списки коммерческих банков и длинные списки рутинных операций (разблокировка карт, перевод пенсии, актуализация данных).
+   - ЕСЛИ ТАКАЯ ТЕМА ЕСТЬ В ИСХОДНЫХ ФАКТАХ: Сожмите до одного нейтрального предложения о социальном явлении. Если такой темы нет в карточках фактов — КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать о ней!
 
 3. Платные медицинские центры и клиники:
    - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО перечислять длинные каталоги врачебных специальностей («ЛОР, кардиолог, дерматолог, терапевт, педиатр, гастроэнтеролог...») и публиковать графики работы лабораторий или забора крови.
@@ -1124,7 +1201,7 @@ class ArticleGenerator:
             self.config.settings, "publication_editorial", PublicationEditorialConfig()
         )
         length_profile = derive_article_length_profile(article_ctx, editorial_config)
-        develop_story_budget = max(0, min(4, length_profile.target_max_sections - 1))
+        develop_story_budget = 0
 
         lookback_hours = 24
         if article_ctx.publication_window is not None:
@@ -1170,7 +1247,43 @@ class ArticleGenerator:
             length_profile=length_profile,
             is_longitudinal=is_longitudinal,
         )
-        user_prompt = f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\n{context_str}"
+        dev_stories_lines = []
+        if coverage_plan and getattr(coverage_plan, "stories", None):
+            for s in coverage_plan.stories:
+                if s.prominence == "DEVELOP":
+                    sup_details = []
+                    for sid in s.support_ids[:3]:
+                        sup_obj = getattr(article_ctx, "support_by_id", {}).get(sid)
+                        t = (sup_obj.text if sup_obj else "") or sid
+                        sup_details.append(f"{sid}: {t}")
+                    dev_stories_lines.append(
+                        f"   ★ [{s.story_id}] {s.topic}\n"
+                        f"     Опорные факты (ОБЯЗАТЕЛЬНО включить в текст с указанием ID!):\n"
+                        f"     - " + "\n     - ".join(sup_details)
+                    )
+        dev_instruction = ""
+        if dev_stories_lines:
+            dev_instruction = (
+                "\n════════════════════════════════════════\n"
+                "ГЛАВНЫЕ ОБЯЗАТЕЛЬНЫЕ СЮЖЕТЫ (DEVELOP / LEAD):\n"
+                "Каждый сюжет из этого списка ОБЯЗАТЕЛЬНО должен быть раскрыт в тексте (в лиде или отдельном абзаце) с указанием его support ID!\n"
+                "Если не упомянуть сюжет из списка DEVELOP, статья будет забракована редакционным контролем.\n"
+                + "\n".join(dev_stories_lines)
+                + "\n════════════════════════════════════════\n\n"
+            )
+
+        user_prompt = (
+            f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\n{context_str}\n\n"
+            "════════════════════════════════════════\n"
+            "ЗАДАНИЕ ВЫПУСКАЮЩЕМУ РЕДАКТОРУ:\n"
+            "Напишите полную, связную городскую вечернюю хронику в формате JSON.\n"
+            f"{dev_instruction}"
+            "1. Обязательно раскройте все ключевые темы DEVELOP в подробных абзацах.\n"
+            "2. Органично вплетите сопутствующие сюжеты WEAVE и полезные сообщения BRIEF в соответствующие тематические разделы.\n"
+            "3. Соблюдайте целевую структуру разделов (не менее 3–4 содержательных разделов).\n"
+            "4. Строго соблюдайте Evidence Boundary — опирайтесь только на факты из материалов выше.\n"
+            "Верните строго валидный JSON."
+        )
 
         from src.publication.article_finalization import ArticleFinalizer
 
@@ -1192,7 +1305,9 @@ class ArticleGenerator:
             article_temp = getattr(
                 getattr(self.config.settings, "article", None), "temperature", 0.3
             )
-            writer_max_tokens = self.config.settings.article.editorial_writer_max_output_tokens
+            writer_max_tokens = min(
+                self.config.settings.article.editorial_writer_max_output_tokens, 65536
+            )
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -1202,7 +1317,7 @@ class ArticleGenerator:
                 model=self.model,
                 temperature=article_temp,
                 max_tokens=writer_max_tokens,
-                reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
+                reasoning_effort="none",
                 response_format={"type": "json_object"},
             )
             raw_parsed = self._parse_event_article_response_json(response)
@@ -1264,6 +1379,7 @@ class ArticleGenerator:
                     coverage_plan=coverage_plan,
                     editorial_config=editorial_config,
                     length_profile=length_profile,
+                    article_ctx=article_ctx,
                 )
                 regen_messages = [
                     {"role": "system", "content": system_prompt},
@@ -1276,7 +1392,7 @@ class ArticleGenerator:
                     model=self.model,
                     temperature=article_temp,
                     max_tokens=writer_max_tokens,
-                    reasoning_effort=getattr(self.config.settings, "reasoning_effort", None),
+                    reasoning_effort="none",
                     response_format={"type": "json_object"},
                 )
                 raw_parsed = self._parse_event_article_response_json(regen_response)
@@ -1334,7 +1450,7 @@ class ArticleGenerator:
                     editor_max_tokens = getattr(
                         getattr(self.config.settings, "article", None),
                         "editorial_repair_max_output_tokens",
-                        8192,
+                        16384,
                     )
                     editor = ArticleEditor(
                         provider=self.provider,

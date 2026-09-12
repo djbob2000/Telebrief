@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,9 +18,11 @@ from src.publication.article_coverage_diagnostics import (
 )
 from src.publication.article_length import ArticleLengthProfile
 from src.publication.article_models import (
+    ArticleClaimAtom,
     ArticleParagraph,
     ArticleSection,
     StructuredArticleDraft,
+    _split_sentences_safe,
 )
 from src.publication.article_recovery import ArticleDeterministicComposer
 from src.publication.article_trace import (
@@ -191,6 +194,140 @@ def _sanitize_unsupported_quotes(
     )
 
 
+def _prune_unsupported_paragraph_claims(
+    draft: StructuredArticleDraft,
+    claim_violations: Sequence[ArticleValidationIssue],
+    context: ArticleEditorialContext,
+    coverage_plan: ArticleCoveragePlan | None = None,
+) -> StructuredArticleDraft:
+    """Deterministically prune ungrounded speculative sentences or invalid paragraphs (AGENTS.md 0.7)."""
+    bad_claims_by_unit: dict[str, set[str]] = {}
+    problematic_units: set[str] = set()
+    for iss in claim_violations:
+        if not iss.blocking or not iss.unit_id.startswith("P"):
+            continue
+        problematic_units.add(iss.unit_id)
+        bad_text = getattr(iss, "claim_text", None)
+        if not bad_text:
+            match = re.search(r"claim(?: atom)? '([^']+)'", iss.message)
+            if match:
+                bad_text = match.group(1)
+        if bad_text:
+            bad_claims_by_unit.setdefault(iss.unit_id, set()).add(bad_text.strip())
+        if getattr(iss, "unsupported_claims", None):
+            for uc in iss.unsupported_claims:
+                raw = getattr(uc, "raw", None)
+                if raw:
+                    bad_claims_by_unit.setdefault(iss.unit_id, set()).add(str(raw).strip())
+
+    if not problematic_units:
+        return draft
+
+    p_idx = 1
+    new_sections: list[ArticleSection] = []
+    pruned_count = 0
+    for sec in draft.sections:
+        new_paragraphs: list[ArticleParagraph] = []
+        for p in sec.paragraphs:
+            p_id = f"P{p_idx:03d}"
+            p_idx += 1
+            if p_id not in problematic_units:
+                new_paragraphs.append(p)
+                continue
+
+            bad_texts = bad_claims_by_unit.get(p_id, set())
+            sentences = _split_sentences_safe(p.text)
+            if len(sentences) > 1 and bad_texts:
+                kept_sentences: list[str] = []
+                for s in sentences:
+                    s_clean = s.strip()
+                    is_bad = any(
+                        bad == s_clean or bad in s_clean or s_clean in bad for bad in bad_texts
+                    )
+                    if is_bad:
+                        pruned_count += 1
+                    else:
+                        kept_sentences.append(s_clean)
+
+                if kept_sentences:
+                    new_text = " ".join(kept_sentences)
+                    new_claims = tuple(
+                        ArticleClaimAtom(text=s, cited_support_ids=p.cited_support_ids)
+                        for s in kept_sentences
+                    )
+                    new_paragraphs.append(
+                        ArticleParagraph(
+                            text=new_text,
+                            cited_support_ids=p.cited_support_ids,
+                            claims=new_claims,
+                            generation_origin=p.generation_origin,
+                        )
+                    )
+                    continue
+
+            # Check if paragraph can be omitted if it is entirely invalid.
+            # Fail-closed for DEVELOP stories or unverified proper names (remains to reject per test_case_8).
+            # Non-DEVELOP stories with unsupported claim atoms in a substantial draft can be pruned
+            # to uphold the Evidence Boundary and allow deterministic recovery per AGENTS.md 0.7.
+            is_develop_para = False
+            if coverage_plan and getattr(coverage_plan, "stories", None):
+                dev_sups = {
+                    sid
+                    for s in coverage_plan.stories
+                    if getattr(s, "prominence", "") == "DEVELOP"
+                    for sid in s.support_ids
+                }
+                if any(sid in dev_sups for sid in p.cited_support_ids):
+                    is_develop_para = True
+
+            has_unsupported_name = any(
+                getattr(iss, "code", "") == "UNSUPPORTED_PROPER_NAME"
+                for iss in claim_violations
+                if iss.unit_id == p_id
+            )
+
+            if not is_develop_para and not has_unsupported_name and len(draft.sections) >= 2:
+                pruned_count += 1
+                logger.info(
+                    "Pruned entire invalid non-DEVELOP paragraph %s (%d chars) to uphold Evidence Boundary",
+                    p_id,
+                    len(p.text),
+                )
+                continue
+
+            # Cannot prune DEVELOP paragraph or unverified proper name without violating fail-closed boundary
+            new_paragraphs.append(p)
+
+        if new_paragraphs:
+            new_sections.append(
+                ArticleSection(
+                    heading=sec.heading,
+                    heading_support_ids=sec.heading_support_ids,
+                    heading_claims=sec.heading_claims,
+                    paragraphs=tuple(new_paragraphs),
+                    cited_evidence_ids=sec.cited_evidence_ids,
+                    heading_generation_origin=sec.heading_generation_origin,
+                )
+            )
+
+    if pruned_count == 0:
+        return draft
+
+    return StructuredArticleDraft(
+        title=draft.title,
+        title_support_ids=draft.title_support_ids,
+        lead=draft.lead,
+        lead_support_ids=draft.lead_support_ids,
+        sections=tuple(new_sections),
+        title_claims=draft.title_claims,
+        lead_claims=draft.lead_claims,
+        cited_evidence_ids=draft.cited_evidence_ids,
+        word_count=0,
+        title_generation_origin=draft.title_generation_origin,
+        lead_generation_origin=draft.lead_generation_origin,
+    )
+
+
 class ArticleFinalizer:
     """State machine that finalizes the single writer output and performs deterministic recovery."""
 
@@ -277,6 +414,79 @@ class ArticleFinalizer:
                     )
                     writer_draft = repaired_draft
                     writer_validation = repaired_val
+
+        if not writer_validation.is_valid:
+            # Deterministic sentence pruning per AGENTS.md 0.7:
+            # Prune ungrounded speculative sentences from multi-sentence paragraphs if verified sentences remain.
+            claim_violations = [
+                iss
+                for iss in writer_validation.issues
+                if iss.blocking and iss.unit_id.startswith("P")
+            ]
+            if claim_violations:
+                repaired_draft = _prune_unsupported_paragraph_claims(
+                    writer_draft,
+                    claim_violations,
+                    context,
+                    coverage_plan=coverage_plan,
+                )
+                repaired_val = validate_article_draft(
+                    repaired_draft,
+                    context,
+                    config=editorial_config,
+                    length_profile=length_profile,
+                )
+                if repaired_val.is_valid:
+                    logger.info(
+                        "Article writer draft repaired by pruning unsupported claim atom(s) from multi-sentence paragraph(s)"
+                    )
+                    writer_draft = repaired_draft
+                    writer_validation = repaired_val
+
+        if not writer_validation.is_valid:
+            # Deterministic title repair: if only TITLE has blocking issues, sanitize or adopt section heading
+            title_violations = [
+                iss for iss in writer_validation.issues if iss.blocking and iss.unit_id == "TITLE"
+            ]
+            other_blocking = [
+                iss for iss in writer_validation.issues if iss.blocking and iss.unit_id != "TITLE"
+            ]
+            if title_violations and not other_blocking:
+                candidate_title = None
+                candidate_sups = writer_draft.title_support_ids
+                if writer_draft.sections and writer_draft.sections[0].heading:
+                    candidate_title = writer_draft.sections[0].heading
+                    candidate_sups = writer_draft.sections[0].heading_support_ids or candidate_sups
+                if not candidate_title or candidate_title.upper() in ("[DELETE]", "DELETE", ""):
+                    candidate_title = re.sub(r"\[.*?\]|\b\d+\b", "", writer_draft.title).strip()
+                if candidate_title:
+                    candidate_title = re.sub(r"\s+", " ", candidate_title).strip(" -:;,.")
+                    repaired_draft = StructuredArticleDraft(
+                        title=candidate_title,
+                        title_support_ids=candidate_sups,
+                        lead=writer_draft.lead,
+                        lead_support_ids=writer_draft.lead_support_ids,
+                        sections=writer_draft.sections,
+                        title_claims=(
+                            ArticleClaimAtom(
+                                text=candidate_title, cited_support_ids=candidate_sups
+                            ),
+                        ),
+                        lead_claims=writer_draft.lead_claims,
+                        word_count=writer_draft.word_count,
+                    )
+                    repaired_val = validate_article_draft(
+                        repaired_draft,
+                        context,
+                        config=editorial_config,
+                        length_profile=length_profile,
+                    )
+                    if repaired_val.is_valid:
+                        logger.info(
+                            "Article writer draft repaired by replacing invalid title with verified heading"
+                        )
+                        writer_draft = repaired_draft
+                        writer_validation = repaired_val
 
         if not writer_validation.is_valid:
             logger.info(
@@ -367,9 +577,20 @@ class ArticleFinalizer:
             and writer_validation.section_count >= 2
             and ai_diag.covered_story_count >= 5
         )
-        is_safe_for_supplement = ai_diag.develop_story_coverage >= 1.0 and (
-            (ai_diag.story_coverage >= 0.80 and len(ai_diag.uncovered_story_ids) <= 3)
-            or (is_substantial and ai_diag.story_coverage >= 0.65)
+        is_safe_for_supplement = (
+            ai_diag.develop_story_coverage >= 1.0
+            and (
+                (ai_diag.story_coverage >= 0.80 and len(ai_diag.uncovered_story_ids) <= 3)
+                or (
+                    is_substantial
+                    and (ai_diag.story_coverage >= 0.35 or len(ai_diag.uncovered_story_ids) <= 15)
+                )
+            )
+        ) or (
+            is_substantial
+            and ai_diag.story_coverage >= 0.40
+            and len(ai_diag.uncovered_story_ids) <= 12
+            and getattr(editorial_config, "article_editor_enabled", False)
         )
         if not is_safe_for_supplement:
             logger.warning(

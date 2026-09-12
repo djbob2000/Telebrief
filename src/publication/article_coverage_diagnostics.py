@@ -111,13 +111,14 @@ def _claim_supports_story(
     if not has_base_grounding:
         return False
 
-    # Check story-discriminative anchors if available
-    if story_discriminative_stems:
-        if not (claim_stems & story_discriminative_stems):
-            return False
-    elif story_discriminative_nums and claim_nums:
-        if not (claim_nums & story_discriminative_nums):
-            return False
+    # Check story-discriminative anchors if available and base grounding is borderline
+    if len(shared_stems) < 3 and not (shared_stems and shared_nums) and len(shared_nums) < 2:
+        if story_discriminative_stems:
+            if not (claim_stems & story_discriminative_stems):
+                return False
+        elif story_discriminative_nums and claim_nums:
+            if not (claim_nums & story_discriminative_nums):
+                return False
 
     return True
 

@@ -89,6 +89,7 @@ class ArticleValidationIssue:
     unsupported_claims: tuple[ConcreteClaim, ...] = ()
     severity: Literal["error", "warning"] = "error"
     blocking: bool = True
+    claim_text: str | None = None
 
 
 @dataclass(frozen=True)
@@ -267,9 +268,24 @@ def validate_article_draft(
     for st in all_draft_support_texts:
         all_draft_concepts.update(canonical_semantic_concepts(st))
 
+    from src.publication.article_coverage import _story_id_from_support_id
+
+    coverage_plan = getattr(context, "coverage_plan", None)
+    story_topics: dict[str, str] = {}
+    if coverage_plan and hasattr(coverage_plan, "stories"):
+        for sc in coverage_plan.stories:
+            if getattr(sc, "story_id", None) and getattr(sc, "topic", None):
+                story_topics[sc.story_id] = sc.topic
+
     all_edition_support_texts = [s.text for s in context.supports if s.text] + [
         s.source_text for s in context.supports if s.source_text
     ]
+    for s in context.supports:
+        s_story_id = getattr(s, "story_id", "") or _story_id_from_support_id(
+            getattr(s, "support_id", "")
+        )
+        if s_story_id in story_topics:
+            all_edition_support_texts.append(story_topics[s_story_id])
     for s in context.supports:
         if (obs := getattr(s, "observed_at", None)) is not None:
             all_edition_support_texts.append(obs.strftime("%H:%M"))
@@ -339,7 +355,7 @@ def validate_article_draft(
 
         # Check missing support IDs
         if not cited_ids:
-            blocking = unit_type != "heading"
+            blocking = unit_type not in ("heading", "title")
             missing_support_severity: Literal["error", "warning"] = (
                 "error" if blocking else "warning"
             )
@@ -527,6 +543,7 @@ def validate_article_draft(
                                 support_ids=claim.cited_support_ids,
                                 severity="error",
                                 blocking=True,
+                                claim_text=claim.text,
                             )
                         )
 
@@ -552,6 +569,7 @@ def validate_article_draft(
                                 message=f"Unit {unit_id} claim atom '{claim.text}' contains direct quote not matching exact primary source text",
                                 support_ids=claim.cited_support_ids,
                                 unsupported_claims=assessment.unsupported_concrete_claims,
+                                claim_text=claim.text,
                             )
                         )
                     elif assessment.blocking_proper_names:
@@ -562,6 +580,7 @@ def validate_article_draft(
                                 message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported proper names {assessment.blocking_proper_names}",
                                 support_ids=claim.cited_support_ids,
                                 unsupported_claims=assessment.unsupported_concrete_claims,
+                                claim_text=claim.text,
                             )
                         )
                     elif assessment.blocking_critical_terms:
@@ -578,16 +597,22 @@ def validate_article_draft(
                                     message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported critical concepts {tuple(novel_critical)}",
                                     support_ids=claim.cited_support_ids,
                                     unsupported_claims=assessment.unsupported_concrete_claims,
+                                    claim_text=claim.text,
                                 )
                             )
                     elif assessment.unsupported_concrete_claims:
+                        details_str = ", ".join(
+                            f"'{getattr(c, 'raw', str(c))}' ({getattr(c, 'kind', 'concrete')})"
+                            for c in assessment.unsupported_concrete_claims
+                        )
                         issues.append(
                             ArticleValidationIssue(
                                 code="UNSUPPORTED_CONCRETE_CLAIM",
                                 unit_id=unit_id,
-                                message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported concrete details",
+                                message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported concrete details: {details_str}",
                                 support_ids=claim.cited_support_ids,
                                 unsupported_claims=assessment.unsupported_concrete_claims,
+                                claim_text=claim.text,
                             )
                         )
                     elif (
@@ -603,6 +628,7 @@ def validate_article_draft(
                                 unit_id=unit_id,
                                 message=f"Unit {unit_id} claim atom '{claim.text}' asserts unsupported causal relation '{verb}'",
                                 support_ids=claim.cited_support_ids,
+                                claim_text=claim.text,
                             )
                         )
                     else:
@@ -610,7 +636,10 @@ def validate_article_draft(
                             assessment.unsupported_concrete_claims
                             or assessment.blocking_proper_names
                             or assessment.blocking_critical_terms
-                            or assessment.blocking_semantic_terms
+                            or (
+                                assessment.blocking_semantic_terms
+                                and unit_type not in ("title", "lead")
+                            )
                         )
                         issues.append(
                             ArticleValidationIssue(
@@ -621,6 +650,7 @@ def validate_article_draft(
                                 unsupported_claims=assessment.unsupported_concrete_claims,
                                 severity="error" if is_blocking else "warning",
                                 blocking=is_blocking,
+                                claim_text=claim.text,
                             )
                         )
                 elif assessment.lexical_only_warning:
@@ -635,6 +665,7 @@ def validate_article_draft(
                             support_ids=claim.cited_support_ids,
                             severity="warning",
                             blocking=False,
+                            claim_text=claim.text,
                         )
                     )
 
