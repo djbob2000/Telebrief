@@ -292,3 +292,106 @@ async def test_ready_decision_claims_and_defers_preparation_once():
     assert first.status == second.status == "ready_for_preparation"
     assert repo.preparing == 1
     assert deferred == [7]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_authority_barrier_enforced_when_background_triage_disabled(
+    monkeypatch,
+):
+    """Publication barrier must discover untriaged active stories even if background authority is disabled."""
+    repo = FakeRepo(_intent(status="processing"), [])
+    intent = _intent(status="processing")
+    reconciliation_now = TARGET + dt.timedelta(minutes=5)
+
+    config = SimpleNamespace(
+        settings=SimpleNamespace(event_pipeline=SimpleNamespace(background_authority_enabled=False))
+    )
+
+    triage_service_called = []
+
+    async def ensure_current(_service, conn, **kwargs):
+        return SimpleNamespace(eligibility_policy_id=73)
+
+    async def find_gap(_repository, conn, **kwargs):
+        # First check finds gap target (active story without triage/revision)
+        if not triage_service_called:
+            return [
+                AuthorityTarget(
+                    story_id=9001,
+                    assignment_id=1201,
+                    edition_id=intent.edition_id,
+                    triage_version="v10",
+                    scope_version="v1",
+                    scope_config_hash="hash",
+                )
+            ]
+        return []
+
+    monkeypatch.setattr(
+        "src.publication.policies.PublicationPolicyService.ensure_current",
+        ensure_current,
+    )
+    monkeypatch.setattr(
+        "src.publication.repository.PublicationRepository.find_authority_gap_targets",
+        find_gap,
+    )
+
+    readiness = FakeReadiness(
+        repo,
+        PublicationReadinessDecision(
+            "processing",
+            None,
+            authority_gap_story_ids=(9001,),
+        ),
+    )
+    orchestrator = PublicationOrchestrator(
+        uow=FakeUow(),
+        config=config,
+        readiness=readiness,
+        readiness_repo=repo,
+    )
+
+    async def defer_event_processing(conn, *, intent_id, edition_id, story_ids):
+        triage_service_called.append((edition_id, story_ids))
+
+    orchestrator._defer_event_processing = defer_event_processing
+
+    decision = await orchestrator.reconcile(7, now=reconciliation_now)
+
+    assert decision.status == "processing"
+    assert triage_service_called == [(1, (9001,))]
+    assert repo.preparing == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_authority_barrier_fails_closed_when_triage_fails():
+    """If Gate V2 authority cannot be obtained before deadline, publication fails closed without sealing."""
+    # Past deadline with unsatisfied authority gap
+    past_deadline_intent = replace(
+        _intent(status="processing"), deadline_at=TARGET - dt.timedelta(minutes=1)
+    )
+    repo = FakeRepo(past_deadline_intent, [])
+    readiness = FakeReadiness(
+        repo,
+        PublicationReadinessDecision(
+            "failed",
+            None,
+            failure_kind="deadline_exceeded",
+            authority_gap_story_ids=(9001,),
+        ),
+    )
+    orchestrator = PublicationOrchestrator(
+        uow=FakeUow(),
+        config=SimpleNamespace(settings=SimpleNamespace()),
+        readiness=readiness,
+        readiness_repo=repo,
+    )
+    orchestrator._enqueue_failure_notification = AsyncMock()
+
+    decision = await orchestrator.reconcile(7, now=TARGET)
+
+    assert decision.status == "failed"
+    assert decision.status != "selected_inputs_sealed"
+    assert repo.preparing == 0
