@@ -355,7 +355,7 @@ class MessageCollector:
 
 
 async def main():
-    """Authenticate and test the message collector.
+    """Authenticate the shared Telegram user session.
 
     Run interactively to create sessions/user.session:
         python -m src.collector
@@ -364,27 +364,20 @@ async def main():
     from src.utils import setup_logging
 
     config = load_config()
-    logger = setup_logging(config.log_level)
+    setup_logging(config.log_level)
 
     # Interactive auth: call start() which prompts for phone + code
     client = TelegramClient("sessions/user", config.telegram_api_id, config.telegram_api_hash)
     print("Authenticating with Telegram User API...")
     print("You will be prompted for your phone number and a login code.")
-    await client.start()
-    print("Authenticated! Session saved to sessions/user.session")
-
-    # Quick test: fetch 1 hour of messages
-    collector = MessageCollector(config, logger)
+    # Keep this command limited to authentication. Opening a second
+    # TelegramClient on the same SQLite session while the auth client is
+    # still connected can leave sessions/user.session locked, especially
+    # when a worker is running alongside the bootstrap command.
     try:
-        await collector.connect()
-        messages = await collector.fetch_messages(hours=1)
-
-        for channel_name, msgs in messages.items():
-            print(f"\n{channel_name}: {len(msgs)} messages")
-            for msg in msgs[:3]:  # Show first 3
-                print(f"  - {msg.sender}: {msg.text[:50]}...")
+        await client.start()
+        print("Authenticated! Session saved to sessions/user.session")
     finally:
-        await collector.disconnect()
         await client.disconnect()
 
 
