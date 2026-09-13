@@ -19,7 +19,7 @@ from procrastinate.exceptions import AlreadyEnqueued, UniqueViolation
 
 from src.config_loader import Config
 from src.ingestion.models import CollectionTrigger
-from src.publication.policies import resolve_publication_lookback_hours
+from src.publication.policies import ARTICLE_PUBLICATION_TYPES, resolve_publication_lookback_hours
 from src.publication.readiness import (
     PublicationReadinessDecision,
     PublicationReadinessService,
@@ -137,20 +137,58 @@ class PublicationOrchestrator:
             if edition is None:
                 raise ValueError(f"edition slug {edition_slug!r} not found")
             source_ids = await EditionRepository().list_enabled_source_ids(conn, edition.id)
-            intent = await self.readiness.create_refresh(
-                conn,
-                edition_id=edition.id,
-                publication_type=publication_type,
-                slot_at=target_at,
-                source_ids=source_ids,
-                requested_at=now,
-                trigger=trigger,
-                request_key=key,
-                freshness_cutoff_at=freshness_cutoff_at,
-                requested_by_user_id=requested_by_user_id,
-                lookback_hours=effective_lookback_hours,
-                deadline_minutes=self.config.settings.publication_readiness_deadline_minutes,
-            )
+            reusable_refresh = None
+            if publication_type in ARTICLE_PUBLICATION_TYPES:
+                reusable_refresh = await self.readiness_repo.find_reusable_frozen_refresh(
+                    conn,
+                    edition_id=edition.id,
+                    freshness_cutoff_at=freshness_cutoff_at,
+                    target_at=target_at,
+                    lookback_hours=effective_lookback_hours,
+                )
+
+            if reusable_refresh is not None:
+                intent = await self.readiness_repo.create_reused_refresh_run(
+                    conn,
+                    source_refresh=reusable_refresh,
+                    publication_type=publication_type,
+                    slot_at=target_at,
+                    requested_at=now,
+                    trigger=trigger,
+                    request_key=key,
+                    freshness_cutoff_at=freshness_cutoff_at,
+                    deadline_at=deadline_at,
+                    requested_by_user_id=requested_by_user_id,
+                    lookback_hours=effective_lookback_hours,
+                )
+                logger.info(
+                    "publication_refresh_snapshot_reused",
+                    extra={
+                        "refresh_run_id": intent.id,
+                        "source_refresh_run_id": reusable_refresh.id,
+                        "publication_type": publication_type,
+                        "knowledge_snapshot_at": (
+                            reusable_refresh.knowledge_snapshot_at.isoformat()
+                            if reusable_refresh.knowledge_snapshot_at is not None
+                            else None
+                        ),
+                    },
+                )
+            else:
+                intent = await self.readiness.create_refresh(
+                    conn,
+                    edition_id=edition.id,
+                    publication_type=publication_type,
+                    slot_at=target_at,
+                    source_ids=source_ids,
+                    requested_at=now,
+                    trigger=trigger,
+                    request_key=key,
+                    freshness_cutoff_at=freshness_cutoff_at,
+                    requested_by_user_id=requested_by_user_id,
+                    lookback_hours=effective_lookback_hours,
+                    deadline_minutes=self.config.settings.publication_readiness_deadline_minutes,
+                )
             if intent.status in {"preparing", "publication_queued", "failed"}:
                 # The scheduler may submit the same stable request key on
                 # every catch-up tick. A handed-off or terminal intent is

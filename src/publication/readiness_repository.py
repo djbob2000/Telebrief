@@ -215,6 +215,128 @@ class PublicationReadinessRepository:
             )
         return refresh
 
+    async def find_reusable_frozen_refresh(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        edition_id: int,
+        freshness_cutoff_at: dt.datetime,
+        target_at: dt.datetime,
+        lookback_hours: int,
+    ) -> PublicationRefreshRun | None:
+        """Find a completed digest snapshot that is fresh enough for an article.
+
+        Article generation is a different publication view over the same frozen
+        Event-First knowledge.  Reusing a successful digest refresh avoids
+        recollecting and reprocessing the same source window when an article is
+        requested immediately afterwards.
+        """
+        query = (  # noqa: S608
+            self._RUN_SELECT  # noqa: S608
+            + """
+            WHERE edition_id = %s
+              AND publication_type IN ('digest', 'digest_grouped', 'digest_channel')
+              AND status = 'publication_queued'
+              AND error_kind IS NULL
+              AND knowledge_snapshot_at IS NOT NULL
+              AND knowledge_snapshot_at >= %s
+              AND knowledge_snapshot_at <= %s
+              AND lookback_hours = %s
+              AND (
+                  publication_run_id IS NULL
+                  OR EXISTS (
+                      SELECT 1
+                      FROM publication_runs
+                      WHERE publication_runs.id = publication_refresh_runs.publication_run_id
+                        AND publication_runs.status = 'succeeded'
+                  )
+              )
+            ORDER BY knowledge_snapshot_at DESC, id DESC
+            LIMIT 1
+            """
+        )
+        cursor = await conn.execute(
+            query,
+            (edition_id, freshness_cutoff_at, target_at, lookback_hours),
+        )
+        row = await cursor.fetchone()
+        return PublicationRefreshRun.from_row(row) if row is not None else None
+
+    async def create_reused_refresh_run(
+        self,
+        conn: psycopg.AsyncConnection,
+        *,
+        source_refresh: PublicationRefreshRun,
+        publication_type: str,
+        slot_at: dt.datetime,
+        requested_at: dt.datetime,
+        trigger: str,
+        request_key: str,
+        freshness_cutoff_at: dt.datetime,
+        deadline_at: dt.datetime,
+        requested_by_user_id: int | None,
+        lookback_hours: int,
+    ) -> PublicationRefreshRun:
+        """Create an article intent already ready to use a frozen snapshot."""
+        metadata = dict(source_refresh.metadata)
+        metadata.update(
+            {
+                "knowledge_snapshot_reused": True,
+                "reused_from_refresh_run_id": source_refresh.id,
+            }
+        )
+        cursor = await conn.execute(
+            """
+            INSERT INTO publication_refresh_runs (
+                edition_id, publication_type, slot_at, requested_at,
+                normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
+                status, collection_ready_at, processing_ready_at,
+                trigger, request_key, freshness_cutoff_at,
+                requested_by_user_id, lookback_hours, knowledge_snapshot_at,
+                metadata
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, 'ready_for_preparation',
+                %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            ON CONFLICT (request_key)
+            DO NOTHING
+            RETURNING id, edition_id, publication_type, slot_at, requested_at,
+                      normal_source_cutoff_at, fallback_snapshot_at, deadline_at,
+                      status, collection_ready_at, processing_ready_at, prepared_at,
+                      publication_run_id, fallback_used, error_kind, metadata,
+                      trigger, request_key, freshness_cutoff_at, requested_by_user_id,
+                      lookback_hours, knowledge_snapshot_at
+            """,
+            (
+                source_refresh.edition_id,
+                publication_type,
+                slot_at,
+                requested_at,
+                source_refresh.normal_source_cutoff_at,
+                source_refresh.fallback_snapshot_at,
+                deadline_at,
+                source_refresh.collection_ready_at,
+                source_refresh.processing_ready_at,
+                trigger,
+                request_key,
+                freshness_cutoff_at,
+                requested_by_user_id,
+                lookback_hours,
+                source_refresh.knowledge_snapshot_at,
+                Jsonb(metadata),
+            ),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            cursor = await conn.execute(
+                self._RUN_SELECT + "\nWHERE request_key = %s",
+                (request_key,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                raise RuntimeError("reused refresh run conflict returned no existing row")
+        return PublicationRefreshRun.from_row(row)
+
     async def get_refresh_run(
         self,
         conn: psycopg.AsyncConnection,

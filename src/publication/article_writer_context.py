@@ -5,12 +5,21 @@ from collections.abc import Sequence
 
 from src.publication.article_context import (
     ArticleEditorialContext,
+    ArticleSupport,
     _support_framing,
 )
 from src.publication.article_coverage import ArticleCoveragePlan
 
 _PHONE_RE = re.compile(r"(?:\+?\d[\d\s()\-–—]{8,}\d)")
 _URL_RE = re.compile(r"https?://\S+|\bwww\.\S+|\bt\.me/\S+", re.IGNORECASE)
+
+# Keep the writer request comfortably below provider context limits.  The
+# complete ArticleEditorialContext remains available to deterministic
+# validation; this is only the human-readable prompt projection.
+ARTICLE_WRITER_CONTEXT_MAX_CHARS = 900_000
+_SUPPORT_FACT_MAX_CHARS = 900
+_SUPPORT_SOURCE_MAX_CHARS = 1_800
+_SUPPORT_COMPACT_FACT_MAX_CHARS = 360
 
 
 def sanitize_writer_source_text(text: str) -> str:
@@ -20,6 +29,15 @@ def sanitize_writer_source_text(text: str) -> str:
     out = _URL_RE.sub("[link omitted]", text)
     out = _PHONE_RE.sub("[contact omitted]", out)
     return out
+
+
+def _compact_text(text: str, max_chars: int) -> str:
+    cleaned = " ".join((text or "").split()).strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    if max_chars <= 3:
+        return cleaned[:max_chars]
+    return cleaned[: max_chars - 3].rstrip() + "..."
 
 
 def _extract_story_microdetails(
@@ -166,12 +184,38 @@ def render_article_writer_context(
             allowed_support_ids.update(item.support_ids)
             allowed_support_ids.update(item.detail_support_ids)
 
+    # Several evidence rows often carry the same fact and source text (for
+    # example, one fact linked to multiple fragments).  They all remain
+    # available in ArticleEditorialContext for traceability, but repeating
+    # their prose in the LLM prompt needlessly multiplies token usage.
+    grouped_supports: list[list[ArticleSupport]] = []
+    groups_by_key: dict[tuple[str, str, str, str, str], list[ArticleSupport]] = {}
     for sup in context.support_index:
         if sup.publication_use == "EXCLUDE":
             continue
         if allowed_support_ids is not None and sup.support_id not in allowed_support_ids:
             # Exclude supports that do not belong to selected stories in the coverage plan
             continue
+        source_text = sanitize_writer_source_text(sup.source_text)
+        group_key = (
+            _compact_text(sup.text, _SUPPORT_FACT_MAX_CHARS),
+            _compact_text(source_text, _SUPPORT_SOURCE_MAX_CHARS),
+            sup.support_kind,
+            sup.publication_use,
+            _support_framing(sup),
+        )
+        group = groups_by_key.get(group_key)
+        if group is None:
+            group = []
+            groups_by_key[group_key] = group
+            grouped_supports.append(group)
+        group.append(sup)
+
+    support_blocks: list[str] = []
+    compact_support_blocks: list[str] = []
+    for group in grouped_supports:
+        sup = group[0]
+        support_ids = ", ".join(item.support_id for item in group)
         roles = ",".join(sup.source_roles) if sup.source_roles else "unknown"
         role_tag: str = str(sup.temporal_role)
         if sup.publication_use == "PUBLISH" and sup.temporal_role == "CURRENT_WINDOW":
@@ -180,7 +224,7 @@ def render_article_writer_context(
             role_tag = "HISTORICAL_CONTEXT (Background only - do NOT cite for Title/Lead)"
 
         lines = [
-            f"[SUPPORT {sup.support_id}]",
+            f"[SUPPORT {support_ids}]",
             f"role={role_tag} kind={sup.support_kind} publication_use={sup.publication_use}",
             f"evidence_kind={sup.evidence_kind} source_roles={roles}",
             f"framing={_support_framing(sup)}",
@@ -192,10 +236,52 @@ def render_article_writer_context(
             lines.append(f"effective_from={sup.effective_from.isoformat()}")
         if sup.effective_until:
             lines.append(f"effective_until={sup.effective_until.isoformat()}")
-        lines.append(f"fact={sup.text}")
-        if sup.source_text:
-            sanitized_source = sanitize_writer_source_text(sup.source_text)
-            lines.append(f"source={sanitized_source}")
-        blocks.append("\n".join(lines))
+        lines.append(f"fact={_compact_text(sup.text, _SUPPORT_FACT_MAX_CHARS)}")
+        if source_text:
+            lines.append(f"source={_compact_text(source_text, _SUPPORT_SOURCE_MAX_CHARS)}")
+        support_blocks.append("\n".join(lines))
 
-    return "\n\n".join(blocks).strip()
+        compact_support_blocks.append(
+            "\n".join(
+                [
+                    f"[SUPPORT {support_ids}]",
+                    f"kind={sup.support_kind} publication_use={sup.publication_use}",
+                    f"evidence_kind={sup.evidence_kind} source_roles={roles}",
+                    f"framing={_support_framing(sup)}",
+                    f"fact={_compact_text(sup.text, _SUPPORT_COMPACT_FACT_MAX_CHARS)}",
+                ]
+            )
+        )
+
+    prefix = "\n\n".join(blocks).strip()
+    remaining = max(0, ARTICLE_WRITER_CONTEXT_MAX_CHARS - len(prefix))
+    rendered_supports = list(compact_support_blocks)
+
+    # First reserve a compact representation for every distinct support group
+    # so a large corpus does not lose its tail merely because early sources
+    # contain long prose.  Spend whatever room remains upgrading groups to
+    # richer fact/source blocks.
+    compact_size = sum(len(block) for block in rendered_supports) + max(
+        0, (len(rendered_supports) - 1) * 2
+    )
+    if compact_size <= remaining:
+        detail_budget = remaining - compact_size
+        for index, full_block in enumerate(support_blocks):
+            delta = len(full_block) - len(rendered_supports[index])
+            if delta <= detail_budget:
+                rendered_supports[index] = full_block
+                detail_budget -= delta
+
+    if compact_size > remaining:
+        rendered_supports.append(
+            "[SUPPORT CONTEXT TRUNCATED]\n"
+            "Additional support remains available to deterministic validation; "
+            "use only the facts shown above for drafting."
+        )
+
+    rendered = "\n\n".join(([prefix] if prefix else []) + rendered_supports).strip()
+    if len(rendered) > ARTICLE_WRITER_CONTEXT_MAX_CHARS:
+        rendered = rendered[: ARTICLE_WRITER_CONTEXT_MAX_CHARS - 40].rstrip()
+        rendered += "\n[SUPPORT CONTEXT TRUNCATED]"
+
+    return rendered

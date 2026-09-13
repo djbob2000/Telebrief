@@ -10,6 +10,7 @@ from src.publication.article_context import (
 )
 from src.publication.article_coverage import build_article_coverage_plan
 from src.publication.article_writer_context import (
+    ARTICLE_WRITER_CONTEXT_MAX_CHARS,
     render_article_writer_context,
     sanitize_writer_source_text,
 )
@@ -120,3 +121,41 @@ def test_render_article_writer_context_includes_plan_and_sanitizes_sources():
 
     # Raw support source text is NOT mutated
     assert s4.source_text == raw_source
+
+
+def test_render_article_writer_context_is_bounded_and_deduplicates_repeated_support():
+    repeated_fact = "Жители сообщили о длительном отключении света в нескольких домах."
+    repeated_source = (
+        "Источник сообщает о длительном отключении света в нескольких домах. "
+        "Подробности наблюдения повторяются в связанных сообщениях. " * 20
+    )
+    supports = tuple(
+        ArticleSupport(
+            support_id=f"support-{index}",
+            text=repeated_fact,
+            source_text=repeated_source,
+            support_kind="evidence",
+            publication_use="PUBLISH",
+            source_refs=(f"ref-{index}",),
+            fragment_ids=(index,),
+            source_item_ids=(index,),
+            observed_at=None,
+            evidence_kind="community_report",
+            story_id=f"story-{index}",
+        )
+        for index in range(100)
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=(),
+        support_index=supports,
+        support_by_id={s.support_id: s for s in supports},
+        recurring_topics=(),
+        publication_window=None,
+        edition_name="Бердянск",
+    )
+
+    rendered = render_article_writer_context(ctx)
+
+    assert len(rendered) <= ARTICLE_WRITER_CONTEXT_MAX_CHARS
+    assert rendered.count(repeated_fact) < len(supports)
+    assert "support-99" in rendered
