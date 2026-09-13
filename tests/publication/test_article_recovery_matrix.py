@@ -1,14 +1,8 @@
-"""Permanent acceptance and unit recovery matrix tests for Event-First article pipeline.
+"""Permanent acceptance and unit recovery matrix tests for Event-First articles.
 
-Tests the 8 canonical recovery, regeneration, copy-editing, and fail-closed scenarios:
-1. 1/17 stories + 79 words -> Full AI regeneration requested, ArticleEditor NOT called first.
-2. Regeneration returns complete valid article -> Accepted, deterministic fallback not used.
-3. Regeneration returns complete article with local unit issue (HISTORICAL_CONTEXT_UNFRAMED:LEAD) -> ArticleEditor repairs LEAD -> Accepted.
-4. Both writer attempts catastrophically incomplete + deterministic fallback false -> ArticlePublicationRejected.
-5. Valid AI draft covers 16/17, missing one BRIEF -> Deterministic supplement allowed -> Final coverage == 1.0.
-6. Valid AI draft covers 1/17 -> Supplement forbidden -> Rejection path.
-7. Any missing DEVELOP story -> Supplement forbidden.
-8. Final article still enforces Evidence Boundary -> Unsupported claim remains blocking.
+The matrix covers single-call writing, targeted copy-editing, grounded partial
+coverage, deterministic recovery boundaries, and fail-closed Evidence Boundary
+validation.
 """
 
 from __future__ import annotations
@@ -274,83 +268,37 @@ def _make_article_generator(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_1_globally_incomplete_draft_triggers_regeneration_not_editor() -> None:
-    """Case 1: 1/17 stories + 79 words -> Full AI regeneration requested, ArticleEditor NOT called first."""
+async def test_case_1_catastrophically_incomplete_draft_is_not_regenerated() -> None:
+    """A catastrophic draft fails closed after one writer call; no giant retry is sent."""
     context, plan = _make_17_story_setup()
     generator = _make_article_generator(
-        article_editor_enabled=True,
+        article_editor_enabled=False,
         article_allow_deterministic_fallback=False,
     )
 
-    resp_attempt_1 = _build_incomplete_79_word_response(list(context.support_index))
-    resp_attempt_2 = _build_complete_longread_response(list(context.support_index))
-    generator.provider.chat_completion.side_effect = [resp_attempt_1, resp_attempt_2]
-
-    observer = RecordingAttemptObserver()
-    title, lead, body = await generator.generate_from_event_article_context(
-        context,
-        coverage_plan=plan,
-        attempt_observer=observer,
+    generator.provider.chat_completion.return_value = _build_incomplete_79_word_response(
+        list(context.support_index)
     )
 
-    assert title
-    assert body
-    # Chat completion must be called at least twice (Attempt 1 + Attempt 2 regeneration)
-    assert generator.provider.chat_completion.call_count == 2
+    observer = RecordingAttemptObserver()
+    with pytest.raises(ArticlePublicationRejected) as exc_info:
+        await generator.generate_from_event_article_context(
+            context,
+            coverage_plan=plan,
+            attempt_observer=observer,
+        )
 
-    # Attempt 1 was marked failed due to global incompleteness with retry scheduled
-    finished_att_1 = observer.finished_attempts[1]
-    assert finished_att_1["status"] == "failed"
-    assert finished_att_1["kwargs"]["error_kind"] == "global_incompleteness_retry"
-    assert finished_att_1["kwargs"]["metadata"]["retry_scheduled"] is True
-    assert finished_att_1["kwargs"]["metadata"]["next_attempt"] == 2
-    assert finished_att_1["kwargs"]["metadata"]["regeneration_reason"] == "global_incompleteness"
-
-    # ArticleEditor was NOT called between attempt 1 and 2
-    started_strategies = [
-        att["kwargs"].get("metadata", {}).get("strategy") for att in observer.started_attempts
-    ]
-    assert "article_editor" not in started_strategies
+    assert generator.provider.chat_completion.call_count == 1
+    assert exc_info.value.reason in {"global_incompleteness", "validation_failed"}
+    assert "global_incompleteness_retry" not in {
+        item.get("kwargs", {}).get("error_kind") for item in observer.finished_attempts.values()
+    }
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_2_regeneration_recovers_complete_valid_article_without_fallback() -> None:
-    """Case 2: Regeneration returns complete valid article -> Accepted, deterministic fallback not used."""
-    context, plan = _make_17_story_setup()
-    generator = _make_article_generator(
-        article_editor_enabled=True,
-        article_allow_deterministic_fallback=False,
-    )
-
-    resp_attempt_1 = _build_incomplete_79_word_response(list(context.support_index))
-    resp_attempt_2 = _build_complete_longread_response(list(context.support_index))
-    generator.provider.chat_completion.side_effect = [resp_attempt_1, resp_attempt_2]
-
-    observer = RecordingAttemptObserver()
-    title, lead, body = await generator.generate_from_event_article_context(
-        context,
-        coverage_plan=plan,
-        attempt_observer=observer,
-    )
-
-    assert title
-    assert len(body.split()) >= 150
-    assert "deterministic_fallback" not in observer.started_kinds
-    assert "deterministic_supplement" not in observer.started_kinds
-
-    # Final attempt succeeded cleanly with event_article_writer
-    att_2_id = observer.started_attempts[1]["id"]
-    finished_att_2 = observer.finished_attempts[att_2_id]
-    assert finished_att_2["status"] == "succeeded"
-    assert finished_att_2["kwargs"]["metadata"]["winning_kind"] == "event_article_writer"
-    assert finished_att_2["kwargs"]["metadata"]["recovery_mode"] == "none"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_case_3_regeneration_with_local_issue_triggers_article_editor_repair() -> None:
-    """Case 3: Regeneration returns complete article with HISTORICAL_CONTEXT_UNFRAMED:LEAD -> ArticleEditor repairs LEAD -> Accepted."""
+async def test_case_2_local_issue_triggers_targeted_article_editor_repair() -> None:
+    """A valid writer draft with a local issue gets targeted repair, not full regeneration."""
     context, plan = _make_17_story_setup(lead_temporal_role="HISTORICAL_CONTEXT")
     generator = _make_article_generator(
         article_editor_enabled=True,
@@ -361,11 +309,9 @@ async def test_case_3_regeneration_with_local_issue_triggers_article_editor_repa
     sup0 = supports[0]  # HISTORICAL_CONTEXT
     sup1 = supports[1]  # CURRENT_WINDOW
 
-    resp_attempt_1 = _build_incomplete_79_word_response(supports)
-
     # Lead has historical sup0 + current window sup1, but lacks continuation framing -> HISTORICAL_CONTEXT_UNFRAMED:LEAD
     unframed_lead = f"{sup0.text} {sup1.text}"
-    resp_attempt_2 = _build_complete_longread_response(
+    resp_attempt_1 = _build_complete_longread_response(
         supports,
         lead_text=unframed_lead,
         lead_sups=[sup0.support_id, sup1.support_id],
@@ -380,7 +326,6 @@ async def test_case_3_regeneration_with_local_issue_triggers_article_editor_repa
 
     generator.provider.chat_completion.side_effect = [
         resp_attempt_1,
-        resp_attempt_2,
         editor_patch_response,
     ]
 
@@ -393,9 +338,9 @@ async def test_case_3_regeneration_with_local_issue_triggers_article_editor_repa
 
     assert title
     assert "Как сообщалось ранее" in lead
-    assert generator.provider.chat_completion.call_count == 3
+    assert generator.provider.chat_completion.call_count == 2
 
-    # ArticleEditor was called for targeted repair after complete regeneration
+    # ArticleEditor was called for targeted repair after the single writer call
     repair_attempts = [att for att in observer.started_attempts if att.get("kind") == "repair"]
     assert len(repair_attempts) == 1
     assert repair_attempts[0]["kwargs"]["metadata"]["strategy"] == "article_editor"
@@ -404,35 +349,8 @@ async def test_case_3_regeneration_with_local_issue_triggers_article_editor_repa
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_4_both_writer_attempts_incomplete_fails_closed() -> None:
-    """Case 4: Both writer attempts catastrophically incomplete + deterministic fallback false -> ArticlePublicationRejected."""
-    context, plan = _make_17_story_setup()
-    generator = _make_article_generator(
-        article_editor_enabled=True,
-        article_allow_deterministic_fallback=False,
-    )
-
-    resp_attempt_1 = _build_incomplete_79_word_response(list(context.support_index))
-    resp_attempt_2 = _build_incomplete_79_word_response(list(context.support_index))
-    generator.provider.chat_completion.side_effect = [resp_attempt_1, resp_attempt_2]
-
-    observer = RecordingAttemptObserver()
-    with pytest.raises(ArticlePublicationRejected) as exc_info:
-        await generator.generate_from_event_article_context(
-            context,
-            coverage_plan=plan,
-            attempt_observer=observer,
-        )
-
-    # Incompleteness rejection is fail-closed, never emitting an 79-word stub
-    assert exc_info.value.reason in ("global_incompleteness", "validation_failed")
-    assert "deterministic_fallback" not in observer.started_kinds
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_case_5_valid_draft_missing_one_brief_allows_deterministic_supplement() -> None:
-    """Case 5: Valid AI draft covers 16/17, missing one BRIEF -> Deterministic supplement allowed -> Final coverage == 1.0."""
+async def test_case_5_valid_partial_draft_is_accepted_without_supplement() -> None:
+    """A grounded substantial draft may omit lower-priority BRIEF material."""
     context, plan = _make_17_story_setup()
     supports = list(context.support_index)
 
@@ -471,11 +389,12 @@ async def test_case_5_valid_draft_missing_one_brief_allows_deterministic_supplem
         attempt_observer=observer,
     )
 
-    assert result.recovery_mode == "supplement"
-    assert result.supplemented_story_ids == ("story:17",)
-    assert set(result.final_covered_story_ids) == set(plan.story_ids)
-    assert result.metadata["final_story_coverage"] == 1.0
-    assert "deterministic_supplement" in observer.started_kinds
+    assert result.recovery_mode == "none"
+    assert result.supplemented_story_ids == ()
+    assert set(result.final_covered_story_ids) == {story.story_id for story in plan.stories[:-1]}
+    assert result.metadata["partial_coverage_accepted"] is True
+    assert result.metadata["final_story_coverage"] == pytest.approx(16 / 17)
+    assert "deterministic_supplement" not in observer.started_kinds
 
 
 @pytest.mark.unit
@@ -665,14 +584,14 @@ async def test_case_8_final_article_enforces_evidence_boundary() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_9_grounding_path_preserves_writer_coverage_and_triggers_regeneration_for_long_single_story_draft() -> (
+async def test_case_9_grounding_path_preserves_writer_coverage_without_regeneration_for_long_single_story_draft() -> (
     None
 ):
     """Regression test: raw writer output has 250 words about only Story 1.
 
     Ensures that _ground_draft_in_coverage_plan does NOT artificially inject
-    supports from Stories 2..17, diagnosing true 1/17 coverage and triggering
-    full AI regeneration.
+    supports from Stories 2..17, diagnosing true 1/17 coverage without issuing
+    a second full AI request.
     """
     from src.article_generator import _ground_draft_in_coverage_plan, _is_globally_incomplete
     from src.publication.article_coverage_diagnostics import diagnose_article_coverage
@@ -765,39 +684,30 @@ async def test_case_9_grounding_path_preserves_writer_coverage_and_triggers_rege
         is_incomplete is True
     ), "Draft covering only 1 of 17 stories must be classified as globally incomplete"
 
-    # 2. Generator must trigger AI regeneration and record attempt 1 with retry metadata
+    # 2. Generator must not trigger a second full writer request.
     generator = _make_article_generator(
-        article_editor_enabled=True,
+        article_editor_enabled=False,
         article_allow_deterministic_fallback=False,
     )
     resp_attempt_1 = json.dumps(single_story_raw_dict)
-    resp_attempt_2 = _build_complete_longread_response(list(context.support_index))
-    generator.provider.chat_completion.side_effect = [resp_attempt_1, resp_attempt_2]
+    generator.provider.chat_completion.return_value = resp_attempt_1
     observer = RecordingAttemptObserver()
-    title, lead, body = await generator.generate_from_event_article_context(
-        context, plan, attempt_observer=observer
-    )
+    with pytest.raises(ArticlePublicationRejected):
+        await generator.generate_from_event_article_context(
+            context, plan, attempt_observer=observer
+        )
 
-    assert title
-    assert body
-    # Chat completion was called twice (Attempt 1 + Attempt 2 regeneration)
-    assert generator.provider.chat_completion.call_count == 2
-
-    # Attempt 1 was recorded failed with global_incompleteness_retry
-    att_1 = observer.finished_attempts[1]
-    assert att_1["status"] == "failed"
-    assert att_1["kwargs"]["error_kind"] == "global_incompleteness_retry"
-    assert att_1["kwargs"]["metadata"]["retry_scheduled"] is True
-    assert att_1["kwargs"]["metadata"]["next_attempt"] == 2
-    assert att_1["kwargs"]["metadata"]["covered_story_count"] == 1
+    assert generator.provider.chat_completion.call_count == 1
+    assert len(observer.started_attempts) == 1
+    assert "global_incompleteness_retry" not in {
+        item.get("kwargs", {}).get("error_kind") for item in observer.finished_attempts.values()
+    }
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_10_attempt_2_valid_but_globally_incomplete_closes_all_attempts() -> None:
-    """Case 10: Attempt 2 is structurally and evidence valid (200+ words, 3 sections), but covers 1/17 stories.
-    After rejection, ALL started attempts must have a finished record (no attempt left running).
-    """
+async def test_case_10_valid_but_globally_incomplete_draft_fails_closed_without_retry() -> None:
+    """A long one-story draft still fails closed without a second writer call."""
     context, plan = _make_17_story_setup()
     generator = _make_article_generator(
         article_editor_enabled=True,
@@ -843,9 +753,8 @@ async def test_case_10_attempt_2_valid_but_globally_incomplete_closes_all_attemp
         "sections": sections,
     }
 
-    resp_attempt_1 = _build_incomplete_79_word_response(list(context.support_index))
-    resp_attempt_2 = json.dumps(valid_1_story_dict)
-    generator.provider.chat_completion.side_effect = [resp_attempt_1, resp_attempt_2]
+    resp_attempt_1 = json.dumps(valid_1_story_dict)
+    generator.provider.chat_completion.return_value = resp_attempt_1
 
     observer = RecordingAttemptObserver()
     with pytest.raises(ArticlePublicationRejected) as exc_info:
@@ -857,20 +766,17 @@ async def test_case_10_attempt_2_valid_but_globally_incomplete_closes_all_attemp
 
     assert exc_info.value.reason == "global_incompleteness"
 
-    # Both attempt 1 and attempt 2 were started
-    started_ids = [att["id"] for att in observer.started_attempts]
-    assert len(started_ids) == 2
-    att1_id, att2_id = started_ids[0], started_ids[1]
+    assert generator.provider.chat_completion.call_count == 1
 
-    # ALL started attempts MUST have a finished record in finished_attempts (none left running!)
+    # Only the original writer attempt was started.
+    started_ids = [att["id"] for att in observer.started_attempts]
+    assert len(started_ids) == 1
+    att1_id = started_ids[0]
+
+    # The started attempt must be closed as failed (none left running).
     assert att1_id in observer.finished_attempts
-    assert att2_id in observer.finished_attempts
 
     finished_1 = observer.finished_attempts[att1_id]
     assert finished_1["status"] == "failed"
-    assert finished_1["kwargs"]["error_kind"] == "global_incompleteness_retry"
-
-    finished_2 = observer.finished_attempts[att2_id]
-    assert finished_2["status"] == "failed"
-    assert finished_2["kwargs"]["error_kind"] == "global_incompleteness"
-    assert finished_2["kwargs"]["metadata"]["ai_story_coverage"] == pytest.approx(1 / 17, abs=1e-3)
+    assert finished_1["kwargs"]["error_kind"] == "global_incompleteness"
+    assert finished_1["kwargs"]["metadata"]["ai_story_coverage"] == pytest.approx(1 / 17, abs=1e-3)

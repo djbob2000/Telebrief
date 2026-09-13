@@ -783,6 +783,54 @@ class ArticleFinalizer:
                 metadata=meta,
             )
 
+        # A grounded, substantial long read may intentionally leave some
+        # BRIEF/WEAVE material out.  Do not append raw fragments or launch a
+        # second full writer request merely to chase a mechanical 100% count.
+        # DEVELOP coverage and the Evidence Boundary remain hard requirements.
+        if (
+            is_substantial
+            and ai_diag.develop_story_coverage >= 1.0
+            and ai_diag.story_coverage >= 0.35
+        ):
+            logger.info(
+                "Accepting grounded substantial article with partial coverage "
+                "(coverage=%.2f, missing=%d); no deterministic supplement",
+                ai_diag.story_coverage,
+                len(ai_diag.uncovered_story_ids),
+            )
+            trace = build_article_claim_trace(writer_draft, context)
+            meta = _build_final_metadata(
+                winning_kind="event_article_writer",
+                writer_status="passed",
+                recovery_mode="none",
+                coverage_plan=coverage_plan,
+                ai_covered_story_ids=ai_covered,
+                supplemented_story_ids=(),
+                final_covered_story_ids=ai_covered,
+                ai_diag=ai_diag,
+                final_diag=ai_diag,
+                trace=trace,
+            )
+            meta["partial_coverage_accepted"] = True
+            if writer_metadata:
+                meta.update(writer_metadata)
+            if attempt_observer:
+                await attempt_observer.attempt_finished(
+                    writer_attempt_id,
+                    status="succeeded",
+                    metadata=meta,
+                )
+            return ArticleFinalizationResult(
+                draft=writer_draft,
+                claim_trace=trace,
+                writer_status="passed",
+                recovery_mode="none",
+                ai_covered_story_ids=ai_covered,
+                supplemented_story_ids=(),
+                final_covered_story_ids=ai_covered,
+                metadata=meta,
+            )
+
         # 4. Incomplete writer draft: check safety gate before deterministic supplement (fallback enabled)
         is_safe_for_supplement = (
             ai_diag.develop_story_coverage >= 1.0
@@ -790,7 +838,8 @@ class ArticleFinalizer:
                 (ai_diag.story_coverage >= 0.80 and len(ai_diag.uncovered_story_ids) <= 3)
                 or (
                     is_substantial
-                    and (ai_diag.story_coverage >= 0.20 or len(ai_diag.uncovered_story_ids) <= 18)
+                    and ai_diag.story_coverage >= 0.20
+                    and len(ai_diag.uncovered_story_ids) <= 18
                 )
             )
         ) or (

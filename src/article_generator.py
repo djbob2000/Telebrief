@@ -1441,86 +1441,24 @@ class ArticleGenerator:
                 val=candidate_val,
                 diag=candidate_diag,
                 provider_obj=self.provider,
-                regeneration_reason="global_incompleteness" if is_incomplete else None,
+                regeneration_reason=None,
             )
 
-            # Check if candidate draft is globally incomplete -> trigger full AI regeneration
+            # Coverage diagnostics must not trigger a second full writer call.
+            # The article is a hierarchical long read, not a checklist whose
+            # missing BRIEF/WEAVE items justify resending the entire context.
             if is_incomplete:
                 self.logger.warning(
-                    "Writer attempt 1 is globally incomplete (%d words, %d/%d stories covered); "
-                    "requesting full AI regeneration",
+                    "Writer draft has incomplete coverage (%d words, %d/%d stories covered); "
+                    "retaining the single writer result for finalization",
                     candidate_val.word_count,
                     candidate_diag.covered_story_count,
                     candidate_diag.planned_story_count,
                 )
-                if attempt_observer is not None:
-                    attempt_1_meta["retry_scheduled"] = True
-                    attempt_1_meta["next_attempt"] = 2
-                    await attempt_observer.attempt_finished(
-                        writer_attempt_id,
-                        status="failed",
-                        error_kind="global_incompleteness_retry",
-                        metadata=attempt_1_meta,
-                    )
-                    writer_attempt_id = await attempt_observer.attempt_started(
-                        "writer",
-                        provider=self.config.settings.ai_provider,
-                        model=self.model,
-                        metadata={"attempt": 2},
-                    )
+                attempt_1_meta["coverage_retry_suppressed"] = True
+            writer_meta = attempt_1_meta
 
-                feedback_prompt = _build_regeneration_feedback(
-                    candidate_draft=candidate_draft,
-                    candidate_val=candidate_val,
-                    candidate_diag=candidate_diag,
-                    coverage_plan=coverage_plan,
-                    editorial_config=editorial_config,
-                    length_profile=length_profile,
-                    article_ctx=article_ctx,
-                )
-                regen_messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                    {"role": "assistant", "content": response},
-                    {"role": "user", "content": feedback_prompt},
-                ]
-                regen_response = await self.provider.chat_completion(
-                    messages=regen_messages,
-                    model=self.model,
-                    temperature=article_temp,
-                    max_tokens=writer_max_tokens,
-                    reasoning_effort=writer_reasoning_effort,
-                    response_format={"type": "json_object"},
-                )
-                raw_parsed = self._parse_event_article_response_json(regen_response)
-                parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
-                candidate_draft = StructuredArticleDraft.from_dict(
-                    parsed, quote_allowlist=quote_allowlist
-                )
-                candidate_val = validate_article_draft(
-                    candidate_draft,
-                    article_ctx,
-                    config=editorial_config,
-                    length_profile=length_profile,
-                )
-                candidate_diag = diagnose_article_coverage(
-                    candidate_draft, coverage_plan, context=article_ctx
-                )
-                is_incomplete = _is_globally_incomplete(candidate_val, candidate_diag)
-                attempt_2_meta = _build_writer_attempt_metadata(
-                    attempt_number=2,
-                    provider_name=getattr(self.config.settings, "ai_provider", "unknown"),
-                    model_name=self.model,
-                    response_text=regen_response,
-                    val=candidate_val,
-                    diag=candidate_diag,
-                    provider_obj=self.provider,
-                )
-                writer_meta = attempt_2_meta
-            else:
-                writer_meta = attempt_1_meta
-
-            if candidate_val.is_valid and not is_incomplete:
+            if candidate_val.is_valid:
                 writer_draft = candidate_draft
                 writer_error = None
             else:

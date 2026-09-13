@@ -944,7 +944,7 @@ async def test_event_article_validation_failure_uses_full_fallback(
 
     assert title
     assert body
-    assert article_generator.provider.chat_completion.call_count == 2
+    assert article_generator.provider.chat_completion.call_count == 1
     assert "writer" in observer.started_kinds
     assert "deterministic_fallback" in observer.started_kinds
 
