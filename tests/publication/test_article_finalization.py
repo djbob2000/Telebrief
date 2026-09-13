@@ -23,6 +23,116 @@ _NOW = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_finalizer_reuses_writer_validation_result(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A writer validation result must not be recomputed by the finalizer."""
+    from src.publication.article_models import ArticleClaimAtom
+    from src.publication.article_validator import validate_article_draft
+
+    support = ArticleSupport(
+        support_id="story:1:evidence:0:frag:101",
+        text="В Бердянске восстановили подачу электроэнергии.",
+        source_text="В Бердянске восстановили подачу электроэнергии.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="established_fact",
+        story_id="story:1",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+        edition_anchor_terms=("Бердянск",),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(support.support_id,),
+                detail_support_ids=(support.support_id,),
+            ),
+        )
+    )
+    draft = StructuredArticleDraft(
+        title="Электроснабжение в Бердянске",
+        title_support_ids=(support.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Электроснабжение в Бердянске",
+                cited_support_ids=(support.support_id,),
+            ),
+        ),
+        lead="В Бердянске восстановили подачу электроэнергии.",
+        lead_support_ids=(support.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В Бердянске восстановили подачу электроэнергии",
+                cited_support_ids=(support.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Электроснабжение",
+                heading_support_ids=(support.support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В Бердянске восстановили подачу электроэнергии.",
+                        cited_support_ids=(support.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В Бердянске восстановили подачу электроэнергии",
+                                cited_support_ids=(support.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    config = PublicationEditorialConfig(
+        article_min_sections=1,
+        article_min_words=1,
+        article_max_sections=3,
+        article_allow_deterministic_fallback=False,
+    )
+    validation = validate_article_draft(draft, context, config)
+    assert validation.is_valid
+
+    def fail_if_revalidated(*args: object, **kwargs: object) -> None:
+        raise AssertionError("finalizer recomputed the writer validation")
+
+    monkeypatch.setattr(
+        "src.publication.article_finalization.validate_article_draft",
+        fail_if_revalidated,
+    )
+
+    observer = RecordingAttemptObserver()
+    writer_id = await observer.attempt_started("writer")
+    result = await ArticleFinalizer().finalize(
+        writer_draft=draft,
+        writer_error=None,
+        writer_attempt_id=writer_id,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=config,
+        length_profile=None,
+        attempt_observer=observer,
+        writer_validation=validation,
+    )
+
+    assert result.writer_status == "passed"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_forced_writer_failure_fallback_regression() -> None:
     """Test 10A: When writer fails/produces invalid draft, fallback draft passes validation with 100% coverage."""
     sup1 = ArticleSupport(

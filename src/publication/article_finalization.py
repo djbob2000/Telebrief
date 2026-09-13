@@ -29,7 +29,11 @@ from src.publication.article_trace import (
     ArticleClaimTraceUnit,
     build_article_claim_trace,
 )
-from src.publication.article_validator import ArticleValidationIssue, validate_article_draft
+from src.publication.article_validator import (
+    ArticleValidationIssue,
+    ArticleValidationResult,
+    validate_article_draft,
+)
 from src.publication.errors import (
     ArticleFinalizationInvariantError,
     ArticlePublicationRejected,
@@ -541,8 +545,14 @@ class ArticleFinalizer:
         length_profile: ArticleLengthProfile | None = None,
         attempt_observer: GenerationAttemptObserver | None = None,
         writer_metadata: dict[str, Any] | None = None,
+        writer_validation: ArticleValidationResult | None = None,
     ) -> ArticleFinalizationResult:
-        """Validate writer output, trigger recovery if needed, and assert final invariants."""
+        """Validate writer output, trigger recovery if needed, and assert final invariants.
+
+        ``writer_validation`` is produced immediately after parsing the writer
+        response. Reusing it avoids repeating the expensive Evidence Boundary
+        pass when no writer-side repair changed the draft.
+        """
         # 1. Handle writer failure / error
         if writer_error is not None or writer_draft is None:
             if attempt_observer:
@@ -578,12 +588,13 @@ class ArticleFinalizer:
             )
 
         # 2. Validate writer draft
-        writer_validation = validate_article_draft(
-            writer_draft,
-            context,
-            config=editorial_config,
-            length_profile=length_profile,
-        )
+        if writer_validation is None:
+            writer_validation = validate_article_draft(
+                writer_draft,
+                context,
+                config=editorial_config,
+                length_profile=length_profile,
+            )
 
         if not writer_validation.is_valid:
             # Deterministic quote repair: convert unverified quotes to indirect speech without quotes

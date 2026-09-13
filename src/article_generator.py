@@ -1298,6 +1298,7 @@ class ArticleGenerator:
         writer_draft: StructuredArticleDraft | None = None
         writer_error: Exception | None = None
         writer_attempt_id = 0
+        writer_validation: ArticleValidationResult | None = None
 
         quote_allowlist = build_article_quote_allowlist(article_ctx)
 
@@ -1341,6 +1342,7 @@ class ArticleGenerator:
                 config=editorial_config,
                 length_profile=length_profile,
             )
+            writer_validation = candidate_val
             candidate_diag = diagnose_article_coverage(
                 candidate_draft, coverage_plan, context=article_ctx
             )
@@ -1421,8 +1423,10 @@ class ArticleGenerator:
                         )
                         writer_draft = edited_draft
                         writer_error = None
+                        writer_validation = edited_val
                     else:
                         writer_draft = edited_draft
+                        writer_validation = edited_val
         except Exception as exc:
             self.logger.warning(
                 "Event article writer execution failed (%s: %s)",
@@ -1451,6 +1455,7 @@ class ArticleGenerator:
             length_profile=length_profile,
             attempt_observer=attempt_observer,
             writer_metadata=writer_meta,
+            writer_validation=writer_validation,
         )
 
         body = finalization_result.draft.render_markdown()
