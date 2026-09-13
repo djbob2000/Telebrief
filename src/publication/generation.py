@@ -332,7 +332,7 @@ class PublicationGenerationService:
                             clean_body, draft_cand = await writer.generate_journalistic_digest(
                                 city=city_name,
                                 date_str=date_str,
-                                cards=frozen.analysis.cards,
+                                cards=detail_cards,
                                 evidence=evidence_dict,
                                 custom_rubrics=renderer.rubrics,
                                 model=getattr(self.config.settings, "openai_model", None)

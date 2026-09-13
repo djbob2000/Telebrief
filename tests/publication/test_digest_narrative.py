@@ -2109,7 +2109,8 @@ def test_digest_prompt_template_has_no_hardcoded_news_examples():
 
     # Ensure anti-hallucination and topic synthesis rules are present
     assert "КАТЕГОРИЧЕСКИЙ ЗАПРЕТ НА ВЫДУМЫВАНИЕ И КОПИРОВАНИЕ ШАБЛОНА" in DIGEST_PROMPT_TEMPLATE
-    assert "ОБЪЕДИНЕНИЕ СООБЩЕНИЙ ПО ОДНОЙ ТЕМЕ" in DIGEST_PROMPT_TEMPLATE
+    assert "СИНТЕЗ СВЯЗАННЫХ СООБЩЕНИЙ" in DIGEST_PROMPT_TEMPLATE
+    assert "Не превращайте дайджест в каталог" in DIGEST_PROMPT_TEMPLATE
 
 
 def test_sanitize_digest_terminology():

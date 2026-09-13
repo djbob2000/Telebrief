@@ -347,8 +347,10 @@ def test_parse_journalistic_markdown_sept_11_sample():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_generate_journalistic_digest_generic_coverage_recovery():
-    # Model generates output missing one of the substantive cards
+async def test_generate_journalistic_digest_does_not_append_raw_coverage_cards():
+    # The writer output is authoritative after editorial condensation. The old
+    # recovery loop appended every omitted card as a raw bullet, which turned a
+    # compact digest into a directory and could push it over Telegram's limit.
     model_output = (
         "Дайджест · 11 сентября 2026\n\n"
         "Городская среда и бизнес\n\n"
@@ -374,9 +376,8 @@ async def test_generate_journalistic_digest_generic_coverage_recovery():
         max_chars=3900,
     )
 
-    # Invariant: omitted card MUST be recovered generically
-    assert "зеркальн" in result_text.lower()
-    assert "бывшего супермаркета «зеркальный»" in result_text.lower()
+    assert "зеркальн" not in result_text.lower()
+    assert len(result_text) <= 3900
     # Verified: toponym normalization converts colloquial phrases into proper entities
     assert "кинотеатр" not in result_text.lower()
     assert "магазин у «зеркального»" not in result_text.lower()
