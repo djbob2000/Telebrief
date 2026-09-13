@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 
 from src.publication.article_context import (
     ArticleEditorialContext,

@@ -246,9 +246,13 @@ def build_article_coverage_plan(
     if signals:
         card_intents: list[tuple[StoryCard, str, int]] = []
         for c in valid_cards:
-            sig = signals.get(c.id) or signals.get(c.id.removeprefix("story:"))
-            intent = sig.intent if sig is not None else "brief"
-            rank_val = sig.rank if (sig is not None and isinstance(sig.rank, int)) else 9999
+            selection_signal = signals.get(c.id) or signals.get(c.id.removeprefix("story:"))
+            intent = selection_signal.intent if selection_signal is not None else "brief"
+            rank_val = (
+                selection_signal.rank
+                if (selection_signal is not None and isinstance(selection_signal.rank, int))
+                else 9999
+            )
             card_intents.append((c, intent, rank_val))
 
         lead_assigned = False
@@ -325,15 +329,17 @@ def build_article_coverage_plan(
     for s in stories:
         c_item = card_map.get(s.story_id)
         sec_id = _thematic_section_id(c_item) if c_item else "city_life"
-        sig = _story_topic_signature(s, context)
-        subtopic_sups[(sec_id, sig)].extend(s.support_ids)
+        subtopic_signature = _story_topic_signature(s, context)
+        subtopic_sups[(sec_id, subtopic_signature)].extend(s.support_ids)
 
     pooled_stories: list[ArticleStoryCoverage] = []
     for s in stories:
         c_item = card_map.get(s.story_id)
         sec_id = _thematic_section_id(c_item) if c_item else "city_life"
-        sig = _story_topic_signature(s, context)
-        cluster_sups = tuple(dict.fromkeys(list(s.support_ids) + subtopic_sups[(sec_id, sig)]))
+        subtopic_signature = _story_topic_signature(s, context)
+        cluster_sups = tuple(
+            dict.fromkeys(list(s.support_ids) + subtopic_sups[(sec_id, subtopic_signature)])
+        )
         pooled_stories.append(
             ArticleStoryCoverage(
                 story_id=s.story_id,

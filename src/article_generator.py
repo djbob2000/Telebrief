@@ -327,17 +327,17 @@ def _ground_draft_in_coverage_plan(
             combined_sups = list(dict.fromkeys(existing_cited + matched_sups))
             if not combined_sups and support_stems:
                 # Fallback: match support with best single stem overlap
-                best_sids: list[str] = []
+                best_para_sids: list[str] = []
                 best_score = 0
                 for sid, s_stems in support_stems.items():
                     sc = len(p_stems & s_stems)
                     if sc > best_score:
                         best_score = sc
-                        best_sids = [sid]
+                        best_para_sids = [sid]
                     elif sc == best_score and sc > 0:
-                        best_sids.append(sid)
-                if best_sids:
-                    combined_sups = best_sids[:3]
+                        best_para_sids.append(sid)
+                if best_para_sids:
+                    combined_sups = best_para_sids[:3]
 
             if not combined_sups and combined_h_sups:
                 combined_sups = list(dict.fromkeys(combined_h_sups))
@@ -1313,12 +1313,14 @@ class ArticleGenerator:
                 th = _resolve_story_theme(s, article_ctx, coverage_plan)
                 stories_by_theme.setdefault(th, []).append(s)
 
-            for th, stories in stories_by_theme.items():
-                th_heading = _THEME_DEFAULT_HEADINGS.get(th, "Городская жизнь")
+            for theme_key, theme_stories in stories_by_theme.items():
+                theme_heading = _THEME_DEFAULT_HEADINGS.get(theme_key, "Городская жизнь")
                 story_items = []
-                for s in stories:
+                for s in theme_stories:
                     story_items.append(f"     • [{s.prominence}] [{s.story_id}] {s.topic}")
-                plan_sections_lines.append(f"   Глава «{th_heading}»:\n" + "\n".join(story_items))
+                plan_sections_lines.append(
+                    f"   Глава «{theme_heading}»:\n" + "\n".join(story_items)
+                )
 
         if coverage_plan and getattr(coverage_plan, "stories", None):
             for s in coverage_plan.stories:
@@ -1671,7 +1673,10 @@ class ArticleGenerator:
                 return {k: _deep_clean(v, k) for k, v in val.items()}
             return val
 
-        return _deep_clean(parsed)
+        cleaned_payload = _deep_clean(parsed)
+        if not isinstance(cleaned_payload, dict):
+            raise ValueError("cleaned article writer response is not a JSON object")
+        return cleaned_payload
 
     async def generate_from_analysis_and_bundle(  # noqa: C901
         self,

@@ -413,7 +413,7 @@ def _clean_support_text_for_reader(text: str) -> str:
     }
 
     def _lower_caps(m: re.Match) -> str:
-        word = m.group(0)
+        word = str(m.group(0))
         if word.upper() in known_acronyms:
             return word.upper()
         return word.lower()
@@ -822,17 +822,19 @@ class ArticleDeterministicComposer:
                     if norm and norm not in seen_dedup_keys:
                         seen_dedup_keys[norm] = len(shared_claim_atoms)
                         shared_claim_atoms.append(c)
-                for s in _split_sentences_safe(p.text):
-                    norm = _normalize_for_dedup(s)
+                for sentence in _split_sentences_safe(p.text):
+                    norm = _normalize_for_dedup(sentence)
                     if norm and norm not in seen_dedup_keys:
-                        atom = ArticleClaimAtom(text=s, cited_support_ids=p.cited_support_ids)
+                        atom = ArticleClaimAtom(
+                            text=sentence, cited_support_ids=p.cited_support_ids
+                        )
                         seen_dedup_keys[norm] = len(shared_claim_atoms)
                         shared_claim_atoms.append(atom)
 
-        for theme, theme_stories in stories_by_theme.items():
+        for theme_key, theme_stories in stories_by_theme.items():
             matching_idx: int | None = None
             for idx, sec in enumerate(sections_list):
-                if _match_section_to_theme(sec, theme, context, plan):
+                if _match_section_to_theme(sec, theme_key, context, plan):
                     matching_idx = idx
                     break
 
@@ -916,7 +918,7 @@ class ArticleDeterministicComposer:
                             heading_cand = planned_sec.title
                             break
                     if not heading_cand:
-                        heading_cand = THEME_HEADINGS.get(theme, _GENERIC_SECTION_HEADING)
+                        heading_cand = THEME_HEADINGS.get(theme_key, _GENERIC_SECTION_HEADING)
 
                     paras = _build_section_paragraphs(
                         theme_stories,
