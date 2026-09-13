@@ -33,6 +33,11 @@ from src.repositories.event_retries import EventProcessingRetryRepository
 
 logger = logging.getLogger(__name__)
 
+# A singleton recovery only needs one compact Gate decision. Keeping its output
+# budget bounded prevents a malformed model response from consuming the whole
+# provider timeout and exhausting the assignment on a runaway generation.
+SINGLETON_RECOVERY_MAX_OUTPUT_TOKENS = 8_192
+
 
 @dataclass(frozen=True)
 class ClaimedAuthorityTarget:
@@ -335,6 +340,10 @@ class EventAuthorityService:
                                 source_cutoff_at=item.target.source_cutoff_at,
                                 decision_fence=decision_fence,
                                 before_decision_persist=before_decision_persist,
+                                max_output_tokens=min(
+                                    cfg.triage_max_output_tokens,
+                                    SINGLETON_RECOVERY_MAX_OUTPUT_TOKENS,
+                                ),
                             ),
                             timeout=max(0.0, remaining),
                         )

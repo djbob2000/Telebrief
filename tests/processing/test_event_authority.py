@@ -206,6 +206,7 @@ def _create_test_authority_service(
                 triage_excerpt_chars=320,
                 triage_min_ignore_confidence=0.95,
                 authority_provider_timeout_seconds=540,
+                triage_max_output_tokens=32768,
                 triage_split_max_extra_calls_per_cycle=triage_split_max_extra_calls_per_cycle,
                 triage_max_attempts_per_assignment=2,
                 provider_retry_backoff_seconds=300,
@@ -354,6 +355,7 @@ async def test_process_batch_partial_gate_recovers_missing_story_via_singleton()
     second_call_args = service.triage_service.triage_stories_batch.await_args_list[1]
     assert second_call_args.args[1] == [state2]
     assert second_call_args.kwargs["assignment_id_by_story"] == {2: 20}
+    assert second_call_args.kwargs["max_output_tokens"] == 8_192
 
     # Verify retry_repo calls: clear for both, record_failure NEVER called
     cleared_sids = [call.kwargs["story_id"] for call in service.retry_repo.clear.await_args_list]

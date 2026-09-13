@@ -360,6 +360,7 @@ class StoryTriageService:
         source_cutoff_at: dt.datetime | None = None,
         decision_fence: DecisionFence | None = None,
         before_decision_persist: DecisionPersistHook | None = None,
+        max_output_tokens: int | None = None,
     ) -> StoryGateBatchResult:
         """Run batch Gate V2 classification on story clusters."""
         if not stories:
@@ -674,7 +675,7 @@ class StoryTriageService:
                         system_prompt=_GATE_V2_SYSTEM_PROMPT,
                         temperature=0.0,
                         json_mode=True,
-                        max_tokens=self.max_output_tokens,
+                        max_tokens=max_output_tokens or self.max_output_tokens,
                         reasoning_effort=self.reasoning_effort,
                     )
                 elif hasattr(self.ai, "chat_completion"):
@@ -685,7 +686,7 @@ class StoryTriageService:
                         ],
                         model=self.model,
                         temperature=0.0,
-                        max_tokens=self.max_output_tokens,
+                        max_tokens=max_output_tokens or self.max_output_tokens,
                         reasoning_effort=self.reasoning_effort,
                         response_format={"type": "json_object"},
                     )
