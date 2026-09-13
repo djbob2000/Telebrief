@@ -336,6 +336,16 @@ stable_context:
         - zo_mintrans
         - brd_2026_transit
     landmarks:
+    - id: supermarket_zerkalny
+      name: супермаркет «Зеркальный»
+      aliases:
+      - Зеркальный
+      - Дзеркальний
+      - колишній супермаркет «Дзеркальний»
+      - бывший супермаркет «Зеркальный»
+      - Универмаг
+      - Илэар
+      type: commercial
     - id: park_schmidt
       name: Парк Шмидта
       type: park

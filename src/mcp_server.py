@@ -108,7 +108,7 @@ def build_server(config: Config, logger: logging.Logger) -> MCPServer:
             parts = []
             if preview.title:
                 parts.append(f"📰 {preview.title}")
-            if preview.lead:
+            if preview.lead and not (preview.body and preview.body.startswith(preview.lead)):
                 parts.append(preview.lead)
             parts.append(preview.body)
             return (

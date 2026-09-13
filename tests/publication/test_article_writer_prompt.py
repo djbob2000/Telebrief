@@ -131,7 +131,7 @@ def test_article_writer_prompt_forbids_brief_topic_dumping():
 
     assert "РАЗДЕЛЕНИЕ НА АБЗАЦЫ" in prompt
     assert "свалку" in prompt.lower() or "сваливать" in prompt.lower()
-    assert "отдельный компактный абзац" in prompt.lower()
+    assert "вплетаться в связный абзац" in prompt.lower() or "bullet-like" in prompt.lower()
 
 
 def test_article_writer_prompt_forbids_meta_reporting():

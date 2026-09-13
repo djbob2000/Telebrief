@@ -142,6 +142,91 @@ def _detail_support_ids(
     return tuple(s.support_id for s in chosen[: _DETAIL_LIMIT[prominence]])
 
 
+def _story_topic_signature(
+    story: ArticleStoryCoverage,
+    context: ArticleEditorialContext,
+) -> str:
+    """Determine fine-grained subtopic signature to cluster closely related civic reports."""
+    sups = getattr(context, "support_by_id", {})
+    text_parts = [story.topic]
+    for sid in story.support_ids:
+        sup = sups.get(sid)
+        if sup and getattr(sup, "text", ""):
+            text_parts.append(sup.text)
+        elif sup and getattr(sup, "source_text", ""):
+            text_parts.append(sup.source_text)
+    text = " ".join(text_parts).casefold()
+    if any(
+        w in text for w in ("электр", "свет", "напряжен", "подстанци", "питани", "энерг", "блэкаут")
+    ):
+        return "power"
+    if any(w in text for w in ("вод", "водоканал", "водовод", "труб", "порыв", "насос")):
+        return "water"
+    if any(
+        w in text
+        for w in (
+            "интернет",
+            "связь",
+            "провайдер",
+            "роутер",
+            "юпитер",
+            "терминал",
+            "повербанк",
+            "миранд",
+            "миртелеком",
+        )
+    ):
+        return "internet"
+    if any(
+        w in text
+        for w in ("автобус", "маршрут", "транспорт", "рейс", "проезд", "такси", "дорог", "трасс")
+    ):
+        return "transport"
+    if any(
+        w in text
+        for w in ("спорт", "футбол", "секц", "школ", "набор", "дети", "девоч", "тренировк")
+    ):
+        return "sports"
+    if any(
+        w in text
+        for w in (
+            "бабушк",
+            "бабул",
+            "пожил",
+            "пропал",
+            "поиск",
+            "потер",
+            "полици",
+            "скорая",
+            "пропавш",
+        )
+    ):
+        return "missing_person"
+    if any(
+        w in text
+        for w in (
+            "магазин",
+            "товар",
+            "торговл",
+            "рынок",
+            "проспект",
+            "сакура",
+            "мясокомбинат",
+            "продукци",
+            "вывоз",
+        )
+    ):
+        return "retail"
+    if any(
+        w in text
+        for w in ("взрыв", "хлопок", "прилет", "обстрел", "бпла", "дрон", "пво", "вибраци", "волна")
+    ):
+        return "incident"
+    if any(w in text for w in ("рецепт", "кулинар", "кухн")):
+        return "culinary"
+    return story.story_id
+
+
 def build_article_coverage_plan(
     cards: Sequence[StoryCard],
     context: ArticleEditorialContext,
@@ -231,6 +316,36 @@ def build_article_coverage_plan(
             )
 
     card_map = {c.id: c for c in valid_cards}
+
+    # Subtopic support pooling:
+    # When multiple stories describe the same practical subject within a domain
+    # (e.g. multiple reports about outages and voltage drops across different streets, or multiple retail closures),
+    # pool their support IDs so that comprehensive narrative coverage of the topic credits all related stories.
+    subtopic_sups: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for s in stories:
+        c_item = card_map.get(s.story_id)
+        sec_id = _thematic_section_id(c_item) if c_item else "city_life"
+        sig = _story_topic_signature(s, context)
+        subtopic_sups[(sec_id, sig)].extend(s.support_ids)
+
+    pooled_stories: list[ArticleStoryCoverage] = []
+    for s in stories:
+        c_item = card_map.get(s.story_id)
+        sec_id = _thematic_section_id(c_item) if c_item else "city_life"
+        sig = _story_topic_signature(s, context)
+        cluster_sups = tuple(dict.fromkeys(list(s.support_ids) + subtopic_sups[(sec_id, sig)]))
+        pooled_stories.append(
+            ArticleStoryCoverage(
+                story_id=s.story_id,
+                topic=s.topic,
+                rank=s.rank,
+                prominence=s.prominence,
+                support_ids=cluster_sups,
+                detail_support_ids=s.detail_support_ids,
+            )
+        )
+    stories = pooled_stories
+
     stories_by_section: dict[str, list[ArticleStoryCoverage]] = defaultdict(list)
     for s in stories:
         c_item = card_map.get(s.story_id)
@@ -243,8 +358,11 @@ def build_article_coverage_plan(
         for sdef in sec_defs:
             sid = sdef[0]
             if sid not in stories_by_section or not stories_by_section[sid]:
-                donor_sid = max(stories_by_section.keys(), key=lambda k: len(stories_by_section[k]))
-                if len(stories_by_section[donor_sid]) >= 2:
+                active_donor_keys = [
+                    k for k in stories_by_section.keys() if len(stories_by_section[k]) >= 2
+                ]
+                if active_donor_keys:
+                    donor_sid = max(active_donor_keys, key=lambda k: len(stories_by_section[k]))
                     moved = stories_by_section[donor_sid].pop()
                     stories_by_section[sid].append(moved)
             if len([k for k, v in stories_by_section.items() if v]) >= 3:
@@ -288,9 +406,19 @@ _THEMATIC_SECTIONS_DEF: tuple[tuple[str, str, str], ...] = (
         "Комплексная картина работы коммунальных сетей, подачи электричества, воды и устранения аварийных ситуаций.",
     ),
     (
+        "communications",
+        "Связь, интернет и цифровые сервисы",
+        "Работа мобильных операторов, интернет-провайдеров, перебои со связью и каналы поддержки абонентов.",
+    ),
+    (
+        "mobility",
+        "Городской транспорт и логистика",
+        "Работа городского общественного транспорта, междугородние рейсы, состояние дорог и дорожная ситуация.",
+    ),
+    (
         "city_life",
-        "Городская среда, транспорт и быт",
-        "Повседневная жизнь города, транспортное сообщение, связь и бытовые решения горожан.",
+        "Городская хроника, торговля и происшествия",
+        "Повседневная жизнь города, продовольствие, торговые сети, происшествия и бытовые решения горожан.",
     ),
     (
         "society",
@@ -305,59 +433,117 @@ _THEMATIC_SECTIONS_DEF: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _thematic_section_id(card: StoryCard) -> str:
+def _thematic_section_id(card: StoryCard | None) -> str:
+    if card is None:
+        return "city_life"
     rid = (getattr(card, "rubric_id", "") or "").casefold()
     cat = (getattr(card, "category", "") or "").casefold()
     topic = (getattr(card, "topic", "") or "").casefold()
+    summary = (getattr(card, "summary", "") or "").casefold()
     tags = {str(t).casefold() for t in getattr(card, "tags", []) or []}
-    tokens = set(re.findall(r"[a-zа-яё0-9]+", f"{rid} {cat} {topic} {' '.join(tags)}"))
+    text = f"{rid} {cat} {topic} {summary} {' '.join(tags)}".casefold()
+    tokens = set(re.findall(r"[a-zа-яё0-9]+", text))
 
-    if {
-        "electricity",
-        "power",
-        "water",
-        "gas",
-        "heating",
-        "utilities",
-        "жкх",
+    # Priority 1: Infrastructure (power, water, gas, heating, utilities)
+    # Checked first so that reports like "voltage in the area of school #16" stay in infrastructure
+    infra_prefixes = (
+        "электр",
         "свет",
-        "вода",
-        "газ",
-        "отопление",
-        "рэс",
+        "напряжен",
+        "вольт",
+        "подстанци",
+        "энерг",
+        "вод",
         "водоканал",
-        "подстанция",
-        "авария",
-    } & tokens:
+        "водовод",
+        "водопровод",
+        "протечк",
+        "порыв",
+        "труб",
+        "газ",
+        "отоплен",
+        "котельн",
+        "теплоснабжен",
+        "жкх",
+        "коммунал",
+        "блэкаут",
+        "вспышк",
+        "замыкан",
+        "обесточ",
+        "авари",
+    )
+    if any(any(tok.startswith(p) for p in infra_prefixes) for tok in tokens):
         return "infrastructure"
-    if {
-        "education",
-        "school",
-        "kindergarten",
-        "спорт",
-        "дети",
-        "школа",
+
+    # Priority 2: Communications & Telecom
+    comm_prefixes = (
+        "интернет",
+        "провайдер",
+        "юпитер",
+        "миранд",
+        "миртелеком",
+        "роутер",
+        "терминал",
+        "повербанк",
+        "wifi",
+        "wi-fi",
+        "связ",
+    )
+    if any(any(tok.startswith(p) for p in comm_prefixes) for tok in tokens):
+        return "communications"
+
+    # Priority 3: Mobility & Transport
+    mob_prefixes = (
+        "транспорт",
+        "автобус",
+        "маршрут",
+        "рейс",
+        "проезд",
+        "дорог",
+        "трасс",
+        "такси",
+        "водител",
+        "автомоб",
+        "пдд",
+        "вожден",
+    )
+    if any(any(tok.startswith(p) for p in mob_prefixes) for tok in tokens):
+        return "mobility"
+
+    # Priority 4: Education, Children & Culture (genuine education/sports topics)
+    edu_prefixes = (
+        "школ",
+        "детсад",
         "садик",
+        "спорт",
+        "футбол",
+        "секци",
+        "тренировк",
+        "дети",
         "культура",
         "музей",
-        "youth",
-        "culture",
-        "sport",
-    } & tokens:
+    )
+    if any(any(tok.startswith(p) for p in edu_prefixes) for tok in tokens):
         return "culture_education"
-    if {
-        "medicine",
-        "hospital",
-        "health",
-        "social",
-        "пенсионный",
-        "пособия",
-        "больница",
-        "поликлиника",
+
+    # Priority 5: Society, Healthcare, Social assistance, Missing persons
+    soc_prefixes = (
+        "медицин",
+        "больниц",
+        "поликлиник",
         "врач",
-        "медицина",
-        "гуманитарная",
-        "question",
-    } & tokens:
+        "скорая",
+        "полици",
+        "пожил",
+        "бабушк",
+        "бабул",
+        "пропал",
+        "поиск",
+        "помощ",
+        "пенсион",
+        "пособи",
+    )
+    if any(any(tok.startswith(p) for p in soc_prefixes) for tok in tokens):
         return "society"
+
     return "city_life"

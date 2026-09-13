@@ -17,8 +17,9 @@ _ABBR_SAFE_SENTENCE_SPLIT = re.compile(
     re.IGNORECASE,
 )
 
-_LATIN_TO_CYRILLIC_HOMOGLYPHS = str.maketrans(
+_HOMOGLYPH_TRANSLATION_TABLE = str.maketrans(
     {
+        # Latin -> Cyrillic
         "e": "е",
         "E": "Е",
         "a": "а",
@@ -40,25 +41,88 @@ _LATIN_TO_CYRILLIC_HOMOGLYPHS = str.maketrans(
         "B": "В",
         "M": "М",
         "K": "К",
+        # Greek -> Cyrillic
+        "α": "а",
+        "Α": "А",
+        "β": "в",
+        "Β": "В",
+        "γ": "г",
+        "Γ": "Г",
+        "δ": "д",
+        "Δ": "Д",
+        "ε": "е",
+        "Ε": "Е",
+        "ζ": "з",
+        "Ζ": "З",
+        "η": "н",
+        "Η": "Н",
+        "θ": "т",
+        "Θ": "Т",
+        "ι": "і",
+        "Ι": "І",
+        "κ": "к",
+        "Κ": "К",
+        "λ": "л",
+        "Λ": "Л",
+        "μ": "м",
+        "Μ": "М",
+        "ν": "н",
+        "Ν": "Н",
+        "ξ": "х",
+        "Ξ": "Х",
+        "ο": "о",
+        "Ο": "О",
+        "π": "п",
+        "Π": "П",
+        "ρ": "р",
+        "Ρ": "Р",
+        "σ": "с",
+        "ς": "с",
+        "Σ": "С",
+        "τ": "т",
+        "Τ": "Т",
+        "υ": "у",
+        "Υ": "У",
+        "φ": "ф",
+        "Φ": "Ф",
+        "χ": "х",
+        "Χ": "Х",
+        "ψ": "п",
+        "Ψ": "П",
+        "ω": "о",
+        "Ω": "О",
     }
 )
 
-_MIXED_CYRILLIC_WORD_RE = re.compile(
-    r"\b(?=[a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ]*[а-яА-ЯёЁіІїЇєЄґҐ])[a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ]+\b"
+
+# Matches words containing at least one Cyrillic or Greek character
+_CYRILLIC_OR_GREEK_WORD_RE = re.compile(
+    r"\b(?=[a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ\u0370-\u03ff]*[а-яА-ЯёЁіІїЇєЄґҐ\u0370-\u03ff])[a-zA-Zа-яА-ЯёЁіІїЇєЄґҐ\u0370-\u03ff]+\b"
 )
 
 
 def _normalize_homoglyphs(text: str) -> str:
-    """Replace accidental Latin homoglyph letters inside predominantly Cyrillic words."""
+    """Replace Latin and Greek homoglyph letters with Cyrillic and correct casing artifacts."""
     if not text:
         return ""
 
     def _repl(m: re.Match[str]) -> str:
         w = m.group(0)
-        # If word has both cyrillic and latin, map latin homoglyphs to cyrillic
-        return w.translate(_LATIN_TO_CYRILLIC_HOMOGLYPHS)
+        tr = w.translate(_HOMOGLYPH_TRANSLATION_TABLE)
+        # Clean casing if mid-word capitals (e.g. from Greek capital substitutions like 'житеЛи')
+        if not (tr.isupper() or len(tr) <= 2):
+            if not (tr[0].isupper() and tr[1:].islower()):
+                tr = tr[0] + tr[1:].lower()
+        return tr
 
-    return _MIXED_CYRILLIC_WORD_RE.sub(_repl, text)
+    cleaned = _CYRILLIC_OR_GREEK_WORD_RE.sub(_repl, text)
+    # Lowercase prepositions/conjunctions capitalized mid-clause due to Greek capital homoglyphs (e.g. "а На Азмоле")
+    cleaned = re.sub(
+        r"(\b[а-яё]+,?\s+)(В|На|С|К|О|Об|По|От|До|Из|За|Под|Над|При)\b",
+        lambda m: m.group(1) + m.group(2).lower(),
+        cleaned,
+    )
+    return cleaned
 
 
 def _split_sentences_safe(text: str) -> list[str]:

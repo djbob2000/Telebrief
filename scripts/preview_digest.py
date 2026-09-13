@@ -54,7 +54,7 @@ async def main() -> None:
             config=config,
         )
         parts = [f"# {preview.title}" if preview.title else "# Дайджест"]
-        if preview.lead:
+        if preview.lead and not (preview.body and preview.body.startswith(preview.lead)):
             parts.extend(["", preview.lead])
         if preview.body:
             parts.extend(["", preview.body])

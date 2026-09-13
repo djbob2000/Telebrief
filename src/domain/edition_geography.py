@@ -29,6 +29,8 @@ _BERDYANSK_TARGET_LOCATIONS = (
     "Черемушки",
     "Аэропорт",
     "Шевченко",
+    "Зеркальный",
+    "супермаркет «Зеркальный»",
 )
 
 _BERDYANSK_DISTRICT_LOCATIONS = (

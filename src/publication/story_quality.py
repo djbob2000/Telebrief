@@ -308,4 +308,16 @@ def validate_story_publication_eligibility(
         if not has_meaningful_predicate(hl) and not has_meaningful_predicate(sm):
             return False, "lacks_meaningful_predicate"
 
+    # Rule 4: Exclude pure conversational chatter lacking civic event/status (e.g. chat recipe recollections)
+    if re.search(r"\b(?:рецепт\w*|кулинарн\w*)\b", all_story_text, re.IGNORECASE):
+        if not any(
+            re.search(
+                r"\b(?:откры\w*|закры\w*|подорож\w*|подешев\w*|дефицит\w*|хлеб\w*|цен\w*)\b",
+                getattr(item, "text", ""),
+                re.IGNORECASE,
+            )
+            for item in non_question_items
+        ):
+            return False, "conversational_chatter_recipe"
+
     return True, None

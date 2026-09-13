@@ -330,11 +330,11 @@ def test_supplement_safe_draft_preserves_ai_units_and_adds_supplement() -> None:
     assert "story:2:evidence:0:frag:202" in result.cited_support_ids
     assert "story:3:evidence:0:frag:303" in result.cited_support_ids
 
-    # DEVELOP miss (story:2) gets its own section, BRIEF miss (story:3) goes to short section
+    # DEVELOP miss (story:2) gets its own section, BRIEF miss (story:3) goes to thematic section
     assert len(result.sections) == 3
     assert result.sections[1].heading == "Городской транспорт"
     assert result.sections[1].heading_generation_origin == "SUPPLEMENT"
-    assert result.sections[2].heading == "Коротко о других событиях города"
+    assert result.sections[2].heading == "Социальная сфера и городские службы"
     assert result.sections[2].heading_generation_origin == "SUPPLEMENT"
 
 

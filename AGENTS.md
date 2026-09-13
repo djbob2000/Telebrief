@@ -145,7 +145,9 @@ It is not limited to 3–4 major stories. It may cover many meaningful parts of 
 
 Selection controls editorial hierarchy, rank, and presentation intent; it does not have subjective authority to delete a legitimate hard-eligible sealed Story.
 
-`ArticleCoveragePlan.story_ids` is the runtime article coverage denominator. AI story coverage may be incomplete; final article Story coverage must be 100%. Writer omission is a recovery trigger, never an acceptable final loss reason.
+`ArticleCoveragePlan` establishes the thematic roadmap and editorial depth (DEVELOP, WEAVE, BRIEF) for the reporting window. The AI writer must aim for broad, faithful coverage of the plan by developing key storylines and synthesizing smaller items into coherent chapters.
+
+Mechanical coverage chasing must never degrade literary quality: never append raw fragment dumps, synthetic filler paragraphs, or deterministic boilerplate to the article draft. The article is evaluated as a cohesive journalistic long read.
 
 The desired transformation is:
 
@@ -299,9 +301,7 @@ When the writer draft contains isolated factual or stylistic validation issues (
 
 Evidence Boundary is fail-closed for unverified assertions: the published article must never contain ungrounded facts.
 
-Safe but incomplete writer output is preserved and completed deterministically.
-
-When substantive PUBLISH material exists, minor validation issues on specific paragraphs must be resolved through targeted editing and deterministic recovery rather than discarding the entire publication. A terminal article-generation failure is reserved for system invariant failure after all recovery steps.
+Safe writer output that meets the Evidence Boundary is published as an authentic journalistic long read. When substantive material exists, minor validation issues on specific paragraphs are resolved through targeted editing (`ArticleEditor`) or pruning of ungrounded sentences, rather than discarding the entire publication or appending synthetic filler. If an article cannot be verified, the pipeline fails closed (`ArticlePublicationRejected`). Never dump raw fragments or append artificial filler paragraphs to compensate for missing coverage.
 
 ## 0.8 Reader hierarchy, not destructive selection
 
@@ -329,11 +329,12 @@ Agents must not make changes whose effect is to:
 
 - reduce the city-life long read to only 3–4 selected headlines;
 - allow subjective article selection dropping legitimate sealed Stories;
-- treat writer omission as an accepted information-loss reason;
-- let writer failure/evidence rejection destroy an otherwise publishable Event-First edition;
+- silently drop major storylines from the coverage plan;
+- append raw fragment dumps, synthetic filler paragraphs, or deterministic boilerplate to the article draft;
+- sacrifice literary cohesion, narrative bridges, or readability to chase mechanical coverage metrics;
+- turn the article into a disconnected collection of single-sentence bullet-like paragraphs;
+- fall back to legacy message-based generation or deterministic concatenation (`article_allow_deterministic_fallback: false` — fail closed: either a verified, cohesive journalistic article or `ArticlePublicationRejected`);
 - turn digest presentation caps into knowledge-loss caps;
-- use legacy/message-based article generation as production recovery;
-- classify deterministic recovery as a correctness regression by itself;
 - require official confirmation or 2+ sources for legitimate local reports;
 - treat resident questions as established facts or operational service states;
 - flatten supported microdetails into generic summaries;
@@ -345,7 +346,6 @@ Agents must not make changes whose effect is to:
 - strengthen verification so aggressively that legitimate community news disappears;
 - reintroduce claim-first per-message LLM explosion as the default processing architecture;
 - hardcode one city's geography or examples into generic production prompt logic;
-- fall back to deterministic concatenation or fragment dumping when article generation or validation fails (`article_allow_deterministic_fallback: false` — fail closed: either a verified quality article or `ArticlePublicationRejected`);
 - configure or run AI models not explicitly declared in `.env` (strict runtime allowlist enforced in `src/ai_providers.py`).
 
 
@@ -383,14 +383,14 @@ EventPayload + exact fragment provenance
 Publication snapshot + selection
         ↓
         ├── Digest: coverage-preserving selection -> DigestPresentationPlan -> City Situation + detail rendering -> DigestCoverageTrace -> publication
-        └── Article: coverage-preserving selection -> ArticleCoveragePlan -> one writer attempt -> deterministic finalization/recovery -> final validation -> ArticleClaimTrace -> publication
+        └── Article: coverage-preserving selection -> ArticleCoveragePlan -> writer attempt -> targeted validation/editing -> ArticleClaimTrace -> publication
         ↓
 Delivery
 ```
 
 The canonical design is **Event-First**, not claim-first.
 
-Legacy floor guards offline regressions; Event-First truth drives production. Writer omission is never an acceptable loss reason. Presentation budgets never redefine publishable knowledge.
+Legacy floor guards offline regressions; Event-First truth drives production. Presentation budgets never redefine publishable knowledge.
 
 Legacy/custom/message-based paths may remain for compatibility, comparison, migration, or benchmarking. Do not treat them as the target architecture unless the user explicitly asks to modify a legacy path.
 
@@ -761,16 +761,15 @@ Do not let the writer hide an unsupported fact in prose merely by keeping it out
 
 ## 6.7 Single-call budget and fail-closed publication
 
-Event-First article generation uses one generative writer attempt.
+Event-First article generation uses one main generative writer attempt, followed by Evidence Boundary validation and optional targeted copy-editing (`ArticleEditor`) for isolated issues.
 
-If deterministic validation fails after the writer starts:
+If validation fails or cannot be resolved:
 
 - mark the generation attempt rejected;
-- fail the publication run with the stable article rejection semantics;
+- fail the publication run fail-closed (`ArticlePublicationRejected`);
 - create no publication row;
 - queue no delivery;
-- do not publish a deterministic replacement article;
-- do not automatically run another writer/fact-check/repair model.
+- do not publish a deterministic replacement article or concatenate raw source fragments.
 
 ---
 

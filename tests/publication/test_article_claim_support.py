@@ -317,3 +317,29 @@ def test_attempt74_real_additions_still_block() -> None:
             allowed_context_terms=tuple(str(x) for x in case.get("edition_terms", [])),
         )
         assert assessment.supported is False, case["id"]
+
+
+@pytest.mark.unit
+def test_zerkalny_closure_claim_supported() -> None:
+    from src.publication.article_context import _edition_anchor_terms
+
+    support = make_support(
+        text="Магазин біля колишнього супермаркету «Зеркальный» вже вивозить товар.",
+        source_text="Магазин біля колишнього супермаркету «Дзеркальний» вже вивозить товар. Про це «Бердянськ 24» дізнався з власних джерел. Раніше в мережі повідомляли, що виробництво припиняє роботу з 1 вересня через відсутність електроенергії.",
+        support_id="story:2:evidence:0:frag:2",
+    )
+    anchors = _edition_anchor_terms("Бердянск")
+
+    # Claim that the Zerkalniy supermarket is probably closing as goods are being moved out
+    claim = (
+        "Супермаркет «Зеркальный» скорее всего закрывается тоже, потому что из него вывозят товар."
+    )
+    assessment = assess_claim_against_supports(
+        claim,
+        [support],
+        allowed_context_terms=anchors,
+    )
+    assert assessment.supported is True
+    assert assessment.blocking_proper_names == ()
+    assert assessment.blocking_semantic_terms == ()
+    assert assessment.unsupported_concrete_claims == ()

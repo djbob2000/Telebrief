@@ -207,6 +207,7 @@ class EventEditorialAdapter:
                     )
 
             # Build PublicationEvidence items
+            from src.processing.operational_semantics import normalize_berdyansk_toponyms
             from src.publication.evidence import PublicationEvidence
 
             if payload and payload.evidence_items:
@@ -218,7 +219,7 @@ class EventEditorialAdapter:
                             all_evidence[evi_id] = PublicationEvidence(
                                 evidence_id=evi_id,
                                 story_id=inp.story_id,
-                                text=evi.text,
+                                text=normalize_berdyansk_toponyms(evi.text),
                                 source_text=str(meta["source_text"]),
                                 kind=evi.kind,
                                 publication_use=evi.publication_use,
@@ -238,7 +239,7 @@ class EventEditorialAdapter:
                             all_evidence[evi_id] = PublicationEvidence(
                                 evidence_id=evi_id,
                                 story_id=inp.story_id,
-                                text=fact,
+                                text=normalize_berdyansk_toponyms(fact),
                                 source_text=str(meta["source_text"]),
                                 kind="established_fact",
                                 publication_use="PUBLISH",
@@ -255,7 +256,7 @@ class EventEditorialAdapter:
                         all_evidence[evi_id] = PublicationEvidence(
                             evidence_id=evi_id,
                             story_id=inp.story_id,
-                            text=str(meta["source_text"]),
+                            text=normalize_berdyansk_toponyms(str(meta["source_text"])),
                             source_text=str(meta["source_text"]),
                             kind="established_fact",
                             publication_use="PUBLISH",
@@ -278,6 +279,8 @@ class EventEditorialAdapter:
                 if payload and payload.digest_summary
                 else (row[2] or row[3] or "")
             )
+            headline = normalize_berdyansk_toponyms(headline)
+            digest_summary = normalize_berdyansk_toponyms(digest_summary)
 
             fallback_refs = card_source_refs or [f"story:{inp.story_id}"]
 

@@ -8,7 +8,7 @@ from src.publication.article_context import (
 )
 from src.publication.article_coverage import ArticleCoveragePlan
 
-_PHONE_RE = re.compile(r"(?:\+?\d[\d\s()\-]{8,}\d)")
+_PHONE_RE = re.compile(r"(?:\+?\d[\d\s()\-–—]{8,}\d)")
 _URL_RE = re.compile(r"https?://\S+|\bwww\.\S+|\bt\.me/\S+", re.IGNORECASE)
 
 
@@ -21,7 +21,40 @@ def sanitize_writer_source_text(text: str) -> str:
     return out
 
 
-def _render_coverage_plan(plan: ArticleCoveragePlan) -> str:
+def _extract_story_microdetails(
+    story_id: str,
+    support_ids: Sequence[str],
+    context: ArticleEditorialContext | None,
+) -> list[str]:
+    if context is None or not hasattr(context, "support_by_id"):
+        return []
+    details: list[str] = []
+    seen: set[str] = set()
+    for sid in support_ids:
+        sup = context.support_by_id.get(sid)
+        if not sup:
+            continue
+        # Prefer rich source text if it provides concrete details, otherwise text
+        raw = (
+            sup.source_text if (sup.source_text and len(sup.source_text.strip()) > 10) else sup.text
+        )
+        if not raw:
+            continue
+        cleaned = sanitize_writer_source_text(raw)
+        # Collapse multiple spaces / newlines
+        cleaned = " ".join(cleaned.split()).strip()
+        if len(cleaned) > 130:
+            cleaned = cleaned[:127] + "..."
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            details.append(cleaned)
+    return details[:3]
+
+
+def _render_coverage_plan(
+    plan: ArticleCoveragePlan,
+    context: ArticleEditorialContext | None = None,
+) -> str:
     lines = ["ARTICLE COVERAGE PLAN"]
     develop_stories = [s for s in plan.stories if s.prominence == "DEVELOP"]
     if develop_stories:
@@ -49,14 +82,29 @@ def _render_coverage_plan(plan: ArticleCoveragePlan) -> str:
                 lines.append(f"  SUPPORTS: {', '.join(sups)}")
                 if det_sups:
                     lines.append(f"  DETAIL SUPPORTS: {', '.join(det_sups)}")
-                if a.concrete_details:
-                    lines.append(f"  MICRODETAILS: {'; '.join(a.concrete_details)}")
+
+                # Extract rich human-readable microdetails
+                micro_targets = list(det_sups) if det_sups else list(sups[:2])
+                micro_details = _extract_story_microdetails(a.story_id, micro_targets, context)
+                if not micro_details and a.concrete_details:
+                    micro_details = [
+                        d
+                        for d in a.concrete_details
+                        if not d.startswith("story:") and not d.startswith("op:")
+                    ]
+                if micro_details:
+                    lines.append(f"  MICRODETAILS: {' | '.join(micro_details)}")
     else:
         for item in plan.stories:
             lines.append(f"- {item.prominence} {item.story_id}: {item.topic}")
             lines.append(f"  SUPPORTS: {', '.join(item.support_ids)}")
             if item.detail_support_ids:
                 lines.append(f"  DETAIL SUPPORTS: {', '.join(item.detail_support_ids)}")
+            micro_details = _extract_story_microdetails(
+                item.story_id, item.detail_support_ids or item.support_ids[:2], context
+            )
+            if micro_details:
+                lines.append(f"  MICRODETAILS: {' | '.join(micro_details)}")
     return "\n".join(lines)
 
 
@@ -93,7 +141,7 @@ def render_article_writer_context(
             )
 
     if coverage_plan is not None:
-        blocks.append(_render_coverage_plan(coverage_plan))
+        blocks.append(_render_coverage_plan(coverage_plan, context=context))
 
     from src.publication.article_quote_allowlist import build_article_quote_allowlist
 
@@ -110,8 +158,18 @@ def render_article_writer_context(
             "QUOTE ALLOWLIST: (NONE — quotation marks are strictly forbidden; use indirect speech only)"
         )
 
+    allowed_support_ids: set[str] | None = None
+    if coverage_plan is not None:
+        allowed_support_ids = set()
+        for item in coverage_plan.stories:
+            allowed_support_ids.update(item.support_ids)
+            allowed_support_ids.update(item.detail_support_ids)
+
     for sup in context.support_index:
         if sup.publication_use == "EXCLUDE":
+            continue
+        if allowed_support_ids is not None and sup.support_id not in allowed_support_ids:
+            # Exclude supports that do not belong to selected stories in the coverage plan
             continue
         roles = ",".join(sup.source_roles) if sup.source_roles else "unknown"
         role_tag: str = str(sup.temporal_role)

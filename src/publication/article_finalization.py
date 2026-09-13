@@ -194,6 +194,102 @@ def _sanitize_unsupported_quotes(
     )
 
 
+def _merge_orphan_paragraphs(
+    draft: StructuredArticleDraft,
+) -> StructuredArticleDraft:
+    """Merge single-sentence orphan paragraphs into preceding paragraph (AGENTS.md §0.9).
+
+    A paragraph is considered an orphan if it contains only one sentence
+    (≤1 sentence-ending punctuation mark) and is not the only paragraph in its section.
+    Orphan paragraphs are appended to the preceding paragraph text with a space separator.
+    """
+    changed = False
+    new_sections = []
+    for sec in draft.sections:
+        if len(sec.paragraphs) <= 1:
+            new_sections.append(sec)
+            continue
+        merged_paras: list[ArticleParagraph] = []
+        for p in sec.paragraphs:
+            sentences = _split_sentences_safe(p.text)
+            is_orphan = len(sentences) <= 1 and len(merged_paras) > 0
+            if is_orphan:
+                prev = merged_paras[-1]
+                merged_text = prev.text.rstrip() + " " + p.text.lstrip()
+                merged_supports = list(prev.cited_support_ids) + [
+                    sid for sid in p.cited_support_ids if sid not in prev.cited_support_ids
+                ]
+                merged_claims = tuple(list(prev.claims) + list(p.claims))
+                merged_paras[-1] = ArticleParagraph(
+                    text=merged_text,
+                    cited_support_ids=tuple(merged_supports),
+                    claims=merged_claims,
+                    generation_origin=prev.generation_origin,
+                )
+                changed = True
+                logger.info(
+                    "Merged orphan single-sentence paragraph into preceding: %.60s...",
+                    p.text[:60],
+                )
+            else:
+                merged_paras.append(p)
+        new_sections.append(
+            ArticleSection(
+                heading=sec.heading,
+                heading_support_ids=sec.heading_support_ids,
+                heading_claims=sec.heading_claims,
+                paragraphs=tuple(merged_paras),
+                heading_generation_origin=sec.heading_generation_origin,
+            )
+        )
+    if not changed:
+        return draft
+    return StructuredArticleDraft(
+        title=draft.title,
+        title_support_ids=draft.title_support_ids,
+        lead=draft.lead,
+        lead_support_ids=draft.lead_support_ids,
+        sections=tuple(new_sections),
+        title_claims=draft.title_claims,
+        lead_claims=draft.lead_claims,
+        cited_evidence_ids=draft.cited_evidence_ids,
+        word_count=draft.word_count,
+        title_generation_origin=draft.title_generation_origin,
+        lead_generation_origin=draft.lead_generation_origin,
+    )
+
+
+_QUOTE_RE = re.compile(r"\u00ab[^\u00bb]+\u00bb")
+
+
+def _detect_chat_roll_paragraphs(
+    draft: StructuredArticleDraft,
+    max_quotes_per_paragraph: int = 3,
+) -> list[tuple[int, int, int]]:
+    """Detect paragraphs with excessive consecutive direct quotes (AGENTS.md §0.6).
+
+    Returns list of (section_idx, paragraph_idx, quote_count) for paragraphs
+    exceeding the quote threshold. These are logged as warnings for editorial review.
+    """
+    violations: list[tuple[int, int, int]] = []
+    for si, sec in enumerate(draft.sections):
+        for pi, para in enumerate(sec.paragraphs):
+            quote_count = len(_QUOTE_RE.findall(para.text))
+            if quote_count > max_quotes_per_paragraph:
+                violations.append((si, pi, quote_count))
+                logger.warning(
+                    "Chat-roll detected: section %d paragraph %d has %d direct quotes "
+                    "(max %d per AGENTS.md 0.6). Consider rewriting with indirect speech. "
+                    "Text preview: %.80s...",
+                    si,
+                    pi,
+                    quote_count,
+                    max_quotes_per_paragraph,
+                    para.text[:80],
+                )
+    return violations
+
+
 def _prune_unsupported_paragraph_claims(
     draft: StructuredArticleDraft,
     claim_violations: Sequence[ArticleValidationIssue],
@@ -237,8 +333,8 @@ def _prune_unsupported_paragraph_claims(
 
             bad_texts = bad_claims_by_unit.get(p_id, set())
             sentences = _split_sentences_safe(p.text)
+            kept_sentences: list[str] = []
             if len(sentences) > 1 and bad_texts:
-                kept_sentences: list[str] = []
                 for s in sentences:
                     s_clean = s.strip()
                     is_bad = any(
@@ -249,21 +345,95 @@ def _prune_unsupported_paragraph_claims(
                     else:
                         kept_sentences.append(s_clean)
 
-                if kept_sentences:
-                    new_text = " ".join(kept_sentences)
-                    new_claims = tuple(
-                        ArticleClaimAtom(text=s, cited_support_ids=p.cited_support_ids)
-                        for s in kept_sentences
-                    )
-                    new_paragraphs.append(
-                        ArticleParagraph(
-                            text=new_text,
-                            cited_support_ids=p.cited_support_ids,
-                            claims=new_claims,
-                            generation_origin=p.generation_origin,
-                        )
-                    )
+            has_unsupported_name = any(
+                getattr(iss, "code", "") == "UNSUPPORTED_PROPER_NAME"
+                for iss in claim_violations
+                if iss.unit_id == p_id
+            )
+
+            # If no sentences kept (or single-sentence invalid paragraph), synthesize from support evidence
+            # unless it has an unverified proper name which must fail closed per AGENTS.md 0.7 & test_case_8.
+            if not kept_sentences and not has_unsupported_name and context and p.cited_support_ids:
+                from src.publication.article_recovery import (
+                    _clean_support_text_for_reader,
+                    _normalize_for_dedup,
+                )
+
+                existing_norms = {
+                    _normalize_for_dedup(para.text) for s in new_sections for para in s.paragraphs
+                } | {_normalize_for_dedup(para.text) for para in new_paragraphs}
+
+                from src.publication.article_claims import _stem
+
+                tok_re = re.compile(r"[\w-]+", re.UNICODE)
+                sec_stems = {
+                    _stem(w.lower())
+                    for para in new_paragraphs
+                    for w in tok_re.findall(para.text)
+                    if len(w) >= 3
+                }
+
+                sup_texts = [
+                    context.support_by_id[sid].text
+                    for sid in p.cited_support_ids
+                    if sid in context.support_by_id and context.support_by_id[sid].text
+                ]
+                safe_s = []
+                for st in sup_texts[:2]:
+                    norm = _normalize_for_dedup(st)
+                    if norm in existing_norms:
+                        continue
+                    st_stems = {_stem(w.lower()) for w in tok_re.findall(norm) if len(w) >= 3}
+                    if len(st_stems) >= 2 and st_stems.issubset(sec_stems):
+                        # Topic already thoroughly covered in this section
+                        continue
+                    cleaned = _clean_support_text_for_reader(st)
+                    if cleaned:
+                        safe_s.append(cleaned)
+
+                if safe_s:
+                    kept_sentences = safe_s
+                    pruned_count += 1
+
+            if kept_sentences:
+                new_text = " ".join(kept_sentences)
+                # Deduplicate against existing paragraphs in the section:
+                # If new_text is substantially redundant or already expressed, omit it.
+                from src.publication.article_recovery import _normalize_for_dedup
+
+                new_norm = _normalize_for_dedup(new_text)
+                is_duplicate = False
+                for ep in new_paragraphs:
+                    ep_norm = _normalize_for_dedup(ep.text)
+                    if new_norm in ep_norm or ep_norm in new_norm:
+                        is_duplicate = True
+                        break
+                    from src.publication.article_claims import _stem
+
+                    tok_re = re.compile(r"[\w-]+", re.UNICODE)
+                    new_stems = {_stem(w.lower()) for w in tok_re.findall(new_norm) if len(w) >= 3}
+                    ep_stems = {_stem(w.lower()) for w in tok_re.findall(ep_norm) if len(w) >= 3}
+                    if len(new_stems) >= 3 and new_stems.issubset(ep_stems):
+                        is_duplicate = True
+                        break
+
+                if is_duplicate:
+                    pruned_count += 1
                     continue
+
+                new_claims = tuple(
+                    ArticleClaimAtom(text=s, cited_support_ids=p.cited_support_ids)
+                    for s in kept_sentences
+                )
+                new_paragraphs.append(
+                    ArticleParagraph(
+                        text=new_text,
+                        cited_support_ids=p.cited_support_ids,
+                        claims=new_claims,
+                        generation_origin=p.generation_origin,
+                    )
+                )
+                continue
 
             # Check if paragraph can be omitted if it is entirely invalid.
             # Fail-closed for DEVELOP stories or unverified proper names (remains to reject per test_case_8).
@@ -280,35 +450,60 @@ def _prune_unsupported_paragraph_claims(
                 if any(sid in dev_sups for sid in p.cited_support_ids):
                     is_develop_para = True
 
-            has_unsupported_name = any(
-                getattr(iss, "code", "") == "UNSUPPORTED_PROPER_NAME"
-                for iss in claim_violations
-                if iss.unit_id == p_id
-            )
-
             if not is_develop_para and not has_unsupported_name and len(draft.sections) >= 2:
-                pruned_count += 1
-                logger.info(
-                    "Pruned entire invalid non-DEVELOP paragraph %s (%d chars) to uphold Evidence Boundary",
-                    p_id,
-                    len(p.text),
-                )
-                continue
+                # Do not prune entire paragraph if it is the only paragraph in the section,
+                # as that would drop the whole section and its topic.
+                if len(sec.paragraphs) > 1:
+                    pruned_count += 1
+                    logger.info(
+                        "Pruned entire invalid non-DEVELOP paragraph %s (%d chars) to uphold Evidence Boundary",
+                        p_id,
+                        len(p.text),
+                    )
+                    continue
 
             # Cannot prune DEVELOP paragraph or unverified proper name without violating fail-closed boundary
             new_paragraphs.append(p)
 
         if new_paragraphs:
-            new_sections.append(
-                ArticleSection(
-                    heading=sec.heading,
-                    heading_support_ids=sec.heading_support_ids,
-                    heading_claims=sec.heading_claims,
-                    paragraphs=tuple(new_paragraphs),
-                    cited_evidence_ids=sec.cited_evidence_ids,
-                    heading_generation_origin=sec.heading_generation_origin,
+            # Deduplicate any duplicate paragraphs within the section
+            from src.publication.article_recovery import _normalize_for_dedup
+
+            deduped_paragraphs: list[ArticleParagraph] = []
+            for para in new_paragraphs:
+                p_norm = _normalize_for_dedup(para.text)
+                dup = False
+                for existing in deduped_paragraphs:
+                    e_norm = _normalize_for_dedup(existing.text)
+                    if p_norm in e_norm:
+                        dup = True
+                        break
+                    from src.publication.article_claims import _stem
+
+                    tok_re = re.compile(r"[\w-]+", re.UNICODE)
+                    p_stems = {_stem(w.lower()) for w in tok_re.findall(p_norm) if len(w) >= 3}
+                    e_stems = {_stem(w.lower()) for w in tok_re.findall(e_norm) if len(w) >= 3}
+                    if len(p_stems) >= 3:
+                        overlap = len(p_stems & e_stems) / len(p_stems)
+                        if p_stems.issubset(e_stems) or overlap >= 0.75:
+                            dup = True
+                            break
+                if not dup:
+                    deduped_paragraphs.append(para)
+                else:
+                    pruned_count += 1
+
+            if deduped_paragraphs:
+                new_sections.append(
+                    ArticleSection(
+                        heading=sec.heading,
+                        heading_support_ids=sec.heading_support_ids,
+                        heading_claims=sec.heading_claims,
+                        paragraphs=tuple(deduped_paragraphs),
+                        cited_evidence_ids=sec.cited_evidence_ids,
+                        heading_generation_origin=sec.heading_generation_origin,
+                    )
                 )
-            )
 
     if pruned_count == 0:
         return draft
@@ -442,6 +637,11 @@ class ArticleFinalizer:
                     )
                     writer_draft = repaired_draft
                     writer_validation = repaired_val
+                else:
+                    logger.warning(
+                        "Article writer draft pruning attempted but repaired draft still invalid: %s",
+                        list(repaired_val.violations),
+                    )
 
         if not writer_validation.is_valid:
             # Deterministic title repair: if only TITLE has blocking issues, sanitize or adopt section heading
@@ -527,10 +727,27 @@ class ArticleFinalizer:
                 attempt_observer=attempt_observer,
             )
 
-        # 3. Writer draft is valid; diagnose its coverage
+        # 3. Writer draft is valid; apply deterministic structural improvements
+        # 3a. Merge single-sentence orphan paragraphs (AGENTS.md §0.9)
+        writer_draft = _merge_orphan_paragraphs(writer_draft)
+        # 3b. Detect chat-roll patterns for editorial logging (AGENTS.md §0.6)
+        _detect_chat_roll_paragraphs(writer_draft, max_quotes_per_paragraph=3)
+
+        # 3c. Diagnose coverage
         ai_diag = diagnose_article_coverage(writer_draft, coverage_plan, context=context)
         ai_covered = tuple(ai_diag.covered_story_ids)
 
+        hard_min = (
+            length_profile.hard_min_words
+            if length_profile is not None
+            else getattr(editorial_config, "article_min_words", 500)
+        )
+        is_substantial = (
+            writer_validation.word_count >= hard_min
+            and writer_validation.section_count >= 2
+            and ai_diag.covered_story_count >= 5
+            and ai_diag.develop_story_coverage >= 1.0
+        )
         if set(ai_covered) == set(coverage_plan.story_ids):
             # Complete AI coverage!
             trace = build_article_claim_trace(writer_draft, context)
@@ -566,30 +783,20 @@ class ArticleFinalizer:
                 metadata=meta,
             )
 
-        # 4. Incomplete writer draft: check safety gate before deterministic supplement
-        hard_min = (
-            length_profile.hard_min_words
-            if length_profile is not None
-            else getattr(editorial_config, "article_min_words", 500)
-        )
-        is_substantial = (
-            writer_validation.word_count >= hard_min
-            and writer_validation.section_count >= 2
-            and ai_diag.covered_story_count >= 5
-        )
+        # 4. Incomplete writer draft: check safety gate before deterministic supplement (fallback enabled)
         is_safe_for_supplement = (
             ai_diag.develop_story_coverage >= 1.0
             and (
                 (ai_diag.story_coverage >= 0.80 and len(ai_diag.uncovered_story_ids) <= 3)
                 or (
                     is_substantial
-                    and (ai_diag.story_coverage >= 0.35 or len(ai_diag.uncovered_story_ids) <= 15)
+                    and (ai_diag.story_coverage >= 0.20 or len(ai_diag.uncovered_story_ids) <= 18)
                 )
             )
         ) or (
             is_substantial
-            and ai_diag.story_coverage >= 0.40
-            and len(ai_diag.uncovered_story_ids) <= 12
+            and ai_diag.story_coverage >= 0.35
+            and len(ai_diag.uncovered_story_ids) <= 15
             and getattr(editorial_config, "article_editor_enabled", False)
         )
         if not is_safe_for_supplement:

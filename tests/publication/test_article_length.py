@@ -51,7 +51,7 @@ def test_derive_article_length_profile_thin():
     assert profile.target_max_words == 800
     assert profile.target_min_sections == 2
     assert profile.target_max_sections == 4
-    assert profile.hard_min_words == 180
+    assert profile.hard_min_words == 200
     assert profile.hard_max_words == 1600
 
 
@@ -75,7 +75,7 @@ def test_derive_article_length_profile_standard():
     assert profile.target_max_words == 1400
     assert profile.target_min_sections == 3
     assert profile.target_max_sections == 6
-    assert profile.hard_min_words == 180
+    assert profile.hard_min_words == 300
 
 
 def test_derive_article_length_profile_rich():
@@ -98,4 +98,4 @@ def test_derive_article_length_profile_rich():
     assert profile.target_max_words == 2000
     assert profile.target_min_sections == 4
     assert profile.target_max_sections == 8
-    assert profile.hard_min_words == 180
+    assert profile.hard_min_words == 400

@@ -176,6 +176,18 @@ async def build_publication_preview(
     snap = snapshot_at or dt.datetime.now(dt.timezone.utc)
     key = f"preview:{edition_slug}:{publication_type}:{uuid.uuid4().hex}"
 
+    async with runtime.uow.transaction() as conn:
+        await conn.execute(
+            """
+            DELETE FROM publication_refresh_runs
+            WHERE edition_id = (SELECT id FROM editions WHERE slug = %s)
+              AND publication_type = %s
+              AND slot_at = %s
+              AND request_key LIKE %s
+            """,
+            (edition_slug, publication_type, snap, "preview:%"),
+        )
+
     intent = await PublicationOrchestrator(uow=runtime.uow, config=config).request(
         edition_slug=edition_slug,
         publication_type=publication_type,
