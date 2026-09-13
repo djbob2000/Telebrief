@@ -392,15 +392,15 @@ async def test_case_5_valid_partial_draft_is_accepted_without_supplement() -> No
     assert result.recovery_mode == "none"
     assert result.supplemented_story_ids == ()
     assert set(result.final_covered_story_ids) == {story.story_id for story in plan.stories[:-1]}
-    assert result.metadata["partial_coverage_accepted"] is True
+    assert result.metadata["coverage_only_diagnostic"] is True
     assert result.metadata["final_story_coverage"] == pytest.approx(16 / 17)
     assert "deterministic_supplement" not in observer.started_kinds
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_6_valid_draft_covering_1_of_17_forbids_supplement_and_fails_closed() -> None:
-    """Case 6: Valid AI draft covers 1/17 -> Supplement forbidden -> Rejection path."""
+async def test_case_6_valid_draft_with_partial_coverage_is_not_rejected_for_coverage() -> None:
+    """Coverage remains diagnostic when the writer draft passes Evidence Boundary."""
     context, plan = _make_17_story_setup()
     supports = list(context.support_index)
     sup1 = supports[0]
@@ -463,33 +463,32 @@ async def test_case_6_valid_draft_covering_1_of_17_forbids_supplement_and_fails_
     observer = RecordingAttemptObserver()
     writer_id = await observer.attempt_started("writer")
 
-    with pytest.raises(ArticlePublicationRejected) as exc_info:
-        await finalizer.finalize(
-            writer_draft=one_story_draft,
-            writer_error=None,
-            writer_attempt_id=writer_id,
-            context=context,
-            coverage_plan=plan,
-            editorial_config=editorial_config,
-            attempt_observer=observer,
-        )
+    result = await finalizer.finalize(
+        writer_draft=one_story_draft,
+        writer_error=None,
+        writer_attempt_id=writer_id,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=editorial_config,
+        attempt_observer=observer,
+    )
 
-    # Coverage is 1/17 (5.88% < 80%) -> supplement is strictly forbidden!
-    assert exc_info.value.reason == "global_incompleteness"
+    assert result.recovery_mode == "none"
+    assert result.metadata["coverage_only_diagnostic"] is True
+    assert result.metadata["final_story_coverage"] == pytest.approx(1 / 17, abs=1e-3)
     assert "deterministic_supplement" not in observer.started_kinds
 
-    # Writer attempt must be closed as failed with global_incompleteness (never left running)
+    # Writer attempt must be closed as succeeded; coverage is recorded, not blocking.
     assert writer_id in observer.finished_attempts
     att = observer.finished_attempts[writer_id]
-    assert att["status"] == "failed"
-    assert att["kwargs"]["error_kind"] == "global_incompleteness"
+    assert att["status"] == "succeeded"
     assert att["kwargs"]["metadata"]["ai_story_coverage"] == pytest.approx(1 / 17, abs=1e-3)
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_7_missing_develop_story_forbids_supplement_and_fails_closed() -> None:
-    """Case 7: Any missing DEVELOP story -> Supplement forbidden."""
+async def test_case_7_missing_develop_story_is_reported_without_coverage_rejection() -> None:
+    """Missing DEVELOP coverage is a quality diagnostic, not an Evidence Boundary failure."""
     context, plan = _make_17_story_setup()
     supports = list(context.support_index)
 
@@ -524,19 +523,18 @@ async def test_case_7_missing_develop_story_forbids_supplement_and_fails_closed(
     observer = RecordingAttemptObserver()
     writer_id = await observer.attempt_started("writer")
 
-    with pytest.raises(ArticlePublicationRejected) as exc_info:
-        await finalizer.finalize(
-            writer_draft=missing_develop_draft,
-            writer_error=None,
-            writer_attempt_id=writer_id,
-            context=context,
-            coverage_plan=plan,
-            editorial_config=editorial_config,
-            attempt_observer=observer,
-        )
+    result = await finalizer.finalize(
+        writer_draft=missing_develop_draft,
+        writer_error=None,
+        writer_attempt_id=writer_id,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=editorial_config,
+        attempt_observer=observer,
+    )
 
-    # develop_story_coverage is 2/3 (66.7% < 100%) -> supplement is strictly forbidden!
-    assert exc_info.value.reason == "global_incompleteness"
+    assert result.recovery_mode == "none"
+    assert result.metadata["coverage"]["develop_story_coverage"] == pytest.approx(2 / 3)
     assert "deterministic_supplement" not in observer.started_kinds
 
 
@@ -706,8 +704,8 @@ async def test_case_9_grounding_path_preserves_writer_coverage_without_regenerat
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_10_valid_but_globally_incomplete_draft_fails_closed_without_retry() -> None:
-    """A long one-story draft still fails closed without a second writer call."""
+async def test_case_10_valid_but_globally_incomplete_draft_is_accepted_without_retry() -> None:
+    """A long one-story draft is accepted without a second writer call."""
     context, plan = _make_17_story_setup()
     generator = _make_article_generator(
         article_editor_enabled=True,
@@ -757,15 +755,15 @@ async def test_case_10_valid_but_globally_incomplete_draft_fails_closed_without_
     generator.provider.chat_completion.return_value = resp_attempt_1
 
     observer = RecordingAttemptObserver()
-    with pytest.raises(ArticlePublicationRejected) as exc_info:
-        await generator.generate_from_event_article_context(
-            context,
-            coverage_plan=plan,
-            attempt_observer=observer,
-        )
+    title, lead, body = await generator.generate_from_event_article_context(
+        context,
+        coverage_plan=plan,
+        attempt_observer=observer,
+    )
 
-    assert exc_info.value.reason == "global_incompleteness"
-
+    assert title
+    assert lead
+    assert body
     assert generator.provider.chat_completion.call_count == 1
 
     # Only the original writer attempt was started.
@@ -773,10 +771,9 @@ async def test_case_10_valid_but_globally_incomplete_draft_fails_closed_without_
     assert len(started_ids) == 1
     att1_id = started_ids[0]
 
-    # The started attempt must be closed as failed (none left running).
+    # The started attempt must be closed as succeeded (none left running).
     assert att1_id in observer.finished_attempts
 
     finished_1 = observer.finished_attempts[att1_id]
-    assert finished_1["status"] == "failed"
-    assert finished_1["kwargs"]["error_kind"] == "global_incompleteness"
+    assert finished_1["status"] == "succeeded"
     assert finished_1["kwargs"]["metadata"]["ai_story_coverage"] == pytest.approx(1 / 17, abs=1e-3)

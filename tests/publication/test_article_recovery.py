@@ -452,7 +452,7 @@ class RecordingAttemptObserver:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_finalizer_safe_incomplete_writer_supplements() -> None:
+async def test_finalizer_safe_incomplete_writer_is_accepted_without_supplement() -> None:
     from src.config_loader import PublicationEditorialConfig
     from src.publication.article_finalization import ArticleFinalizer
 
@@ -551,18 +551,13 @@ async def test_finalizer_safe_incomplete_writer_supplements() -> None:
     )
 
     assert result.writer_status == "passed"
-    assert result.recovery_mode == "supplement"
+    assert result.recovery_mode == "none"
     assert result.ai_covered_story_ids == ("story:1", "story:2", "story:3", "story:4")
-    assert result.supplemented_story_ids == ("story:5",)
-    assert set(result.final_covered_story_ids) == {
-        "story:1",
-        "story:2",
-        "story:3",
-        "story:4",
-        "story:5",
-    }
-    assert result.metadata["final_story_coverage"] == 1.0
-    assert observer.started_kinds == ["writer", "deterministic_supplement"]
+    assert result.supplemented_story_ids == ()
+    assert set(result.final_covered_story_ids) == {"story:1", "story:2", "story:3", "story:4"}
+    assert result.metadata["coverage_only_diagnostic"] is True
+    assert result.metadata["final_story_coverage"] == 0.8
+    assert observer.started_kinds == ["writer"]
     assert observer.finished_attempts[writer_id]["status"] == "succeeded"
 
 
@@ -656,7 +651,7 @@ async def test_finalizer_writer_error_uses_full_fallback() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_finalizer_supplement_escalation_to_fallback() -> None:
+async def test_finalizer_partial_writer_does_not_escalate_to_fallback() -> None:
     from src.config_loader import PublicationEditorialConfig
     from src.publication.article_finalization import ArticleFinalizer
 
@@ -754,13 +749,9 @@ async def test_finalizer_supplement_escalation_to_fallback() -> None:
         attempt_observer=observer,
     )
 
-    assert result.recovery_mode == "full_fallback"
-    assert result.metadata["winning_kind"] == "event_article_deterministic_fallback"
-    assert observer.started_kinds == [
-        "writer",
-        "deterministic_supplement",
-        "deterministic_fallback",
-    ]
+    assert result.recovery_mode == "none"
+    assert result.metadata["winning_kind"] == "event_article_writer"
+    assert observer.started_kinds == ["writer"]
 
 
 @pytest.mark.unit
@@ -908,7 +899,7 @@ async def test_event_article_validation_failure_uses_full_fallback(
             "title": "Отключение света в центре",
             "title_support_ids": [sup_id],
             "title_claims": [{"text": "Отключение света в центре", "cited_support_ids": [sup_id]}],
-            "lead": "В центре города авария на подстанции.",
+            "lead": "Префект Парижа Иванов объявил, что в центре города восстановили питание.",
             "lead_support_ids": [sup_id],
             "lead_claims": [
                 {"text": "В центре города авария на подстанции", "cited_support_ids": [sup_id]}
@@ -920,11 +911,11 @@ async def test_event_article_validation_failure_uses_full_fallback(
                     "heading_claims": [{"text": "Энергоснабжение", "cited_support_ids": [sup_id]}],
                     "paragraphs": [
                         {
-                            "text": "Бригады восстановили питание в течение полутора часов.",
+                            "text": "Префект Парижа Иванов объявил, что бригады восстановили питание.",
                             "cited_support_ids": [sup_id],
                             "claims": [
                                 {
-                                    "text": "Бригады восстановили питание в течение полутора часов.",
+                                    "text": "Префект Парижа Иванов объявил, что бригады восстановили питание.",
                                     "cited_support_ids": [sup_id],
                                 }
                             ],
@@ -951,7 +942,7 @@ async def test_event_article_validation_failure_uses_full_fallback(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_event_article_safe_incomplete_uses_supplement(
+async def test_event_article_safe_incomplete_is_accepted_without_supplement(
     article_generator,
 ) -> None:
     import json
@@ -1030,7 +1021,7 @@ async def test_event_article_safe_incomplete_uses_supplement(
     assert title
     assert body
     assert article_generator.provider.chat_completion.call_count == 1
-    assert observer.started_kinds == ["writer", "deterministic_supplement"]
+    assert observer.started_kinds == ["writer"]
 
 
 @pytest.mark.unit
@@ -1099,6 +1090,7 @@ async def test_event_article_prompt_contains_epistemic_fidelity_and_no_corrobora
 
     assert article_generator.provider.chat_completion.call_count == 1
     call_kwargs = article_generator.provider.chat_completion.call_args.kwargs
+    assert "response_format" not in call_kwargs
     messages = call_kwargs["messages"]
     system_content = next(m["content"] for m in messages if m["role"] == "system")
     user_content = next(m["content"] for m in messages if m["role"] == "user")
@@ -1107,8 +1099,9 @@ async def test_event_article_prompt_contains_epistemic_fidelity_and_no_corrobora
     assert "community_report" in user_content
     assert "framing=attributed_report" in user_content
     assert "Epistemic Fidelity" in system_content or "epistemic" in system_content.lower()
-    assert "ARTICLE COVERAGE PLAN" in user_content
-    assert "DETAIL SUPPORTS:" in user_content
+    assert "ARTICLE COVERAGE PLAN" not in user_content
+    assert "DETAIL SUPPORTS:" not in user_content
+    assert "формате Markdown" in user_content
 
     # No second-source / corroboration gate
     assert "two independent sources" not in system_content.lower()

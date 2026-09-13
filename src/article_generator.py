@@ -39,7 +39,6 @@ from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, EditorialWriter
 from src.publication.article_context import ArticleEditorialContext
-from src.publication.article_coverage import ArticleCoveragePlan
 from src.publication.article_coverage_diagnostics import (
     ArticleCoverageDiagnostics,
     diagnose_article_coverage,
@@ -396,7 +395,7 @@ def _is_globally_incomplete(
     validation_result: ArticleValidationResult,
     diagnostics: ArticleCoverageDiagnostics,
 ) -> bool:
-    """Classify whether a draft suffers from global incompleteness requiring full AI regeneration."""
+    """Classify broad coverage gaps for diagnostics, never as a retry trigger."""
     has_draft_blocking = any(
         iss.blocking and iss.unit_id in ("DRAFT", "") for iss in validation_result.issues
     )
@@ -404,79 +403,6 @@ def _is_globally_incomplete(
     low_coverage = diagnostics.story_coverage < 0.80
     many_missing = len(diagnostics.uncovered_story_ids) > 3
     return has_draft_blocking or (not all_develop_covered) or low_coverage or many_missing
-
-
-def _build_regeneration_feedback(
-    candidate_draft: StructuredArticleDraft,
-    candidate_val: ArticleValidationResult,
-    candidate_diag: ArticleCoverageDiagnostics,
-    coverage_plan: ArticleCoveragePlan,
-    editorial_config: Any,
-    length_profile: Any | None,
-    article_ctx: Any | None = None,
-) -> str:
-    hard_min = (
-        length_profile.hard_min_words
-        if length_profile is not None
-        else getattr(editorial_config, "article_min_words", 500)
-    )
-    target_min = (
-        length_profile.target_min_words
-        if length_profile is not None
-        else getattr(editorial_config, "article_target_words", 1200)
-    )
-    target_max = (
-        length_profile.target_max_words
-        if length_profile is not None
-        else getattr(editorial_config, "article_target_words", 1600)
-    )
-
-    uncovered_set = set(candidate_diag.uncovered_story_ids)
-    missing_by_depth: list[str] = []
-    from src.publication.article_recovery import _THEME_DEFAULT_HEADINGS, _resolve_story_theme
-
-    for prominence in ("DEVELOP", "WEAVE", "BRIEF"):
-        subset = []
-        for s in coverage_plan.stories:
-            if s.prominence == prominence and s.story_id in uncovered_set:
-                topic_str = getattr(s, "topic", None) or getattr(s, "headline", None) or "no topic"
-                theme = _resolve_story_theme(s, article_ctx, coverage_plan)
-                rec_heading = _THEME_DEFAULT_HEADINGS.get(theme, "Городская жизнь")
-                sups_info = ""
-                if article_ctx is not None and getattr(s, "support_ids", None):
-                    sup_lines = []
-                    max_sups = 3 if prominence == "DEVELOP" else 2
-                    for sid in s.support_ids[:max_sups]:
-                        sup_obj = getattr(article_ctx, "support_by_id", {}).get(sid)
-                        t = (sup_obj.text if sup_obj else "") or sid
-                        sup_lines.append(f"       * {sid}: {t}")
-                    if sup_lines:
-                        sups_info = "\n" + "\n".join(sup_lines)
-                subset.append(
-                    f"  • [{s.story_id}] {topic_str} [рекомендуемый раздел: «{rec_heading}»]{sups_info}"
-                )
-        if subset:
-            missing_by_depth.append(f"- {prominence}:\n" + "\n".join(subset))
-    missing_str = "\n".join(missing_by_depth) if missing_by_depth else "- None"
-
-    return (
-        "Предыдущий черновик был отклонён из-за неполного покрытия обязательных тем (globally incomplete).\n\n"
-        "Фактически в черновике:\n"
-        f"- {candidate_val.word_count} слов\n"
-        f"- {candidate_val.section_count} раздел(ов)\n"
-        f"- {candidate_diag.covered_story_count} из {candidate_diag.planned_story_count} тем покрыто\n\n"
-        "Требования к статье:\n"
-        f"- обязательный минимум слов: {hard_min}\n"
-        f"- целевой объём: {target_min}–{target_max} слов\n"
-        "- ОБЯЗАТЕЛЬНО раскрыть ВСЕ темы категории DEVELOP (без исключений!)\n"
-        "- ОБЯЗАТЕЛЬНО включить ВСЕ темы WEAVE и BRIEF в соответствующие тематические разделы (100% покрытие плана!)\n"
-        "- НЕ создавайте разделы-свалки вроде «Коротко о других событиях» — распределяйте факты по смысловым главам\n"
-        '- пишите абзацы обычным связным текстом в массиве paragraphs: ["...", "..."] без сложных объектов\n'
-        "- не используйте союзы причины («из-за», «вследствие»), если причина прямо не подтверждена источником\n\n"
-        "ПРОПУЩЕННЫЕ ТЕМЫ, КОТОРЫЕ ОБЯЗАТЕЛЬНО НУЖНО ВКЛЮЧИТЬ В СТАТЬЮ:\n"
-        f"{missing_str}\n\n"
-        "Напишите ПОЛНУЮ версию статьи заново, включив все указанные пропущенные сюжеты в виде связного вечернего лонг-рида (8–12 абзацев)."
-    )
 
 
 def _build_writer_attempt_metadata(
@@ -1133,8 +1059,8 @@ class ArticleGenerator:
    - Следуйте тематическим разделам, предложенным в плане покрытия (обычно 3–5 разделов).
    - DEVELOP: ключевые сюжеты дня. Раскройте их в подробных абзацах с сохранением микродеталей (районы, улицы, интервалы движения, стоимость, действия жителей и коммунальщиков).
    - WEAVE: сопутствующие темы городской жизни. Органично вплетайте их в канву соответствующего раздела.
-   - ОБЯЗАТЕЛЬНОЕ 100% ПОКРЫТИЕ ВСЕХ СЮЖЕТОВ ПЛАНА (DEVELOP, WEAVE, BRIEF):
-     * Каждый сюжет из ARTICLE COVERAGE PLAN должен быть упомянут в соответствующем разделе статьи. Ни один сюжет не должен быть забыт или пропущен!
+   - ПРИОРИТЕТЫ ПОКРЫТИЯ (DEVELOP, WEAVE, BRIEF):
+     * Стремитесь охватить весь ARTICLE COVERAGE PLAN в связном тексте, уделяя DEVELOP больше места, WEAVE вплетая в главы, а BRIEF упоминая компактно. Не жертвуйте цельностью статьи ради механического перечисления каждого сюжета.
      * BRIEF: короткие полезные городские сообщения. Упоминайте их конкретными фактологическими деталями (улицы, микрорайоны, факты).
      * СИНТЕЗ ОДНОРОДНЫХ СООБЩЕНИЙ (ГЕОГРАФИЯ И УЛИЦЫ):
        Если в плане есть несколько коротких сюжетов BRIEF на одну тему (например, сообщения жителей об отключениях на разных улицах или сообщения о восстановлении связи):
@@ -1192,28 +1118,12 @@ class ArticleGenerator:
 6. Не вставляйте в текст технические ID вроде [story:...] или [SUPPORT...].
 7. Язык статьи: {self.output_language}. Текст должен быть связным, грамотным, с живыми микродеталями.
 
-### Формат ответа — строго валидный JSON:
-{{
-  "title": "Информативный газетный заголовок дня",
-  "lead": "Вводный абзац статьи (2-3 предложения), обобщающий общую картину дня...",
-  "sections": [
-    {{
-      "heading": "Выразительный сюжетный заголовок первой главы (например: Кратковременные включения и скачки напряжения: обстановка в микрорайонах)",
-      "paragraphs": [
-        "Первый содержательный абзац раздела (ядро событий, география, факты)...",
-        "Второй содержательный абзац раздела (последствия для быта и практической жизни)...",
-        "Третий содержательный абзац раздела (адаптация, службы, нерешённые вопросы)..."
-      ]
-    }},
-    {{
-      "heading": "Выразительный сюжетный заголовок второй главы (например: Перебои со связью и локальные решения: как горожане остаются на связи)",
-      "paragraphs": [
-        "Первый содержательный абзац раздела...",
-        "Второй содержательный абзац раздела..."
-      ]
-    }}
-  ]
-}}
+### Формат ответа — обычный Markdown:
+Первая строка — газетный заголовок без технических идентификаторов.
+Затем один связный лид отдельным абзацем.
+Каждая тематическая глава начинается с заголовка второго уровня (`## ...`),
+после него идут обычные абзацы статьи. Не добавляйте JSON, списки support ID,
+служебные комментарии или пояснения о формате ответа.
 """
 
     async def generate_from_event_article_context(  # noqa: C901
@@ -1278,7 +1188,11 @@ class ArticleGenerator:
                     develop_story_budget=develop_story_budget,
                 )
 
-        context_str = render_article_writer_context(article_ctx, coverage_plan)
+        context_str = render_article_writer_context(
+            article_ctx,
+            coverage_plan,
+            include_coverage_plan=False,
+        )
         system_prompt = self._build_event_article_system_prompt(
             length_profile=length_profile,
             is_longitudinal=is_longitudinal,
@@ -1332,24 +1246,24 @@ class ArticleGenerator:
                         sup_details.append(f"{t}")
                     dev_stories_lines.append(
                         f"   ★ [{s.story_id}] {s.topic}\n"
-                        f"     Ключевые факты (ОБЯЗАТЕЛЬНО подробно раскрыть в тексте!):\n"
+                        f"     Ключевые факты для приоритетного раскрытия:\n"
                         f"     - " + "\n     - ".join(sup_details)
                     )
         dev_instruction = ""
         if dev_stories_lines:
             dev_instruction = (
                 "\n════════════════════════════════════════\n"
-                "ГЛАВНЫЕ ОБЯЗАТЕЛЬНЫЕ СЮЖЕТЫ (DEVELOP / LEAD):\n"
-                "Каждый сюжет из этого списка ОБЯЗАТЕЛЬНО должен быть подробно раскрыт в тексте (в лиде или отдельном абзаце) со всеми конкретными деталями!\n"
+                "ГЛАВНЫЕ СЮЖЕТЫ (DEVELOP / LEAD):\n"
+                "В первую очередь раскройте эти сюжеты в лиде или отдельных абзацах, сохраняя конкретные детали.\n"
                 + "\n".join(dev_stories_lines)
                 + "\n════════════════════════════════════════\n\n"
             )
         plan_instruction = ""
         if plan_sections_lines:
             plan_instruction = (
-                "СТРУКТУРА СТАТЬИ ПО ГЛАВАМ (ОБЯЗАТЕЛЬНО ВКЛЮЧИТЬ ВСЕ СЮЖЕТЫ ПЛАНА!):\n"
-                "Напишите по одной содержательной главе для каждого из разделов ниже. "
-                "В каждой главе напишите 2–3 развёрнутых, связных абзаца, объединив ВСЕ указанные темы в плавное журналистское повествование с естественными связками между предложениями:\n"
+                "СТРУКТУРА СТАТЬИ ПО ГЛАВАМ:\n"
+                "Сформируйте содержательные главы по основным разделам ниже. "
+                "В каждой главе напишите 2–3 развёрнутых, связных абзаца, синтезируя подходящие темы в плавное журналистское повествование с естественными связками между предложениями:\n"
                 + "\n\n".join(plan_sections_lines)
                 + "\n════════════════════════════════════════\n\n"
             )
@@ -1358,25 +1272,25 @@ class ArticleGenerator:
             f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\n{context_str}\n\n"
             "════════════════════════════════════════\n"
             "ЗАДАНИЕ ВЫПУСКАЮЩЕМУ РЕДАКТОРУ:\n"
-            "Напишите полную, связную городскую вечернюю хронику в формате JSON.\n"
+            "Напишите полную, связную городскую вечернюю хронику в формате Markdown.\n"
             f"{dev_instruction}"
             f"{plan_instruction}"
             "ТРЕБОВАНИЯ К ПОКРЫТИЮ И СТРУКТУРЕ:\n"
-            "1. ОБЯЗАТЕЛЬНОЕ ПОКРЫТИЕ 100% ПЛАНА: Все сюжеты из плана выше (DEVELOP, WEAVE и BRIEF) должны быть органично вплетены в текст соответствующих глав!\n"
+            "1. ПРИОРИТЕТЫ ПОКРЫТИЯ: Стремитесь органично охватить сюжеты из плана выше (DEVELOP, WEAVE и BRIEF), но сохраняйте цельность повествования и редакционную иерархию.\n"
             "   - DEVELOP: ключевые сюжеты дня, раскрываются подробно (1-2 богатых абзаца со всеми деталями).\n"
             "   - WEAVE: важные городские темы, органично вплетаются в повествование главы (1-2 абзаца).\n"
             "   - BRIEF: краткие городские факты, упоминаются конкретными деталями внутри подходящих глав. Синтезируйте однородные факты вместе в плавные предложения (НЕ создавайте изолированные однострочные абзацы-выжимки!).\n"
-            '2. СТРУКТУРА JSON: Пишите обычным чистым текстом в массиве paragraphs: ["Первый абзац раздела...", "Второй абзац раздела..."] в каждом разделе. Не создавайте вложенных объектов, списков claims или технических идентификаторов.\n'
+            "2. ФОРМАТ MARKDOWN: первая строка — заголовок, затем лид, затем главы с заголовками `##`. Каждый абзац отделяйте пустой строкой. Не добавляйте технических идентификаторов.\n"
             "3. ЛИТЕРАТУРНАЯ СВЯЗНОСТЬ И ЗАПРЕТ НА ОДНОСТРОЧНЫЕ ОБРЫВКИ: Для каждой главы из плана создайте отдельный section с выразительным сюжетным подзаголовком (`heading`).\n"
             "   - Для крупных тем пишите 2–3 развёрнутых абзаца, для компактных тем — 1–2 полноценных абзаца.\n"
             "   - КАЖДЫЙ абзац ОБЯЗАТЕЛЬНО должен состоять минимум из 2–4 связных предложений! КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ абзацы из одного предложения или телеграфные выжимки.\n"
             "   - Используйте естественные журналистские связки и мостики между предложениями («В то же время...», «Впрочем, по сообщениям жителей...», «При этом...», «Параллельно с этим...»).\n"
             "   - В теме связи и интернета объединяйте графики предупреждений и личный опыт абонентов (например, сколько времени абонент ждал в очереди на звонке оператору, разморозку счёта и через сколько заработала сеть).\n"
-            "   - В торговой теме объединяйте закрытия торговых точек, распродажи и вывоз товаров в единый связный рассказ. Обязательно сохраняйте конкретные названия магазинов и супермаркетов (включая распродажу в «Сакуре» на проспекте Ленина с конкретными ценами и скидками), а также вывоз товара как свидетельство того, что супермаркет «Зеркальный» (или магазин возле него), скорее всего, закрывается тоже вслед за остановкой производства мясокомбината.\n"
+            "   - В торговой теме объединяйте поддержанные сообщения о работе магазинов, ценах и распродажах в единый связный рассказ. Не делайте выводов о закрытии или причинах событий, если они прямо не подтверждены материалами.\n"
             "4. ЯЗЫК И ГРАМОТНОСТЬ: Пишите на грамотном русском литературном языке стандартной кириллицей. Не допускайте орфографических ошибок, опечаток, случайных пробелов внутри слов или разорванных окончаний слов. Соблюдайте правила орфографии и пунктуации.\n"
             "5. ПРИЧИННО-СЛЕДСТВЕННЫЕ СВЯЗИ: Строго соблюдайте Evidence Boundary — опирайтесь только на факты из материалов выше, не выдумывайте подробностей. Не домысливайте причин («из-за аварии», «вследствие пожара» допустимы только если причина прямо указана в источнике). Если причинно-следственная связь прямо не подтверждена, описывайте события рядом без слова «из-за».\n"
             "6. ОБЪЁМ: Напишите обстоятельный, богатый конкретными деталями вечерний лонг-рид объёмом 700–1200 слов.\n"
-            "Верните строго валидный JSON."
+            "Верните только Markdown статьи, без JSON-обёртки и пояснений."
         )
 
         from src.publication.article_finalization import ArticleFinalizer
@@ -1415,9 +1329,8 @@ class ArticleGenerator:
                 temperature=article_temp,
                 max_tokens=writer_max_tokens,
                 reasoning_effort=writer_reasoning_effort,
-                response_format={"type": "json_object"},
             )
-            raw_parsed = self._parse_event_article_response_json(response)
+            raw_parsed = self._parse_event_article_response(response)
             parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
             candidate_draft = StructuredArticleDraft.from_dict(
                 parsed, quote_allowlist=quote_allowlist
@@ -1543,8 +1456,82 @@ class ArticleGenerator:
         body = finalization_result.draft.render_markdown()
         return (finalization_result.draft.title, finalization_result.draft.lead, body)
 
+    def _parse_event_article_response(self, response: str) -> dict[str, Any]:
+        """Parse the writer's Markdown, retaining JSON compatibility for older callers."""
+        cleaned = (response or "").strip()
+        json_candidate = cleaned.lstrip()
+        if json_candidate.startswith("{") or json_candidate.startswith("```json"):
+            try:
+                return self._parse_event_article_response_json(response)
+            except (ValueError, json.JSONDecodeError):
+                # A malformed JSON response can still contain a readable Markdown
+                # article.  Fall through to the text parser instead of issuing a
+                # second writer request.
+                pass
+        return self._parse_event_article_response_markdown(response)
+
+    @staticmethod
+    def _parse_event_article_response_markdown(response: str) -> dict[str, Any]:
+        """Convert the writer's reader-facing Markdown into the internal draft shape."""
+        lines = (response or "").strip().splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        title = ""
+        lead_paragraphs: list[str] = []
+        sections: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        paragraph_lines: list[str] = []
+
+        def flush_paragraph() -> None:
+            if not paragraph_lines:
+                return
+            paragraph = " ".join(line.strip() for line in paragraph_lines).strip()
+            paragraph_lines.clear()
+            if not paragraph:
+                return
+            if current is None:
+                lead_paragraphs.append(paragraph)
+            else:
+                current["paragraphs"].append(paragraph)
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line:
+                flush_paragraph()
+                continue
+            if line.startswith("---") or line.startswith("***") or line.startswith("___"):
+                flush_paragraph()
+                continue
+            if line.startswith("# "):
+                flush_paragraph()
+                if not title:
+                    title = line[2:].strip()
+                continue
+            if line.startswith("## ") or line.startswith("### "):
+                flush_paragraph()
+                heading = line.lstrip("#").strip()
+                current = {"heading": heading, "paragraphs": []}
+                sections.append(current)
+                continue
+            paragraph_lines.append(line)
+        flush_paragraph()
+
+        if not title and lead_paragraphs:
+            title = lead_paragraphs.pop(0)
+        lead = " ".join(lead_paragraphs).strip()
+        if not sections and lead:
+            sections = [{"heading": "Городская хроника", "paragraphs": [lead]}]
+            lead = ""
+        if not title:
+            title = "Городская хроника"
+
+        return {"title": title, "lead": lead, "sections": sections}
+
     def _parse_event_article_response_json(self, response: str) -> dict[str, Any]:
-        """Clean and parse JSON from article writer response string."""
+        """Clean and parse legacy JSON article responses."""
         cleaned = (response or "").strip()
         if cleaned.startswith("```"):
             lines = cleaned.splitlines()

@@ -13,10 +13,10 @@ from src.publication.article_coverage import ArticleCoveragePlan
 _PHONE_RE = re.compile(r"(?:\+?\d[\d\s()\-–—]{8,}\d)")
 _URL_RE = re.compile(r"https?://\S+|\bwww\.\S+|\bt\.me/\S+", re.IGNORECASE)
 
-# Keep the writer request comfortably below provider context limits.  The
-# complete ArticleEditorialContext remains available to deterministic
-# validation; this is only the human-readable prompt projection.
-ARTICLE_WRITER_CONTEXT_MAX_CHARS = 900_000
+# Keep the writer request compact enough that the model has room for a
+# coherent article response.  The complete ArticleEditorialContext remains
+# available to deterministic validation; this is only the prompt projection.
+ARTICLE_WRITER_CONTEXT_MAX_CHARS = 320_000
 _SUPPORT_FACT_MAX_CHARS = 900
 _SUPPORT_SOURCE_MAX_CHARS = 1_800
 _SUPPORT_COMPACT_FACT_MAX_CHARS = 360
@@ -130,6 +130,8 @@ def _render_coverage_plan(
 def render_article_writer_context(
     context: ArticleEditorialContext,
     coverage_plan: ArticleCoveragePlan | None = None,
+    *,
+    include_coverage_plan: bool = True,
 ) -> str:
     """Render coverage-aware and sanitized support context for single-call writer."""
     blocks: list[str] = []
@@ -159,7 +161,7 @@ def render_article_writer_context(
                 "- Conclude with a dedicated closing section or outlook ('## Городской горизонт') covering upcoming deadlines, scheduled works, and unresolved questions strictly grounded in FUTURE_SCHEDULED and unresolved supports."
             )
 
-    if coverage_plan is not None:
+    if coverage_plan is not None and include_coverage_plan:
         blocks.append(_render_coverage_plan(coverage_plan, context=context))
 
     from src.publication.article_quote_allowlist import build_article_quote_allowlist
@@ -273,11 +275,21 @@ def render_article_writer_context(
                 detail_budget -= delta
 
     if compact_size > remaining:
-        rendered_supports.append(
+        marker = (
             "[SUPPORT CONTEXT TRUNCATED]\n"
             "Additional support remains available to deterministic validation; "
             "use only the facts shown above for drafting."
         )
+        available = max(0, remaining - len(marker) - 2)
+        selected: list[str] = []
+        used = 0
+        for block in compact_support_blocks:
+            extra = len(block) + (2 if selected else 0)
+            if used + extra > available:
+                break
+            selected.append(block)
+            used += extra
+        rendered_supports = selected + [marker]
 
     rendered = "\n\n".join(([prefix] if prefix else []) + rendered_supports).strip()
     if len(rendered) > ARTICLE_WRITER_CONTEXT_MAX_CHARS:

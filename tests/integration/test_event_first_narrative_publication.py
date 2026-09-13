@@ -623,8 +623,9 @@ async def test_event_first_article_city_life_broad_coverage():
     assert mock_provider.chat_completion.call_count == 1
     call_kwargs = mock_provider.chat_completion.call_args.kwargs
     user_prompt = next(m["content"] for m in call_kwargs["messages"] if m["role"] == "user")
-    assert "ARTICLE COVERAGE PLAN" in user_prompt
-    assert "DETAIL SUPPORTS:" in user_prompt
+    assert "СТРУКТУРА СТАТЬИ ПО ГЛАВАМ" in user_prompt
+    assert "ARTICLE COVERAGE PLAN" not in user_prompt
+    assert "DETAIL SUPPORTS:" not in user_prompt
 
     assert len(observer.finished) == 1
     meta = observer.finished[0]["metadata"]

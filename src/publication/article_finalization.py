@@ -737,17 +737,6 @@ class ArticleFinalizer:
         ai_diag = diagnose_article_coverage(writer_draft, coverage_plan, context=context)
         ai_covered = tuple(ai_diag.covered_story_ids)
 
-        hard_min = (
-            length_profile.hard_min_words
-            if length_profile is not None
-            else getattr(editorial_config, "article_min_words", 500)
-        )
-        is_substantial = (
-            writer_validation.word_count >= hard_min
-            and writer_validation.section_count >= 2
-            and ai_diag.covered_story_count >= 5
-            and ai_diag.develop_story_coverage >= 1.0
-        )
         if set(ai_covered) == set(coverage_plan.story_ids):
             # Complete AI coverage!
             trace = build_article_claim_trace(writer_draft, context)
@@ -783,18 +772,14 @@ class ArticleFinalizer:
                 metadata=meta,
             )
 
-        # A grounded, substantial long read may intentionally leave some
-        # BRIEF/WEAVE material out.  Do not append raw fragments or launch a
-        # second full writer request merely to chase a mechanical 100% count.
-        # DEVELOP coverage and the Evidence Boundary remain hard requirements.
-        if (
-            is_substantial
-            and ai_diag.develop_story_coverage >= 1.0
-            and ai_diag.story_coverage >= 0.35
-        ):
+        # Coverage is a quality diagnostic, not a second factual-verification
+        # gate.  Do not append raw fragments or reject a grounded city-life
+        # article merely because the writer did not mention every BRIEF/WEAVE
+        # item in a single cohesive narrative.
+        else:
             logger.info(
-                "Accepting grounded substantial article with partial coverage "
-                "(coverage=%.2f, missing=%d); no deterministic supplement",
+                "Accepting grounded article with partial coverage "
+                "(coverage=%.2f, missing=%d); coverage recorded diagnostically",
                 ai_diag.story_coverage,
                 len(ai_diag.uncovered_story_ids),
             )
@@ -811,7 +796,7 @@ class ArticleFinalizer:
                 final_diag=ai_diag,
                 trace=trace,
             )
-            meta["partial_coverage_accepted"] = True
+            meta["coverage_only_diagnostic"] = True
             if writer_metadata:
                 meta.update(writer_metadata)
             if attempt_observer:
@@ -829,177 +814,6 @@ class ArticleFinalizer:
                 supplemented_story_ids=(),
                 final_covered_story_ids=ai_covered,
                 metadata=meta,
-            )
-
-        # 4. Incomplete writer draft: check safety gate before deterministic supplement (fallback enabled)
-        is_safe_for_supplement = (
-            ai_diag.develop_story_coverage >= 1.0
-            and (
-                (ai_diag.story_coverage >= 0.80 and len(ai_diag.uncovered_story_ids) <= 3)
-                or (
-                    is_substantial
-                    and ai_diag.story_coverage >= 0.20
-                    and len(ai_diag.uncovered_story_ids) <= 18
-                )
-            )
-        ) or (
-            is_substantial
-            and ai_diag.story_coverage >= 0.35
-            and len(ai_diag.uncovered_story_ids) <= 15
-            and getattr(editorial_config, "article_editor_enabled", False)
-        )
-        if not is_safe_for_supplement:
-            logger.warning(
-                "Writer draft is not safe for deterministic supplement "
-                "(coverage=%.2f, missing=%d, develop_coverage=%.2f); supplement forbidden",
-                ai_diag.story_coverage,
-                len(ai_diag.uncovered_story_ids),
-                ai_diag.develop_story_coverage,
-            )
-            if attempt_observer:
-                fail_meta: dict[str, Any] = {
-                    "writer_status": "rejected",
-                    "ai_story_coverage": ai_diag.story_coverage,
-                    "uncovered_story_ids": list(ai_diag.uncovered_story_ids),
-                    "develop_story_coverage": ai_diag.develop_story_coverage,
-                }
-                if writer_metadata:
-                    fail_meta.update(writer_metadata)
-                await attempt_observer.attempt_finished(
-                    writer_attempt_id,
-                    status="failed",
-                    error_kind="global_incompleteness",
-                    metadata=fail_meta,
-                )
-            if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
-                raise ArticlePublicationRejected(
-                    reason="global_incompleteness",
-                    message=(
-                        f"Writer draft is too incomplete for deterministic supplement: "
-                        f"coverage={ai_diag.story_coverage:.2f} (required >= 0.80), "
-                        f"missing={len(ai_diag.uncovered_story_ids)} (max 3), "
-                        f"develop_coverage={ai_diag.develop_story_coverage:.2f} (required 1.0)"
-                    ),
-                    metadata={
-                        "ai_story_coverage": ai_diag.story_coverage,
-                        "uncovered_story_ids": list(ai_diag.uncovered_story_ids),
-                        "develop_story_coverage": ai_diag.develop_story_coverage,
-                        "draft": writer_draft.to_dict(),
-                    },
-                )
-            return await self._run_full_fallback(
-                writer_status="rejected",
-                ai_diag=ai_diag,
-                ai_covered_story_ids=ai_covered,
-                context=context,
-                coverage_plan=coverage_plan,
-                editorial_config=editorial_config,
-                length_profile=length_profile,
-                attempt_observer=attempt_observer,
-            )
-
-        if attempt_observer:
-            succ_meta: dict[str, Any] = {
-                "writer_status": "passed",
-                "ai_covered_story_ids": list(ai_covered),
-                "ai_story_coverage": ai_diag.story_coverage,
-            }
-            if writer_metadata:
-                succ_meta.update(writer_metadata)
-            await attempt_observer.attempt_finished(
-                writer_attempt_id,
-                status="succeeded",
-                metadata=succ_meta,
-            )
-
-        supp_attempt_id = 0
-        if attempt_observer:
-            supp_attempt_id = await attempt_observer.attempt_started("deterministic_supplement")
-
-        try:
-            supplemented = self.composer.supplement_safe_draft(
-                writer_draft,
-                ai_diag.uncovered_story_ids,
-                context,
-                coverage_plan,
-            )
-            supp_validation = validate_article_draft(
-                supplemented,
-                context,
-                config=editorial_config,
-                length_profile=length_profile,
-            )
-            if not supp_validation.is_valid:
-                raise ValueError(
-                    f"Supplemented draft failed validation: {list(supp_validation.violations)}"
-                )
-
-            trace = build_article_claim_trace(supplemented, context)
-            final_diag = diagnose_article_coverage(supplemented, coverage_plan, context=context)
-            final_covered = tuple(final_diag.covered_story_ids)
-
-            if (
-                set(final_covered) != set(coverage_plan.story_ids)
-                or final_diag.story_coverage != 1.0
-            ):
-                raise ValueError(
-                    f"Supplemented draft coverage incomplete: {final_covered} vs {coverage_plan.story_ids}"
-                )
-
-            supplemented_story_ids = tuple(
-                sid for sid in coverage_plan.story_ids if sid not in ai_covered
-            )
-            meta = _build_final_metadata(
-                winning_kind="event_article_writer_with_supplement",
-                writer_status="passed",
-                recovery_mode="supplement",
-                coverage_plan=coverage_plan,
-                ai_covered_story_ids=ai_covered,
-                supplemented_story_ids=supplemented_story_ids,
-                final_covered_story_ids=final_covered,
-                ai_diag=ai_diag,
-                final_diag=final_diag,
-                trace=trace,
-            )
-            if attempt_observer:
-                await attempt_observer.attempt_finished(
-                    supp_attempt_id,
-                    status="succeeded",
-                    metadata=meta,
-                )
-            return ArticleFinalizationResult(
-                draft=supplemented,
-                claim_trace=trace,
-                writer_status="passed",
-                recovery_mode="supplement",
-                ai_covered_story_ids=ai_covered,
-                supplemented_story_ids=supplemented_story_ids,
-                final_covered_story_ids=final_covered,
-                metadata=meta,
-            )
-        except Exception as exc:
-            logger.warning("Deterministic supplement failed, escalating to full fallback: %s", exc)
-            if attempt_observer and supp_attempt_id:
-                await attempt_observer.attempt_finished(
-                    supp_attempt_id,
-                    status="failed",
-                    metadata={"error": str(exc)},
-                )
-            if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
-                raise ArticlePublicationRejected(
-                    reason="validation_failed",
-                    message=f"Deterministic supplement failed: {exc}",
-                    metadata={"error": str(exc)},
-                ) from exc
-            return await self._run_full_fallback(
-                writer_status="passed",
-                ai_diag=ai_diag,
-                ai_covered_story_ids=ai_covered,
-                context=context,
-                coverage_plan=coverage_plan,
-                editorial_config=editorial_config,
-                length_profile=length_profile,
-                attempt_observer=attempt_observer,
             )
 
     async def _run_full_fallback(

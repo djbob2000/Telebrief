@@ -159,3 +159,39 @@ def test_render_article_writer_context_is_bounded_and_deduplicates_repeated_supp
     assert len(rendered) <= ARTICLE_WRITER_CONTEXT_MAX_CHARS
     assert rendered.count(repeated_fact) < len(supports)
     assert "support-99" in rendered
+
+
+def test_render_article_writer_context_compacts_large_corpus_to_writer_budget():
+    supports = tuple(
+        ArticleSupport(
+            support_id=f"support-{index}",
+            text=(
+                f"Сюжет {index}: жители сообщили о конкретном городском событии, "
+                "его месте, времени и практических последствиях для жителей."
+            ),
+            source_text=(
+                f"Источник для сюжета {index}. "
+                "Подробное первичное сообщение с повторяющимися пояснениями. " * 20
+            ),
+            support_kind="evidence",
+            publication_use="PUBLISH",
+            source_refs=(f"ref-{index}",),
+            fragment_ids=(index,),
+            source_item_ids=(index,),
+            observed_at=None,
+            evidence_kind="community_report",
+            story_id=f"story-{index}",
+        )
+        for index in range(1000)
+    )
+    ctx = ArticleEditorialContext(
+        headline_candidates=(),
+        support_index=supports,
+        support_by_id={s.support_id: s for s in supports},
+        recurring_topics=(),
+        edition_name="Бердянск",
+    )
+
+    rendered = render_article_writer_context(ctx)
+
+    assert len(rendered) <= 320_000

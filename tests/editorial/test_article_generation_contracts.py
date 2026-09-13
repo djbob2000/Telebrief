@@ -22,6 +22,30 @@ from src.publication.evidence import PublicationEvidence
 _NOW = dt.datetime(2026, 8, 29, 20, 0, tzinfo=dt.timezone.utc)
 
 
+@pytest.mark.unit
+def test_event_article_writer_markdown_is_parsed_without_json_contract() -> None:
+    generator = ArticleGenerator.__new__(ArticleGenerator)
+
+    parsed = generator._parse_event_article_response(
+        "# Городские новости\n\n"
+        "В городе произошли несколько заметных событий.\n\n"
+        "## Коммунальная жизнь\n\n"
+        "Жители сообщили о текущем состоянии коммунальных служб.\n\n"
+        "## Городская жизнь\n\n"
+        "В учреждениях и на улицах продолжаются обычные городские события."
+    )
+
+    assert parsed["title"] == "Городские новости"
+    assert parsed["lead"] == "В городе произошли несколько заметных событий."
+    assert [section["heading"] for section in parsed["sections"]] == [
+        "Коммунальная жизнь",
+        "Городская жизнь",
+    ]
+    assert parsed["sections"][0]["paragraphs"] == [
+        "Жители сообщили о текущем состоянии коммунальных служб."
+    ]
+
+
 def _make_article_config() -> Config:
     settings = Settings(
         schedule_time="09:00",
