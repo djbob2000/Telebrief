@@ -183,12 +183,25 @@ jobs:
             export IMAGE_TAG="$DEPLOY_TAG"
             echo "==> Deploying Telebrief with IMAGE_TAG=${IMAGE_TAG}..."
 
+            repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+            image_ref="ghcr.io/${repository}:${IMAGE_TAG}"
+
             # Stop legacy single-container telebrief if running
             docker stop telebrief 2>/dev/null || true
 
             # Pull latest images
             echo "==> Pulling images..."
             docker compose pull telebrief-app telebrief-worker telebrief-processing-worker
+
+            # Keep the moving dev alias fresh as well as the immutable SHA tag.
+            # This makes ad-hoc `docker compose run` commands use the same
+            # revision as the long-running services after a dev deployment.
+            if [[ "$IMAGE_TAG" == dev-* ]]; then
+              echo "==> Refreshing the dev image alias..."
+              docker pull "ghcr.io/${repository}:dev"
+              dev_revision="$(docker image inspect "ghcr.io/${repository}:dev" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
+              test "$dev_revision" = "${IMAGE_TAG#dev-}"
+            fi
 
             # Migration 0034 changes ownership semantics for legacy running
             # revisions. Quiesce the processing owner before expiring those
@@ -208,8 +221,6 @@ jobs:
 
             # Verify that every application container uses the exact image
             # revision that was pulled and that the image supports the DB schema.
-            repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
-            image_ref="ghcr.io/${repository}:${IMAGE_TAG}"
             expected_revision="$(docker image inspect "$image_ref" --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')"
             test -n "$expected_revision"
             if [[ "$IMAGE_TAG" == dev-* ]]; then
