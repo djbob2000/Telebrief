@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import psycopg
+from procrastinate.exceptions import AlreadyEnqueued, UniqueViolation
 
 from src.config_loader import Config
 from src.ingestion.models import CollectionTrigger
@@ -367,8 +368,6 @@ class PublicationOrchestrator:
             return
         import contextlib
 
-        from procrastinate.exceptions import AlreadyEnqueued
-
         from src.jobs.event_authority import (
             PUBLICATION_AUTHORITY_PRIORITY,
             process_publication_authority_gap,
@@ -386,6 +385,21 @@ class PublicationOrchestrator:
             logger.debug(
                 "publication authority already queued for authority gap",
                 extra={"edition_id": edition_id, "story_count": len(story_ids)},
+            )
+        except UniqueViolation as exc:
+            if (
+                exc.queueing_lock is None
+                or exc.constraint_name is None
+                or "queueing_lock" not in exc.constraint_name
+            ):
+                raise
+            logger.debug(
+                "publication authority queueing-lock race treated as already queued",
+                extra={
+                    "edition_id": edition_id,
+                    "story_count": len(story_ids),
+                    "queueing_lock": exc.queueing_lock,
+                },
             )
 
     async def _enqueue_failure_notification(

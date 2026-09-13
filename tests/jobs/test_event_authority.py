@@ -305,6 +305,50 @@ async def test_defer_event_processing_savepoint_handles_already_enqueued(monkeyp
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_defer_event_processing_treats_queueing_lock_race_as_already_queued(monkeypatch):
+    from procrastinate.exceptions import UniqueViolation
+
+    from src.publication.orchestrator import PublicationOrchestrator
+
+    configured = MagicMock()
+    configured.defer_async = AsyncMock(
+        side_effect=UniqueViolation(
+            constraint_name="procrastinate_jobs_queueing_lock_idx_v1",
+            queueing_lock="publication-authority:7",
+        )
+    )
+    monkeypatch.setattr(
+        authority_jobs.process_publication_authority_gap,
+        "configure",
+        MagicMock(return_value=configured),
+    )
+
+    orchestrator = PublicationOrchestrator(
+        uow=MagicMock(),
+        config=cast(Any, SimpleNamespace(settings=SimpleNamespace())),
+    )
+
+    class FakeConn:
+        def transaction(self):
+            return FakeSavepoint()
+
+    class FakeSavepoint:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            return False
+
+    await orchestrator._defer_event_processing(
+        cast(Any, FakeConn()),
+        intent_id=7,
+        edition_id=1,
+        story_ids=(9001,),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_background_authority_disabled_by_default_prevents_dispatch(monkeypatch):
     configured = MagicMock()
     configured.defer_async = AsyncMock()
