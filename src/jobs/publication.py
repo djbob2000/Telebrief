@@ -34,6 +34,34 @@ class PreparationContractChangedError(RuntimeError):
     error_kind = "preparation_contract_changed"
 
 
+def _is_preview_request_key(request_key: str | None) -> bool:
+    """Return whether a durable request key belongs to an in-process preview."""
+    return bool(
+        request_key
+        and (
+            request_key.startswith("preview:")
+            or request_key.startswith("publication-intent:preview:")
+        )
+    )
+
+
+def _is_preview_run(run: Any) -> bool:
+    """Identify preview runs, including rows created by older deployments."""
+    metadata = getattr(run, "metadata", None)
+    return bool(
+        isinstance(metadata, dict) and metadata.get("preview") is True
+    ) or _is_preview_request_key(getattr(run, "request_key", None))
+
+
+async def _load_publication_run(run_id: int) -> Any | None:
+    """Read a publication run before a worker task performs side effects."""
+    from src.publication.repository import PublicationRepository
+
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        return await PublicationRepository().get_run_by_id(conn, run_id)
+
+
 @procrastinate_app.task(
     name=SELECT_STORIES_TASK_NAME,
     queue=PUBLICATION_QUEUE,
@@ -46,6 +74,10 @@ async def select_stories_for_publication(context: Any, run_id: int) -> None:
     from src.publication.selection import EditorialSelectionService
 
     runtime = get_runtime()
+    run = await _load_publication_run(run_id)
+    if run is not None and _is_preview_run(run):
+        logger.warning("Skipping queued selection for preview publication run %s", run_id)
+        return
     service = EditorialSelectionService(uow=runtime.uow)
     await service.select(run_id)
 
@@ -63,6 +95,10 @@ async def generate_publication(context: Any, run_id: int) -> None:
     from src.publication.generation import PublicationGenerationService
 
     runtime = get_runtime()
+    run = await _load_publication_run(run_id)
+    if run is not None and _is_preview_run(run):
+        logger.warning("Skipping queued generation for preview publication run %s", run_id)
+        return
     service = PublicationGenerationService(uow=runtime.uow)
     try:
         await service.generate(run_id)
@@ -115,6 +151,14 @@ async def deliver_publication_payload(context: Any, delivery_id: int) -> None:
 )
 async def prepare_publication_from_intent(context: Any, intent_id: int) -> None:
     """Create a PublicationRun only after a durable intent is ready."""
+    from src.publication.readiness_repository import PublicationReadinessRepository
+
+    runtime = get_runtime()
+    async with runtime.uow.transaction() as conn:
+        intent = await PublicationReadinessRepository().get_refresh_run(conn, intent_id)
+    if intent is not None and _is_preview_request_key(getattr(intent, "request_key", None)):
+        logger.warning("Skipping queued preparation for preview intent %s", intent_id)
+        return
     try:
         await _prepare_publication_from_intent_once(intent_id)
     except Exception as exc:
@@ -127,7 +171,11 @@ async def prepare_publication_from_intent(context: Any, intent_id: int) -> None:
 
 
 async def _prepare_publication_from_intent_once(
-    intent_id: int, *, defer_selection: bool = True, config: Any | None = None
+    intent_id: int,
+    *,
+    defer_selection: bool = True,
+    preview: bool = False,
+    config: Any | None = None,
 ) -> int | None:
     """Create a PublicationRun only after a durable intent is ready."""
     from src.config_loader import load_config
@@ -170,6 +218,8 @@ async def _prepare_publication_from_intent_once(
         "intent_request_key": refresh.request_key,
         "trigger": refresh.trigger,
     }
+    if preview:
+        run_metadata["preview"] = True
 
     async with runtime.uow.transaction() as conn:
         current_refresh = await readiness_repo.get_refresh_run(conn, refresh.id, for_update=True)

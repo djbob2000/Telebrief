@@ -116,6 +116,13 @@ class TestPublicationFacade:
         pub_row = await cur.fetchone()
         assert pub_row[0].get("preview") is True
 
+        cur = await conn.execute(
+            "SELECT metadata FROM publication_runs WHERE id = %s",
+            (preview.run_id,),
+        )
+        run_row = await cur.fetchone()
+        assert run_row[0].get("preview") is True
+
     async def test_build_publication_preview_lookback_override(
         self, conn: psycopg.AsyncConnection, pool, edition, pub_config: Config
     ):

@@ -12,6 +12,7 @@ import pytest
 
 from src.db.uow import DatabaseUnitOfWork
 from src.jobs.publication import (
+    _is_preview_run,
     select_stories_for_publication,
 )
 from src.publication.snapshot import PublicationSnapshotService
@@ -106,6 +107,7 @@ async def test_generate_publication_job_does_not_retry_terminal_article_rejectio
         "src.publication.generation.PublicationGenerationService.generate",
         mocked_generate,
     )
+    monkeypatch.setattr("src.jobs.publication._load_publication_run", AsyncMock(return_value=None))
 
     await generate_publication({}, run_id=42)
 
@@ -125,9 +127,52 @@ async def test_generate_publication_job_still_raises_infrastructure_failure(monk
         "src.publication.generation.PublicationGenerationService.generate",
         mocked_generate,
     )
+    monkeypatch.setattr("src.jobs.publication._load_publication_run", AsyncMock(return_value=None))
 
     with pytest.raises(ConnectionError):
         await generate_publication({}, run_id=42)
+
+
+@pytest.mark.asyncio
+async def test_preview_run_is_recognized_for_worker_safety():
+    from types import SimpleNamespace
+
+    assert _is_preview_run(
+        SimpleNamespace(
+            request_key="publication-intent:preview:berdyansk:daily_article:old",
+            metadata={},
+        )
+    )
+    assert _is_preview_run(SimpleNamespace(request_key="manual:normal", metadata={"preview": True}))
+    assert not _is_preview_run(SimpleNamespace(request_key="manual:normal", metadata={}))
+
+
+@pytest.mark.asyncio
+async def test_generate_publication_job_skips_preview_run(monkeypatch):
+    from types import SimpleNamespace
+
+    from src import runtime
+    from src.jobs.publication import generate_publication
+
+    runtime._runtime = SimpleNamespace(uow=object())
+    monkeypatch.setattr(
+        "src.jobs.publication._load_publication_run",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                request_key="publication-intent:preview:berdyansk:daily_article:old",
+                metadata={},
+            )
+        ),
+    )
+    mocked_generate = AsyncMock()
+    monkeypatch.setattr(
+        "src.publication.generation.PublicationGenerationService.generate",
+        mocked_generate,
+    )
+
+    await generate_publication({}, run_id=42)
+
+    mocked_generate.assert_not_awaited()
 
 
 @pytest.mark.asyncio

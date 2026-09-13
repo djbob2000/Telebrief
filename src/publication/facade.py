@@ -243,6 +243,7 @@ async def build_publication_preview(
     run_id = await _prepare_publication_from_intent_once(
         intent.intent_id,
         defer_selection=False,
+        preview=True,
         config=config,
     )
     if run_id is None:
