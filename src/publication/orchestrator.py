@@ -230,9 +230,17 @@ class PublicationOrchestrator:
         )
 
     async def reconcile(
-        self, intent_id: int, *, now: dt.datetime | None = None
+        self,
+        intent_id: int,
+        *,
+        now: dt.datetime | None = None,
+        defer_preparation: bool = True,
     ) -> PublicationReadinessDecision:
-        """Reconcile one open intent and defer only work still needed."""
+        """Reconcile one open intent and defer only work still needed.
+
+        Preview callers may keep preparation in-process after readiness turns
+        green; normal scheduler/worker callers retain the default behavior.
+        """
         now = _utc(now or dt.datetime.now(dt.timezone.utc))
         async with self.uow.transaction() as conn:
             intent = await self.readiness_repo.get_refresh_run(conn, intent_id, for_update=True)
@@ -240,7 +248,7 @@ class PublicationOrchestrator:
                 raise ValueError(f"publication intent {intent_id} not found")
             decision = await self.readiness.reconcile(conn, intent.id, now=now)
             decision, source_ids_to_enqueue = await self._prepare_decision(
-                conn, intent, decision, now=now, defer_preparation=True
+                conn, intent, decision, now=now, defer_preparation=defer_preparation
             )
         await self._enqueue_sources(source_ids_to_enqueue)
         logger.info(

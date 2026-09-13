@@ -6,9 +6,41 @@ import psycopg
 import pytest
 
 from src.config_loader import Config
-from src.publication.facade import build_publication_preview, request_publication
+from src.publication.facade import (
+    _wait_for_preview_readiness,
+    build_publication_preview,
+    request_publication,
+)
 
 _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_preview_waits_for_worker_readiness_without_deferring_preparation(monkeypatch):
+    class FakeOrchestrator:
+        def __init__(self):
+            self.statuses = iter(("processing", "ready_for_preparation"))
+            self.calls = []
+
+        async def reconcile(self, intent_id, *, now, defer_preparation):
+            self.calls.append((intent_id, defer_preparation))
+            return type("Decision", (), {"status": next(self.statuses)})()
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("src.publication.facade.asyncio.sleep", no_sleep)
+    orchestrator = FakeOrchestrator()
+
+    await _wait_for_preview_readiness(
+        orchestrator,
+        intent_id=586,
+        initial_status="collecting",
+        deadline_at=dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=1),
+    )
+
+    assert orchestrator.calls == [(586, False), (586, False)]
 
 
 @pytest.mark.postgres

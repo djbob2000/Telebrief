@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 import uuid
@@ -46,6 +47,38 @@ class PublicationPreviewResult:
     body: str
     publication_type: str
     snapshot_at: dt.datetime
+
+
+async def _wait_for_preview_readiness(
+    orchestrator,
+    *,
+    intent_id: int,
+    initial_status: str,
+    deadline_at: dt.datetime,
+    poll_interval_seconds: float = 5.0,
+) -> None:
+    """Wait for normal worker readiness without deferring preview preparation."""
+    status = initial_status
+    while status != "ready_for_preparation":
+        now = dt.datetime.now(dt.timezone.utc)
+        decision = await orchestrator.reconcile(
+            intent_id,
+            now=now,
+            defer_preparation=False,
+        )
+        status = decision.status
+        if status == "ready_for_preparation":
+            return
+        if status == "failed":
+            from src.publication.snapshot import IncompleteTriageError
+
+            raise IncompleteTriageError(f"preview readiness did not complete: {status}")
+        remaining = (deadline_at - now).total_seconds()
+        if remaining <= 0:
+            from src.publication.snapshot import IncompleteTriageError
+
+            raise IncompleteTriageError(f"preview readiness did not complete: {status}")
+        await asyncio.sleep(min(poll_interval_seconds, remaining))
 
 
 def validate_publication_config(config: Config) -> None:
@@ -169,7 +202,6 @@ async def build_publication_preview(
     from src.publication.generation import PublicationGenerationService
     from src.publication.orchestrator import PublicationOrchestrator
     from src.publication.selection import EditorialSelectionService
-    from src.publication.snapshot import IncompleteTriageError
     from src.runtime import get_runtime
 
     runtime = get_runtime()
@@ -188,19 +220,24 @@ async def build_publication_preview(
             (edition_slug, publication_type, snap, "preview:%"),
         )
 
-    intent = await PublicationOrchestrator(uow=runtime.uow, config=config).request(
+    orchestrator = PublicationOrchestrator(uow=runtime.uow, config=config)
+    request_now = snap if snapshot_at is not None else dt.datetime.now(dt.timezone.utc)
+    intent = await orchestrator.request(
         edition_slug=edition_slug,
         publication_type=publication_type,
         trigger="manual",
         target_at=snap,
-        now=snap,
+        now=request_now,
         request_key=key,
         lookback_hours=lookback_hours,
         defer_preparation=False,
     )
     if intent.readiness_status != "ready_for_preparation":
-        raise IncompleteTriageError(
-            f"preview readiness did not complete: {intent.readiness_status}"
+        await _wait_for_preview_readiness(
+            orchestrator,
+            intent_id=intent.intent_id,
+            initial_status=intent.readiness_status,
+            deadline_at=intent.deadline_at,
         )
 
     run_id = await _prepare_publication_from_intent_once(
