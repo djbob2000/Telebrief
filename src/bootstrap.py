@@ -32,10 +32,11 @@ if TYPE_CHECKING:
 # version 28, semantic Event-First reuse lands version 29, unified
 # publication intents land version 30, observation barriers/lookback
 # persistence land version 31, the legacy lookback repair lands version 32,
-# frozen publication knowledge snapshots land version 33, and revision claim
-# leases land version 34.
+# frozen publication knowledge snapshots land version 33, revision claim
+# leases land version 34, event processing cycle scopes land version 35, and
+# event authority query indexes land version 36.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 34
+SCHEMA_VERSION_MAXIMUM = 36
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]

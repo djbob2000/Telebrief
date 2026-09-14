@@ -207,6 +207,7 @@ def _create_test_authority_service(
                 triage_min_ignore_confidence=0.95,
                 authority_provider_timeout_seconds=540,
                 triage_max_output_tokens=32768,
+                triage_max_input_chars=48000,
                 triage_split_max_extra_calls_per_cycle=triage_split_max_extra_calls_per_cycle,
                 triage_max_attempts_per_assignment=2,
                 provider_retry_backoff_seconds=300,
@@ -928,3 +929,77 @@ async def test_process_batch_invalid_response_triggers_singleton_recovery():
     cleared = {call.kwargs["story_id"] for call in service.retry_repo.clear.await_args_list}
     assert cleared == {1, 2}
     service.retry_repo.record_failure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_process_batch_overflow_items_claims_released_and_provider_batch_bounded():
+    from src.domain.event_authority import AuthorityTarget
+    from src.processing.event_triage import StoryGateBatchResult, StoryGateResult
+
+    service = _create_test_authority_service()
+    # Configure tight max input chars: 1 story fits, 2nd story overflows
+    service.config.settings.event_pipeline.triage_max_input_chars = 2000
+
+    state1 = SimpleNamespace(story_id=1, fragment_count=5)
+    state2 = SimpleNamespace(story_id=2, fragment_count=5)
+    service.cluster_repo.get_cluster_state.side_effect = lambda conn, sid: (
+        state1 if sid == 1 else state2
+    )
+
+    gate1 = StoryGateResult(
+        story_id=1,
+        scope="LOCAL",
+        scope_confidence=0.99,
+        scope_reason="ok",
+        retention="KEEP",
+        enrichment="BRIEF",
+        exclusion_reason=None,
+        confidence=0.95,
+        reason="ok",
+        brief_payload=None,
+    )
+
+    service.triage_service.triage_stories_batch.return_value = StoryGateBatchResult(
+        results=(gate1,),
+        deferred_story_ids=(),
+        missing_story_ids=(),
+        invalid_story_ids=(),
+        prompt_hash="p1",
+    )
+
+    targets = [
+        AuthorityTarget(
+            edition_id=1,
+            story_id=1,
+            assignment_id=10,
+            scope_config_hash="h1",
+            triage_version="v2",
+            scope_version="v1",
+            source_cutoff_at=None,
+        ),
+        AuthorityTarget(
+            edition_id=1,
+            story_id=2,
+            assignment_id=20,
+            scope_config_hash="h1",
+            triage_version="v2",
+            scope_version="v1",
+            source_cutoff_at=None,
+        ),
+    ]
+
+    with patch(
+        "src.processing.event_authority.resolve_edition_scope",
+        AsyncMock(return_value=("berdyansk", SimpleNamespace(focus_places=("Бердянск",)))),
+    ):
+        result = await service.process_batch(targets, mode="background")
+
+    # Claimed was 2, but provider_batch_size was 1 due to character overflow
+    assert result.stats.claimed == 2
+    assert result.stats.provider_batch_size == 1
+    assert result.stats.triaged == 1
+
+    # Stage claim on story 2 (overflow item) must have been released before provider triage
+    released_claims = [call.args[1] for call in service.claim_repo.release_stage.await_args_list]
+    released_story_ids = {c.story_id for c in released_claims}
+    assert 2 in released_story_ids

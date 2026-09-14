@@ -1111,8 +1111,13 @@ class PublicationRepository:
         snapshot_at: dt.datetime,
         eligibility_policy_id: int,
         source_cutoff_at: dt.datetime | None = None,
+        shard_index: int | None = None,
+        shard_count: int | None = None,
     ) -> list[AuthorityTarget]:
         """Return exact assignments missing Gate/scope/KEEP brief authority."""
+        if shard_count is not None and shard_count > 1:
+            if shard_index is None or not (0 <= shard_index < shard_count):
+                raise ValueError(f"shard_index must be between 0 and {shard_count - 1}")
         (
             lookback_hours,
             excluded_platforms,
@@ -1122,10 +1127,15 @@ class PublicationRepository:
         ) = await self._load_authority_policy(conn, eligibility_policy_id)
         effective_source_cutoff_at = source_cutoff_at or snapshot_at
         window_start = effective_source_cutoff_at - dt.timedelta(hours=lookback_hours)
+        shard_clause = ""
+        if shard_count is not None and shard_count > 1:
+            shard_clause = "AND MOD(ea.story_id, %(shard_count)s) = %(shard_index)s"
         query = f"""{_event_authority_candidate_sql()}
         SELECT ea.story_id, ea.cutoff_assignment_id
         FROM event_assignments_at_cutoff ea
-        WHERE NOT EXISTS (
+        WHERE 1 = 1
+          {shard_clause}
+          AND NOT EXISTS (
             SELECT 1 FROM story_edition_scope_decisions sesd
             JOIN story_event_triage_decisions setd
               ON setd.story_id = sesd.story_id
@@ -1154,7 +1164,7 @@ class PublicationRepository:
         )
         ORDER BY ea.story_id ASC
         """  # noqa: S608 — static CTE template; values are bound params
-        params = {
+        params: dict[str, object] = {
             "edition_id": edition_id,
             "snapshot_at": snapshot_at,
             "source_cutoff_at": effective_source_cutoff_at,
@@ -1164,6 +1174,9 @@ class PublicationRepository:
             "scope_version": scope_version,
             "scope_config_hash": scope_config_hash,
         }
+        if shard_count is not None and shard_count > 1:
+            params["shard_count"] = shard_count
+            params["shard_index"] = shard_index
         cursor = await conn.execute(query, params)
         return [
             AuthorityTarget(

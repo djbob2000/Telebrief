@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from src.worker import validate_worker_configuration
+from src.worker import WORKER_QUEUES, validate_worker_configuration
+
+
+@pytest.mark.unit
+def test_worker_queues_includes_authority():
+    assert "authority" in WORKER_QUEUES
 
 
 @pytest.mark.unit
@@ -16,6 +21,17 @@ def test_processing_worker_stays_within_safe_concurrency_ceiling():
 def test_processing_worker_rejects_unsafe_concurrency():
     with pytest.raises(ValueError, match="processing worker concurrency"):
         validate_worker_configuration(3, ["processing"])
+
+
+@pytest.mark.unit
+def test_authority_worker_stays_within_safe_concurrency_ceiling():
+    validate_worker_configuration(4, ["authority"])
+
+
+@pytest.mark.unit
+def test_authority_worker_rejects_unsafe_concurrency():
+    with pytest.raises(ValueError, match="authority worker concurrency"):
+        validate_worker_configuration(5, ["authority"])
 
 
 @pytest.mark.unit

@@ -36,25 +36,182 @@ def test_authority_block_reason_has_stable_precedence(stats, remaining, expected
 
 @pytest.mark.unit
 def test_authority_completion_log_contains_semantic_counters(caplog):
-    stats = AuthorityBatchStats(requested=2, claimed=2, triaged=1, busy=1)
+    stats = AuthorityBatchStats(
+        requested=2,
+        claimed=2,
+        triaged=1,
+        busy=1,
+        provider_failures=0,
+        retry_wait=0,
+        terminal=0,
+    )
     with caplog.at_level(logging.INFO, logger="src.jobs.event_authority"):
         log_authority_complete(
             mode="publication",
             intent_id=68,
             edition_id=1,
+            shard_id=2,
             stats=stats,
             remaining_gap=1,
             duration_ms=42,
+            backlog_before=5,
+            backlog_after=4,
+            progressed=True,
+            continuation_enqueued=False,
+            prompt_chars=1200,
         )
     record = caplog.records[-1]
+    assert record.mode == "publication"
     assert record.intent_id == 68
+    assert record.edition_id == 1
+    assert record.shard_id == 2
+    assert record.backlog_before == 5
+    assert record.backlog_after == 4
+    assert record.claimed == 2
+    assert record.triaged == 1
+    assert record.provider_failures == 0
+    assert record.retry_wait == 0
+    assert record.terminal == 0
     assert record.remaining_gap == 1
     assert record.duration_ms == 42
+    assert record.block_reason == "pending"
+    assert record.progressed is True
+    assert record.continuation_enqueued is False
+    assert record.prompt_chars == 1200
 
 
 @pytest.mark.unit
 def test_contention_error_is_distinct_from_provider_failure():
     assert issubclass(AuthorityCoordinationBusy, RuntimeError)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_dispatcher_fans_out_shards_without_calling_service(monkeypatch):
+    deadline_at = authority_jobs.dt.datetime.now(
+        authority_jobs.dt.timezone.utc
+    ) + authority_jobs.dt.timedelta(minutes=20)
+    intent = SimpleNamespace(status="processing", deadline_at=deadline_at, edition_id=1)
+    diagnostics_repo = SimpleNamespace(get_refresh_run=AsyncMock(return_value=intent))
+    orchestrator = SimpleNamespace(readiness_repo=diagnostics_repo)
+
+    runtime = SimpleNamespace(
+        uow=MagicMock(),
+        config=SimpleNamespace(
+            settings=SimpleNamespace(event_pipeline=SimpleNamespace(authority_shard_count=3))
+        ),
+    )
+    runtime.uow.transaction.return_value.__aenter__.return_value = AsyncMock()
+
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(authority_jobs, "PublicationOrchestrator", lambda **kwargs: orchestrator)
+
+    mock_service_from_runtime = MagicMock()
+    monkeypatch.setattr(
+        authority_jobs.EventAuthorityService, "from_runtime", mock_service_from_runtime
+    )
+
+    configured = MagicMock()
+    configured.defer_async = AsyncMock()
+    configure = MagicMock(return_value=configured)
+    monkeypatch.setattr(authority_jobs.process_publication_authority_batch, "configure", configure)
+
+    await authority_jobs.process_publication_authority_gap(intent_id=42)
+
+    mock_service_from_runtime.assert_not_called()
+    assert configure.call_count == 3
+    configured_calls = [c.kwargs for c in configure.call_args_list]
+    assert configured_calls == [
+        {
+            "priority": authority_jobs.PUBLICATION_AUTHORITY_PRIORITY,
+            "queueing_lock": "publication-authority:42:0",
+        },
+        {
+            "priority": authority_jobs.PUBLICATION_AUTHORITY_PRIORITY,
+            "queueing_lock": "publication-authority:42:1",
+        },
+        {
+            "priority": authority_jobs.PUBLICATION_AUTHORITY_PRIORITY,
+            "queueing_lock": "publication-authority:42:2",
+        },
+    ]
+    defer_calls = [c.kwargs for c in configured.defer_async.call_args_list]
+    assert defer_calls == [
+        {"intent_id": 42, "shard_id": 0},
+        {"intent_id": 42, "shard_id": 1},
+        {"intent_id": 42, "shard_id": 2},
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_authority_batch_preserves_boundaries_and_coordination_scope(monkeypatch):
+    snapshot_at = authority_jobs.dt.datetime(
+        2026, 9, 14, 9, 0, tzinfo=authority_jobs.dt.timezone.utc
+    )
+    cutoff_at = authority_jobs.dt.datetime(
+        2026, 9, 14, 8, 55, tzinfo=authority_jobs.dt.timezone.utc
+    )
+    deadline_at = authority_jobs.dt.datetime(
+        2026, 9, 14, 9, 20, tzinfo=authority_jobs.dt.timezone.utc
+    )
+    intent = SimpleNamespace(
+        status="processing",
+        deadline_at=deadline_at,
+        knowledge_snapshot_at=snapshot_at,
+        normal_source_cutoff_at=cutoff_at,
+        edition_id=1,
+    )
+    target = SimpleNamespace(story_id=10, assignment_id=20)
+    diagnostics_repo = SimpleNamespace(
+        get_refresh_run=AsyncMock(return_value=intent),
+        update_authority_diagnostics=AsyncMock(),
+    )
+    orchestrator = SimpleNamespace(
+        readiness_repo=diagnostics_repo,
+        find_authority_gap_targets=AsyncMock(side_effect=[[target], []]),
+    )
+    authority_service = SimpleNamespace(
+        process_batch=AsyncMock(
+            return_value=SimpleNamespace(
+                stats=AuthorityBatchStats(triaged=1), enrichment_targets=()
+            )
+        )
+    )
+    runtime = SimpleNamespace(
+        uow=MagicMock(),
+        config=SimpleNamespace(
+            settings=SimpleNamespace(
+                event_pipeline=SimpleNamespace(
+                    authority_shard_count=4,
+                    triage_batch_size=10,
+                )
+            )
+        ),
+    )
+    runtime.uow.transaction.return_value.__aenter__.return_value = AsyncMock()
+
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(authority_jobs, "PublicationOrchestrator", lambda **kwargs: orchestrator)
+    monkeypatch.setattr(
+        authority_jobs.EventAuthorityService,
+        "from_runtime",
+        lambda runtime, config: authority_service,
+    )
+    defer_reconcile = AsyncMock()
+    monkeypatch.setattr(authority_jobs, "_defer_publication_reconcile", defer_reconcile)
+
+    await authority_jobs.process_publication_authority_batch(intent_id=55, shard_id=2)
+
+    first_call_kwargs = orchestrator.find_authority_gap_targets.await_args_list[0].kwargs
+    assert first_call_kwargs["evaluation_at"] == snapshot_at
+    assert first_call_kwargs["shard_index"] == 2
+    assert first_call_kwargs["shard_count"] == 4
+
+    authority_service.process_batch.assert_awaited_once_with(
+        [target], mode="publication", coordination_scope="publication:55:2"
+    )
+    defer_reconcile.assert_awaited_once_with(55)
 
 
 @pytest.mark.unit
@@ -75,7 +232,12 @@ async def test_publication_authority_records_progress_after_provider_batch(monke
             cls.calls += 1
             return started_at if cls.calls == 1 else observed_at
 
-    intent = SimpleNamespace(status="processing", deadline_at=deadline_at, edition_id=1)
+    intent = SimpleNamespace(
+        status="processing",
+        deadline_at=deadline_at,
+        edition_id=1,
+        knowledge_snapshot_at=None,
+    )
     target = SimpleNamespace(story_id=10, assignment_id=20)
     diagnostics_repo = SimpleNamespace(
         get_refresh_run=AsyncMock(return_value=intent),
@@ -92,7 +254,17 @@ async def test_publication_authority_records_progress_after_provider_batch(monke
             )
         )
     )
-    runtime = SimpleNamespace(uow=MagicMock(), config=SimpleNamespace())
+    runtime = SimpleNamespace(
+        uow=MagicMock(),
+        config=SimpleNamespace(
+            settings=SimpleNamespace(
+                event_pipeline=SimpleNamespace(
+                    authority_shard_count=1,
+                    triage_batch_size=10,
+                )
+            )
+        ),
+    )
     runtime.uow.transaction.return_value.__aenter__.return_value = AsyncMock()
 
     monkeypatch.setattr(authority_jobs.dt, "datetime", Clock)
@@ -106,7 +278,7 @@ async def test_publication_authority_records_progress_after_provider_batch(monke
     defer_reconcile = AsyncMock()
     monkeypatch.setattr(authority_jobs, "_defer_publication_reconcile", defer_reconcile)
 
-    await authority_jobs.process_publication_authority_gap(68)
+    await authority_jobs.process_publication_authority_batch(68, shard_id=0)
 
     assert (
         orchestrator.find_authority_gap_targets.await_args_list[1].kwargs["evaluation_at"]
@@ -156,12 +328,12 @@ async def test_background_dispatch_does_not_queueing_lock_execution_locked_batch
     configure.assert_called_once_with(
         priority=authority_jobs.BACKGROUND_AUTHORITY_PRIORITY,
     )
-    configured.defer_async.assert_awaited_once_with(edition_id=1)
+    configured.defer_async.assert_awaited_once_with(edition_id=1, shard_id=0)
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_process_background_authority_batch_does_not_retrigger_dispatch(monkeypatch):
+async def test_process_background_authority_batch_schedules_continuation_on_progress(monkeypatch):
     target = SimpleNamespace(story_id=10, assignment_id=20)
     authority_service = SimpleNamespace(
         process_batch=AsyncMock(
@@ -177,30 +349,78 @@ async def test_process_background_authority_batch_does_not_retrigger_dispatch(mo
                 event_pipeline=SimpleNamespace(
                     background_authority_enabled=True,
                     triage_batch_size=10,
+                    authority_shard_count=4,
                     active_window_hours=72,
                 )
             )
         ),
     )
     monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
-    monkeypatch.setattr(
-        authority_jobs,
-        "_load_background_targets",
-        AsyncMock(return_value=[target]),
-    )
+    load_targets = AsyncMock(side_effect=[[target], [target]])
+    monkeypatch.setattr(authority_jobs, "_load_background_targets", load_targets)
     monkeypatch.setattr(
         authority_jobs.EventAuthorityService,
         "from_runtime",
         lambda runtime, config: authority_service,
     )
-    request_dispatch = AsyncMock()
-    monkeypatch.setattr(authority_jobs, "request_background_authority_dispatch", request_dispatch)
+    defer_continuation = AsyncMock()
+    monkeypatch.setattr(
+        authority_jobs, "_defer_background_authority_continuation", defer_continuation
+    )
 
-    await authority_jobs.process_background_authority_batch(edition_id=1)
+    await authority_jobs.process_background_authority_batch(edition_id=1, shard_id=2)
 
-    authority_service.process_batch.assert_awaited_once()
-    # It must NOT call request_background_authority_dispatch to prevent runaway loop
-    request_dispatch.assert_not_awaited()
+    authority_service.process_batch.assert_awaited_once_with(
+        [target], mode="background", coordination_scope="authority:2"
+    )
+    defer_continuation.assert_awaited_once_with(1, 2)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stats",
+    [
+        AuthorityBatchStats(provider_failures=1),
+        AuthorityBatchStats(retry_wait=1, triaged=0),
+    ],
+)
+async def test_process_background_authority_batch_does_not_tight_loop_on_failure_or_retry(
+    monkeypatch, stats
+):
+    target = SimpleNamespace(story_id=10, assignment_id=20)
+    authority_service = SimpleNamespace(
+        process_batch=AsyncMock(return_value=SimpleNamespace(stats=stats, enrichment_targets=()))
+    )
+    runtime = SimpleNamespace(
+        uow=MagicMock(),
+        config=SimpleNamespace(
+            settings=SimpleNamespace(
+                event_pipeline=SimpleNamespace(
+                    background_authority_enabled=True,
+                    triage_batch_size=10,
+                    authority_shard_count=4,
+                    active_window_hours=72,
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+    load_targets = AsyncMock(return_value=[target])
+    monkeypatch.setattr(authority_jobs, "_load_background_targets", load_targets)
+    monkeypatch.setattr(
+        authority_jobs.EventAuthorityService,
+        "from_runtime",
+        lambda runtime, config: authority_service,
+    )
+    defer_continuation = AsyncMock()
+    monkeypatch.setattr(
+        authority_jobs, "_defer_background_authority_continuation", defer_continuation
+    )
+
+    await authority_jobs.process_background_authority_batch(edition_id=1, shard_id=2)
+
+    defer_continuation.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -314,7 +534,7 @@ async def test_defer_event_processing_treats_queueing_lock_race_as_already_queue
     configured.defer_async = AsyncMock(
         side_effect=UniqueViolation(
             constraint_name="procrastinate_jobs_queueing_lock_idx_v1",
-            queueing_lock="publication-authority:7",
+            queueing_lock="publication-authority-dispatch:7",
         )
     )
     monkeypatch.setattr(
@@ -455,3 +675,87 @@ async def test_periodic_background_authority_dispatch_skipped_when_disabled(monk
 
     request_mock.assert_not_awaited()
     runtime.uow.transaction.assert_not_called()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_shards_monotonic_gap_drain_under_frozen_snapshot(monkeypatch):
+    frozen_now = authority_jobs.dt.datetime(
+        2026, 9, 14, 10, 0, tzinfo=authority_jobs.dt.timezone.utc
+    )
+    intent = SimpleNamespace(
+        status="processing",
+        deadline_at=frozen_now + authority_jobs.dt.timedelta(minutes=15),
+        edition_id=1,
+        knowledge_snapshot_at=frozen_now,
+    )
+
+    logged_gaps: list[int] = []
+
+    def fake_log_authority_complete(**kwargs):
+        if kwargs.get("remaining_gap") is not None:
+            logged_gaps.append(kwargs["remaining_gap"])
+
+    monkeypatch.setattr(authority_jobs, "log_authority_complete", fake_log_authority_complete)
+
+    # Shard targets shrinking as work completes
+    active_gap: dict[int, int] = {1: 0, 2: 1}  # story_id -> shard_id
+
+    async def fake_find_targets(*args, **kwargs):
+        shard_index = kwargs.get("shard_index")
+        if shard_index is not None:
+            return [
+                SimpleNamespace(story_id=sid, assignment_id=sid * 10)
+                for sid, sh in active_gap.items()
+                if sh == shard_index
+            ]
+        return [SimpleNamespace(story_id=sid, assignment_id=sid * 10) for sid in active_gap]
+
+    async def fake_process_batch(targets, **kwargs):
+        for t in targets:
+            active_gap.pop(t.story_id, None)
+        return SimpleNamespace(
+            stats=AuthorityBatchStats(
+                requested=len(targets), claimed=len(targets), triaged=len(targets)
+            ),
+            enrichment_targets=(),
+        )
+
+    orchestrator = SimpleNamespace(
+        readiness_repo=SimpleNamespace(
+            get_refresh_run=AsyncMock(return_value=intent),
+            update_authority_diagnostics=AsyncMock(),
+        ),
+        find_authority_gap_targets=AsyncMock(side_effect=fake_find_targets),
+        count_authority_gap=AsyncMock(side_effect=[2, 1, 0]),
+    )
+
+    authority_service = SimpleNamespace(process_batch=AsyncMock(side_effect=fake_process_batch))
+
+    runtime = SimpleNamespace(
+        uow=MagicMock(),
+        config=SimpleNamespace(
+            settings=SimpleNamespace(
+                event_pipeline=SimpleNamespace(authority_shard_count=2, triage_batch_size=10)
+            )
+        ),
+    )
+    runtime.uow.transaction.return_value.__aenter__.return_value = AsyncMock()
+
+    monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(authority_jobs, "PublicationOrchestrator", lambda **kwargs: orchestrator)
+    monkeypatch.setattr(
+        authority_jobs.EventAuthorityService, "from_runtime", lambda r, c: authority_service
+    )
+    monkeypatch.setattr(authority_jobs, "_defer_publication_reconcile", AsyncMock())
+
+    # Run 3 consecutive batches
+    await authority_jobs.process_publication_authority_batch(intent_id=77, shard_id=0)
+    await authority_jobs.process_publication_authority_batch(intent_id=77, shard_id=1)
+    await authority_jobs.process_publication_authority_batch(intent_id=77, shard_id=0)
+
+    # Verify that remaining_gap monotonically non-increases
+    assert len(logged_gaps) >= 2
+    for prev, curr in zip(logged_gaps, logged_gaps[1:], strict=False):
+        assert curr <= prev, f"remaining_gap increased from {prev} to {curr}"
+    assert logged_gaps[-1] == 0

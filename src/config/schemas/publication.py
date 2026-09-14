@@ -136,6 +136,8 @@ class EventPipelineConfig:
     authority_coordination_lease_seconds: int = 10
     event_processing_stage_lease_seconds: int = 600
     authority_provider_timeout_seconds: int = 540
+    authority_shard_count: int = 1
+    triage_max_input_chars: int = 48_000
     triage_split_max_extra_calls_per_cycle: int = 8
     live_batch_size: int = 100
     backfill_batch_size: int = 500
@@ -143,8 +145,11 @@ class EventPipelineConfig:
     def __post_init__(self) -> None:
         if not 1 <= self.triage_batch_size <= 10:
             raise ValueError("triage_batch_size must be between 1 and 10")
+        if not 1 <= self.authority_shard_count <= 16:
+            raise ValueError("authority_shard_count must be between 1 and 16")
         for field_name in (
             "triage_max_output_tokens",
+            "triage_max_input_chars",
             "analysis_max_output_tokens",
             "triage_max_attempts_per_assignment",
             "analysis_max_attempts_per_assignment",

@@ -27,19 +27,33 @@ import asyncio
 # Every queue used by registered tasks: collection (Telegram/Facebook),
 # maintenance (retention, sweeps), processing (knowledge pipeline),
 # publication (snapshot -> delivery), enrichment (Facebook comment refresh).
-WORKER_QUEUES = ("publication", "collection", "maintenance", "processing", "enrichment", "default")
+WORKER_QUEUES = (
+    "publication",
+    "collection",
+    "maintenance",
+    "processing",
+    "enrichment",
+    "authority",
+    "default",
+)
 DEFAULT_CONCURRENCY = 2
 MAX_SAFE_PROCESSING_CONCURRENCY = 2
+MAX_SAFE_AUTHORITY_CONCURRENCY = 4
 
 
 def validate_worker_configuration(concurrency: int, queues: list[str]) -> None:
-    """Reject the known-unsafe processing burst before opening infrastructure."""
+    """Reject known-unsafe worker bursts before opening infrastructure."""
     if concurrency < 1:
         raise ValueError("concurrency must be >= 1")
     if "processing" in queues and concurrency > MAX_SAFE_PROCESSING_CONCURRENCY:
         raise ValueError(
             "processing worker concurrency must be <= "
             f"{MAX_SAFE_PROCESSING_CONCURRENCY} until cluster updates are fully serialized"
+        )
+    if "authority" in queues and concurrency > MAX_SAFE_AUTHORITY_CONCURRENCY:
+        raise ValueError(
+            f"authority worker concurrency must be <= {MAX_SAFE_AUTHORITY_CONCURRENCY} "
+            "to prevent DB connection and provider exhaustion"
         )
 
 

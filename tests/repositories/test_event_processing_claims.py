@@ -114,6 +114,67 @@ async def test_cycle_claim_is_exclusive_until_expiry(repo_conn):
 
 
 @pytest.mark.postgres
+async def test_cycle_claims_with_distinct_scopes_can_coexist(repo_conn):
+    repository = EventProcessingClaimRepository()
+    edition_id = await _seed_edition(repo_conn, "cycle-multi-scope")
+
+    default_claim = await repository.acquire_cycle(
+        repo_conn,
+        edition_id=edition_id,
+        owner_id="worker-default",
+        ttl_seconds=600,
+        scope_key="default",
+    )
+    assert default_claim is not None
+    assert default_claim.scope_key == "default"
+
+    shard0_claim = await repository.acquire_cycle(
+        repo_conn,
+        edition_id=edition_id,
+        owner_id="worker-shard0",
+        ttl_seconds=600,
+        scope_key="authority:0",
+    )
+    assert shard0_claim is not None
+    assert shard0_claim.scope_key == "authority:0"
+
+    shard1_claim = await repository.acquire_cycle(
+        repo_conn,
+        edition_id=edition_id,
+        owner_id="worker-shard1",
+        ttl_seconds=600,
+        scope_key="authority:1",
+    )
+    assert shard1_claim is not None
+    assert shard1_claim.scope_key == "authority:1"
+
+    # Mutual exclusion within the same scope:
+    conflict = await repository.acquire_cycle(
+        repo_conn,
+        edition_id=edition_id,
+        owner_id="worker-shard0-other",
+        ttl_seconds=600,
+        scope_key="authority:0",
+    )
+    assert conflict is None
+
+    # Stale token cannot spend or release replacement:
+    stale_shard0 = replace(shard0_claim, claim_token="stale-token")
+    assert (
+        await repository.claim_rich_slot(repo_conn, stale_shard0, max_calls=1, ttl_seconds=600)
+        is False
+    )
+    assert await repository.release_cycle(repo_conn, stale_shard0) is False
+
+    # Valid token works:
+    assert (
+        await repository.claim_rich_slot(repo_conn, shard0_claim, max_calls=1, ttl_seconds=600)
+        is True
+    )
+    assert await repository.release_cycle(repo_conn, shard0_claim) is True
+
+
+@pytest.mark.postgres
 async def test_stale_cycle_token_cannot_spend_or_release_replacement(repo_conn):
     repository = EventProcessingClaimRepository()
     edition_id = await _seed_edition(repo_conn, "cycle-stale")
@@ -187,7 +248,7 @@ async def test_cycle_call_slot_is_durable_and_bounded(repo_conn):
     assert not await repository.claim_rich_slot(repo_conn, claim, max_calls=2, ttl_seconds=600)
 
     cursor = await repo_conn.execute(
-        "SELECT rich_calls_started FROM event_processing_cycle_leases WHERE edition_id = %s",
-        (edition_id,),
+        "SELECT rich_calls_started FROM event_processing_cycle_leases WHERE edition_id = %s AND scope_key = %s",
+        (edition_id, claim.scope_key),
     )
     assert (await cursor.fetchone())[0] == 2

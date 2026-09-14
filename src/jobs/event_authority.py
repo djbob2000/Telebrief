@@ -42,13 +42,28 @@ def log_authority_complete(
     stats: AuthorityBatchStats,
     remaining_gap: int | None,
     duration_ms: int,
+    shard_id: int | None = None,
+    backlog_before: int | None = None,
+    backlog_after: int | None = None,
+    progressed: bool | None = None,
+    continuation_enqueued: bool | None = None,
+    prompt_chars: int | None = None,
+    block_reason: str | None = None,
 ) -> None:
+    resolved_block_reason = block_reason or authority_block_reason(stats, remaining_gap or 0)
     logger.info(
         "event_first_authority_complete",
         extra={
             "mode": mode,
             "intent_id": intent_id,
             "edition_id": edition_id,
+            "shard_id": shard_id,
+            "backlog_before": backlog_before,
+            "backlog_after": backlog_after,
+            "progressed": progressed,
+            "continuation_enqueued": continuation_enqueued,
+            "prompt_chars": prompt_chars,
+            "block_reason": resolved_block_reason,
             "requested": stats.requested,
             "already_satisfied": stats.already_satisfied,
             "claimed": stats.claimed,
@@ -77,7 +92,13 @@ def authority_block_reason(stats: AuthorityBatchStats, remaining_gap: int) -> st
     return "pending"
 
 
-async def _load_background_targets(edition_id: int, *, limit: int):
+async def _load_background_targets(
+    edition_id: int,
+    *,
+    limit: int,
+    shard_index: int = 0,
+    shard_count: int = 1,
+):
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
     cfg = config.settings.event_pipeline
@@ -92,40 +113,93 @@ async def _load_background_targets(edition_id: int, *, limit: int):
             now=dt.datetime.now(dt.timezone.utc),
             limit=limit,
             active_window_hours=cfg.active_window_hours,
+            shard_index=shard_index,
+            shard_count=shard_count,
         )
 
 
+async def _defer_background_authority_continuation(edition_id: int, shard_id: int = 0) -> None:
+    from procrastinate.exceptions import AlreadyEnqueued
+
+    try:
+        await process_background_authority_batch.configure(
+            priority=BACKGROUND_AUTHORITY_PRIORITY,
+            queueing_lock=f"authority-background-continuation:{edition_id}:{shard_id}",
+        ).defer_async(edition_id=edition_id, shard_id=shard_id)
+    except AlreadyEnqueued:
+        return
+
+
 @procrastinate_app.task(
-    queue="processing",
+    queue="authority",
     name="process_background_authority_batch",
-    lock="authority-background:{edition_id}",
+    lock="authority-background:{edition_id}:{shard_id}",
 )
-async def process_background_authority_batch(edition_id: int) -> None:
+async def process_background_authority_batch(edition_id: int, shard_id: int = 0) -> None:
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
     cfg = getattr(config.settings, "event_pipeline", None)
     if not getattr(cfg, "background_authority_enabled", False):
         return
+    shard_count = getattr(cfg, "authority_shard_count", 1)
     targets = await _load_background_targets(
-        edition_id, limit=config.settings.event_pipeline.triage_batch_size
+        edition_id,
+        limit=config.settings.event_pipeline.triage_batch_size,
+        shard_index=shard_id,
+        shard_count=shard_count,
     )
-    if targets:
-        started = time.perf_counter()
-        result = await EventAuthorityService.from_runtime(runtime, config).process_batch(
-            targets, mode="background"
+    if not targets:
+        return
+    started = time.perf_counter()
+    result = await EventAuthorityService.from_runtime(runtime, config).process_batch(
+        targets, mode="background", coordination_scope=f"authority:{shard_id}"
+    )
+    progressed = result.stats.triaged > 0 or (
+        result.stats.claimed > 0
+        and result.stats.busy == 0
+        and result.stats.provider_failures == 0
+        and result.stats.retry_wait == 0
+    )
+    can_continue = (
+        progressed
+        and result.stats.provider_failures == 0
+        and not (result.stats.retry_wait > 0 and result.stats.triaged == 0)
+        and not (
+            result.stats.busy > 0
+            and result.stats.triaged == 0
+            and result.stats.already_satisfied == 0
         )
-        log_authority_complete(
-            mode="background",
-            intent_id=None,
-            edition_id=edition_id,
-            stats=result.stats,
-            remaining_gap=None,
-            duration_ms=int((time.perf_counter() - started) * 1000),
+    )
+    continuation_enqueued = False
+    remaining_after: int | None = None
+    if can_continue:
+        remaining = await _load_background_targets(
+            edition_id, limit=1, shard_index=shard_id, shard_count=shard_count
         )
-        from src.jobs.event_enrichment import defer_event_enrichment
+        if remaining:
+            remaining_after = len(remaining)
+            await _defer_background_authority_continuation(edition_id, shard_id)
+            continuation_enqueued = True
+        else:
+            remaining_after = 0
 
-        for target in result.enrichment_targets:
-            await defer_event_enrichment(target.story_id, target.assignment_id)
+    log_authority_complete(
+        mode="background",
+        intent_id=None,
+        edition_id=edition_id,
+        stats=result.stats,
+        remaining_gap=remaining_after,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        shard_id=shard_id,
+        backlog_before=len(targets),
+        backlog_after=remaining_after,
+        progressed=progressed,
+        continuation_enqueued=continuation_enqueued,
+    )
+    from src.jobs.event_enrichment import defer_event_enrichment
+
+    for target in result.enrichment_targets:
+        await defer_event_enrichment(target.story_id, target.assignment_id)
 
 
 async def request_background_authority_dispatch(edition_id: int) -> None:
@@ -160,18 +234,21 @@ async def dispatch_background_authority(edition_id: int) -> None:
     targets = await _load_background_targets(edition_id, limit=1)
     if not targets:
         return
-    await process_background_authority_batch.configure(
-        priority=BACKGROUND_AUTHORITY_PRIORITY,
-    ).defer_async(edition_id=edition_id)
+    shard_count = getattr(cfg, "authority_shard_count", 1)
+    for shard_id in range(shard_count):
+        await process_background_authority_batch.configure(
+            priority=BACKGROUND_AUTHORITY_PRIORITY,
+        ).defer_async(edition_id=edition_id, shard_id=shard_id)
 
 
 @procrastinate_app.task(
-    queue="processing",
+    queue="maintenance",
     name="process_publication_authority_gap",
-    retry=PUBLICATION_AUTHORITY_CONTENTION_RETRY,
-    lock="publication-authority:{intent_id}",
+    lock="publication-authority-dispatch:{intent_id}",
 )
 async def process_publication_authority_gap(intent_id: int) -> None:
+    from procrastinate.exceptions import AlreadyEnqueued
+
     runtime = get_runtime()
     config = getattr(runtime, "config", None) or load_config()
     orchestrator = PublicationOrchestrator(uow=runtime.uow, config=config)
@@ -185,54 +262,134 @@ async def process_publication_authority_gap(intent_id: int) -> None:
         }:
             return
         if now >= intent.deadline_at:
-            targets = []
-        else:
-            targets = await orchestrator.find_authority_gap_targets(conn, intent, evaluation_at=now)
-
-    if now < intent.deadline_at and targets:
-        started = time.perf_counter()
-        result = await EventAuthorityService.from_runtime(runtime, config).process_batch(
-            targets, mode="publication"
-        )
-        observed_at = dt.datetime.now(dt.timezone.utc)
-        async with runtime.uow.transaction() as conn:
-            remaining = await orchestrator.find_authority_gap_targets(
-                conn, intent, evaluation_at=min(observed_at, intent.deadline_at)
-            )
-            remaining_gap = len(remaining)
-            if hasattr(orchestrator.readiness_repo, "update_authority_diagnostics"):
-                await orchestrator.readiness_repo.update_authority_diagnostics(
-                    conn,
-                    refresh_run_id=intent_id,
-                    observed_at=observed_at,
-                    gap_count=remaining_gap,
-                    block_reason=authority_block_reason(result.stats, remaining_gap),
-                    terminal_count=result.stats.terminal,
-                )
-        log_authority_complete(
-            mode="publication",
-            intent_id=intent_id,
-            edition_id=intent.edition_id,
-            stats=result.stats,
-            remaining_gap=remaining_gap,
-            duration_ms=int((time.perf_counter() - started) * 1000),
-        )
-        from src.jobs.event_enrichment import defer_event_enrichment
-
-        for target in result.enrichment_targets:
-            await defer_event_enrichment(target.story_id, target.assignment_id)
-        if (
-            result.stats.triaged == 0
-            and result.stats.already_satisfied == 0
-            and result.stats.busy > 0
-            and result.stats.retry_wait == 0
-            and result.stats.terminal == 0
-            and result.stats.provider_failures == 0
-        ):
             await _defer_publication_reconcile(intent_id)
-            raise AuthorityCoordinationBusy(
-                f"publication intent {intent_id} authority targets are busy"
+            return
+
+    cfg = config.settings.event_pipeline
+    shard_count = getattr(cfg, "authority_shard_count", 1)
+    for shard_id in range(shard_count):
+        try:
+            await process_publication_authority_batch.configure(
+                priority=PUBLICATION_AUTHORITY_PRIORITY,
+                queueing_lock=f"publication-authority:{intent_id}:{shard_id}",
+            ).defer_async(intent_id=intent_id, shard_id=shard_id)
+        except AlreadyEnqueued:
+            pass
+
+
+@procrastinate_app.task(
+    queue="authority",
+    name="process_publication_authority_batch",
+    retry=PUBLICATION_AUTHORITY_CONTENTION_RETRY,
+    lock="publication-authority:{intent_id}:{shard_id}",
+)
+async def process_publication_authority_batch(intent_id: int, shard_id: int = 0) -> None:
+    from procrastinate.exceptions import AlreadyEnqueued
+
+    runtime = get_runtime()
+    config = getattr(runtime, "config", None) or load_config()
+    cfg = config.settings.event_pipeline
+    shard_count = getattr(cfg, "authority_shard_count", 1)
+    orchestrator = PublicationOrchestrator(uow=runtime.uow, config=config)
+    now = dt.datetime.now(dt.timezone.utc)
+    async with runtime.uow.transaction() as conn:
+        intent = await orchestrator.readiness_repo.get_refresh_run(conn, intent_id)
+        if intent is None or intent.status not in {
+            "collecting",
+            "processing",
+            "ready_waiting_slot",
+        }:
+            return
+        if now >= intent.deadline_at:
+            await _defer_publication_reconcile(intent_id)
+            return
+        eval_boundary = intent.knowledge_snapshot_at or min(now, intent.deadline_at)
+        targets = await orchestrator.find_authority_gap_targets(
+            conn,
+            intent,
+            evaluation_at=eval_boundary,
+            shard_index=shard_id,
+            shard_count=shard_count,
+        )
+
+    if not targets:
+        await _defer_publication_reconcile(intent_id)
+        return
+
+    started = time.perf_counter()
+    batch_targets = targets[: cfg.triage_batch_size]
+    result = await EventAuthorityService.from_runtime(runtime, config).process_batch(
+        batch_targets,
+        mode="publication",
+        coordination_scope=f"publication:{intent_id}:{shard_id}",
+    )
+    observed_at = dt.datetime.now(dt.timezone.utc)
+    async with runtime.uow.transaction() as conn:
+        eval_boundary = intent.knowledge_snapshot_at or min(observed_at, intent.deadline_at)
+        remaining = await orchestrator.find_authority_gap_targets(
+            conn, intent, evaluation_at=eval_boundary
+        )
+        remaining_gap = len(remaining)
+        if hasattr(orchestrator.readiness_repo, "update_authority_diagnostics"):
+            await orchestrator.readiness_repo.update_authority_diagnostics(
+                conn,
+                refresh_run_id=intent_id,
+                observed_at=observed_at,
+                gap_count=remaining_gap,
+                block_reason=authority_block_reason(result.stats, remaining_gap),
+                terminal_count=result.stats.terminal,
             )
+
+    progressed = result.stats.triaged > 0 or result.stats.already_satisfied > 0
+    continuation_enqueued = False
+    if progressed and remaining_gap > 0 and observed_at < intent.deadline_at:
+        async with runtime.uow.transaction() as conn:
+            shard_remaining = await orchestrator.find_authority_gap_targets(
+                conn,
+                intent,
+                evaluation_at=eval_boundary,
+                shard_index=shard_id,
+                shard_count=shard_count,
+            )
+        if shard_remaining:
+            try:
+                await process_publication_authority_batch.configure(
+                    priority=PUBLICATION_AUTHORITY_PRIORITY,
+                    queueing_lock=f"publication-authority-continuation:{intent_id}:{shard_id}",
+                ).defer_async(intent_id=intent_id, shard_id=shard_id)
+                continuation_enqueued = True
+            except AlreadyEnqueued:
+                pass
+
+    log_authority_complete(
+        mode="publication",
+        intent_id=intent_id,
+        edition_id=intent.edition_id,
+        stats=result.stats,
+        remaining_gap=remaining_gap,
+        duration_ms=int((time.perf_counter() - started) * 1000),
+        shard_id=shard_id,
+        backlog_before=len(targets),
+        backlog_after=remaining_gap,
+        progressed=progressed,
+        continuation_enqueued=continuation_enqueued,
+    )
+    from src.jobs.event_enrichment import defer_event_enrichment
+
+    for target in result.enrichment_targets:
+        await defer_event_enrichment(target.story_id, target.assignment_id)
+    if (
+        result.stats.triaged == 0
+        and result.stats.already_satisfied == 0
+        and result.stats.busy > 0
+        and result.stats.retry_wait == 0
+        and result.stats.terminal == 0
+        and result.stats.provider_failures == 0
+    ):
+        await _defer_publication_reconcile(intent_id)
+        raise AuthorityCoordinationBusy(
+            f"publication intent {intent_id} shard {shard_id} authority targets are busy"
+        )
     await _defer_publication_reconcile(intent_id)
 
 

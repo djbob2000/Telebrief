@@ -189,7 +189,7 @@ def build_article_quote_allowlist(
     seen: set[str] = set()
 
     def _add_cand(cand: str, source_text: str) -> None:
-        c = cand.strip(" .,!?;:-—\t\n\r«»\"“”")
+        c = cand.strip(' .,!?;:-—\t\n\r«»"“”')
         if not c:
             return
         tokens = quote_words(c)
@@ -262,14 +262,21 @@ def test_strip_non_allowlisted_quotes_converts_direct_speech_to_indirect():
     allowlist = ["Звук генераторов уже как колыбельная перед сном"]
 
     # Allowed quote preserves colon and quotes
-    text_allowed = "Житель признался: «Звук генераторов уже как колыбельная перед сном», а другой подтвердил."
+    text_allowed = (
+        "Житель признался: «Звук генераторов уже как колыбельная перед сном», а другой подтвердил."
+    )
     res_allowed = _strip_non_allowlisted_quotes(text_allowed, allowlist)
-    assert res_allowed == "Житель признался: «Звук генераторов уже как колыбельная перед сном», а другой подтвердил."
+    assert (
+        res_allowed
+        == "Житель признался: «Звук генераторов уже как колыбельная перед сном», а другой подтвердил."
+    )
 
     # Unallowed quote converts to indirect speech without leaving naked colon
     text_unallowed = "Житель признался: «Света не будет до конца года», а другой подтвердил."
     res_unallowed = _strip_non_allowlisted_quotes(text_unallowed, allowlist)
-    assert res_unallowed == "Житель признался, что света не будет до конца года, а другой подтвердил."
+    assert (
+        res_unallowed == "Житель признался, что света не будет до конца года, а другой подтвердил."
+    )
     assert "признался:" not in res_unallowed
 ```
 
@@ -355,10 +362,11 @@ git commit -m "fix(article_models): convert unallowed quotes after colons into i
 In `src/publication/article_editor.py`:
 Update Rule 1:
 ```python
-            "1. ПРЯМАЯ РЕЧЬ И КАВЫЧКИ (UNSUPPORTED_DIRECT_QUOTE):\n"
-            "   - Запрещено оставлять кавычки «...» вокруг слов или фраз, если они не являются 100% дословной цитатой из предоставленных фактов.\n"
-            "   - Переведите фразу в естественную косвенную речь БЕЗ КАВЫЧЕК через союз «что» со строчной буквы (например: «житель признался, что...», «горожане отмечают, что...»).\n"
-            "   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО оставлять двоеточие перед текстом без кавычек (например: «житель признался: Звук генераторов...» — это грубая грамматическая ошибка).\n\n"
+"1. ПРЯМАЯ РЕЧЬ И КАВЫЧКИ (UNSUPPORTED_DIRECT_QUOTE):\n"
+
+"   - Запрещено оставлять кавычки «...» вокруг слов или фраз, если они не являются 100% дословной цитатой из предоставленных фактов.\n"
+"   - Переведите фразу в естественную косвенную речь БЕЗ КАВЫЧЕК через союз «что» со строчной буквы (например: «житель признался, что...», «горожане отмечают, что...»).\n"
+"   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО оставлять двоеточие перед текстом без кавычек (например: «житель признался: Звук генераторов...» — это грубая грамматическая ошибка).\n\n"
 ```
 
 - [ ] **Step 2: Run test suite to verify no regressions**

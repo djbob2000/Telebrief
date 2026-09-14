@@ -361,6 +361,7 @@ class StoryTriageService:
         decision_fence: DecisionFence | None = None,
         before_decision_persist: DecisionPersistHook | None = None,
         max_output_tokens: int | None = None,
+        max_input_chars: int | None = None,
     ) -> StoryGateBatchResult:
         """Run batch Gate V2 classification on story clusters."""
         if not stories:
@@ -661,6 +662,41 @@ class StoryTriageService:
             self.ai, "provider_name", "ai_cascade"
         )
         model_name = getattr(self.ai, "model_name", None) or self.model or "default"
+
+        if max_input_chars is not None and len(user_prompt) > max_input_chars:
+            try:
+                async with _get_conn() as err_conn:
+                    await err_conn.execute(
+                        """
+                        INSERT INTO story_event_triage_runs (
+                            triage_version, provider, model, prompt_hash, story_count, input_chars, status, error_kind, completed_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, 'failed', %s, now())
+                        """,
+                        (
+                            TRIAGE_VERSION,
+                            str(provider_name),
+                            str(model_name),
+                            prompt_hash,
+                            len(uncached_stories),
+                            len(user_prompt),
+                            "input_too_large",
+                        ),
+                    )
+            except Exception as log_exc:
+                self.logger.warning("Failed to record failed triage run: %s", log_exc)
+            self.logger.warning(
+                "Story triage user prompt exceeded max_input_chars (%d > %d); failing batch as recoverable",
+                len(user_prompt),
+                max_input_chars,
+            )
+            return StoryGateBatchResult(
+                results=tuple(valid_results),
+                deferred_story_ids=tuple(s.story_id for s in uncached_stories),
+                batch_error_kind="input_too_large",
+                prompt_hash=prompt_hash,
+                fence_lost_story_ids=tuple(sorted(fence_lost_ids)),
+                invalid_story_ids=tuple(s.story_id for s in uncached_stories),
+            )
 
         # 6. Call LLM
         try:

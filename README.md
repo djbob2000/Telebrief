@@ -356,6 +356,7 @@ from src.extensions.filters import MessageFilter
 from src.config_loader import ChannelConfig
 from src.collector import Message
 
+
 class MyFilter:
     name = "my_filter"
 
@@ -399,6 +400,7 @@ To use a custom composer, implement the `PromptComposer` Protocol and set `compo
 ```python
 from src.config_loader import ChannelConfig, DigestGroupConfig
 from src.extensions.prompts import PromptComposer
+
 
 class MyComposer:
     def __init__(self, base_template: str, language: str) -> None:

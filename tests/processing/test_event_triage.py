@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -3197,3 +3197,94 @@ async def test_uncached_triage_without_assignment_mapping_loads_parent_item_id_r
     assert len(res.results) == 1
     prompt_text = mock_ai.generate_text.call_args.kwargs["prompt"]
     assert 'in_reply_to: "Свет пропал на Горе?"' in prompt_text
+
+
+@pytest.mark.asyncio
+async def test_story_triage_batch_max_input_chars_fails_recoverable():
+    from src.domain.event_clusters import StoryClusterState
+
+    now = dt.datetime.now(dt.timezone.utc)
+    story = StoryClusterState(
+        story_id=999,
+        centroid=[1.0, 0.0],
+        model="test",
+        dimensions=2,
+        fragment_count=1,
+        unique_source_count=1,
+        first_seen_at=now,
+        last_seen_at=now,
+        latest_assignment_id=1,
+        last_analyzed_assignment_id=None,
+        last_analyzed_at=None,
+        analysis_dirty=False,
+        updated_at=now,
+    )
+
+    class AsyncFakeCursor:
+        def __init__(self, rows):
+            self.rows = rows
+            self.idx = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.idx < len(self.rows):
+                val = self.rows[self.idx]
+                self.idx += 1
+                return val
+            raise StopAsyncIteration
+
+        async def fetchone(self):
+            return self.rows[0] if self.rows else None
+
+        async def close(self):
+            pass
+
+    executed_queries = []
+
+    async def fake_execute(query, params=None):
+        executed_queries.append(query)
+        q = query.strip()
+        if "FROM story_fragments" in q:
+            return AsyncFakeCursor(
+                [(999, 1001, "A very long fragment text here", 1, "Chat", "community", now, None)]
+            )
+        if "SELECT slug FROM editions" in q:
+            return AsyncFakeCursor([("berdyansk",)])
+        if "INSERT INTO story_event_triage_runs" in q:
+            return AsyncFakeCursor([(1,)])
+        return AsyncFakeCursor([])
+
+    conn = MagicMock()
+    conn.execute.side_effect = fake_execute
+
+    mock_ai = AsyncMock()
+    service = StoryTriageService(ai_cascade=mock_ai, cluster_repo=MagicMock())
+    scope_config = EditionScopeConfig(name="Бердянск", focus_places=("Бердянск",))
+    scope_hash = scope_config_hash(scope_config)
+
+    # Set max_input_chars to a very low value (e.g. 50) so user_prompt definitely exceeds it
+    res = await service.triage_stories_batch(
+        conn,
+        [story],
+        edition_id=1,
+        scope_config=scope_config,
+        scope_hash=scope_hash,
+        max_input_chars=50,
+    )
+
+    # LLM must not be called
+    mock_ai.generate_text.assert_not_called()
+    if hasattr(mock_ai, "chat_completion"):
+        mock_ai.chat_completion.assert_not_called()
+
+    # Must be marked recoverable with input_too_large
+    assert res.batch_error_kind == "input_too_large"
+    assert res.invalid_story_ids == (999,)
+    assert res.deferred_story_ids == (999,)
+    assert len(res.results) == 0
+
+    # Must have recorded failed run with input_too_large
+    triage_run_inserts = [q for q in executed_queries if "INSERT INTO story_event_triage_runs" in q]
+    assert len(triage_run_inserts) == 1

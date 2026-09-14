@@ -123,6 +123,8 @@ settings:
     event_processing_cycle_lease_seconds: 600
     event_processing_stage_lease_seconds: 600
     authority_provider_timeout_seconds: 540
+    authority_shard_count: 1
+    triage_max_input_chars: 48000
     triage_split_max_extra_calls_per_cycle: 8
 
 

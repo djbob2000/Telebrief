@@ -604,6 +604,8 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
             "event_processing_stage_lease_seconds", 600
         ),
         authority_provider_timeout_seconds=_val_pos_int("authority_provider_timeout_seconds", 540),
+        authority_shard_count=_val_range_int("authority_shard_count", 1, 1, 16),
+        triage_max_input_chars=_val_pos_int("triage_max_input_chars", 48_000),
         triage_split_max_extra_calls_per_cycle=_val_pos_int(
             "triage_split_max_extra_calls_per_cycle", 8
         ),

@@ -2196,6 +2196,8 @@ def test_event_pipeline_config_defaults(tmp_path, mock_env_vars):
     assert ep.analysis_max_input_chars == 24000
     assert ep.representative_fragment_limit == 16
     assert ep.revision_claim_lease_seconds == 1_800
+    assert ep.authority_shard_count == 1
+    assert ep.triage_max_input_chars == 48_000
     assert ep.live_batch_size == 100
     assert ep.backfill_batch_size == 500
 
@@ -2213,6 +2215,8 @@ def test_event_pipeline_config_custom(tmp_path, mock_env_vars):
         "direct_analysis_min_fragments": 2,
         "direct_analysis_min_unique_sources": 1,
         "triage_batch_size": 5,
+        "authority_shard_count": 4,
+        "triage_max_input_chars": 32000,
         "triage_excerpt_chars": 200,
         "triage_min_ignore_confidence": 0.90,
         "analysis_quiet_seconds": 60,
@@ -2238,6 +2242,8 @@ def test_event_pipeline_config_custom(tmp_path, mock_env_vars):
     assert ep.fragment_max_chars == 1500
     assert ep.embedding_batch_size == 64
     assert ep.triage_batch_size == 5
+    assert ep.authority_shard_count == 4
+    assert ep.triage_max_input_chars == 32000
     assert ep.revision_claim_lease_seconds == 900
 
 
@@ -2263,6 +2269,11 @@ def test_event_pipeline_config_rejects_invalid_mode(tmp_path, mock_env_vars, bad
         ("triage_batch_size", 0, "triage_batch_size must be between 1 and 10"),
         ("triage_batch_size", 11, "triage_batch_size must be between 1 and 10"),
         ("triage_batch_size", 50, "triage_batch_size must be between 1 and 10"),
+        ("authority_shard_count", 0, "authority_shard_count must be between 1 and 16"),
+        ("authority_shard_count", 17, "authority_shard_count must be between 1 and 16"),
+        ("authority_shard_count", -1, "authority_shard_count must be between 1 and 16"),
+        ("triage_max_input_chars", 0, "triage_max_input_chars must be a positive integer"),
+        ("triage_max_input_chars", -1, "triage_max_input_chars must be a positive integer"),
         (
             "triage_min_ignore_confidence",
             0.0,

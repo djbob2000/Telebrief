@@ -12,7 +12,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import psycopg
 from procrastinate.exceptions import AlreadyEnqueued, UniqueViolation
@@ -342,6 +342,8 @@ class PublicationOrchestrator:
         intent: PublicationRefreshRun,
         *,
         evaluation_at: dt.datetime,
+        shard_index: int | None = None,
+        shard_count: int | None = None,
     ):
         from src.publication.policies import PublicationPolicyService
 
@@ -352,12 +354,18 @@ class PublicationOrchestrator:
             config=self.config,
             lookback_hours_override=intent.lookback_hours,
         )
+        kwargs: dict[str, Any] = {
+            "edition_id": intent.edition_id,
+            "source_cutoff_at": intent.normal_source_cutoff_at,
+            "snapshot_at": evaluation_at,
+            "eligibility_policy_id": policy_set.eligibility_policy_id,
+        }
+        if shard_count is not None:
+            kwargs["shard_index"] = shard_index
+            kwargs["shard_count"] = shard_count
         return await PublicationRepository().find_authority_gap_targets(
             conn,
-            edition_id=intent.edition_id,
-            source_cutoff_at=intent.normal_source_cutoff_at,
-            snapshot_at=evaluation_at,
-            eligibility_policy_id=policy_set.eligibility_policy_id,
+            **kwargs,
         )
 
     async def _get_authority_barrier_state(
@@ -425,7 +433,7 @@ class PublicationOrchestrator:
                 await process_publication_authority_gap.configure(
                     connection=conn,
                     priority=PUBLICATION_AUTHORITY_PRIORITY,
-                    queueing_lock=f"publication-authority:{intent_id}",
+                    queueing_lock=f"publication-authority-dispatch:{intent_id}",
                 ).defer_async(intent_id=intent_id)
         except AlreadyEnqueued:
             logger.debug(

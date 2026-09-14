@@ -624,3 +624,178 @@ async def test_event_authority_gap_regressions(repo_conn):
     assert [(t.story_id, t.assignment_id) for t in gaps if t.story_id == s_reassign] == [
         (s_reassign, a_new)
     ]
+
+
+@pytest.mark.postgres
+async def test_list_background_targets_shards_are_disjoint_and_complete(repo_conn):
+    conn = repo_conn
+    cursor = await conn.execute(
+        "INSERT INTO editions (slug, name) VALUES ('bg-shard-test', 'Background Shard Test') RETURNING id"
+    )
+    edition_id = int((await cursor.fetchone())[0])
+
+    cursor = await conn.execute(
+        """
+        INSERT INTO sources (platform, kind, external_id, name)
+        VALUES ('telegram', 'channel', 'bg-shard-src', 'BG Shard Source')
+        RETURNING id
+        """
+    )
+    source_id = int((await cursor.fetchone())[0])
+
+    now = dt.datetime(2026, 9, 14, 12, 0, tzinfo=UTC)
+    repo = EventAuthorityRepository()
+
+    created_stories: list[tuple[int, int]] = []
+    for i in range(12):
+        cursor = await conn.execute(
+            """
+            INSERT INTO stories (edition_id, knowledge_source, lifecycle_state, created_at)
+            VALUES (%s, 'event_first', 'active', %s) RETURNING id
+            """,
+            (edition_id, now - dt.timedelta(minutes=i)),
+        )
+        s_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO source_items (source_id, kind, external_id, first_collected_at)
+            VALUES (%s, 'message', %s, %s) RETURNING id
+            """,
+            (source_id, f"bg-msg-{i}", now - dt.timedelta(minutes=i)),
+        )
+        item_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO source_item_revisions (source_item_id, revision_no, collected_at, content_hash, text_content)
+            VALUES (%s, 1, %s, %s, %s) RETURNING id
+            """,
+            (item_id, now - dt.timedelta(minutes=i), f"bg-hash-{i}", f"text-{i}"),
+        )
+        rev_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate)
+            VALUES (%s, 0, %s, %s, 'v1', TRUE) RETURNING id
+            """,
+            (rev_id, f"text-{i}", f"bg-frag-{i}"),
+        )
+        frag_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO fragment_embedding_vectors (normalized_hash, embedding, model, dimensions)
+            VALUES (%s, '[1, 0]'::vector, 'test', 2) RETURNING id
+            """,
+            (f"bg-frag-{i}",),
+        )
+        vec_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            "INSERT INTO source_fragment_embeddings (fragment_id, vector_id) VALUES (%s, %s) RETURNING id",
+            (frag_id, vec_id),
+        )
+        fe_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO story_fragments (story_id, fragment_id, fragment_embedding_id, assignment_kind, assigned_at)
+            VALUES (%s, %s, %s, 'new_story', %s) RETURNING id
+            """,
+            (s_id, frag_id, fe_id, now - dt.timedelta(minutes=i)),
+        )
+        a_id = int((await cursor.fetchone())[0])
+
+        cursor = await conn.execute(
+            """
+            INSERT INTO story_cluster_state (
+                story_id, centroid, model, dimensions, fragment_count,
+                unique_source_count, first_seen_at, last_seen_at,
+                latest_assignment_id, analysis_dirty
+            ) VALUES (%s, '[1, 0]'::vector, 'test', 2, 1, 1, %s, %s, %s, TRUE)
+            """,
+            (s_id, now - dt.timedelta(minutes=i), now - dt.timedelta(minutes=i), a_id),
+        )
+        created_stories.append((s_id, a_id))
+
+    # Add one story with exhausted retry (should be filtered out)
+    exhausted_s, exhausted_a = created_stories[-1]
+    await conn.execute(
+        """
+        INSERT INTO story_event_processing_retries (story_id, latest_assignment_id, stage, attempt_count, exhausted_at)
+        VALUES (%s, %s, 'triage', 3, %s)
+        """,
+        (exhausted_s, exhausted_a, now),
+    )
+
+    # Add one story outside active window (should be filtered out)
+    cursor = await conn.execute(
+        """
+        INSERT INTO stories (edition_id, knowledge_source, lifecycle_state, created_at)
+        VALUES (%s, 'event_first', 'active', %s) RETURNING id
+        """,
+        (edition_id, now - dt.timedelta(hours=100)),
+    )
+    old_s = int((await cursor.fetchone())[0])
+    cursor = await conn.execute(
+        """
+        INSERT INTO story_cluster_state (
+            story_id, centroid, model, dimensions, fragment_count,
+            unique_source_count, first_seen_at, last_seen_at,
+            latest_assignment_id, analysis_dirty
+        ) VALUES (%s, '[1, 0]'::vector, 'test', 2, 1, 1, %s, %s, %s, TRUE)
+        """,
+        (
+            old_s,
+            now - dt.timedelta(hours=100),
+            now - dt.timedelta(hours=100),
+            created_stories[0][1],
+        ),
+    )
+
+    unsharded = await repo.list_background_targets(
+        conn,
+        edition_id=edition_id,
+        triage_version="v-triage",
+        scope_version="v-scope",
+        scope_config_hash="hash",
+        now=now,
+        limit=100,
+        active_window_hours=72,
+        shard_index=0,
+        shard_count=1,
+    )
+    unsharded_ids = {(t.story_id, t.assignment_id) for t in unsharded}
+    assert (exhausted_s, exhausted_a) not in unsharded_ids
+    assert old_s not in {t.story_id for t in unsharded}
+    assert len(unsharded) == 11
+
+    shard_results = []
+    shard_count = 4
+    for idx in range(shard_count):
+        sharded = await repo.list_background_targets(
+            conn,
+            edition_id=edition_id,
+            triage_version="v-triage",
+            scope_version="v-scope",
+            scope_config_hash="hash",
+            now=now,
+            limit=100,
+            active_window_hours=72,
+            shard_index=idx,
+            shard_count=shard_count,
+        )
+        shard_results.append(sharded)
+
+    # Verify disjointness
+    for i in range(shard_count):
+        s_i = {(t.story_id, t.assignment_id) for t in shard_results[i]}
+        for j in range(i + 1, shard_count):
+            s_j = {(t.story_id, t.assignment_id) for t in shard_results[j]}
+            assert s_i.isdisjoint(s_j), f"Shard {i} and {j} overlap!"
+
+    # Verify union equals unsharded
+    union_ids = set().union(*[{(t.story_id, t.assignment_id) for t in r} for r in shard_results])
+    assert union_ids == unsharded_ids

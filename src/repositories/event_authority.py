@@ -25,13 +25,24 @@ class EventAuthorityRepository:
         now: dt.datetime,
         limit: int,
         active_window_hours: int | None = None,
+        shard_index: int = 0,
+        shard_count: int = 1,
     ) -> list[AuthorityTarget]:
+        if shard_count <= 0:
+            raise ValueError("shard_count must be a positive integer")
+        if not 0 <= shard_index < shard_count:
+            raise ValueError(f"shard_index must be between 0 and {shard_count - 1}")
+
         cutoff_clause = ""
         params: list[object] = [edition_id]
         if active_window_hours is not None:
             active_cutoff = now - dt.timedelta(hours=active_window_hours)
             cutoff_clause = "AND sc.last_seen_at >= %s"
             params.append(active_cutoff)
+        shard_clause = ""
+        if shard_count > 1:
+            shard_clause = "AND MOD(sc.story_id, %s) = %s"
+            params.extend([shard_count, shard_index])
         params.extend(
             [
                 now,
@@ -56,6 +67,7 @@ class EventAuthorityRepository:
               AND s.knowledge_source = 'event_first'
               AND sc.analysis_dirty = TRUE
               {cutoff_clause}
+              {shard_clause}
               AND retry.exhausted_at IS NULL
               AND (retry.next_retry_at IS NULL OR retry.next_retry_at <= %s)
               AND NOT EXISTS (

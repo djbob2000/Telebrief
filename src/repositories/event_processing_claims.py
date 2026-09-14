@@ -15,6 +15,7 @@ class EventProcessingCycleClaim:
     """The fencing token and durable counters for one edition cycle."""
 
     edition_id: int
+    scope_key: str
     claim_token: str
     owner_id: str
     lease_expires_at: dt.datetime
@@ -53,11 +54,12 @@ class EventProcessingClaimRepository:
     def _cycle_from_row(row: Sequence[object]) -> EventProcessingCycleClaim:
         return EventProcessingCycleClaim(
             edition_id=cast(int, row[0]),
-            claim_token=str(row[1]),
-            owner_id=str(row[2]),
-            lease_expires_at=cast(dt.datetime, row[3]),
-            rich_calls_started=cast(int, row[4]),
-            triage_split_calls_started=cast(int, row[5]),
+            scope_key=str(row[1]),
+            claim_token=str(row[2]),
+            owner_id=str(row[3]),
+            lease_expires_at=cast(dt.datetime, row[4]),
+            rich_calls_started=cast(int, row[5]),
+            triage_split_calls_started=cast(int, row[6]),
         )
 
     @staticmethod
@@ -78,6 +80,7 @@ class EventProcessingClaimRepository:
         edition_id: int,
         owner_id: str,
         ttl_seconds: int,
+        scope_key: str = "default",
     ) -> EventProcessingCycleClaim | None:
         """Acquire an edition cycle, replacing only an expired claim."""
         self._validate_ttl(ttl_seconds)
@@ -85,11 +88,11 @@ class EventProcessingClaimRepository:
         cursor = await conn.execute(
             """
             INSERT INTO event_processing_cycle_leases (
-                edition_id, claim_token, owner_id, lease_expires_at,
+                edition_id, scope_key, claim_token, owner_id, lease_expires_at,
                 rich_calls_started, triage_split_calls_started
             )
-            VALUES (%s, %s, %s, now() + make_interval(secs => %s), 0, 0)
-            ON CONFLICT (edition_id) DO UPDATE SET
+            VALUES (%s, %s, %s, %s, now() + make_interval(secs => %s), 0, 0)
+            ON CONFLICT (edition_id, scope_key) DO UPDATE SET
                 claim_token = EXCLUDED.claim_token,
                 owner_id = EXCLUDED.owner_id,
                 lease_expires_at = EXCLUDED.lease_expires_at,
@@ -97,10 +100,10 @@ class EventProcessingClaimRepository:
                 triage_split_calls_started = 0,
                 updated_at = now()
             WHERE event_processing_cycle_leases.lease_expires_at <= now()
-            RETURNING edition_id, claim_token, owner_id, lease_expires_at,
+            RETURNING edition_id, scope_key, claim_token, owner_id, lease_expires_at,
                       rich_calls_started, triage_split_calls_started
             """,
-            (edition_id, token, owner_id, ttl_seconds),
+            (edition_id, scope_key, token, owner_id, ttl_seconds),
         )
         row = await cursor.fetchone()
         return None if row is None else self._cycle_from_row(row)
@@ -120,12 +123,13 @@ class EventProcessingClaimRepository:
             SET lease_expires_at = now() + make_interval(secs => %s),
                 updated_at = now()
             WHERE edition_id = %s
+              AND scope_key = %s
               AND claim_token = %s
               AND lease_expires_at > now()
-            RETURNING edition_id, claim_token, owner_id, lease_expires_at,
+            RETURNING edition_id, scope_key, claim_token, owner_id, lease_expires_at,
                       rich_calls_started, triage_split_calls_started
             """,
-            (ttl_seconds, claim.edition_id, claim.claim_token),
+            (ttl_seconds, claim.edition_id, claim.scope_key, claim.claim_token),
         )
         row = await cursor.fetchone()
         return None if row is None else self._cycle_from_row(row)
@@ -138,12 +142,12 @@ class EventProcessingClaimRepository:
         """Read durable cycle counters while fencing by the claim token."""
         cursor = await conn.execute(
             """
-            SELECT edition_id, claim_token, owner_id, lease_expires_at,
+            SELECT edition_id, scope_key, claim_token, owner_id, lease_expires_at,
                    rich_calls_started, triage_split_calls_started
             FROM event_processing_cycle_leases
-            WHERE edition_id = %s AND claim_token = %s
+            WHERE edition_id = %s AND scope_key = %s AND claim_token = %s
             """,
-            (claim.edition_id, claim.claim_token),
+            (claim.edition_id, claim.scope_key, claim.claim_token),
         )
         row = await cursor.fetchone()
         return None if row is None else self._cycle_from_row(row)
@@ -169,12 +173,13 @@ class EventProcessingClaimRepository:
                 lease_expires_at = now() + make_interval(secs => %s),
                 updated_at = now()
             WHERE edition_id = %s
+              AND scope_key = %s
               AND claim_token = %s
               AND lease_expires_at > now()
               AND {counter} < %s
             RETURNING {counter}
             """,  # noqa: S608 -- counter is selected from a fixed allowlist
-            (ttl_seconds, claim.edition_id, claim.claim_token, max_calls),
+            (ttl_seconds, claim.edition_id, claim.scope_key, claim.claim_token, max_calls),
         )
         return await cursor.fetchone() is not None
 
@@ -221,9 +226,9 @@ class EventProcessingClaimRepository:
         cursor = await conn.execute(
             """
             DELETE FROM event_processing_cycle_leases
-            WHERE edition_id = %s AND claim_token = %s
+            WHERE edition_id = %s AND scope_key = %s AND claim_token = %s
             """,
-            (claim.edition_id, claim.claim_token),
+            (claim.edition_id, claim.scope_key, claim.claim_token),
         )
         return cursor.rowcount == 1
 

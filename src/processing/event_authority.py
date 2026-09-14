@@ -19,6 +19,11 @@ from src.ai_providers import create_provider
 from src.config_loader import load_config
 from src.domain.event_authority import AuthorityTarget
 from src.domain.event_clusters import StoryClusterState
+from src.processing.authority_batching import (
+    AuthorityBatchItem,
+    estimate_story_input_chars,
+    select_bounded_authority_items,
+)
 from src.processing.edition_scope import resolve_edition_scope
 from src.processing.event_brief import EventBriefService
 from src.processing.event_triage import StoryGateBatchResult, StoryTriageService
@@ -51,6 +56,7 @@ class AuthorityBatchStats:
     requested: int = 0
     already_satisfied: int = 0
     claimed: int = 0
+    provider_batch_size: int = 0
     busy: int = 0
     triaged: int = 0
     retry_wait: int = 0
@@ -127,6 +133,7 @@ class EventAuthorityService:
         targets: Sequence[AuthorityTarget],
         *,
         mode: Literal["background", "publication"],
+        coordination_scope: str = "default",
     ) -> AuthorityBatchResult:
         publication_mode = mode == "publication"
         cfg = self.config.settings.event_pipeline
@@ -168,6 +175,7 @@ class EventAuthorityService:
                 edition_id=edition_id,
                 owner_id=owner_id,
                 ttl_seconds=cfg.authority_coordination_lease_seconds,
+                scope_key=coordination_scope,
             )
             if cycle is None:
                 stats.busy += len(processable)
@@ -219,6 +227,39 @@ class EventAuthorityService:
                     for item in already_satisfied:
                         await self.claim_repo.release_stage(conn, item.claim)
             claimed = [item for item in claimed if item not in already_satisfied]
+            if not claimed:
+                return AuthorityBatchResult(stats)
+
+            authority_items = [
+                AuthorityBatchItem(
+                    story_id=item.target.story_id,
+                    estimated_input_chars=estimate_story_input_chars(
+                        getattr(item.state, "fragment_count", 1),
+                        excerpt_chars=cfg.triage_excerpt_chars,
+                    ),
+                )
+                for item in claimed
+            ]
+            max_input_chars = getattr(cfg, "triage_max_input_chars", 48_000)
+            _admitted_items, overflow_items = select_bounded_authority_items(
+                authority_items,
+                max_items=cfg.triage_batch_size,
+                max_input_chars=max_input_chars,
+            )
+            if overflow_items:
+                overflow_story_ids = {i.story_id for i in overflow_items}
+                overflow_claimed = [
+                    item for item in claimed if item.target.story_id in overflow_story_ids
+                ]
+                if overflow_claimed:
+                    async with self.runtime.uow.transaction() as conn:
+                        for item in overflow_claimed:
+                            await self.claim_repo.release_stage(conn, item.claim)
+                claimed = [
+                    item for item in claimed if item.target.story_id not in overflow_story_ids
+                ]
+
+            stats.provider_batch_size = len(claimed)
             if not claimed:
                 return AuthorityBatchResult(stats)
 
@@ -294,6 +335,7 @@ class EventAuthorityService:
                             ),
                             decision_fence=decision_fence,
                             before_decision_persist=before_decision_persist,
+                            max_input_chars=max_input_chars,
                         ),
                         timeout=max(0.0, remaining_provider_time()),
                     )
@@ -344,6 +386,7 @@ class EventAuthorityService:
                                     cfg.triage_max_output_tokens,
                                     SINGLETON_RECOVERY_MAX_OUTPUT_TOKENS,
                                 ),
+                                max_input_chars=max_input_chars,
                             ),
                             timeout=max(0.0, remaining),
                         )

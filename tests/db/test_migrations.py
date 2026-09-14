@@ -50,6 +50,50 @@ async def test_publication_refresh_has_frozen_knowledge_snapshot(pg_conn):
 
 
 @pytest.mark.postgres
+async def test_event_processing_cycle_leases_has_scope_key(pg_conn):
+    await migrate(pg_conn, MIGRATIONS_DIR)
+    cursor = await pg_conn.execute(
+        """
+        SELECT data_type, column_default, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'event_processing_cycle_leases'
+          AND column_name = 'scope_key'
+        """
+    )
+    assert await cursor.fetchone() == ("text", "'default'::text", "NO")
+
+
+@pytest.mark.postgres
+async def test_event_authority_indexes_exist(pg_conn):
+    version = await migrate(pg_conn, MIGRATIONS_DIR)
+    assert version >= 36
+    cursor = await pg_conn.execute(
+        """
+        SELECT indexname
+        FROM pg_indexes
+        WHERE schemaname = 'public'
+          AND indexname IN (
+              'idx_story_cluster_state_dirty_last_seen',
+              'idx_story_fragments_story_assigned',
+              'idx_stories_event_first_edition',
+              'idx_story_edition_scope_authority_lookup',
+              'idx_story_event_triage_authority_lookup'
+          )
+        """
+    )
+    rows = await cursor.fetchall()
+    found_indexes = {row[0] for row in rows}
+    assert found_indexes == {
+        "idx_story_cluster_state_dirty_last_seen",
+        "idx_story_fragments_story_assigned",
+        "idx_stories_event_first_edition",
+        "idx_story_edition_scope_authority_lookup",
+        "idx_story_event_triage_authority_lookup",
+    }
+
+
+@pytest.mark.postgres
 async def test_require_schema_compatible_returns_current_version(pg_conn):
     from src.bootstrap import SCHEMA_VERSION_MAXIMUM
 
@@ -298,7 +342,7 @@ async def test_publication_lookback_repair_only_updates_legacy_open_rows(
         "UPDATE telebrief_schema_migrations SET applied_at = %s WHERE version = 31",
         (boundary,),
     )
-    assert await migrate(isolated_pg_conn, MIGRATIONS_DIR) == 34
+    assert await migrate(isolated_pg_conn, MIGRATIONS_DIR) >= 34
 
     cursor = await isolated_pg_conn.execute(
         "SELECT id, lookback_hours FROM publication_refresh_runs WHERE id = ANY(%s)",

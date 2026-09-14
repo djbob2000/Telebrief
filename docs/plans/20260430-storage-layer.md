@@ -74,14 +74,12 @@ collect → **save to DB** → summarize → format → send
 - [ ] Add `StorageConfig` dataclass after `DigestGroupConfig`:
 
   ```python
-
   @dataclass
   class StorageConfig:
       enabled: bool = False
-      backend: str = "sqlite"       # "sqlite" | "postgres"
+      backend: str = "sqlite"  # "sqlite" | "postgres"
       path: str = "data/messages.db"
-      url: str = ""                 # postgres only
-
+      url: str = ""  # postgres only
   ```
 
 - [ ] Add `_parse_storage_config(yaml_config: dict) -> StorageConfig` helper that:
@@ -187,7 +185,6 @@ Wire at the `_collect_messages()` level — this is the single collection chokep
 - [ ] After `await collector.disconnect()` (inside the `finally`), add storage block:
 
   ```python
-
   storage = await create_storage(storage_config)
   if storage:
       try:
@@ -198,7 +195,6 @@ Wire at the `_collect_messages()` level — this is the single collection chokep
           logger.error(f"Storage write failed, digest continues: {e}")
       finally:
           await storage.close()
-
   ```
 
   Storage failures are logged but **do not abort digest generation**.
@@ -287,37 +283,43 @@ Wire at the `_collect_messages()` level — this is the single collection chokep
 **Message dataclass** (from `src/collector.py`):
 
 ```python
-
 @dataclass
 class Message:
     text: str
     sender: str
-    timestamp: datetime   # UTC-aware (collector uses timezone.utc)
+    timestamp: datetime  # UTC-aware (collector uses timezone.utc)
     link: str
     channel_name: str
     has_media: bool
     media_type: str
-
 ```
 
 **SQLite insert row tuple**:
 
 ```python
-
-(msg.channel_name, msg.sender, msg.text,
- msg.timestamp.isoformat(), msg.link,
- int(msg.has_media), msg.media_type)
-
+(
+    msg.channel_name,
+    msg.sender,
+    msg.text,
+    msg.timestamp.isoformat(),
+    msg.link,
+    int(msg.has_media),
+    msg.media_type,
+)
 ```
 
 **Postgres insert row tuple**:
 
 ```python
-
-(msg.channel_name, msg.sender, msg.text,
- msg.timestamp, msg.link,           # datetime passed directly → TIMESTAMPTZ
- msg.has_media, msg.media_type)
-
+(
+    msg.channel_name,
+    msg.sender,
+    msg.text,
+    msg.timestamp,
+    msg.link,  # datetime passed directly → TIMESTAMPTZ
+    msg.has_media,
+    msg.media_type,
+)
 ```
 
 **Timezone contract**: Collector imports `timezone` and uses `datetime.now(timezone.utc)` / `timezone.utc` → all `Message.timestamp` values are UTC-aware. SQLite stores as ISO 8601 string with UTC offset; Postgres stores as TIMESTAMPTZ.
@@ -325,19 +327,14 @@ class Message:
 **Config loading flow** (follows existing `load_config` pattern):
 
 ```python
-
 storage_config = _parse_storage_config(yaml_config)
 return Config(..., storage=storage_config)
-
 ```
 
 **`_collect_messages` updated signature**:
 
 ```python
-
-async def _collect_messages(
-    config: Config, logger: logging.Logger, hours: int
-) -> dict:
+async def _collect_messages(config: Config, logger: logging.Logger, hours: int) -> dict:
     # ... existing collection ...
     storage = await create_storage(config.storage)
     if storage:
@@ -350,7 +347,6 @@ async def _collect_messages(
         finally:
             await storage.close()
     return messages_by_channel
-
 ```
 
 ## Post-Completion
