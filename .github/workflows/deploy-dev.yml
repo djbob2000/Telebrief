@@ -191,7 +191,7 @@ jobs:
 
             # Pull latest images
             echo "==> Pulling images..."
-            docker compose pull telebrief-app telebrief-worker telebrief-processing-worker
+            docker compose pull telebrief-app telebrief-worker telebrief-processing-worker telebrief-authority-worker
 
             # Keep the moving dev alias fresh as well as the immutable SHA tag.
             # This makes ad-hoc `docker compose run` commands use the same
@@ -208,15 +208,18 @@ jobs:
             # leases so an old worker cannot continue side effects while a new
             # worker reclaims the same revision.
             echo "==> Stopping processing worker before ownership migration..."
-            docker compose stop telebrief-processing-worker
+            docker compose stop telebrief-processing-worker telebrief-authority-worker
 
             # Run database migrations
             echo "==> Running database migrations..."
-            docker compose run --rm --interactive=false -T telebrief-app python scripts/migrate.py </dev/null
+            migration_output="$(docker compose run --rm --interactive=false -T telebrief-app python scripts/migrate.py </dev/null)"
+            printf '%s\n' "$migration_output"
+            applied_schema="$(printf '%s\n' "$migration_output" | awk '/^schema version: / {print $3}')"
+            test -n "$applied_schema"
 
             # Start all services with force recreate for application containers
             echo "==> Starting services with force recreate..."
-            docker compose up -d --force-recreate --no-deps telebrief-app telebrief-worker telebrief-processing-worker
+            docker compose up -d --force-recreate --no-deps telebrief-app telebrief-worker telebrief-processing-worker telebrief-authority-worker
             docker compose up -d --remove-orphans
 
             # Verify that every application container uses the exact image
@@ -226,7 +229,7 @@ jobs:
             if [[ "$IMAGE_TAG" == dev-* ]]; then
               test "$expected_revision" = "${IMAGE_TAG#dev-}"
             fi
-            for service in telebrief-app telebrief-worker telebrief-processing-worker; do
+            for service in telebrief-app telebrief-worker telebrief-processing-worker telebrief-authority-worker; do
               container_id="$(docker compose ps -q "$service")"
               test -n "$container_id"
               container_status="$(docker inspect "$container_id" --format '{{.State.Status}}')"
@@ -235,7 +238,7 @@ jobs:
               test "$container_revision" = "$expected_revision"
             done
             runtime_schema="$(docker compose run --rm --interactive=false -T --no-deps telebrief-app python -c 'from src.bootstrap import SCHEMA_VERSION_MAXIMUM; print(SCHEMA_VERSION_MAXIMUM)' </dev/null)"
-            test "$runtime_schema" = "34"
+            test "$runtime_schema" = "$applied_schema"
 
             # Clean up old unused images to save disk space
             echo "==> Pruning dangling images..."

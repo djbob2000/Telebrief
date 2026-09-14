@@ -692,6 +692,13 @@ async def test_publication_shards_monotonic_gap_drain_under_frozen_snapshot(monk
     frozen_now = authority_jobs.dt.datetime(
         2026, 9, 14, 10, 0, tzinfo=authority_jobs.dt.timezone.utc
     )
+
+    class Clock(authority_jobs.dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            del tz
+            return frozen_now
+
     intent = SimpleNamespace(
         status="processing",
         deadline_at=frozen_now + authority_jobs.dt.timedelta(minutes=15),
@@ -752,6 +759,7 @@ async def test_publication_shards_monotonic_gap_drain_under_frozen_snapshot(monk
     runtime.uow.transaction.return_value.__aenter__.return_value = AsyncMock()
 
     monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(authority_jobs.dt, "datetime", Clock)
     monkeypatch.setattr(authority_jobs, "PublicationOrchestrator", lambda **kwargs: orchestrator)
     monkeypatch.setattr(
         authority_jobs.EventAuthorityService, "from_runtime", lambda r, c: authority_service

@@ -17,9 +17,15 @@ def test_dev_deploy_is_immutable_noninteractive_and_verifies_all_runtime_service
     assert text.index("docker compose stop telebrief-processing-worker") < text.index(
         "docker compose run --rm --interactive=false -T telebrief-app python scripts/migrate.py"
     )
-    assert "telebrief-app telebrief-worker telebrief-processing-worker" in text
+    assert (
+        "telebrief-app telebrief-worker telebrief-processing-worker telebrief-authority-worker"
+        in text
+    )
+    assert "docker compose stop telebrief-processing-worker telebrief-authority-worker" in text
     assert "org.opencontainers.image.revision" in text
     assert (
         "repository=\"$(printf '%s' \"$GITHUB_REPOSITORY\" | tr '[:upper:]' '[:lower:]')\"" in text
     )
     assert "SCHEMA_VERSION_MAXIMUM" in text
+    assert 'applied_schema="$(printf' in text
+    assert 'test "$runtime_schema" = "$applied_schema"' in text
