@@ -155,6 +155,14 @@ async def test_publication_authority_batch_preserves_boundaries_and_coordination
     deadline_at = authority_jobs.dt.datetime(
         2026, 9, 14, 9, 20, tzinfo=authority_jobs.dt.timezone.utc
     )
+    current_at = snapshot_at + authority_jobs.dt.timedelta(minutes=5)
+
+    class Clock(authority_jobs.dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            del tz
+            return current_at
+
     intent = SimpleNamespace(
         status="processing",
         deadline_at=deadline_at,
@@ -192,6 +200,7 @@ async def test_publication_authority_batch_preserves_boundaries_and_coordination
     runtime.uow.transaction.return_value.__aenter__.return_value = AsyncMock()
 
     monkeypatch.setattr(authority_jobs, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(authority_jobs.dt, "datetime", Clock)
     monkeypatch.setattr(authority_jobs, "PublicationOrchestrator", lambda **kwargs: orchestrator)
     monkeypatch.setattr(
         authority_jobs.EventAuthorityService,
