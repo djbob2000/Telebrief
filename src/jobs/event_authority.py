@@ -418,7 +418,7 @@ async def reconcile_publication_intent(intent_id: int) -> None:
 
 
 @procrastinate_app.periodic(
-    cron="*/5 * * * *", periodic_id="periodic-background-authority-dispatch"
+    cron="0 */5 * * *", periodic_id="periodic-background-authority-dispatch"
 )
 @procrastinate_app.task(
     queue="maintenance",
