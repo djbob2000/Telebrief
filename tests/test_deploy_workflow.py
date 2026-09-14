@@ -29,3 +29,15 @@ def test_dev_deploy_is_immutable_noninteractive_and_verifies_all_runtime_service
     assert "SCHEMA_VERSION_MAXIMUM" in text
     assert 'applied_schema="$(printf' in text
     assert 'test "$runtime_schema" = "$applied_schema"' in text
+
+
+def test_dev_deploy_copies_runtime_config_and_verifies_loaded_authority_settings():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "scp -i ~/.ssh/deploy_key" in workflow
+    assert "docker-compose.yml config.yaml" in workflow
+    assert "CONFIG_SHA256" in workflow
+    assert "sha256sum config.yaml" in workflow
+    assert "sha256sum /app/config.yaml" in workflow
+    assert "background_authority_enabled" in workflow
+    assert "authority_shard_count" in workflow

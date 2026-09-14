@@ -162,13 +162,13 @@ jobs:
           ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Copy docker-compose.yml to server
+      - name: Copy deployment files to server
         env:
           SSH_USER: ${{ secrets.SSH_USER }}
           SSH_HOST: ${{ secrets.SSH_HOST }}
           WORK_DIR: ${{ secrets.WORK_DIR }}
         run: |
-          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new docker-compose.yml "$SSH_USER@$SSH_HOST:$WORK_DIR/docker-compose.yml"
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new docker-compose.yml config.yaml "$SSH_USER@$SSH_HOST:$WORK_DIR/"
 
       - name: Execute Remote Deployment
         env:
@@ -177,11 +177,22 @@ jobs:
           WORK_DIR: ${{ secrets.WORK_DIR }}
           DEPLOY_TAG: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' && github.event.inputs.tag || format('dev-{0}', github.sha) }}
         run: |
-          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "WORK_DIR=\"$WORK_DIR\" DEPLOY_TAG=\"$DEPLOY_TAG\" GITHUB_REPOSITORY=\"$GITHUB_REPOSITORY\" GITHUB_SHA=\"$GITHUB_SHA\" bash -s" << 'EOF'
+          CONFIG_SHA256="$(sha256sum config.yaml | awk '{print $1}')"
+          EXPECTED_BACKGROUND_AUTHORITY="$(awk -F': *' '$1 ~ /^[[:space:]]*background_authority_enabled[[:space:]]*$/ {print $2; exit}' config.yaml)"
+          EXPECTED_AUTHORITY_SHARDS="$(awk -F': *' '$1 ~ /^[[:space:]]*authority_shard_count[[:space:]]*$/ {print $2; exit}' config.yaml)"
+          test -n "$CONFIG_SHA256"
+          test -n "$EXPECTED_BACKGROUND_AUTHORITY"
+          test -n "$EXPECTED_AUTHORITY_SHARDS"
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" "WORK_DIR=\"$WORK_DIR\" DEPLOY_TAG=\"$DEPLOY_TAG\" GITHUB_REPOSITORY=\"$GITHUB_REPOSITORY\" GITHUB_SHA=\"$GITHUB_SHA\" CONFIG_SHA256=\"$CONFIG_SHA256\" EXPECTED_BACKGROUND_AUTHORITY=\"$EXPECTED_BACKGROUND_AUTHORITY\" EXPECTED_AUTHORITY_SHARDS=\"$EXPECTED_AUTHORITY_SHARDS\" bash -s" << 'EOF'
             set -euo pipefail
             cd "$WORK_DIR"
             export IMAGE_TAG="$DEPLOY_TAG"
             echo "==> Deploying Telebrief with IMAGE_TAG=${IMAGE_TAG}..."
+
+            # docker-compose.yml bind-mounts this file into every container;
+            # verify the copied host file before recreating services.
+            host_config_sha256="$(sha256sum config.yaml | awk '{print $1}')"
+            test "$host_config_sha256" = "$CONFIG_SHA256"
 
             repository="$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
             image_ref="ghcr.io/${repository}:${IMAGE_TAG}"
@@ -237,6 +248,12 @@ jobs:
               test "$container_status" = "running"
               test "$container_revision" = "$expected_revision"
             done
+            container_config_sha256="$(docker compose exec -T telebrief-app sha256sum /app/config.yaml | awk '{print $1}')"
+            test "$container_config_sha256" = "$CONFIG_SHA256"
+            runtime_authority_config="$(docker compose exec -T telebrief-app python -c 'from src.config_loader import load_config; c=load_config(); print(str(c.settings.event_pipeline.background_authority_enabled).lower(), c.settings.event_pipeline.authority_shard_count)' </dev/null)"
+            expected_authority_config="${EXPECTED_BACKGROUND_AUTHORITY,,} $EXPECTED_AUTHORITY_SHARDS"
+            echo "==> Runtime authority config: ${runtime_authority_config}"
+            test "$runtime_authority_config" = "$expected_authority_config"
             runtime_schema="$(docker compose run --rm --interactive=false -T --no-deps telebrief-app python -c 'from src.bootstrap import SCHEMA_VERSION_MAXIMUM; print(SCHEMA_VERSION_MAXIMUM)' </dev/null)"
             test "$runtime_schema" = "$applied_schema"
 
