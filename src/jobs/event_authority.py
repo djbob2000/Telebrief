@@ -310,6 +310,8 @@ async def process_publication_authority_batch(intent_id: int, shard_id: int = 0)
             evaluation_at=eval_boundary,
             shard_index=shard_id,
             shard_count=shard_count,
+            only_actionable=True,
+            now=now,
         )
 
     if not targets:
@@ -342,7 +344,12 @@ async def process_publication_authority_batch(intent_id: int, shard_id: int = 0)
 
     progressed = result.stats.triaged > 0 or result.stats.already_satisfied > 0
     continuation_enqueued = False
-    if progressed and remaining_gap > 0 and observed_at < intent.deadline_at:
+    quarantined = (
+        result.stats.provider_failures > 0
+        or result.stats.retry_wait > 0
+        or result.stats.terminal > 0
+    )
+    if remaining_gap > 0 and observed_at < intent.deadline_at:
         async with runtime.uow.transaction() as conn:
             shard_remaining = await orchestrator.find_authority_gap_targets(
                 conn,
@@ -350,8 +357,10 @@ async def process_publication_authority_batch(intent_id: int, shard_id: int = 0)
                 evaluation_at=eval_boundary,
                 shard_index=shard_id,
                 shard_count=shard_count,
+                only_actionable=True,
+                now=observed_at,
             )
-        if shard_remaining:
+        if (progressed or quarantined) and shard_remaining:
             try:
                 await process_publication_authority_batch.configure(
                     priority=PUBLICATION_AUTHORITY_PRIORITY,

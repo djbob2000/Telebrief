@@ -1113,6 +1113,8 @@ class PublicationRepository:
         source_cutoff_at: dt.datetime | None = None,
         shard_index: int | None = None,
         shard_count: int | None = None,
+        only_actionable: bool = False,
+        now: dt.datetime | None = None,
     ) -> list[AuthorityTarget]:
         """Return exact assignments missing Gate/scope/KEEP brief authority."""
         if shard_count is not None and shard_count > 1:
@@ -1130,11 +1132,26 @@ class PublicationRepository:
         shard_clause = ""
         if shard_count is not None and shard_count > 1:
             shard_clause = "AND MOD(ea.story_id, %(shard_count)s) = %(shard_index)s"
+        actionable_clause = ""
+        if only_actionable:
+            actionable_clause = """
+              AND NOT EXISTS (
+                  SELECT 1 FROM story_event_processing_retries retry
+                  WHERE retry.story_id = ea.story_id
+                    AND retry.latest_assignment_id = ea.cutoff_assignment_id
+                    AND retry.stage = 'triage'
+                    AND (
+                        retry.exhausted_at IS NOT NULL
+                        OR (retry.next_retry_at IS NOT NULL AND retry.next_retry_at > %(now)s)
+                    )
+              )
+            """
         query = f"""{_event_authority_candidate_sql()}
         SELECT ea.story_id, ea.cutoff_assignment_id
         FROM event_assignments_at_cutoff ea
         WHERE 1 = 1
           {shard_clause}
+          {actionable_clause}
           AND NOT EXISTS (
             SELECT 1 FROM story_edition_scope_decisions sesd
             JOIN story_event_triage_decisions setd
@@ -1174,6 +1191,8 @@ class PublicationRepository:
             "scope_version": scope_version,
             "scope_config_hash": scope_config_hash,
         }
+        if only_actionable:
+            params["now"] = now or dt.datetime.now(dt.timezone.utc)
         if shard_count is not None and shard_count > 1:
             params["shard_count"] = shard_count
             params["shard_index"] = shard_index

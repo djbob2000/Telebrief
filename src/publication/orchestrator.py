@@ -344,6 +344,8 @@ class PublicationOrchestrator:
         evaluation_at: dt.datetime,
         shard_index: int | None = None,
         shard_count: int | None = None,
+        only_actionable: bool = False,
+        now: dt.datetime | None = None,
     ):
         from src.publication.policies import PublicationPolicyService
 
@@ -363,6 +365,10 @@ class PublicationOrchestrator:
         if shard_count is not None:
             kwargs["shard_index"] = shard_index
             kwargs["shard_count"] = shard_count
+        if only_actionable:
+            kwargs["only_actionable"] = True
+            if now is not None:
+                kwargs["now"] = now
         return await PublicationRepository().find_authority_gap_targets(
             conn,
             **kwargs,
