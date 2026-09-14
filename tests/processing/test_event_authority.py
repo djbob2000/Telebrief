@@ -269,7 +269,7 @@ def _create_test_authority_service(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_process_batch_partial_gate_recovers_missing_story_via_singleton():
+async def test_process_batch_partial_gate_recovers_missing_story_via_batch_retry():
     from src.processing.event_authority import AuthorityTarget
     from src.processing.event_triage import StoryGateBatchResult, StoryGateResult
 
@@ -314,7 +314,7 @@ async def test_process_batch_partial_gate_recovers_missing_story_via_singleton()
         batch_error_kind="partial_response",
         prompt_hash="p1",
     )
-    # Second call (singleton recovery): succeeds for sid 2
+    # Second call (batch retry): succeeds for sid 2
     recovery_res = StoryGateBatchResult(
         results=(gate2,),
         deferred_story_ids=(),
@@ -352,11 +352,11 @@ async def test_process_batch_partial_gate_recovers_missing_story_via_singleton()
 
     assert result.stats.triaged == 2
     assert service.triage_service.triage_stories_batch.await_count == 2
-    # Verify singleton call passed story 2
+    # Verify batch retry passed story 2
     second_call_args = service.triage_service.triage_stories_batch.await_args_list[1]
     assert second_call_args.args[1] == [state2]
     assert second_call_args.kwargs["assignment_id_by_story"] == {2: 20}
-    assert second_call_args.kwargs["max_output_tokens"] == 8_192
+    assert second_call_args.kwargs["max_output_tokens"] == 32_768
 
     # Verify retry_repo calls: clear for both, record_failure NEVER called
     cleared_sids = [call.kwargs["story_id"] for call in service.retry_repo.clear.await_args_list]
@@ -718,7 +718,7 @@ async def test_process_batch_shared_provider_deadline_halts_recovery_when_time_e
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_process_batch_singleton_isolated_timeout_consumes_durable_attempt_and_halts_further_singletons(
+async def test_process_batch_batch_retry_timeout_records_each_unresolved_story(
     monkeypatch,
 ):
     from src.processing.event_authority import AuthorityTarget
@@ -774,10 +774,10 @@ async def test_process_batch_singleton_isolated_timeout_consumes_durable_attempt
             current_time += 530.0
             return initial_res
         elif call_count == 2:
-            # Singleton for story 2: advances time by 15s (exceeds remaining 10s budget)
+            # Batch retry advances time by 15s (exceeds remaining 10s budget).
             current_time += 15.0
             raise asyncio.TimeoutError()
-        raise AssertionError("Story 3 should not be called")
+        raise AssertionError("No further retry should be called")
 
     service.triage_service.triage_stories_batch.side_effect = mock_triage
 
@@ -820,19 +820,15 @@ async def test_process_batch_singleton_isolated_timeout_consumes_durable_attempt
     assert result.stats.triaged == 1
     assert service.triage_service.triage_stories_batch.await_count == 2
 
-    # Story 2 (which started and timed out) gets durable failure with error_kind="timeout"
-    service.retry_repo.record_failure.assert_awaited_once()
-    record_call = service.retry_repo.record_failure.await_args
-    assert record_call.kwargs["story_id"] == 2
-    assert record_call.kwargs["latest_assignment_id"] == 20
-    assert record_call.kwargs["stage"] == "triage"
-    assert record_call.kwargs["error_kind"] == "timeout"
-    assert record_call.kwargs["exhausted"] is False
-
-    # Story 3 was never started and was not recorded as failure
-    assert 3 not in [
-        call.kwargs["story_id"] for call in service.retry_repo.record_failure.await_args_list
-    ]
+    # Both unresolved stories share the single timed-out retry result.
+    assert service.retry_repo.record_failure.await_count == 2
+    recorded = {
+        call.kwargs["story_id"]: call.kwargs
+        for call in service.retry_repo.record_failure.await_args_list
+    }
+    assert set(recorded) == {2, 3}
+    assert all(call["error_kind"] == "timeout" for call in recorded.values())
+    assert all(call["exhausted"] is False for call in recorded.values())
 
 
 @pytest.mark.unit
@@ -929,6 +925,75 @@ async def test_process_batch_invalid_response_triggers_singleton_recovery():
     cleared = {call.kwargs["story_id"] for call in service.retry_repo.clear.await_args_list}
     assert cleared == {1, 2}
     service.retry_repo.record_failure.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_process_batch_retries_all_recoverable_stories_once_in_one_batch():
+    from src.processing.event_authority import AuthorityTarget
+    from src.processing.event_triage import StoryGateBatchResult, StoryGateResult
+
+    service = _create_test_authority_service(triage_split_max_extra_calls_per_cycle=8)
+
+    states = {
+        story_id: SimpleNamespace(story_id=story_id, latest_assignment_id=story_id * 10)
+        for story_id in (1, 2, 3)
+    }
+    service.cluster_repo.get_cluster_state.side_effect = lambda conn, story_id: states[story_id]
+
+    def gate(story_id: int) -> StoryGateResult:
+        return StoryGateResult(
+            story_id=story_id,
+            scope="LOCAL",
+            scope_confidence=0.99,
+            scope_reason="ok",
+            retention="KEEP",
+            enrichment="BRIEF",
+            exclusion_reason=None,
+            confidence=0.95,
+            reason="ok",
+            brief_payload=None,
+        )
+
+    service.triage_service.triage_stories_batch.side_effect = [
+        StoryGateBatchResult(
+            results=(gate(1),),
+            deferred_story_ids=(2, 3),
+            missing_story_ids=(2, 3),
+            batch_error_kind="partial_response",
+            prompt_hash="p1",
+        ),
+        StoryGateBatchResult(
+            results=(gate(2), gate(3)),
+            deferred_story_ids=(),
+            prompt_hash="p2",
+        ),
+    ]
+
+    targets = [
+        AuthorityTarget(
+            edition_id=1,
+            story_id=story_id,
+            assignment_id=story_id * 10,
+            scope_config_hash="h1",
+            triage_version="v2",
+            scope_version="v1",
+            source_cutoff_at=None,
+        )
+        for story_id in (1, 2, 3)
+    ]
+
+    with patch(
+        "src.processing.event_authority.resolve_edition_scope",
+        AsyncMock(return_value=("berdyansk", SimpleNamespace(focus_places=("Бердянск",)))),
+    ):
+        result = await service.process_batch(targets, mode="background")
+
+    assert result.stats.triaged == 3
+    assert service.triage_service.triage_stories_batch.await_count == 2
+    retry_call = service.triage_service.triage_stories_batch.await_args_list[1]
+    assert retry_call.args[1] == [states[2], states[3]]
+    assert retry_call.kwargs["max_output_tokens"] == 32_768
 
 
 @pytest.mark.asyncio

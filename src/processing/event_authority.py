@@ -38,11 +38,6 @@ from src.repositories.event_retries import EventProcessingRetryRepository
 
 logger = logging.getLogger(__name__)
 
-# A singleton recovery only needs one compact Gate decision. Keeping its output
-# budget bounded prevents a malformed model response from consuming the whole
-# provider timeout and exhausting the assignment on a runaway generation.
-SINGLETON_RECOVERY_MAX_OUTPUT_TOKENS = 8_192
-
 
 @dataclass(frozen=True)
 class ClaimedAuthorityTarget:
@@ -354,69 +349,80 @@ class EventAuthorityService:
                     set(result.missing_story_ids) | set(result.invalid_story_ids)
                 ) - fence_lost
 
-                singleton_failures: dict[int, StoryGateBatchResult] = {}
+                retry_failures: dict[int, StoryGateBatchResult] = {}
                 recoverable_targets = [
                     item for item in claimed if item.target.story_id in recoverable
                 ]
-                extra_calls_budget = cfg.triage_split_max_extra_calls_per_cycle
-                for item in recoverable_targets:
-                    if extra_calls_budget <= 0:
-                        break
+                # A malformed/partial batch response is an application-level
+                # format failure, not a reason to fan out into one request per
+                # story. Retry all recoverable stories once in one bounded call;
+                # durable retry policy handles anything still unresolved.
+                if recoverable_targets and cfg.triage_split_max_extra_calls_per_cycle > 0:
                     remaining = remaining_provider_time()
-                    if remaining <= 0:
-                        break
-                    extra_calls_budget -= 1
-                    try:
-                        singleton_result = await asyncio.wait_for(
-                            self.triage_service.triage_stories_batch(
-                                None,
-                                [item.state],
-                                edition_id=edition_id,
-                                scope_config=scope_config,
-                                scope_hash=batch[0].scope_config_hash,
-                                excerpt_chars=cfg.triage_excerpt_chars,
-                                min_ignore_confidence=cfg.triage_min_ignore_confidence,
-                                assignment_id_by_story={
-                                    item.target.story_id: item.target.assignment_id
-                                },
-                                source_cutoff_at=item.target.source_cutoff_at,
-                                decision_fence=decision_fence,
-                                before_decision_persist=before_decision_persist,
-                                max_output_tokens=min(
-                                    cfg.triage_max_output_tokens,
-                                    SINGLETON_RECOVERY_MAX_OUTPUT_TOKENS,
+                    if remaining > 0:
+                        recoverable_ids = {item.target.story_id for item in recoverable_targets}
+                        try:
+                            retry_result = await asyncio.wait_for(
+                                self.triage_service.triage_stories_batch(
+                                    None,
+                                    [item.state for item in recoverable_targets],
+                                    edition_id=edition_id,
+                                    scope_config=scope_config,
+                                    scope_hash=batch[0].scope_config_hash,
+                                    excerpt_chars=cfg.triage_excerpt_chars,
+                                    min_ignore_confidence=cfg.triage_min_ignore_confidence,
+                                    assignment_id_by_story={
+                                        item.target.story_id: item.target.assignment_id
+                                        for item in recoverable_targets
+                                    },
+                                    source_cutoff_at=next(
+                                        (
+                                            item.target.source_cutoff_at
+                                            for item in recoverable_targets
+                                            if item.target.source_cutoff_at is not None
+                                        ),
+                                        None,
+                                    ),
+                                    decision_fence=decision_fence,
+                                    before_decision_persist=before_decision_persist,
+                                    max_output_tokens=cfg.triage_max_output_tokens,
+                                    max_input_chars=max_input_chars,
                                 ),
-                                max_input_chars=max_input_chars,
-                            ),
-                            timeout=max(0.0, remaining),
-                        )
-                    except asyncio.TimeoutError:
-                        singleton_result = StoryGateBatchResult(
-                            results=(),
-                            deferred_story_ids=(item.target.story_id,),
-                            batch_error_kind="timeout",
-                        )
+                                timeout=max(0.0, remaining),
+                            )
+                        except asyncio.TimeoutError:
+                            retry_result = StoryGateBatchResult(
+                                results=(),
+                                deferred_story_ids=tuple(sorted(recoverable_ids)),
+                                batch_error_kind="timeout",
+                            )
 
-                    if singleton_result.results:
-                        recovered_gate = singleton_result.results[0]
-                        result_by_id[recovered_gate.story_id] = recovered_gate
-                        deferred.discard(recovered_gate.story_id)
-                        recoverable.discard(recovered_gate.story_id)
-                        stats.triaged += 1
-                    elif singleton_result.fence_lost_story_ids:
-                        for fid in singleton_result.fence_lost_story_ids:
-                            fence_lost.add(fid)
-                            deferred.discard(fid)
-                            recoverable.discard(fid)
-                    else:
-                        recoverable.discard(item.target.story_id)
-                        singleton_failures[item.target.story_id] = singleton_result
+                        recovered_ids: set[int] = set()
+                        for recovered_gate in retry_result.results:
+                            if recovered_gate.story_id not in recoverable_ids:
+                                continue
+                            result_by_id[recovered_gate.story_id] = recovered_gate
+                            deferred.discard(recovered_gate.story_id)
+                            recoverable.discard(recovered_gate.story_id)
+                            recovered_ids.add(recovered_gate.story_id)
+                            stats.triaged += 1
+
+                        for fid in retry_result.fence_lost_story_ids:
+                            if fid in recoverable_ids:
+                                fence_lost.add(fid)
+                                deferred.discard(fid)
+                                recoverable.discard(fid)
+                                recovered_ids.add(fid)
+
+                        for story_id in recoverable_ids - recovered_ids:
+                            recoverable.discard(story_id)
+                            retry_failures[story_id] = retry_result
             finally:
                 heartbeat_stop.set()
                 await heartbeat_task
 
             durable_failure_ids = deferred - recoverable
-            if result.batch_error_kind is not None or singleton_failures:
+            if result.batch_error_kind is not None or retry_failures:
                 stats.provider_failures += len(durable_failure_ids)
             if durable_failure_ids:
                 async with self.runtime.uow.transaction() as conn:
@@ -426,7 +432,7 @@ class EventAuthorityService:
                         previous = retry_states.get(
                             (item.target.story_id, item.target.assignment_id)
                         )
-                        failure_res = singleton_failures.get(item.target.story_id)
+                        failure_res = retry_failures.get(item.target.story_id)
                         error_kind = (
                             (failure_res.batch_error_kind if failure_res else None)
                             or result.batch_error_kind

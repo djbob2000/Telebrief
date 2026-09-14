@@ -284,6 +284,196 @@ Respond ONLY with a valid JSON object containing a "results" array:
 """
 
 
+def build_gate_response_format(story_count: int) -> dict[str, Any]:
+    """Build the strict structured-output contract for one Gate V2 batch.
+
+    ``json_object`` only asks the provider for syntactically valid JSON. Gate
+    needs a stronger contract: one result per requested story and a stable
+    nested brief shape. Semantic provenance checks still run after parsing.
+    """
+    if story_count < 1:
+        raise ValueError("story_count must be positive")
+
+    service_state_schema: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "subject_key": {"type": "string"},
+            "subject_label": {"type": "string"},
+            "dimension": {"type": "string"},
+            "state": {
+                "type": "string",
+                "enum": [
+                    "AVAILABLE",
+                    "UNAVAILABLE",
+                    "DEGRADED",
+                    "RESTRICTED",
+                    "UNKNOWN",
+                    "SCHEDULED",
+                ],
+            },
+            "location": {"type": "string"},
+            "entity": {"type": "string"},
+            "expected_now": {"type": "boolean"},
+            "basis": {
+                "type": "string",
+                "enum": [
+                    "normal_operation",
+                    "direct_failure",
+                    "degraded_access",
+                    "explicit_restriction",
+                    "scheduled_change",
+                ],
+            },
+            "effective_from": {"type": ["string", "null"]},
+            "effective_until": {"type": ["string", "null"]},
+        },
+        "required": [
+            "subject_key",
+            "subject_label",
+            "dimension",
+            "state",
+            "location",
+            "entity",
+            "expected_now",
+            "basis",
+            "effective_from",
+            "effective_until",
+        ],
+    }
+
+    evidence_item_schema: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "text": {"type": "string"},
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "established_fact",
+                    "community_report",
+                    "service_access",
+                    "official_statement",
+                    "commercial_offer",
+                    "resident_question",
+                ],
+            },
+            "publication_use": {"type": "string", "enum": ["PUBLISH", "CONTEXT", "EXCLUDE"]},
+            "source_fragment_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 1,
+            },
+            "service_state": {
+                "type": ["object", "null"],
+                "properties": service_state_schema["properties"],
+                "required": service_state_schema["required"],
+                "additionalProperties": False,
+            },
+        },
+        "required": ["text", "kind", "publication_use", "source_fragment_ids", "service_state"],
+    }
+
+    brief_payload_schema: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "enrichment_level": {"type": "string", "enum": ["brief", "analysis"]},
+            "topic": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "urgency": {"type": "string", "enum": ["critical", "high", "normal", "low"]},
+            "publishability": {
+                "type": "string",
+                "enum": ["news", "brief", "internal_only", "noise"],
+            },
+            "headline": {"type": "string"},
+            "digest_summary": {"type": "string"},
+            "evidence_items": {
+                "type": "array",
+                "items": evidence_item_schema,
+                "minItems": 1,
+            },
+        },
+        "required": [
+            "enrichment_level",
+            "topic",
+            "tags",
+            "urgency",
+            "publishability",
+            "headline",
+            "digest_summary",
+            "evidence_items",
+        ],
+    }
+
+    result_item_schema: dict[str, Any] = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "story_id": {"type": "integer"},
+            "scope": {
+                "type": "string",
+                "enum": ["LOCAL", "DIRECT_IMPACT", "OUT_OF_SCOPE", "UNCERTAIN"],
+            },
+            "scope_basis_fragment_ids": {
+                "type": "array",
+                "items": {"type": "integer"},
+            },
+            "scope_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "scope_reason": {"type": "string"},
+            "retention": {"type": "string", "enum": ["KEEP", "DROP"]},
+            "enrichment": {"type": "string", "enum": ["NONE", "BRIEF", "ANALYZE"]},
+            "exclusion_reason": {
+                "type": ["string", "null"],
+                "enum": [
+                    "commercial_classified",
+                    "private_classified",
+                    "directory_payload",
+                    "obvious_noise",
+                    None,
+                ],
+            },
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+            "reason": {"type": "string"},
+            "brief_payload": {"anyOf": [brief_payload_schema, {"type": "null"}]},
+        },
+        "required": [
+            "story_id",
+            "scope",
+            "scope_basis_fragment_ids",
+            "scope_confidence",
+            "scope_reason",
+            "retention",
+            "enrichment",
+            "exclusion_reason",
+            "confidence",
+            "reason",
+            "brief_payload",
+        ],
+    }
+
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "event_triage",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "results": {
+                        "type": "array",
+                        "items": result_item_schema,
+                        "minItems": story_count,
+                        "maxItems": story_count,
+                    }
+                },
+                "required": ["results"],
+            },
+        },
+    }
+
+
 @dataclass(frozen=True)
 class StoryGateResult:
     story_id: int
@@ -724,7 +914,7 @@ class StoryTriageService:
                         temperature=0.0,
                         max_tokens=max_output_tokens or self.max_output_tokens,
                         reasoning_effort=self.reasoning_effort,
-                        response_format={"type": "json_object"},
+                        response_format=build_gate_response_format(len(uncached_stories)),
                     )
                 else:
                     raise TypeError(f"Unsupported AI provider type: {type(self.ai)}")
