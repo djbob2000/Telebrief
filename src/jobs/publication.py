@@ -28,12 +28,6 @@ PUBLICATION_RETRY_STRATEGY = procrastinate.RetryStrategy(
 )
 
 
-class PreparationContractChangedError(RuntimeError):
-    """Frozen readiness evidence no longer matches preparation-time checks."""
-
-    error_kind = "preparation_contract_changed"
-
-
 def _is_preview_request_key(request_key: str | None) -> bool:
     """Return whether a durable request key belongs to an in-process preview."""
     return bool(
@@ -229,8 +223,7 @@ async def _prepare_publication_from_intent_once(
             return current_refresh.publication_run_id
         if current_refresh.status != "preparing":
             raise ValueError(f"refresh run {refresh.id} is not preparing")
-        legacy_refresh = not hasattr(current_refresh, "knowledge_snapshot_at")
-        if legacy_refresh:
+        if not hasattr(current_refresh, "knowledge_snapshot_at"):
             knowledge_snapshot_at = current_refresh.normal_source_cutoff_at
         elif current_refresh.knowledge_snapshot_at is None:
             raise ValueError(
@@ -238,36 +231,6 @@ async def _prepare_publication_from_intent_once(
             )
         else:
             knowledge_snapshot_at = current_refresh.knowledge_snapshot_at
-        if legacy_refresh:
-            gap_count = len(
-                await service.repo.find_authority_gap_story_ids(
-                    conn,
-                    edition_id=current_refresh.edition_id,
-                    source_cutoff_at=current_refresh.normal_source_cutoff_at,
-                    snapshot_at=knowledge_snapshot_at,
-                    eligibility_policy_id=policy_set.eligibility_policy_id,
-                )
-            )
-        else:
-            gap_count = len(
-                await service.repo.find_authority_gap_targets(
-                    conn,
-                    edition_id=current_refresh.edition_id,
-                    source_cutoff_at=current_refresh.normal_source_cutoff_at,
-                    snapshot_at=knowledge_snapshot_at,
-                    eligibility_policy_id=policy_set.eligibility_policy_id,
-                )
-            )
-        if gap_count:
-            if legacy_refresh:
-                await readiness_repo.transition_refresh(
-                    conn, current_refresh.id, status="processing"
-                )
-                return None
-            raise PreparationContractChangedError(
-                f"refresh run {current_refresh.id} has {gap_count} authority gaps "
-                f"at frozen snapshot {knowledge_snapshot_at.isoformat()}"
-            )
         run = await service.create_run(
             edition_id=current_refresh.edition_id,
             publication_type=current_refresh.publication_type,

@@ -196,83 +196,16 @@ class PublicationReadinessService:
                 )
                 return PublicationReadinessDecision("failed", None, "readiness_deadline")
             if revision_barrier.unprocessed_count == 0:
-                authority_gap_story_ids: tuple[int, ...] = ()
-                authority_completed_at: dt.datetime | None = None
-                authority_barrier: AuthorityBarrierState | None = None
-                if self.authority_barrier_checker is not None:
-                    authority_barrier = await self.authority_barrier_checker(
-                        conn, refresh, evaluation_at, now
-                    )
-                    authority_gap_story_ids = tuple(
-                        target.story_id for target in authority_barrier.gap_targets
-                    )
-                    authority_completed_at = authority_barrier.completed_at
-                elif self.authority_gap_checker is not None:
-                    authority_gap_story_ids = tuple(
-                        int(story_id)
-                        for story_id in await self.authority_gap_checker(
-                            conn, refresh, evaluation_at
-                        )
-                    )
-                if authority_gap_story_ids:
-                    if authority_barrier is not None and authority_barrier.terminal_count > 0:
-                        await self._transition(
-                            conn,
-                            refresh.id,
-                            status="failed",
-                            error_kind="authority_terminal",
-                            now=now,
-                        )
-                        return PublicationReadinessDecision(
-                            "failed", None, "authority_terminal", authority_gap_story_ids
-                        )
-                    if (
-                        authority_barrier is not None
-                        and authority_barrier.retry_exceeds_deadline_count > 0
-                    ):
-                        await self._transition(
-                            conn,
-                            refresh.id,
-                            status="failed",
-                            error_kind="authority_retry_exceeds_deadline",
-                            now=now,
-                        )
-                        return PublicationReadinessDecision(
-                            "failed",
-                            None,
-                            "authority_retry_exceeds_deadline",
-                            authority_gap_story_ids,
-                        )
-                    if now >= refresh.deadline_at:
-                        await self._transition(
-                            conn,
-                            refresh.id,
-                            status="failed",
-                            error_kind="readiness_deadline",
-                            now=now,
-                        )
-                        return PublicationReadinessDecision("failed", None, "readiness_deadline")
-                    await self._transition(
-                        conn,
-                        refresh.id,
-                        status="processing",
-                        collection_ready_at=refresh.collection_ready_at
-                        or max(
-                            source.completed_at
-                            for source in sources
-                            if source.completed_at is not None
-                        ),
-                        now=now,
-                    )
-                    return PublicationReadinessDecision(
-                        "processing",
-                        None,
-                        authority_gap_story_ids=authority_gap_story_ids,
-                    )
+                # Authority is an asynchronous enrichment stage.  A publication
+                # snapshot may contain the last durable Event-First knowledge
+                # while newly formed Stories are still awaiting Gate/analysis;
+                # unresolved Stories are excluded when candidates are sealed.
+                # Making authority a readiness barrier causes one malformed
+                # batch response to turn into a serial LLM recovery queue and
+                # blocks every publication behind unrelated backlog.
                 processing_ready_at = max(
                     [source.completed_at for source in sources if source.completed_at is not None]
                     + ([revision_barrier.completed_at] if revision_barrier.completed_at else [])
-                    + ([authority_completed_at] if authority_completed_at else [])
                 )
                 await self._transition(
                     conn,

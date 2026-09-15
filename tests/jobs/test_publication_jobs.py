@@ -329,11 +329,7 @@ async def test_prepare_publication_from_intent_does_not_drain_authority_gap(monk
     await prepare_publication_from_intent({}, intent_id=10)
 
     mock_service.drain_authority_gap.assert_not_awaited()
-    mock_service.repo.find_authority_gap_story_ids.assert_awaited_once()
-    assert (
-        mock_service.repo.find_authority_gap_story_ids.await_args.kwargs["snapshot_at"]
-        == mock_service.create_run.await_args.kwargs["snapshot_at"]
-    )
+    mock_service.repo.find_authority_gap_story_ids.assert_not_awaited()
     assert seal_called == [10]
 
 
@@ -394,12 +390,12 @@ async def test_prepare_publication_from_intent_does_not_run_event_first_coalesce
     await prepare_publication_from_intent({}, intent_id=10)
 
     mock_service.drain_authority_gap.assert_not_awaited()
-    mock_service.repo.find_authority_gap_story_ids.assert_awaited_once()
+    mock_service.repo.find_authority_gap_story_ids.assert_not_awaited()
     mock_service.create_run.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_prepare_defense_returns_to_processing_without_event_first_work(monkeypatch):
+async def test_prepare_publication_does_not_wait_for_authority_backlog(monkeypatch):
     from types import SimpleNamespace
 
     from src import runtime
@@ -427,6 +423,7 @@ async def test_prepare_defense_returns_to_processing_without_event_first_work(mo
     readiness_repo = SimpleNamespace(
         get_refresh_run=AsyncMock(return_value=refresh),
         transition_refresh=AsyncMock(),
+        mark_publication_queued=AsyncMock(),
     )
     monkeypatch.setattr(
         "src.publication.readiness_repository.PublicationReadinessRepository",
@@ -444,21 +441,14 @@ async def test_prepare_defense_returns_to_processing_without_event_first_work(mo
         "src.publication.snapshot.PublicationSnapshotService",
         lambda uow: mock_service,
     )
-    coalesce = AsyncMock(side_effect=AssertionError("preparation must not enqueue coalesce"))
     monkeypatch.setattr(
-        "src.jobs.event_authority.process_publication_authority_gap.configure",
-        lambda **kwargs: SimpleNamespace(defer_async=coalesce),
+        "src.jobs.publication.select_stories_for_publication.configure",
+        lambda connection: SimpleNamespace(defer_async=AsyncMock()),
     )
-
     await prepare_publication_from_intent({}, intent_id=10)
 
-    readiness_repo.transition_refresh.assert_awaited_once_with(
-        mock_conn,
-        10,
-        status="processing",
-    )
-    mock_service.create_run.assert_not_awaited()
-    coalesce.assert_not_awaited()
+    readiness_repo.transition_refresh.assert_not_awaited()
+    mock_service.create_run.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -487,79 +477,3 @@ async def test_prepare_publication_from_intent_rejects_unclaimed_intent(monkeypa
     )
     with pytest.raises(ValueError, match="not preparing"):
         await prepare_publication_from_intent({}, intent_id=10)
-
-
-@pytest.mark.asyncio
-async def test_prepare_publication_marks_final_failure_and_notifies(monkeypatch):
-    from types import SimpleNamespace
-
-    from src import runtime
-    from src.jobs.publication import prepare_publication_from_intent
-
-    mock_uow = MagicMock()
-    mock_conn = AsyncMock()
-    mock_uow.transaction.return_value.__aenter__.return_value = mock_conn
-    runtime._runtime = SimpleNamespace(uow=mock_uow)
-
-    refresh = SimpleNamespace(
-        id=10,
-        edition_id=1,
-        publication_type="digest_grouped",
-        slot_at=dt.datetime(2026, 9, 7, 6, 0, tzinfo=dt.timezone.utc),
-        requested_at=dt.datetime(2026, 9, 7, 5, 30, tzinfo=dt.timezone.utc),
-        normal_source_cutoff_at=dt.datetime(2026, 9, 7, 6, 0, tzinfo=dt.timezone.utc),
-        deadline_at=dt.datetime(2026, 9, 7, 6, 20, tzinfo=dt.timezone.utc),
-        request_key="manual:test",
-        trigger="manual",
-        status="preparing",
-        eligibility_policy_id=5,
-        freshness_cutoff_at=dt.datetime(2026, 9, 7, 5, 30, tzinfo=dt.timezone.utc),
-        requested_by_user_id=123,
-        lookback_hours=24,
-    )
-    readiness_repo = SimpleNamespace(
-        get_refresh_run=AsyncMock(return_value=refresh),
-        transition_refresh=AsyncMock(),
-    )
-    monkeypatch.setattr(
-        "src.publication.readiness_repository.PublicationReadinessRepository",
-        lambda: readiness_repo,
-    )
-    monkeypatch.setattr(
-        "src.repositories.editions.EditionRepository.get_by_id",
-        AsyncMock(return_value=SimpleNamespace(id=1)),
-    )
-    monkeypatch.setattr(
-        "src.publication.policies.PublicationPolicyService.ensure_current",
-        AsyncMock(return_value=SimpleNamespace(eligibility_policy_id=5)),
-    )
-    monkeypatch.setattr(
-        "src.publication.snapshot.PublicationSnapshotService",
-        lambda uow: SimpleNamespace(
-            repo=SimpleNamespace(
-                find_authority_gap_story_ids=AsyncMock(
-                    side_effect=RuntimeError("database unavailable")
-                )
-            )
-        ),
-    )
-    notify = AsyncMock()
-    notify.return_value = []
-    monkeypatch.setattr(
-        "src.publication.notifications.PublicationFailureNotificationService.enqueue_for_failed_intent",
-        notify,
-    )
-
-    context = SimpleNamespace(job=SimpleNamespace(attempts=3))
-    with pytest.raises(RuntimeError, match="database unavailable"):
-        await prepare_publication_from_intent(context, intent_id=10)
-
-    readiness_repo.transition_refresh.assert_awaited_once_with(
-        mock_conn, 10, status="failed", error_kind="preparation_failed"
-    )
-    notify.assert_awaited_once_with(
-        mock_conn,
-        intent=refresh,
-        failure_kind="preparation_failed",
-        dispatch=False,
-    )

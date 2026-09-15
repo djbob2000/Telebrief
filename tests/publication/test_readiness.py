@@ -112,60 +112,20 @@ async def test_late_revision_barrier_fails_closed_at_deadline():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_authority_gap_keeps_fully_revision_processed_intent_in_processing():
+async def test_authority_backlog_does_not_block_publication_snapshot():
+    """Publication may seal the ready knowledge snapshot while authority catches up."""
     repo = FakeReadinessRepository(_refresh(), [_source()])
 
-    async def authority_gap_checker(conn, refresh, now):
-        assert refresh.id == 10
-        assert now == NOW
-        return [9001]
+    async def authority_gap_checker(conn, refresh, evaluation_at, now):
+        raise AssertionError("authority must not be a publication readiness barrier")
 
     decision = await PublicationReadinessService(
         repo,
-        authority_gap_checker=authority_gap_checker,
+        authority_barrier_checker=authority_gap_checker,
     ).reconcile(None, 10, now=NOW)
 
-    assert decision.status == "processing"
-    assert decision.source_cutoff_at is None
-    assert decision.authority_gap_story_ids == (9001,)
-    assert repo.refresh.status == "processing"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_authority_gap_can_converge_before_deadline():
-    repo = FakeReadinessRepository(_refresh(), [_source()])
-    calls = 0
-
-    async def authority_gap_checker(conn, refresh, now):
-        nonlocal calls
-        calls += 1
-        return [9001] if calls == 1 else []
-
-    service = PublicationReadinessService(repo, authority_gap_checker=authority_gap_checker)
-    first = await service.reconcile(None, 10, now=NOW)
-    second = await service.reconcile(None, 10, now=NOW + dt.timedelta(minutes=7))
-
-    assert first.status == "processing"
-    assert second.status == "ready_for_preparation"
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_authority_gap_fails_closed_at_deadline():
-    repo = FakeReadinessRepository(_refresh(deadline_at=NOW - dt.timedelta(seconds=1)), [_source()])
-
-    async def authority_gap_checker(conn, refresh, now):
-        assert now == refresh.deadline_at
-        return [9001]
-
-    decision = await PublicationReadinessService(
-        repo,
-        authority_gap_checker=authority_gap_checker,
-    ).reconcile(None, 10, now=NOW)
-
-    assert decision.status == "failed"
-    assert decision.failure_kind == "readiness_deadline"
+    assert decision.status == "ready_for_preparation"
+    assert repo.refresh.status == "ready_for_preparation"
 
 
 @pytest.mark.asyncio
@@ -224,13 +184,6 @@ async def test_scheduled_ready_before_slot_waits():
 async def test_scheduled_ready_snapshot_is_not_moved_when_slot_opens():
     repo = FakeReadinessRepository(_refresh(), [_source()])
     service = PublicationReadinessService(repo)
-    authority_checks: list[dt.datetime] = []
-
-    async def authority_gap_checker(conn, refresh, evaluation_at):
-        authority_checks.append(evaluation_at)
-        return [] if len(authority_checks) == 1 else [9001]
-
-    service = PublicationReadinessService(repo, authority_gap_checker=authority_gap_checker)
     first = await service.reconcile(None, 10, now=NOW - dt.timedelta(minutes=1))
 
     assert first.status == "ready_waiting_slot"
@@ -241,7 +194,6 @@ async def test_scheduled_ready_snapshot_is_not_moved_when_slot_opens():
 
     assert second.status == "ready_for_preparation"
     assert repo.refresh.knowledge_snapshot_at == frozen
-    assert len(authority_checks) == 1
 
 
 @pytest.mark.asyncio
