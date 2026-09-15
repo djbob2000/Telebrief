@@ -2736,7 +2736,7 @@ async def test_story_triage_service_partial_response_classifies_and_records_fail
 
 @pytest.mark.postgres
 async def test_story_triage_service_schema_invalid_result_classified_as_invalid_response(
-    conn, edition, revision
+    conn, edition, revision, caplog
 ):
     now = dt.datetime.now(dt.timezone.utc)
     story_repo = StoryRepository()
@@ -2886,6 +2886,12 @@ async def test_story_triage_service_schema_invalid_result_classified_as_invalid_
     assert result.invalid_story_ids == (sid_2,)
     assert result.missing_story_ids == ()
     assert result.batch_error_kind == "invalid_response"
+
+    invalid_logs = [
+        record for record in caplog.records if record.message == "event_first_gate_invalid_response"
+    ]
+    assert invalid_logs
+    assert invalid_logs[-1].invalid_reasons == {str(sid_2): "invalid_scope"}
 
     # Verify story_event_triage_runs marked as failed with invalid_response
     cursor = await conn.execute(

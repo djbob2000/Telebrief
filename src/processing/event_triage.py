@@ -1010,20 +1010,26 @@ class StoryTriageService:
         )
 
         invalid_ids: list[int] = []
+        invalid_reasons: dict[int, str] = {}
         new_valid_results: list[StoryGateResult] = []
+
+        def mark_invalid(story_id: int, reason: str) -> None:
+            deferred_ids.append(story_id)
+            invalid_ids.append(story_id)
+            invalid_reasons.setdefault(story_id, reason)
 
         for s in uncached_stories:
             item = items_by_id.get(s.story_id)
             if item is None or not isinstance(item, dict):
                 deferred_ids.append(s.story_id)
                 if s.story_id in returned_story_ids:
+                    invalid_reasons[s.story_id] = "result_not_object"
                     invalid_ids.append(s.story_id)
                 continue
 
             scope_raw = str(item.get("scope", "")).strip()
             if scope_raw not in {"LOCAL", "DIRECT_IMPACT", "OUT_OF_SCOPE", "UNCERTAIN"}:
-                deferred_ids.append(s.story_id)
-                invalid_ids.append(s.story_id)
+                mark_invalid(s.story_id, "invalid_scope")
                 continue
             scope: EditionScopeClass = scope_raw  # type: ignore[assignment]
 
@@ -1033,15 +1039,13 @@ class StoryTriageService:
                 or not isinstance(scope_conf, (int, float))
                 or not (0.0 <= float(scope_conf) <= 1.0)
             ):
-                deferred_ids.append(s.story_id)
-                invalid_ids.append(s.story_id)
+                mark_invalid(s.story_id, "invalid_scope_confidence")
                 continue
             scope_confidence = float(scope_conf)
 
             scope_reason = item.get("scope_reason")
             if not isinstance(scope_reason, str) or not scope_reason.strip():
-                deferred_ids.append(s.story_id)
-                invalid_ids.append(s.story_id)
+                mark_invalid(s.story_id, "missing_scope_reason")
                 continue
 
             conf = item.get("confidence")
@@ -1050,8 +1054,7 @@ class StoryTriageService:
                 or not isinstance(conf, (int, float))
                 or not (0.0 <= float(conf) <= 1.0)
             ):
-                deferred_ids.append(s.story_id)
-                invalid_ids.append(s.story_id)
+                mark_invalid(s.story_id, "invalid_confidence")
                 continue
             confidence = float(conf)
 
@@ -1076,13 +1079,11 @@ class StoryTriageService:
                 scope_basis_ids = ()
 
             if set(scope_basis_ids) - allowed_fids:
-                deferred_ids.append(s.story_id)
-                invalid_ids.append(s.story_id)
+                mark_invalid(s.story_id, "scope_basis_fragment_not_in_story")
                 continue
 
             if scope in {"LOCAL", "DIRECT_IMPACT"} and not scope_basis_ids:
-                deferred_ids.append(s.story_id)
-                invalid_ids.append(s.story_id)
+                mark_invalid(s.story_id, "missing_scope_basis_fragments")
                 continue
 
             basis_texts = tuple(
@@ -1193,13 +1194,11 @@ class StoryTriageService:
                         )
                     else:
                         # Unsafe drop without a valid brief must defer
-                        deferred_ids.append(s.story_id)
-                        invalid_ids.append(s.story_id)
+                        mark_invalid(s.story_id, "drop_without_valid_brief")
                         continue
                 elif retention_raw == "KEEP":
                     if enrichment_raw not in ("BRIEF", "ANALYZE") or brief_payload is None:
-                        deferred_ids.append(s.story_id)
-                        invalid_ids.append(s.story_id)
+                        mark_invalid(s.story_id, "keep_without_valid_brief")
                         continue
                     retention = "KEEP"
                     enrichment = enrichment_raw  # type: ignore[assignment]
@@ -1212,8 +1211,7 @@ class StoryTriageService:
                         brief_payload, story_frag_texts
                     )
                 else:
-                    deferred_ids.append(s.story_id)
-                    invalid_ids.append(s.story_id)
+                    mark_invalid(s.story_id, "invalid_retention_or_enrichment")
                     continue
 
                 # If retention is KEEP and story is mixed (has excluded fragments),
@@ -1261,12 +1259,10 @@ class StoryTriageService:
                                 "Story %s has 0 PUBLISH items unexpectedly; deferring for re-analysis",
                                 s.story_id,
                             )
-                            deferred_ids.append(s.story_id)
-                            invalid_ids.append(s.story_id)
+                            mark_invalid(s.story_id, "keep_without_publish_evidence")
                             continue
             else:
-                deferred_ids.append(s.story_id)
-                invalid_ids.append(s.story_id)
+                mark_invalid(s.story_id, "invalid_scope_classification")
                 continue
 
             gate_res = StoryGateResult(
@@ -1311,6 +1307,10 @@ class StoryTriageService:
                             "missing_story_ids": missing_story_ids,
                             "invalid_count": len(invalid_story_ids),
                             "invalid_story_ids": invalid_story_ids,
+                            "invalid_reasons": {
+                                str(story_id): invalid_reasons.get(story_id, "validation_failed")
+                                for story_id in invalid_story_ids
+                            },
                             "prompt_hash": prompt_hash,
                             "error_kind": run_error_kind,
                         },
