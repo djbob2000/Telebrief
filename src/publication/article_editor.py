@@ -23,6 +23,7 @@ from src.publication.article_validator import (
     ArticleValidationResult,
     validate_article_draft,
 )
+from src.publication.article_writer_context import sanitize_writer_source_text
 
 logger = logging.getLogger(__name__)
 
@@ -178,6 +179,16 @@ class ArticleEditor:
         """Collect current text, cited supports, and issues for each target unit."""
         unit_data: list[dict[str, Any]] = []
 
+        def support_text(support_id: str) -> str:
+            support = context.support_by_id.get(support_id)
+            if support is None:
+                return ""
+            fact = (support.text or "").strip()
+            source = sanitize_writer_source_text((support.source_text or "").strip())
+            if source and source != fact:
+                return f"{fact}\nПервичный источник: {source}" if fact else source
+            return fact or source
+
         # Index units across draft
         # 1. Title
         if "TITLE" in issues_by_unit:
@@ -193,9 +204,7 @@ class ArticleEditor:
                     "text": draft.title,
                     "support_ids": t_sups,
                     "supports": [
-                        context.support_by_id[sid].text
-                        for sid in t_sups
-                        if sid in context.support_by_id
+                        support_text(sid) for sid in t_sups if sid in context.support_by_id
                     ],
                     "issues": issues_by_unit["TITLE"],
                 }
@@ -210,7 +219,7 @@ class ArticleEditor:
                     "text": draft.lead,
                     "support_ids": list(draft.lead_support_ids),
                     "supports": [
-                        context.support_by_id[sid].text
+                        support_text(sid)
                         for sid in draft.lead_support_ids
                         if sid in context.support_by_id
                     ],
@@ -230,7 +239,7 @@ class ArticleEditor:
                         "text": sec.heading,
                         "support_ids": list(sec.heading_support_ids),
                         "supports": [
-                            context.support_by_id[sid].text
+                            support_text(sid)
                             for sid in sec.heading_support_ids
                             if sid in context.support_by_id
                         ],
@@ -251,9 +260,7 @@ class ArticleEditor:
                             "text": p.text,
                             "support_ids": p_sups,
                             "supports": [
-                                context.support_by_id[sid].text
-                                for sid in p_sups
-                                if sid in context.support_by_id
+                                support_text(sid) for sid in p_sups if sid in context.support_by_id
                             ],
                             "issues": issues_by_unit[p_id],
                         }

@@ -374,8 +374,9 @@ class StructuredArticleDraft:
                             )
                             p_claims = _parse_claim_atoms(p.get("claims"))
                             if not p_claims and p_text and p_support_ids and allow_claim_autogen:
-                                p_claims = (
-                                    ArticleClaimAtom(text=p_text, cited_support_ids=p_support_ids),
+                                p_claims = tuple(
+                                    ArticleClaimAtom(text=sentence, cited_support_ids=p_support_ids)
+                                    for sentence in (_split_sentences_safe(p_text) or [p_text])
                                 )
 
                             if p_text:

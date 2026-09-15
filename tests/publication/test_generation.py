@@ -14,6 +14,15 @@ from src.publication.repository import (
     PublicationRepository,
 )
 
+
+def test_journalistic_digest_mode_uses_structured_single_call_pipeline():
+    from src.publication.generation import effective_digest_narrative_mode
+
+    assert effective_digest_narrative_mode("journalistic") == "single_call"
+    assert effective_digest_narrative_mode("single_call") == "single_call"
+    assert effective_digest_narrative_mode("deterministic") == "deterministic"
+
+
 _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
 
 

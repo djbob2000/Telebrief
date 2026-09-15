@@ -157,12 +157,7 @@ def _build_complete_longread_response(
         sid = f"story:{i}"
         s = sup_map[sid]
         sec1_sups.append(s.support_id)
-        sec1_paras.append(
-            {
-                "text": f"{s.text} Бригады коммунальщиков продолжают дежурство на данном участке.",
-                "cited_support_ids": [s.support_id],
-            }
-        )
+        sec1_paras.append({"text": s.text, "cited_support_ids": [s.support_id]})
 
     # Section 2: Stories 6..11
     sec2_paras = []
@@ -171,12 +166,7 @@ def _build_complete_longread_response(
         sid = f"story:{i}"
         s = sup_map[sid]
         sec2_sups.append(s.support_id)
-        sec2_paras.append(
-            {
-                "text": f"{s.text} Муниципальные службы координируют график движения и ремонтных смен.",
-                "cited_support_ids": [s.support_id],
-            }
-        )
+        sec2_paras.append({"text": s.text, "cited_support_ids": [s.support_id]})
 
     # Section 3: Stories 12..17
     sec3_paras = []
@@ -185,12 +175,7 @@ def _build_complete_longread_response(
         sid = f"story:{i}"
         s = sup_map[sid]
         sec3_sups.append(s.support_id)
-        sec3_paras.append(
-            {
-                "text": f"{s.text} Местные жители отмечают постепенное расширение доступных возможностей.",
-                "cited_support_ids": [s.support_id],
-            }
-        )
+        sec3_paras.append({"text": s.text, "cited_support_ids": [s.support_id]})
 
     return json.dumps(
         {
@@ -417,11 +402,11 @@ async def test_case_6_valid_draft_with_partial_coverage_is_not_rejected_for_cove
                 "heading_support_ids": [sup1.support_id],
                 "paragraphs": [
                     {
-                        "text": f"{sup1.text} Ремонтные бригады отчитались о завершении восстановительных работ.",
+                        "text": sup1.text,
                         "cited_support_ids": [sup1.support_id],
                     },
                     {
-                        "text": f"{sup1.text} Горожане подтверждают появление стабильного напряжения в жилых домах.",
+                        "text": sup1.text,
                         "cited_support_ids": [sup1.support_id],
                     },
                 ],
@@ -431,11 +416,11 @@ async def test_case_6_valid_draft_with_partial_coverage_is_not_rejected_for_cove
                 "heading_support_ids": [sup1.support_id],
                 "paragraphs": [
                     {
-                        "text": f"{sup1.text} Специалисты провели наладку распределительных узлов.",
+                        "text": sup1.text,
                         "cited_support_ids": [sup1.support_id],
                     },
                     {
-                        "text": f"{sup1.text} Бригады завершили наладку оборудования.",
+                        "text": sup1.text,
                         "cited_support_ids": [sup1.support_id],
                     },
                 ],
@@ -445,7 +430,7 @@ async def test_case_6_valid_draft_with_partial_coverage_is_not_rejected_for_cove
                 "heading_support_ids": [sup1.support_id],
                 "paragraphs": [
                     {
-                        "text": f"{sup1.text} Коммунальные службы завершили ключевой этап мероприятий.",
+                        "text": sup1.text,
                         "cited_support_ids": [sup1.support_id],
                     },
                 ],

@@ -46,7 +46,7 @@ async def _seed_policies(conn: psycopg.AsyncConnection, edition_id: int) -> tupl
 
 
 @pytest.mark.postgres
-async def test_journalistic_digest_writer_exception_fails_closed(conn, pool, edition) -> None:
+async def test_structured_digest_writer_exception_fails_closed(conn, pool, edition) -> None:
     uow = DatabaseUnitOfWork(pool)
     repo = PublicationRepository()
     policy_ids = await _seed_policies(conn, edition.id)
@@ -177,7 +177,7 @@ async def test_journalistic_digest_writer_exception_fails_closed(conn, pool, edi
     await repo.transition_run(conn, run.id, "selected_inputs_sealed")
 
     editorial_cfg = PublicationEditorialConfig(
-        digest_narrative_mode="journalistic",
+        digest_narrative_mode="single_call",
         digest_city_situation_max_items=5,
         digest_city_situation_max_details_per_item=2,
     )
@@ -207,14 +207,12 @@ async def test_journalistic_digest_writer_exception_fails_closed(conn, pool, edi
     )
 
     with patch(
-        "src.publication.digest_narrative.DigestNarrativeWriter.generate_journalistic_digest",
+        "src.publication.digest_narrative.DigestNarrativeWriter.generate_narrative_draft",
         new_callable=AsyncMock,
     ) as mock_generate:
         mock_generate.side_effect = RuntimeError("AI synthesis timeout")
 
-        with pytest.raises(
-            PublicationGenerationError, match="Journalistic digest generation failed"
-        ):
+        with pytest.raises(PublicationGenerationError, match="Digest narrative generation failed"):
             await service.generate(run.id, defer_delivery=True)
 
     # Verify no publication was created
@@ -231,7 +229,7 @@ async def test_journalistic_digest_writer_exception_fails_closed(conn, pool, edi
 
 
 @pytest.mark.postgres
-async def test_journalistic_digest_empty_candidate_fails_closed(conn, pool, edition) -> None:
+async def test_structured_digest_empty_candidate_fails_closed(conn, pool, edition) -> None:
     uow = DatabaseUnitOfWork(pool)
     repo = PublicationRepository()
     policy_ids = await _seed_policies(conn, edition.id)
@@ -350,7 +348,7 @@ async def test_journalistic_digest_empty_candidate_fails_closed(conn, pool, edit
     await repo.transition_run(conn, run.id, "selected_inputs_sealed")
 
     editorial_cfg = PublicationEditorialConfig(
-        digest_narrative_mode="journalistic",
+        digest_narrative_mode="single_call",
         digest_city_situation_max_items=5,
         digest_city_situation_max_details_per_item=2,
     )
@@ -380,7 +378,7 @@ async def test_journalistic_digest_empty_candidate_fails_closed(conn, pool, edit
     )
 
     with patch(
-        "src.publication.digest_narrative.DigestNarrativeWriter.generate_journalistic_digest",
+        "src.publication.digest_narrative.DigestNarrativeWriter.generate_narrative_draft",
         new_callable=AsyncMock,
     ) as mock_generate:
         # Returns empty text and None draft
@@ -388,7 +386,7 @@ async def test_journalistic_digest_empty_candidate_fails_closed(conn, pool, edit
 
         with pytest.raises(
             PublicationGenerationError,
-            match="Journalistic digest generation failed: AI writer was unable to produce a valid draft",
+            match="Digest narrative generation failed",
         ):
             await service.generate(run.id, defer_delivery=True)
 

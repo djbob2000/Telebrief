@@ -17,17 +17,82 @@ from src.publication.article_context import (
     ArticleSupport,
 )
 from src.publication.article_coverage import ArticleCoveragePlan, ArticleStoryCoverage
+from src.publication.article_editor import ArticleEditor
 from src.publication.article_finalization import ArticleFinalizer
 from src.publication.article_models import (
+    ArticleClaimAtom,
     ArticleParagraph,
     ArticleSection,
     StructuredArticleDraft,
 )
 from src.publication.article_semantic_support import assess_semantic_support
+from src.publication.article_validator import ArticleValidationIssue
 from src.publication.errors import ArticlePublicationRejected
 from tests.publication.test_article_recovery import RecordingAttemptObserver
 
 _NOW = dt.datetime(2026, 9, 3, 19, 30, tzinfo=dt.timezone.utc)
+
+
+@pytest.mark.unit
+def test_article_editor_receives_sanitized_primary_source_for_repair() -> None:
+    """Targeted repair must see primary evidence, without leaking contact payload."""
+    support_id = "story:1:evidence:0:frag:1"
+    support = ArticleSupport(
+        support_id=support_id,
+        text="Работает пункт помощи.",
+        source_text="Пункт помощи работает на улице Победы, 43. Телефон +79991234567.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Пункт помощи",),
+        support_index=(support,),
+        support_by_id={support_id: support},
+        recurring_topics=(),
+    )
+    draft = StructuredArticleDraft(
+        title="Пункт помощи",
+        title_support_ids=(support_id,),
+        lead="Пункт помощи работает.",
+        lead_support_ids=(support_id,),
+        sections=(
+            ArticleSection(
+                heading="Помощь жителям",
+                heading_support_ids=(support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Пункт помощи работает.",
+                        cited_support_ids=(support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Пункт помощи работает.",
+                                cited_support_ids=(support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    issue = ArticleValidationIssue(
+        code="UNSUPPORTED_CLAIM_ATOM",
+        unit_id="P001",
+        message="test issue",
+    )
+    editor = ArticleEditor(provider=object(), model="test")  # type: ignore[arg-type]
+
+    units = editor._build_unit_contexts(draft, {"P001": [issue]}, context)
+
+    assert units[0]["supports"] == [
+        "Работает пункт помощи.\n"
+        "Первичный источник: Пункт помощи работает на улице Победы, 43. "
+        "Телефон [contact omitted]."
+    ]
 
 
 @pytest.mark.unit

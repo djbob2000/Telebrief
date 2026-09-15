@@ -1201,8 +1201,26 @@ class ArticleGenerator:
         plan_sections_lines = []
         if coverage_plan and getattr(coverage_plan, "sections", None):
             for sec in coverage_plan.sections:
+                # Keep the complete plan for deterministic coverage diagnostics, but do not
+                # turn the writer prompt into a 100-item checklist.  Develop stories and a
+                # small number of weave stories remain explicit; the rest stay available in
+                # the evidence context and are summarized as a compact group.
                 story_items = []
-                for assign in sec.story_assignments:
+                explicit_assignments = [
+                    assign for assign in sec.story_assignments if assign.depth == "DEVELOP"
+                ]
+                explicit_assignments.extend(
+                    assign for assign in sec.story_assignments if assign.depth == "WEAVE"
+                )
+                explicit_assignments = explicit_assignments[:12]
+                explicit_ids = {assign.story_id for assign in explicit_assignments}
+                grouped_assignments = [
+                    assign
+                    for assign in sec.story_assignments
+                    if assign.story_id not in explicit_ids
+                ]
+
+                for assign in explicit_assignments:
                     s = coverage_plan.by_story_id.get(assign.story_id)
                     topic = s.topic if s else assign.story_id
                     sup_snippet = ""
@@ -1211,7 +1229,22 @@ class ArticleGenerator:
                         if sup_obj and sup_obj.text:
                             sup_snippet = f" — {sup_obj.text[:100]}"
                     story_items.append(
-                        f"     • [{assign.depth}] [{assign.story_id}] {topic}{sup_snippet}"
+                        f"     • [{assign.depth}] [{assign.story_id}] {topic[:180]}{sup_snippet}"
+                    )
+                if grouped_assignments:
+                    grouped_topics = []
+                    for assign in grouped_assignments:
+                        s = coverage_plan.by_story_id.get(assign.story_id)
+                        if s and s.topic:
+                            grouped_topics.append(s.topic[:100])
+                    grouped_label = ", ".join(grouped_topics[:12])
+                    if len(grouped_topics) > 12:
+                        grouped_label += f" и ещё {len(grouped_topics) - 12}"
+                    story_items.append(
+                        "     • [BRIEF/WEAVE GROUP] "
+                        f"{len(grouped_assignments)} небольших сюжетов: {grouped_label}. "
+                        "Выбирайте конкретные факты из материалов выше и органично вплетайте их, "
+                        "не превращая текст в перечень."
                     )
                 plan_sections_lines.append(
                     f"   Глава «{sec.title}» ({sec.narrative_intent}):\n" + "\n".join(story_items)
@@ -1281,15 +1314,17 @@ class ArticleGenerator:
             "   - WEAVE: важные городские темы, органично вплетаются в повествование главы (1-2 абзаца).\n"
             "   - BRIEF: краткие городские факты, упоминаются конкретными деталями внутри подходящих глав. Синтезируйте однородные факты вместе в плавные предложения (НЕ создавайте изолированные однострочные абзацы-выжимки!).\n"
             "2. ФОРМАТ MARKDOWN: первая строка — заголовок, затем лид, затем главы с заголовками `##`. Каждый абзац отделяйте пустой строкой. Не добавляйте технических идентификаторов.\n"
-            "3. ЛИТЕРАТУРНАЯ СВЯЗНОСТЬ И ЗАПРЕТ НА ОДНОСТРОЧНЫЕ ОБРЫВКИ: Для каждой главы из плана создайте отдельный section с выразительным сюжетным подзаголовком (`heading`).\n"
-            "   - Для крупных тем пишите 2–3 развёрнутых абзаца, для компактных тем — 1–2 полноценных абзаца.\n"
+            "3. ЛИТЕРАТУРНАЯ СВЯЗНОСТЬ И ЗАПРЕТ НА ОДНОСТРОЧНЫЕ ОБРЫВКИ: Для каждой содержательной главы из плана создайте отдельный section с выразительным сюжетным подзаголовком (`heading`).\n"
+            "   - Для крупных тем пишите 2–3 развёрнутых абзаца, для компактных тем — один полноценный абзац; не создавайте пустые главы ради формального покрытия.\n"
             "   - КАЖДЫЙ абзац ОБЯЗАТЕЛЬНО должен состоять минимум из 2–4 связных предложений! КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ абзацы из одного предложения или телеграфные выжимки.\n"
             "   - Используйте естественные журналистские связки и мостики между предложениями («В то же время...», «Впрочем, по сообщениям жителей...», «При этом...», «Параллельно с этим...»).\n"
             "   - В теме связи и интернета объединяйте графики предупреждений и личный опыт абонентов (например, сколько времени абонент ждал в очереди на звонке оператору, разморозку счёта и через сколько заработала сеть).\n"
             "   - В торговой теме объединяйте поддержанные сообщения о работе магазинов, ценах и распродажах в единый связный рассказ. Не делайте выводов о закрытии или причинах событий, если они прямо не подтверждены материалами.\n"
             "4. ЯЗЫК И ГРАМОТНОСТЬ: Пишите на грамотном русском литературном языке стандартной кириллицей. Не допускайте орфографических ошибок, опечаток, случайных пробелов внутри слов или разорванных окончаний слов. Соблюдайте правила орфографии и пунктуации.\n"
             "5. ПРИЧИННО-СЛЕДСТВЕННЫЕ СВЯЗИ: Строго соблюдайте Evidence Boundary — опирайтесь только на факты из материалов выше, не выдумывайте подробностей. Не домысливайте причин («из-за аварии», «вследствие пожара» допустимы только если причина прямо указана в источнике). Если причинно-следственная связь прямо не подтверждена, описывайте события рядом без слова «из-за».\n"
-            "6. ОБЪЁМ: Напишите обстоятельный, богатый конкретными деталями вечерний лонг-рид объёмом 700–1200 слов.\n"
+            f"6. ОБЪЁМ: Напишите обстоятельный, богатый конкретными деталями вечерний лонг-рид примерно на {length_profile.target_min_words}–{length_profile.target_max_words} слов "
+            f"(допустимый проверочный диапазон: {length_profile.hard_min_words}–{length_profile.hard_max_words}). "
+            "Не пытайтесь дать каждому BRIEF-сюжету отдельный абзац: объединяйте близкие факты и сохраняйте конкретные детали.\n"
             "Верните только Markdown статьи, без JSON-обёртки и пояснений."
         )
 

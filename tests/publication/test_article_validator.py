@@ -147,6 +147,41 @@ def test_valid_draft_passes_validation() -> None:
     assert result.violations == ()
 
 
+@pytest.mark.unit
+def test_markdown_paragraph_claim_autogen_is_sentence_atomic() -> None:
+    """Reader prose must not be validated as one giant Claim Atom per paragraph."""
+    support_id = "story:1:evidence:0:frag:101"
+    draft = StructuredArticleDraft.from_dict(
+        {
+            "title": "Коммунальная обстановка",
+            "title_support_ids": [support_id],
+            "lead": "В городе продолжаются восстановительные работы.",
+            "lead_support_ids": [support_id],
+            "sections": [
+                {
+                    "heading": "Электроснабжение",
+                    "heading_support_ids": [support_id],
+                    "paragraphs": [
+                        {
+                            "text": (
+                                "В центральной и нагорной части Бердянска временно нет света. "
+                                "Бригада РЭС продолжает восстановительные работы."
+                            ),
+                            "cited_support_ids": [support_id],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    paragraph_claims = draft.sections[0].paragraphs[0].claims
+    assert [claim.text for claim in paragraph_claims] == [
+        "В центральной и нагорной части Бердянска временно нет света.",
+        "Бригада РЭС продолжает восстановительные работы.",
+    ]
+
+
 def test_validator_rejects_leaked_meta_omission():
     from src.publication.article_cleaner import strip_leaked_meta_omissions
 

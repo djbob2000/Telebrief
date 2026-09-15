@@ -647,7 +647,7 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
             )
         return v
 
-    mode_val = raw.get("digest_narrative_mode", "journalistic")
+    mode_val = raw.get("digest_narrative_mode", "single_call")
     if not isinstance(mode_val, str) or mode_val not in (
         "deterministic",
         "single_call",

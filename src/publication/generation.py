@@ -53,6 +53,19 @@ _MONTHS_RU = (
 )
 
 
+def effective_digest_narrative_mode(mode: str | None) -> str:
+    """Return the production pipeline for a configured digest mode.
+
+    ``journalistic`` was the original free-form text path. It bypassed the
+    immutable narrative plan and its coverage/evidence validation, allowing a
+    digest to become one item per Story. Keep the value accepted for config
+    compatibility, but route it through the structured single-call pipeline.
+    """
+    if mode == "journalistic":
+        return "single_call"
+    return mode or "deterministic"
+
+
 def compute_digest_allowed_terms(
     all_draft_support_texts: Sequence[str],
     snapshot_at: dt.datetime | None = None,
@@ -254,11 +267,12 @@ class PublicationGenerationService:
 
                 narrative_draft = None
                 pub_edit = getattr(self.config.settings, "publication_editorial", None)
-                narrative_mode = (
+                configured_narrative_mode = (
                     getattr(pub_edit, "digest_narrative_mode", "deterministic")
                     if pub_edit
                     else "deterministic"
                 )
+                narrative_mode = effective_digest_narrative_mode(configured_narrative_mode)
 
                 max_sit_items = (
                     getattr(pub_edit, "digest_city_situation_max_items", 7) if pub_edit else 7
@@ -285,7 +299,7 @@ class PublicationGenerationService:
                 )
 
                 if (
-                    narrative_mode in ("single_call", "journalistic")
+                    narrative_mode == "single_call"
                     and run.publication_type != "digest_channel"
                     and frozen.analysis.cards
                 ):
@@ -324,145 +338,108 @@ class PublicationGenerationService:
                         },
                     )
                     try:
-                        if narrative_mode == "journalistic":
-                            from src.publication.digest_narrative import format_digest_date_ru
+                        draft_cand = await writer.generate_narrative_draft(
+                            plan=plan,
+                            cards=detail_cards,
+                            evidence=evidence_dict,
+                            language=getattr(self.config.settings, "output_language", "Russian"),
+                            max_output_tokens=max_tokens,
+                            model=getattr(self.config.settings, "openai_model", None)
+                            or getattr(self.config.settings, "ai_model", None),
+                            situation_plan=presentation_plan.city_situation,
+                        )
+                        support_text_index = build_digest_support_text_index(
+                            evidence=evidence_dict,
+                            cards=frozen.analysis.cards,
+                            frozen_input=frozen,
+                        )
+                        all_draft_support_texts = list(support_text_index.values())
+                        allowed_digest_terms = compute_digest_allowed_terms(
+                            all_draft_support_texts, getattr(run, "snapshot_at", None)
+                        )
 
-                            date_str = format_digest_date_ru(run.snapshot_at)
-                            city_name = getattr(frozen.analysis, "city_name", "Бердянск")
-                            clean_body, draft_cand = await writer.generate_journalistic_digest(
-                                city=city_name,
-                                date_str=date_str,
-                                cards=detail_cards,
-                                evidence=evidence_dict,
-                                custom_rubrics=renderer.rubrics,
-                                model=getattr(self.config.settings, "openai_model", None)
-                                or getattr(self.config.settings, "ai_model", None),
-                            )
-                            if draft_cand is None:
-                                raise PublicationGenerationError(
-                                    "Journalistic digest generation failed: AI writer was unable to produce a valid draft"
-                                )
+                        val_res = validate_digest_narrative(
+                            draft_cand,
+                            plan,
+                            support_text_by_id=support_text_index,
+                            situation_plan=presentation_plan.city_situation,
+                            allowed_context_terms=allowed_digest_terms,
+                            all_known_draft_supports=all_draft_support_texts,
+                        )
+                        if val_res.is_valid:
                             narrative_draft = draft_cand
                             final_digest_draft = draft_cand
-                            title = f"Дайджест · {date_str}"
-                            lead = ""
-                            body = clean_body
+
+                            title, lead, body = renderer.render_grouped_digest(
+                                frozen,
+                                snapshot_at=run.snapshot_at,
+                                narrative_draft=narrative_draft,
+                                presentation_plan=presentation_plan,
+                            )
+                            from src.publication.digest_coverage import build_digest_coverage_trace
+                            from src.publication.digest_quality_diagnostics import (
+                                audit_digest_prose_quality,
+                            )
+                            from src.publication.errors import DigestCoverageInvariantError
+
+                            quality_audit = audit_digest_prose_quality(
+                                draft_cand,
+                                evidence=evidence_dict,
+                                presentation_plan=presentation_plan,
+                            )
+                            coverage_trace = build_digest_coverage_trace(
+                                presentation_plan,
+                                final_digest_draft,
+                                plan,
+                            )
+                            if coverage_trace.material_fact_coverage < 1.0:
+                                raise DigestCoverageInvariantError(
+                                    f"material fact coverage incomplete: {coverage_trace.material_fact_coverage:.2f} < 1.0"
+                                )
+                            presentations = presentation_plan.story_presentations
+                            coverage_meta = {
+                                "planned_story_count": len(presentation_plan.story_ids),
+                                "dashboard_only_count": sum(
+                                    p.mode == "DASHBOARD_ONLY" for p in presentations
+                                ),
+                                "detail_only_count": sum(
+                                    p.mode == "DETAIL_ONLY" for p in presentations
+                                ),
+                                "dashboard_and_drilldown_count": sum(
+                                    p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
+                                ),
+                                "final_covered_story_count": len(coverage_trace.story_ids),
+                                "final_digest_story_coverage": coverage_trace.story_coverage,
+                                "final_digest_material_fact_coverage": coverage_trace.material_fact_coverage,
+                                "deterministic_digest_fallback_used": False,
+                                "digest_presentation_plan": presentation_plan.to_audit_dict(),
+                                "digest_coverage_trace": coverage_trace.to_dict(),
+                            }
                             await observer.attempt_finished(
                                 att_id,
                                 "succeeded",
                                 metadata={
-                                    "mode": "journalistic",
+                                    "validation": {"is_valid": True},
                                     "block_count": len(draft_cand.blocks),
-                                    "chars": len(clean_body),
+                                    "situation_item_count": len(draft_cand.situation_items),
+                                    "prose_quality_audit": quality_audit.as_metadata(),
+                                    **coverage_meta,
                                 },
                             )
+
                         else:
-                            draft_cand = await writer.generate_narrative_draft(
-                                plan=plan,
-                                cards=detail_cards,
-                                evidence=evidence_dict,
-                                language=getattr(
-                                    self.config.settings, "output_language", "Russian"
-                                ),
-                                max_output_tokens=max_tokens,
-                                model=getattr(self.config.settings, "openai_model", None)
-                                or getattr(self.config.settings, "ai_model", None),
-                                situation_plan=presentation_plan.city_situation,
+                            logger.warning(
+                                "digest narrative validation failed: %s", val_res.violations
                             )
-                            support_text_index = build_digest_support_text_index(
-                                evidence=evidence_dict,
-                                cards=frozen.analysis.cards,
-                                frozen_input=frozen,
+                            await observer.attempt_finished(
+                                att_id,
+                                "failed",
+                                error_kind="digest_narrative_validation_failed",
+                                metadata={
+                                    "error_message": "; ".join(val_res.violations[:5]),
+                                    "violations": list(val_res.violations),
+                                },
                             )
-                            all_draft_support_texts = list(support_text_index.values())
-                            allowed_digest_terms = compute_digest_allowed_terms(
-                                all_draft_support_texts, getattr(run, "snapshot_at", None)
-                            )
-
-                            val_res = validate_digest_narrative(
-                                draft_cand,
-                                plan,
-                                support_text_by_id=support_text_index,
-                                situation_plan=presentation_plan.city_situation,
-                                allowed_context_terms=allowed_digest_terms,
-                                all_known_draft_supports=all_draft_support_texts,
-                            )
-                            if val_res.is_valid:
-                                narrative_draft = draft_cand
-                                final_digest_draft = draft_cand
-
-                                title, lead, body = renderer.render_grouped_digest(
-                                    frozen,
-                                    snapshot_at=run.snapshot_at,
-                                    narrative_draft=narrative_draft,
-                                    presentation_plan=presentation_plan,
-                                )
-                                from src.publication.digest_coverage import (
-                                    build_digest_coverage_trace,
-                                )
-                                from src.publication.digest_quality_diagnostics import (
-                                    audit_digest_prose_quality,
-                                )
-                                from src.publication.errors import DigestCoverageInvariantError
-
-                                quality_audit = audit_digest_prose_quality(
-                                    draft_cand,
-                                    evidence=evidence_dict,
-                                    presentation_plan=presentation_plan,
-                                )
-                                coverage_trace = build_digest_coverage_trace(
-                                    presentation_plan,
-                                    final_digest_draft,
-                                    plan,
-                                )
-                                if coverage_trace.material_fact_coverage < 1.0:
-                                    raise DigestCoverageInvariantError(
-                                        f"material fact coverage incomplete: {coverage_trace.material_fact_coverage:.2f} < 1.0"
-                                    )
-                                presentations = presentation_plan.story_presentations
-                                coverage_meta = {
-                                    "planned_story_count": len(presentation_plan.story_ids),
-                                    "dashboard_only_count": sum(
-                                        p.mode == "DASHBOARD_ONLY" for p in presentations
-                                    ),
-                                    "detail_only_count": sum(
-                                        p.mode == "DETAIL_ONLY" for p in presentations
-                                    ),
-                                    "dashboard_and_drilldown_count": sum(
-                                        p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
-                                    ),
-                                    "final_covered_story_count": len(coverage_trace.story_ids),
-                                    "final_digest_story_coverage": coverage_trace.story_coverage,
-                                    "final_digest_material_fact_coverage": coverage_trace.material_fact_coverage,
-                                    "deterministic_digest_fallback_used": False,
-                                    "digest_presentation_plan": presentation_plan.to_audit_dict(),
-                                    "digest_coverage_trace": coverage_trace.to_dict(),
-                                }
-                                await observer.attempt_finished(
-                                    att_id,
-                                    "succeeded",
-                                    metadata={
-                                        "validation": {"is_valid": True},
-                                        "block_count": len(draft_cand.blocks),
-                                        "situation_item_count": len(draft_cand.situation_items),
-                                        "prose_quality_audit": quality_audit.as_metadata(),
-                                        **coverage_meta,
-                                    },
-                                )
-
-                            else:
-                                logger.warning(
-                                    "digest narrative validation failed: %s", val_res.violations
-                                )
-                                await observer.attempt_finished(
-                                    att_id,
-                                    "failed",
-                                    error_kind="digest_narrative_validation_failed",
-                                    metadata={
-                                        "error_message": "; ".join(val_res.violations[:5]),
-                                        "violations": list(val_res.violations),
-                                    },
-                                )
 
                     except Exception as exc:
                         logger.warning(
@@ -482,10 +459,6 @@ class PublicationGenerationService:
                             "digest_allow_deterministic_fallback",
                             False,
                         )
-                        if narrative_mode == "journalistic":
-                            raise PublicationGenerationError(
-                                f"Journalistic digest generation failed: {exc}"
-                            ) from exc
                         if not allow_fallback and narrative_mode == "single_call":
                             raise PublicationGenerationError(
                                 f"Digest narrative generation failed: {exc}"
@@ -497,10 +470,6 @@ class PublicationGenerationService:
                     False,
                 )
                 if narrative_draft is None:
-                    if narrative_mode == "journalistic":
-                        raise PublicationGenerationError(
-                            "Journalistic digest generation failed: AI writer was unable to produce a valid draft"
-                        )
                     if not allow_fallback and narrative_mode == "single_call":
                         raise PublicationGenerationError(
                             "Digest narrative generation failed: AI writer was unable to produce a valid draft"
