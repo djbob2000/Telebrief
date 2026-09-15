@@ -10,7 +10,6 @@ from src.publication.repository import (
     PublicationPolicyRepository,
     PublicationRepository,
 )
-from src.publication.snapshot import IncompleteTriageError
 
 _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
 
@@ -1021,7 +1020,8 @@ class TestPublicationSnapshotConstraints:
         assert sid_v9 in eligible_sids
         assert sid_stale not in eligible_sids
 
-        # 5. Verify snapshot service raises IncompleteTriageError because sid_stale lacks authoritative triage
+        # 5. Untriaged stories are excluded from the candidate universe rather
+        # than blocking the whole publication snapshot.
         service = PublicationSnapshotService(uow=uow, repo=repo)
         run = await service.create_run(
             edition_id=edition.id,
@@ -1030,8 +1030,8 @@ class TestPublicationSnapshotConstraints:
             request_key="test-frozen-v9-run",
             policy_ids=policy_ids,
         )
-        with pytest.raises(IncompleteTriageError, match="lacking authoritative triage"):
-            await service.seal_candidates(run.id)
+        candidates = await service.seal_candidates(run.id)
+        assert [candidate.story_id for candidate in candidates] == [sid_v9]
 
         # 6. Decisions created after snapshot_at must not alter the frozen run.
         post_snap = _NOW + dt.timedelta(minutes=5)
@@ -1043,8 +1043,8 @@ class TestPublicationSnapshotConstraints:
             "UPDATE story_edition_scope_decisions SET scope_class = 'OUT_OF_SCOPE', created_at = %s WHERE story_id = %s",
             (post_snap, sid_stale),
         )
-        with pytest.raises(IncompleteTriageError, match="lacking authoritative triage"):
-            await service.seal_candidates(run.id)
+        candidates = await service.seal_candidates(run.id)
+        assert [candidate.story_id for candidate in candidates] == [sid_v9]
 
         # The same decisions are visible to a later candidate snapshot.
         later_run = await service.create_run(
@@ -1109,7 +1109,7 @@ class TestPublicationSnapshotConstraints:
         self, conn: psycopg.AsyncConnection, edition, pool
     ):
         from src.db.uow import DatabaseUnitOfWork
-        from src.publication.snapshot import IncompleteTriageError, PublicationSnapshotService
+        from src.publication.snapshot import PublicationSnapshotService
 
         repo = PublicationRepository()
         policy_repo = PublicationPolicyRepository()
@@ -1224,7 +1224,8 @@ class TestPublicationSnapshotConstraints:
         )
         assert ef_sid in gap_ids
 
-        # Attempting to seal candidates while gap > 0 raises IncompleteTriageError
+        # A gap does not block sealing; the untriaged story is simply absent
+        # from eligible_story_revisions and therefore from candidates.
         sel = await policy_repo.get_or_create_selection_policy(
             conn, edition_id=edition.id, config_hash="s-1", prompt_version="s-1"
         )
@@ -1238,5 +1239,5 @@ class TestPublicationSnapshotConstraints:
             request_key="test-run-with-gap",
             policy_ids=(pol_valid.id, sel.id, wri.id),
         )
-        with pytest.raises(IncompleteTriageError, match="lacking authoritative triage"):
-            await service.seal_candidates(run_with_gap.id)
+        candidates = await service.seal_candidates(run_with_gap.id)
+        assert ef_sid not in {candidate.story_id for candidate in candidates}

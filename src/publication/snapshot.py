@@ -246,20 +246,6 @@ class PublicationSnapshotService:
                 policy_scope_version = p_row[1]
                 policy_scope_hash = p_row[2]
 
-        if run.eligibility_policy_id is not None:
-            gap_count = await self.repo.count_authority_gap(
-                conn,
-                edition_id=run.edition_id,
-                source_cutoff_at=run.source_cutoff_at or run.snapshot_at,
-                snapshot_at=run.snapshot_at,
-                eligibility_policy_id=run.eligibility_policy_id,
-            )
-            if gap_count > 0:
-                raise IncompleteTriageError(
-                    f"Completeness invariant violation: {gap_count} active in-window stories "
-                    f"lacking authoritative triage ({policy_triage_version or 'v10'}) for edition {run.edition_id}"
-                )
-
         ef_story_ids = [
             r["story_id"] for r in eligible_rows if r.get("knowledge_source") == "event_first"
         ]
