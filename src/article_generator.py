@@ -325,31 +325,12 @@ def _ground_draft_in_coverage_plan(
 
             combined_sups = list(dict.fromkeys(existing_cited + matched_sups))
             if not combined_sups and support_stems:
-                # Fallback: match support with best single stem overlap
-                best_para_sids: list[str] = []
-                best_score = 0
-                for sid, s_stems in support_stems.items():
-                    sc = len(p_stems & s_stems)
-                    if sc > best_score:
-                        best_score = sc
-                        best_para_sids = [sid]
-                    elif sc == best_score and sc > 0:
-                        best_para_sids.append(sid)
-                if best_para_sids:
-                    combined_sups = best_para_sids[:3]
-
-            if not combined_sups and combined_h_sups:
-                combined_sups = list(dict.fromkeys(combined_h_sups))
-
-            if not combined_sups and coverage_plan and getattr(coverage_plan, "stories", None):
-                dev_sups = [
-                    sid
-                    for s in coverage_plan.stories
-                    if getattr(s, "prominence", "") == "DEVELOP"
-                    for sid in s.support_ids
-                ]
-                if dev_sups:
-                    combined_sups = dev_sups[:3]
+                # Do not invent provenance for an unmatched paragraph.  A
+                # best-single-stem match, section-heading inheritance, or
+                # DEVELOP-story fallback can attach an unrelated source to a
+                # fluent but fabricated sentence.  The validator must see the
+                # paragraph as unsupported and fail closed instead.
+                combined_sups = []
 
             if support_by_id:
                 combined_sups = [sid for sid in combined_sups if sid in support_by_id]

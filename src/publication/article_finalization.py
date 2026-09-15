@@ -741,6 +741,61 @@ class ArticleFinalizer:
         # 3. Writer draft is valid; apply deterministic structural improvements
         # 3a. Merge single-sentence orphan paragraphs (AGENTS.md §0.9)
         writer_draft = _merge_orphan_paragraphs(writer_draft)
+
+        # Structural finalization changes the reader-facing draft. Never reuse
+        # the validation result from the pre-merge object: the exact object
+        # rendered below must pass the Evidence Boundary itself.
+        final_validation = validate_article_draft(
+            writer_draft,
+            context,
+            config=editorial_config,
+            length_profile=length_profile,
+        )
+        if not final_validation.is_valid:
+            logger.warning(
+                "Finalized article draft failed re-validation: %s",
+                list(final_validation.violations),
+            )
+            if attempt_observer:
+                final_val_meta: dict[str, Any] = {
+                    "writer_status": "rejected",
+                    "violations": list(final_validation.violations),
+                    "draft": writer_draft.to_dict(),
+                    "stage": "post_finalization_validation",
+                }
+                if writer_metadata:
+                    final_val_meta.update(writer_metadata)
+                await attempt_observer.attempt_finished(
+                    writer_attempt_id,
+                    status="failed",
+                    error_kind="article_validation_rejected",
+                    metadata=final_val_meta,
+                )
+            if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
+                raise ArticlePublicationRejected(
+                    reason="validation_failed",
+                    message=(
+                        "Finalized article draft failed Evidence Boundary validation: "
+                        f"{list(final_validation.violations)}"
+                    ),
+                    metadata={
+                        "violations": list(final_validation.violations),
+                        "stage": "post_finalization_validation",
+                        "draft": writer_draft.to_dict(),
+                    },
+                )
+            return await self._run_full_fallback(
+                writer_status="rejected",
+                ai_diag=None,
+                ai_covered_story_ids=(),
+                context=context,
+                coverage_plan=coverage_plan,
+                editorial_config=editorial_config,
+                length_profile=length_profile,
+                attempt_observer=attempt_observer,
+            )
+        writer_validation = final_validation
+
         # 3b. Detect chat-roll patterns for editorial logging (AGENTS.md §0.6)
         _detect_chat_roll_paragraphs(writer_draft, max_quotes_per_paragraph=3)
 

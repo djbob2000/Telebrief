@@ -6,6 +6,7 @@ import datetime as dt
 
 import pytest
 
+from src.article_generator import _ground_draft_in_coverage_plan
 from src.config_loader import PublicationEditorialConfig
 from src.publication.article_claims import (
     extract_concrete_claims,
@@ -31,6 +32,230 @@ from src.publication.errors import ArticlePublicationRejected
 from tests.publication.test_article_recovery import RecordingAttemptObserver
 
 _NOW = dt.datetime(2026, 9, 3, 19, 30, tzinfo=dt.timezone.utc)
+
+
+@pytest.mark.unit
+def test_grounding_does_not_assign_unrelated_develop_support_to_paragraph() -> None:
+    """An unrelated sentence must not inherit the first DEVELOP story as fake provenance."""
+    support_id = "story:1:evidence:0:frag:101"
+    support = ArticleSupport(
+        support_id=support_id,
+        text="У провайдера интернет работает в полном объёме.",
+        source_text="У провайдера интернет есть, он работает.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(101,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        story_id="story:1",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Интернет",),
+        support_index=(support,),
+        support_by_id={support_id: support},
+        recurring_topics=(),
+        edition_name="Бердянск",
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Интернет",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(support_id,),
+            ),
+        )
+    )
+    parsed = {
+        "title": "Городская хроника",
+        "lead": "",
+        "sections": [
+            {
+                "heading": "Городская хроника",
+                "paragraphs": [
+                    "Пожилая женщина не могла вспомнить свой адрес на остановке у рынка.",
+                ],
+            }
+        ],
+    }
+
+    grounded = _ground_draft_in_coverage_plan(parsed, plan, context)
+
+    assert grounded["sections"][0]["paragraphs"][0]["cited_support_ids"] == []
+
+
+@pytest.mark.unit
+def test_editor_patch_does_not_preserve_old_support_for_unrelated_text() -> None:
+    """Replacing a paragraph must invalidate its old provenance until re-grounded."""
+    support_id = "story:1:evidence:0:frag:101"
+    support = ArticleSupport(
+        support_id=support_id,
+        text="У провайдера интернет работает в полном объёме.",
+        source_text="У провайдера интернет есть, он работает.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(101,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        story_id="story:1",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Интернет",),
+        support_index=(support,),
+        support_by_id={support_id: support},
+        recurring_topics=(),
+    )
+    draft = StructuredArticleDraft(
+        title="Интернет",
+        title_support_ids=(support_id,),
+        lead="Интернет работает.",
+        lead_support_ids=(support_id,),
+        sections=(
+            ArticleSection(
+                heading="Связь",
+                heading_support_ids=(support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Интернет работает.",
+                        cited_support_ids=(support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Интернет работает.",
+                                cited_support_ids=(support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    editor = ArticleEditor(provider=object(), model="test")  # type: ignore[arg-type]
+
+    edited = editor.apply_patches(
+        draft,
+        {"P001": "Пожилая женщина не могла вспомнить свой адрес на остановке."},
+        context=context,
+    )
+
+    assert not edited.sections
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_revalidates_draft_after_structural_finalization(monkeypatch) -> None:
+    """The exact draft rendered to the publication must be validated after final mutations."""
+    from src.publication import article_finalization as finalization
+
+    support_id = "story:1:evidence:0:frag:101"
+    support = ArticleSupport(
+        support_id=support_id,
+        text="В микрорайоне восстановили подачу электроэнергии.",
+        source_text="В микрорайоне восстановили подачу электроэнергии.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(101,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        story_id="story:1",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение",),
+        support_index=(support,),
+        support_by_id={support_id: support},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(support_id,),
+            ),
+        )
+    )
+    draft = StructuredArticleDraft(
+        title="Восстановление электроснабжения",
+        title_support_ids=(support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Восстановление электроснабжения",
+                cited_support_ids=(support_id,),
+            ),
+        ),
+        lead="В микрорайоне восстановили подачу электроэнергии.",
+        lead_support_ids=(support_id,),
+        lead_claims=(ArticleClaimAtom(text=support.text, cited_support_ids=(support_id,)),),
+        sections=(
+            ArticleSection(
+                heading="Электроснабжение",
+                heading_support_ids=(support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text=support.text,
+                        cited_support_ids=(support_id,),
+                        claims=(
+                            ArticleClaimAtom(text=support.text, cited_support_ids=(support_id,)),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    def inject_unsupported_final_text(current):
+        section = current.sections[0]
+        bad = ArticleParagraph(
+            text="Пожилая женщина не могла вспомнить свой адрес на остановке у рынка.",
+            cited_support_ids=(support_id,),
+            claims=(
+                ArticleClaimAtom(
+                    text="Пожилая женщина не могла вспомнить свой адрес на остановке у рынка.",
+                    cited_support_ids=(support_id,),
+                ),
+            ),
+        )
+        return StructuredArticleDraft(
+            title=current.title,
+            title_support_ids=current.title_support_ids,
+            title_claims=current.title_claims,
+            lead=current.lead,
+            lead_support_ids=current.lead_support_ids,
+            lead_claims=current.lead_claims,
+            sections=(
+                ArticleSection(
+                    heading=section.heading,
+                    heading_support_ids=section.heading_support_ids,
+                    heading_claims=section.heading_claims,
+                    paragraphs=section.paragraphs + (bad,),
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(finalization, "_merge_orphan_paragraphs", inject_unsupported_final_text)
+
+    with pytest.raises(ArticlePublicationRejected):
+        await ArticleFinalizer().finalize(
+            writer_draft=draft,
+            writer_error=None,
+            writer_attempt_id=0,
+            context=context,
+            coverage_plan=plan,
+            editorial_config=PublicationEditorialConfig(
+                article_min_words=5,
+                article_min_sections=1,
+                article_allow_deterministic_fallback=False,
+            ),
+            length_profile=None,
+        )
 
 
 @pytest.mark.unit

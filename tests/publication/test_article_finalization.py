@@ -23,8 +23,10 @@ _NOW = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_finalizer_reuses_writer_validation_result(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A writer validation result must not be recomputed by the finalizer."""
+async def test_finalizer_revalidates_writer_draft_after_structural_finalization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The finalizer validates the exact draft that it will render."""
     from src.publication.article_models import ArticleClaimAtom
     from src.publication.article_validator import validate_article_draft
 
@@ -106,12 +108,15 @@ async def test_finalizer_reuses_writer_validation_result(monkeypatch: pytest.Mon
     validation = validate_article_draft(draft, context, config)
     assert validation.is_valid
 
-    def fail_if_revalidated(*args: object, **kwargs: object) -> None:
-        raise AssertionError("finalizer recomputed the writer validation")
+    validation_calls: list[tuple[object, ...]] = []
+    real_validate = validate_article_draft
+
+    def record_revalidation(*args: object, **kwargs: object):
+        validation_calls.append(args)
+        return real_validate(*args, **kwargs)
 
     monkeypatch.setattr(
-        "src.publication.article_finalization.validate_article_draft",
-        fail_if_revalidated,
+        "src.publication.article_finalization.validate_article_draft", record_revalidation
     )
 
     observer = RecordingAttemptObserver()
@@ -129,6 +134,7 @@ async def test_finalizer_reuses_writer_validation_result(monkeypatch: pytest.Mon
     )
 
     assert result.writer_status == "passed"
+    assert len(validation_calls) == 1
 
 
 @pytest.mark.unit

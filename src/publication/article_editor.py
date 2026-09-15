@@ -30,6 +30,49 @@ logger = logging.getLogger(__name__)
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
+def _reground_support_ids(text: str, context: ArticleEditorialContext) -> tuple[str, ...]:
+    """Return only support packets with a concrete lexical anchor in ``text``.
+
+    Editor patches replace reader-facing prose, so citations from the old
+    paragraph cannot be carried forward.  This deliberately has no
+    best-match fallback: an unmatched patch must remain unsupported and be
+    rejected by the normal fail-closed validator.
+    """
+    from src.publication.article_claims import _stem
+    from src.publication.article_semantic_support import _EDITORIAL_GLUE, _STOPWORDS
+
+    token_re = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
+
+    def distinctive_stems(value: str) -> set[str]:
+        stems: set[str] = set()
+        for token in token_re.findall(value or ""):
+            normalized = token.casefold().replace("ё", "е")
+            if len(normalized) < 3 or normalized in _STOPWORDS:
+                continue
+            stem = _stem(normalized)
+            if stem in _EDITORIAL_GLUE or normalized in _EDITORIAL_GLUE:
+                continue
+            stems.add(stem)
+        return stems
+
+    text_stems = distinctive_stems(text)
+    text_numbers = set(re.findall(r"\b\d+\b", text))
+    matched: list[str] = []
+    for support in context.supports:
+        if support.publication_use != "PUBLISH":
+            continue
+        support_text = f"{support.text} {support.source_text}"
+        shared_stems = text_stems & distinctive_stems(support_text)
+        support_numbers = set(re.findall(r"\b\d+\b", support_text))
+        if (
+            len(shared_stems) >= 2
+            or (shared_stems and text_numbers & support_numbers)
+            or len(text_numbers & support_numbers) >= 2
+        ):
+            matched.append(support.support_id)
+    return tuple(dict.fromkeys(matched))
+
+
 class ArticleEditor:
     """Targeted fact-checking editor that fixes isolated validation issues without full draft rewrite."""
 
@@ -559,6 +602,9 @@ class ArticleEditor:
                         p_idx += 1
                         continue
                     text = _normalize_homoglyphs(_strip_internal_handles(raw_patch))
+                    # A patch replaces the prose; recompute its provenance
+                    # instead of retaining citations from the old paragraph.
+                    p_sups = _reground_support_ids(text, context) if context else p_sups
                     sentences = _split_sentences_safe(text)
                     claims = tuple(
                         ArticleClaimAtom(text=s, cited_support_ids=p_sups)
