@@ -76,7 +76,16 @@ def test_grounding_does_not_assign_unrelated_develop_support_to_paragraph() -> N
             {
                 "heading": "Городская хроника",
                 "paragraphs": [
-                    "Пожилая женщина не могла вспомнить свой адрес на остановке у рынка.",
+                    {
+                        "text": "Пожилая женщина не могла вспомнить свой адрес на остановке у рынка.",
+                        "cited_support_ids": [support_id],
+                        "claims": [
+                            {
+                                "text": "Пожилая женщина не могла вспомнить свой адрес на остановке у рынка.",
+                                "cited_support_ids": [support_id],
+                            }
+                        ],
+                    },
                 ],
             }
         ],
@@ -84,7 +93,9 @@ def test_grounding_does_not_assign_unrelated_develop_support_to_paragraph() -> N
 
     grounded = _ground_draft_in_coverage_plan(parsed, plan, context)
 
-    assert grounded["sections"][0]["paragraphs"][0]["cited_support_ids"] == []
+    grounded_paragraph = grounded["sections"][0]["paragraphs"][0]
+    assert grounded_paragraph["cited_support_ids"] == []
+    assert grounded_paragraph["claims"][0]["cited_support_ids"] == []
 
 
 @pytest.mark.unit

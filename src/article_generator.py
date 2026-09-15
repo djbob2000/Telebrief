@@ -323,7 +323,19 @@ def _ground_draft_in_coverage_plan(
                     ):
                         matched_sups.append(sid)
 
-            combined_sups = list(dict.fromkeys(existing_cited + matched_sups))
+            # Writer-supplied citations are hints, not proof.  Keep them only
+            # when the paragraph itself has a deterministic anchor in the
+            # cited support.  Otherwise a fluent hallucination can carry an
+            # unrelated support ID into the validator and appear grounded.
+            grounded_existing = [sid for sid in existing_cited if sid in matched_sups]
+            # If the writer supplied citations, keep only that grounded set.
+            # Do not append every lexically similar support from another Story:
+            # that turns broad vocabulary overlap into cross-story provenance.
+            combined_sups = (
+                list(dict.fromkeys(grounded_existing))
+                if existing_cited
+                else list(dict.fromkeys(matched_sups))
+            )
             if not combined_sups and support_stems:
                 # Do not invent provenance for an unmatched paragraph.  A
                 # best-single-stem match, section-heading inheritance, or
@@ -345,7 +357,7 @@ def _ground_draft_in_coverage_plan(
                     if isinstance(cl, dict):
                         cl_text = cl.get("text", "")
                         existing_c_sups = [
-                            sid for sid in cl.get("cited_support_ids", ()) if sid in support_by_id
+                            sid for sid in cl.get("cited_support_ids", ()) if sid in combined_sups
                         ]
                         if not existing_c_sups and combined_sups:
                             existing_c_sups = combined_sups
