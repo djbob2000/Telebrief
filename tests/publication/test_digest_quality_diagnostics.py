@@ -95,6 +95,24 @@ def test_detects_duplicated_attribution():
     assert warning.item_index == 0
 
 
+def test_digest_with_prose_warnings_is_not_publishable():
+    evi = _make_evidence("evi:1", 1, "На Горе нет света")
+    item = DigestEditorialItemDraft(
+        headline="Жители сообщают об отключении света на Горе",
+        body="По сообщениям жителей, электричество пропало около полудня.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:util", items=(item,)),)
+    )
+
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+
+    assert audit.is_clean is False
+    assert audit.is_publishable is False
+
+
 def test_detects_question_as_meta_news():
     evi = _make_evidence(
         "evi:1",

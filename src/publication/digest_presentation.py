@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal
 
@@ -1642,8 +1642,6 @@ def build_thematic_topic_bundles(
             groups_by_key.setdefault(t_key, []).append(c)
 
         rubric_bundles: list[TopicBundle] = []
-        empty_groups: list[tuple[tuple[str, ...], list[str]]] = []
-
         for t_key, g_cards in groups_by_key.items():
             bundle_counter += 1
             sample_card = g_cards[0]
@@ -1747,7 +1745,6 @@ def build_thematic_topic_bundles(
             )
 
             if not dedup_facts and not bundle_req_facts:
-                empty_groups.append((story_ids, all_sups))
                 continue
 
             rubric_bundles.append(
@@ -1765,43 +1762,6 @@ def build_thematic_topic_bundles(
                     status_summary="",
                     states=tuple(bundle_states),
                     epistemic_status=epistemic_status,
-                )
-            )
-
-        # Absorb empty chatter groups into the first substantive bundle of the rubric
-        if empty_groups and rubric_bundles:
-            first_b = rubric_bundles[0]
-            extra_sids = [
-                sid for sids, _ in empty_groups for sid in sids if sid not in first_b.story_ids
-            ]
-            extra_sups = [
-                sup for _, sups in empty_groups for sup in sups if sup not in first_b.support_ids
-            ]
-            rubric_bundles[0] = replace(
-                first_b,
-                story_ids=first_b.story_ids + tuple(extra_sids),
-                support_ids=first_b.support_ids + tuple(extra_sups),
-            )
-        elif empty_groups and not rubric_bundles:
-            # Entire rubric had only chatter without usable facts; keep a single fallback bundle
-            sample_c = r_cards[0]
-            _, t_label, t_emoji = _canonical_topic_family(sample_c, rid)
-            all_r_sups = [sup for _, sups in empty_groups for sup in sups]
-            rubric_bundles.append(
-                TopicBundle(
-                    bundle_id=f"bundle:{rid}:general",
-                    rubric_id=rid,
-                    topic_key="general",
-                    topic_label=t_label,
-                    emoji=t_emoji,
-                    story_ids=tuple(c.id for c in r_cards),
-                    support_ids=tuple(dict.fromkeys(all_r_sups)),
-                    fact_ledger=(),
-                    locations=(),
-                    required_facts=(),
-                    status_summary="",
-                    states=(),
-                    epistemic_status="сообщения жителей",
                 )
             )
 

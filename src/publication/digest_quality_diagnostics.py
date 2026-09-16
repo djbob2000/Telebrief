@@ -1,4 +1,4 @@
-"""Non-blocking prose quality diagnostics for narrative digests."""
+"""Prose quality diagnostics for narrative digests."""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ class DigestQualityWarning:
 
 @dataclass(frozen=True)
 class DigestProseQualityAudit:
-    """Audit record capturing all non-blocking prose diagnostics for a digest draft."""
+    """Audit record capturing prose diagnostics for a digest draft."""
 
     version: str = DIGEST_DIAGNOSTICS_VERSION
     warnings: tuple[DigestQualityWarning, ...] = ()
@@ -98,6 +98,11 @@ class DigestProseQualityAudit:
     @property
     def is_clean(self) -> bool:
         return len(self.warnings) == 0
+
+    @property
+    def is_publishable(self) -> bool:
+        """Whether the draft is safe to publish as reader-facing prose."""
+        return self.is_clean
 
     def as_metadata(self) -> dict[str, Any]:
         return {

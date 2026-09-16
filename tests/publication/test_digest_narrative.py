@@ -2833,7 +2833,7 @@ def test_usable_fact_line_keeps_concrete_report_with_conversational_prefix():
     )
 
 
-def test_topic_bundle_does_not_restore_filtered_metadata_summary():
+def test_topic_bundle_drops_filtered_metadata_summary():
     from src.publication.digest_presentation import build_thematic_topic_bundles
 
     card = StoryCard(
@@ -2848,5 +2848,32 @@ def test_topic_bundle_does_not_restore_filtered_metadata_summary():
 
     bundles = build_thematic_topic_bundles([card])
 
-    assert len(bundles) == 1
-    assert bundles[0].fact_ledger == ()
+    assert bundles == ()
+
+
+def test_topic_bundle_does_not_absorb_filtered_story_into_other_topic():
+    from src.publication.digest_presentation import build_thematic_topic_bundles
+
+    substantive = StoryCard(
+        id="story:water",
+        topic="Водоснабжение",
+        importance="high",
+        summary="На улице Ленина восстановили подачу воды.",
+        rubric_id="utilities",
+        useful_details=(),
+        hard_facts=(),
+    )
+    chatter = StoryCard(
+        id="story:chatter",
+        topic="Обсуждение в чате",
+        importance="low",
+        summary="Жители публикуют сообщения с эмодзи воды",
+        rubric_id="utilities",
+        useful_details=(),
+        hard_facts=(),
+    )
+
+    bundles = build_thematic_topic_bundles([substantive, chatter])
+
+    assert bundles
+    assert "story:chatter" not in {story_id for bundle in bundles for story_id in bundle.story_ids}

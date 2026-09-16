@@ -147,6 +147,16 @@ def test_article_writer_prompt_forbids_meta_reporting():
     )
 
 
+def test_article_writer_prompt_marks_material_context_as_sole_source_of_facts():
+    generator = ArticleGenerator.__new__(ArticleGenerator)
+    generator.output_language = "Russian"
+
+    prompt = generator._build_event_article_system_prompt()
+
+    assert "единственным источником фактов" in prompt.lower()
+    assert "не дополняйте отсутствующие сведения" in prompt.lower()
+
+
 def test_build_article_quote_allowlist_extracts_primary_quotes_and_filters_trivial():
     now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
     s_spaced = ArticleSupport(
