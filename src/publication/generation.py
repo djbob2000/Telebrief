@@ -204,6 +204,7 @@ class PublicationGenerationService:
 
         # Observer records each attempt into publication_generation_attempts
         observer = DatabaseGenerationAttemptObserver(uow=self.uow, run_id=run_id, repo=self.repo)
+        fallback_attempt_id: int | None = None
 
         try:
             if run.publication_type in DIGEST_PUBLICATION_TYPES:
@@ -534,14 +535,15 @@ class PublicationGenerationService:
                         raise PublicationGenerationError(
                             "Digest narrative generation failed: AI writer was unable to produce a valid draft"
                         )
-                    att_id = await observer.attempt_started(
+                    fallback_attempt_id = await observer.attempt_started(
                         "story_renderer_fallback", metadata={"renderer": run.publication_type}
                     )
                     if run.publication_type == "digest_channel":
                         title, lead, body = renderer.render_channel_digest(
                             frozen, snapshot_at=run.snapshot_at
                         )
-                        await observer.attempt_finished(att_id, "succeeded")
+                        await observer.attempt_finished(fallback_attempt_id, "succeeded")
+                        fallback_attempt_id = None
                     else:
                         from src.publication.digest_coverage import (
                             build_digest_coverage_trace,
@@ -661,7 +663,10 @@ class PublicationGenerationService:
                             narrative_draft=final_digest_draft,
                             presentation_plan=presentation_plan,
                         )
-                        await observer.attempt_finished(att_id, "succeeded", metadata=coverage_meta)
+                        await observer.attempt_finished(
+                            fallback_attempt_id, "succeeded", metadata=coverage_meta
+                        )
+                        fallback_attempt_id = None
 
             else:
                 title, lead, body = await self.generator.generate_from_frozen_input(
@@ -748,6 +753,21 @@ class PublicationGenerationService:
             raise
         except Exception as exc:
             logger.error("generation failed completely for run %s: %s", run_id, exc)
+            if fallback_attempt_id is not None:
+                try:
+                    await observer.attempt_finished(
+                        fallback_attempt_id,
+                        "failed",
+                        error_kind="digest_deterministic_fallback_failed",
+                        metadata={"error_message": str(exc)},
+                    )
+                except Exception as observer_exc:
+                    logger.error(
+                        "could not close fallback attempt %s for run %s: %s",
+                        fallback_attempt_id,
+                        run_id,
+                        observer_exc,
+                    )
             async with self.uow.transaction() as conn:
                 await self.repo.transition_run(
                     conn, run_id, "failed", error_kind=type(exc).__name__

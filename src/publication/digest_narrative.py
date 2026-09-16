@@ -20,11 +20,50 @@ _INTERNAL_LEAKAGE_RE = re.compile(r"\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)
 _INTERNAL_REPLY_ANNOTATION_RE = re.compile(
     r'\s*\(in_reply_to:\s*".*"\)\s*$', re.IGNORECASE | re.DOTALL
 )
+_DIGEST_ATTRIBUTION_RE = re.compile(
+    r"\b(?:"
+    r"(?:по\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев))"
+    r"|(?:(?:жители|горожане|очевидцы)\s+(?:сообщают|пишут|отмечают|жалуются))"
+    r")\s*(?:,|:)??\s*(?:что\s+)?",
+    re.IGNORECASE,
+)
+_DIGEST_LEADING_ATTRIBUTION_RE = re.compile(
+    r"^\s*(?:"
+    r"(?:по\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев))"
+    r"|(?:(?:жители|горожане|очевидцы)\s+(?:сообщают|пишут|отмечают|жалуются))"
+    r")\s*(?:,|:)??\s*(?:что\s+)?",
+    re.IGNORECASE,
+)
 
 
 def _sanitize_digest_support_text(text: str) -> str:
     """Remove Event-First reply metadata before projecting evidence to readers."""
     return _INTERNAL_REPLY_ANNOTATION_RE.sub("", text or "").strip()
+
+
+def _strip_leading_digest_attribution(text: str) -> str:
+    """Remove a leading community-attribution phrase from a reader headline."""
+    cleaned = _DIGEST_LEADING_ATTRIBUTION_RE.sub("", text or "", count=1).strip()
+    if not cleaned:
+        return text.strip()
+    return cleaned[:1].upper() + cleaned[1:]
+
+
+def _deduplicate_digest_attribution(text: str) -> str:
+    """Keep the first attribution in a fallback item and remove repeated ones."""
+    seen = False
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal seen
+        if not seen:
+            seen = True
+            return match.group(0)
+        return ""
+
+    cleaned = _DIGEST_ATTRIBUTION_RE.sub(replace, text or "")
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    cleaned = re.sub(r"([.!?])\s*,", r"\1", cleaned)
+    return cleaned.strip()
 
 
 def _clean_str_list(items: Any) -> list[str]:
@@ -1499,6 +1538,9 @@ def build_deterministic_digest_draft(
                         body_text[:DIGEST_ITEM_BODY_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ")
                         + "."
                     )
+                body_text = _deduplicate_digest_attribution(body_text)
+                if _DIGEST_ATTRIBUTION_RE.search(body_text):
+                    headline = _strip_leading_digest_attribution(headline)
 
                 base_claim_text = _clean_fact_sentence(usable_facts[0])
                 base_claim_text = re.sub(r"\bиз-за\b", "при", base_claim_text, flags=re.IGNORECASE)
@@ -1789,6 +1831,9 @@ def build_deterministic_digest_draft(
                 body_text = (
                     body_text[:DIGEST_ITEM_BODY_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ") + "."
                 )
+            body_text = _deduplicate_digest_attribution(body_text)
+            if _DIGEST_ATTRIBUTION_RE.search(body_text):
+                headline = _strip_leading_digest_attribution(headline)
 
             item_claims = []
             for sid in story_group:

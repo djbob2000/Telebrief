@@ -12,6 +12,8 @@ from src.publication.digest_narrative import (
     DigestEditorialItemDraft,
     DigestNarrativeBlockDraft,
     DigestNarrativeDraft,
+    _deduplicate_digest_attribution,
+    _strip_leading_digest_attribution,
     build_deterministic_digest_draft,
 )
 from src.publication.digest_presentation import (
@@ -64,6 +66,22 @@ def test_digest_coverage_trace_reader_visible_texts() -> None:
     assert trace.to_dict()[0]["detail_texts"] == [
         "Бесплатная зарядка: На Гагарина, 1 жители могут бесплатно зарядить телефоны.",
     ]
+
+
+def test_deterministic_digest_keeps_one_attribution_per_item() -> None:
+    body = (
+        "По сообщениям жителей, света нет в Центре. "
+        "По сообщениям жителей, на Слободке электричество появилось. "
+        "Жители сообщают, что напряжение остаётся нестабильным."
+    )
+
+    cleaned = _deduplicate_digest_attribution(body)
+
+    assert cleaned.count("По сообщениям жителей") == 1
+    assert "Жители сообщают" not in cleaned
+    assert _strip_leading_digest_attribution("Жители сообщают о перебоях со светом") == (
+        "О перебоях со светом"
+    )
 
 
 def test_build_digest_coverage_trace_for_ai_draft() -> None:
