@@ -599,6 +599,7 @@ class OpenAIProvider(AIProvider):
         )
         self.logger = logger
         self.base_url = base_url.lower()
+        self.request_timeout = float(timeout)
         max_concurrency_str = os.environ.get("OPENROUTER_MAX_CONCURRENCY", "4")
         try:
             max_concurrency = max(1, int(max_concurrency_str))
@@ -685,10 +686,19 @@ class OpenAIProvider(AIProvider):
         _t0 = time.monotonic()
         try:
             async with self._semaphore:
-                try:
-                    response = await self.client.chat.completions.create(**create_kwargs)
-                except OpenAIBadRequestError as exc:
-                    response = await self._handle_bad_request(create_kwargs, exc, reasoning_effort)
+                # httpx's read timeout is reset by any bytes received from the
+                # server.  Some gateways keep a stalled generation alive with
+                # periodic TLS/HTTP keep-alives, so inactivity alone is not a
+                # sufficient bound for a publication job.  Bound the complete
+                # provider operation, including compatibility retries, by the
+                # configured API timeout.
+                async with asyncio.timeout(self.request_timeout):
+                    try:
+                        response = await self.client.chat.completions.create(**create_kwargs)
+                    except OpenAIBadRequestError as exc:
+                        response = await self._handle_bad_request(
+                            create_kwargs, exc, reasoning_effort
+                        )
         except Exception as exc:
             _elapsed = time.monotonic() - _t0
             self.logger.warning(

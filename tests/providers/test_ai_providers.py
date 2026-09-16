@@ -1,5 +1,6 @@
 """Tests for ai_providers module."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -304,6 +305,26 @@ async def test_openai_provider_chat_completion(mock_logger):
         assert "max_completion_tokens" in call_kwargs
         assert "max_tokens" not in call_kwargs
         assert call_kwargs["max_completion_tokens"] == 500
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_openai_provider_enforces_total_request_deadline(mock_logger):
+    """A keep-alive response cannot extend the configured request deadline indefinitely."""
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = OpenAIProvider(api_key="sk-test", logger=mock_logger, timeout=0.01)
+
+        async def stalled_request(**kwargs):
+            await asyncio.sleep(1)
+
+        provider.client.chat.completions.create = stalled_request
+
+        with pytest.raises(asyncio.TimeoutError):
+            await provider.chat_completion(
+                messages=[{"role": "user", "content": "Hello"}],
+                model="gpt-5-nano",
+                max_tokens=500,
+            )
 
 
 @pytest.mark.unit
