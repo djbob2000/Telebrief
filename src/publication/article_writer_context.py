@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from collections.abc import Sequence
 
 from src.publication.article_context import (
@@ -16,10 +17,14 @@ _URL_RE = re.compile(r"https?://\S+|\bwww\.\S+|\bt\.me/\S+", re.IGNORECASE)
 # Keep the writer request compact enough that the model has room for a
 # coherent article response.  The complete ArticleEditorialContext remains
 # available to deterministic validation; this is only the prompt projection.
-ARTICLE_WRITER_CONTEXT_MAX_CHARS = 320_000
+ARTICLE_WRITER_CONTEXT_MAX_CHARS = 120_000
 _SUPPORT_FACT_MAX_CHARS = 900
 _SUPPORT_SOURCE_MAX_CHARS = 1_800
 _SUPPORT_COMPACT_FACT_MAX_CHARS = 360
+_PACKET_FACT_MAX_CHARS = 420
+_PACKET_COMPACT_FACT_MAX_CHARS = 180
+_PACKET_SUPPORT_LIMIT = {"DEVELOP": 3, "WEAVE": 2, "BRIEF": 1}
+_QUOTE_ALLOWLIST_MAX_CHARS = 12_000
 
 
 def sanitize_writer_source_text(text: str) -> str:
@@ -127,6 +132,94 @@ def _render_coverage_plan(
     return "\n".join(lines)
 
 
+def _render_article_story_packets(
+    context: ArticleEditorialContext,
+    coverage_plan: ArticleCoveragePlan,
+) -> tuple[list[str], list[str]]:
+    """Materialize the zero-loss coverage plan into bounded writer packets.
+
+    The complete plan and support index remain available to deterministic
+    validation. The writer receives a small, story-local set of facts for
+    every Story instead of every duplicate evidence row and pooled source
+    text.
+    """
+    support_by_id = getattr(context, "support_by_id", {})
+    supports_by_story: dict[str, list[ArticleSupport]] = defaultdict(list)
+    for support in context.support_index:
+        if support.publication_use != "EXCLUDE" and support.story_id:
+            supports_by_story[support.story_id].append(support)
+
+    packets: list[str] = []
+    compact_packets: list[str] = []
+    for item in coverage_plan.stories:
+        depth = str(item.prominence)
+        limit = _PACKET_SUPPORT_LIMIT.get(depth, 1)
+        planned_ids = list(dict.fromkeys((*item.detail_support_ids, *item.support_ids)))
+
+        # Longitudinal plans may pool support IDs across a thread. Prefer the
+        # Story's own evidence first, then use pooled evidence only to fill
+        # the small packet budget.
+        own_ids = [
+            support.support_id
+            for support in supports_by_story.get(item.story_id, ())
+            if support.support_id in planned_ids
+        ]
+        selected_ids = list(dict.fromkeys((*own_ids, *planned_ids)))[:limit]
+        selected_supports = [support_by_id[sid] for sid in selected_ids if sid in support_by_id]
+
+        header = (
+            f"[ARTICLE STORY PACKET {item.story_id}] depth={depth} "
+            f"topic={_compact_text(item.topic, 180)}"
+        )
+        full_lines = [header]
+        compact_lines = [header]
+        for support in selected_supports:
+            raw_fact = sanitize_writer_source_text(support.text or support.source_text)
+            full_fact = _compact_text(raw_fact, _PACKET_FACT_MAX_CHARS)
+            compact_fact = _compact_text(raw_fact, _PACKET_COMPACT_FACT_MAX_CHARS)
+            framing = _support_framing(support)
+            full_lines.append(
+                f"  support={support.support_id} kind={support.evidence_kind} "
+                f"framing={framing} fact={full_fact}"
+            )
+            compact_lines.append(
+                f"  support={support.support_id} kind={support.evidence_kind} fact={compact_fact}"
+            )
+
+        if not selected_supports:
+            full_lines.append("  support=none fact=No citable support was materialized.")
+            compact_lines.append("  support=none fact=No citable support was materialized.")
+
+        packets.append("\n".join(full_lines))
+        compact_packets.append("\n".join(compact_lines))
+
+    return packets, compact_packets
+
+
+def _fit_story_packets(
+    prefix: str,
+    full_packets: Sequence[str],
+    compact_packets: Sequence[str],
+) -> str:
+    """Fit every Story packet in budget, reducing facts before Story IDs."""
+    remaining = max(0, ARTICLE_WRITER_CONTEXT_MAX_CHARS - len(prefix))
+
+    def join_if_fits(packets: Sequence[str]) -> str | None:
+        body = "\n\n".join(packets)
+        return body if len(body) <= remaining else None
+
+    body = join_if_fits(full_packets) or join_if_fits(compact_packets)
+    if body is None:
+        # Headers are the last-resort materialization. This keeps the full
+        # coverage map in the prompt while deterministic validation retains
+        # the complete evidence index outside the prompt.
+        headers = [packet.split("\n", 1)[0] for packet in compact_packets]
+        body = join_if_fits(headers)
+    if body is None:
+        raise ValueError("article story packet headers exceed writer context budget")
+    return "\n\n".join(part for part in (prefix, body) if part).strip()
+
+
 def render_article_writer_context(
     context: ArticleEditorialContext,
     coverage_plan: ArticleCoveragePlan | None = None,
@@ -171,8 +264,14 @@ def render_article_writer_context(
         quote_lines = [
             'QUOTE ALLOWLIST (ONLY these exact primary-source phrases may be in quotation marks «...» / "..."):'
         ]
+        quote_budget = _QUOTE_ALLOWLIST_MAX_CHARS - len(quote_lines[0])
         for q in allowlist:
-            quote_lines.append(f"- «{q}»")
+            line = f"- «{q}»"
+            if quote_budget - len(line) < 0:
+                quote_lines.append("- Additional quotes are not exposed to the writer.")
+                break
+            quote_lines.append(line)
+            quote_budget -= len(line)
         blocks.append("\n".join(quote_lines))
     else:
         blocks.append(
@@ -185,6 +284,10 @@ def render_article_writer_context(
         for item in coverage_plan.stories:
             allowed_support_ids.update(item.support_ids)
             allowed_support_ids.update(item.detail_support_ids)
+
+        prefix = "\n\n".join(blocks).strip()
+        packet_blocks, compact_packet_blocks = _render_article_story_packets(context, coverage_plan)
+        return _fit_story_packets(prefix, packet_blocks, compact_packet_blocks)
 
     # Several evidence rows often carry the same fact and source text (for
     # example, one fact linked to multiple fragments).  They all remain

@@ -1321,6 +1321,13 @@ class ArticleGenerator:
             "Верните только Markdown статьи, без JSON-обёртки и пояснений."
         )
 
+        self.logger.info(
+            "Article writer materialized input: stories=%d context_chars=%d prompt_chars=%d",
+            len(getattr(coverage_plan, "stories", ())),
+            len(context_str),
+            len(system_prompt) + len(user_prompt),
+        )
+
         from src.publication.article_finalization import ArticleFinalizer
 
         writer_draft: StructuredArticleDraft | None = None
