@@ -41,6 +41,38 @@ class DigestPresentationUnit:
 
 
 @dataclass(frozen=True)
+class TopicBundle:
+    """Thematic aggregate of related stories within a rubric."""
+
+    bundle_id: str
+    rubric_id: str
+    topic_key: str
+    topic_label: str
+    emoji: str
+    story_ids: tuple[str, ...]
+    support_ids: tuple[str, ...]
+    fact_ledger: tuple[str, ...]
+    locations: tuple[str, ...] = ()
+    required_facts: tuple[RequiredDigestFact, ...] = ()
+    status_summary: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "bundle_id": self.bundle_id,
+            "rubric_id": self.rubric_id,
+            "topic_key": self.topic_key,
+            "topic_label": self.topic_label,
+            "emoji": self.emoji,
+            "story_ids": list(self.story_ids),
+            "support_ids": list(self.support_ids),
+            "fact_ledger": list(self.fact_ledger),
+            "locations": list(self.locations),
+            "required_facts": [rf.to_dict() for rf in self.required_facts],
+            "status_summary": self.status_summary,
+        }
+
+
+@dataclass(frozen=True)
 class RequiredDigestFact:
     """A discrete material operational proposition required for lossless digest coverage."""
 
@@ -1039,11 +1071,443 @@ def _canonical_service_family(card: Any) -> str | None:
     return None
 
 
+def _canonical_topic_family(card: Any, rubric_id: str = "") -> tuple[str, str, str]:
+    """Return (topic_key, topic_label, emoji) for a card based on its content and rubric."""
+    cat = (getattr(card, "category", "") or "").casefold()
+    topic = (getattr(card, "topic", "") or "").casefold()
+    summary = (getattr(card, "summary", "") or "").casefold()
+    tags = {str(t).casefold() for t in getattr(card, "tags", []) or []}
+    text_corpus = f"{cat} {topic} {summary} {' '.join(tags)}"
+    tokens = set(re.findall(r"[a-zа-яё0-9]+", text_corpus))
+
+    # 1. Electricity / Электроснабжение
+    if {
+        "electricity",
+        "power",
+        "blackout",
+        "свет",
+        "электроснабжение",
+        "электроэнергия",
+        "электричество",
+        "подстанция",
+        "подстанции",
+        "рэс",
+        "горсвет",
+        "напряжение",
+        "киловольт",
+    } & tokens:
+        if not any(w in topic for w in ("услуги электрика", "электрик на дом", "частный электрик")):
+            return ("electricity", "Электроснабжение", "⚡️")
+
+    # 2. Water / Водоснабжение
+    if {"water", "водоснабжение", "вода", "водоканал", "водопровод", "порыв", "водоводе"} & tokens:
+        if not any(w in topic for w in ("услуги сантехника", "сантехник", "баки")):
+            return ("water", "Водоснабжение", "💧")
+
+    # 3. Gas / Газоснабжение
+    if {"gas", "газ", "газоснабжение", "горгаз", "газопровод"} & tokens:
+        return ("gas", "Газоснабжение", "💨")
+
+    # 4. Heating / Отопление
+    if {"heating", "отопление", "теплосеть", "котельная", "теплоснабжение"} & tokens:
+        return ("heating", "Отопление", "♨️")
+
+    # 5. Telecom / Connectivity / Internet
+    if {
+        "telecom",
+        "connectivity",
+        "связь",
+        "интернет",
+        "провайдер",
+        "мобильная",
+        "сотовая",
+        "вышка",
+        "оптика",
+        "миртелеком",
+        "онэт",
+    } & tokens:
+        return ("connectivity", "Связь и интернет", "🌐")
+
+    # 6. Transport & Roads
+    if {
+        "transport",
+        "транспорт",
+        "автобус",
+        "автобусы",
+        "маршрутка",
+        "маршрут",
+        "перевозки",
+        "дорога",
+        "дороги",
+        "чонгар",
+        "перекрытие",
+        "трасса",
+    } & tokens:
+        return ("transport", "Транспорт и дороги", "🚌")
+
+    # 7. Safety / Strikes / Air Defense
+    if {
+        "взрыв",
+        "взрывы",
+        "обстрел",
+        "обстрелы",
+        "пво",
+        "бпла",
+        "дрон",
+        "дроны",
+        "прилет",
+        "прилеты",
+        "сирена",
+        "тревога",
+        "хлопок",
+        "хлопки",
+        "атеш",
+    } & tokens:
+        return ("strikes", "Безопасность и происшествия", "💥")
+
+    # 8. Fires / Emergency
+    if {"пожар", "пожары", "возгорание", "мчс", "спасатели"} & tokens:
+        return ("fire", "Пожары и происшествия", "🔥")
+
+    # 9. Civic services & Documents
+    if {
+        "паспорт",
+        "паспортный",
+        "мфц",
+        "гибдд",
+        "гаи",
+        "пенсионный",
+        "госуслуги",
+        "нотариус",
+        "доверенность",
+        "прописка",
+        "документы",
+        "заявление",
+    } & tokens:
+        return ("civic_services", "Городские службы и документы", "🏛")
+
+    # 10. Banks & Cash
+    if {
+        "банк",
+        "банки",
+        "банкомат",
+        "банкоматы",
+        "наличные",
+        "сбер",
+        "пнкб",
+        "карта",
+        "перерасчет",
+    } & tokens:
+        return ("banking", "Банки и наличные", "🏧")
+
+    # 11. Medicine & Health
+    if {
+        "больница",
+        "больницы",
+        "поликлиника",
+        "аптека",
+        "аптеки",
+        "врач",
+        "врачи",
+        "медицина",
+        "медицинский",
+        "флюорография",
+        "визант",
+    } & tokens:
+        return ("health", "Медицина и здоровье", "🏥")
+
+    # 12. Education & Culture
+    if {
+        "школа",
+        "школы",
+        "детсад",
+        "детсады",
+        "училище",
+        "вуз",
+        "образование",
+        "спорт",
+        "культура",
+        "музей",
+    } & tokens:
+        return ("education", "Образование и культура", "🎓")
+
+    # 13. Social help & benefits
+    if {
+        "выплата",
+        "выплаты",
+        "пособие",
+        "пособия",
+        "гуманитарная",
+        "гумпомощь",
+        "помощь",
+        "льготы",
+        "социальная",
+    } & tokens:
+        return ("social", "Социальная помощь", "🏢")
+
+    # 14. Economy & Business
+    if {
+        "магазин",
+        "магазины",
+        "рынок",
+        "цена",
+        "цены",
+        "торговля",
+        "предприятие",
+        "бизнес",
+    } & tokens:
+        return ("economy", "Торговля и экономика", "💼")
+
+    # Fallback to rubric ID
+    r = (getattr(card, "rubric_id", "") or rubric_id or cat).casefold()
+    if "safety" in r or "безопасн" in r:
+        return ("safety_general", "Безопасность", "🛡")
+    if "infrastructure" in r or "utilities" in r or "коммун" in r or "жкх" in r:
+        return ("infrastructure_general", "Коммунальная сфера", "⚡️")
+    if "comm" in r or "связ" in r:
+        return ("connectivity_general", "Связь и интернет", "🌐")
+    if "mobil" in r or "transport" in r or "трансп" in r:
+        return ("mobility_general", "Транспорт и дороги", "🚌")
+    if "health" in r or "медиц" in r:
+        return ("health_general", "Медицина и здоровье", "🏥")
+    if "civic" in r or "служб" in r:
+        return ("civic_general", "Городские службы", "🏛")
+    if "educ" in r or "образ" in r:
+        return ("education_general", "Образование и культура", "🎓")
+    if "soc" in r or "соц" in r:
+        return ("social_general", "Социальная помощь", "🏢")
+    if "econ" in r or "эконом" in r:
+        return ("economy_general", "Экономика и бизнес", "💼")
+    if "focus" in r or "фокус" in r:
+        return ("focus_general", "В фокусе внимания", "🎯")
+
+    return ("other_general", "Городские события", "📌")
+
+
+_KNOWN_LOCATIONS = (
+    # Районы и микрорайоны
+    "Центр",
+    "Нагорная часть",
+    "Нагорный район",
+    "Колония",
+    "Слободка",
+    "Лиски",
+    "Азмол",
+    "АКЗ",
+    "Пески",
+    "Дальняя Коса",
+    "Ближняя Коса",
+    "Коса",
+    "РТС",
+    "Военный городок",
+    "8 Марта",
+    "Черёмушки",
+    "Стекловолокно",
+    # Улицы и проспекты
+    "проспект Победы",
+    "проспект Труда",
+    "улица Гайдара",
+    "улица Кирово",
+    "улица Орджоникидзе",
+    "улица Руденко",
+    "улица Правды",
+    "улица Свободы",
+    "улица Шевченко",
+    "улица Дюмина",
+    "улица Крупской",
+    "улица Морозова",
+    "улица Нагорная",
+    "улица Пионерская",
+    "улица Тверская",
+    "улица Карла Маркса",
+    "улица Франко",
+    "улица Ростовская",
+    "улица Тищенко",
+    "Мелитопольское шоссе",
+    "Восточный проспект",
+    # Ориентиры
+    "район 19 училища",
+    "19 училище",
+    "район Пакета",
+    "район Меры",
+    "район Сбера",
+    "самолёт",
+    "вокзал",
+    "водоканал",
+    "ПНС Димитрова",
+    "ТЦ «Дель Мар»",
+)
+
+
+def _extract_bundle_locations(texts: Sequence[str]) -> tuple[str, ...]:
+    """Extract and deduplicate known locations from a collection of texts."""
+    found: list[str] = []
+    combined = " ".join(texts)
+    combined_l = combined.casefold()
+    for loc in _KNOWN_LOCATIONS:
+        if loc.casefold() in combined_l and loc not in found:
+            found.append(loc)
+    for match in re.finditer(r"\b(?:ул\.|улице|улицы|на|по)\s+([А-Я][а-я]+(?:\s+\d+)?)", combined):
+        val = match.group(1).strip()
+        if len(val) >= 4 and val not in found and not val.startswith(("Бердян", "Город", "Район")):
+            found.append(val)
+    return tuple(found)
+
+
+def _clean_fact_sentence(text: str) -> str:
+    """Sanitize a raw sentence from chat noise, questions, and metadata."""
+    t = text.strip()
+    if not t:
+        return ""
+    t = re.sub(
+        r"^(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    ).strip()
+    if t:
+        t = t[:1].upper() + t[1:]
+    return t.rstrip(". ") + "."
+
+
+def _is_usable_fact_line(text: str) -> bool:
+    """Filter out chat noise, resident questions, classified ads, and meta comments."""
+    if not text or len(text.strip()) < 10:
+        return False
+    t_l = text.casefold()
+    if "?" in text or any(
+        t_l.startswith(q)
+        for q in ("кто знает", "подскажите", "скажите", "где найти", "работает ли", "люди кто")
+    ):
+        return False
+    if any(
+        k in t_l for k in ("куплю", "продам", "цена от", "позвонить по номеру", "купить стекло")
+    ):
+        return False
+    if "эмодзи" in t_l or "смайлик" in t_l:
+        return False
+    if any(k in t_l for k in ("чо за фигня", "идите нах", "кинули не только вас")):
+        return False
+    return True
+
+
+def build_thematic_topic_bundles(
+    cards: Sequence[Any],
+    *,
+    evidence: Mapping[str, Any] | None = None,
+    required_facts: Sequence[RequiredDigestFact] = (),
+    rubric_id: str | None = None,
+) -> tuple[TopicBundle, ...]:
+    """Group story cards within rubrics into cohesive, scan-first Thematic Topic Bundles."""
+    if not cards:
+        return ()
+
+    target_cards = [
+        c for c in cards if rubric_id is None or getattr(c, "rubric_id", "") == rubric_id
+    ]
+    if not target_cards:
+        return ()
+
+    by_rubric: dict[str, list[Any]] = {}
+    for c in target_cards:
+        rid = getattr(c, "rubric_id", "") or "other"
+        by_rubric.setdefault(rid, []).append(c)
+
+    bundles: list[TopicBundle] = []
+    bundle_counter = 0
+
+    for rid, r_cards in by_rubric.items():
+        groups_by_key: dict[str, list[Any]] = {}
+        for c in r_cards:
+            t_key, _, _ = _canonical_topic_family(c, rid)
+            groups_by_key.setdefault(t_key, []).append(c)
+
+        for t_key, g_cards in groups_by_key.items():
+            bundle_counter += 1
+            sample_card = g_cards[0]
+            _, t_label, t_emoji = _canonical_topic_family(sample_card, rid)
+            story_ids = tuple(c.id for c in g_cards)
+
+            # Collect allowed supports
+            all_sups: list[str] = []
+            for c in g_cards:
+                for s in _card_allowed_supports(c):
+                    if s not in all_sups:
+                        all_sups.append(s)
+            if evidence:
+                for eid, evi in evidence.items():
+                    evi_sid = getattr(evi, "story_id", None)
+                    if (
+                        evi_sid and (str(evi_sid) in story_ids or f"story:{evi_sid}" in story_ids)
+                    ) or eid.startswith(tuple(f"{sid}:" for sid in story_ids)):
+                        if (
+                            getattr(evi, "publication_use", "PUBLISH") == "PUBLISH"
+                            and eid not in all_sups
+                        ):
+                            all_sups.append(eid)
+
+            # Collect texts for location extraction and fact ledger
+            raw_texts: list[str] = []
+            fact_candidates: list[str] = []
+            for c in g_cards:
+                if c.topic:
+                    raw_texts.append(c.topic)
+                if c.summary:
+                    raw_texts.append(c.summary)
+                    if _is_usable_fact_line(c.summary):
+                        fact_candidates.append(_clean_fact_sentence(c.summary))
+                for hf in getattr(c, "hard_facts", []) or []:
+                    if hf.text:
+                        raw_texts.append(hf.text)
+                        if _is_usable_fact_line(hf.text):
+                            fact_candidates.append(_clean_fact_sentence(hf.text))
+                for co in getattr(c, "community_observations", []) or []:
+                    if co.text:
+                        raw_texts.append(co.text)
+                        if _is_usable_fact_line(co.text):
+                            fact_candidates.append(_clean_fact_sentence(co.text))
+
+            locations = _extract_bundle_locations(raw_texts)
+
+            # Deduplicate fact ledger propositions
+            dedup_facts: list[str] = []
+            seen_cf: set[str] = set()
+            for fc in fact_candidates:
+                key = fc.casefold()
+                if key not in seen_cf and not any(key in s or s in key for s in seen_cf):
+                    seen_cf.add(key)
+                    dedup_facts.append(fc)
+
+            # Match required operational facts
+            story_id_set = set(story_ids)
+            bundle_req_facts = tuple(
+                rf for rf in required_facts if bool(set(rf.story_ids) & story_id_set)
+            )
+
+            bundles.append(
+                TopicBundle(
+                    bundle_id=f"bundle:{rid}:{t_key}",
+                    rubric_id=rid,
+                    topic_key=t_key,
+                    topic_label=t_label,
+                    emoji=t_emoji,
+                    story_ids=story_ids,
+                    support_ids=tuple(all_sups),
+                    fact_ledger=tuple(dedup_facts[:8]),
+                    locations=locations,
+                    required_facts=bundle_req_facts,
+                    status_summary="",
+                )
+            )
+
+    return tuple(bundles)
+
+
 def build_digest_presentation_units(
     cards: Sequence[Any],
     presentation_plan: Any = None,
     *,
-    max_synthesis_size: int = 24,
+    max_synthesis_size: int = 100,
     max_normal_size: int = 8,
     max_brief_size: int = 6,
 ) -> tuple[DigestPresentationUnit, ...]:
@@ -1068,11 +1532,15 @@ def build_digest_presentation_units(
             if fam:
                 gid = f"service:{fam}"
             else:
-                gid = fallback_merge_groups.get(c.id, c.id)
+                t_key, _, _ = _canonical_topic_family(c, rid)
+                if t_key and not t_key.endswith("_general"):
+                    gid = f"topic:{t_key}"
+                else:
+                    gid = fallback_merge_groups.get(c.id, c.id)
             groups_by_key.setdefault(gid, []).append(c)
 
         for gid, g_cards in groups_by_key.items():
-            is_service = gid.startswith("service:")
+            is_service = gid.startswith("service:") or gid.startswith("topic:")
             max_size = max_synthesis_size if is_service else 6
             kind: DigestPresentationUnitKind = "SYNTHESIS" if is_service else "NORMAL"
 

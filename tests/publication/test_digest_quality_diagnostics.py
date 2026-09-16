@@ -398,3 +398,51 @@ def test_detects_temporal_replay_chain():
     audit = audit_digest_prose_quality(draft, {"evi:1": evi})
     codes = [w.code for w in audit.warnings]
     assert "TEMPORAL_REPLAY_CHAIN" in codes
+
+
+def test_detects_repetitive_body_attribution():
+    evi = _make_evidence("evi:1", 1, "Свет дали")
+    item = DigestEditorialItemDraft(
+        headline="Электроснабжение",
+        body="По сообщениям жителей, свет дали на Горе. По сообщениям жителей, напряжение слабое.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:util", items=(item,)),)
+    )
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+    codes = [w.code for w in audit.warnings]
+    assert "REPETITIVE_BODY_ATTRIBUTION" in codes
+
+
+def test_detects_chat_slang_or_metadata():
+    evi = _make_evidence("evi:1", 1, "Чо за фигня со светом")
+    item = DigestEditorialItemDraft(
+        headline="Электроснабжение",
+        body="Жители Бердянска публикуют сообщения с эмодзи о перебоях.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:util", items=(item,)),)
+    )
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+    codes = [w.code for w in audit.warnings]
+    assert "CHAT_SLANG_OR_METADATA" in codes
+
+
+def test_detects_classified_ad_leak():
+    evi = _make_evidence("evi:1", 1, "Купить стекло")
+    item = DigestEditorialItemDraft(
+        headline="Объявления",
+        body="Жители предлагают купить стекло по выгодной цене.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:util", items=(item,)),)
+    )
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+    codes = [w.code for w in audit.warnings]
+    assert "CLASSIFIED_AD_LEAK" in codes

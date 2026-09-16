@@ -54,6 +54,7 @@ class DigestNarrativeBlock:
     dashboard_support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
     required_story_groups: tuple[tuple[str, ...], ...] = ()
     support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    topic_bundles: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -254,11 +255,56 @@ class DigestEditorialItemDraft:
         clean_headline = (
             re.sub(r"\bиз-за\b", "при", headline, flags=re.IGNORECASE) if headline else ""
         )
+        if clean_headline:
+            clean_headline = re.sub(
+                r"^(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
+                "",
+                clean_headline,
+                flags=re.IGNORECASE,
+            ).strip()
+            if clean_headline:
+                clean_headline = clean_headline[:1].upper() + clean_headline[1:]
+
         # Sanitize body: remove conversational assumption markers
         clean_body = body
         if clean_body:
             clean_body = re.sub(r"[«\"]по свету ноль[»\"]", "по свету ноль", clean_body)
             clean_body = re.sub(r"\s+вместо\s+220(?:\s*[вВвольт]+)?", "", clean_body)
+
+            # Strip redundant headline repetition at start of body
+            if clean_headline:
+                h_norm = clean_headline.strip(".:; ")
+                if clean_body.startswith(h_norm):
+                    clean_body = clean_body[len(h_norm) :].lstrip(" :.-–—")
+                    if clean_body:
+                        clean_body = clean_body[:1].upper() + clean_body[1:]
+
+            # Remove duplicate attribution in body if present multiple times
+            att_matches = list(
+                re.finditer(
+                    r"\b(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
+                    clean_body,
+                    flags=re.IGNORECASE,
+                )
+            )
+            if len(att_matches) > 1:
+                for m in reversed(att_matches[1:]):
+                    clean_body = clean_body[: m.start()] + clean_body[m.end() :]
+                clean_body = re.sub(
+                    r"\.\s+([a-zа-я])", lambda x: ". " + x.group(1).upper(), clean_body
+                )
+
+            # Remove chat metadata and emoji spam
+            clean_body = re.sub(
+                r"(?:публикуют\s+)?сообщения\s+с\s+эмодзи[\w\s,]*[.]?",
+                "",
+                clean_body,
+                flags=re.IGNORECASE,
+            ).strip()
+            clean_body = re.sub(
+                r"\bсмайлик(?:ами|и)?\b", "", clean_body, flags=re.IGNORECASE
+            ).strip()
+            clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
 
         clean_claims: list[DigestClaimAtom] = []
         for c in claims:
@@ -356,6 +402,7 @@ def plan_digest_narrative_blocks(
     rubrics: Sequence[Any],
     max_cards_per_block: int = 6,
     presentation_plan: Any = None,
+    use_topic_bundles: bool | None = None,
 ) -> DigestNarrativePlan:
     """Build immutable narrative blocks from classified story cards strictly preserving order."""
     if not cards:
@@ -375,6 +422,7 @@ def plan_digest_narrative_blocks(
         )
 
     presentations_by_id = {}
+    raw_presentations: tuple[Any, ...] = ()
     if presentation_plan is not None:
         raw_presentations = tuple(
             getattr(presentation_plan, "story_presentations", ())
@@ -426,12 +474,136 @@ def plan_digest_narrative_blocks(
     blocks: list[DigestNarrativeBlock] = []
 
     assigned_fact_ids: set[str] = set()
+    has_explicit_merge_groups = any(
+        bool(getattr(p, "merge_group_id", ""))
+        and getattr(p, "merge_group_id", "") != getattr(p, "story_id", "")
+        for p in raw_presentations
+    )
+    use_bundles = (
+        use_topic_bundles
+        if use_topic_bundles is not None
+        else (
+            (presentation_plan is not None or max_cards_per_block >= 20)
+            and not (has_explicit_merge_groups and max_cards_per_block < 20)
+        )
+    )
+
     for rid, rname, _ in rubric_infos:
         if not rid:
             continue
         rubric_cards = cards_by_rubric.get(rid, [])
         if not rubric_cards:
             continue
+
+        card_by_id = {c.id: c for c in rubric_cards}
+
+        if use_bundles:
+            from src.publication.digest_presentation import build_thematic_topic_bundles
+
+            plan_req_facts = (
+                getattr(presentation_plan, "required_facts", ()) if presentation_plan else ()
+            )
+            thematic_bundles = build_thematic_topic_bundles(
+                rubric_cards,
+                evidence=evidence,
+                required_facts=plan_req_facts,
+                rubric_id=rid,
+            )
+            if thematic_bundles:
+                block_id = f"block:{rid}:0"
+                story_ids = tuple(c.id for c in rubric_cards)
+                req_story_groups = tuple(b.story_ids for b in thematic_bundles)
+
+                block_support_ids: list[str] = []
+                story_support_ids_map: list[tuple[str, tuple[str, ...]]] = []
+
+                for tb in thematic_bundles:
+                    for s in tb.support_ids:
+                        if s not in block_support_ids:
+                            block_support_ids.append(s)
+                    for sid in tb.story_ids:
+                        sups = list(tb.support_ids)
+                        if sid in presentations_by_id:
+                            for det_s in presentations_by_id[sid].detail_support_ids:
+                                if det_s not in sups:
+                                    sups.insert(0, det_s)
+                                if det_s not in block_support_ids:
+                                    block_support_ids.append(det_s)
+                        if sid not in sups:
+                            sups.append(sid)
+                        c_card = card_by_id.get(sid)
+                        if c_card and c_card.id not in sups:
+                            sups.append(c_card.id)
+                        story_support_ids_map.append((sid, tuple(sups)))
+
+                notes: list[str] = []
+                for tb in thematic_bundles:
+                    for fact in tb.fact_ledger:
+                        if fact not in notes:
+                            notes.append(fact)
+                if not notes:
+                    for c in rubric_cards:
+                        if c.summary and c.summary not in notes:
+                            notes.append(c.summary)
+                        elif c.topic and c.topic not in notes:
+                            notes.append(c.topic)
+
+                detail_supports = tuple(
+                    (c.id, presentations_by_id[c.id].detail_support_ids)
+                    for c in rubric_cards
+                    if c.id in presentations_by_id and presentations_by_id[c.id].detail_support_ids
+                )
+                merge_groups = tuple(
+                    (sid, tb.bundle_id) for tb in thematic_bundles for sid in tb.story_ids
+                )
+                detail_roles = tuple(
+                    (c.id, getattr(presentations_by_id[c.id], "detail_role", "NORMAL"))
+                    for c in rubric_cards
+                    if c.id in presentations_by_id
+                )
+                pres_modes = tuple(
+                    (c.id, getattr(presentations_by_id[c.id], "mode", "DETAIL_ONLY"))
+                    for c in rubric_cards
+                    if c.id in presentations_by_id
+                )
+                dash_supports = tuple(
+                    (c.id, tuple(dashboard_supports_by_story_map.get(c.id, ())))
+                    for c in rubric_cards
+                    if c.id in dashboard_supports_by_story_map
+                )
+
+                block_req_facts: list[RequiredDigestFact] = []
+                if presentation_plan is not None and getattr(
+                    presentation_plan, "required_facts", None
+                ):
+                    story_id_set = set(story_ids)
+                    for rf in presentation_plan.required_facts:
+                        if rf.fact_id in assigned_fact_ids:
+                            continue
+                        if bool(set(rf.story_ids) & story_id_set):
+                            block_req_facts.append(rf)
+                            assigned_fact_ids.add(rf.fact_id)
+
+                blocks.append(
+                    DigestNarrativeBlock(
+                        block_id=block_id,
+                        rubric_id=rid,
+                        rubric_title=rname,
+                        story_ids=story_ids,
+                        support_ids=tuple(block_support_ids),
+                        canonical_notes=tuple(notes),
+                        required_facts=tuple(block_req_facts),
+                        detail_support_ids_by_story=detail_supports,
+                        merge_group_by_story=merge_groups,
+                        detail_roles_by_story=detail_roles,
+                        presentation_modes_by_story=pres_modes,
+                        dashboard_support_ids_by_story=dash_supports,
+                        required_story_groups=req_story_groups,
+                        support_ids_by_story=tuple(story_support_ids_map),
+                        topic_bundles=thematic_bundles,
+                    )
+                )
+                continue
 
         # Partition cards using deterministic presentation compression units
         from src.publication.digest_presentation import build_digest_presentation_units
@@ -482,9 +654,9 @@ def plan_digest_narrative_blocks(
                 req_story_groups = tuple(tuple(u.story_ids) for u in block_units)
 
             # Collect canonical notes from cards and track support ownership per story
-            notes: list[str] = []
-            block_support_ids: list[str] = []
-            story_support_ids_map: list[tuple[str, tuple[str, ...]]] = []
+            notes = []
+            block_support_ids = []
+            story_support_ids_map = []
 
             for c in chunk:
                 story_sups: list[str] = []
@@ -570,7 +742,7 @@ def plan_digest_narrative_blocks(
             )
 
             # Assign required facts matching this block
-            block_req_facts: list[RequiredDigestFact] = []
+            block_req_facts = []
             if presentation_plan is not None and getattr(presentation_plan, "required_facts", None):
                 story_id_set = set(story_ids)
                 for rf in presentation_plan.required_facts:
@@ -1145,6 +1317,182 @@ def build_deterministic_digest_draft(
     block_drafts: list[DigestNarrativeBlockDraft] = []
     for plan_block in narrative_plan.blocks:
         item_drafts: list[DigestEditorialItemDraft] = []
+
+        if getattr(plan_block, "topic_bundles", None):
+            from src.publication.digest_presentation import (
+                _clean_fact_sentence,
+                _is_usable_fact_line,
+            )
+
+            for bundle in plan_block.topic_bundles:
+                usable_facts = [f for f in bundle.fact_ledger if _is_usable_fact_line(f)]
+                if not usable_facts:
+                    for sid in bundle.story_ids:
+                        c = cards_by_id.get(sid)
+                        if c and c.summary and _is_usable_fact_line(c.summary):
+                            usable_facts.append(_clean_fact_sentence(c.summary))
+                        elif c and c.topic and _is_usable_fact_line(c.topic):
+                            usable_facts.append(_clean_fact_sentence(c.topic))
+                if not usable_facts:
+                    usable_facts = [
+                        f"{bundle.topic_label} в городе остаётся на контроле городских служб."
+                    ]
+
+                if len(bundle.story_ids) == 1:
+                    c = cards_by_id.get(bundle.story_ids[0])
+                    if (
+                        c
+                        and c.topic
+                        and len(c.topic.strip()) >= 3
+                        and not any(
+                            w in c.topic.casefold()
+                            for w in ("городские события", "разное", "другое")
+                        )
+                    ):
+                        headline = c.topic.strip()
+                    elif bundle.locations:
+                        locs_text = ", ".join(bundle.locations[:3])
+                        headline = f"{bundle.topic_label}: ситуация в районах {locs_text}"
+                    else:
+                        headline = f"{bundle.topic_label}: текущая обстановка"
+                elif bundle.locations:
+                    locs_text = ", ".join(bundle.locations[:3])
+                    headline = f"{bundle.topic_label}: ситуация в районах {locs_text}"
+                else:
+                    headline = f"{bundle.topic_label}: текущая обстановка"
+                if len(headline) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
+                    headline = (
+                        headline[:DIGEST_ITEM_HEADLINE_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ")
+                    )
+
+                body_sentences: list[str] = []
+                for f in usable_facts[:3]:
+                    cf = _clean_fact_sentence(f)
+                    if cf and cf not in body_sentences:
+                        body_sentences.append(cf)
+                if not body_sentences:
+                    body_sentences = [
+                        f"{bundle.topic_label} в городе остаётся на контроле городских служб."
+                    ]
+
+                is_community = any(
+                    getattr(evidence.get(s), "kind", "")
+                    in {"community_report", "community_observation", "quote_assertion"}
+                    or getattr(evidence.get(s), "source_role", "") in {"citizen", "community"}
+                    for s in bundle.support_ids
+                    if s in evidence
+                )
+                first_sent = body_sentences[0]
+                if is_community:
+                    if not first_sent.casefold().startswith(
+                        ("по сообщениям", "жители сообщают", "по словам")
+                    ):
+                        first_sent = (
+                            f"По сообщениям жителей, {first_sent[:1].lower() + first_sent[1:]}"
+                        )
+                else:
+                    if not first_sent.casefold().startswith(
+                        ("по информации", "по данным", "согласно")
+                    ):
+                        first_sent = f"По информации коммунальных служб, {first_sent[:1].lower() + first_sent[1:]}"
+                body_sentences[0] = first_sent
+
+                body_text = " ".join(body_sentences)
+                if len(body_text) > DIGEST_ITEM_BODY_MAX_CHARS:
+                    body_text = (
+                        body_text[:DIGEST_ITEM_BODY_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ")
+                        + "."
+                    )
+
+                chosen_sups: list[str] = []
+                for sid in bundle.story_ids:
+                    pres = presentations_by_id.get(sid)
+                    if pres and pres.detail_support_ids:
+                        for s in pres.detail_support_ids:
+                            if s not in chosen_sups:
+                                chosen_sups.append(s)
+
+                bundle_req_facts = [
+                    rf
+                    for rf in plan_block.required_facts
+                    if bool(set(rf.story_ids) & set(bundle.story_ids))
+                ]
+                for rf in bundle_req_facts:
+                    for s in rf.support_ids:
+                        if s not in chosen_sups:
+                            chosen_sups.append(s)
+
+                has_explicit_detail_supports = any(
+                    bool(
+                        presentations_by_id.get(sid) and presentations_by_id[sid].detail_support_ids
+                    )
+                    for sid in bundle.story_ids
+                )
+                if not has_explicit_detail_supports:
+                    for s in bundle.support_ids:
+                        if s not in chosen_sups and s in support_map:
+                            chosen_sups.append(s)
+                        if len(chosen_sups) >= 6:
+                            break
+
+                if not chosen_sups:
+                    chosen_sups = (
+                        list(bundle.support_ids[:2])
+                        if bundle.support_ids
+                        else [bundle.story_ids[0]]
+                    )
+
+                base_claim_text = _clean_fact_sentence(usable_facts[0])
+                base_claim_text = re.sub(r"\bиз-за\b", "при", base_claim_text, flags=re.IGNORECASE)
+                item_claims: list[DigestClaimAtom] = [
+                    DigestClaimAtom(
+                        text=base_claim_text,
+                        covered_story_ids=tuple(bundle.story_ids),
+                        cited_support_ids=tuple(chosen_sups),
+                        covered_fact_ids=(),
+                    )
+                ]
+                for rf in bundle_req_facts:
+                    rf_text = _clean_fact_sentence(rf.text or base_claim_text)
+                    rf_text = re.sub(r"\bиз-за\b", "при", rf_text, flags=re.IGNORECASE)
+                    rf_sups = [s for s in rf.support_ids if s in chosen_sups] or list(
+                        rf.support_ids[:1]
+                    )
+                    for s in chosen_sups:
+                        if s not in rf_sups and s in support_map:
+                            rf_sups.append(s)
+                            if len(rf_sups) >= 4:
+                                break
+                    item_claims.append(
+                        DigestClaimAtom(
+                            text=rf_text,
+                            covered_story_ids=tuple(set(rf.story_ids) & set(bundle.story_ids))
+                            or tuple(bundle.story_ids[:1]),
+                            cited_support_ids=tuple(rf_sups),
+                            covered_fact_ids=(rf.fact_id,),
+                        )
+                    )
+
+                item_drafts.append(
+                    DigestEditorialItemDraft(
+                        headline=headline,
+                        body=body_text,
+                        emoji=bundle.emoji,
+                        covered_story_ids=tuple(bundle.story_ids),
+                        cited_support_ids=tuple(chosen_sups),
+                        claims=tuple(item_claims),
+                    )
+                )
+
+            if item_drafts:
+                block_drafts.append(
+                    DigestNarrativeBlockDraft(
+                        block_id=plan_block.block_id,
+                        items=tuple(item_drafts),
+                    )
+                )
+            continue
+
         groups_to_cover = (
             plan_block.required_story_groups
             if plan_block.required_story_groups
@@ -1290,7 +1638,8 @@ def build_deterministic_digest_draft(
                             if not text.casefold().startswith(
                                 ("по сообщениям", "жители сообщают", "по словам")
                             ):
-                                text = f"По сообщениям жителей, {text[:1].lower() + text[1:]}"
+                                if not group_rendered_sentences:
+                                    text = f"По сообщениям жителей, {text[:1].lower() + text[1:]}"
                         group_rendered_sentences.append(text.rstrip(". ") + ".")
 
             topic = lead_topic
@@ -1358,7 +1707,7 @@ def build_deterministic_digest_draft(
                     body_text[:DIGEST_ITEM_BODY_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ") + "."
                 )
 
-            item_claims: list[DigestClaimAtom] = []
+            item_claims = []
             for sid in story_group:
                 c_sups = sid_chosen_supports.get(sid, [])
                 c_texts = sid_support_texts.get(sid, [])
@@ -1399,10 +1748,33 @@ def build_deterministic_digest_draft(
                         )
                     )
 
+            # Infer emoji if not set
+            legacy_item_emoji = ""
+            comb_l = f"{headline} {body_text}".casefold()
+            if any(w in comb_l for w in ("вод", "водопровод", "водоканал", "водоснабжен")):
+                legacy_item_emoji = "💧"
+            elif any(
+                w in comb_l for w in ("свет", "электрич", "напряжен", "подстанц", "обрыв", "лэп")
+            ):
+                legacy_item_emoji = "⚡️"
+            elif any(w in comb_l for w in ("газ", "газоснабжен", "газопровод")):
+                legacy_item_emoji = "💨"
+            elif any(w in comb_l for w in ("отоплен", "тепло")):
+                legacy_item_emoji = "♨️"
+            elif any(w in comb_l for w in ("связь", "интернет", "провайдер", "мобильн")):
+                legacy_item_emoji = "🌐"
+            elif any(w in comb_l for w in ("транспорт", "автобус", "маршрутк")):
+                legacy_item_emoji = "🚌"
+            elif any(w in comb_l for w in ("больниц", "поликлиник", "аптек", "врач")):
+                legacy_item_emoji = "🏥"
+            elif any(w in comb_l for w in ("взрыв", "обстрел", "пожар", "сирен")):
+                legacy_item_emoji = "💥"
+
             item_drafts.append(
                 DigestEditorialItemDraft(
                     headline=headline,
                     body=body_text,
+                    emoji=legacy_item_emoji,
                     covered_story_ids=tuple(story_group),
                     cited_support_ids=tuple(group_chosen_supports),
                     claims=tuple(item_claims),
@@ -2241,40 +2613,89 @@ class DigestNarrativeWriter:
 
         blocks_payload = []
         for b in plan.blocks:
-            supports_payload = []
-            for sid in b.support_ids:
-                if sid in evidence:
-                    evi = evidence[sid]
-                    supports_payload.append(
+            if getattr(b, "topic_bundles", None):
+                from src.publication.digest_presentation import _clean_fact_sentence
+
+                bundles_payload = []
+                for tb in b.topic_bundles:
+                    key_sups = []
+                    for sid in tb.support_ids[:6]:
+                        if sid in evidence:
+                            evi = evidence[sid]
+                            if evi.text and len(evi.text.strip()) >= 8:
+                                key_sups.append(
+                                    {
+                                        "id": sid,
+                                        "text": _clean_fact_sentence(evi.text),
+                                        "role": evi.source_role,
+                                        "evidence_kind": evi.kind,
+                                    }
+                                )
+                    req_facts_payload = [
                         {
-                            "id": sid,
-                            "text": evi.text,
-                            "role": evi.source_role,
-                            "evidence_kind": evi.kind,
-                            "publication_use": evi.publication_use,
+                            "fact_id": rf.fact_id,
+                            "text": rf.text,
+                            "support_ids": list(rf.support_ids),
+                        }
+                        for rf in tb.required_facts
+                    ]
+                    bundles_payload.append(
+                        {
+                            "bundle_id": tb.bundle_id,
+                            "topic": tb.topic_label,
+                            "emoji": tb.emoji,
+                            "locations": list(tb.locations),
+                            "fact_ledger": list(tb.fact_ledger),
+                            "required_facts": req_facts_payload,
+                            "story_ids": list(tb.story_ids),
+                            "supports": key_sups,
                         }
                     )
 
-            block_dict: dict[str, Any] = {
-                "block_id": b.block_id,
-                "rubric_id": b.rubric_id,
-                "rubric_title": b.rubric_title,
-                "story_ids": list(b.story_ids),
-                "required_story_groups": [list(grp) for grp in b.required_story_groups],
-                "canonical_notes": list(b.canonical_notes),
-                "supports": supports_payload,
-            }
-            if b.detail_support_ids_by_story:
-                block_dict["detail_support_hints"] = [
-                    {"story_id": sid, "detail_support_ids": list(sids)}
-                    for sid, sids in b.detail_support_ids_by_story
-                ]
-            if b.merge_group_by_story:
-                block_dict["merge_group_hints"] = [
-                    {"story_id": sid, "merge_group_id": mgid}
-                    for sid, mgid in b.merge_group_by_story
-                ]
-            blocks_payload.append(block_dict)
+                block_dict: dict[str, Any] = {
+                    "block_id": b.block_id,
+                    "rubric_id": b.rubric_id,
+                    "rubric_title": b.rubric_title,
+                    "topic_bundles": bundles_payload,
+                    "story_ids": list(b.story_ids),
+                    "required_story_groups": [list(grp) for grp in b.required_story_groups],
+                }
+                blocks_payload.append(block_dict)
+            else:
+                supports_payload = []
+                for sid in b.support_ids:
+                    if sid in evidence:
+                        evi = evidence[sid]
+                        supports_payload.append(
+                            {
+                                "id": sid,
+                                "text": evi.text,
+                                "role": evi.source_role,
+                                "evidence_kind": evi.kind,
+                                "publication_use": evi.publication_use,
+                            }
+                        )
+
+                block_dict = {
+                    "block_id": b.block_id,
+                    "rubric_id": b.rubric_id,
+                    "rubric_title": b.rubric_title,
+                    "story_ids": list(b.story_ids),
+                    "required_story_groups": [list(grp) for grp in b.required_story_groups],
+                    "canonical_notes": list(b.canonical_notes),
+                    "supports": supports_payload,
+                }
+                if b.detail_support_ids_by_story:
+                    block_dict["detail_support_hints"] = [
+                        {"story_id": sid, "detail_support_ids": list(sids)}
+                        for sid, sids in b.detail_support_ids_by_story
+                    ]
+                if b.merge_group_by_story:
+                    block_dict["merge_group_hints"] = [
+                        {"story_id": sid, "merge_group_id": mgid}
+                        for sid, mgid in b.merge_group_by_story
+                    ]
+                blocks_payload.append(block_dict)
 
         situation_payload = []
         if situation_plan is not None and getattr(situation_plan, "groups", None):
@@ -2386,7 +2807,8 @@ class DigestNarrativeWriter:
             "- In thematic 'blocks', never repeat the headline in the first sentence of the body text.\n"
             "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
             "- State facts directly. NEVER invent or infer unverified causal relations or mechanisms (using phrases like 'из-за чего', 'по причине', 'вследствие', 'в результате') unless that causal relation is explicitly stated in the source evidence.\n"
-            "- Attribution: Attribute source role naturally ('По сообщениям жителей', 'По данным коммунальных служб') at most once per item.\n"
+            "- Attribution: Attribute source role naturally ('По сообщениям жителей', 'По данным коммунальных служб') at most once per item. Never place attribution in the headline.\n"
+            "- If a block contains 'topic_bundles', write EXACTLY ONE editorial item for each topic bundle. Use the bundle's 'emoji', include all 'story_ids' in 'covered_story_ids', and synthesize the 'fact_ledger' and 'locations'.\n"
             "- For each thematic item, provide atomic claims in 'claims'. Every story in the item's covered_story_ids must be covered by at least one claim atom.\n"
             "- Claims must be short atomic factual statements supported by cited_support_ids.\n\n"
             f"{narrative_contract}\n\n"
@@ -2437,7 +2859,7 @@ class DigestNarrativeWriter:
                 f"Failed to decode LLM response as JSON: {err}. Raw was: {raw_response[:200]!r}"
             ) from err
 
-        # Consolidate any duplicate block_ids produced by LLM before strict schema instantiation
+        # Consolidate any duplicate block_ids produced by LLM and normalize strictly against plan.blocks
         if isinstance(parsed, dict) and isinstance(parsed.get("blocks"), list):
             merged_blocks: list[Any] = []
             block_by_id: dict[str, dict[str, Any]] = {}
@@ -2455,7 +2877,193 @@ class DigestNarrativeWriter:
                         merged_blocks.append(b)
                 else:
                     merged_blocks.append(b)
-            parsed["blocks"] = merged_blocks
+
+            # Ensure all plan blocks exist and are strictly ordered
+            final_blocks: list[dict[str, Any]] = []
+
+            for plan_block in plan.blocks:
+                b_raw = block_by_id.get(plan_block.block_id)
+                if b_raw is None:
+                    # Find by rubric if block_id format differed
+                    b_raw = next(
+                        (
+                            b
+                            for bid, b in block_by_id.items()
+                            if bid.startswith(f"block:{plan_block.rubric_id}:")
+                        ),
+                        None,
+                    )
+                if b_raw is None:
+                    # Synthesize missing block cleanly
+                    det_draft = build_deterministic_digest_draft(
+                        cards=cards,
+                        evidence=evidence,
+                        rubrics=[{"id": plan_block.rubric_id, "name": plan_block.rubric_title}],
+                        presentation_plan=None,
+                    )
+                    matching_det = next(
+                        (
+                            db
+                            for db in det_draft.blocks
+                            if db.block_id == plan_block.block_id
+                            or db.block_id.startswith(f"block:{plan_block.rubric_id}:")
+                        ),
+                        None,
+                    )
+                    if matching_det:
+                        b_raw = {
+                            "block_id": plan_block.block_id,
+                            "items": [
+                                {
+                                    "headline": it.headline,
+                                    "body": it.body,
+                                    "emoji": it.emoji,
+                                    "covered_story_ids": list(it.covered_story_ids),
+                                    "cited_support_ids": list(it.cited_support_ids),
+                                    "claims": [c.to_dict() for c in it.claims],
+                                }
+                                for it in matching_det.items
+                            ],
+                        }
+                    else:
+                        b_raw = {"block_id": plan_block.block_id, "items": []}
+                else:
+                    b_raw["block_id"] = plan_block.block_id
+
+                # If block has topic_bundles, align items to topic_bundles
+                if getattr(plan_block, "topic_bundles", None) and isinstance(
+                    b_raw.get("items"), list
+                ):
+                    raw_items = b_raw["items"]
+                    norm_items: list[dict[str, Any]] = []
+                    assigned_bundle_ids: set[str] = set()
+
+                    for it in raw_items:
+                        if not isinstance(it, dict):
+                            continue
+                        it_sids = {str(x) for x in (it.get("covered_story_ids") or [])}
+                        matched_tb = None
+                        for tb in plan_block.topic_bundles:
+                            if tb.bundle_id not in assigned_bundle_ids:
+                                if (
+                                    bool(it_sids & set(tb.story_ids))
+                                    or tb.bundle_id in it_sids
+                                    or tb.topic_key in it_sids
+                                ):
+                                    matched_tb = tb
+                                    break
+                        if matched_tb is None:
+                            unassigned_tbs = [
+                                tb
+                                for tb in plan_block.topic_bundles
+                                if tb.bundle_id not in assigned_bundle_ids
+                            ]
+                            if unassigned_tbs:
+                                matched_tb = unassigned_tbs[0]
+
+                        if matched_tb:
+                            assigned_bundle_ids.add(matched_tb.bundle_id)
+                            it["covered_story_ids"] = list(matched_tb.story_ids)
+                            if not it.get("emoji"):
+                                it["emoji"] = matched_tb.emoji
+
+                            # Ensure claims partition story_ids
+                            claims = it.get("claims", [])
+                            if not claims:
+                                claims = [
+                                    {
+                                        "text": it.get("headline", "") or matched_tb.topic_label,
+                                        "covered_story_ids": list(matched_tb.story_ids),
+                                        "cited_support_ids": list(
+                                            it.get("cited_support_ids", [])
+                                            or matched_tb.support_ids[:2]
+                                        ),
+                                    }
+                                ]
+                            else:
+                                for c in claims:
+                                    if not c.get("covered_story_ids"):
+                                        c["covered_story_ids"] = list(matched_tb.story_ids)
+                                    if not c.get("cited_support_ids"):
+                                        c["cited_support_ids"] = (
+                                            list(
+                                                it.get("cited_support_ids", [])
+                                                or matched_tb.support_ids[:2]
+                                            ),
+                                        )
+
+                            # Ensure required facts are covered in claims
+                            for rf in matched_tb.required_facts:
+                                has_rf = any(
+                                    rf.fact_id in (c.get("covered_fact_ids") or []) for c in claims
+                                )
+                                if not has_rf:
+                                    claims.append(
+                                        {
+                                            "text": rf.text or it.get("headline", ""),
+                                            "covered_story_ids": list(
+                                                set(rf.story_ids) & set(matched_tb.story_ids)
+                                            )
+                                            or list(matched_tb.story_ids[:1]),
+                                            "cited_support_ids": list(rf.support_ids),
+                                            "covered_fact_ids": [rf.fact_id],
+                                        }
+                                    )
+                            it["claims"] = claims
+
+                            # Union support IDs
+                            claim_sups = [
+                                s for c in claims for s in (c.get("cited_support_ids") or [])
+                            ]
+                            cur_sups = it.get("cited_support_ids", []) or []
+                            it["cited_support_ids"] = list(
+                                dict.fromkeys(cur_sups + claim_sups)
+                            ) or list(matched_tb.support_ids[:2])
+                            norm_items.append(it)
+                        else:
+                            norm_items.append(it)
+
+                    # If any bundle in plan_block was missed entirely by LLM, synthesize it
+                    for tb in plan_block.topic_bundles:
+                        if tb.bundle_id not in assigned_bundle_ids:
+                            clean_text = (
+                                tb.fact_ledger[0]
+                                if tb.fact_ledger
+                                else f"{tb.topic_label}: обстановка остаётся стабильной."
+                            )
+                            sups = list(tb.support_ids[:2]) if tb.support_ids else [tb.story_ids[0]]
+                            req_claims = [
+                                {
+                                    "text": rf.text or clean_text,
+                                    "covered_story_ids": list(set(rf.story_ids) & set(tb.story_ids))
+                                    or list(tb.story_ids[:1]),
+                                    "cited_support_ids": list(rf.support_ids),
+                                    "covered_fact_ids": [rf.fact_id],
+                                }
+                                for rf in tb.required_facts
+                            ]
+                            base_claim = {
+                                "text": clean_text,
+                                "covered_story_ids": list(tb.story_ids),
+                                "cited_support_ids": sups,
+                                "covered_fact_ids": [],
+                            }
+                            norm_items.append(
+                                {
+                                    "headline": f"{tb.topic_label}: текущая обстановка",
+                                    "body": f"По информации городских служб, {clean_text[:1].lower() + clean_text[1:]}",
+                                    "emoji": tb.emoji,
+                                    "covered_story_ids": list(tb.story_ids),
+                                    "cited_support_ids": sups,
+                                    "claims": [base_claim] + req_claims,
+                                }
+                            )
+
+                    b_raw["items"] = norm_items
+
+                final_blocks.append(b_raw)
+
+            parsed["blocks"] = final_blocks
 
         return DigestNarrativeDraft.from_dict(parsed)
 

@@ -374,17 +374,16 @@ class PublicationDigestRenderer:
                     if ":" in block_draft.block_id
                     else block_draft.block_id
                 )
+                rubric = next((r for r in self.rubrics if r.get("id") == rubric_id), None)
+                rubric_emoji = rubric.get("emoji", "") if rubric else ""
+
                 item_lines = []
                 for item in block_draft.items:
                     h_text = item.headline.strip()
                     b_text = item.body.strip()
                     if not h_text and not b_text:
                         continue
-                    item_emoji = getattr(item, "emoji", "") or ""
-                    if not item_emoji:
-                        rubric = next((r for r in self.rubrics if r.get("id") == rubric_id), None)
-                        if rubric and rubric.get("emoji"):
-                            item_emoji = rubric["emoji"]
+                    item_emoji = getattr(item, "emoji", "") or rubric_emoji
                     prefix = f"{item_emoji} " if item_emoji else ""
                     if h_text and b_text:
                         clean_h = h_text.strip("*").rstrip(".:;, ")

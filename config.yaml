@@ -158,7 +158,7 @@ settings:
     article_max_words: 2400
     article_max_sections: 6
     digest_narrative_mode: "single_call"
-    digest_narrative_max_cards_per_block: 6
+    digest_narrative_max_cards_per_block: 100
     digest_narrative_max_output_tokens: 16384
     selection_max_output_tokens: 8192
     selection_reasoning_effort: "low"

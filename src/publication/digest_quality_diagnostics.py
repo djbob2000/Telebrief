@@ -44,6 +44,18 @@ _TEMPORAL_CHAIN_RE = re.compile(
     r"(?:ранее\s+также|также\s+ранее|также\s+сообщается,\s+что\s+ранее)",
     re.IGNORECASE,
 )
+_REPETITIVE_BODY_ATTRIBUTION_RE = re.compile(
+    r"(?:\bпо\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев)\b|\b(?:жители|горожане|очевидцы)\s+(?:сообщают|пишут|делятся)\b)",
+    re.IGNORECASE,
+)
+_CHAT_SLANG_OR_METADATA_RE = re.compile(
+    r"(?:\b(?:чо\s+за\s+фигня|идите\s+нах|кинули\s+не\s+только\s+вас)\b|\bсмайлик(?:ами|и)?\b|(?:публикуют\s+)?сообщения\s+с\s+эмодзи)",
+    re.IGNORECASE,
+)
+_CLASSIFIED_AD_RE = re.compile(
+    r"(?:\b(?:куплю|продам|купить\s+стекло|цена\s+от|позвонить\s+по\s+номеру)\b)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -215,6 +227,39 @@ def audit_digest_prose_quality(
                     DigestQualityWarning(
                         code="TEMPORAL_REPLAY_CHAIN",
                         message="Headline or body contains repetitive temporal replay chain (e.g. 'ранее также').",
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
+            if len(_REPETITIVE_BODY_ATTRIBUTION_RE.findall(item.body)) > 1:
+                warnings.append(
+                    DigestQualityWarning(
+                        code="REPETITIVE_BODY_ATTRIBUTION",
+                        message="Body contains multiple repetitive attribution phrases.",
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
+            if _CHAT_SLANG_OR_METADATA_RE.search(item_full_text):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="CHAT_SLANG_OR_METADATA",
+                        message="Headline or body contains conversational chat slang or emoji chatter.",
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
+            if _CLASSIFIED_AD_RE.search(item_full_text):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="CLASSIFIED_AD_LEAK",
+                        message="Headline or body contains classified advertisement phrases.",
                         block_id=block.block_id,
                         item_index=idx,
                         headline=item.headline,
