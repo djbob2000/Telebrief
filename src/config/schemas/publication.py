@@ -194,6 +194,7 @@ class PublicationEditorialConfig:
     digest_narrative_max_cards_per_block: int = 6
 
     digest_narrative_max_output_tokens: int = 4096
+    digest_narrative_timeout_seconds: int = 120
     selection_max_output_tokens: int = 4096
     selection_reasoning_effort: str | None = "low"
     digest_city_situation_max_items: int = 7
@@ -229,6 +230,8 @@ class PublicationEditorialConfig:
             raise ValueError("digest_narrative_max_cards_per_block must be a positive integer")
         if self.digest_narrative_max_output_tokens <= 0:
             raise ValueError("digest_narrative_max_output_tokens must be a positive integer")
+        if self.digest_narrative_timeout_seconds <= 0:
+            raise ValueError("digest_narrative_timeout_seconds must be a positive integer")
         if self.selection_max_output_tokens <= 0:
             raise ValueError("selection_max_output_tokens must be a positive integer")
         if (

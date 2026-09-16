@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -180,6 +181,7 @@ async def test_structured_digest_writer_exception_uses_event_first_fallback(
 
     editorial_cfg = PublicationEditorialConfig(
         digest_narrative_mode="single_call",
+        digest_narrative_timeout_seconds=1,
         digest_city_situation_max_items=5,
         digest_city_situation_max_details_per_item=2,
     )
@@ -212,7 +214,12 @@ async def test_structured_digest_writer_exception_uses_event_first_fallback(
         "src.publication.digest_narrative.DigestNarrativeWriter.generate_narrative_draft",
         new_callable=AsyncMock,
     ) as mock_generate:
-        mock_generate.side_effect = RuntimeError("AI synthesis timeout")
+
+        async def stalled_writer(*args, **kwargs):
+            del args, kwargs
+            await asyncio.sleep(2)
+
+        mock_generate.side_effect = stalled_writer
 
         publication = await service.generate(run.id, defer_delivery=True)
 

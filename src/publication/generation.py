@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 import re
@@ -319,6 +320,7 @@ class PublicationGenerationService:
 
                     max_cards = getattr(pub_edit, "digest_narrative_max_cards_per_block", 6)
                     max_tokens = getattr(pub_edit, "digest_narrative_max_output_tokens", 4096)
+                    narrative_timeout = getattr(pub_edit, "digest_narrative_timeout_seconds", 120)
                     plan = plan_digest_narrative_blocks(
                         cards=detail_cards,
                         evidence=evidence_dict,
@@ -342,18 +344,21 @@ class PublicationGenerationService:
                         has_topic_bundles = any(
                             getattr(b, "topic_bundles", None) for b in plan.blocks
                         )
-                        draft_cand = await writer.generate_narrative_draft(
-                            plan=plan,
-                            cards=detail_cards,
-                            evidence=evidence_dict,
-                            language=getattr(self.config.settings, "output_language", "Russian"),
-                            max_output_tokens=max_tokens,
-                            model=getattr(self.config.settings, "openai_model", None)
-                            or getattr(self.config.settings, "ai_model", None),
-                            situation_plan=None
-                            if has_topic_bundles
-                            else presentation_plan.city_situation,
-                        )
+                        async with asyncio.timeout(narrative_timeout):
+                            draft_cand = await writer.generate_narrative_draft(
+                                plan=plan,
+                                cards=detail_cards,
+                                evidence=evidence_dict,
+                                language=getattr(
+                                    self.config.settings, "output_language", "Russian"
+                                ),
+                                max_output_tokens=max_tokens,
+                                model=getattr(self.config.settings, "openai_model", None)
+                                or getattr(self.config.settings, "ai_model", None),
+                                situation_plan=None
+                                if has_topic_bundles
+                                else presentation_plan.city_situation,
+                            )
                         support_text_index = build_digest_support_text_index(
                             evidence=evidence_dict,
                             cards=frozen.analysis.cards,
@@ -512,8 +517,20 @@ class PublicationGenerationService:
                         await observer.attempt_finished(
                             att_id,
                             "failed",
-                            error_kind="digest_narrative_synthesis_failed",
-                            metadata={"error_message": str(exc)},
+                            error_kind=(
+                                "digest_narrative_timeout"
+                                if isinstance(exc, TimeoutError)
+                                else "digest_narrative_synthesis_failed"
+                            ),
+                            metadata={
+                                "error_message": str(exc)
+                                or f"digest narrative writer timed out after {narrative_timeout}s",
+                                **(
+                                    {"timeout_seconds": narrative_timeout}
+                                    if isinstance(exc, TimeoutError)
+                                    else {}
+                                ),
+                            },
                         )
                         allow_fallback = getattr(
                             pub_edit,

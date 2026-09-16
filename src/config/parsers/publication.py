@@ -670,6 +670,7 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
             "digest_narrative_max_cards_per_block", 6
         ),
         digest_narrative_max_output_tokens=_val_pos_int("digest_narrative_max_output_tokens", 4096),
+        digest_narrative_timeout_seconds=_val_pos_int("digest_narrative_timeout_seconds", 120),
         selection_max_output_tokens=_val_pos_int("selection_max_output_tokens", 4096),
         selection_reasoning_effort=_val_reasoning_effort("selection_reasoning_effort", "low"),
         digest_city_situation_max_items=_val_pos_int("digest_city_situation_max_items", 7),
