@@ -2891,6 +2891,19 @@ def test_usable_fact_line_keeps_concrete_report_with_conversational_prefix():
         _clean_fact_sentence("Сообщение от местного жителя: на улице Ленина нет воды")
         == "На улице Ленина нет воды."
     )
+    assert (
+        _clean_fact_sentence(
+            "Жители района АКЗ интересуются, есть ли электричество. Один отвечает, что есть."
+        )
+        == ""
+    )
+    assert (
+        _clean_fact_sentence(
+            "[Электроснабжение] UNAVAILABLE — На улице Ленина нет света. "
+            "Подробности уточняйте в официальных источниках."
+        )
+        == "На улице Ленина нет света."
+    )
 
 
 def test_topic_bundle_drops_filtered_metadata_summary():

@@ -1358,14 +1358,71 @@ def _extract_bundle_locations(texts: Sequence[str]) -> tuple[str, ...]:
     return tuple(found)
 
 
+_FACT_INTERNAL_METADATA_RE = re.compile(
+    r"\s*\[[^\]\n]+\]\s*(?:" r"(?:AVAILABLE|UNAVAILABLE|DEGRADED|CONFLICTING)\s*[—-]\s*" r")?",
+    re.IGNORECASE,
+)
+_FACT_QUESTION_RE = re.compile(
+    r"(?:\?|\b(?:интересу(?:ется|ются|ются|ются)|спрашива(?:ет|ют|ют)|"
+    r"выясня(?:ет|ют)|узна(?:ет|ют)|подскажите|кто\s+знает)\b)",
+    re.IGNORECASE,
+)
+_FACT_META_OR_ADVICE_RE = re.compile(
+    r"\b(?:подробности\s+(?:не\s+)?уточняются|детали\s+не\s+раскрыты|"
+    r"уточняйте\s+в\s+официальных\s+источниках|"
+    r"совет(?:ую|ует|уют)|рекоменду(?:ется|ют|ет)|"
+    r"не\s+(?:обстреливайте|появляйтесь|ходите|звоните)|"
+    r"сообщается\s+о\s+(?:событии|ситуации))\b",
+    re.IGNORECASE,
+)
+
+
+def _is_fact_noise_sentence(text: str) -> bool:
+    """Return whether a sentence is chat metadata, a question, or unsolicited advice."""
+    t_l = text.casefold().strip()
+    if not t_l:
+        return True
+    if _FACT_QUESTION_RE.search(t_l):
+        return True
+    if _FACT_META_OR_ADVICE_RE.search(t_l):
+        return True
+    if any(
+        marker in t_l
+        for marker in (
+            "сообщения с эмодзи",
+            "сообщение сообщества о выполнении работ",
+            "настраиваются на позитив",
+            "эмоциональное сообщение",
+        )
+    ):
+        return True
+    if re.match(r"^(?:один|кто-то|кто то)\s+(?:отвечает|говорит|пишет)\b", t_l):
+        return True
+    return False
+
+
 def _clean_fact_sentence(text: str) -> str:
-    """Sanitize a raw sentence from chat noise, questions, and metadata."""
-    t = text.strip()
+    """Sanitize a raw sentence from chat noise, questions, and internal metadata."""
+    t = _FACT_INTERNAL_METADATA_RE.sub(" ", text or "").strip()
     if not t:
         return ""
     t = re.sub(r"^(?:да|ну\s+да|а)\s*,\s*", "", t, flags=re.IGNORECASE)
     t = re.sub(
         r"^(?:сообщение\s+от\s+(?:местного\s+)?жителя|по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    # Keep concrete sentences from a mixed summary while dropping appended
+    # questions, chat reactions, and advice boilerplate.
+    sentences = re.split(r"(?<=[.!?])\s+", t)
+    kept = [sentence.strip() for sentence in sentences if not _is_fact_noise_sentence(sentence)]
+    t = " ".join(kept).strip()
+    if not t:
+        return ""
+    t = re.sub(
+        r"\s*(?:,|;)?\s*(?:подробности|детали)\s+(?:не\s+)?уточняются\.?$",
         "",
         t,
         flags=re.IGNORECASE,
@@ -1377,34 +1434,17 @@ def _clean_fact_sentence(text: str) -> str:
 
 def _is_usable_fact_line(text: str) -> bool:
     """Filter out chat noise, resident questions, classified ads, lost & found, and meta comments."""
-    if not text or len(text.strip()) < 12:
+    cleaned = _clean_fact_sentence(text)
+    if not cleaned or len(cleaned) < 12:
         return False
-    t = text.strip()
+    t = cleaned
     words = t.split()
     if len(words) < 3:
         return False
     t_l = t.casefold()
 
     # 1. Questions
-    if "?" in text or any(
-        t_l.startswith(q)
-        for q in (
-            "кто знает",
-            "подскажите",
-            "скажите",
-            "где найти",
-            "работает ли",
-            "люди кто",
-            "можно ли",
-            "что с ",
-            "куда звонить",
-            "когда включат",
-            "кому-то дали",
-            "есть у кого",
-            "подскажите пожалуйста",
-            "кто в курсе",
-        )
-    ):
+    if _FACT_QUESTION_RE.search(t_l) or _FACT_META_OR_ADVICE_RE.search(t_l):
         return False
 
     # 2. Lost & found animals / personal items / lost belongings

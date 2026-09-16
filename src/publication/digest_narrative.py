@@ -1398,7 +1398,20 @@ def build_deterministic_digest_draft(
             )
 
             for bundle in plan_block.topic_bundles:
-                usable_facts = [f for f in bundle.fact_ledger if _is_usable_fact_line(f)]
+                usable_facts: list[str] = []
+                fact_keys: list[str] = []
+                for fact in bundle.fact_ledger:
+                    if not _is_usable_fact_line(fact):
+                        continue
+                    cleaned_fact = _clean_fact_sentence(fact)
+                    fact_key = " ".join(re.findall(r"[\w-]+", cleaned_fact.casefold()))
+                    if not fact_key or any(
+                        fact_key == previous or fact_key in previous or previous in fact_key
+                        for previous in fact_keys
+                    ):
+                        continue
+                    fact_keys.append(fact_key)
+                    usable_facts.append(cleaned_fact)
                 if not usable_facts:
                     for sid in bundle.story_ids:
                         c = cards_by_id.get(sid)
@@ -1439,7 +1452,7 @@ def build_deterministic_digest_draft(
                     )
 
                 body_sentences: list[str] = []
-                for f in usable_facts[:3]:
+                for f in usable_facts[:2]:
                     cf = _clean_fact_sentence(f)
                     if cf and cf not in body_sentences:
                         body_sentences.append(cf)
