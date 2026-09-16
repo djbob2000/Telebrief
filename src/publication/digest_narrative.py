@@ -17,6 +17,14 @@ from src.publication.evidence import PublicationEvidence
 logger = logging.getLogger(__name__)
 
 _INTERNAL_LEAKAGE_RE = re.compile(r"\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]", re.IGNORECASE)
+_INTERNAL_REPLY_ANNOTATION_RE = re.compile(
+    r'\s*\(in_reply_to:\s*".*"\)\s*$', re.IGNORECASE | re.DOTALL
+)
+
+
+def _sanitize_digest_support_text(text: str) -> str:
+    """Remove Event-First reply metadata before projecting evidence to readers."""
+    return _INTERNAL_REPLY_ANNOTATION_RE.sub("", text or "").strip()
 
 
 @dataclass(frozen=True)
@@ -1230,23 +1238,25 @@ def build_deterministic_digest_draft(
                     kind = "established_fact"
                     actual_sup_id = s
                     if s in support_map:
-                        text = support_map[s].strip()
+                        text = _sanitize_digest_support_text(support_map[s])
                         if s in evidence:
                             kind = getattr(evidence[s], "kind", "established_fact")
                     elif s in evidence:
-                        text = (evidence[s].text or evidence[s].source_text).strip()
+                        text = _sanitize_digest_support_text(
+                            evidence[s].text or evidence[s].source_text
+                        )
                         kind = getattr(evidence[s], "kind", "established_fact")
                     elif s == f"{card.id}:summary" or s in getattr(
                         card, "representative_source_refs", ()
                     ):
                         if card.summary:
-                            text = card.summary.strip()
+                            text = _sanitize_digest_support_text(card.summary)
                         elif card.topic:
-                            text = card.topic.strip()
+                            text = _sanitize_digest_support_text(card.topic)
                     else:
                         for hf in getattr(card, "hard_facts", ()):
                             if s in getattr(hf, "source_refs", ()) or s == getattr(hf, "text", ""):
-                                text = hf.text.strip()
+                                text = _sanitize_digest_support_text(hf.text)
                                 kind = "established_fact"
                                 break
                         if not text:
@@ -1254,21 +1264,21 @@ def build_deterministic_digest_draft(
                                 if s in getattr(co, "source_refs", ()) or s == getattr(
                                     co, "text", ""
                                 ):
-                                    text = co.text.strip()
+                                    text = _sanitize_digest_support_text(co.text)
                                     kind = "community_report"
                                     break
                         if not text:
                             if card.summary:
-                                text = card.summary.strip()
+                                text = _sanitize_digest_support_text(card.summary)
                                 actual_sup_id = f"{card.id}:summary"
                             elif card.topic:
-                                text = card.topic.strip()
+                                text = _sanitize_digest_support_text(card.topic)
                                 actual_sup_id = card.id
 
                     if not text:
                         for rf in story_req_facts:
                             if s in rf.support_ids and rf.text:
-                                text = rf.text.strip()
+                                text = _sanitize_digest_support_text(rf.text)
                                 break
 
                     if text:
@@ -1364,7 +1374,9 @@ def build_deterministic_digest_draft(
                                 break
                         if best_s is None:
                             best_s = c_sups[0]
-                        best_t = support_map.get(best_s) or (rf.text if rf.text else "")
+                        best_t = _sanitize_digest_support_text(
+                            support_map.get(best_s) or (rf.text if rf.text else "")
+                        )
                         clean_c_text = re.sub(r"\bиз-за\b", "при", best_t, flags=re.IGNORECASE)
                         item_claims.append(
                             DigestClaimAtom(
@@ -1376,7 +1388,7 @@ def build_deterministic_digest_draft(
                         )
                 else:
                     best_s = c_sups[0]
-                    best_t = support_map.get(best_s) or c_texts[0]
+                    best_t = _sanitize_digest_support_text(support_map.get(best_s) or c_texts[0])
                     clean_c_text = re.sub(r"\bиз-за\b", "при", best_t, flags=re.IGNORECASE)
                     item_claims.append(
                         DigestClaimAtom(
