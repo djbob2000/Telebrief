@@ -93,7 +93,7 @@ async def generate_publication(context: Any, run_id: int) -> None:
     if run is not None and _is_preview_run(run):
         logger.warning("Skipping queued generation for preview publication run %s", run_id)
         return
-    if run is not None and run.status == "failed":
+    if run is not None and getattr(run, "status", None) == "failed":
         logger.warning("Skipping queued generation for already failed publication run %s", run_id)
         return
     service = PublicationGenerationService(uow=runtime.uow)

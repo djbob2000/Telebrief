@@ -205,7 +205,36 @@ async def test_generate_publication_job_skips_preview_run(monkeypatch):
 
     await generate_publication({}, run_id=42)
 
-    mocked_generate.assert_not_awaited()
+    mocked_generate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_generate_publication_job_skips_failed_run(monkeypatch):
+    from types import SimpleNamespace
+
+    from src import runtime
+    from src.jobs.publication import generate_publication
+
+    runtime._runtime = SimpleNamespace(uow=object())
+    monkeypatch.setattr(
+        "src.jobs.publication._load_publication_run",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                request_key="publication-intent:scheduled:berdyansk:digest_grouped:slot",
+                metadata={},
+                status="failed",
+            )
+        ),
+    )
+    mocked_generate = AsyncMock()
+    monkeypatch.setattr(
+        "src.publication.generation.PublicationGenerationService.generate",
+        mocked_generate,
+    )
+
+    await generate_publication({}, run_id=42)
+
+    mocked_generate.assert_not_called()
 
 
 @pytest.mark.asyncio
