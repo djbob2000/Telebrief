@@ -371,6 +371,40 @@ class PublicationGenerationService:
                             allowed_context_terms=allowed_digest_terms,
                             all_known_draft_supports=all_draft_support_texts,
                         )
+                        if not val_res.is_valid:
+                            from src.publication.digest_narrative import (
+                                patch_failing_digest_bundles,
+                            )
+
+                            logger.info(
+                                "digest narrative validation found violations (%s); attempting localized bundle patch",
+                                val_res.violations[:3],
+                            )
+                            patched_cand = patch_failing_digest_bundles(
+                                draft_cand,
+                                plan,
+                                val_res.violations,
+                                cards=frozen.analysis.cards,
+                                evidence=evidence_dict,
+                                rubrics=renderer.rubrics,
+                                presentation_plan=presentation_plan,
+                                support_text_by_id=support_text_index,
+                            )
+                            patched_val = validate_digest_narrative(
+                                patched_cand,
+                                plan,
+                                support_text_by_id=support_text_index,
+                                situation_plan=presentation_plan.city_situation,
+                                allowed_context_terms=allowed_digest_terms,
+                                all_known_draft_supports=all_draft_support_texts,
+                            )
+                            if patched_val.is_valid:
+                                logger.info(
+                                    "localized bundle patch succeeded; replacing draft with patched version"
+                                )
+                                draft_cand = patched_cand
+                                val_res = patched_val
+
                         if val_res.is_valid:
                             narrative_draft = draft_cand
                             final_digest_draft = draft_cand

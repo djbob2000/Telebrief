@@ -61,7 +61,7 @@ class SelectionModel(Protocol):
 
 
 class HeuristicSelectionModel:
-    """Default rule-based selection model when no AI model is configured."""
+    """Default rule-based selection model for deterministic / digest selection."""
 
     async def select_stories(
         self,
@@ -71,6 +71,24 @@ class HeuristicSelectionModel:
     ) -> list[SelectionProposal]:
         proposals: list[SelectionProposal] = []
         for rank, cand in enumerate(candidates, start=1):
+            features = cand.snapshot_features or {}
+            if (
+                features.get("is_commercial_classified")
+                or features.get("exclusion_reason") == "commercial_classified"
+            ):
+                proposals.append(
+                    SelectionProposal(
+                        story_id=cand.story_id,
+                        story_revision_id=cand.story_revision_id,
+                        decision="OMIT",
+                        confidence=1.0,
+                        reason="Omitted: commercial classified offer",
+                        exclusion_reason="commercial_classified",
+                        rank=rank,
+                    )
+                )
+                continue
+
             intent = "lead" if rank == 1 else "normal"
             proposals.append(
                 SelectionProposal(
@@ -78,8 +96,8 @@ class HeuristicSelectionModel:
                     story_revision_id=cand.story_revision_id,
                     decision="INCLUDE",
                     presentation_intent=intent,
-                    confidence=0.9,
-                    reason="Automatically included by heuristic selection",
+                    confidence=1.0,
+                    reason="Coverage-preserving heuristic digest selection",
                     rank=rank,
                 )
             )
@@ -160,8 +178,23 @@ class EditorialSelectionService:
             except Exception as exc:
                 logger.debug("Failed to resolve scope contract for selection: %s", exc)
 
+        is_digest = run.publication_type in DIGEST_PUBLICATION_TYPES
+        from src.publication.selection_ai import (
+            AIPublicationSelectionModel,
+            FailOpenSelectionModel,
+        )
+
+        if is_digest and (
+            self.model is None
+            or isinstance(self.model, (AIPublicationSelectionModel, FailOpenSelectionModel))
+        ):
+            logger.info("Using fast heuristic selection for digest publication run %s", run_id)
+            selector_model: SelectionModel = HeuristicSelectionModel()
+        else:
+            selector_model = self.model or AIPublicationSelectionModel(config=self.config)
+
         # Model call outside transaction
-        raw_proposals = await self.model.select_stories(run=run, candidates=candidates)
+        raw_proposals = await selector_model.select_stories(run=run, candidates=candidates)
 
         # Validate proposals: must only reference candidates in allowed_keys
         validated_proposals: list[tuple[PublicationCandidate, SelectionProposal]] = []

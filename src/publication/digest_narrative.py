@@ -1266,7 +1266,7 @@ def validate_digest_narrative(
                 for c in item.claims:
                     claim_sups = set(c.cited_support_ids)
                     if rf_allowed_supports and (claim_sups & rf_allowed_supports):
-                        if not c.covered_fact_ids or rf.fact_id in c.covered_fact_ids:
+                        if rf.fact_id in c.covered_fact_ids:
                             rf_covered = True
                             break
                     elif c.covered_fact_ids and rf.fact_id in c.covered_fact_ids:
@@ -1867,6 +1867,88 @@ def build_deterministic_digest_draft(
             )
 
     return DigestNarrativeDraft(blocks=tuple(block_drafts), situation_items=())
+
+
+def patch_failing_digest_bundles(
+    draft: DigestNarrativeDraft,
+    plan: DigestNarrativePlan,
+    violations: Sequence[str],
+    *,
+    cards: Sequence[StoryCard],
+    evidence: Mapping[str, PublicationEvidence],
+    rubrics: Sequence[dict[str, Any]],
+    presentation_plan: Any = None,
+    support_text_by_id: Mapping[str, str] | None = None,
+) -> DigestNarrativeDraft:
+    """Replace failing narrative blocks/bundles with clean deterministic equivalents."""
+    import re
+
+    failing_block_ids: set[str] = set()
+    for v in violations:
+        # 1. Check direct block_id match
+        for b in draft.blocks:
+            if b.block_id in v:
+                failing_block_ids.add(b.block_id)
+        # 2. Regex match for block identifier
+        m = re.search(r"\b(block:[a-zA-Z0-9_:-]+)", v)
+        if m:
+            failing_block_ids.add(m.group(1).strip())
+        # 3. If violation mentions story_id
+        m_sid = re.search(r"(?:STORY_CLAIM_COVERAGE_MISSING|story)\s*[:\s]\s*([a-zA-Z0-9_:-]+)", v)
+        if m_sid:
+            target_sid = m_sid.group(1).strip()
+            for pb in plan.blocks:
+                if target_sid in pb.story_ids:
+                    failing_block_ids.add(pb.block_id)
+        # 4. If violation mentions fact_id
+        m_fid = re.search(r"FACT[a-zA-Z0-9_]*[:\s]+([a-zA-Z0-9_:-]+)", v)
+        if m_fid:
+            target_fid = m_fid.group(1).strip()
+            for pb in plan.blocks:
+                if any(rf.fact_id == target_fid for rf in pb.required_facts):
+                    failing_block_ids.add(pb.block_id)
+
+    if not failing_block_ids and violations:
+        failing_block_ids = {b.block_id for b in draft.blocks}
+
+    if not failing_block_ids:
+        return draft
+
+    det_draft = build_deterministic_digest_draft(
+        cards=cards,
+        evidence=evidence,
+        rubrics=rubrics,
+        presentation_plan=presentation_plan,
+        support_text_by_id=support_text_by_id,
+    )
+    det_blocks_by_id = {b.block_id: b for b in det_draft.blocks}
+
+    new_blocks = []
+    for b in draft.blocks:
+        if b.block_id in failing_block_ids:
+            det_b = det_blocks_by_id.get(b.block_id)
+            if not det_b:
+                b_parts = b.block_id.split(":")
+                rubric_prefix = f"block:{b_parts[1]}:" if len(b_parts) > 1 else b.block_id
+                det_b = next(
+                    (db for db in det_draft.blocks if db.block_id.startswith(rubric_prefix)),
+                    None,
+                )
+            if det_b:
+                logger.info(
+                    "Replacing failing narrative block %s with deterministic bundle fallback",
+                    b.block_id,
+                )
+                new_blocks.append(det_b)
+            else:
+                new_blocks.append(b)
+        else:
+            new_blocks.append(b)
+
+    return DigestNarrativeDraft(
+        blocks=tuple(new_blocks),
+        situation_items=draft.situation_items,
+    )
 
 
 def format_digest_date_ru(snapshot_at: dt.datetime) -> str:
@@ -2688,31 +2770,17 @@ class DigestNarrativeWriter:
 
         from src.publication.narrative_contract import build_digest_narrative_contract
 
+        has_topic_bundles = any(getattr(b, "topic_bundles", None) for b in plan.blocks)
+
         blocks_payload = []
         for b in plan.blocks:
             if getattr(b, "topic_bundles", None):
-                from src.publication.digest_presentation import _clean_fact_sentence
-
                 bundles_payload = []
                 for tb in b.topic_bundles:
-                    key_sups = []
-                    for sid in tb.support_ids[:6]:
-                        if sid in evidence:
-                            evi = evidence[sid]
-                            if evi.text and len(evi.text.strip()) >= 8:
-                                key_sups.append(
-                                    {
-                                        "id": sid,
-                                        "text": _clean_fact_sentence(evi.text),
-                                        "role": evi.source_role,
-                                        "evidence_kind": evi.kind,
-                                    }
-                                )
                     req_facts_payload = [
                         {
                             "fact_id": rf.fact_id,
                             "text": rf.text,
-                            "support_ids": list(rf.support_ids),
                         }
                         for rf in tb.required_facts
                     ]
@@ -2722,10 +2790,12 @@ class DigestNarrativeWriter:
                             "topic": tb.topic_label,
                             "emoji": tb.emoji,
                             "locations": list(tb.locations),
+                            "states": list(getattr(tb, "states", ())),
+                            "epistemic_status": getattr(
+                                tb, "epistemic_status", "сообщения жителей"
+                            ),
                             "fact_ledger": list(tb.fact_ledger),
                             "required_facts": req_facts_payload,
-                            "story_ids": list(tb.story_ids),
-                            "supports": key_sups,
                         }
                     )
 
@@ -2734,8 +2804,6 @@ class DigestNarrativeWriter:
                     "rubric_id": b.rubric_id,
                     "rubric_title": b.rubric_title,
                     "topic_bundles": bundles_payload,
-                    "story_ids": list(b.story_ids),
-                    "required_story_groups": [list(grp) for grp in b.required_story_groups],
                 }
                 blocks_payload.append(block_dict)
             else:
@@ -2817,82 +2885,122 @@ class DigestNarrativeWriter:
                 )
 
         narrative_contract = build_digest_narrative_contract(output_language=language)
-        situation_schema = ""
-        if situation_payload:
-            situation_schema = (
-                '  "situation_items": [\n'
+
+        if has_topic_bundles:
+            schema_desc = (
+                "{\n"
+                '  "items": [\n'
                 "    {\n"
-                '      "group_id": "string (must match input group_id exactly)",\n'
-                "      \"emoji\": \"string (semantic emoji, e.g. '⚡️' for power, '💧' for water, '💨' for gas, '🚌' for transport)\",\n"
-                '      "label": "string (subject label matching input group label, e.g. \'Электроснабжение\')",\n'
-                '      "body": "string (1-3 sentences of cohesive editorial prose synthesizing the operational facts)",\n'
-                '      "cited_support_ids": ["string (support IDs cited)"],\n'
-                '      "claims": [\n'
+                '      "bundle_id": "string (must match input bundle_id exactly)",\n'
+                '      "emoji": "string (thematic semantic emoji from bundle)",\n'
+                '      "headline": "string (bold mini-summary answering what happened)",\n'
+                '      "body": "string (cohesive 2-4 sentence narrative covering what happened, micro-locations in parentheses, explanations, and practical consequences)",\n'
+                '      "covered_fact_ids": ["all fact IDs from required_facts reflected in the body; every required fact must be covered"]\n'
+                "    }\n"
+                "  ]\n"
+                "}\n"
+            )
+
+            system_prompt = (
+                "You are a professional regional newsroom editor and journalist.\n"
+                "Your task is to write a cohesive, scan-first, and strictly factual daily news digest in Russian.\n\n"
+                "EDITORIAL AND LANGUAGE RULES:\n"
+                "- Write in professional Russian regional news style matching top Telegram channels.\n"
+                "- Never output bullet points ('•') or dashes ('—') at the beginning of items.\n"
+                "- For each topic bundle in 'topic_bundles', write EXACTLY ONE editorial item in 'items'.\n"
+                "- Set 'bundle_id' to the bundle's input 'bundle_id'.\n"
+                "- Set 'emoji' using the bundle's emoji.\n"
+                "- Craft rich, 2-3 sentence journalistic paragraphs following a cohesive storytelling structure:\n"
+                "  1. What occurred + concrete micro-locations/districts/streets (in parentheses if listing multiple).\n"
+                "  2. Current state, contrast, or cause (from 'states' or 'fact_ledger').\n"
+                "  3. Practical civic consequences or advice for residents (contacts, workarounds, billing procedures).\n"
+                "- If source facts or notes are in Ukrainian, accurately translate and paraphrase them into Russian.\n"
+                "- Cover every entry in 'required_facts' in the item's body and list every covered fact_id in 'covered_fact_ids'. Do not omit a required fact; synthesize related facts compactly instead of repeating them.\n"
+                "- In thematic items, never repeat the headline in the first sentence of the body text.\n"
+                "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
+                "- State facts directly. NEVER invent or infer unverified causal relations or mechanisms (using phrases like 'из-за чего', 'по причине', 'вследствие', 'в результате') unless that causal relation is explicitly stated in the source facts.\n"
+                "- Attribution: If 'epistemic_status' is 'сообщения жителей', attribute once naturally ('По сообщениям жителей', 'По словам горожан') in the body text. If 'официальная информация', attribute to official sources or state directly. Never place attribution in the headline.\n"
+                "- Filter out chat noise: do NOT mention chat polls, stickers, reactions, greetings, or off-topic conversational chatter.\n\n"
+                f"{narrative_contract}\n\n"
+                "OUTPUT FORMAT REQUIREMENTS:\n"
+                "Return ONLY valid JSON strictly matching this schema:\n"
+                f"{schema_desc}"
+            )
+        else:
+            situation_schema = ""
+            if situation_payload:
+                situation_schema = (
+                    '  "situation_items": [\n'
+                    "    {\n"
+                    '      "group_id": "string (must match input group_id exactly)",\n'
+                    "      \"emoji\": \"string (semantic emoji, e.g. '⚡️' for power, '💧' for water, '💨' for gas, '🚌' for transport)\",\n"
+                    '      "label": "string (subject label matching input group label, e.g. \'Электроснабжение\')",\n'
+                    '      "body": "string (1-3 sentences of cohesive editorial prose synthesizing the operational facts)",\n'
+                    '      "cited_support_ids": ["string (support IDs cited)"],\n'
+                    '      "claims": [\n'
+                    "        {\n"
+                    '          "text": "string (atomic factual claim in Russian)",\n'
+                    '          "covered_fact_ids": ["string (fact IDs this claim covers)"],\n'
+                    '          "covered_story_ids": ["string (story IDs this claim covers)"],\n'
+                    '          "cited_support_ids": ["string (support IDs supporting this claim)"]\n'
+                    "        }\n"
+                    "      ]\n"
+                    "    }\n"
+                    "  ],\n"
+                )
+            else:
+                situation_schema = '  "situation_items": [],\n'
+
+            schema_desc = (
+                "{\n"
+                f"{situation_schema}"
+                '  "blocks": [\n'
+                "    {\n"
+                '      "block_id": "string (must match input block_id exactly)",\n'
+                '      "items": [\n'
                 "        {\n"
-                '          "text": "string (atomic factual claim in Russian)",\n'
-                '          "covered_fact_ids": ["string (fact IDs this claim covers)"],\n'
-                '          "covered_story_ids": ["string (story IDs this claim covers)"],\n'
-                '          "cited_support_ids": ["string (support IDs supporting this claim)"]\n'
+                "          \"emoji\": \"string (thematic semantic emoji, e.g. '⚡️', '💨', '💥', '🛡', '🌐', '🚌', '🏢', '🚫', '📚', '📌')\",\n"
+                '          "headline": "string (bold mini-summary answer to what happened)",\n'
+                '          "body": "string (cohesive 2-4 sentence narrative covering what happened, micro-locations in parentheses, explanations, and practical consequences)",\n'
+                '          "covered_story_ids": ["string (story IDs covered)"],\n'
+                '          "cited_support_ids": ["string (support IDs cited)"],\n'
+                '          "claims": [\n'
+                "            {\n"
+                '              "text": "string (atomic factual claim in Russian)",\n'
+                '              "covered_story_ids": ["string (story IDs this claim covers)"],\n'
+                '              "cited_support_ids": ["string (support IDs supporting this claim)"]\n'
+                "            }\n"
+                "          ]\n"
                 "        }\n"
                 "      ]\n"
                 "    }\n"
-                "  ],\n"
+                "  ]\n"
+                "}\n"
             )
-        else:
-            situation_schema = '  "situation_items": [],\n'
 
-        schema_desc = (
-            "{\n"
-            f"{situation_schema}"
-            '  "blocks": [\n'
-            "    {\n"
-            '      "block_id": "string (must match input block_id exactly)",\n'
-            '      "items": [\n'
-            "        {\n"
-            "          \"emoji\": \"string (thematic semantic emoji, e.g. '⚡️', '💨', '💥', '🛡', '🌐', '🚌', '🏢', '🚫', '📚', '📌')\",\n"
-            '          "headline": "string (bold mini-summary answer to what happened)",\n'
-            '          "body": "string (cohesive 2-4 sentence narrative covering what happened, micro-locations in parentheses, explanations, and practical consequences)",\n'
-            '          "covered_story_ids": ["string (story IDs covered)"],\n'
-            '          "cited_support_ids": ["string (support IDs cited)"],\n'
-            '          "claims": [\n'
-            "            {\n"
-            '              "text": "string (atomic factual claim in Russian)",\n'
-            '              "covered_story_ids": ["string (story IDs this claim covers)"],\n'
-            '              "cited_support_ids": ["string (support IDs supporting this claim)"]\n'
-            "            }\n"
-            "          ]\n"
-            "        }\n"
-            "      ]\n"
-            "    }\n"
-            "  ]\n"
-            "}\n"
-        )
-
-        system_prompt = (
-            "You are a professional regional newsroom editor and journalist.\n"
-            "Your task is to write a cohesive, scan-first, and strictly factual daily news digest in Russian.\n\n"
-            "EDITORIAL AND LANGUAGE RULES:\n"
-            "- Write in professional Russian regional news style matching top Telegram channels.\n"
-            "- Never output bullet points ('•') or dashes ('—') at the beginning of items.\n"
-            "- For each item, select an accurate thematic semantic emoji (e.g. '⚡️', '💨', '💥', '🛡', '🌐', '🚌', '🏢', '🚫', '📚', '📌') in 'emoji'.\n"
-            "- Craft rich, 2-3 sentence journalistic paragraphs following a cohesive storytelling structure:\n"
-            "  1. What occurred + concrete micro-locations/districts/streets (in parentheses if listing multiple).\n"
-            "  2. Cause or official/specialist explanation (if supported in evidence, e.g. technical works, scheduled maintenance, odorant markers).\n"
-            "  3. Practical civic consequences or advice for residents (contacts, workarounds, billing procedures).\n"
-            "- If source facts or notes are in Ukrainian, accurately translate and paraphrase them into Russian.\n"
-            "- If 'situation_groups' are provided, synthesize each operational group in 'situation_items'. Every required fact in 'required_facts' must be covered in 'claims' and reflected in the narrative body. Use natural chronology and geographical clarity (e.g. outages, low voltage, and restored sections). Never invent ungrounded numbers or causes. Cite the exact support IDs.\n"
-            "- In thematic 'blocks', never repeat the headline in the first sentence of the body text.\n"
-            "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
-            "- State facts directly. NEVER invent or infer unverified causal relations or mechanisms (using phrases like 'из-за чего', 'по причине', 'вследствие', 'в результате') unless that causal relation is explicitly stated in the source evidence.\n"
-            "- Attribution: Attribute source role naturally ('По сообщениям жителей', 'По данным коммунальных служб') at most once per item. Never place attribution in the headline.\n"
-            "- If a block contains 'topic_bundles', write EXACTLY ONE editorial item for each topic bundle. Use the bundle's 'emoji', include all 'story_ids' in 'covered_story_ids', and synthesize the 'fact_ledger' and 'locations'.\n"
-            "- For each thematic item, provide atomic claims in 'claims'. Every story in the item's covered_story_ids must be covered by at least one claim atom.\n"
-            "- Claims must be short atomic factual statements supported by cited_support_ids.\n\n"
-            f"{narrative_contract}\n\n"
-            "OUTPUT FORMAT REQUIREMENTS:\n"
-            "Return ONLY valid JSON strictly matching this schema:\n"
-            f"{schema_desc}"
-        )
+            system_prompt = (
+                "You are a professional regional newsroom editor and journalist.\n"
+                "Your task is to write a cohesive, scan-first, and strictly factual daily news digest in Russian.\n\n"
+                "EDITORIAL AND LANGUAGE RULES:\n"
+                "- Write in professional Russian regional news style matching top Telegram channels.\n"
+                "- Never output bullet points ('•') or dashes ('—') at the beginning of items.\n"
+                "- For each item, select an accurate thematic semantic emoji (e.g. '⚡️', '💨', '💥', '🛡', '🌐', '🚌', '🏢', '🚫', '📚', '📌') in 'emoji'.\n"
+                "- Craft rich, 2-3 sentence journalistic paragraphs following a cohesive storytelling structure:\n"
+                "  1. What occurred + concrete micro-locations/districts/streets (in parentheses if listing multiple).\n"
+                "  2. Cause or official/specialist explanation (if supported in evidence, e.g. technical works, scheduled maintenance, odorant markers).\n"
+                "  3. Practical civic consequences or advice for residents (contacts, workarounds, billing procedures).\n"
+                "- If source facts or notes are in Ukrainian, accurately translate and paraphrase them into Russian.\n"
+                "- If 'situation_groups' are provided, synthesize each operational group in 'situation_items'. Every required fact in 'required_facts' must be covered in 'claims' and reflected in the narrative body. Use natural chronology and geographical clarity (e.g. outages, low voltage, and restored sections). Never invent ungrounded numbers or causes. Cite the exact support IDs.\n"
+                "- In thematic 'blocks', never repeat the headline in the first sentence of the body text.\n"
+                "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
+                "- State facts directly. NEVER invent or infer unverified causal relations or mechanisms (using phrases like 'из-за чего', 'по причине', 'вследствие', 'в результате') unless that causal relation is explicitly stated in the source evidence.\n"
+                "- Attribution: Attribute source role naturally ('По сообщениям жителей', 'По данным коммунальных служб') at most once per item. Never place attribution in the headline.\n"
+                "- Claims must be short atomic factual statements supported by cited_support_ids.\n\n"
+                f"{narrative_contract}\n\n"
+                "OUTPUT FORMAT REQUIREMENTS:\n"
+                "Return ONLY valid JSON strictly matching this schema:\n"
+                f"{schema_desc}"
+            )
 
         user_dict: dict[str, Any] = {"blocks": blocks_payload}
         if situation_payload:
@@ -2935,6 +3043,34 @@ class DigestNarrativeWriter:
             raise ValueError(
                 f"Failed to decode LLM response as JSON: {err}. Raw was: {raw_response[:200]!r}"
             ) from err
+
+        # If top-level "items" was returned (the new minimal schema), wrap into blocks
+        if (
+            has_topic_bundles
+            and isinstance(parsed, dict)
+            and isinstance(parsed.get("items"), list)
+            and not parsed.get("blocks")
+        ):
+            bundle_to_block_id: dict[str, str] = {}
+            for pb in plan.blocks:
+                for tb in getattr(pb, "topic_bundles", ()):
+                    bundle_to_block_id[tb.bundle_id] = pb.block_id
+
+            blocks_map: dict[str, list[dict[str, Any]]] = {}
+            for item_index, it in enumerate(parsed["items"]):
+                if not isinstance(it, dict):
+                    raise ValueError(f"items[{item_index}] must be an object")
+                bid = str(it.get("bundle_id") or "").strip()
+                if not bid:
+                    raise ValueError(f"items[{item_index}] is missing bundle_id")
+                target_block_id = bundle_to_block_id.get(bid)
+                if not target_block_id:
+                    raise ValueError(f"unknown bundle_id: {bid}")
+                blocks_map.setdefault(target_block_id, []).append(it)
+
+            parsed["blocks"] = [
+                {"block_id": b_id, "items": items_list} for b_id, items_list in blocks_map.items()
+            ]
 
         # Consolidate any duplicate block_ids produced by LLM and normalize strictly against plan.blocks
         if isinstance(parsed, dict) and isinstance(parsed.get("blocks"), list):
@@ -3018,25 +3154,43 @@ class DigestNarrativeWriter:
                     for it in raw_items:
                         if not isinstance(it, dict):
                             continue
+                        it_bid = str(it.get("bundle_id") or "").strip()
                         it_sids = {str(x) for x in (it.get("covered_story_ids") or [])}
                         matched_tb = None
-                        for tb in plan_block.topic_bundles:
-                            if tb.bundle_id not in assigned_bundle_ids:
+
+                        # 1. Match by bundle_id
+                        if it_bid:
+                            for tb in plan_block.topic_bundles:
                                 if (
-                                    bool(it_sids & set(tb.story_ids))
-                                    or tb.bundle_id in it_sids
-                                    or tb.topic_key in it_sids
+                                    tb.bundle_id not in assigned_bundle_ids
+                                    and tb.bundle_id == it_bid
                                 ):
                                     matched_tb = tb
                                     break
+
+                        # 2. Match by story_ids or topic_key
                         if matched_tb is None:
-                            unassigned_tbs = [
-                                tb
-                                for tb in plan_block.topic_bundles
-                                if tb.bundle_id not in assigned_bundle_ids
-                            ]
-                            if unassigned_tbs:
-                                matched_tb = unassigned_tbs[0]
+                            for tb in plan_block.topic_bundles:
+                                if tb.bundle_id not in assigned_bundle_ids:
+                                    if (
+                                        bool(it_sids & set(tb.story_ids))
+                                        or tb.bundle_id in it_sids
+                                        or tb.topic_key in it_sids
+                                    ):
+                                        matched_tb = tb
+                                        break
+
+                        # 3. Match by topic label substring
+                        if matched_tb is None:
+                            it_text = (it.get("headline", "") + " " + it.get("body", "")).casefold()
+                            for tb in plan_block.topic_bundles:
+                                if tb.bundle_id not in assigned_bundle_ids:
+                                    if (
+                                        tb.topic_label.casefold() in it_text
+                                        or tb.topic_key.casefold() in it_text
+                                    ):
+                                        matched_tb = tb
+                                        break
 
                         if matched_tb:
                             assigned_bundle_ids.add(matched_tb.bundle_id)
@@ -3044,57 +3198,143 @@ class DigestNarrativeWriter:
                             if not it.get("emoji"):
                                 it["emoji"] = matched_tb.emoji
 
-                            # Ensure claims partition story_ids
-                            claims = it.get("claims", [])
-                            if not claims:
-                                claims = [
-                                    {
-                                        "text": it.get("headline", "") or matched_tb.topic_label,
-                                        "covered_story_ids": list(matched_tb.story_ids),
-                                        "cited_support_ids": _clean_str_list(
-                                            it.get("cited_support_ids")
-                                            or matched_tb.support_ids[:2]
-                                        ),
-                                    }
-                                ]
-                            else:
-                                for c in claims:
-                                    if not c.get("covered_story_ids"):
-                                        c["covered_story_ids"] = list(matched_tb.story_ids)
-                                    else:
-                                        c["covered_story_ids"] = _clean_str_list(
-                                            c["covered_story_ids"]
-                                        )
-                                    if not c.get("cited_support_ids"):
-                                        c["cited_support_ids"] = _clean_str_list(
-                                            it.get("cited_support_ids")
-                                            or matched_tb.support_ids[:2]
-                                        )
-                                    else:
-                                        c["cited_support_ids"] = _clean_str_list(
-                                            c["cited_support_ids"]
-                                        )
+                            # Sanitize headline
+                            headline = str(it.get("headline", "")).strip()
+                            clean_headline = (
+                                re.sub(r"\bиз-за\b", "при", headline, flags=re.IGNORECASE)
+                                if headline
+                                else ""
+                            )
+                            if clean_headline:
+                                clean_headline = re.sub(
+                                    r"^(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
+                                    "",
+                                    clean_headline,
+                                    flags=re.IGNORECASE,
+                                ).strip()
+                                if clean_headline:
+                                    clean_headline = clean_headline[:1].upper() + clean_headline[1:]
+                            it["headline"] = (
+                                clean_headline or f"{matched_tb.topic_label}: текущая обстановка"
+                            )
+
+                            # Sanitize body
+                            body = str(it.get("body", "")).strip()
+                            clean_body = body
+                            if clean_body:
+                                clean_body = re.sub(
+                                    r"[«\"]по свету ноль[»\"]", "по свету ноль", clean_body
+                                )
+                                clean_body = re.sub(
+                                    r"\s+вместо\s+220(?:\s*[вВвольт]+)?", "", clean_body
+                                )
+
+                                # Strip redundant headline repetition at start of body
+                                if clean_headline:
+                                    h_norm = clean_headline.strip(".:; ")
+                                    if clean_body.startswith(h_norm):
+                                        clean_body = clean_body[len(h_norm) :].lstrip(" :.-–—")
+                                        if clean_body:
+                                            clean_body = clean_body[:1].upper() + clean_body[1:]
+
+                                # Remove duplicate attribution in body if present multiple times
+                                att_matches = list(
+                                    re.finditer(
+                                        r"\b(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
+                                        clean_body,
+                                        flags=re.IGNORECASE,
+                                    )
+                                )
+                                if len(att_matches) > 1:
+                                    for m in reversed(att_matches[1:]):
+                                        clean_body = clean_body[: m.start()] + clean_body[m.end() :]
+                                    clean_body = re.sub(
+                                        r"\.\s+([a-zа-я])",
+                                        lambda x: ". " + x.group(1).upper(),
+                                        clean_body,
+                                    )
+
+                                # Remove chat metadata and emoji spam
+                                clean_body = re.sub(
+                                    r"(?:публикуют\s+)?сообщения\s+с\s+эмодзи[\w\s,]*[.]?",
+                                    "",
+                                    clean_body,
+                                    flags=re.IGNORECASE,
+                                ).strip()
+                                clean_body = re.sub(
+                                    r"\bсмайлик(?:ами|и)?\b", "", clean_body, flags=re.IGNORECASE
+                                ).strip()
+                                clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
+                            it["body"] = (
+                                clean_body
+                                or f"{matched_tb.topic_label} в городе остаётся на контроле городских служб."
+                            )
+
+                            # Allowed block supports
+                            allowed_block_supports = set(plan_block.support_ids)
+                            base_sups = [
+                                s for s in matched_tb.support_ids if s in allowed_block_supports
+                            ]
+                            if not base_sups:
+                                base_sups = list(matched_tb.support_ids[:2]) or list(
+                                    matched_tb.story_ids[:1]
+                                )
+
+                            base_claim_text = (
+                                matched_tb.fact_ledger[0]
+                                if matched_tb.fact_ledger
+                                else (
+                                    it["headline"]
+                                    or f"{matched_tb.topic_label}: обстановка остаётся стабильной."
+                                )
+                            )
+                            base_claim_text = re.sub(
+                                r"\bиз-за\b", "при", base_claim_text, flags=re.IGNORECASE
+                            )
+
+                            claims: list[dict[str, Any]] = [
+                                {
+                                    "text": base_claim_text,
+                                    "covered_story_ids": list(matched_tb.story_ids),
+                                    "cited_support_ids": base_sups,
+                                    "covered_fact_ids": [],
+                                }
+                            ]
 
                             # Ensure required facts are covered in claims
-                            for rf in matched_tb.required_facts:
-                                has_rf = any(
-                                    rf.fact_id in (c.get("covered_fact_ids") or []) for c in claims
+                            covered_fids = {
+                                str(fid).strip()
+                                for fid in (it.get("covered_fact_ids") or [])
+                                if str(fid).strip()
+                            }
+                            known_fact_ids = {rf.fact_id for rf in matched_tb.required_facts}
+                            unknown_fact_ids = covered_fids - known_fact_ids
+                            if unknown_fact_ids:
+                                raise ValueError(
+                                    "unknown covered_fact_ids for "
+                                    f"{matched_tb.bundle_id}: {sorted(unknown_fact_ids)}"
                                 )
-                                if not has_rf:
-                                    claims.append(
-                                        {
-                                            "text": rf.text or it.get("headline", ""),
-                                            "covered_story_ids": list(
-                                                set(rf.story_ids) & set(matched_tb.story_ids)
-                                            )
-                                            or list(matched_tb.story_ids[:1]),
-                                            "cited_support_ids": _clean_str_list(rf.support_ids),
-                                            "covered_fact_ids": [rf.fact_id],
-                                        }
-                                    )
-                            it["claims"] = claims
+                            for rf in matched_tb.required_facts:
+                                if rf.fact_id not in covered_fids:
+                                    continue
+                                rf_text = rf.text or base_claim_text
+                                rf_text = re.sub(r"\bиз-за\b", "при", rf_text, flags=re.IGNORECASE)
+                                rf_sids = list(
+                                    set(rf.story_ids) & set(matched_tb.story_ids)
+                                ) or list(matched_tb.story_ids)
+                                rf_sups = [
+                                    s for s in rf.support_ids if s in allowed_block_supports
+                                ] or base_sups
+                                claims.append(
+                                    {
+                                        "text": rf_text,
+                                        "covered_story_ids": rf_sids,
+                                        "cited_support_ids": rf_sups,
+                                        "covered_fact_ids": [rf.fact_id],
+                                    }
+                                )
 
-                            # Union support IDs
+                            it["claims"] = claims
                             claim_sups = [
                                 s
                                 for c in claims
@@ -3102,8 +3342,8 @@ class DigestNarrativeWriter:
                             ]
                             cur_sups = _clean_str_list(it.get("cited_support_ids"))
                             it["cited_support_ids"] = list(
-                                dict.fromkeys(cur_sups + claim_sups)
-                            ) or list(matched_tb.support_ids[:2])
+                                dict.fromkeys(base_sups + cur_sups + claim_sups)
+                            )
                             norm_items.append(it)
                         else:
                             norm_items.append(it)

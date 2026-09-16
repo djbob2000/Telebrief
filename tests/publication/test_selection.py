@@ -576,7 +576,7 @@ class TestEditorialSelection:
 
         run = await snap_service.create_run(
             edition_id=edition.id,
-            publication_type="digest_grouped",
+            publication_type="article",
             snapshot_at=_NOW,
             request_key="test-fail-open-fallback",
         )
@@ -596,6 +596,56 @@ class TestEditorialSelection:
         assert len(inputs) == 2
         included_story_ids = {inp.story_id for inp in inputs}
         assert included_story_ids == {s1, s2}
+
+    async def test_digest_selection_skips_ai_priority_overlay(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Digest selection must not spend an AI call on a non-gating priority overlay."""
+        import json
+        from unittest.mock import AsyncMock
+
+        from src.ai_providers import AIProvider
+        from src.publication.selection_ai import (
+            AIPublicationSelectionModel,
+            FailOpenSelectionModel,
+        )
+
+        uow = DatabaseUnitOfWork(pool)
+        snap_service = PublicationSnapshotService(uow=uow)
+
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, _NOW),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            "INSERT INTO story_revisions (story_id, revision_no, current_state, semantic_text, content_hash, created_at) VALUES (%s, 1, 'open', 'Короткое сообщение о свете', 'digest-no-ai', %s) RETURNING id",
+            (story_id, _NOW),
+        )
+        revision_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s",
+            (revision_id, story_id),
+        )
+        await seed_claim_for_story(conn, edition.id, story_id, _NOW)
+
+        run = await snap_service.create_run(
+            edition_id=edition.id,
+            publication_type="digest_grouped",
+            snapshot_at=_NOW,
+            request_key="test-digest-skips-ai-selection",
+        )
+        await snap_service.seal_candidates(run.id)
+
+        mock_provider = AsyncMock(spec=AIProvider)
+        mock_provider.chat_completion.return_value = json.dumps({"included": []})
+        primary = AIPublicationSelectionModel(provider=mock_provider)
+        selector = FailOpenSelectionModel(primary=primary)
+
+        inputs = await EditorialSelectionService(uow=uow, model=selector).select(run.id)
+
+        assert [item.story_id for item in inputs] == [story_id]
+        mock_provider.chat_completion.assert_not_awaited()
 
     async def test_orphan_story_without_claims_is_never_candidate_or_input(
         self, conn: psycopg.AsyncConnection, pool, edition

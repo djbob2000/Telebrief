@@ -55,6 +55,8 @@ class TopicBundle:
     locations: tuple[str, ...] = ()
     required_facts: tuple[RequiredDigestFact, ...] = ()
     status_summary: str = ""
+    states: tuple[str, ...] = ()
+    epistemic_status: str = "сообщения жителей"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +71,8 @@ class TopicBundle:
             "locations": list(self.locations),
             "required_facts": [rf.to_dict() for rf in self.required_facts],
             "status_summary": self.status_summary,
+            "states": list(self.states),
+            "epistemic_status": self.epistemic_status,
         }
 
 
@@ -1359,6 +1363,7 @@ def _clean_fact_sentence(text: str) -> str:
     t = text.strip()
     if not t:
         return ""
+    t = re.sub(r"^(?:да|ну\s+да|а)\s*,\s*", "", t, flags=re.IGNORECASE)
     t = re.sub(
         r"^(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
         "",
@@ -1371,23 +1376,172 @@ def _clean_fact_sentence(text: str) -> str:
 
 
 def _is_usable_fact_line(text: str) -> bool:
-    """Filter out chat noise, resident questions, classified ads, and meta comments."""
-    if not text or len(text.strip()) < 10:
+    """Filter out chat noise, resident questions, classified ads, lost & found, and meta comments."""
+    if not text or len(text.strip()) < 12:
         return False
-    t_l = text.casefold()
+    t = text.strip()
+    words = t.split()
+    if len(words) < 3:
+        return False
+    t_l = t.casefold()
+
+    # 1. Questions
     if "?" in text or any(
         t_l.startswith(q)
-        for q in ("кто знает", "подскажите", "скажите", "где найти", "работает ли", "люди кто")
+        for q in (
+            "кто знает",
+            "подскажите",
+            "скажите",
+            "где найти",
+            "работает ли",
+            "люди кто",
+            "можно ли",
+            "что с ",
+            "куда звонить",
+            "когда включат",
+            "кому-то дали",
+            "есть у кого",
+            "подскажите пожалуйста",
+            "кто в курсе",
+        )
     ):
+        return False
+
+    # 2. Conversational interjections & colloquial dialogue starts. A colloquial
+    # lead-in is not enough to discard a report: short local observations often
+    # begin with "у нас" or "да, с ...". Keep them when the line still carries
+    # a concrete service/event signal or a date/number.
+    concrete_signal = bool(re.search(r"\d", t_l)) or any(
+        marker in t_l
+        for marker in (
+            "свет",
+            "электр",
+            "напряж",
+            "вода",
+            "водопровод",
+            "газ",
+            "интернет",
+            "связь",
+            "отоплен",
+            "автобус",
+            "маршрут",
+            "дорог",
+            "аптек",
+            "больниц",
+            "врач",
+            "выплат",
+            "ремонт",
+            "авар",
+            "пожар",
+            "взрыв",
+            "дрон",
+            "пво",
+            "перерасч",
+        )
+    )
+    if (
+        any(
+            t_l.startswith(prefix)
+            for prefix in (
+                "та уже",
+                "уже тихо",
+                "да брат",
+                "та не",
+                "та вроде",
+                "ну да",
+                "вот именно",
+                "короче",
+                "кстати",
+                "да, с ",
+                "нет, с ",
+                "а у нас",
+                "у нас тоже",
+                "и у меня",
+                "похоже, забыли",
+                "посетите, а то",
+                "только особо не рассчитывайте",
+                "самостоятельно будет много быстрее",
+                "раза с 15",
+                "дозваниваюсь",
+                "вчера будет",
+                "а завтра день",
+                "а завтра — день",
+                "с праздником",
+                "доброе утро",
+                "спокойной ночи",
+                "всем привет",
+                "внизу, район",
+                "житель приглашает посетить",
+            )
+        )
+        and not concrete_signal
+    ):
+        return False
+
+    # 3. Commercial classifieds, private sales, job postings
+    if any(
+        k in t_l
+        for k in (
+            "куплю",
+            "продам",
+            "цена от",
+            "позвонить по номеру",
+            "купить стекло",
+            "продается",
+            "сдам",
+            "сниму",
+            "требуются",
+            "вакансия",
+            "в личные сообщения",
+            "писать в лс",
+            "писать в личку",
+            "стоимости перекопки",
+            "за сотку",
+        )
+    ):
+        return False
+
+    # 4. Lost & found animals / personal items
+    if any(
+        k in t_l
+        for k in (
+            "пропал кот",
+            "пропала кошка",
+            "пропала собака",
+            "нашли собачку",
+            "нашли собаку",
+            "нашли щенка",
+            "помогите найти хозяина",
+            "оставил рюкзак",
+            "потерял ключи",
+            "потерялись документы",
+            "найдены ключи",
+            "найден кошелек",
+        )
+    ):
+        return False
+
+    # 5. Emojis / technical metadata / chat profanity
+    if "эмодзи" in t_l or "смайлик" in t_l or "стикер" in t_l:
         return False
     if any(
-        k in t_l for k in ("куплю", "продам", "цена от", "позвонить по номеру", "купить стекло")
+        k in t_l
+        for k in (
+            "чо за фигня",
+            "идите нах",
+            "кинули не только вас",
+            "жесть",
+            "херня",
+        )
     ):
         return False
-    if "эмодзи" in t_l or "смайлик" in t_l:
+
+    # 6. Meta-commentary without concrete facts
+    if "подробности уточняются" in t_l and len(words) <= 8:
         return False
-    if any(k in t_l for k in ("чо за фигня", "идите нах", "кинули не только вас")):
+    if "детали не раскрыты" in t_l:
         return False
+
     return True
 
 
@@ -1478,6 +1632,46 @@ def build_thematic_topic_bundles(
                     seen_cf.add(key)
                     dedup_facts.append(fc)
 
+            # If all raw lines were filtered as chatter, preserve cleaned summary/topic
+            if not dedup_facts:
+                fallback_source = sample_card.summary or sample_card.topic
+                fallback_cand = (
+                    _clean_fact_sentence(fallback_source)
+                    if _is_usable_fact_line(fallback_source)
+                    else ""
+                )
+                if fallback_cand:
+                    dedup_facts.append(fallback_cand)
+
+            # Determine epistemic kind
+            is_official = False
+            if evidence:
+                for s in all_sups:
+                    evi = evidence.get(s)
+                    if evi and (
+                        getattr(evi, "kind", "") == "official_statement"
+                        or getattr(evi, "source_role", "") in {"official", "authority"}
+                    ):
+                        is_official = True
+                        break
+            epistemic_status = "официальная информация" if is_official else "сообщения жителей"
+
+            # Extract distinct operational states
+            bundle_states: list[str] = []
+            for c in g_cards:
+                for co in getattr(c, "community_observations", []) or []:
+                    if co.text and _is_usable_fact_line(co.text):
+                        st = _clean_fact_sentence(co.text)
+                        if st not in bundle_states:
+                            bundle_states.append(st)
+                for hf in getattr(c, "hard_facts", []) or []:
+                    if hf.text and _is_usable_fact_line(hf.text):
+                        st = _clean_fact_sentence(hf.text)
+                        if st not in bundle_states:
+                            bundle_states.append(st)
+            if not bundle_states and dedup_facts:
+                bundle_states = list(dedup_facts[:4])
+
             # Match required operational facts
             story_id_set = set(story_ids)
             bundle_req_facts = tuple(
@@ -1497,6 +1691,8 @@ def build_thematic_topic_bundles(
                     locations=locations,
                     required_facts=bundle_req_facts,
                     status_summary="",
+                    states=tuple(bundle_states),
+                    epistemic_status=epistemic_status,
                 )
             )
 
