@@ -2517,4 +2517,4 @@ def build_digest_support_text_index(
         if c.summary and f"{c.id}:summary" not in index:
             index[f"{c.id}:summary"] = c.summary
 
-    return index
+    return {key: _sanitize_digest_support_text(value) for key, value in index.items()}

@@ -1665,9 +1665,18 @@ def test_build_deterministic_digest_draft_with_all_modes_and_attribution() -> No
 
 
 def test_deterministic_digest_hides_internal_reply_annotations() -> None:
-    from src.publication.digest_narrative import _sanitize_digest_support_text
+    from src.publication.digest_narrative import (
+        _sanitize_digest_support_text,
+        build_digest_support_text_index,
+    )
 
     assert _sanitize_digest_support_text('Света нет (in_reply_to: "А когда дадут?")') == "Света нет"
+    evidence = {
+        "sup:reply": _make_evidence("sup:reply", 1, 'Света нет (in_reply_to: "А когда дадут?")')
+    }
+    assert build_digest_support_text_index(evidence=evidence, cards=[]) == {
+        "sup:reply": "Света нет"
+    }
 
 
 def test_narrative_plan_turns_merge_group_into_required_story_group() -> None:
