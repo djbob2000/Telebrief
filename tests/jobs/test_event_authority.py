@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 from types import SimpleNamespace
 from typing import Any, cast
@@ -146,16 +147,10 @@ async def test_publication_dispatcher_fans_out_shards_without_calling_service(mo
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_publication_authority_batch_preserves_boundaries_and_coordination_scope(monkeypatch):
-    snapshot_at = authority_jobs.dt.datetime(
-        2026, 9, 14, 9, 0, tzinfo=authority_jobs.dt.timezone.utc
-    )
-    cutoff_at = authority_jobs.dt.datetime(
-        2026, 9, 14, 8, 55, tzinfo=authority_jobs.dt.timezone.utc
-    )
-    deadline_at = authority_jobs.dt.datetime(
-        2026, 9, 14, 9, 20, tzinfo=authority_jobs.dt.timezone.utc
-    )
-    current_at = snapshot_at + authority_jobs.dt.timedelta(minutes=5)
+    current_at = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+    snapshot_at = current_at - dt.timedelta(minutes=5)
+    cutoff_at = snapshot_at - dt.timedelta(minutes=5)
+    deadline_at = current_at + dt.timedelta(minutes=15)
 
     class Clock(authority_jobs.dt.datetime):
         @classmethod
