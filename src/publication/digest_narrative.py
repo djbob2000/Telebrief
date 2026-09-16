@@ -23,14 +23,14 @@ _INTERNAL_REPLY_ANNOTATION_RE = re.compile(
 _DIGEST_ATTRIBUTION_RE = re.compile(
     r"\b(?:"
     r"(?:по\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев))"
-    r"|(?:(?:жители|горожане|очевидцы)\s+(?:сообщают|пишут|отмечают|жалуются))"
+    r"|(?:(?:местный\s+)?жител(?:и|ь)|горожан(?:е|ин)|очевид(?:цы|ец))\s+(?:сообща(?:ют|ет)|пиш(?:ут|ет)|отмеча(?:ют|ет)|жалу(?:ются|ется))"
     r")\s*(?:,|:)??\s*(?:что\s+)?",
     re.IGNORECASE,
 )
 _DIGEST_LEADING_ATTRIBUTION_RE = re.compile(
     r"^\s*(?:"
     r"(?:по\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев))"
-    r"|(?:(?:жители|горожане|очевидцы)\s+(?:сообщают|пишут|отмечают|жалуются))"
+    r"|(?:(?:местный\s+)?жител(?:и|ь)|горожан(?:е|ин)|очевид(?:цы|ец))\s+(?:сообща(?:ют|ет)|пиш(?:ут|ет)|отмеча(?:ют|ет)|жалу(?:ются|ется))"
     r")\s*(?:,|:)??\s*(?:что\s+)?",
     re.IGNORECASE,
 )
@@ -1401,17 +1401,19 @@ def build_deterministic_digest_draft(
                 usable_facts: list[str] = []
                 fact_keys: list[str] = []
                 for fact in bundle.fact_ledger:
-                    if not _is_usable_fact_line(fact):
-                        continue
                     cleaned_fact = _clean_fact_sentence(fact)
-                    fact_key = " ".join(re.findall(r"[\w-]+", cleaned_fact.casefold()))
-                    if not fact_key or any(
-                        fact_key == previous or fact_key in previous or previous in fact_key
-                        for previous in fact_keys
-                    ):
-                        continue
-                    fact_keys.append(fact_key)
-                    usable_facts.append(cleaned_fact)
+                    for atom in re.split(r"(?<=[.!?])\s+", cleaned_fact):
+                        if not _is_usable_fact_line(atom):
+                            continue
+                        atom = _clean_fact_sentence(atom)
+                        fact_key = " ".join(re.findall(r"[\w-]+", atom.casefold()))
+                        if not fact_key or any(
+                            fact_key == previous or fact_key in previous or previous in fact_key
+                            for previous in fact_keys
+                        ):
+                            continue
+                        fact_keys.append(fact_key)
+                        usable_facts.append(atom)
                 if not usable_facts:
                     for sid in bundle.story_ids:
                         c = cards_by_id.get(sid)

@@ -1372,7 +1372,21 @@ _FACT_META_OR_ADVICE_RE = re.compile(
     r"уточняйте\s+в\s+официальных\s+источниках|"
     r"совет(?:ую|ует|уют)|рекоменду(?:ется|ют|ет)|"
     r"не\s+(?:обстреливайте|появляйтесь|ходите|звоните)|"
-    r"сообщается\s+о\s+(?:событии|ситуации))\b",
+    r"сообщается\s+о\s+(?:событии|ситуации)|"
+    r"сообщени[ея]\s+(?:сообщества\s+о\s+выполнении\s+работ|о\s+(?:событии|ситуации))|"
+    r"жител(?:и|ь)\s+(?:интересу(?:ются|ется)|спрашива(?:ют|ет)|зада(?:ют|ёт)\s+вопрос)|"
+    r"что[- ]то\s+(?:произошло|отключилось|случилось))\b",
+    re.IGNORECASE,
+)
+
+_FACT_DIRECTORY_OR_PROMO_RE = re.compile(
+    r"\b(?:"
+    r"ежедневн\w*\s+(?:автобусн\w*\s+)?(?:рейс\w*|пассажирск\w*\s+перевоз\w*)|"
+    r"атмосфер\w*\s+красот\w*|маленьк\w*\s+леди|"
+    r"при[её]м\s+автомобил\w*\s+в\s+разбор|"
+    r"задава(?:ть|йте)\s+вопрос\w*\s+в\s+личн\w*\s+сообщени\w*|"
+    r"сообщени[ея]\s+о\s+контактн\w*\s+телефон\w*"
+    r")\b",
     re.IGNORECASE,
 )
 
@@ -1385,6 +1399,8 @@ def _is_fact_noise_sentence(text: str) -> bool:
     if _FACT_QUESTION_RE.search(t_l):
         return True
     if _FACT_META_OR_ADVICE_RE.search(t_l):
+        return True
+    if _FACT_DIRECTORY_OR_PROMO_RE.search(t_l):
         return True
     if any(
         marker in t_l
@@ -1408,7 +1424,8 @@ def _clean_fact_sentence(text: str) -> str:
         return ""
     t = re.sub(r"^(?:да|ну\s+да|а)\s*,\s*", "", t, flags=re.IGNORECASE)
     t = re.sub(
-        r"^(?:сообщение\s+от\s+(?:местного\s+)?жителя|по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
+        r"^(?:сообщение\s+от\s+(?:местного\s+)?жителя|по\s+сообщениям\s+жителей|"
+        r"(?:местный\s+)?жител(?:и|ь)\s+сообща(?:ют|ет)|по\s+словам\s+горожан)[\s,:]*",
         "",
         t,
         flags=re.IGNORECASE,
@@ -1444,7 +1461,11 @@ def _is_usable_fact_line(text: str) -> bool:
     t_l = t.casefold()
 
     # 1. Questions
-    if _FACT_QUESTION_RE.search(t_l) or _FACT_META_OR_ADVICE_RE.search(t_l):
+    if (
+        _FACT_QUESTION_RE.search(t_l)
+        or _FACT_META_OR_ADVICE_RE.search(t_l)
+        or _FACT_DIRECTORY_OR_PROMO_RE.search(t_l)
+    ):
         return False
 
     # 2. Lost & found animals / personal items / lost belongings
@@ -1714,18 +1735,24 @@ def build_thematic_topic_bundles(
                     raw_texts.append(c.topic)
                 if c.summary:
                     raw_texts.append(c.summary)
-                    if _is_usable_fact_line(c.summary):
-                        fact_candidates.append(_clean_fact_sentence(c.summary))
+                    cleaned_summary = _clean_fact_sentence(c.summary)
+                    for atom in re.split(r"(?<=[.!?])\s+", cleaned_summary):
+                        if _is_usable_fact_line(atom):
+                            fact_candidates.append(_clean_fact_sentence(atom))
                 for hf in getattr(c, "hard_facts", []) or []:
                     if hf.text:
                         raw_texts.append(hf.text)
-                        if _is_usable_fact_line(hf.text):
-                            fact_candidates.append(_clean_fact_sentence(hf.text))
+                        cleaned_fact = _clean_fact_sentence(hf.text)
+                        for atom in re.split(r"(?<=[.!?])\s+", cleaned_fact):
+                            if _is_usable_fact_line(atom):
+                                fact_candidates.append(_clean_fact_sentence(atom))
                 for co in getattr(c, "community_observations", []) or []:
                     if co.text:
                         raw_texts.append(co.text)
-                        if _is_usable_fact_line(co.text):
-                            fact_candidates.append(_clean_fact_sentence(co.text))
+                        cleaned_observation = _clean_fact_sentence(co.text)
+                        for atom in re.split(r"(?<=[.!?])\s+", cleaned_observation):
+                            if _is_usable_fact_line(atom):
+                                fact_candidates.append(_clean_fact_sentence(atom))
 
             locations = _extract_bundle_locations(raw_texts)
 

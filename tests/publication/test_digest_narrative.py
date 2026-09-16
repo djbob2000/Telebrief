@@ -2904,6 +2904,16 @@ def test_usable_fact_line_keeps_concrete_report_with_conversational_prefix():
         )
         == "На улице Ленина нет света."
     )
+    assert (
+        _clean_fact_sentence(
+            "Сообщения сообщества о выполнении работ в Бердянске. "
+            "На улице Ленина восстановили подачу воды."
+        )
+        == "На улице Ленина восстановили подачу воды."
+    )
+    assert not _is_usable_fact_line(
+        "В Бердянске планируется мероприятие, создающее атмосферу красоты для маленьких леди."
+    )
 
 
 def test_topic_bundle_drops_filtered_metadata_summary():
