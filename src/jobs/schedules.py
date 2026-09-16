@@ -236,7 +236,7 @@ async def publication_schedule_dispatcher(timestamp: int) -> None:
         await orchestrator.reconcile(refresh.id, now=scheduled_for)
 
     for action in due_publication_actions(config, scheduled_for):
-        await orchestrator.request(
+        result = await orchestrator.request(
             edition_slug=action.task_kwargs["edition_slug"],
             publication_type=action.task_kwargs["publication_type"],
             trigger="scheduled",
@@ -244,11 +244,27 @@ async def publication_schedule_dispatcher(timestamp: int) -> None:
             request_key=action.task_kwargs["request_key"],
             now=scheduled_for,
         )
-        logger.info(
-            "reconciled scheduled %s publication for %s",
-            action.task_kwargs["publication_type"],
-            action.task_kwargs["target_at"],
-        )
+        if result.readiness_status in {"failed", "completed"}:
+            logger.debug(
+                "scheduled %s publication for %s is already terminal (%s)",
+                action.task_kwargs["publication_type"],
+                action.task_kwargs["target_at"],
+                result.readiness_status,
+            )
+        elif result.readiness_status in {"preparing", "publication_queued"}:
+            logger.debug(
+                "scheduled %s publication for %s is already in progress (%s)",
+                action.task_kwargs["publication_type"],
+                action.task_kwargs["target_at"],
+                result.readiness_status,
+            )
+        else:
+            logger.info(
+                "reconciled scheduled %s publication for %s (status: %s)",
+                action.task_kwargs["publication_type"],
+                action.task_kwargs["target_at"],
+                result.readiness_status,
+            )
 
 
 @procrastinate_app.task(
