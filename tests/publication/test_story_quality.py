@@ -190,6 +190,66 @@ def test_validate_story_publication_eligibility_keeps_advice_with_event():
     assert reason is None
 
 
+def test_validate_story_publication_eligibility_rejects_question_without_answer():
+    payload = EventPayload(
+        headline="Жители спрашивают, есть ли свет",
+        digest_summary="В чате жители интересуются наличием электричества в районах города.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Есть ли у кого-нибудь свет?",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(10,),
+            ),
+        ),
+    )
+
+    is_valid, reason = validate_story_publication_eligibility(payload)
+
+    assert is_valid is False
+    assert reason == "resident_question_only"
+
+
+def test_validate_story_publication_eligibility_rejects_non_editorial_payload():
+    payload = EventPayload(
+        headline="Поиск работы в Бердянске",
+        digest_summary="Один человек ищет подработку на завтра в Бердянске.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Ищу шабашку на завтра.",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(11,),
+            ),
+        ),
+    )
+
+    is_valid, reason = validate_story_publication_eligibility(payload)
+
+    assert is_valid is False
+    assert reason == "non_editorial_payload"
+
+
+def test_validate_story_publication_eligibility_rejects_promotional_event_copy():
+    payload = EventPayload(
+        headline="Культурное мероприятие для девочек",
+        digest_summary="Планируется мероприятие, создающее атмосферу красоты для маленьких леди.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Атмосфера красоты будет окружать наших маленьких леди.",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(12,),
+            ),
+        ),
+    )
+
+    is_valid, reason = validate_story_publication_eligibility(payload)
+
+    assert is_valid is False
+    assert reason == "non_editorial_payload"
+
+
 def test_validate_story_publication_eligibility_rejects_reply_annotation_only_service():
     payload = EventPayload(
         headline="Житель Бердянска спрашивает о водоканале",

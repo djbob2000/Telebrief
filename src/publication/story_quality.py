@@ -67,6 +67,7 @@ _CHATTER_META_RE = re.compile(
     r"детали\s+не\s+раскрыты|без\s+конкретных\s+деталей|эмоциональное\s+сообщение|"
     r"выясняют\s+обстоятельства|жители\s+интересуются|"
     r"сообщени[ея]\s+(?:из|о)\s+[^.!?]{1,80}|"
+    r"сообщени[ея]\s+сообщества\s+о\s+выполнении\s+работ|"
     r"конкретный\s+вид\s+сервиса\s+(?:в\s+сообщениях\s+)?не\s+уточняется|"
     r"вид\s+сервиса\s+(?:в\s+сообщениях\s+)?не\s+уточняется"
     r")\b",
@@ -77,6 +78,28 @@ _ADVICE_MARKER_RE = re.compile(
     r"\b(?:совет(?:ую|ует|уем|уют)|рекоменд(?:ую|ует|уем|уют)|"
     r"призыва(?:ет|ют)|призыв|не\s+(?:появляйтесь|ходите|обстреливайте|"
     r"звоните|заходите|выходите)|выражает\s+надежду|наде(?:юсь|ется|емся))\b",
+    re.IGNORECASE,
+)
+
+_QUESTION_CONTEXT_RE = re.compile(
+    r"(?:\?|\b(?:интересу(?:ется|ются)|спрашива(?:ет|ют)|зада(?:ёт|ет)\s+вопрос|"
+    r"кто\s+знает|есть\s+ли|подскажите)\b)",
+    re.IGNORECASE,
+)
+
+_CONCRETE_EVENT_SIGNAL_RE = re.compile(
+    r"\b(?:взрыв\w*|обстрел\w*|пожар\w*|авари\w*|ремонт\w*|"
+    r"отключ\w*|включ\w*|нет\s+(?:свет\w*|вод\w*|газ\w*)|"
+    r"восстанов\w*|поврежд\w*|прорыв\w*|перебо\w*|"
+    r"напряжен\w*|сирен\w*|дтп|маршрут\w*|рейс\w*|аптек\w*)\b",
+    re.IGNORECASE,
+)
+
+_NON_EDITORIAL_PAYLOAD_RE = re.compile(
+    r"\b(?:аренд\w*\s+жиль\w*|ищет\s+(?:работ\w*|подработ\w*)|"
+    r"поиск\s+(?:работ\w*|подработ\w*)|шабашк\w*|"
+    r"автозапчаст\w*|автомобил\w*\s+в\s+разбор|"
+    r"маленьк\w*\s+леди|атмосфер\w*\s+красот\w*)\b",
     re.IGNORECASE,
 )
 
@@ -204,6 +227,13 @@ def _is_advice_without_event(text: str) -> bool:
     return not _CIVIC_EVENT_TOKENS_RE.search(without_advice)
 
 
+def _is_question_without_event(text: str) -> bool:
+    """Return whether a source item is only a resident question/context line."""
+    return bool(
+        text and _QUESTION_CONTEXT_RE.search(text) and not _CONCRETE_EVENT_SIGNAL_RE.search(text)
+    )
+
+
 def validate_story_publication_eligibility(
     payload: Any, fallback_text: str = ""
 ) -> tuple[bool, str | None]:
@@ -245,6 +275,11 @@ def validate_story_publication_eligibility(
     ):
         return False, "advice_without_event"
 
+    if non_question_items and all(
+        _is_question_without_event(getattr(item, "text", "")) for item in non_question_items
+    ):
+        return False, "resident_question_only"
+
     # Rule 2: Generic anonymous service check
     all_story_text = " ".join(
         [
@@ -253,6 +288,11 @@ def validate_story_publication_eligibility(
         ]
         + [getattr(item, "text", "") for item in non_question_items]
     ).lower()
+
+    if _NON_EDITORIAL_PAYLOAD_RE.search(all_story_text) and not _CONCRETE_EVENT_SIGNAL_RE.search(
+        all_story_text
+    ):
+        return False, "non_editorial_payload"
 
     cat = getattr(payload, "category", "") or ""
     tags = {str(t).lower() for t in (getattr(payload, "tags", ()) or ())}
