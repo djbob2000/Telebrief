@@ -1365,7 +1365,7 @@ def _clean_fact_sentence(text: str) -> str:
         return ""
     t = re.sub(r"^(?:да|ну\s+да|а)\s*,\s*", "", t, flags=re.IGNORECASE)
     t = re.sub(
-        r"^(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
+        r"^(?:сообщение\s+от\s+(?:местного\s+)?жителя|по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
         "",
         t,
         flags=re.IGNORECASE,
@@ -1407,7 +1407,77 @@ def _is_usable_fact_line(text: str) -> bool:
     ):
         return False
 
-    # 2. Conversational interjections & colloquial dialogue starts. A colloquial
+    # 2. Lost & found animals / personal items / lost belongings
+    if any(
+        k in t_l
+        for k in (
+            "пропал кот",
+            "пропала кошка",
+            "пропала собака",
+            "потерялась собака",
+            "потерялся пес",
+            "потерялся пёс",
+            "нашли собачку",
+            "нашли собаку",
+            "нашлась собака",
+            "найдена собака",
+            "нашли щенка",
+            "помогите найти хозяина",
+            "оставил рюкзак",
+            "оставили рюкзак",
+            "потерял рюкзак",
+            "потеряли рюкзак",
+            "нашел рюкзак",
+            "нашёл рюкзак",
+            "найден рюкзак",
+            "потерян рюкзак",
+            "потерял ключи",
+            "потерялись документы",
+            "найдены ключи",
+            "найден кошелек",
+            "найден кошелёк",
+            "забыли в автобусе",
+            "забыл в автобусе",
+            "нашли в автобусе",
+            "кто-то нашёл",
+            "кто-то нашел",
+            "кто то нашел",
+            "кто то нашёл",
+            "найден паспорт",
+            "утерян паспорт",
+            "утеряны документы",
+            "найдены документы",
+        )
+    ):
+        return False
+
+    # 3. Unconditional chat dialogue fragments & non-factual community openers
+    if any(
+        t_l.startswith(prefix)
+        for prefix in (
+            "внизу, район",
+            "внизу район",
+            "житель приглашает посетить",
+            "жители приглашают посетить",
+            "сообщение от местного жителя",
+            "сообщение от жителя",
+            "посетите, а то",
+            "только особо не рассчитывайте",
+            "самостоятельно будет много быстрее",
+            "похоже, забыли",
+            "раза с 15",
+            "раза с 10",
+            "дозваниваюсь",
+            "с праздником",
+            "доброе утро",
+            "добрый вечер",
+            "спокойной ночи",
+            "всем привет",
+        )
+    ):
+        return False
+
+    # 4. Conversational interjections & colloquial dialogue starts. A colloquial
     # lead-in is not enough to discard a report: short local observations often
     # begin with "у нас" or "да, с ...". Keep them when the line still carries
     # a concrete service/event signal or a date/number.
@@ -1457,28 +1527,16 @@ def _is_usable_fact_line(text: str) -> bool:
                 "а у нас",
                 "у нас тоже",
                 "и у меня",
-                "похоже, забыли",
-                "посетите, а то",
-                "только особо не рассчитывайте",
-                "самостоятельно будет много быстрее",
-                "раза с 15",
-                "дозваниваюсь",
                 "вчера будет",
                 "а завтра день",
                 "а завтра — день",
-                "с праздником",
-                "доброе утро",
-                "спокойной ночи",
-                "всем привет",
-                "внизу, район",
-                "житель приглашает посетить",
             )
         )
         and not concrete_signal
     ):
         return False
 
-    # 3. Commercial classifieds, private sales, job postings
+    # 5. Commercial classifieds, private sales, job postings
     if any(
         k in t_l
         for k in (
@@ -1497,31 +1555,13 @@ def _is_usable_fact_line(text: str) -> bool:
             "писать в личку",
             "стоимости перекопки",
             "за сотку",
+            "напишите в лс",
+            "написать в лс",
         )
     ):
         return False
 
-    # 4. Lost & found animals / personal items
-    if any(
-        k in t_l
-        for k in (
-            "пропал кот",
-            "пропала кошка",
-            "пропала собака",
-            "нашли собачку",
-            "нашли собаку",
-            "нашли щенка",
-            "помогите найти хозяина",
-            "оставил рюкзак",
-            "потерял ключи",
-            "потерялись документы",
-            "найдены ключи",
-            "найден кошелек",
-        )
-    ):
-        return False
-
-    # 5. Emojis / technical metadata / chat profanity
+    # 6. Emojis / technical metadata / chat profanity
     if "эмодзи" in t_l or "смайлик" in t_l or "стикер" in t_l:
         return False
     if any(
@@ -1536,7 +1576,7 @@ def _is_usable_fact_line(text: str) -> bool:
     ):
         return False
 
-    # 6. Meta-commentary without concrete facts
+    # 7. Meta-commentary without concrete facts
     if "подробности уточняются" in t_l and len(words) <= 8:
         return False
     if "детали не раскрыты" in t_l:

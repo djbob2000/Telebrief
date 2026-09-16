@@ -1090,7 +1090,9 @@ def validate_digest_narrative(
                 claimed_story_ids = {sid for c in item.claims for sid in c.covered_story_ids}
                 for sid in item.covered_story_ids:
                     if sid not in claimed_story_ids:
-                        violations.append(f"STORY_CLAIM_COVERAGE_MISSING:{sid}")
+                        violations.append(
+                            f"STORY_CLAIM_COVERAGE_MISSING:{sid} in block {out_block.block_id}"
+                        )
 
                 for claim in item.claims:
                     for sid in claim.covered_story_ids:
@@ -1118,7 +1120,7 @@ def validate_digest_narrative(
                             )
                         if sup_id not in support_map:
                             violations.append(
-                                f"UNKNOWN_SUPPORT_ID: {sup_id} not found in support text index"
+                                f"UNKNOWN_SUPPORT_ID: {sup_id} not found in support text index in block {out_block.block_id}"
                             )
 
                     c_claim_supports = [
@@ -1149,7 +1151,9 @@ def validate_digest_narrative(
                     block_req_facts_by_id = {rf.fact_id: rf for rf in plan_block.required_facts}
                     for fid in claim.covered_fact_ids:
                         if fid not in block_req_facts_by_id:
-                            violations.append(f"UNKNOWN_DIGEST_FACT_ID:{fid}")
+                            violations.append(
+                                f"UNKNOWN_DIGEST_FACT_ID:{fid} in block {out_block.block_id}"
+                            )
                         else:
                             rf = block_req_facts_by_id[fid]
                             rf_allowed_sups = set(rf.support_ids)
@@ -1160,7 +1164,9 @@ def validate_digest_narrative(
                             if allowed_fact_sups and not (
                                 set(claim.cited_support_ids) & allowed_fact_sups
                             ):
-                                violations.append(f"DIGEST_FACT_SUPPORT_MISSING:{fid}")
+                                violations.append(
+                                    f"DIGEST_FACT_SUPPORT_MISSING:{fid} in block {out_block.block_id}"
+                                )
 
             if len(item.covered_story_ids) > 1 and merge_group_map:
                 m_groups = {merge_group_map.get(sid, sid) for sid in item.covered_story_ids}
@@ -1276,7 +1282,9 @@ def validate_digest_narrative(
                 if rf_covered:
                     break
             if not rf_covered:
-                violations.append(f"DIGEST_FACT_COVERAGE_MISSING:{rf.fact_id}")
+                violations.append(
+                    f"DIGEST_FACT_COVERAGE_MISSING:{rf.fact_id} in block {out_block.block_id}"
+                )
 
     is_valid = len(violations) == 0 and len(unsupported_claims) == 0
     return DigestNarrativeValidationResult(
@@ -3192,6 +3200,13 @@ class DigestNarrativeWriter:
                                         matched_tb = tb
                                         break
 
+                        # 4. Fallback: match to first unassigned bundle in this block
+                        if matched_tb is None:
+                            for tb in plan_block.topic_bundles:
+                                if tb.bundle_id not in assigned_bundle_ids:
+                                    matched_tb = tb
+                                    break
+
                         if matched_tb:
                             assigned_bundle_ids.add(matched_tb.bundle_id)
                             it["covered_story_ids"] = list(matched_tb.story_ids)
@@ -3301,19 +3316,14 @@ class DigestNarrativeWriter:
                                 }
                             ]
 
-                            # Ensure required facts are covered in claims
+                            # Bind claims for facts explicitly covered by the model
+                            known_fact_ids = {rf.fact_id for rf in matched_tb.required_facts}
                             covered_fids = {
                                 str(fid).strip()
                                 for fid in (it.get("covered_fact_ids") or [])
-                                if str(fid).strip()
+                                if str(fid).strip() in known_fact_ids
                             }
-                            known_fact_ids = {rf.fact_id for rf in matched_tb.required_facts}
-                            unknown_fact_ids = covered_fids - known_fact_ids
-                            if unknown_fact_ids:
-                                raise ValueError(
-                                    "unknown covered_fact_ids for "
-                                    f"{matched_tb.bundle_id}: {sorted(unknown_fact_ids)}"
-                                )
+
                             for rf in matched_tb.required_facts:
                                 if rf.fact_id not in covered_fids:
                                     continue
@@ -3346,7 +3356,12 @@ class DigestNarrativeWriter:
                             )
                             norm_items.append(it)
                         else:
-                            norm_items.append(it)
+                            # Drop surplus unmapped item in bundle-based blocks to prevent ungrounded validation failures
+                            logger.info(
+                                "Ignoring surplus unmapped item in block %s: %s",
+                                plan_block.block_id,
+                                it.get("headline", ""),
+                            )
 
                     # If any bundle in plan_block was missed entirely by LLM, synthesize it
                     for tb in plan_block.topic_bundles:

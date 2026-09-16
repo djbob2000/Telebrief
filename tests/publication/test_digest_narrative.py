@@ -2822,6 +2822,16 @@ def test_usable_fact_line_keeps_concrete_report_with_conversational_prefix():
     assert _is_usable_fact_line("Да, с 12.09 свет отключили.")
     assert _clean_fact_sentence("Да, с 12.09 свет отключили.") == "С 12.09 свет отключили."
 
+    # Verify chatter and lost & found filtering
+    assert not _is_usable_fact_line("внизу, район 16 школы")
+    assert not _is_usable_fact_line("Кто-то нашёл рюкзак в автобусе")
+    assert not _is_usable_fact_line("Нашли собаку в районе набережной")
+    assert not _is_usable_fact_line("Сообщение от местного жителя: добрый вечер всем")
+    assert (
+        _clean_fact_sentence("Сообщение от местного жителя: на улице Ленина нет воды")
+        == "На улице Ленина нет воды."
+    )
+
 
 def test_topic_bundle_does_not_restore_filtered_metadata_summary():
     from src.publication.digest_presentation import build_thematic_topic_bundles
