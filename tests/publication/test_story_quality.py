@@ -148,6 +148,32 @@ def test_validate_story_publication_eligibility_rejects_predicateless_fragment()
     assert reason == "lacks_meaningful_predicate"
 
 
+def test_validate_story_publication_eligibility_rejects_reply_annotation_only_service():
+    payload = EventPayload(
+        headline="Житель Бердянска спрашивает о водоканале",
+        digest_summary="Сообщение из Бердянска о ситуации с водоканалом.",
+        tags=("водоснабжение",),
+        evidence_items=(
+            EvidenceItemPayload(
+                text='(in_reply_to: "А к нам сегодня приходили показания электроэнергии проверять.")',
+                kind="service_access",
+                publication_use="PUBLISH",
+                source_fragment_ids=(7,),
+                service_state=ServiceStatePayload(
+                    subject_key="water_supply",
+                    subject_label="Водоснабжение",
+                    dimension="availability",
+                    state="UNAVAILABLE",
+                    entity="",
+                ),
+            ),
+        ),
+    )
+    is_valid, reason = validate_story_publication_eligibility(payload)
+    assert is_valid is False
+    assert reason == "lacks_meaningful_predicate"
+
+
 def test_validate_story_publication_eligibility_rejects_generic_service_community_report():
     """The run-44 service card was persisted as a community report, not service_access."""
     payload = EventPayload(

@@ -65,6 +65,7 @@ _CHATTER_META_RE = re.compile(
     r"(?:обсуждают|выясняют|интересуются|сообщают\s+о|сообщает\s+о|сообщени[ея]\s+о)?(?:\s+текущ\w*)?\s+ситуаци[июей]\w*|"
     r"подробности\s+уточняются|информация\s+уточняется|ситуация\s+уточняется|"
     r"выясняют\s+обстоятельства|жители\s+интересуются|"
+    r"сообщени[ея]\s+из\s+[^.!?]{1,80}\s+о\s+ситуаци[июей]\w*|"
     r"конкретный\s+вид\s+сервиса\s+(?:в\s+сообщениях\s+)?не\s+уточняется|"
     r"вид\s+сервиса\s+(?:в\s+сообщениях\s+)?не\s+уточняется"
     r")\b",
@@ -115,6 +116,11 @@ _PURE_GEOGRAPHIC_FRAGMENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_INTERNAL_REPLY_ANNOTATION_RE = re.compile(
+    r"\s*\(in_reply_to:\s*\".*\"\)\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+
 
 def is_generic_service_entity(entity: str, subject_label: str = "", subject_key: str = "") -> bool:
     """Check if an entity represents a generic placeholder without concrete service identity."""
@@ -144,7 +150,7 @@ def has_meaningful_predicate(text: str) -> bool:
     if not text or not text.strip():
         return False
 
-    cleaned = text.strip()
+    cleaned = _INTERNAL_REPLY_ANNOTATION_RE.sub("", text.strip()).strip()
     # Strip leading attribution phrases
     cleaned = _ATTRIBUTION_PREFIX_RE.sub("", cleaned).strip()
     # Strip chatter meta / filler
@@ -293,14 +299,11 @@ def validate_story_publication_eligibility(
         if all_generic:
             return False, "service_access_without_concrete_entity"
 
-    # Rule 3: at least one substantive evidence item or story summary must contain a meaningful predicate
+    # Rule 3: at least one substantive evidence item or story summary must contain a meaningful predicate.
+    # Structured service_state is not sufficient by itself: corrupted reply metadata can
+    # otherwise produce a publishable-looking operational card with no grounded event text.
     has_predicate = any(
-        has_meaningful_predicate(getattr(item, "text", ""))
-        or (
-            getattr(getattr(item, "service_state", None), "state", "").upper()
-            in {"AVAILABLE", "UNAVAILABLE", "DEGRADED", "RESTRICTED"}
-        )
-        for item in non_question_items
+        has_meaningful_predicate(getattr(item, "text", "")) for item in non_question_items
     )
     if not has_predicate:
         hl = getattr(payload, "headline", "") or ""
