@@ -338,6 +338,9 @@ class PublicationGenerationService:
                         },
                     )
                     try:
+                        has_topic_bundles = any(
+                            getattr(b, "topic_bundles", None) for b in plan.blocks
+                        )
                         draft_cand = await writer.generate_narrative_draft(
                             plan=plan,
                             cards=detail_cards,
@@ -346,7 +349,9 @@ class PublicationGenerationService:
                             max_output_tokens=max_tokens,
                             model=getattr(self.config.settings, "openai_model", None)
                             or getattr(self.config.settings, "ai_model", None),
-                            situation_plan=presentation_plan.city_situation,
+                            situation_plan=None
+                            if has_topic_bundles
+                            else presentation_plan.city_situation,
                         )
                         support_text_index = build_digest_support_text_index(
                             evidence=evidence_dict,
@@ -446,6 +451,7 @@ class PublicationGenerationService:
                             "digest narrative synthesis failed (%s: %s); falling back to deterministic",
                             type(exc).__name__,
                             exc,
+                            exc_info=True,
                         )
 
                         await observer.attempt_finished(

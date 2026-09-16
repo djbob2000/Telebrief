@@ -27,6 +27,19 @@ def _sanitize_digest_support_text(text: str) -> str:
     return _INTERNAL_REPLY_ANNOTATION_RE.sub("", text or "").strip()
 
 
+def _clean_str_list(items: Any) -> list[str]:
+    """Recursively extract non-empty trimmed strings from single items, lists, sets, or tuples."""
+    out: list[str] = []
+    if isinstance(items, (str, int)):
+        val = str(items).strip()
+        if val:
+            out.append(val)
+    elif isinstance(items, (list, tuple, set)):
+        for x in items:
+            out.extend(_clean_str_list(x))
+    return out
+
+
 @dataclass(frozen=True)
 class DigestNarrativeValidationResult:
     """Outcome of validating a narrative digest draft against a deterministic plan."""
@@ -531,9 +544,24 @@ def plan_digest_narrative_blocks(
                                     block_support_ids.append(det_s)
                         if sid not in sups:
                             sups.append(sid)
+                        if sid not in block_support_ids:
+                            block_support_ids.append(sid)
                         c_card = card_by_id.get(sid)
-                        if c_card and c_card.id not in sups:
-                            sups.append(c_card.id)
+                        if c_card:
+                            if c_card.id not in sups:
+                                sups.append(c_card.id)
+                            if c_card.id not in block_support_ids:
+                                block_support_ids.append(c_card.id)
+                            c_summary_ref = f"{c_card.id}:summary"
+                            if c_summary_ref not in sups:
+                                sups.append(c_summary_ref)
+                            if c_summary_ref not in block_support_ids:
+                                block_support_ids.append(c_summary_ref)
+                            c_topic_ref = f"{c_card.id}:topic"
+                            if c_topic_ref not in sups:
+                                sups.append(c_topic_ref)
+                            if c_topic_ref not in block_support_ids:
+                                block_support_ids.append(c_topic_ref)
                         story_support_ids_map.append((sid, tuple(sups)))
 
                 notes: list[str] = []
@@ -1397,19 +1425,12 @@ def build_deterministic_digest_draft(
                         first_sent = f"По информации коммунальных служб, {first_sent[:1].lower() + first_sent[1:]}"
                 body_sentences[0] = first_sent
 
-                body_text = " ".join(body_sentences)
-                if len(body_text) > DIGEST_ITEM_BODY_MAX_CHARS:
-                    body_text = (
-                        body_text[:DIGEST_ITEM_BODY_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ")
-                        + "."
-                    )
-
                 chosen_sups: list[str] = []
                 for sid in bundle.story_ids:
                     pres = presentations_by_id.get(sid)
                     if pres and pres.detail_support_ids:
                         for s in pres.detail_support_ids:
-                            if s not in chosen_sups:
+                            if s in support_map and s not in chosen_sups:
                                 chosen_sups.append(s)
 
                 bundle_req_facts = [
@@ -1419,7 +1440,7 @@ def build_deterministic_digest_draft(
                 ]
                 for rf in bundle_req_facts:
                     for s in rf.support_ids:
-                        if s not in chosen_sups:
+                        if s in support_map and s not in chosen_sups:
                             chosen_sups.append(s)
 
                 has_explicit_detail_supports = any(
@@ -1428,12 +1449,10 @@ def build_deterministic_digest_draft(
                     )
                     for sid in bundle.story_ids
                 )
-                if not has_explicit_detail_supports:
+                if len(bundle.story_ids) > 1 or not has_explicit_detail_supports:
                     for s in bundle.support_ids:
-                        if s not in chosen_sups and s in support_map:
+                        if s in support_map and s not in chosen_sups:
                             chosen_sups.append(s)
-                        if len(chosen_sups) >= 6:
-                            break
 
                 if not chosen_sups:
                     chosen_sups = (
@@ -1442,8 +1461,49 @@ def build_deterministic_digest_draft(
                         else [bundle.story_ids[0]]
                     )
 
+                c_sups_texts = [support_map[s] for s in chosen_sups if s in support_map]
+                if find_unsupported_claims(
+                    headline,
+                    c_sups_texts,
+                    allowed_context_terms=ctx_terms,
+                    all_known_draft_supports=known_supports,
+                ):
+                    if bundle.locations:
+                        locs_text = ", ".join(bundle.locations[:3])
+                        headline = f"{bundle.topic_label}: ситуация в районах {locs_text}"
+                    else:
+                        headline = f"{bundle.topic_label}: текущая обстановка"
+
+                valid_body_sentences = []
+                for s in body_sentences:
+                    if not find_unsupported_claims(
+                        s,
+                        c_sups_texts,
+                        allowed_context_terms=ctx_terms,
+                        all_known_draft_supports=known_supports,
+                    ):
+                        valid_body_sentences.append(s)
+                if not valid_body_sentences:
+                    valid_body_sentences = [
+                        f"{bundle.topic_label} в городе остаётся на контроле городских служб."
+                    ]
+                body_text = " ".join(valid_body_sentences)
+                if len(body_text) > DIGEST_ITEM_BODY_MAX_CHARS:
+                    body_text = (
+                        body_text[:DIGEST_ITEM_BODY_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ")
+                        + "."
+                    )
+
                 base_claim_text = _clean_fact_sentence(usable_facts[0])
                 base_claim_text = re.sub(r"\bиз-за\b", "при", base_claim_text, flags=re.IGNORECASE)
+                if find_unsupported_claims(
+                    base_claim_text,
+                    c_sups_texts,
+                    allowed_context_terms=ctx_terms,
+                    all_known_draft_supports=known_supports,
+                ):
+                    base_claim_text = f"{bundle.topic_label} остаётся на контроле городских служб."
+
                 item_claims: list[DigestClaimAtom] = [
                     DigestClaimAtom(
                         text=base_claim_text,
@@ -1452,6 +1512,23 @@ def build_deterministic_digest_draft(
                         covered_fact_ids=(),
                     )
                 ]
+                for extra_fact in usable_facts[1:3]:
+                    ef_text = _clean_fact_sentence(extra_fact)
+                    ef_text = re.sub(r"\bиз-за\b", "при", ef_text, flags=re.IGNORECASE)
+                    if not find_unsupported_claims(
+                        ef_text,
+                        c_sups_texts,
+                        allowed_context_terms=ctx_terms,
+                        all_known_draft_supports=known_supports,
+                    ):
+                        item_claims.append(
+                            DigestClaimAtom(
+                                text=ef_text,
+                                covered_story_ids=tuple(bundle.story_ids),
+                                cited_support_ids=tuple(chosen_sups),
+                                covered_fact_ids=(),
+                            )
+                        )
                 for rf in bundle_req_facts:
                     rf_text = _clean_fact_sentence(rf.text or base_claim_text)
                     rf_text = re.sub(r"\bиз-за\b", "при", rf_text, flags=re.IGNORECASE)
@@ -2974,8 +3051,8 @@ class DigestNarrativeWriter:
                                     {
                                         "text": it.get("headline", "") or matched_tb.topic_label,
                                         "covered_story_ids": list(matched_tb.story_ids),
-                                        "cited_support_ids": list(
-                                            it.get("cited_support_ids", [])
+                                        "cited_support_ids": _clean_str_list(
+                                            it.get("cited_support_ids")
                                             or matched_tb.support_ids[:2]
                                         ),
                                     }
@@ -2984,12 +3061,18 @@ class DigestNarrativeWriter:
                                 for c in claims:
                                     if not c.get("covered_story_ids"):
                                         c["covered_story_ids"] = list(matched_tb.story_ids)
+                                    else:
+                                        c["covered_story_ids"] = _clean_str_list(
+                                            c["covered_story_ids"]
+                                        )
                                     if not c.get("cited_support_ids"):
-                                        c["cited_support_ids"] = (
-                                            list(
-                                                it.get("cited_support_ids", [])
-                                                or matched_tb.support_ids[:2]
-                                            ),
+                                        c["cited_support_ids"] = _clean_str_list(
+                                            it.get("cited_support_ids")
+                                            or matched_tb.support_ids[:2]
+                                        )
+                                    else:
+                                        c["cited_support_ids"] = _clean_str_list(
+                                            c["cited_support_ids"]
                                         )
 
                             # Ensure required facts are covered in claims
@@ -3005,7 +3088,7 @@ class DigestNarrativeWriter:
                                                 set(rf.story_ids) & set(matched_tb.story_ids)
                                             )
                                             or list(matched_tb.story_ids[:1]),
-                                            "cited_support_ids": list(rf.support_ids),
+                                            "cited_support_ids": _clean_str_list(rf.support_ids),
                                             "covered_fact_ids": [rf.fact_id],
                                         }
                                     )
@@ -3013,9 +3096,11 @@ class DigestNarrativeWriter:
 
                             # Union support IDs
                             claim_sups = [
-                                s for c in claims for s in (c.get("cited_support_ids") or [])
+                                s
+                                for c in claims
+                                for s in _clean_str_list(c.get("cited_support_ids"))
                             ]
-                            cur_sups = it.get("cited_support_ids", []) or []
+                            cur_sups = _clean_str_list(it.get("cited_support_ids"))
                             it["cited_support_ids"] = list(
                                 dict.fromkeys(cur_sups + claim_sups)
                             ) or list(matched_tb.support_ids[:2])
@@ -3031,7 +3116,7 @@ class DigestNarrativeWriter:
                                 if tb.fact_ledger
                                 else f"{tb.topic_label}: обстановка остаётся стабильной."
                             )
-                            sups = list(tb.support_ids[:2]) if tb.support_ids else [tb.story_ids[0]]
+                            sups = list(tb.support_ids) if tb.support_ids else [tb.story_ids[0]]
                             req_claims = [
                                 {
                                     "text": rf.text or clean_text,
@@ -3124,5 +3209,7 @@ def build_digest_support_text_index(
             index[c.id] = " ".join(card_texts)
         if c.summary and f"{c.id}:summary" not in index:
             index[f"{c.id}:summary"] = c.summary
+        if c.topic and f"{c.id}:topic" not in index:
+            index[f"{c.id}:topic"] = c.topic
 
     return {key: _sanitize_digest_support_text(value) for key, value in index.items()}

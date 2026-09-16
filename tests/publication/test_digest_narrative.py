@@ -2330,3 +2330,188 @@ def test_recommendation_action_clause_level_grounding_rejects_unsupported_bundle
     support_both = "Водоканал: рекомендуется запастись питьевой водой. МЧС: рекомендуется не выходить на улицу."
     violations_ok = find_unsupported_digest_recommendations(bundled_text, [support_both])
     assert len(violations_ok) == 0
+
+
+@pytest.mark.asyncio
+async def test_generate_narrative_draft_topic_bundle_unhashable_fix(mocker) -> None:
+    import json
+
+    from src.publication.digest_narrative import (
+        DigestNarrativeBlock,
+        DigestNarrativeDraft,
+        DigestNarrativePlan,
+        DigestNarrativeWriter,
+    )
+    from src.publication.digest_presentation import RequiredDigestFact, TopicBundle
+
+    # LLM returns an item with empty claim cited_support_ids or nested list
+    mock_provider = mocker.AsyncMock()
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "blocks": [
+                {
+                    "block_id": "block:communications:0",
+                    "items": [
+                        {
+                            "headline": "Связь восстановлена",
+                            "body": "Провайдер восстановил интернет.",
+                            "covered_story_ids": ["story:1", "story:2"],
+                            "cited_support_ids": ["sup-comm-1"],
+                            "claims": [
+                                {
+                                    "text": "Связь восстановлена в полном объеме.",
+                                    "covered_story_ids": ["story:1"],
+                                    # cited_support_ids missing or empty
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    tb = TopicBundle(
+        bundle_id="bundle:communications:telecom",
+        rubric_id="communications",
+        topic_key="telecom",
+        topic_label="Связь",
+        emoji="📶",
+        story_ids=("story:1", "story:2"),
+        support_ids=("sup-comm-1", "sup-comm-2"),
+        fact_ledger=("Провайдер восстановил интернет.",),
+        required_facts=(
+            RequiredDigestFact(
+                fact_id="fact:comm:1",
+                rubric_id="communications",
+                subject_key="telecom",
+                subject_label="Связь",
+                story_ids=("story:1",),
+                support_ids=("sup-comm-1",),
+                text="Связь восстановлена.",
+            ),
+        ),
+    )
+
+    block = DigestNarrativeBlock(
+        block_id="block:communications:0",
+        rubric_id="communications",
+        rubric_title="Связь",
+        story_ids=("story:1", "story:2"),
+        support_ids=("sup-comm-1", "sup-comm-2"),
+        canonical_notes=(),
+        topic_bundles=(tb,),
+        required_facts=tb.required_facts,
+    )
+    plan = DigestNarrativePlan(blocks=(block,))
+
+    writer = DigestNarrativeWriter(provider=mock_provider)
+    # Must succeed without TypeError: cannot use 'list' as a dict key
+    draft = await writer.generate_narrative_draft(
+        plan=plan,
+        cards=[],
+        evidence={},
+    )
+    assert isinstance(draft, DigestNarrativeDraft)
+    assert len(draft.blocks) == 1
+    assert len(draft.blocks[0].items) == 1
+    item = draft.blocks[0].items[0]
+    assert all(isinstance(s, str) for s in item.cited_support_ids)
+
+
+def test_build_deterministic_digest_draft_multi_story_topic_bundle_grounding() -> None:
+    from src.editorial_models import StoryCard
+    from src.publication.digest_narrative import (
+        build_deterministic_digest_draft,
+        build_digest_support_text_index,
+        validate_digest_narrative,
+    )
+    from src.publication.digest_presentation import (
+        CitySituationPresentationPlan,
+        DigestPresentationPlan,
+        DigestStoryPresentation,
+        RequiredDigestFact,
+    )
+
+    # Story 1 has detail_support_ids and number 27 in topic
+    # Story 2 has «Юпитер» in useful_details and facts
+    card1 = StoryCard(
+        id="story:1",
+        topic="Маршрут 27 работает по графику",
+        importance="medium",
+        summary="Автобусы 27 вышли на линию",
+        rubric_id="transport",
+        useful_details=(),
+        hard_facts=(),
+    )
+    card2 = StoryCard(
+        id="story:2",
+        topic="Провайдер Юпитер обновил сеть",
+        importance="medium",
+        summary="Провайдер «Юпитер» провел модернизацию оборудования",
+        rubric_id="transport",
+        useful_details=(),
+        hard_facts=(),
+    )
+
+    evidence = {
+        "sup-1": _make_evidence("sup-1", 1, "Маршрут 27 курсирует в штатном режиме."),
+        "sup-2": _make_evidence("sup-2", 2, "Провайдер «Юпитер» закончил ремонтные работы."),
+    }
+
+    pres1 = DigestStoryPresentation(
+        story_id="story:1",
+        mode="DETAIL_ONLY",
+        detail_support_ids=("sup-1",),
+    )
+    pres2 = DigestStoryPresentation(
+        story_id="story:2",
+        mode="DETAIL_ONLY",
+        detail_support_ids=("sup-2",),
+    )
+
+    pres_plan = DigestPresentationPlan(
+        story_presentations=(pres1, pres2),
+        city_situation=CitySituationPresentationPlan(),
+        required_facts=(
+            RequiredDigestFact(
+                fact_id="rf:1",
+                rubric_id="transport",
+                subject_key="bus",
+                subject_label="Транспорт",
+                story_ids=("story:1",),
+                support_ids=("sup-1",),
+                text="Маршрут 27 курсирует.",
+            ),
+        ),
+    )
+
+    rubrics = [{"id": "transport", "title": "Транспорт и связь"}]
+    cards = [card1, card2]
+    support_index = build_digest_support_text_index(evidence=evidence, cards=cards)
+
+    draft = build_deterministic_digest_draft(
+        cards=cards,
+        evidence=evidence,
+        rubrics=rubrics,
+        presentation_plan=pres_plan,
+        support_text_by_id=support_index,
+    )
+
+    from src.publication.digest_narrative import plan_digest_narrative_blocks
+
+    narrative_plan = plan_digest_narrative_blocks(
+        cards=cards,
+        evidence=evidence,
+        rubrics=rubrics,
+        presentation_plan=pres_plan,
+    )
+
+    # Must pass validation without UNSUPPORTED_CONCRETE_CLAIM for '27' or '«Юпитер»'
+    val_res = validate_digest_narrative(
+        draft,
+        narrative_plan,
+        support_text_by_id=support_index,
+        all_known_draft_supports=list(support_index.values()),
+    )
+    assert val_res.is_valid, f"Validation failed: {val_res.violations}"
