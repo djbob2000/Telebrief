@@ -406,15 +406,6 @@ class PublicationGenerationService:
                                 val_res = patched_val
 
                         if val_res.is_valid:
-                            narrative_draft = draft_cand
-                            final_digest_draft = draft_cand
-
-                            title, lead, body = renderer.render_grouped_digest(
-                                frozen,
-                                snapshot_at=run.snapshot_at,
-                                narrative_draft=narrative_draft,
-                                presentation_plan=presentation_plan,
-                            )
                             from src.publication.digest_coverage import build_digest_coverage_trace
                             from src.publication.digest_quality_diagnostics import (
                                 audit_digest_prose_quality,
@@ -428,43 +419,72 @@ class PublicationGenerationService:
                             )
                             coverage_trace = build_digest_coverage_trace(
                                 presentation_plan,
-                                final_digest_draft,
+                                draft_cand,
                                 plan,
                             )
                             if coverage_trace.material_fact_coverage < 1.0:
                                 raise DigestCoverageInvariantError(
                                     f"material fact coverage incomplete: {coverage_trace.material_fact_coverage:.2f} < 1.0"
                                 )
-                            presentations = presentation_plan.story_presentations
-                            coverage_meta = {
-                                "planned_story_count": len(presentation_plan.story_ids),
-                                "dashboard_only_count": sum(
-                                    p.mode == "DASHBOARD_ONLY" for p in presentations
-                                ),
-                                "detail_only_count": sum(
-                                    p.mode == "DETAIL_ONLY" for p in presentations
-                                ),
-                                "dashboard_and_drilldown_count": sum(
-                                    p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
-                                ),
-                                "final_covered_story_count": len(coverage_trace.story_ids),
-                                "final_digest_story_coverage": coverage_trace.story_coverage,
-                                "final_digest_material_fact_coverage": coverage_trace.material_fact_coverage,
-                                "deterministic_digest_fallback_used": False,
-                                "digest_presentation_plan": presentation_plan.to_audit_dict(),
-                                "digest_coverage_trace": coverage_trace.to_dict(),
-                            }
-                            await observer.attempt_finished(
-                                att_id,
-                                "succeeded",
-                                metadata={
-                                    "validation": {"is_valid": True},
-                                    "block_count": len(draft_cand.blocks),
-                                    "situation_item_count": len(draft_cand.situation_items),
-                                    "prose_quality_audit": quality_audit.as_metadata(),
-                                    **coverage_meta,
-                                },
-                            )
+                            if not quality_audit.is_publishable:
+                                quality_violations = [
+                                    f"DIGEST_PROSE_QUALITY:{warning.code}"
+                                    for warning in quality_audit.warnings
+                                ]
+                                logger.warning(
+                                    "digest narrative prose quality failed; using deterministic fallback: %s",
+                                    quality_violations,
+                                )
+                                await observer.attempt_finished(
+                                    att_id,
+                                    "failed",
+                                    error_kind="digest_prose_quality_failed",
+                                    metadata={
+                                        "error_message": "; ".join(quality_violations),
+                                        "violations": quality_violations,
+                                        "validation": {"is_valid": False},
+                                        "prose_quality_audit": quality_audit.as_metadata(),
+                                    },
+                                )
+                            else:
+                                narrative_draft = draft_cand
+                                final_digest_draft = draft_cand
+                                title, lead, body = renderer.render_grouped_digest(
+                                    frozen,
+                                    snapshot_at=run.snapshot_at,
+                                    narrative_draft=narrative_draft,
+                                    presentation_plan=presentation_plan,
+                                )
+                                presentations = presentation_plan.story_presentations
+                                coverage_meta = {
+                                    "planned_story_count": len(presentation_plan.story_ids),
+                                    "dashboard_only_count": sum(
+                                        p.mode == "DASHBOARD_ONLY" for p in presentations
+                                    ),
+                                    "detail_only_count": sum(
+                                        p.mode == "DETAIL_ONLY" for p in presentations
+                                    ),
+                                    "dashboard_and_drilldown_count": sum(
+                                        p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
+                                    ),
+                                    "final_covered_story_count": len(coverage_trace.story_ids),
+                                    "final_digest_story_coverage": coverage_trace.story_coverage,
+                                    "final_digest_material_fact_coverage": coverage_trace.material_fact_coverage,
+                                    "deterministic_digest_fallback_used": False,
+                                    "digest_presentation_plan": presentation_plan.to_audit_dict(),
+                                    "digest_coverage_trace": coverage_trace.to_dict(),
+                                }
+                                await observer.attempt_finished(
+                                    att_id,
+                                    "succeeded",
+                                    metadata={
+                                        "validation": {"is_valid": True},
+                                        "block_count": len(draft_cand.blocks),
+                                        "situation_item_count": len(draft_cand.situation_items),
+                                        "prose_quality_audit": quality_audit.as_metadata(),
+                                        **coverage_meta,
+                                    },
+                                )
 
                         else:
                             logger.warning(
@@ -580,6 +600,35 @@ class PublicationGenerationService:
                                 f"deterministic digest draft failed validation: {det_val.violations}"
                             )
 
+                        if (
+                            build_digest_coverage_trace(
+                                presentation_plan,
+                                final_digest_draft,
+                                det_plan,
+                            ).material_fact_coverage
+                            < 1.0
+                        ):
+                            raise DigestCoverageInvariantError(
+                                "deterministic digest draft has incomplete material fact coverage"
+                            )
+
+                        from src.publication.digest_quality_diagnostics import (
+                            audit_digest_prose_quality,
+                        )
+
+                        fallback_quality_audit = audit_digest_prose_quality(
+                            final_digest_draft,
+                            evidence=evidence_dict,
+                            presentation_plan=presentation_plan,
+                        )
+                        if not fallback_quality_audit.is_publishable:
+                            raise DigestCoverageInvariantError(
+                                "deterministic digest draft failed prose quality audit: "
+                                + ", ".join(
+                                    warning.code for warning in fallback_quality_audit.warnings
+                                )
+                            )
+
                         coverage_trace = build_digest_coverage_trace(
                             presentation_plan,
                             final_digest_draft,
@@ -601,6 +650,7 @@ class PublicationGenerationService:
                             "final_digest_story_coverage": coverage_trace.story_coverage,
                             "final_digest_material_fact_coverage": coverage_trace.material_fact_coverage,
                             "deterministic_digest_fallback_used": True,
+                            "prose_quality_audit": fallback_quality_audit.as_metadata(),
                             "digest_presentation_plan": presentation_plan.to_audit_dict(),
                             "digest_coverage_trace": coverage_trace.to_dict(),
                         }
