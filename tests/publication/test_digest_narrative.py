@@ -2419,6 +2419,66 @@ async def test_generate_narrative_draft_topic_bundle_unhashable_fix(mocker) -> N
     assert all(isinstance(s, str) for s in item.cited_support_ids)
 
 
+@pytest.mark.asyncio
+async def test_generate_narrative_draft_builds_missing_block_fallback_once(mocker) -> None:
+    import json
+    from unittest.mock import AsyncMock
+
+    from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
+        DigestNarrativeBlock,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+        DigestNarrativeWriter,
+    )
+
+    plan = DigestNarrativePlan(
+        blocks=tuple(
+            DigestNarrativeBlock(
+                block_id=f"block:utilities:{idx}",
+                rubric_id="utilities",
+                rubric_title="ЖКХ",
+                story_ids=(),
+                support_ids=(),
+                canonical_notes=(),
+            )
+            for idx in range(2)
+        )
+    )
+    deterministic = DigestNarrativeDraft(
+        blocks=tuple(
+            DigestNarrativeBlockDraft(
+                block_id=f"block:utilities:{idx}",
+                items=(
+                    DigestEditorialItemDraft(
+                        headline=f"Тема {idx}",
+                        body=f"Факт {idx}.",
+                        covered_story_ids=(f"story:{idx}",),
+                        cited_support_ids=(f"support:{idx}",),
+                    ),
+                ),
+            )
+            for idx in range(2)
+        )
+    )
+
+    provider = AsyncMock()
+    provider.chat_completion.return_value = json.dumps({"blocks": []})
+    build_fallback = mocker.patch(
+        "src.publication.digest_narrative.build_deterministic_digest_draft",
+        return_value=deterministic,
+    )
+
+    draft = await DigestNarrativeWriter(provider).generate_narrative_draft(
+        plan=plan,
+        cards=[],
+        evidence={},
+    )
+
+    assert len(draft.blocks) == 2
+    assert build_fallback.call_count == 1
+
+
 def test_build_deterministic_digest_draft_multi_story_topic_bundle_grounding() -> None:
     from src.editorial_models import StoryCard
     from src.publication.digest_narrative import (

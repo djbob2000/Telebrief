@@ -3147,6 +3147,7 @@ class DigestNarrativeWriter:
 
             # Ensure all plan blocks exist and are strictly ordered
             final_blocks: list[dict[str, Any]] = []
+            deterministic_missing_block_drafts: dict[str, DigestNarrativeDraft] = {}
 
             for plan_block in plan.blocks:
                 b_raw = block_by_id.get(plan_block.block_id)
@@ -3162,12 +3163,18 @@ class DigestNarrativeWriter:
                     )
                 if b_raw is None:
                     # Synthesize missing block cleanly
-                    det_draft = build_deterministic_digest_draft(
-                        cards=cards,
-                        evidence=evidence,
-                        rubrics=[{"id": plan_block.rubric_id, "name": plan_block.rubric_title}],
-                        presentation_plan=None,
-                    )
+                    if plan_block.rubric_id not in deterministic_missing_block_drafts:
+                        deterministic_missing_block_drafts[plan_block.rubric_id] = (
+                            build_deterministic_digest_draft(
+                                cards=cards,
+                                evidence=evidence,
+                                rubrics=[
+                                    {"id": plan_block.rubric_id, "name": plan_block.rubric_title}
+                                ],
+                                presentation_plan=None,
+                            )
+                        )
+                    det_draft = deterministic_missing_block_drafts[plan_block.rubric_id]
                     matching_det = next(
                         (
                             db

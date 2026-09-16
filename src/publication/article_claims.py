@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Literal
 
 from src.publication.article_semantic_lexicon import (
@@ -401,6 +402,7 @@ def _stem(word: str) -> str:
 stem_word = _stem
 
 
+@lru_cache(maxsize=8192)
 def normalize_support_text(text: str) -> str:
     """Normalize text for evidence-boundary claim matching."""
     if not text:
