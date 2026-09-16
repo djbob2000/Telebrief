@@ -331,6 +331,9 @@ class EventEditorialAdapter:
                 ]
 
             effective_observations: tuple[OperationalObservationPayload, ...] = ()
+            story_observations_with_time: list[
+                tuple[OperationalObservationPayload, dt.datetime, Sequence[str]]
+            ] = []
             if payload:
                 derived = derive_operational_observations(payload)
                 if derived:
@@ -373,14 +376,14 @@ class EventEditorialAdapter:
                     for fid in obs.source_fragment_ids:
                         if fid in frag_ts_map:
                             f_ref = [frag_id_to_ref[fid]] if fid in frag_id_to_ref else obs_refs
-                            all_observations_with_time.append((obs, frag_ts_map[fid], f_ref))
+                            story_observations_with_time.append((obs, frag_ts_map[fid], f_ref))
                     if not obs.source_fragment_ids:
                         obs_ts = (
                             row[6]
                             if isinstance(row[6], dt.datetime)
                             else dt.datetime.now(dt.timezone.utc)
                         )
-                        all_observations_with_time.append((obs, obs_ts, obs_refs))
+                        story_observations_with_time.append((obs, obs_ts, obs_refs))
 
             legacy_community_observations = [
                 StoryElement(
@@ -445,6 +448,10 @@ class EventEditorialAdapter:
                 )
 
             if should_emit_card:
+                # Keep the operational rollup aligned with the cards that can
+                # actually be published. Otherwise a rejected story's derived
+                # observation can become an unmapped required digest fact.
+                all_observations_with_time.extend(story_observations_with_time)
                 story_kind = "operational_status" if inp.story_id in pure_op_story_ids else ""
                 card = StoryCard(
                     id=f"story:{inp.story_id}",
