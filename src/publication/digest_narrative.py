@@ -513,18 +513,28 @@ def plan_digest_narrative_blocks(
         if use_bundles:
             from src.publication.digest_presentation import build_thematic_topic_bundles
 
-            plan_req_facts = (
-                getattr(presentation_plan, "required_facts", ()) if presentation_plan else ()
-            )
+            story_ids = tuple(c.id for c in rubric_cards)
+            tentative_req_facts: list[RequiredDigestFact] = []
+            if presentation_plan is not None and getattr(presentation_plan, "required_facts", None):
+                story_id_set = set(story_ids)
+                for rf in presentation_plan.required_facts:
+                    if rf.fact_id in assigned_fact_ids:
+                        continue
+                    if bool(set(rf.story_ids) & story_id_set):
+                        tentative_req_facts.append(rf)
+
             thematic_bundles = build_thematic_topic_bundles(
                 rubric_cards,
                 evidence=evidence,
-                required_facts=plan_req_facts,
+                required_facts=tuple(tentative_req_facts),
                 rubric_id=rid,
             )
             if thematic_bundles:
+                for rf in tentative_req_facts:
+                    assigned_fact_ids.add(rf.fact_id)
+                block_req_facts = tentative_req_facts
+
                 block_id = f"block:{rid}:0"
-                story_ids = tuple(c.id for c in rubric_cards)
                 req_story_groups = tuple(b.story_ids for b in thematic_bundles)
 
                 block_support_ids: list[str] = []
@@ -599,18 +609,6 @@ def plan_digest_narrative_blocks(
                     for c in rubric_cards
                     if c.id in dashboard_supports_by_story_map
                 )
-
-                block_req_facts: list[RequiredDigestFact] = []
-                if presentation_plan is not None and getattr(
-                    presentation_plan, "required_facts", None
-                ):
-                    story_id_set = set(story_ids)
-                    for rf in presentation_plan.required_facts:
-                        if rf.fact_id in assigned_fact_ids:
-                            continue
-                        if bool(set(rf.story_ids) & story_id_set):
-                            block_req_facts.append(rf)
-                            assigned_fact_ids.add(rf.fact_id)
 
                 blocks.append(
                     DigestNarrativeBlock(
