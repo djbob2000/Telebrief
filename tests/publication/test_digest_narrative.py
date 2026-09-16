@@ -1727,6 +1727,41 @@ def test_narrative_plan_turns_merge_group_into_required_story_group() -> None:
     )
 
 
+def test_narrative_plan_uses_compression_units_when_presentations_are_implicit() -> None:
+    """Compatibility presentation defaults must not disable deterministic synthesis."""
+    from src.publication.digest_presentation import DigestPresentationPlan
+
+    cards = [
+        StoryCard(
+            id="story:1",
+            topic="Электроснабжение",
+            importance="high",
+            summary="На улице Гайдара нет света",
+            rubric_id="utilities",
+        ),
+        StoryCard(
+            id="story:2",
+            topic="Электроснабжение",
+            importance="medium",
+            summary="В районе РТС свет появляется по ночам",
+            rubric_id="utilities",
+        ),
+    ]
+
+    # DigestPresentationPlan creates legacy per-story descriptors when only story_ids
+    # are supplied. Those implicit descriptors carry no editorial merge decision.
+    presentation_plan = DigestPresentationPlan(story_ids=("story:1", "story:2"))
+
+    plan = plan_digest_narrative_blocks(
+        cards=cards,
+        evidence={},
+        rubrics=[_RUBRIC_UTIL],
+        presentation_plan=presentation_plan,
+    )
+
+    assert plan.blocks[0].required_story_groups == (("story:1", "story:2"),)
+
+
 def test_narrative_plan_chunks_large_merge_group_into_max_6() -> None:
     from src.publication.digest_presentation import (
         CitySituationPresentationPlan,

@@ -46,7 +46,9 @@ async def _seed_policies(conn: psycopg.AsyncConnection, edition_id: int) -> tupl
 
 
 @pytest.mark.postgres
-async def test_structured_digest_writer_exception_fails_closed(conn, pool, edition) -> None:
+async def test_structured_digest_writer_exception_uses_event_first_fallback(
+    conn, pool, edition
+) -> None:
     uow = DatabaseUnitOfWork(pool)
     repo = PublicationRepository()
     policy_ids = await _seed_policies(conn, edition.id)
@@ -212,24 +214,28 @@ async def test_structured_digest_writer_exception_fails_closed(conn, pool, editi
     ) as mock_generate:
         mock_generate.side_effect = RuntimeError("AI synthesis timeout")
 
-        with pytest.raises(PublicationGenerationError, match="Digest narrative generation failed"):
-            await service.generate(run.id, defer_delivery=True)
+        publication = await service.generate(run.id, defer_delivery=True)
 
-    # Verify no publication was created
+    # A failed optional narrative overlay must not suppress the valid digest.
     pub = await repo.get_publication_by_run_id(conn, run.id)
-    assert pub is None
+    assert pub is not None
+    assert publication.id == pub.id
+    assert pub.metadata["deterministic_digest_fallback_used"] is True
+    assert pub.metadata["final_digest_story_coverage"] == 1.0
 
-    # Verify no fallback attempt was started
+    # Verify the deterministic Event-First floor was used.
     cur = await conn.execute(
         "SELECT kind FROM publication_generation_attempts WHERE publication_run_id = %s",
         (run.id,),
     )
     kinds = [r[0] for r in await cur.fetchall()]
-    assert "story_renderer_fallback" not in kinds
+    assert "story_renderer_fallback" in kinds
 
 
 @pytest.mark.postgres
-async def test_structured_digest_empty_candidate_fails_closed(conn, pool, edition) -> None:
+async def test_structured_digest_empty_candidate_uses_event_first_fallback(
+    conn, pool, edition
+) -> None:
     uow = DatabaseUnitOfWork(pool)
     repo = PublicationRepository()
     policy_ids = await _seed_policies(conn, edition.id)
@@ -384,12 +390,12 @@ async def test_structured_digest_empty_candidate_fails_closed(conn, pool, editio
         # Returns empty text and None draft
         mock_generate.return_value = ("", None)
 
-        with pytest.raises(
-            PublicationGenerationError,
-            match="Digest narrative generation failed",
-        ):
-            await service.generate(run.id, defer_delivery=True)
+        publication = await service.generate(run.id, defer_delivery=True)
 
-    # Verify no publication was created
+    # The invalid optional narrative response falls back to the deterministic
+    # Event-First digest with complete coverage.
     pub = await repo.get_publication_by_run_id(conn, run.id)
-    assert pub is None
+    assert pub is not None
+    assert publication.id == pub.id
+    assert pub.metadata["deterministic_digest_fallback_used"] is True
+    assert pub.metadata["final_digest_story_coverage"] == 1.0

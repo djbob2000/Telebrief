@@ -533,6 +533,65 @@ class TestTemporalPublicationSnapshots:
         assert candidates[0].story_id == story_id
         assert candidates[0].snapshot_features.get("new_claims_count") == 1
 
+    async def test_reprocessed_old_source_is_not_recent_publication_activity(
+        self, conn: psycopg.AsyncConnection, pool, edition
+    ):
+        """Reattaching an old message during ingestion must not make it news again."""
+        uow = DatabaseUnitOfWork(pool)
+        service = PublicationSnapshotService(uow=uow)
+
+        old_at = _T_19_58 - dt.timedelta(hours=48)
+        cur = await conn.execute(
+            "INSERT INTO stories (edition_id, lifecycle_state, created_at) VALUES (%s, 'active', %s) RETURNING id",
+            (edition.id, old_at),
+        )
+        story_id = (await cur.fetchone())[0]
+        cur = await conn.execute(
+            """
+            INSERT INTO story_revisions (
+                story_id, revision_no, current_state, semantic_text, content_hash, created_at
+            ) VALUES (%s, 1, 'open', 'Старая реплика', 'hash-reprocessed-old', %s)
+            RETURNING id
+            """,
+            (story_id, old_at),
+        )
+        rev_id = (await cur.fetchone())[0]
+        await conn.execute(
+            "UPDATE stories SET current_revision_id = %s WHERE id = %s", (rev_id, story_id)
+        )
+
+        from tests.publication.conftest import seed_claim_for_story
+
+        claim_id = await seed_claim_for_story(conn, edition.id, story_id, old_at)
+        fresh_attachment_at = _T_19_58 - dt.timedelta(minutes=10)
+        await conn.execute(
+            "UPDATE story_claims SET attached_at = %s WHERE story_id = %s AND claim_id = %s",
+            (fresh_attachment_at, story_id, claim_id),
+        )
+        await conn.execute(
+            """
+            UPDATE source_items
+            SET first_collected_at = %s, published_at = %s
+            WHERE id = (
+                SELECT sir.source_item_id
+                FROM claims c
+                JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
+                WHERE c.id = %s
+            )
+            """,
+            (old_at, old_at, claim_id),
+        )
+
+        run = await service.create_run(
+            edition_id=edition.id,
+            publication_type="article",
+            snapshot_at=_T_19_58,
+            request_key="test-reprocessed-old-source-not-recent",
+        )
+        candidates = await service.seal_candidates(run.id)
+
+        assert candidates == []
+
     async def test_single_source_recent_story_is_eligible(
         self, conn: psycopg.AsyncConnection, pool, edition
     ):

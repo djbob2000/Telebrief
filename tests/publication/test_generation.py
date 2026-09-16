@@ -2429,7 +2429,7 @@ async def test_event_first_digest_narrative_writer_failure_falls_back_to_determi
 
 
 @pytest.mark.postgres
-async def test_event_first_digest_narrative_writer_failure_fails_closed_by_default(
+async def test_event_first_digest_narrative_writer_failure_falls_back_by_default(
     conn, pool, edition
 ):
     import datetime as dt
@@ -2437,12 +2437,9 @@ async def test_event_first_digest_narrative_writer_failure_fails_closed_by_defau
     import logging
     from unittest.mock import AsyncMock
 
-    import pytest
-
     from src.article_generator import ArticleGenerator
     from src.config_loader import Config, PublicationEditorialConfig, Settings
     from src.db.uow import DatabaseUnitOfWork
-    from src.publication.errors import PublicationGenerationError
     from src.publication.generation import PublicationGenerationService
     from src.publication.models import PublicationSelectionDecision
     from src.publication.repository import PublicationRepository
@@ -2583,7 +2580,8 @@ async def test_event_first_digest_narrative_writer_failure_fails_closed_by_defau
         digest_narrative_mode="single_call",
         digest_city_situation_max_items=5,
         digest_city_situation_max_details_per_item=2,
-        # digest_allow_deterministic_fallback=False by default!
+        # The grouped digest's deterministic Event-First renderer is the
+        # publication floor when the optional narrative overlay fails.
     )
     settings = Settings(
         schedule_time="09:00",
@@ -2611,5 +2609,7 @@ async def test_event_first_digest_narrative_writer_failure_fails_closed_by_defau
         generator=generator,
     )
 
-    with pytest.raises(PublicationGenerationError, match="Digest narrative generation failed"):
-        await service.generate(run.id, defer_delivery=True)
+    pub = await service.generate(run.id, defer_delivery=True)
+    assert pub is not None
+    assert pub.metadata["deterministic_digest_fallback_used"] is True
+    assert pub.metadata["final_digest_story_coverage"] == 1.0

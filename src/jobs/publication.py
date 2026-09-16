@@ -85,7 +85,7 @@ async def select_stories_for_publication(context: Any, run_id: int) -> None:
 )
 async def generate_publication(context: Any, run_id: int) -> None:
     """Generate publication from sealed inputs."""
-    from src.publication.errors import ArticlePublicationRejected
+    from src.publication.errors import ArticlePublicationRejected, PublicationGenerationError
     from src.publication.generation import PublicationGenerationService
 
     runtime = get_runtime()
@@ -101,6 +101,14 @@ async def generate_publication(context: Any, run_id: int) -> None:
             "publication run %s ended with terminal article rejection: %s",
             run_id,
             exc.error_kind,
+        )
+        await _mark_publication_intent_failed(run, error_kind=exc.error_kind)
+        return
+    except PublicationGenerationError as exc:
+        logger.error("publication run %s ended with terminal generation failure: %s", run_id, exc)
+        await _mark_publication_intent_failed(
+            run,
+            error_kind=getattr(exc, "error_kind", type(exc).__name__),
         )
         return
 
@@ -321,6 +329,62 @@ async def _mark_preparation_failed(intent_id: int, *, error_kind: str | None = N
     except Exception:
         logger.exception(
             "failed to dispatch preparation failure notification for intent %s", intent_id
+        )
+
+
+async def _mark_publication_intent_failed(
+    run: Any | None,
+    *,
+    error_kind: str,
+) -> None:
+    """Close the intent after terminal generation failure and notify its owner."""
+    from src.config_loader import load_config
+    from src.publication.notifications import PublicationFailureNotificationService
+    from src.publication.readiness_repository import PublicationReadinessRepository
+
+    metadata = getattr(run, "metadata", None)
+    refresh_run_id = metadata.get("refresh_run_id") if isinstance(metadata, dict) else None
+    if not isinstance(refresh_run_id, int):
+        return
+
+    runtime = get_runtime()
+    readiness_repo = PublicationReadinessRepository()
+    notification_ids: list[int] = []
+    async with runtime.uow.transaction() as conn:
+        refresh = await readiness_repo.get_refresh_run(conn, refresh_run_id, for_update=True)
+        if refresh is None or refresh.status == "failed":
+            return
+        await readiness_repo.transition_refresh(
+            conn,
+            refresh_run_id,
+            status="failed",
+            error_kind=error_kind,
+        )
+        notification_ids = await PublicationFailureNotificationService(
+            config=load_config(), readiness_repo=readiness_repo
+        ).enqueue_for_failed_intent(
+            conn,
+            intent=refresh,
+            failure_kind=error_kind,
+            dispatch=False,
+        )
+
+    if not notification_ids:
+        return
+    try:
+        async with runtime.uow.transaction() as conn:
+            refresh = await readiness_repo.get_refresh_run(conn, refresh_run_id)
+            if refresh is not None:
+                await PublicationFailureNotificationService(
+                    config=load_config(), readiness_repo=readiness_repo
+                ).dispatch_existing(
+                    conn,
+                    intent=refresh,
+                    notification_ids=notification_ids,
+                )
+    except Exception:
+        logger.exception(
+            "failed to dispatch generation failure notification for intent %s", refresh_run_id
         )
 
 

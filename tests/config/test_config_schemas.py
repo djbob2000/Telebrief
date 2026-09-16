@@ -90,6 +90,7 @@ def test_publication_editorial_validation():
     pub = PublicationEditorialConfig()
     assert pub.conflict_window_minutes == 90
     assert pub.digest_narrative_mode == "deterministic"
+    assert pub.digest_allow_deterministic_fallback is True
 
 
 def test_source_role_resolver():

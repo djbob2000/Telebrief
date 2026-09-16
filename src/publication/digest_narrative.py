@@ -367,10 +367,27 @@ def plan_digest_narrative_blocks(
         )
 
     presentations_by_id = {}
-    if presentation_plan is not None and getattr(presentation_plan, "story_presentations", None):
-        presentations_by_id = {p.story_id: p for p in presentation_plan.story_presentations}
-    elif presentation_plan is not None and getattr(presentation_plan, "story_hints", None):
-        presentations_by_id = {h.story_id: h for h in presentation_plan.story_hints}
+    if presentation_plan is not None:
+        raw_presentations = tuple(
+            getattr(presentation_plan, "story_presentations", ())
+            or getattr(presentation_plan, "story_hints", ())
+            or ()
+        )
+        # DigestPresentationPlan creates legacy per-story descriptors when callers
+        # provide only story_ids. They are compatibility defaults, not editorial
+        # merge decisions. Treat them as absent so compression units can synthesize
+        # related Stories in deterministic/fallback mode.
+        has_explicit_presentation_metadata = any(
+            bool(getattr(p, "detail_support_ids", ()))
+            or bool(getattr(p, "merge_group_id", ""))
+            or getattr(p, "mode", "DETAIL_ONLY") != "DETAIL_ONLY"
+            or bool(getattr(p, "city_situation_group_ids", ()))
+            for p in raw_presentations
+        )
+        if has_explicit_presentation_metadata:
+            presentations_by_id = {
+                p.story_id: p for p in raw_presentations if getattr(p, "story_id", None)
+            }
 
     dashboard_supports_by_story_map: dict[str, set[str]] = {}
 

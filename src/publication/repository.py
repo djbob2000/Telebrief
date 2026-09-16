@@ -340,7 +340,7 @@ def _candidate_universe_sql() -> str:
                       AND sc.attached_at <= %(snapshot_at)s
                       AND c.created_at <= %(snapshot_at)s
                       AND COALESCE(si.published_at, si.first_collected_at, c.created_at)
-                          <= %(source_cutoff_at)s
+                          BETWEEN %(window_start)s AND %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
                 ),
                 0
@@ -458,7 +458,7 @@ def _candidate_universe_sql() -> str:
                   AND sf2.assigned_at >= %(window_start)s
                   AND sf2.assigned_at <= %(snapshot_at)s
                   AND COALESCE(si2.published_at, si2.first_collected_at, f2.created_at)
-                      <= %(source_cutoff_at)s
+                      BETWEEN %(window_start)s AND %(source_cutoff_at)s
                   AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src2.platform <> ALL(%(excluded_platforms)s::text[]))
             ) AS has_recent_fragment,
             EXISTS (
@@ -473,7 +473,7 @@ def _candidate_universe_sql() -> str:
                   AND sc2.attached_at <= %(snapshot_at)s
                   AND c2.created_at <= %(snapshot_at)s
                   AND COALESCE(si2.published_at, si2.first_collected_at, c2.created_at)
-                      <= %(source_cutoff_at)s
+                      BETWEEN %(window_start)s AND %(source_cutoff_at)s
                   AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src2.platform <> ALL(%(excluded_platforms)s::text[]))
             ) AS has_recent_claim,
             EXISTS (

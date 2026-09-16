@@ -134,6 +134,39 @@ async def test_generate_publication_job_still_raises_infrastructure_failure(monk
 
 
 @pytest.mark.asyncio
+async def test_generate_publication_job_closes_intent_on_terminal_generation_failure(monkeypatch):
+    from types import SimpleNamespace
+
+    from src import runtime
+    from src.jobs.publication import generate_publication
+    from src.publication.errors import PublicationGenerationError
+
+    runtime._runtime = SimpleNamespace(uow=AsyncMock())
+    run = SimpleNamespace(
+        request_key="publication-intent:scheduled:berdyansk:digest_grouped:slot",
+        metadata={"refresh_run_id": 1165},
+    )
+    mocked_generate = AsyncMock(
+        side_effect=PublicationGenerationError("narrative validation failed")
+    )
+    monkeypatch.setattr(
+        "src.publication.generation.PublicationGenerationService.generate",
+        mocked_generate,
+    )
+    monkeypatch.setattr("src.jobs.publication._load_publication_run", AsyncMock(return_value=run))
+    mark_failed = AsyncMock()
+    monkeypatch.setattr("src.jobs.publication._mark_publication_intent_failed", mark_failed)
+
+    await generate_publication({}, run_id=42)
+
+    mocked_generate.assert_awaited_once_with(42)
+    mark_failed.assert_awaited_once_with(
+        run,
+        error_kind="PublicationGenerationError",
+    )
+
+
+@pytest.mark.asyncio
 async def test_preview_run_is_recognized_for_worker_safety():
     from types import SimpleNamespace
 
