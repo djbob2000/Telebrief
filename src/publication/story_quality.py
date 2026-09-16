@@ -73,6 +73,13 @@ _CHATTER_META_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ADVICE_MARKER_RE = re.compile(
+    r"\b(?:совет(?:ую|ует|уем|уют)|рекоменд(?:ую|ует|уем|уют)|"
+    r"призыва(?:ет|ют)|призыв|не\s+(?:появляйтесь|ходите|обстреливайте|"
+    r"звоните|заходите|выходите)|выражает\s+надежду|наде(?:юсь|ется|емся))\b",
+    re.IGNORECASE,
+)
+
 _CIVIC_EVENT_TOKENS_RE = re.compile(
     r"\b(?:"
     # Verbs / participles of action, state, change (past, present, future)
@@ -174,6 +181,29 @@ def has_meaningful_predicate(text: str) -> bool:
     return True
 
 
+def _is_advice_without_event(text: str) -> bool:
+    """Return whether text is only advice/appeal and contains no concrete event."""
+    if not text or not _ADVICE_MARKER_RE.search(text):
+        return False
+    # Remove the short advice target as well ("советую не появляться",
+    # "призывает не выходить"). Otherwise the generic verb "появляться"
+    # would be mistaken for an event by the broad civic-predicate guard.
+    without_advice = re.sub(
+        r"\b(?:совет(?:ую|ует|уем|уют)|рекоменд(?:ую|ует|уем|уют)|"
+        r"призыва(?:ет|ют)|призыв)\b(?:\s+\w+){0,4}",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    without_advice = re.sub(
+        r"\bне\s+(?:появляйтесь|ходите|обстреливайте|звоните|заходите|выходите)\b",
+        " ",
+        without_advice,
+        flags=re.IGNORECASE,
+    )
+    return not _CIVIC_EVENT_TOKENS_RE.search(without_advice)
+
+
 def validate_story_publication_eligibility(
     payload: Any, fallback_text: str = ""
 ) -> tuple[bool, str | None]:
@@ -206,6 +236,14 @@ def validate_story_publication_eligibility(
     ]
     if not non_question_items:
         return False, "resident_question_only"
+
+    # A bare appeal or emotional warning is not a reportable event. Keep
+    # practical warnings when the same evidence also contains a concrete
+    # event (for example, an explosion, outage, repair, or evacuation).
+    if non_question_items and all(
+        _is_advice_without_event(getattr(item, "text", "")) for item in non_question_items
+    ):
+        return False, "advice_without_event"
 
     # Rule 2: Generic anonymous service check
     all_story_text = " ".join(

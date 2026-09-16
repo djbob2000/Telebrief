@@ -148,6 +148,48 @@ def test_validate_story_publication_eligibility_rejects_predicateless_fragment()
     assert reason == "lacks_meaningful_predicate"
 
 
+def test_validate_story_publication_eligibility_rejects_pure_advice_without_event():
+    """A warning or appeal alone is not a local event for publication."""
+    payload = EventPayload(
+        headline="Житель Бердянска предупреждает об опасном месте",
+        digest_summary="Местный житель выражает ужас и советует не появляться в определённом месте.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Ужас, не советую там появляться.",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(8,),
+            ),
+        ),
+    )
+
+    is_valid, reason = validate_story_publication_eligibility(payload)
+
+    assert is_valid is False
+    assert reason == "advice_without_event"
+
+
+def test_validate_story_publication_eligibility_keeps_advice_with_event():
+    """A practical warning remains publishable when grounded in a concrete event."""
+    payload = EventPayload(
+        headline="После взрыва жителей просят не выходить на улицу",
+        digest_summary="После взрыва в городе жителям советуют не выходить на улицу.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="После взрыва в городе жителям советуют не выходить на улицу.",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(9,),
+            ),
+        ),
+    )
+
+    is_valid, reason = validate_story_publication_eligibility(payload)
+
+    assert is_valid is True
+    assert reason is None
+
+
 def test_validate_story_publication_eligibility_rejects_reply_annotation_only_service():
     payload = EventPayload(
         headline="Житель Бердянска спрашивает о водоканале",
