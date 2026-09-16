@@ -219,6 +219,26 @@ class IngestionService:
 
         from src.jobs.event_processing import process_event_revisions_task
 
-        await process_event_revisions_task.configure(connection=conn).defer_async(
-            revision_ids=cast(JSONValue, incomplete_revision_ids)
-        )
+        batch_size = 50
+        try:
+            from src.config_loader import load_config
+            from src.runtime import get_runtime
+
+            config = None
+            try:
+                runtime = get_runtime()
+                config = getattr(runtime, "config", None)
+            except Exception:
+                config = None
+            if config is None:
+                config = load_config()
+            cfg_pipeline = getattr(getattr(config, "settings", None), "event_pipeline", None)
+            batch_size = getattr(cfg_pipeline, "revision_processing_batch_size", 50)
+        except Exception:
+            batch_size = 50
+
+        for i in range(0, len(incomplete_revision_ids), batch_size):
+            chunk = incomplete_revision_ids[i : i + batch_size]
+            await process_event_revisions_task.configure(connection=conn).defer_async(
+                revision_ids=cast(JSONValue, chunk)
+            )

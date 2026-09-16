@@ -611,6 +611,7 @@ def _parse_event_pipeline_config(settings_dict: dict) -> EventPipelineConfig:
         ),
         live_batch_size=_val_pos_int("live_batch_size", 100),
         backfill_batch_size=_val_pos_int("backfill_batch_size", 500),
+        revision_processing_batch_size=_val_pos_int("revision_processing_batch_size", 50),
     )
 
 

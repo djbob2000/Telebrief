@@ -141,12 +141,15 @@ class EventPipelineConfig:
     triage_split_max_extra_calls_per_cycle: int = 8
     live_batch_size: int = 100
     backfill_batch_size: int = 500
+    revision_processing_batch_size: int = 50
 
     def __post_init__(self) -> None:
         if not 1 <= self.triage_batch_size <= 10:
             raise ValueError("triage_batch_size must be between 1 and 10")
         if not 1 <= self.authority_shard_count <= 16:
             raise ValueError("authority_shard_count must be between 1 and 16")
+        if not 1 <= self.revision_processing_batch_size <= 500:
+            raise ValueError("revision_processing_batch_size must be between 1 and 500")
         for field_name in (
             "triage_max_output_tokens",
             "triage_max_input_chars",

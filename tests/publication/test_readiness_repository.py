@@ -408,3 +408,106 @@ async def test_qualifying_success_survives_a_later_failed_attempt(conn, edition)
     source = (await repo.reconcile_qualifying_collection_runs(conn, refresh.id))[0]
     assert source.status == "succeeded"
     assert source.collection_run_id == successful_run
+
+
+@pytest.mark.postgres
+async def test_revision_barrier_ignores_historical_revisions_outside_window(conn, edition):
+    """Historical revisions older than the reporting window do not block readiness."""
+    source_id = await _source(conn, "window-filtering-source")
+    # 1. Historical revision from 5 days ago (unprocessed)
+    old_item_cursor = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, published_at, first_collected_at)
+        VALUES (%s, 'post', 'old-post-1', %s, %s)
+        RETURNING id
+        """,
+        (source_id, TARGET - dt.timedelta(days=5), TARGET - dt.timedelta(days=5)),
+    )
+    old_item_id = int((await old_item_cursor.fetchone())[0])
+    old_rev_cursor = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, collected_at)
+        VALUES (%s, 1, 'old-hash', %s)
+        RETURNING id
+        """,
+        (old_item_id, TARGET - dt.timedelta(days=5)),
+    )
+    old_revision_id = int((await old_rev_cursor.fetchone())[0])
+
+    # 2. Fresh revision from 2 hours ago (succeeded)
+    fresh_item_cursor = await conn.execute(
+        """
+        INSERT INTO source_items (source_id, kind, external_id, published_at, first_collected_at)
+        VALUES (%s, 'post', 'fresh-post-1', %s, %s)
+        RETURNING id
+        """,
+        (source_id, TARGET - dt.timedelta(hours=2), TARGET - dt.timedelta(hours=2)),
+    )
+    fresh_item_id = int((await fresh_item_cursor.fetchone())[0])
+    fresh_rev_cursor = await conn.execute(
+        """
+        INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, collected_at)
+        VALUES (%s, 1, 'fresh-hash', %s)
+        RETURNING id
+        """,
+        (fresh_item_id, TARGET - dt.timedelta(hours=2)),
+    )
+    fresh_revision_id = int((await fresh_rev_cursor.fetchone())[0])
+
+    await conn.execute(
+        """
+        INSERT INTO event_revision_processing_state (
+            source_item_revision_id, status, attempt_count, completed_at
+        ) VALUES (%s, 'succeeded', 1, %s)
+        """,
+        (fresh_revision_id, TARGET - dt.timedelta(hours=1)),
+    )
+
+    # Collection run observes both revisions
+    run_id = await _collection_run(
+        conn,
+        source_id,
+        started_at=CUTOFF + dt.timedelta(minutes=1),
+        completed_at=TARGET - dt.timedelta(seconds=2),
+        status="success",
+    )
+    await conn.execute(
+        """
+        INSERT INTO collection_run_revision_observations (
+            collection_run_id, source_item_revision_id
+        ) VALUES (%s, %s), (%s, %s)
+        """,
+        (run_id, old_revision_id, run_id, fresh_revision_id),
+    )
+
+    repo = PublicationReadinessRepository()
+    refresh = await repo.get_or_create_refresh_run(
+        conn,
+        edition_id=edition.id,
+        publication_type="digest_grouped",
+        slot_at=TARGET,
+        requested_at=CUTOFF,
+        trigger="manual",
+        request_key="manual:window-filter-test",
+        freshness_cutoff_at=CUTOFF,
+        deadline_at=TARGET + dt.timedelta(minutes=20),
+        requested_by_user_id=123,
+        source_ids=[source_id],
+        lookback_hours=24,
+    )
+    await repo.reconcile_qualifying_collection_runs(conn, refresh.id, evaluation_at=TARGET)
+
+    # Without window filtering, the old revision blocks the barrier
+    unfiltered_state = await repo.get_revision_barrier_state(conn, refresh.id, evaluation_at=TARGET)
+    assert unfiltered_state.unprocessed_count == 1
+
+    # With window filtering (24 hours lookback), the old revision is ignored
+    filtered_state = await repo.get_revision_barrier_state(
+        conn,
+        refresh.id,
+        evaluation_at=TARGET,
+        window_start=TARGET - dt.timedelta(hours=24),
+        source_cutoff_at=TARGET,
+    )
+    assert filtered_state.unprocessed_count == 0
+    assert filtered_state.completed_at == TARGET - dt.timedelta(hours=1)

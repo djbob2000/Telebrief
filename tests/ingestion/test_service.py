@@ -708,3 +708,49 @@ async def test_forced_defer_failure_rolls_back_ingestion(
             "procrastinate.procrastinate_jobs",
         ):
             assert await _fetch_scalar(db, f"SELECT COUNT(*) FROM {table}") == 0
+
+
+@pytest.mark.postgres
+@pytest.mark.asyncio
+async def test_ingest_chunks_large_revision_sets_into_bounded_jobs(
+    service, source, edition, production_jobs_app, sample_config, monkeypatch
+):
+    """Large sets of incomplete revisions are split into bounded chunk jobs."""
+    import src.jobs.event_processing as event_jobs
+
+    deferred_chunks = []
+
+    class _CaptureDeferral:
+        def configure(self, **_kwargs):
+            return self
+
+        async def defer_async(self, revision_ids):
+            deferred_chunks.append(list(revision_ids))
+
+    monkeypatch.setattr(event_jobs, "process_event_revisions_task", _CaptureDeferral())
+
+    # Create 5 items
+    items = tuple(_observation(external_id=f"chunk-item-{i}", text=f"msg {i}") for i in range(5))
+    batch = _batch(items=items)
+
+    # Set batch_size = 2 via sample_config
+    import src.config_loader as config_loader
+
+    new_pipeline = replace(sample_config.settings.event_pipeline, revision_processing_batch_size=2)
+    new_settings = replace(sample_config.settings, event_pipeline=new_pipeline)
+    new_config = replace(sample_config, settings=new_settings)
+    monkeypatch.setattr(config_loader, "load_config", lambda: new_config)
+
+    async with service.uow.pool.connection() as conn:
+        await _bind(conn, source.id, edition.id)
+        result = await service.ingest_batch_in_transaction(
+            conn, source_id=source.id, trigger=CollectionTrigger.SCHEDULED, batch=batch
+        )
+
+    assert len(result.new_revision_ids) == 5
+    # 5 items with batch size 2 should be chunked as [2, 2, 1]
+    assert len(deferred_chunks) == 3
+    assert [len(chunk) for chunk in deferred_chunks] == [2, 2, 1]
+    assert deferred_chunks[0] == list(result.new_revision_ids[0:2])
+    assert deferred_chunks[1] == list(result.new_revision_ids[2:4])
+    assert deferred_chunks[2] == list(result.new_revision_ids[4:5])

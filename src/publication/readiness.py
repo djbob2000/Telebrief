@@ -168,12 +168,31 @@ class PublicationReadinessService:
         all_sources_succeeded = all(source.status == "succeeded" for source in sources)
 
         if all_sources_succeeded:
+            window_start = (
+                refresh.normal_source_cutoff_at - dt.timedelta(hours=refresh.lookback_hours)
+                if refresh.normal_source_cutoff_at and getattr(refresh, "lookback_hours", None)
+                else None
+            )
             if hasattr(self.repo, "get_revision_barrier_state"):
                 revision_barrier = await self.repo.get_revision_barrier_state(
-                    conn, refresh.id, evaluation_at=evaluation_at
+                    conn,
+                    refresh.id,
+                    evaluation_at=evaluation_at,
+                    window_start=window_start,
+                    source_cutoff_at=refresh.normal_source_cutoff_at,
                 )
             else:
-                unprocessed = await self.repo.count_unprocessed_refresh_revisions(conn, refresh.id)
+                try:
+                    unprocessed = await self.repo.count_unprocessed_refresh_revisions(
+                        conn,
+                        refresh.id,
+                        window_start=window_start,
+                        source_cutoff_at=refresh.normal_source_cutoff_at,
+                    )
+                except TypeError:
+                    unprocessed = await self.repo.count_unprocessed_refresh_revisions(
+                        conn, refresh.id
+                    )
                 revision_barrier = RevisionBarrierState(
                     unprocessed_count=unprocessed,
                     completed_at=(

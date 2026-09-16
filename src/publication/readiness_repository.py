@@ -550,7 +550,12 @@ class PublicationReadinessRepository:
         return await self.list_refresh_sources(conn, refresh_run_id)
 
     async def count_unprocessed_refresh_revisions(
-        self, conn: psycopg.AsyncConnection, refresh_run_id: int
+        self,
+        conn: psycopg.AsyncConnection,
+        refresh_run_id: int,
+        *,
+        window_start: dt.datetime | None = None,
+        source_cutoff_at: dt.datetime | None = None,
     ) -> int:
         cursor = await conn.execute(
             """
@@ -560,13 +565,27 @@ class PublicationReadinessRepository:
               ON cro.collection_run_id = prs.collection_run_id
             JOIN source_item_revisions sir
               ON sir.id = cro.source_item_revision_id
+            JOIN source_items si
+              ON si.id = sir.source_item_id
             LEFT JOIN event_revision_processing_state erps
               ON erps.source_item_revision_id = sir.id
-            WHERE prs.refresh_run_id = %s
+            WHERE prs.refresh_run_id = %(refresh_run_id)s
               AND prs.status = 'succeeded'
+              AND (
+                  %(window_start)s::timestamptz IS NULL
+                  OR COALESCE(si.published_at, si.first_collected_at, sir.collected_at) >= %(window_start)s
+              )
+              AND (
+                  %(source_cutoff_at)s::timestamptz IS NULL
+                  OR COALESCE(si.published_at, si.first_collected_at, sir.collected_at) <= %(source_cutoff_at)s
+              )
               AND COALESCE(erps.status, 'missing') <> 'succeeded'
             """,
-            (refresh_run_id,),
+            {
+                "refresh_run_id": refresh_run_id,
+                "window_start": window_start,
+                "source_cutoff_at": source_cutoff_at,
+            },
         )
         row = await cursor.fetchone()
         return int(row[0]) if row is not None else 0
@@ -577,6 +596,8 @@ class PublicationReadinessRepository:
         refresh_run_id: int,
         *,
         evaluation_at: dt.datetime,
+        window_start: dt.datetime | None = None,
+        source_cutoff_at: dt.datetime | None = None,
     ) -> RevisionBarrierState:
         """Return revision readiness and durable completion as of a boundary."""
         cursor = await conn.execute(
@@ -588,8 +609,18 @@ class PublicationReadinessRepository:
                   ON cro.collection_run_id = prs.collection_run_id
                 JOIN source_item_revisions sir
                   ON sir.id = cro.source_item_revision_id
-                WHERE prs.refresh_run_id = %s
+                JOIN source_items si
+                  ON si.id = sir.source_item_id
+                WHERE prs.refresh_run_id = %(refresh_run_id)s
                   AND prs.status = 'succeeded'
+                  AND (
+                      %(window_start)s::timestamptz IS NULL
+                      OR COALESCE(si.published_at, si.first_collected_at, sir.collected_at) >= %(window_start)s
+                  )
+                  AND (
+                      %(source_cutoff_at)s::timestamptz IS NULL
+                      OR COALESCE(si.published_at, si.first_collected_at, sir.collected_at) <= %(source_cutoff_at)s
+                  )
             ), states AS (
                 SELECT required.revision_id, erps.status, erps.completed_at
                 FROM required
@@ -600,7 +631,7 @@ class PublicationReadinessRepository:
                     COUNT(*) FILTER (
                         WHERE status IS DISTINCT FROM 'succeeded'
                            OR completed_at IS NULL
-                           OR completed_at > %s
+                           OR completed_at > %(evaluation_at)s
                     ) AS unprocessed_count,
                     MAX(completed_at) AS max_completed_at
                 FROM states
@@ -609,7 +640,12 @@ class PublicationReadinessRepository:
                    CASE WHEN unprocessed_count = 0 THEN max_completed_at END
             FROM aggregate
             """,
-            (refresh_run_id, evaluation_at),
+            {
+                "refresh_run_id": refresh_run_id,
+                "evaluation_at": evaluation_at,
+                "window_start": window_start,
+                "source_cutoff_at": source_cutoff_at,
+            },
         )
         row = await cursor.fetchone()
         if row is None:
@@ -622,7 +658,7 @@ class PublicationReadinessRepository:
         """Return collection and Event-First facts that still block readiness."""
         run_cursor = await conn.execute(
             """
-            SELECT status, error_kind
+            SELECT status, error_kind, normal_source_cutoff_at, lookback_hours
             FROM publication_refresh_runs
             WHERE id = %s
             """,
@@ -641,6 +677,14 @@ class PublicationReadinessRepository:
                     stage="preparation",
                 )
             ]
+        source_cutoff_at = run_row[2] if run_row is not None else None
+        lookback = int(run_row[3]) if run_row is not None and run_row[3] is not None else 24
+        window_start = (
+            source_cutoff_at - dt.timedelta(hours=lookback)
+            if source_cutoff_at is not None
+            else None
+        )
+
         cursor = await conn.execute(
             """
             SELECT prs.source_id, source.name, prs.status, latest.status, latest.id,
@@ -671,18 +715,32 @@ class PublicationReadinessRepository:
                 FROM collection_run_revision_observations cro
                 JOIN source_item_revisions sir
                   ON sir.id = cro.source_item_revision_id
+                JOIN source_items si
+                  ON si.id = sir.source_item_id
                 LEFT JOIN event_revision_processing_state erps
                   ON erps.source_item_revision_id = sir.id
                 WHERE cro.collection_run_id = prs.collection_run_id
+                  AND (
+                      %(window_start)s::timestamptz IS NULL
+                      OR COALESCE(si.published_at, si.first_collected_at, sir.collected_at) >= %(window_start)s
+                  )
+                  AND (
+                      %(source_cutoff_at)s::timestamptz IS NULL
+                      OR COALESCE(si.published_at, si.first_collected_at, sir.collected_at) <= %(source_cutoff_at)s
+                  )
             ) processing ON TRUE
-            WHERE prs.refresh_run_id = %s
+            WHERE prs.refresh_run_id = %(refresh_run_id)s
               AND (
                   prs.status <> 'succeeded'
                   OR COALESCE(processing.unprocessed_count, 0) > 0
               )
             ORDER BY prs.source_id
             """,
-            (refresh_run_id,),
+            {
+                "refresh_run_id": refresh_run_id,
+                "window_start": window_start,
+                "source_cutoff_at": source_cutoff_at,
+            },
         )
         retryable = {"transient", "rate_limited"}
         diagnostics: list[PublicationSourceDiagnostic] = []
