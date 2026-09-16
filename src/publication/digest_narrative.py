@@ -2925,6 +2925,9 @@ class DigestNarrativeWriter:
                 "- In thematic items, never repeat the headline in the first sentence of the body text.\n"
                 "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
                 "- State facts directly. NEVER invent or infer unverified causal relations or mechanisms (using phrases like 'из-за чего', 'по причине', 'вследствие', 'в результате') unless that causal relation is explicitly stated in the source facts.\n"
+                '- Avoid direct quotes in quotation marks («...» or "..."). Always prefer smooth indirect speech and paraphrasing in Russian regional news style.\n'
+                "- Never invent resident advice, recommendations, or procedural tips (e.g. 'жителям советуют', 'рекомендуется') unless that specific instruction is explicitly stated in the source facts.\n"
+                "- Never output meta-commentary like 'Новых сообщений не поступало' or 'тихий день'. Focus strictly on concrete reported facts.\n"
                 "- Attribution: If 'epistemic_status' is 'сообщения жителей', attribute once naturally ('По сообщениям жителей', 'По словам горожан') in the body text. If 'официальная информация', attribute to official sources or state directly. Never place attribution in the headline.\n"
                 "- Filter out chat noise: do NOT mention chat polls, stickers, reactions, greetings, or off-topic conversational chatter.\n\n"
                 f"{narrative_contract}\n\n"

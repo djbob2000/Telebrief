@@ -217,3 +217,32 @@ def test_validate_story_publication_eligibility_accepts_valid_story():
     is_valid, reason = validate_story_publication_eligibility(payload)
     assert is_valid is True
     assert reason is None
+
+
+def test_validate_story_publication_eligibility_rejects_lost_and_found_pet():
+    payload = EventPayload(
+        headline="В районе 16-й школы нашли собаку — ищут хозяина",
+        digest_summary="Житель Бердянска сообщает о найденной собаке в районе 16-й школы и просит помочь найти хозяина.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Помогите найти хозяина, в районе 16 школы нашли собачку",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(5,),
+            ),
+        ),
+    )
+    is_valid, reason = validate_story_publication_eligibility(payload)
+    assert is_valid is False
+    assert reason == "lost_and_found_pet"
+
+
+def test_has_meaningful_predicate_rejects_meta_message_headline():
+    assert has_meaningful_predicate("Сообщение о районе 16 школы в Бердянске") is False
+    assert (
+        has_meaningful_predicate(
+            "Житель упоминает район 16 школы в Бердянске, но детали не раскрыты."
+        )
+        is False
+    )
+    assert has_meaningful_predicate("Внизу, район 16 школы") is False
