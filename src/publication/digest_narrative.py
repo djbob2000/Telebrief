@@ -1400,6 +1400,8 @@ def build_deterministic_digest_draft(
             for bundle in plan_block.topic_bundles:
                 usable_facts: list[str] = []
                 fact_keys: list[str] = []
+                fact_token_sets: list[set[str]] = []
+                fact_number_sets: list[set[str]] = []
                 for fact in bundle.fact_ledger:
                     cleaned_fact = _clean_fact_sentence(fact)
                     for atom in re.split(r"(?<=[.!?])\s+", cleaned_fact):
@@ -1407,12 +1409,29 @@ def build_deterministic_digest_draft(
                             continue
                         atom = _clean_fact_sentence(atom)
                         fact_key = " ".join(re.findall(r"[\w-]+", atom.casefold()))
+                        atom_tokens = set(re.findall(r"[\w-]+", atom.casefold()))
+                        atom_numbers = set(re.findall(r"\d+", atom))
                         if not fact_key or any(
-                            fact_key == previous or fact_key in previous or previous in fact_key
-                            for previous in fact_keys
+                            fact_key == previous
+                            or fact_key in previous
+                            or previous in fact_key
+                            or (
+                                atom_tokens
+                                and len(atom_tokens & previous_tokens)
+                                / min(len(atom_tokens), len(previous_tokens))
+                                >= 0.78
+                                and atom_numbers == previous_numbers
+                            )
+                            for previous, previous_tokens, previous_numbers in zip(
+                                fact_keys,
+                                fact_token_sets,
+                                fact_number_sets,
+                            )
                         ):
                             continue
                         fact_keys.append(fact_key)
+                        fact_token_sets.append(atom_tokens)
+                        fact_number_sets.append(atom_numbers)
                         usable_facts.append(atom)
                 if not usable_facts:
                     for sid in bundle.story_ids:
