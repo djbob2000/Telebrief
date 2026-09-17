@@ -69,6 +69,9 @@ _CHATTER_META_RE = re.compile(
     r"сообщается\s+о\s+(?:событии|ситуации)|"
     r"в\s+радиусе\s+\d+\s*[–-]\s*\d+\s*км|"
     r"точнее\s+не\s+работает\s+вообще|"
+    r"не\s+может\s+пройти\s+через\s+кпп|"
+    r"обсуждают\s+(?:старый\s+)?(?:ж[её]лтый\s+)?автобус\w*|"
+    r"упоминают\s+автобус\w*\s+[^.!?]{0,50}\s+производств\w*|"
     r"жителям\s+сообщают\s+о\s+записи\s+на\s+при[её]м|"
     r"планирует\s+забрать\s+(?:горячую\s+)?воду|"
     r"комментирует,?\s+что\s+никто\s+не\s+спорит|"
@@ -105,7 +108,11 @@ _NON_EDITORIAL_PAYLOAD_RE = re.compile(
     r"\b(?:аренд\w*\s+жиль\w*|ищет\s+(?:работ\w*|подработ\w*)|"
     r"поиск\s+(?:работ\w*|подработ\w*)|шабашк\w*|"
     r"автозапчаст\w*|автомобил\w*\s+в\s+разбор|"
-    r"маленьк\w*\s+леди|атмосфер\w*\s+красот\w*)\b",
+    r"маленьк\w*\s+леди|атмосфер\w*\s+красот\w*|"
+    r"ежедневн\w*\s+(?:автобусн\w*\s+)?(?:рейс\w*|пассажирск\w*\s+перевоз\w*)|"
+    r"не\s+может\s+пройти\s+через\s+кпп|"
+    r"обсуждают\s+(?:старый\s+)?(?:ж[её]лтый\s+)?автобус\w*|"
+    r"упоминают\s+автобус\w*\s+[^.!?]{0,50}\s+производств\w*)\b",
     re.IGNORECASE,
 )
 
@@ -295,9 +302,7 @@ def validate_story_publication_eligibility(
         + [getattr(item, "text", "") for item in non_question_items]
     ).lower()
 
-    if _NON_EDITORIAL_PAYLOAD_RE.search(all_story_text) and not _CONCRETE_EVENT_SIGNAL_RE.search(
-        all_story_text
-    ):
+    if _NON_EDITORIAL_PAYLOAD_RE.search(all_story_text):
         return False, "non_editorial_payload"
 
     cat = getattr(payload, "category", "") or ""

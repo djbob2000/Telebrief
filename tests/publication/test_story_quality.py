@@ -250,6 +250,26 @@ def test_validate_story_publication_eligibility_rejects_promotional_event_copy()
     assert reason == "non_editorial_payload"
 
 
+def test_validate_story_publication_eligibility_rejects_unresolved_transport_chatter():
+    payload = EventPayload(
+        headline="Проблемы с прохождением КПП",
+        digest_summary="Житель сообщает, что не может пройти через КПП. Подробности уточняются.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Не могу пройти через КПП.",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(13,),
+            ),
+        ),
+    )
+
+    is_valid, reason = validate_story_publication_eligibility(payload)
+
+    assert is_valid is False
+    assert reason == "non_editorial_payload"
+
+
 def test_validate_story_publication_eligibility_rejects_reply_annotation_only_service():
     payload = EventPayload(
         headline="Житель Бердянска спрашивает о водоканале",
