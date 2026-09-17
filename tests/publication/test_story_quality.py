@@ -322,6 +322,45 @@ def test_validate_story_publication_eligibility_rejects_meta_only_local_reports(
         assert reason in {"non_editorial_payload", "lacks_meaningful_predicate"}
 
 
+def test_validate_story_publication_eligibility_does_not_use_noun_headline_as_fact():
+    cases = (
+        (
+            "Контакт скорой помощи в Бердянске",
+            "Опубликован контактный телефон скорой помощи для вызова врача (круглосуточно).",
+            "+79901428214 **Скорая помощь** — вызов врача при неотложных состояниях (круглосуточно)",
+        ),
+        (
+            "Завтра в Бердянске — день города",
+            "Жители Бердянска настраиваются на позитив в преддверии дня города, который состоится завтра.",
+            "А завтра — день города.",
+        ),
+        (
+            "Жители Бердянска сообщают о громких звуках",
+            "Житель сообщает о повторяющихся громких звуках в Бердянске. Требуется уточнение источника.",
+            "Что-то гупает громко, уже второй раз!",
+        ),
+    )
+
+    for headline, summary, evidence_text in cases:
+        payload = EventPayload(
+            headline=headline,
+            digest_summary=summary,
+            evidence_items=(
+                EvidenceItemPayload(
+                    text=evidence_text,
+                    kind="community_report",
+                    publication_use="PUBLISH",
+                    source_fragment_ids=(15,),
+                ),
+            ),
+        )
+
+        is_valid, reason = validate_story_publication_eligibility(payload)
+
+        assert is_valid is False
+        assert reason == "lacks_meaningful_predicate"
+
+
 def test_validate_story_publication_eligibility_rejects_reply_annotation_only_service():
     payload = EventPayload(
         headline="Житель Бердянска спрашивает о водоканале",

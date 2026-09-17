@@ -479,12 +479,22 @@ def validate_story_publication_eligibility(
     from src.publication.digest_presentation import _is_usable_fact_line
 
     reader_texts = [
-        getattr(payload, "headline", "") or "",
         getattr(payload, "digest_summary", "") or getattr(payload, "summary", "") or "",
     ] + [getattr(item, "text", "") or "" for item in non_question_items]
     key_facts = getattr(payload, "key_facts", ()) or ()
     reader_texts.extend(str(fact) for fact in key_facts if fact)
-    if not any(_is_usable_fact_line(text) for text in reader_texts if text):
+    # A generated headline is often only a noun phrase ("Контакт скорой
+    # помощи", "День города") and must not make an otherwise unusable
+    # directory/chat payload eligible.  Eligibility needs a grounded reader
+    # fact with an event/state predicate; concrete safety signals such as a
+    # possible explosion are accepted even when the source uses colloquial
+    # wording that lacks a standard verb.
+    if not any(
+        (_is_usable_fact_line(text) or _CONCRETE_EVENT_SIGNAL_RE.search(text))
+        and (has_meaningful_predicate(text) or _CONCRETE_EVENT_SIGNAL_RE.search(text))
+        for text in reader_texts
+        if text
+    ):
         return False, "lacks_meaningful_predicate"
 
     return True, None
