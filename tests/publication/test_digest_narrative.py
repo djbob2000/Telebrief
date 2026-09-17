@@ -2992,3 +2992,43 @@ def test_topic_bundles_do_not_merge_unrecognized_general_topics():
         ("story:lighting",),
         ("story:plaza",),
     }
+
+
+def test_topic_bundles_merge_exact_duplicate_unrecognized_facts():
+    from src.publication.digest_presentation import build_thematic_topic_bundles
+
+    cards = [
+        StoryCard(
+            id="story:city-day-a",
+            topic="Завтра в Бердянске — день города",
+            importance="medium",
+            summary="Жители Бердянска настраиваются на позитив в преддверии дня города, который состоится завтра.",
+            rubric_id="focus",
+            useful_details=(),
+            hard_facts=(),
+            community_observations=(
+                StoryElement(
+                    text="Завтра в Бердянске состоится День города.", source_refs=["test:a"]
+                ),
+            ),
+        ),
+        StoryCard(
+            id="story:city-day-b",
+            topic="Завтра в Бердянске — день города",
+            importance="medium",
+            summary="Жители Бердянска настраиваются на позитив в преддверии дня города, который состоится завтра.",
+            rubric_id="focus",
+            useful_details=(),
+            hard_facts=(),
+            community_observations=(
+                StoryElement(
+                    text="Завтра в Бердянске состоится День города.", source_refs=["test:b"]
+                ),
+            ),
+        ),
+    ]
+
+    bundles = build_thematic_topic_bundles(cards)
+
+    assert len(bundles) == 1
+    assert bundles[0].story_ids == ("story:city-day-a", "story:city-day-b")

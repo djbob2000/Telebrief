@@ -1717,7 +1717,15 @@ def build_thematic_topic_bundles(
             # such cards creates mixed headlines/bodies (and makes the fallback
             # print unrelated chat fragments together).  Keep unclassified
             # topics separate until a stronger deterministic family is known.
-            group_key = f"{t_key}:{c.id}" if t_key.endswith("_general") else t_key
+            if t_key.endswith("_general"):
+                raw_fingerprint = (
+                    _clean_fact_sentence(getattr(c, "summary", "") or "")
+                    or _clean_fact_sentence(getattr(c, "topic", "") or "")
+                ).casefold()
+                fingerprint = re.sub(r"\W+", "_", raw_fingerprint).strip("_")[:96]
+                group_key = f"{t_key}:fact:{fingerprint}" if fingerprint else f"{t_key}:{c.id}"
+            else:
+                group_key = t_key
             groups_by_key.setdefault(group_key, []).append(c)
 
         rubric_bundles: list[TopicBundle] = []
