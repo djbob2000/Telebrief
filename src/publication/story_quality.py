@@ -322,6 +322,18 @@ def validate_story_publication_eligibility(
     ):
         return False, "lacks_meaningful_predicate"
 
+    # "Something was switched off" is not a usable local report unless the
+    # source identifies what changed.  A generated headline may still contain
+    # the generic word "отключение", so check for the concrete service subject
+    # rather than relying on the broad civic predicate regex.
+    if re.search(r"\bчто[- ]то\s+(?:произошло|отключилось|случилось)\b", all_story_text):
+        if not re.search(
+            r"\b(?:свет\w*|электр\w*|вод\w*|газ\w*|отоплен\w*|интернет\w*|связ\w*)\b",
+            all_story_text,
+            re.IGNORECASE,
+        ):
+            return False, "lacks_meaningful_predicate"
+
     cat = getattr(payload, "category", "") or ""
     tags = {str(t).lower() for t in (getattr(payload, "tags", ()) or ())}
     has_recognized_domain = cat.lower() in RECOGNIZED_CORE_SERVICE_KEYS or bool(
@@ -440,5 +452,21 @@ def validate_story_publication_eligibility(
         re.IGNORECASE,
     ):
         return False, "lost_and_found_pet"
+
+    # Keep eligibility aligned with digest presentation.  Some stale
+    # revisions have a predicate-bearing generated headline, while their only
+    # evidence is a chat fragment that the reader-facing sanitizer removes.
+    # Letting those revisions through creates a Story that has no TopicBundle
+    # and later fails the deterministic Story partition invariant.
+    from src.publication.digest_presentation import _is_usable_fact_line
+
+    reader_texts = [
+        getattr(payload, "headline", "") or "",
+        getattr(payload, "digest_summary", "") or getattr(payload, "summary", "") or "",
+    ] + [getattr(item, "text", "") or "" for item in non_question_items]
+    key_facts = getattr(payload, "key_facts", ()) or ()
+    reader_texts.extend(str(fact) for fact in key_facts if fact)
+    if not any(_is_usable_fact_line(text) for text in reader_texts if text):
+        return False, "lacks_meaningful_predicate"
 
     return True, None
