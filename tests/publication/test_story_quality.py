@@ -270,6 +270,42 @@ def test_validate_story_publication_eligibility_rejects_unresolved_transport_cha
     assert reason == "non_editorial_payload"
 
 
+def test_validate_story_publication_eligibility_rejects_meta_only_local_reports():
+    cases = (
+        (
+            "В Бердянске объявлена запись на приём",
+            "Жителям Бердянска сообщают о записи на приём. Подробности не раскрыты.",
+        ),
+        (
+            "Сообщение о районе Восточный",
+            "Житель Бердянска сообщает о ситуации в районе Восточный. Детали не раскрыты.",
+        ),
+        (
+            "Жители Бердянска обсуждают возможное появление мечети",
+            "В городском чате обсуждается вопрос о возможном появлении мечети.",
+        ),
+    )
+
+    for headline, summary in cases:
+        payload = EventPayload(
+            headline=headline,
+            digest_summary=summary,
+            evidence_items=(
+                EvidenceItemPayload(
+                    text=summary,
+                    kind="community_report",
+                    publication_use="PUBLISH",
+                    source_fragment_ids=(14,),
+                ),
+            ),
+        )
+
+        is_valid, reason = validate_story_publication_eligibility(payload)
+
+        assert is_valid is False
+        assert reason in {"non_editorial_payload", "lacks_meaningful_predicate"}
+
+
 def test_validate_story_publication_eligibility_rejects_reply_annotation_only_service():
     payload = EventPayload(
         headline="Житель Бердянска спрашивает о водоканале",

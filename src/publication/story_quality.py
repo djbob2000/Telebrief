@@ -75,6 +75,12 @@ _CHATTER_META_RE = re.compile(
     r"жителям\s+сообщают\s+о\s+записи\s+на\s+при[её]м|"
     r"планирует\s+забрать\s+(?:горячую\s+)?воду|"
     r"комментирует,?\s+что\s+никто\s+не\s+спорит|"
+    r"(?:жител(?:ь|и)|горожан(?:ин|е))\s+(?:упомина(?:ет|ют)|обсужда(?:ет|ют)|"
+    r"вспомина(?:ет|ют)|иронизиру(?:ет|ют)|высказыва(?:ет|ют)\s+мнени\w*)|"
+    r"сообщени[ея]\s+о\s+(?:районе|событии|ситуации)|"
+    r"жител(?:ь|и)\s+(?:сообща(?:ет|ют)|пиш(?:ет|ут))\s+о\s+ситуации|"
+    r"жителям(?:\s+[а-яё-]+){0,2}\s+сообщают\s+о\s+записи\s+на\s+при[её]м|"
+    r"в\s+городском\s+чате\s+обсужда(?:ется|ются)\s+вопрос\w*\s+о\s+возможн\w*\s+появлени\w*|"
     r"сообщени[ея]\s+(?:из|о)\s+[^.!?]{1,80}|"
     r"сообщени[ея]\s+сообщества\s+о\s+выполнении\s+работ|"
     r"конкретный\s+вид\s+сервиса\s+(?:в\s+сообщениях\s+)?не\s+уточняется|"
@@ -111,6 +117,7 @@ _NON_EDITORIAL_PAYLOAD_RE = re.compile(
     r"маленьк\w*\s+леди|атмосфер\w*\s+красот\w*|"
     r"ежедневн\w*\s+(?:автобусн\w*\s+)?(?:рейс\w*|пассажирск\w*\s+перевоз\w*)|"
     r"не\s+может\s+пройти\s+через\s+кпп|"
+    r"не\s+вернул\w*\s+деньги|"
     r"обсуждают\s+(?:старый\s+)?(?:ж[её]лтый\s+)?автобус\w*|"
     r"упоминают\s+автобус\w*\s+[^.!?]{0,50}\s+производств\w*)\b",
     re.IGNORECASE,
@@ -304,6 +311,16 @@ def validate_story_publication_eligibility(
 
     if _NON_EDITORIAL_PAYLOAD_RE.search(all_story_text):
         return False, "non_editorial_payload"
+
+    # A persisted Event-First revision may contain a fluent-looking headline
+    # for a pure chat meta-line ("a resident mentions a district", "the chat
+    # discusses a situation", etc.).  Such a line is not an event and must not
+    # become a digest card merely because the verbs "сообщает" or "обсуждает"
+    # satisfy the broad predicate guard.
+    if _CHATTER_META_RE.search(all_story_text) and not _CONCRETE_EVENT_SIGNAL_RE.search(
+        all_story_text
+    ):
+        return False, "lacks_meaningful_predicate"
 
     cat = getattr(payload, "category", "") or ""
     tags = {str(t).lower() for t in (getattr(payload, "tags", ()) or ())}

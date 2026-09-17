@@ -1413,6 +1413,8 @@ def _is_fact_noise_sentence(text: str) -> bool:
             "не может пройти через кпп",
             "радиусе",
             "точнее не работает вообще",
+            "всем мира",
+            "город спит и пусть",
         )
     ):
         return True
@@ -1427,6 +1429,12 @@ def _clean_fact_sentence(text: str) -> str:
     if not t:
         return ""
     t = re.sub(r"^(?:да|ну\s+да|а)\s*,\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(
+        r"^(?:ах\s+да\s*,?\s*)?(?:вроде|кажется)\s*,?\s*",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
     t = re.sub(
         r"^(?:сообщение\s+от\s+(?:местного\s+)?жителя|по\s+сообщениям\s+жителей|"
         r"(?:местный\s+)?жител(?:и|ь)\s+сообща(?:ют|ет)|по\s+словам\s+горожан)[\s,:]*",
@@ -1704,13 +1712,19 @@ def build_thematic_topic_bundles(
         groups_by_key: dict[str, list[Any]] = {}
         for c in r_cards:
             t_key, _, _ = _canonical_topic_family(c, rid)
-            groups_by_key.setdefault(t_key, []).append(c)
+            # A rubric fallback such as ``other_general`` is only a label, not
+            # evidence that two stories describe the same subject.  Merging all
+            # such cards creates mixed headlines/bodies (and makes the fallback
+            # print unrelated chat fragments together).  Keep unclassified
+            # topics separate until a stronger deterministic family is known.
+            group_key = f"{t_key}:{c.id}" if t_key.endswith("_general") else t_key
+            groups_by_key.setdefault(group_key, []).append(c)
 
         rubric_bundles: list[TopicBundle] = []
-        for t_key, g_cards in groups_by_key.items():
+        for group_key, g_cards in groups_by_key.items():
             bundle_counter += 1
             sample_card = g_cards[0]
-            _, t_label, t_emoji = _canonical_topic_family(sample_card, rid)
+            t_key, t_label, t_emoji = _canonical_topic_family(sample_card, rid)
             story_ids = tuple(c.id for c in g_cards)
 
             # Collect allowed supports
@@ -1820,7 +1834,7 @@ def build_thematic_topic_bundles(
 
             rubric_bundles.append(
                 TopicBundle(
-                    bundle_id=f"bundle:{rid}:{t_key}",
+                    bundle_id=f"bundle:{rid}:{group_key}",
                     rubric_id=rid,
                     topic_key=t_key,
                     topic_label=t_label,

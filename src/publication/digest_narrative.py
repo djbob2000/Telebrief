@@ -34,6 +34,12 @@ _DIGEST_LEADING_ATTRIBUTION_RE = re.compile(
     r")\s*(?:,|:)??\s*(?:что\s+)?",
     re.IGNORECASE,
 )
+_GENERIC_DIGEST_TOPIC_RE = re.compile(
+    r"^(?:в\s+фокусе\s+внимания|городское?\s+событие|городские\s+события|"
+    r"коммунальная\s+сфера|городские\s+службы|текущая\s+обстановка|"
+    r"ситуация|разное|другое)$",
+    re.IGNORECASE,
+)
 
 
 def _sanitize_digest_support_text(text: str) -> str:
@@ -64,6 +70,21 @@ def _deduplicate_digest_attribution(text: str) -> str:
     cleaned = re.sub(r"\s{2,}", " ", cleaned)
     cleaned = re.sub(r"([.!?])\s*,", r"\1", cleaned)
     return cleaned.strip()
+
+
+def _headline_from_digest_fact(fact: str) -> str:
+    """Use a grounded fact as a headline when the persisted topic is generic."""
+    from src.publication.digest_presentation import _clean_fact_sentence
+
+    cleaned = _clean_fact_sentence(fact)
+    cleaned = re.sub(r"^(?:что|а)\s+", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(
+        r"^(?:по\s+сообщениям\s+жителей|по\s+словам\s+горожан)[\s,:]*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned.rstrip(". ")
 
 
 def _clean_str_list(items: Any) -> list[str]:
@@ -1441,9 +1462,21 @@ def build_deterministic_digest_draft(
                         elif c and c.topic and _is_usable_fact_line(c.topic):
                             usable_facts.append(_clean_fact_sentence(c.topic))
                 if not usable_facts:
-                    usable_facts = [
-                        f"{bundle.topic_label} в городе остаётся на контроле городских служб."
-                    ]
+                    for required_fact in bundle.required_facts:
+                        cleaned_required = _clean_fact_sentence(required_fact.text)
+                        if _is_usable_fact_line(cleaned_required):
+                            usable_facts.append(cleaned_required)
+                if not usable_facts:
+                    # A bundle without a grounded reader-facing fact must not
+                    # be padded with synthetic operational boilerplate.  Such
+                    # a bundle should have been filtered before planning; keep
+                    # the fallback fail-closed if a stale persisted revision
+                    # still reaches this point.
+                    logger.warning(
+                        "Skipping digest bundle without usable grounded facts: %s",
+                        bundle.bundle_id,
+                    )
+                    continue
 
                 if len(bundle.story_ids) == 1:
                     c = cards_by_id.get(bundle.story_ids[0])
@@ -1451,22 +1484,25 @@ def build_deterministic_digest_draft(
                         c
                         and c.topic
                         and len(c.topic.strip()) >= 3
-                        and not any(
-                            w in c.topic.casefold()
-                            for w in ("городские события", "разное", "другое")
-                        )
+                        and not _GENERIC_DIGEST_TOPIC_RE.fullmatch(c.topic.strip())
                     ):
                         headline = c.topic.strip()
+                    elif _GENERIC_DIGEST_TOPIC_RE.fullmatch(bundle.topic_label.strip()):
+                        headline = _headline_from_digest_fact(usable_facts[0])
                     elif bundle.locations:
                         locs_text = ", ".join(bundle.locations[:3])
                         headline = f"{bundle.topic_label}: ситуация в районах {locs_text}"
                     else:
-                        headline = f"{bundle.topic_label}: текущая обстановка"
+                        headline = _headline_from_digest_fact(usable_facts[0])
                 elif bundle.locations:
                     locs_text = ", ".join(bundle.locations[:3])
                     headline = f"{bundle.topic_label}: ситуация в районах {locs_text}"
                 else:
-                    headline = f"{bundle.topic_label}: текущая обстановка"
+                    headline = (
+                        _headline_from_digest_fact(usable_facts[0])
+                        if _GENERIC_DIGEST_TOPIC_RE.fullmatch(bundle.topic_label.strip())
+                        else f"{bundle.topic_label}: обзор сообщений"
+                    )
                 if len(headline) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
                     headline = (
                         headline[:DIGEST_ITEM_HEADLINE_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ")
@@ -1563,9 +1599,7 @@ def build_deterministic_digest_draft(
                     ):
                         valid_body_sentences.append(s)
                 if not valid_body_sentences:
-                    valid_body_sentences = [
-                        f"{bundle.topic_label} в городе остаётся на контроле городских служб."
-                    ]
+                    valid_body_sentences = [usable_facts[0]]
                 body_text = " ".join(valid_body_sentences)
                 if len(body_text) > DIGEST_ITEM_BODY_MAX_CHARS:
                     body_text = (

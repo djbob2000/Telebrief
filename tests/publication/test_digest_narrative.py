@@ -2960,3 +2960,35 @@ def test_topic_bundle_does_not_absorb_filtered_story_into_other_topic():
 
     assert bundles
     assert "story:chatter" not in {story_id for bundle in bundles for story_id in bundle.story_ids}
+
+
+def test_topic_bundles_do_not_merge_unrecognized_general_topics():
+    from src.publication.digest_presentation import build_thematic_topic_bundles
+
+    cards = [
+        StoryCard(
+            id="story:lighting",
+            topic="Городское событие",
+            importance="medium",
+            summary="На улице Ленина заменили фонари.",
+            rubric_id="other",
+            useful_details=(),
+            hard_facts=(),
+        ),
+        StoryCard(
+            id="story:plaza",
+            topic="Городское событие",
+            importance="medium",
+            summary="На площади завершили работы по благоустройству.",
+            rubric_id="other",
+            useful_details=(),
+            hard_facts=(),
+        ),
+    ]
+
+    bundles = build_thematic_topic_bundles(cards)
+
+    assert {bundle.story_ids for bundle in bundles} == {
+        ("story:lighting",),
+        ("story:plaza",),
+    }
