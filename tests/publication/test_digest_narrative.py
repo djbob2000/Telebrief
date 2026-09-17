@@ -2917,7 +2917,7 @@ def test_usable_fact_line_keeps_concrete_report_with_conversational_prefix():
 
 
 def test_usable_fact_line_rejects_unresolved_chat_reactions_and_directory_payload():
-    from src.publication.digest_presentation import _is_usable_fact_line
+    from src.publication.digest_presentation import _clean_fact_sentence, _is_usable_fact_line
 
     rejected = (
         "Что в центре Бердянска не тихо, но.",
@@ -2932,6 +2932,12 @@ def test_usable_fact_line_rejects_unresolved_chat_reactions_and_directory_payloa
 
     assert _is_usable_fact_line("В Бердянске слышны громкие звуки, возможно взрывы.")
     assert _is_usable_fact_line("На улице Гайдара нет света с 1 августа.")
+    assert not _is_usable_fact_line("Поехали и он всё оформил за 20 минут.")
+    assert not _is_usable_fact_line("Мы с приятелем не звонили, дозвониться не получится.")
+    assert (
+        _clean_fact_sentence("Жительница сообщает, что на улице Гагарина нет воды.")
+        == "На улице Гагарина нет воды."
+    )
 
 
 def test_topic_bundle_drops_filtered_metadata_summary():

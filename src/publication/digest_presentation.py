@@ -1437,11 +1437,14 @@ def _clean_fact_sentence(text: str) -> str:
     )
     t = re.sub(
         r"^(?:сообщение\s+от\s+(?:местного\s+)?жителя|по\s+сообщениям\s+жителей|"
-        r"(?:местный\s+)?жител(?:и|ь)\s+сообща(?:ют|ет)|по\s+словам\s+горожан)[\s,:]*",
+        r"по\s+сообщению\s+(?:местных\s+)?жител(?:ей|я)|"
+        r"(?:местн(?:ый|ая|ые)\s+)?(?:жител(?:и|ь)|жительниц(?:а|ы))\s+сообща(?:ют|ет)|"
+        r"по\s+словам\s+горожан)[\s,:]*(?:что\s+)?",
         "",
         t,
         flags=re.IGNORECASE,
     ).strip()
+    t = re.sub(r"^(?:что|а)\s+", "", t, flags=re.IGNORECASE).strip()
 
     # Keep concrete sentences from a mixed summary while dropping appended
     # questions, chat reactions, and advice boilerplate.
@@ -1568,6 +1571,20 @@ def _is_usable_fact_line(text: str) -> bool:
             "утеряны документы",
             "найдены документы",
         )
+    ):
+        return False
+
+    # Personal dialogue about arranging something is not a city-life update
+    # unless it names a concrete service or event.  These lines commonly leak
+    # from a chat thread into an otherwise valid connectivity bundle.
+    if re.search(r"\bпоехал\w*\b[^.!?]{0,80}\bоформил\w*\b", t_l) and not re.search(
+        r"\b(?:интернет|связь|провайдер|заявк\w*|водоканал|электр\w*|вода|свет)\b",
+        t_l,
+    ):
+        return False
+    if re.search(r"\bс\s+приятел\w*\b|\bмы\s+не\s+звонил\w*\b", t_l) and not re.search(
+        r"\b(?:интернет|связь|провайдер|заявк\w*|водоканал|электр\w*|вода|свет)\b",
+        t_l,
     ):
         return False
 
