@@ -2916,6 +2916,24 @@ def test_usable_fact_line_keeps_concrete_report_with_conversational_prefix():
     )
 
 
+def test_usable_fact_line_rejects_unresolved_chat_reactions_and_directory_payload():
+    from src.publication.digest_presentation import _is_usable_fact_line
+
+    rejected = (
+        "Что в центре Бердянска не тихо, но.",
+        "Движуха с вечера началась, а я сразу даже не заметил.",
+        "О повторяющихся громких звуках в Бердянске. Требуется уточнение источника.",
+        "Завтра — день города.",
+        "Опубликован контактный телефон скорой помощи для вызова врача: +79901428214.",
+        "У меня на Димитрова не работает.",
+    )
+    for line in rejected:
+        assert not _is_usable_fact_line(line), line
+
+    assert _is_usable_fact_line("В Бердянске слышны громкие звуки, возможно взрывы.")
+    assert _is_usable_fact_line("На улице Гайдара нет света с 1 августа.")
+
+
 def test_topic_bundle_drops_filtered_metadata_summary():
     from src.publication.digest_presentation import build_thematic_topic_bundles
 

@@ -1485,6 +1485,7 @@ def build_deterministic_digest_draft(
                         and c.topic
                         and len(c.topic.strip()) >= 3
                         and not _GENERIC_DIGEST_TOPIC_RE.fullmatch(c.topic.strip())
+                        and _is_usable_fact_line(c.topic)
                     ):
                         headline = c.topic.strip()
                     elif _GENERIC_DIGEST_TOPIC_RE.fullmatch(bundle.topic_label.strip()):

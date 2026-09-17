@@ -1472,6 +1472,42 @@ def _is_usable_fact_line(text: str) -> bool:
         return False
     t_l = t.casefold()
 
+    # Short chat reactions can acquire a predicate during Event-First
+    # analysis, but they are not useful city-life facts on their own.
+    if re.search(
+        r"\b(?:не\s+тихо|движух\w*|завтра\s*[-—]?\s*день\s+город\w*)\b",
+        t_l,
+    ):
+        return False
+    if re.search(r"\bгромк\w*\s+зву\w*\b", t_l) and not re.search(
+        r"\b(?:взрыв\w*|стрел\w*|обстрел\w*|дрон\w*|пво|сирен\w*|пожар\w*|авари\w*)\b",
+        t_l,
+    ):
+        return False
+    if re.search(
+        r"\b(?:источник|причин\w*)\b[^.!?]{0,50}\b(?:уточн\w*|неизвестн\w*)\b",
+        t_l,
+    ) and not re.search(
+        r"\b(?:взрыв\w*|стрел\w*|обстрел\w*|дрон\w*|пво|сирен\w*|пожар\w*|авари\w*)\b",
+        t_l,
+    ):
+        return False
+
+    # Contact-card lines are directory payload, not scan-first digest facts.
+    if re.search(
+        r"(?:контактн\w*\s+телефон|телефон\s+для\s+вызов\w*|номер\s+телефон|\+?\d[\d\s().-]{7,})",
+        t_l,
+    ):
+        return False
+
+    # A reply such as "У меня на улице X не работает" has no identified
+    # service or event.  A bare predicate must not make it publishable.
+    if re.search(r"\bне\s+работа\w*\b", t_l) and not re.search(
+        r"\b(?:свет\w*|электр\w*|вод\w*|газ\w*|отоплен\w*|интернет\w*|связ\w*|светофор\w*|автобус\w*|маршрут\w*|аптек\w*|врач\w*)\b",
+        t_l,
+    ):
+        return False
+
     # 1. Questions
     if (
         _FACT_QUESTION_RE.search(t_l)
@@ -1790,6 +1826,31 @@ def build_thematic_topic_bundles(
                 if key not in seen_cf and not any(key in s or s in key for s in seen_cf):
                     seen_cf.add(key)
                     dedup_facts.append(fc)
+
+            # Persisted summaries often begin with a generic attribution while
+            # the concrete street, duration, number, or service state appears
+            # later.  Rank the ledger deterministically so both the compact
+            # writer and the fallback lead with useful local detail.
+            def fact_score(fact: str) -> tuple[int, int]:
+                fact_l = fact.casefold()
+                score = 0
+                if re.search(r"\d", fact_l):
+                    score += 3
+                if re.search(
+                    r"\b(?:улиц\w*|проспект\w*|район\w*|дом\w*|микрорайон\w*|на\s+гор\w*|в\s+центре)\b",
+                    fact_l,
+                ):
+                    score += 2
+                if re.search(
+                    r"\b(?:нет\w*|есть|отключ\w*|включ\w*|восстанов\w*|ремонт\w*|работа\w*|перебо\w*|напряж\w*)\b",
+                    fact_l,
+                ):
+                    score += 1
+                if re.search(r"\b(?:жител\w*|горожан\w*)\s+(?:сообщ\w*|отмеч\w*)", fact_l):
+                    score -= 1
+                return score, min(len(fact), 180)
+
+            dedup_facts.sort(key=fact_score, reverse=True)
 
             # If all raw lines were filtered as chatter, preserve cleaned summary/topic
             if not dedup_facts:
