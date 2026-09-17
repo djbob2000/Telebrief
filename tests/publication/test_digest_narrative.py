@@ -2938,6 +2938,10 @@ def test_usable_fact_line_rejects_unresolved_chat_reactions_and_directory_payloa
         _clean_fact_sentence("Жительница сообщает, что на улице Гагарина нет воды.")
         == "На улице Гагарина нет воды."
     )
+    assert (
+        _clean_fact_sentence("Жительница Бердянска сообщает, что воду не отключали 3 дня.")
+        == "Воду не отключали 3 дня."
+    )
 
 
 def test_topic_bundle_drops_filtered_metadata_summary():
