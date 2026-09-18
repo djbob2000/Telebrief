@@ -1770,6 +1770,7 @@ def build_deterministic_digest_draft(
                         )
                 for rf in bundle_req_facts:
                     rf_text = _clean_fact_sentence(rf.text or base_claim_text)
+                    rf_text = re.sub(r'["«»“„\']', "", rf_text)
                     rf_text = re.sub(r"\bиз-за\b", "при", rf_text, flags=re.IGNORECASE)
                     allowed_fact_sups = set(rf.support_ids)
                     for sid in rf.story_ids:
@@ -1779,6 +1780,9 @@ def build_deterministic_digest_draft(
                         if sid in support_map:
                             allowed_fact_sups.add(sid)
                     rf_sups = [s for s in rf.support_ids if s in support_map]
+                    for sid in rf.story_ids:
+                        if sid in support_map and sid not in rf_sups:
+                            rf_sups.append(sid)
                     if not rf_sups:
                         rf_sups = [s for s in allowed_fact_sups if s in support_map]
                     if not rf_sups:
@@ -1786,6 +1790,16 @@ def build_deterministic_digest_draft(
                     for s in rf_sups:
                         if s not in chosen_sups:
                             chosen_sups.append(s)
+
+                    rf_sups_texts = [support_map[s] for s in rf_sups if s in support_map]
+                    if find_unsupported_claims(
+                        rf_text,
+                        rf_sups_texts,
+                        allowed_context_terms=ctx_terms,
+                        all_known_draft_supports=known_supports,
+                    ):
+                        rf_text = base_claim_text
+
                     item_claims.append(
                         DigestClaimAtom(
                             text=rf_text,
@@ -3614,12 +3628,16 @@ class DigestNarrativeWriter:
                                 if rf.fact_id not in covered_fids:
                                     continue
                                 rf_text = rf.text or base_claim_text
+                                rf_text = re.sub(r'["«»“„\']', "", rf_text)
                                 rf_text = re.sub(r"\bиз-за\b", "при", rf_text, flags=re.IGNORECASE)
                                 allowed_fact_sups = set(rf.support_ids)
                                 story_sups_map = dict(plan_block.support_ids_by_story)
                                 for sid in rf.story_ids:
                                     allowed_fact_sups.update(story_sups_map.get(sid, ()))
                                 rf_sups = [s for s in rf.support_ids if s in allowed_block_supports]
+                                for sid in rf.story_ids:
+                                    if sid in allowed_block_supports and sid not in rf_sups:
+                                        rf_sups.append(sid)
                                 if not (set(rf_sups) & allowed_fact_sups):
                                     rf_sups = [
                                         s for s in allowed_fact_sups if s in allowed_block_supports

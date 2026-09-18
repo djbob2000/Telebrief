@@ -643,6 +643,10 @@ def build_required_digest_facts(
                         obs_refs.append(ref_fid)
 
                 obs_supports = _resolve_fact_supports(obs_refs, card, evidence_map)
+                obs_sups_list = list(obs_supports)
+                if card.id not in obs_sups_list:
+                    obs_sups_list.append(card.id)
+                obs_supports = tuple(obs_sups_list)
 
                 required_facts.append(
                     RequiredDigestFact(
@@ -668,6 +672,10 @@ def build_required_digest_facts(
 
                 hf_refs = list(getattr(hf, "source_refs", []) or [])
                 hf_supports = _resolve_fact_supports(hf_refs, card, evidence_map)
+                hf_sups_list = list(hf_supports)
+                if card.id not in hf_sups_list:
+                    hf_sups_list.append(card.id)
+                hf_supports = tuple(hf_sups_list)
 
                 required_facts.append(
                     RequiredDigestFact(
