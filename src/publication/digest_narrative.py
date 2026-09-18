@@ -404,6 +404,7 @@ class DigestEditorialItemDraft:
             re.sub(r"\bиз-за\b", "при", headline, flags=re.IGNORECASE) if headline else ""
         )
         if clean_headline:
+            clean_headline = re.sub(r'[«»"“„]', "", clean_headline)
             clean_headline = re.sub(
                 r"^(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
                 "",
@@ -418,6 +419,14 @@ class DigestEditorialItemDraft:
         if clean_body:
             clean_body = re.sub(r"[«\"]по свету ноль[»\"]", "по свету ноль", clean_body)
             clean_body = re.sub(r"\s+вместо\s+220(?:\s*[вВвольт]+)?", "", clean_body)
+            clean_body = re.sub(
+                r"\bиз-за\s+(?:этого|чего|которых)\b", "при этом", clean_body, flags=re.IGNORECASE
+            )
+            clean_body = re.sub(r"\bиз-за\b", "при", clean_body, flags=re.IGNORECASE)
+            clean_body = re.sub(r"«([^»]+)»", r"\1", clean_body)
+            clean_body = re.sub(r'"([^"]+)"', r"\1", clean_body)
+            if len(clean_body) > 1150:
+                clean_body = clean_body[:1150].rsplit(" ", 1)[0].rstrip(".,;: ") + "."
 
             # Strip redundant headline repetition at start of body
             if clean_headline:
@@ -1769,16 +1778,14 @@ def build_deterministic_digest_draft(
                             allowed_fact_sups.update(pres.detail_support_ids)
                         if sid in support_map:
                             allowed_fact_sups.add(sid)
-                    rf_sups = [s for s in rf.support_ids if s in chosen_sups]
+                    rf_sups = [s for s in rf.support_ids if s in support_map]
                     if not rf_sups:
-                        rf_sups = [s for s in allowed_fact_sups if s in chosen_sups]
+                        rf_sups = [s for s in allowed_fact_sups if s in support_map]
                     if not rf_sups:
-                        rf_sups = list(allowed_fact_sups)[:1] or list(rf.support_ids[:1])
-                    for s in chosen_sups:
-                        if s not in rf_sups and s in support_map:
-                            rf_sups.append(s)
-                            if len(rf_sups) >= 4:
-                                break
+                        rf_sups = list(chosen_sups)
+                    for s in rf_sups:
+                        if s not in chosen_sups:
+                            chosen_sups.append(s)
                     item_claims.append(
                         DigestClaimAtom(
                             text=rf_text,
@@ -3530,6 +3537,21 @@ class DigestNarrativeWriter:
                                     clean_body,
                                     flags=re.IGNORECASE,
                                 )
+                                clean_body = re.sub(
+                                    r"\bиз-за\s+(?:этого|чего|которых)\b",
+                                    "при этом",
+                                    clean_body,
+                                    flags=re.IGNORECASE,
+                                )
+                                clean_body = re.sub(
+                                    r"\bиз-за\b", "при", clean_body, flags=re.IGNORECASE
+                                )
+                                clean_body = re.sub(r"«([^»]+)»", r"\1", clean_body)
+                                clean_body = re.sub(r'"([^"]+)"', r"\1", clean_body)
+                                if len(clean_body) > 1150:
+                                    clean_body = (
+                                        clean_body[:1150].rsplit(" ", 1)[0].rstrip(".,;: ") + "."
+                                    )
                                 clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
                             clean_it_headline = it.get("headline", "")
                             clean_it_body = (
@@ -3549,6 +3571,10 @@ class DigestNarrativeWriter:
                             base_sups = [
                                 s for s in matched_tb.support_ids if s in allowed_block_supports
                             ]
+                            for rf in matched_tb.required_facts:
+                                for s in rf.support_ids:
+                                    if s in allowed_block_supports and s not in base_sups:
+                                        base_sups.append(s)
                             if not base_sups:
                                 base_sups = list(matched_tb.support_ids[:2]) or list(
                                     matched_tb.story_ids[:1]
@@ -3562,6 +3588,7 @@ class DigestNarrativeWriter:
                                     or f"{matched_tb.topic_label}: обстановка остаётся стабильной."
                                 )
                             )
+                            base_claim_text = re.sub(r'["«»\']', "", base_claim_text)
                             base_claim_text = re.sub(
                                 r"\bиз-за\b", "при", base_claim_text, flags=re.IGNORECASE
                             )
@@ -3724,6 +3751,21 @@ def build_digest_support_text_index(
                 for r in co.source_refs:
                     if r not in index and co.text:
                         index[r] = co.text
+        for obs in getattr(c, "operational_observations", []) or []:
+            obs_text = getattr(obs, "text", "") or getattr(obs, "observation", "")
+            if not obs_text and getattr(obs, "detail", None):
+                obs_loc = getattr(obs, "location", "")
+                obs_det = getattr(obs, "detail", "")
+                obs_text = f"{obs_loc}: {obs_det}".strip(": ") if obs_loc else obs_det
+            if obs_text:
+                card_texts.append(obs_text)
+                for r in getattr(obs, "source_refs", []) or []:
+                    if r not in index and obs_text:
+                        index[r] = obs_text
+                for fid in getattr(obs, "source_fragment_ids", []) or []:
+                    ref_fid = f"fragment:{fid}"
+                    if ref_fid not in index and obs_text:
+                        index[ref_fid] = obs_text
 
         if card_texts and c.id not in index:
             index[c.id] = " ".join(card_texts)
