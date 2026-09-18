@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
@@ -102,12 +103,46 @@ class DigestRubricClassifier:
         assignments_by_card_id: dict[str, RubricAssignment] = {}
         unresolved_cards: list[StoryCard] = []
 
+        _CATEGORY_SYNONYMS = {
+            "security": ("safety", "security"),
+            "safety": ("safety", "security"),
+            "utilities": ("infrastructure", "utilities"),
+            "infrastructure": ("infrastructure", "utilities"),
+            "communal": ("infrastructure", "utilities"),
+            "transport": ("mobility", "transport"),
+            "mobility": ("mobility", "transport"),
+            "telecom": ("communications", "telecom"),
+            "connectivity": ("communications", "telecom"),
+            "communications": ("communications", "telecom"),
+            "health": ("health", "medicine"),
+            "medicine": ("health", "medicine"),
+            "civic": ("civic_services", "civic"),
+            "civic_services": ("civic_services", "civic"),
+            "culture": ("education_culture", "culture"),
+            "education": ("education_culture", "education"),
+            "education_culture": ("education_culture", "culture", "education"),
+            "social": ("society", "social"),
+            "society": ("society", "social"),
+            "economy": ("economy", "business"),
+            "banking": ("civic_services", "economy"),
+        }
+
         # 1. Compatibility hint check: matching legacy category without embedding
         for card in cards:
-            if card.category and card.category in known_rubrics_by_id:
+            c_cat = (card.category or "").strip().lower()
+            matched_rid = None
+            if c_cat in known_rubrics_by_id:
+                matched_rid = c_cat
+            elif c_cat in _CATEGORY_SYNONYMS:
+                for syn in _CATEGORY_SYNONYMS[c_cat]:
+                    if syn in known_rubrics_by_id:
+                        matched_rid = syn
+                        break
+
+            if matched_rid:
                 assignments_by_card_id[card.id] = RubricAssignment(
                     story_id=card.id,
-                    rubric_id=card.category,
+                    rubric_id=matched_rid,
                     score=1.0,
                     method="legacy_hint",
                 )
@@ -207,8 +242,22 @@ class DigestRubricClassifier:
                         if second_best_score >= rubrics.min_similarity:
                             best_rubric_id = second_best_id
                             best_score = second_best_score
-                        else:
-                            best_score = -1.0
+                # Safety override: stories about explosions, shelling, drones, sirens
+                # must not be classified into mobility or non-safety rubrics
+                c_text = f"{card.topic} {card.summary}".lower()
+                safety_rubric = None
+                for s_key in ("safety", "security"):
+                    if s_key in known_rubrics_by_id:
+                        safety_rubric = s_key
+                        break
+
+                if safety_rubric and re.search(
+                    r"\b(?:взрыв\w*|обстрел\w*|пво|дрон\w*|бпла|бомб\w*|фаб[- ]\d+|прилет\w*|сирен\w*|хлоп[о-я]\w*)\b",
+                    c_text,
+                ):
+                    if best_rubric_id != "focus":
+                        best_rubric_id = safety_rubric
+                        best_score = max(best_score, rubrics.min_similarity)
 
                 if best_score >= rubrics.min_similarity:
                     assignments_by_card_id[card.id] = RubricAssignment(
@@ -228,6 +277,16 @@ class DigestRubricClassifier:
                     valid_candidates = {r for r in rubric_candidates if r in known_rubrics_by_id}
                     if len(valid_candidates) == 1:
                         family_rubric = next(iter(valid_candidates))
+
+                    if (
+                        family_rubric is None
+                        and safety_rubric
+                        and re.search(
+                            r"\b(?:взрыв\w*|обстрел\w*|пво|дрон\w*|бпла|бомб\w*|фаб[- ]\d+|прилет\w*|сирен\w*|хлоп[о-я]\w*)\b",
+                            c_text,
+                        )
+                    ):
+                        family_rubric = safety_rubric
 
                     if family_rubric is not None:
                         assignments_by_card_id[card.id] = RubricAssignment(

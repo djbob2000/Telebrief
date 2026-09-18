@@ -1642,7 +1642,7 @@ def build_deterministic_digest_draft(
                         or "сообщают" in first_sent.casefold()
                         or "отмечают" in first_sent.casefold()
                     )
-                    if not has_prior_attribution:
+                    if not has_prior_attribution and community_attribution_count == 0:
                         attributions = [
                             "По сообщениям жителей",
                             "По словам горожан",
@@ -1706,7 +1706,11 @@ def build_deterministic_digest_draft(
                         locs_text = ", ".join(bundle.locations[:3])
                         headline = f"{bundle.topic_label}: ситуация в районах {locs_text}"
                     else:
-                        headline = f"{bundle.topic_label}: текущая обстановка"
+                        headline = (
+                            _headline_from_digest_fact(usable_facts[0])
+                            if usable_facts
+                            else f"{bundle.topic_label}: ситуация в городе"
+                        )
 
                 valid_body_sentences = []
                 for s in body_sentences:
@@ -3498,7 +3502,7 @@ class DigestNarrativeWriter:
                                 if clean_headline:
                                     clean_headline = clean_headline[:1].upper() + clean_headline[1:]
                             it["headline"] = (
-                                clean_headline or f"{matched_tb.topic_label}: текущая обстановка"
+                                clean_headline or f"{matched_tb.topic_label}: ситуация в городе"
                             )
 
                             # Sanitize body
@@ -3698,9 +3702,20 @@ class DigestNarrativeWriter:
                                 "cited_support_ids": sups,
                                 "covered_fact_ids": [],
                             }
+                            hl_cand = (
+                                _headline_from_digest_fact(clean_text)
+                                if clean_text
+                                else f"{tb.topic_label}: ситуация в городе"
+                            )
+                            if len(hl_cand) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
+                                hl_cand = (
+                                    hl_cand[:DIGEST_ITEM_HEADLINE_MAX_CHARS]
+                                    .rsplit(" ", 1)[0]
+                                    .rstrip(".:;, ")
+                                )
                             norm_items.append(
                                 {
-                                    "headline": f"{tb.topic_label}: текущая обстановка",
+                                    "headline": hl_cand or f"{tb.topic_label}: ситуация в городе",
                                     "body": f"{clean_text[:1].upper() + clean_text[1:]}",
                                     "emoji": tb.emoji,
                                     "covered_story_ids": list(tb.story_ids),

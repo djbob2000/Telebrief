@@ -1181,6 +1181,13 @@ def _canonical_topic_family(card: Any, rubric_id: str = "") -> tuple[str, str, s
         "хлопок",
         "хлопки",
         "атеш",
+        "фаб",
+        "каб",
+        "бомба",
+        "авиабомба",
+        "ракета",
+        "мина",
+        "снаряд",
     } & tokens:
         return ("strikes", "Безопасность и происшествия", "💥")
 
@@ -1202,6 +1209,7 @@ def _canonical_topic_family(card: Any, rubric_id: str = "") -> tuple[str, str, s
         "прописка",
         "документы",
         "заявление",
+        "вытрезвитель",
     } & tokens:
         return ("civic_services", "Городские службы и документы", "🏛")
 
@@ -1213,6 +1221,11 @@ def _canonical_topic_family(card: Any, rubric_id: str = "") -> tuple[str, str, s
         "банкоматы",
         "наличные",
         "сбер",
+        "сбербанк",
+        "сбол",
+        "псб",
+        "мера",
+        "дельмар",
         "пнкб",
         "карта",
         "перерасчет",
@@ -1232,6 +1245,10 @@ def _canonical_topic_family(card: Any, rubric_id: str = "") -> tuple[str, str, s
         "медицинский",
         "флюорография",
         "визант",
+        "донор",
+        "доноры",
+        "кровь",
+        "донорство",
     } & tokens:
         return ("health", "Медицина и здоровье", "🏥")
 
@@ -1815,7 +1832,7 @@ def build_thematic_topic_bundles(
             # such cards creates mixed headlines/bodies (and makes the fallback
             # print unrelated chat fragments together).  Keep unclassified
             # topics separate until a stronger deterministic family is known.
-            if t_key.endswith("_general"):
+            if t_key == "other_general":
                 raw_fingerprint = (
                     _clean_fact_sentence(getattr(c, "summary", "") or "")
                     or _clean_fact_sentence(getattr(c, "topic", "") or "")
