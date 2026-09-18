@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -110,17 +111,132 @@ def _geo_stem(name: str) -> str:
     return norm.rstrip("ь'")
 
 
+_CENTER_EXCLUSION_PREFIXES_RE = re.compile(
+    r"\b(?:торгов|бизнес|бізнес|детск|дитяч|культурн|медицинск|медичн|кризисн|кризов|сервисн|сервісн|развлекательн|розважальн|реабилитацион|реабілітаційн|диагностическ|діагностичн|перинатальн|волонтерск|волонтерськ|гуманитарн|гуманітарн|координацион|координаційн|логистическ|логістичн|учебн|навчальн|фитнес|фітнес|пресс|областн|обласн|районн|административн|адміністративн|населен)[а-яяіїє]*\s+центр",
+    re.IGNORECASE,
+)
+_CENTER_EXCLUSION_SUFFIXES_RE = re.compile(
+    r"центр[а-яіїє]*\s+(?:занятост|зайнятост|помощ|допомог|реабилитац|реабілітац|безопасност|безпек|запорож|запоріж|славянск|слов[’\'`]?янськ|краматорск|донецк|дніпр|днепр|харьков|харків|киев|київ|одесс|одес)",
+    re.IGNORECASE,
+)
+
+
 def _contains_any_anchor(text: str, anchors: set[str] | tuple[str, ...] | list[str]) -> bool:
     norm_text = _norm_geo_text(text)
     for anchor in anchors:
         if not anchor:
             continue
+
+        anchor_lower = anchor.casefold()
+        if anchor_lower == "центр":
+            matches = list(re.finditer(r"\bцентр[а-яіїє]*\b", norm_text))
+            if not matches:
+                continue
+            has_valid_center = False
+            for m in matches:
+                start_window = max(0, m.start() - 35)
+                end_window = min(len(norm_text), m.end() + 35)
+                window_text = norm_text[start_window:end_window]
+                if _CENTER_EXCLUSION_PREFIXES_RE.search(
+                    window_text
+                ) or _CENTER_EXCLUSION_SUFFIXES_RE.search(window_text):
+                    continue
+                has_valid_center = True
+                break
+            if has_valid_center:
+                return True
+            continue
+
         stem = _geo_stem(anchor)
-        if stem and stem in norm_text:
-            return True
+        if stem:
+            escaped_stem = re.escape(stem)
+            matches = list(re.finditer(rf"\b{escaped_stem}[а-яіїє]*\b", norm_text))
+            for m in matches:
+                word = m.group(0)
+                # Prevent matching street adjectives (e.g., Севастопольская) when looking for a city (Севастополь).
+                # But allow if the anchor itself is an adjective (e.g., Бердянская коса).
+                is_adj_anchor = anchor.endswith(
+                    (
+                        "ский",
+                        "ская",
+                        "ское",
+                        "ские",
+                        "ський",
+                        "ська",
+                        "ське",
+                        "ські",
+                        "ському",
+                        "ского",
+                        "ськом",
+                        "ського",
+                        "ской",
+                    )
+                )
+                is_adj_word = word.endswith(
+                    (
+                        "ский",
+                        "ская",
+                        "ское",
+                        "ские",
+                        "ський",
+                        "ська",
+                        "ське",
+                        "ські",
+                        "ському",
+                        "ского",
+                        "ськом",
+                        "ського",
+                        "ской",
+                    )
+                )
+                if not is_adj_anchor and is_adj_word:
+                    continue
+                return True
+
         norm_anchor = _norm_geo_text(anchor)
-        if norm_anchor and norm_anchor in norm_text:
-            return True
+        if norm_anchor:
+            escaped_norm = re.escape(norm_anchor)
+            matches = list(re.finditer(rf"\b{escaped_norm}[а-яіїє]*\b", norm_text))
+            for m in matches:
+                word = m.group(0)
+                is_adj_anchor = norm_anchor.endswith(
+                    (
+                        "ский",
+                        "ская",
+                        "ское",
+                        "ские",
+                        "ський",
+                        "ська",
+                        "ське",
+                        "ські",
+                        "ському",
+                        "ского",
+                        "ськом",
+                        "ського",
+                        "ской",
+                    )
+                )
+                is_adj_word = word.endswith(
+                    (
+                        "ский",
+                        "ская",
+                        "ское",
+                        "ские",
+                        "ський",
+                        "ська",
+                        "ське",
+                        "ські",
+                        "ському",
+                        "ского",
+                        "ськом",
+                        "ського",
+                        "ской",
+                    )
+                )
+                if not is_adj_anchor and is_adj_word:
+                    continue
+                return True
+
     return False
 
 

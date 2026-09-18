@@ -388,9 +388,22 @@ def validate_story_publication_eligibility(
     out_of_scope = tuple(
         loc for loc in geo.out_of_scope_locations if loc and _norm_geo_text(loc) not in norm_focus
     )
-    has_focus = _contains_any_anchor(all_story_text, focus_anchors)
-    if not has_focus and _contains_any_anchor(all_story_text, out_of_scope):
+
+    # Use evidence text for geographic checks to avoid hallucinated headlines bypassing the guard
+    evidence_text = " ".join([getattr(item, "text", "") for item in non_question_items]).lower()
+    evidence_has_focus = _contains_any_anchor(evidence_text, focus_anchors)
+    evidence_has_out_of_scope = _contains_any_anchor(evidence_text, out_of_scope)
+
+    if not evidence_has_focus and evidence_has_out_of_scope:
         return False, "external_city_without_focus_impact"
+
+    # Rule 2c: Reject generic or unanchored military strikes without local focus
+    _GENERIC_STRIKE_KEYWORDS_RE = re.compile(
+        r"\b(?:авіабомб\w*|авиабомб\w*|умпк|fpv-дрон\w*|шахед\w*|обстріл\w*|обстрел\w*|ракет\w*|влучання|попадани\w*|ппо)\b",
+        re.IGNORECASE,
+    )
+    if not evidence_has_focus and _GENERIC_STRIKE_KEYWORDS_RE.search(evidence_text):
+        return False, "external_or_unanchored_strike"
 
     # A persisted Event-First revision may contain a fluent-looking headline
     # for a pure chat meta-line ("a resident mentions a district", "the chat
