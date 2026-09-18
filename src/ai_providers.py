@@ -425,15 +425,21 @@ class ProviderCascade(AIProvider):
             selected_model = model_override or model
             try:
                 self.logger.info("Trying AI provider slot %s (model=%s)", label, selected_model)
-                response = await provider.chat_completion(
-                    messages=messages,
-                    model=selected_model,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    reasoning_effort=reasoning_effort,
-                    thinking=thinking,
-                    response_format=response_format,
+                slot_timeout = float(
+                    getattr(provider, "request_timeout", None)
+                    or getattr(self, "request_timeout", 300.0)
+                    or 300.0
                 )
+                async with asyncio.timeout(slot_timeout):
+                    response = await provider.chat_completion(
+                        messages=messages,
+                        model=selected_model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        thinking=thinking,
+                        response_format=response_format,
+                    )
                 if not isinstance(response, str) or not response.strip():
                     raise RuntimeError("provider returned an empty response")
                 # Clear any global cooldown upon a successful response for this slot

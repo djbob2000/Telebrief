@@ -188,6 +188,29 @@ class DigestRubricClassifier:
                         best_rubric_id = rubric_id
 
                 if best_score >= rubrics.min_similarity:
+                    # Focus rubric guard: "В фокусе внимания" is strictly reserved for
+                    # major high/critical priority citywide events. Never place low/medium
+                    # importance stories or general chatter into "focus".
+                    if best_rubric_id == "focus" and getattr(card, "importance", "") not in (
+                        "high",
+                        "critical",
+                    ):
+                        second_best_id = fallback_rubric.id
+                        second_best_score = -1.0
+                        for r_id, r_vec in cached_dict.items():
+                            if r_id == "focus":
+                                continue
+                            s = cosine_similarity(card_vec, r_vec)
+                            if s > second_best_score:
+                                second_best_score = s
+                                second_best_id = r_id
+                        if second_best_score >= rubrics.min_similarity:
+                            best_rubric_id = second_best_id
+                            best_score = second_best_score
+                        else:
+                            best_score = -1.0
+
+                if best_score >= rubrics.min_similarity:
                     assignments_by_card_id[card.id] = RubricAssignment(
                         story_id=card.id,
                         rubric_id=best_rubric_id,

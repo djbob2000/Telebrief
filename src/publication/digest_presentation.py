@@ -393,13 +393,20 @@ def _derive_situation_fact_id(group_id: str, item: CitySituationItem, idx: int) 
     if "центр" in loc.casefold() and ("170" in detail or "напряжен" in detail.casefold()):
         return "center_voltage"
 
-    if loc:
+    if loc and loc.casefold() not in (
+        "бердянск",
+        "город",
+        "г. бердянск",
+        "г.бердянск",
+        "бердянськ",
+        "city",
+    ):
         slug = re.sub(r"[^\w]+", "_", loc.casefold()).strip("_")
         if slug:
             return slug
     if detail:
         slug = re.sub(r"[^\w]+", "_", detail[:30].casefold()).strip("_")
-        if slug:
+        if slug and slug not in ("бердянск", "город"):
             return slug
     clean_grp = group_id.split(":", 1)[-1] if ":" in group_id else group_id
     return f"{clean_grp}_fact_{idx + 1}"
@@ -1435,8 +1442,10 @@ def _clean_fact_sentence(text: str) -> str:
         t,
         flags=re.IGNORECASE,
     )
+    # Strip conversational and chat-source prefixes
     t = re.sub(
-        r"^(?:сообщение\s+от\s+(?:местного\s+)?жителя|по\s+сообщениям\s+жителей|"
+        r"^(?:(?:в\s+)?(?:городском\s+|местном\s+|районном\s+)?чате(?:\s+[а-яёA-Za-z-]+)?\s+сообща(?:ют|ется)|"
+        r"сообщение\s+от\s+(?:местного\s+)?жителя|по\s+сообщениям\s+жителей|"
         r"по\s+сообщению\s+(?:местных\s+)?жител(?:ей|я)|"
         r"(?:местн(?:ый|ая|ые)\s+)?(?:жител(?:и|ь)|жительниц(?:а|ы))"
         r"(?:\s+[а-яё-]+){0,2}\s+сообща(?:ют|ет)|"
@@ -1446,6 +1455,24 @@ def _clean_fact_sentence(text: str) -> str:
         flags=re.IGNORECASE,
     ).strip()
     t = re.sub(r"^(?:что|а)\s+", "", t, flags=re.IGNORECASE).strip()
+
+    # Never reveal internal collection mechanics or chat sources to readers
+    t = re.sub(
+        r"\b(?:в\s+)?(?:городском\s+|местном\s+|районном\s+)?чате(?:\s+[а-яёA-Za-z-]+)?\s+сообща(?:ют|ется)[\s,:]*(?:что\s+)?",
+        "",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\bв\s+(?:городском\s+|местном\s+|районном\s+)?чате(?:\s+[а-яёA-Za-z-]+)?\b",
+        "в городе",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(r"\bучастники?\s+чата\b", "жители", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bсообщени[ея]\s+в\s+чате\b", "сообщения", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s*\(\s*со\s+слов\s+[^)]+\)", "", t, flags=re.IGNORECASE)
+    t = re.sub(r",\s*по\s+словам\s+жителя\b", "", t, flags=re.IGNORECASE)
 
     # Keep concrete sentences from a mixed summary while dropping appended
     # questions, chat reactions, and advice boilerplate.
@@ -1460,6 +1487,9 @@ def _clean_fact_sentence(text: str) -> str:
         t,
         flags=re.IGNORECASE,
     ).strip()
+    # Clean leading punctuation and trailing quote/parenthesis artifacts
+    t = t.lstrip(" ,.-:;—")
+    t = re.sub(r"[\"')\]]+\.?$", "", t).strip()
     if t:
         t = t[:1].upper() + t[1:]
     return t.rstrip(". ") + "."
@@ -1764,6 +1794,12 @@ def build_thematic_topic_bundles(
 
     for rid, r_cards in by_rubric.items():
         groups_by_key: dict[str, list[Any]] = {}
+        # Count cards per topic family within this rubric
+        family_counts: dict[str, int] = {}
+        for c in r_cards:
+            tk, _, _ = _canonical_topic_family(c, rid)
+            family_counts[tk] = family_counts.get(tk, 0) + 1
+
         for c in r_cards:
             t_key, _, _ = _canonical_topic_family(c, rid)
             # A rubric fallback such as ``other_general`` is only a label, not
@@ -1928,7 +1964,7 @@ def build_thematic_topic_bundles(
                     emoji=t_emoji,
                     story_ids=story_ids,
                     support_ids=tuple(all_sups),
-                    fact_ledger=tuple(dedup_facts[:8]),
+                    fact_ledger=tuple(dedup_facts[:16]),
                     locations=locations,
                     required_facts=bundle_req_facts,
                     status_summary="",

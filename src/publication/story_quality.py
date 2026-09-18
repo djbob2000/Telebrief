@@ -104,8 +104,12 @@ _QUESTION_CONTEXT_RE = re.compile(
 
 _CONCRETE_EVENT_SIGNAL_RE = re.compile(
     r"\b(?:взрыв\w*|обстрел\w*|пожар\w*|авари\w*|ремонт\w*|"
-    r"отключ\w*|включ\w*|нет\s+(?:свет\w*|вод\w*|газ\w*)|"
+    r"отключ\w*|выключ\w*|включ\w*|нет\s+(?:свет\w*|вод\w*|газ\w*)|"
+    r"не\s+(?:было|включали)\s+(?:свет\w*|вод\w*|газ\w*)|"
+    r"дали\s+(?:свет\w*|вод\w*|газ\w*|электр\w*|\d+\s*мин\w*)|"
+    r"пода[чл]\w*\s+(?:свет\w*|вод\w*|газ\w*|электр\w*)|"
     r"восстанов\w*|поврежд\w*|прорыв\w*|перебо\w*|"
+    r"ветряк\w*|солнечн\w*\s+электростанци\w*|редкост\w*|"
     r"напряжен\w*|сирен\w*|дтп|маршрут\w*|рейс\w*|аптек\w*)\b",
     re.IGNORECASE,
 )
@@ -137,14 +141,32 @@ _NON_EDITORIAL_PAYLOAD_RE = re.compile(
     r"не\s+тихо[^.!?]{0,60}детал\w*\s+не\s+уточн|"
     r"услуг\w*\s+предоставля\w*\s+только\s+некотор\w*\s+улиц\w*|"
     r"обсуждают\s+(?:старый\s+)?(?:ж[её]лтый\s+)?автобус\w*|"
-    r"упоминают\s+автобус\w*\s+[^.!?]{0,50}\s+производств\w*)\b",
+    r"упоминают\s+автобус\w*\s+[^.!?]{0,50}\s+производств\w*|"
+    # Carrier, taxi, carpool, passenger and parcel transport advertisements
+    r"(?:мест\w*\s+на\s+(?:завтра|сегодня)|есть\s+(?:несколько\s+)?мест\w*)|"
+    r"(?:пассажирск\w*\s+перевоз\w*|перевозк\w*\s+пассажир\w*)|"
+    r"(?:поездк\w*\s+(?:в|из|до)\s+[А-Яа-я]+|доставк\w*\s+посыл\w*|попутк\w*)|"
+    # Lost and found (keys, glasses, wallets, pets, documents)
+    r"(?:найден\w*|потеря\w*|потерян\w*|бюро\s+находок)\s+(?:очки|ключ\w*|документ\w*|кошелек|кошелёк|телефон|вещи|сумк\w*|номер\w*)|"
+    r"на\s+улице\s+[^\n.,!?]{1,30}\s+найден\w*|"
+    r"найден\w*\s+в\s+кофейн\w*|"
+    r"потерял\w*\s+(?:очки|ключ\w*|карточк\w*|кошелек|кошелёк|телефон)|"
+    # Chat memories, reviews, and non-event reactions
+    r"(?:изменени\w*\s+не\s+заметно|не\s+заметно\s+изменени\w*)|"
+    r"ездили\s+(?:месяц|неделю|год|несколько\s+дней)\s+назад|"
+    r"делится\s+(?:своим\s+)?опытом\s+(?:быстрой\s+)?поездки|"
+    r"прогулк\w*\s+с\s+(?:четвероног\w*|собак\w*)|"
+    # Private beauty, repair, and personal services / advertisements
+    r"(?:маникюр\w*|педикюр\w*|мастер\w*\s+маникюра|наращиван\w*\s+ресниц|ресничк\w*)|"
+    r"(?:стрижк\w*|парикмахер\w*|ногт\w*|бров\w*|косметолог\w*|массаж\w*)|"
+    r"(?:ремонт\s+(?:стиральн\w*|холодильн\w*|телевизор\w*|обув\w*|одежд\w*|замк\w*|двер\w*|окон\w*)))\b",
     re.IGNORECASE,
 )
 
 _CIVIC_EVENT_TOKENS_RE = re.compile(
     r"\b(?:"
     # Verbs / participles of action, state, change (past, present, future)
-    r"отключ\w*|включ\w*|пропа[лв]\w*|исчез\w*|верну\w*|возвращ\w*|"
+    r"отключ\w*|выключ\w*|включ\w*|пропа[лв]\w*|исчез\w*|верну\w*|возвращ\w*|"
     r"восстанов\w*|возобнов\w*|заработа\w*|работа\w*|"
     r"выш[ели]\w*|выход\w*|пополн\w*|поступ\w*|"
     r"прорва\w*|прорыв\w*|теч[её]\w*|капа\w*|ут[её]к\w*|утечк\w*|"
@@ -152,8 +174,8 @@ _CIVIC_EVENT_TOKENS_RE = re.compile(
     r"взорв\w*|взрыв\w*|повред\w*|разруш\w*|"
     r"ремонтир\w*|почин\w*|чин[яи]\w*|провод\w*|прове[лд]\w*|"
     r"откры\w*|закры\w*|запуст\w*|пуск\w*|пода[юе]\w*|подач\w*|"
-    r"ход[яи]\w*|езди\w*|курсир\w*|перевоз\w*|"
-    r"списа\w*|подорож\w*|подешев\w*|зафиксир\w*|замеч\w*|наблюда\w*|"
+    r"ход[яи]\w*|курсир\w*|перевоз\w*|"
+    r"списа\w*|подорож\w*|подешев\w*|зафиксир\w*|наблюда\w*|"
     r"сниз\w*|повыс\w*|вырос\w*|раст[еу]\w*|увелич\w*|уменьш\w*|"
     r"выплат\w*|начисл\w*|получ\w*|направ\w*|"
     r"приним\w*|приня\w*|утверд\w*|ввел\w*|ввод\w*|измен\w*|отмен\w*|"
@@ -167,7 +189,7 @@ _CIVIC_EVENT_TOKENS_RE = re.compile(
     r"авари[яи]|прорыв\w*|ремонт\w*|отключени[ея]|перебо[яев]|восстановлени[ея]|возобновлени[ея]|"
     r"взрыв\w*|обстрел\w*|сирен\w*|пожар\w*|дым\w*|дтп|сбой\w*|неисправност\w*|проблем\w*|"
     r"напряжени[ея]|скач[ок]\w*|график\w*|подвоз\w*|задержк\w*|отмен\w*|рейс\w*|маршрут\w*|"
-    r"выплат\w*|пособи[ея]|запрет\w*|штраф\w*|при[её]м\w*|проверк\w*|"
+    r"выплат\w*|пособи[ея]|запрет\w*|штраф\w*|при[её]м\w*|проверк\w*|редкост\w*|"
     # Predicates / states
     r"нет|нету|есть|доступен|доступна|доступно|доступны|недоступен|недоступна|недоступно|недоступны|"
     r"отсутству\w*|восстановлен\w*|отключен\w*|перекрыт\w*|открыт\w*|закрыт\w*|завершен\w*|поврежден\w*|"
@@ -175,7 +197,7 @@ _CIVIC_EVENT_TOKENS_RE = re.compile(
     # General Russian verb morphology fallback (verbs ending in -лся, -лась, -лось, -лись, -ется, -ются, -ится, -ятся)
     r"[а-яё]{3,}(?:лся|лась|лось|лись|ется|ются|ится|ятся)|"
     # Quantitative facts / measurements
-    r"\d+\s*(?:в|вольт|квт|руб|рублей|р\.|грн|мбит|%|процент\w*|автобус\w*|рейс\w*|человек\w*|дом\w*|улиц\w*)"
+    r"\d+\s*(?:минут\w*|мин\w*|час\w*|суток|дня|дней|в|вольт|квт|руб|рублей|р\.|грн|мбит|%|процент\w*|автобус\w*|рейс\w*|человек\w*|дом\w*|улиц\w*)"
     r")\b",
     re.IGNORECASE,
 )
@@ -483,12 +505,16 @@ def validate_story_publication_eligibility(
     ] + [getattr(item, "text", "") or "" for item in non_question_items]
     key_facts = getattr(payload, "key_facts", ()) or ()
     reader_texts.extend(str(fact) for fact in key_facts if fact)
+    hl = getattr(payload, "headline", "") or ""
+    if hl and _CONCRETE_EVENT_SIGNAL_RE.search(hl) and has_meaningful_predicate(hl):
+        reader_texts.append(hl)
+
     # A generated headline is often only a noun phrase ("Контакт скорой
     # помощи", "День города") and must not make an otherwise unusable
     # directory/chat payload eligible.  Eligibility needs a grounded reader
     # fact with an event/state predicate; concrete safety signals such as a
-    # possible explosion are accepted even when the source uses colloquial
-    # wording that lacks a standard verb.
+    # possible explosion or concrete outage are accepted even when the source
+    # uses colloquial wording that lacks a standard verb.
     if not any(
         (_is_usable_fact_line(text) or _CONCRETE_EVENT_SIGNAL_RE.search(text))
         and (has_meaningful_predicate(text) or _CONCRETE_EVENT_SIGNAL_RE.search(text))

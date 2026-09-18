@@ -3060,3 +3060,25 @@ def test_topic_bundles_merge_exact_duplicate_unrecognized_facts():
 
     assert len(bundles) == 1
     assert bundles[0].story_ids == ("story:city-day-a", "story:city-day-b")
+
+
+def test_clean_fact_sentence_removes_chat_sources_and_artifacts():
+    from src.publication.digest_presentation import _clean_fact_sentence
+
+    raw_1 = "в чате Бердянска сообщают, что части домов свет дают по 4–5 дней без перерыва"
+    assert "в чате" not in _clean_fact_sentence(raw_1).lower()
+    assert _clean_fact_sentence(raw_1).startswith("Части домов свет дают")
+
+    raw_2 = "На 4-й линии свет есть, возможно не на всей улице (со слов «Лёшки»)."
+    cleaned_2 = _clean_fact_sentence(raw_2)
+    assert "со слов" not in cleaned_2
+    assert "лёшки" not in cleaned_2.lower()
+    assert cleaned_2 == "На 4-й линии свет есть, возможно не на всей улице."
+
+    raw_3 = ", свет на ул. Павлова сохранился"
+    assert not _clean_fact_sentence(raw_3).startswith(",")
+    assert _clean_fact_sentence(raw_3).startswith("Свет на ул. Павлова")
+
+    raw_4 = 'Жду звонка, не знаю, дали им свет или нет.").'
+    assert not _clean_fact_sentence(raw_4).endswith('").')
+    assert _clean_fact_sentence(raw_4).endswith(".")

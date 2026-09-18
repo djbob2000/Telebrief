@@ -2189,3 +2189,33 @@ def test_validate_model_allowed_accepts_deepseek_if_explicitly_in_env(monkeypatc
     monkeypatch.setenv("OPENROUTER_MODEL", "deepseek/deepseek-chat")
 
     validate_model_allowed("deepseek/deepseek-chat", force=True)
+
+
+@pytest.mark.asyncio
+async def test_provider_cascade_slot_timeout_failover(mock_logger):
+    """When a provider slot hangs longer than its slot_timeout, cascade fails over to next slot."""
+    slot1 = MagicMock()
+    slot1.request_timeout = 0.05
+
+    async def hanging_chat(*args, **kwargs):
+        await asyncio.sleep(1.0)
+        return "hanging response"
+
+    slot1.chat_completion = AsyncMock(side_effect=hanging_chat)
+
+    slot2 = MagicMock()
+    slot2.request_timeout = 2.0
+    slot2.chat_completion = AsyncMock(return_value="fast response")
+
+    cascade = ProviderCascade(
+        providers=[("slot-1", slot1), ("slot-2", slot2)],
+        logger=mock_logger,
+    )
+
+    result = await cascade.chat_completion(
+        messages=[{"role": "user", "content": "hello"}],
+        model="test-model",
+    )
+    assert result == "fast response"
+    assert slot1.chat_completion.called
+    assert slot2.chat_completion.called

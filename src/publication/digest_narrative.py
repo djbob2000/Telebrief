@@ -87,6 +87,81 @@ def _headline_from_digest_fact(fact: str) -> str:
     return cleaned.rstrip(". ")
 
 
+def _strip_redundant_headline_from_body(headline: str, body: str) -> str:
+    """Strip redundant verbatim repetition of headline from the beginning of body."""
+    norm_h = " ".join((headline or "").casefold().split()).strip(" .:,!-–—")
+    norm_b = (body or "").strip()
+    if not norm_h or not norm_b:
+        return norm_b
+
+    if norm_b.casefold().startswith(norm_h):
+        stripped = norm_b[len(norm_h) :].lstrip(" :.-–—")
+        if stripped:
+            return stripped[:1].upper() + stripped[1:]
+
+    att_m = re.match(
+        r"^(по\s+(?:сообщениям\s+жителей|словам\s+горожан|информации\s+коммунальных\s+служб)[,\s:]*)",
+        norm_b,
+        flags=re.IGNORECASE,
+    )
+    if att_m:
+        prefix = att_m.group(1)
+        rest = norm_b[len(prefix) :].strip()
+        if rest.casefold().startswith(norm_h):
+            stripped = rest[len(norm_h) :].lstrip(" :.-–—")
+            if stripped:
+                return f"{prefix}{stripped[:1].lower() + stripped[1:]}"
+
+    parts = re.split(r"([.!?]\s+)", norm_b, maxsplit=1)
+    if len(parts) >= 3:
+        first_sent = parts[0].strip(" .:,!-–—")
+        if first_sent.casefold() == norm_h:
+            remaining = parts[2].strip()
+            if remaining:
+                return remaining
+
+    return norm_b
+
+
+def _fix_redundant_headline_and_body(
+    headline: str,
+    body: str,
+    topic_label: str = "",
+) -> tuple[str, str]:
+    """Ensure headline and body do not trigger REDUNDANT_HEADLINE_IN_BODY."""
+    from src.publication.digest_quality_diagnostics import _check_redundant_headline_in_body
+
+    if not _check_redundant_headline_in_body(headline, body):
+        return headline, body
+
+    # 1. Try stripping headline from beginning of body if multiple sentences remain
+    stripped_b = _strip_redundant_headline_from_body(headline, body)
+    if (
+        stripped_b
+        and len(stripped_b) >= 20
+        and not _check_redundant_headline_in_body(headline, stripped_b)
+    ):
+        return headline, stripped_b
+
+    # 2. Differentiate the headline by framing it as a thematic topic header
+    lbl = (topic_label or "").strip()
+    if lbl and not _GENERIC_DIGEST_TOPIC_RE.fullmatch(lbl):
+        new_headline = f"{lbl}: ключевые данные"
+        if not _check_redundant_headline_in_body(new_headline, body):
+            return new_headline, body
+
+    # 3. Form headline from the first 2-3 words + ': текущий статус'
+    words = headline.split()
+    if len(words) >= 2:
+        short_topic = " ".join(words[:3]).rstrip(".,;:!—–- ")
+        new_headline = f"{short_topic}: текущий статус"
+        if not _check_redundant_headline_in_body(new_headline, body):
+            return new_headline, body
+
+    new_headline = "Городские события: оперативная информация"
+    return new_headline, body
+
+
 def _clean_str_list(items: Any) -> list[str]:
     """Recursively extract non-empty trimmed strings from single items, lists, sets, or tuples."""
     out: list[str] = []
@@ -346,11 +421,7 @@ class DigestEditorialItemDraft:
 
             # Strip redundant headline repetition at start of body
             if clean_headline:
-                h_norm = clean_headline.strip(".:; ")
-                if clean_body.startswith(h_norm):
-                    clean_body = clean_body[len(h_norm) :].lstrip(" :.-–—")
-                    if clean_body:
-                        clean_body = clean_body[:1].upper() + clean_body[1:]
+                clean_body = _strip_redundant_headline_from_body(clean_headline, clean_body)
 
             # Remove duplicate attribution in body if present multiple times
             att_matches = list(
@@ -377,7 +448,18 @@ class DigestEditorialItemDraft:
             clean_body = re.sub(
                 r"\bсмайлик(?:ами|и)?\b", "", clean_body, flags=re.IGNORECASE
             ).strip()
+            clean_body = re.sub(
+                r"\b(?:в\s+местных\s+чатах|в\s+чате(?:\s+[А-Яа-я]+)?|в\s+местном\s+чате|в\s+городском\s+чате)\b",
+                "в городе",
+                clean_body,
+                flags=re.IGNORECASE,
+            )
             clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
+
+        if clean_headline and clean_body:
+            clean_headline, clean_body = _fix_redundant_headline_and_body(
+                clean_headline, clean_body
+            )
 
         clean_claims: list[DigestClaimAtom] = []
         for c in claims:
@@ -1412,6 +1494,7 @@ def build_deterministic_digest_draft(
     for plan_block in narrative_plan.blocks:
         item_drafts: list[DigestEditorialItemDraft] = []
 
+        community_attribution_count = 0
         if getattr(plan_block, "topic_bundles", None):
             from src.publication.digest_presentation import (
                 _clean_fact_sentence,
@@ -1504,16 +1587,23 @@ def build_deterministic_digest_draft(
                         if _GENERIC_DIGEST_TOPIC_RE.fullmatch(bundle.topic_label.strip())
                         else f"{bundle.topic_label}: обзор сообщений"
                     )
+                headline = headline.lstrip(" ,.-:;—")
+                if headline and headline[0].islower():
+                    headline = headline[0].upper() + headline[1:]
                 if len(headline) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
                     headline = (
                         headline[:DIGEST_ITEM_HEADLINE_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ")
                     )
 
                 body_sentences: list[str] = []
-                for f in usable_facts[:2]:
+                current_len = 0
+                for f in usable_facts[:6]:
                     cf = _clean_fact_sentence(f)
                     if cf and cf not in body_sentences:
+                        if current_len + len(cf) + 2 > DIGEST_ITEM_BODY_MAX_CHARS:
+                            break
                         body_sentences.append(cf)
+                        current_len += len(cf) + 2
                 if not body_sentences:
                     body_sentences = [
                         f"{bundle.topic_label} в городе остаётся на контроле городских служб."
@@ -1528,12 +1618,31 @@ def build_deterministic_digest_draft(
                 )
                 first_sent = body_sentences[0]
                 if is_community:
-                    if not first_sent.casefold().startswith(
-                        ("по сообщениям", "жители сообщают", "по словам")
-                    ):
-                        first_sent = (
-                            f"По сообщениям жителей, {first_sent[:1].lower() + first_sent[1:]}"
+                    has_prior_attribution = (
+                        any(
+                            first_sent.casefold().startswith(p)
+                            for p in (
+                                "по сообщениям",
+                                "жители сообщают",
+                                "по словам",
+                                "как сообщают",
+                                "как отмечают",
+                                "по информации горожан",
+                            )
                         )
+                        or "сообщают" in first_sent.casefold()
+                        or "отмечают" in first_sent.casefold()
+                    )
+                    if not has_prior_attribution:
+                        attributions = [
+                            "По сообщениям жителей",
+                            "По словам горожан",
+                            "Жители сообщают",
+                            "Очевидцы отмечают",
+                        ]
+                        att = attributions[community_attribution_count % len(attributions)]
+                        first_sent = f"{att}, {first_sent[:1].lower() + first_sent[1:]}"
+                        community_attribution_count += 1
                 else:
                     if not first_sent.casefold().startswith(
                         ("по информации", "по данным", "согласно")
@@ -1611,6 +1720,10 @@ def build_deterministic_digest_draft(
                 if _DIGEST_ATTRIBUTION_RE.search(body_text):
                     headline = _strip_leading_digest_attribution(headline)
 
+                headline, body_text = _fix_redundant_headline_and_body(
+                    headline, body_text, bundle.topic_label
+                )
+
                 base_claim_text = _clean_fact_sentence(usable_facts[0])
                 base_claim_text = re.sub(r"\bиз-за\b", "при", base_claim_text, flags=re.IGNORECASE)
                 if find_unsupported_claims(
@@ -1649,9 +1762,18 @@ def build_deterministic_digest_draft(
                 for rf in bundle_req_facts:
                     rf_text = _clean_fact_sentence(rf.text or base_claim_text)
                     rf_text = re.sub(r"\bиз-за\b", "при", rf_text, flags=re.IGNORECASE)
-                    rf_sups = [s for s in rf.support_ids if s in chosen_sups] or list(
-                        rf.support_ids[:1]
-                    )
+                    allowed_fact_sups = set(rf.support_ids)
+                    for sid in rf.story_ids:
+                        pres = presentations_by_id.get(sid)
+                        if pres and pres.detail_support_ids:
+                            allowed_fact_sups.update(pres.detail_support_ids)
+                        if sid in support_map:
+                            allowed_fact_sups.add(sid)
+                    rf_sups = [s for s in rf.support_ids if s in chosen_sups]
+                    if not rf_sups:
+                        rf_sups = [s for s in allowed_fact_sups if s in chosen_sups]
+                    if not rf_sups:
+                        rf_sups = list(allowed_fact_sups)[:1] or list(rf.support_ids[:1])
                     for s in chosen_sups:
                         if s not in rf_sups and s in support_map:
                             rf_sups.append(s)
@@ -2159,7 +2281,7 @@ DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регио�
    - СТРОГО соблюдайте правила местной микрогеографии и предлогов, указанные в блоке топонимических правил редакции.
 5. Сохраняйте микродетали: точные улицы, микрорайоны, графики подачи, номера маршрутов, цены, важные решения жителей.
 6. Очистка от рекламы, справочных каталогов и чат-флуда: категорически исключайте коммерческие объявления, полные прайс-листы, телефоны и контактные списки, booking URL, перечни маршрутов, объявления об услугах и бытовой чат-флуд («все живые», пустые реплики). Текущий факт доступности услуги можно сохранить кратко, если он важен для городской жизни. Вопросы жителей не превращайте в утверждения и не оформляйте как новости о том, что жители спрашивают.
-7. Разнообразная естественная атрибуция: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО начинать каждое предложение с «По сообщениям жителей...». Используйте естественные и разнообразные обороты («По словам горожан...», «В местных чатах отмечают...», «Как рассказали жители...») либо пишите сразу от сути события.
+7. Разнообразная естественная атрибуция: КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО начинать каждое предложение с «По сообщениям жителей...». КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО упоминать источники («в чате Бердянска», «в местных чатах», «в каналах», «в соцсетях»)! Не вскрываем свои источники. Используйте естественные и разнообразные обороты («По словам горожан...», «Очевидцы отмечают...», «Жители сообщают...», «Как отмечают горожане...») либо пишите сразу от сути события.
 8. Ограничение длины и редакционный приоритет:
    - Итоговый текст дайджеста должен составлять от 2500 до 3700 знаков, если материала достаточно (жесткий лимит Telegram — 4096 символов).
    - Выводите рубрики со значимыми локальными темами. Приоритет — полезные события и практическая информация, а не механическое включение каждой карточки, точки, контакта или рекламного объявления.{toponym_rules}
@@ -3027,9 +3149,10 @@ class DigestNarrativeWriter:
                 "EDITORIAL AND LANGUAGE RULES:\n"
                 "- Write in professional Russian regional news style matching top Telegram channels.\n"
                 "- Never output bullet points ('•') or dashes ('—') at the beginning of items.\n"
-                "- For each topic bundle in 'topic_bundles', write EXACTLY ONE editorial item in 'items'.\n"
+                "- For each topic bundle in 'topic_bundles', write ONE cohesive editorial item in 'items' (or up to TWO if the bundle covers distinct locations or situations that are clearer as separate items).\n"
                 "- Set 'bundle_id' to the bundle's input 'bundle_id'.\n"
                 "- Set 'emoji' using the bundle's emoji.\n"
+                "- Headline and storytelling: headline must be a concise, informative theme header answering what occurred (e.g. 'Массовые сообщения о запахе газа в городе', 'Ремонт магистральных интернет-сетей', 'Обновление квитанций за коммунальные услуги'). Never write generic headlines like 'текущая обстановка' or 'обзор сообщений'.\n"
                 "- Craft rich, 2-3 sentence journalistic paragraphs following a cohesive storytelling structure:\n"
                 "  1. What occurred + concrete micro-locations/districts/streets (in parentheses if listing multiple).\n"
                 "  2. Current state, contrast, or cause (from 'states' or 'fact_ledger').\n"
@@ -3042,8 +3165,10 @@ class DigestNarrativeWriter:
                 '- Avoid direct quotes in quotation marks («...» or "..."). Always prefer smooth indirect speech and paraphrasing in Russian regional news style.\n'
                 "- Never invent resident advice, recommendations, or procedural tips (e.g. 'жителям советуют', 'рекомендуется') unless that specific instruction is explicitly stated in the source facts.\n"
                 "- Never output meta-commentary like 'Новых сообщений не поступало' or 'тихий день'. Focus strictly on concrete reported facts.\n"
-                "- Attribution: If 'epistemic_status' is 'сообщения жителей', attribute once naturally ('По сообщениям жителей', 'По словам горожан') in the body text. If 'официальная информация', attribute to official sources or state directly. Never place attribution in the headline.\n"
-                "- Filter out chat noise: do NOT mention chat polls, stickers, reactions, greetings, or off-topic conversational chatter.\n\n"
+                "- Natural, varied journalistic attribution: Do NOT repeat the phrase 'По сообщениям жителей' across items. Vary attribution naturally ('горожане отмечают', 'по словам жителей', 'в районе зафиксировали', 'жители сообщают') or state established civic events directly ('Провайдер приступил к работам', 'Вступил в силу запрет', 'Над городом фиксировались'). Never start consecutive items with the same attribution opening. Never place attribution in the headline.\n"
+                "- Filter out chat noise: do NOT mention chat polls, stickers, reactions, greetings, or off-topic conversational chatter.\n"
+                "- Never reveal collection mechanics or chat sources: do NOT write 'в чате', 'в Telegram-чате', 'в чате Бердянска', 'участники чата', 'со слов <имя>'. Synthesize into smooth civic news ('в городе', 'по словам горожан', 'жители сообщают', or state facts directly).\n"
+                "- Rich local detail: preserve concrete micro-locations (districts, streets, landmarks), contrasts between neighborhoods, specific durations, equipment, and practical resident consequences from 'fact_ledger'. Do not flatten concrete lived reality into vague generic summaries.\n\n"
                 f"{narrative_contract}\n\n"
                 "OUTPUT FORMAT REQUIREMENTS:\n"
                 "Return ONLY valid JSON strictly matching this schema:\n"
@@ -3368,11 +3493,9 @@ class DigestNarrativeWriter:
 
                                 # Strip redundant headline repetition at start of body
                                 if clean_headline:
-                                    h_norm = clean_headline.strip(".:; ")
-                                    if clean_body.startswith(h_norm):
-                                        clean_body = clean_body[len(h_norm) :].lstrip(" :.-–—")
-                                        if clean_body:
-                                            clean_body = clean_body[:1].upper() + clean_body[1:]
+                                    clean_body = _strip_redundant_headline_from_body(
+                                        clean_headline, clean_body
+                                    )
 
                                 # Remove duplicate attribution in body if present multiple times
                                 att_matches = list(
@@ -3401,11 +3524,25 @@ class DigestNarrativeWriter:
                                 clean_body = re.sub(
                                     r"\bсмайлик(?:ами|и)?\b", "", clean_body, flags=re.IGNORECASE
                                 ).strip()
+                                clean_body = re.sub(
+                                    r"\b(?:в\s+местных\s+чатах|в\s+чате(?:\s+[А-Яа-я]+)?|в\s+местном\s+чате|в\s+городском\s+чате)\b",
+                                    "в городе",
+                                    clean_body,
+                                    flags=re.IGNORECASE,
+                                )
                                 clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
-                            it["body"] = (
+                            clean_it_headline = it.get("headline", "")
+                            clean_it_body = (
                                 clean_body
                                 or f"{matched_tb.topic_label} в городе остаётся на контроле городских служб."
                             )
+                            clean_it_headline, clean_it_body = _fix_redundant_headline_and_body(
+                                clean_it_headline,
+                                clean_it_body,
+                                matched_tb.topic_label if matched_tb else "",
+                            )
+                            it["headline"] = clean_it_headline
+                            it["body"] = clean_it_body
 
                             # Allowed block supports
                             allowed_block_supports = set(plan_block.support_ids)
@@ -3451,12 +3588,18 @@ class DigestNarrativeWriter:
                                     continue
                                 rf_text = rf.text or base_claim_text
                                 rf_text = re.sub(r"\bиз-за\b", "при", rf_text, flags=re.IGNORECASE)
+                                allowed_fact_sups = set(rf.support_ids)
+                                story_sups_map = dict(plan_block.support_ids_by_story)
+                                for sid in rf.story_ids:
+                                    allowed_fact_sups.update(story_sups_map.get(sid, ()))
+                                rf_sups = [s for s in rf.support_ids if s in allowed_block_supports]
+                                if not (set(rf_sups) & allowed_fact_sups):
+                                    rf_sups = [
+                                        s for s in allowed_fact_sups if s in allowed_block_supports
+                                    ]
                                 rf_sids = list(
                                     set(rf.story_ids) & set(matched_tb.story_ids)
                                 ) or list(matched_tb.story_ids)
-                                rf_sups = [
-                                    s for s in rf.support_ids if s in allowed_block_supports
-                                ] or base_sups
                                 claims.append(
                                     {
                                         "text": rf_text,
@@ -3513,7 +3656,7 @@ class DigestNarrativeWriter:
                             norm_items.append(
                                 {
                                     "headline": f"{tb.topic_label}: текущая обстановка",
-                                    "body": f"По информации городских служб, {clean_text[:1].lower() + clean_text[1:]}",
+                                    "body": f"{clean_text[:1].upper() + clean_text[1:]}",
                                     "emoji": tb.emoji,
                                     "covered_story_ids": list(tb.story_ids),
                                     "cited_support_ids": sups,

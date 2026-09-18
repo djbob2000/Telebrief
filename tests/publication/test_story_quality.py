@@ -459,3 +459,41 @@ def test_has_meaningful_predicate_rejects_meta_message_headline():
         is False
     )
     assert has_meaningful_predicate("Внизу, район 16 школы") is False
+
+
+def test_validate_story_publication_eligibility_accepts_concrete_outages_and_brief_supplies():
+    from src.domain.event_payload import EventPayload, EvidenceItemPayload
+
+    cases = (
+        (
+            "В Бердянске дали свет на 2 минуты",
+            "Житель сообщает, что свет в Бердянске дали всего на 2 минуты.",
+            "вот вам 2 минуты света, не обляпайтесь",
+        ),
+        (
+            "В Бердянске после кратковременной подачи снова отключили свет",
+            "Жители сообщают, что после подачи электричества на 3 минуты в районе Морозово свет снова отключили.",
+            "После того как дали на 3 минуты на Морозова, всем выключили?",
+        ),
+        (
+            "На Севастопольской в Бердянске не было света",
+            "Житель сообщает, что на улице Севастопольской в Бердянске свет не включали даже на 5 минут.",
+            "На Севастопольской не включали даже на 5 минут.",
+        ),
+    )
+
+    for headline, summary, evidence_text in cases:
+        payload = EventPayload(
+            headline=headline,
+            digest_summary=summary,
+            evidence_items=(
+                EvidenceItemPayload(
+                    text=evidence_text,
+                    kind="community_report",
+                    publication_use="PUBLISH",
+                    source_fragment_ids=(10,),
+                ),
+            ),
+        )
+        is_valid, reason = validate_story_publication_eligibility(payload)
+        assert is_valid is True, f"Failed for {headline}: {reason}"

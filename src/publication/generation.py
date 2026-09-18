@@ -320,7 +320,11 @@ class PublicationGenerationService:
 
                     max_cards = getattr(pub_edit, "digest_narrative_max_cards_per_block", 6)
                     max_tokens = getattr(pub_edit, "digest_narrative_max_output_tokens", 4096)
-                    narrative_timeout = getattr(pub_edit, "digest_narrative_timeout_seconds", 120)
+                    narrative_timeout = (
+                        getattr(pub_edit, "digest_narrative_timeout_seconds", None)
+                        or getattr(self.config.settings, "digest_narrative_timeout_seconds", None)
+                        or 600
+                    )
                     plan = plan_digest_narrative_blocks(
                         cards=detail_cards,
                         evidence=evidence_dict,
