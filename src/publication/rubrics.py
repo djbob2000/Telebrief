@@ -140,6 +140,7 @@ class DigestRubricClassifier:
         for card in cards:
             c_cat = (card.category or "").strip().lower()
             matched_rid = None
+            matched_method = "legacy_hint"
             c_text = f"{card.topic} {card.summary}"
 
             # Safety and strike events take priority over vehicle/transport mentions
@@ -153,12 +154,23 @@ class DigestRubricClassifier:
                         matched_rid = syn
                         break
 
+            # If category is missing or invalid, try deterministic taxonomy before embeddings
+            if not matched_rid:
+                fams = detect_service_families(c_text)
+                rubric_candidates = {
+                    map_family_to_rubric(f) for f in fams if map_family_to_rubric(f) is not None
+                }
+                valid_candidates = {r for r in rubric_candidates if r in known_rubrics_by_id}
+                if len(valid_candidates) == 1:
+                    matched_rid = next(iter(valid_candidates))
+                    matched_method = "family_fallback"
+
             if matched_rid:
                 assignments_by_card_id[card.id] = RubricAssignment(
                     story_id=card.id,
                     rubric_id=matched_rid,
                     score=1.0,
-                    method="legacy_hint",
+                    method=matched_method,
                 )
             else:
                 unresolved_cards.append(card)
