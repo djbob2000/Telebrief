@@ -497,3 +497,43 @@ def test_validate_story_publication_eligibility_accepts_concrete_outages_and_bri
         )
         is_valid, reason = validate_story_publication_eligibility(payload)
         assert is_valid is True, f"Failed for {headline}: {reason}"
+
+
+def test_validate_story_publication_eligibility_rejects_voting_gossip_and_chat_sarcasm():
+    from src.domain.event_payload import EventPayload, EvidenceItemPayload
+
+    payload = EventPayload(
+        headline="Голосование в городе идёт уже десятый день и продолжится",
+        digest_summary="Голосование продолжается уже 10 дней, кому надо уже проголосовали.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Они уже идут у нас 10 дней, и завтра и послезавтра идут, кому надо уже проголосовали и за кого надо, хотите можете сходить, но я не Ванга, но могу уже сказать результат🤓",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(10,),
+            ),
+        ),
+    )
+    is_valid, reason = validate_story_publication_eligibility(payload)
+    assert is_valid is False
+    assert reason == "non_editorial_payload"
+
+
+def test_validate_story_publication_eligibility_rejects_external_city_events():
+    from src.domain.event_payload import EventPayload, EvidenceItemPayload
+
+    payload = EventPayload(
+        headline="Вечером прогремели взрывы, город атакован авиабомбой ФАБ-250",
+        digest_summary="Вечером около 22:40 прогремели взрывы. Ранее в тот же вечер российский FPV-дрон атаковал автобус в Запорожье.",
+        evidence_items=(
+            EvidenceItemPayload(
+                text="Вибухи в місті пролунали близько 22:40. Раніше цього ж вечора російський FPV-дрон атакував пасажирський автобус у Запоріжжі.",
+                kind="community_report",
+                publication_use="PUBLISH",
+                source_fragment_ids=(10,),
+            ),
+        ),
+    )
+    is_valid, reason = validate_story_publication_eligibility(payload, edition_slug="berdyansk")
+    assert is_valid is False
+    assert reason == "external_city_without_focus_impact"

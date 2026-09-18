@@ -31,6 +31,7 @@ from src.processing.edition_scope import (
     EditionScopeClass,
     broad_region_without_focus_impact,
     build_scope_contract,
+    external_city_without_focus_impact,
     external_relocated_idp_event,
 )
 from src.processing.hard_exclusion import evaluate_story_hard_exclusion
@@ -1105,6 +1106,16 @@ class StoryTriageService:
                     scope_confidence = max(scope_confidence, 0.95)
                     scope_reason = (
                         "Broad regional summary without explicit configured focus-area consequence"
+                    )
+                elif external_city_without_focus_impact(
+                    basis_texts=(*basis_texts, *story_all_texts),
+                    scope=scope_config,
+                    geo_context=geo_context,
+                ):
+                    scope = "OUT_OF_SCOPE"
+                    scope_confidence = max(scope_confidence, 0.95)
+                    scope_reason = (
+                        "External city event without explicit configured focus-area consequence"
                     )
                 elif external_relocated_idp_event(basis_texts=(*basis_texts, *story_all_texts)):
                     scope = "OUT_OF_SCOPE"

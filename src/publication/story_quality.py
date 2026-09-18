@@ -183,7 +183,9 @@ _NON_EDITORIAL_PAYLOAD_RE = re.compile(
     # Contextless fragments without a named subject
     r"(?:служба\s+работает\s+в\s+(?:нынешнем|текущем)\s+режиме\s+с\s+\d+|работает\s+в\s+таком\s+режиме\s+с\s+\d+)|"
     # Relocated Ukrainian administration and educational programs outside the city
-    r"(?:бердянск\w*\s+гимнази\w*\s+гармони\w*|олимпийск\w*\s+урок|шлях\s+до\s+олімпу|министерств\w*\s+культур\w*\s+украин\w*|тысячевесн\w*|тисячовесн\w*))\b",
+    r"(?:бердянск\w*\s+гимнази\w*\s+гармони\w*|олимпийск\w*\s+урок|шлях\s+до\s+олімпу|министерств\w*\s+культур\w*\s+украин\w*|тысячевесн\w*|тисячовесн\w*)|"
+    # Informal voting gossip, chat sarcasm, and non-verified election chatter
+    r"(?:кому\s+надо\s+(?:уже\s+)?проголосовал|я\s+не\s+ванга|смысл\s+в\s+голосовани|уже\s+идут\s+у\s+нас\s+\d+\s+дней|голосовани\w*[^.!?]{0,60}(?:десятый\s+день|\d+\s+дней|результат\b)|за\s+кого\s+надо\s+(?:уже\s+)?проголосовал|выборы\s+в\s+госдуму))\b",
     re.IGNORECASE,
 )
 
@@ -319,7 +321,7 @@ def _is_question_without_event(text: str) -> bool:
 
 
 def validate_story_publication_eligibility(
-    payload: Any, fallback_text: str = ""
+    payload: Any, fallback_text: str = "", edition_slug: str = "berdyansk"
 ) -> tuple[bool, str | None]:
     """Validate whether an event payload is eligible to produce a publishable story card."""
     if payload is None:
@@ -375,6 +377,25 @@ def validate_story_publication_eligibility(
 
     if _NON_EDITORIAL_PAYLOAD_RE.search(all_story_text):
         return False, "non_editorial_payload"
+
+    # Rule 2b: Check for external city events without focus anchors
+    from src.domain.edition_geography import resolve_edition_geography
+
+    geo = resolve_edition_geography(edition_slug or "berdyansk")
+    norm_story = all_story_text.replace("ё", "е")
+    focus_set = {
+        " ".join(a.lower().replace("ё", "е").split())
+        for a in (*geo.target_locations, *geo.district_locations)
+        if a
+    }
+    out_set = {
+        " ".join(a.lower().replace("ё", "е").split())
+        for a in geo.out_of_scope_locations
+        if a and " ".join(a.lower().replace("ё", "е").split()) not in focus_set
+    }
+    has_focus = any(f in norm_story for f in focus_set if f)
+    if not has_focus and any(o in norm_story for o in out_set if o):
+        return False, "external_city_without_focus_impact"
 
     # A persisted Event-First revision may contain a fluent-looking headline
     # for a pure chat meta-line ("a resident mentions a district", "the chat

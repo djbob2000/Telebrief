@@ -23,6 +23,18 @@ _DEPENDENT_PREFIX_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_ANAPHORIC_CONTINUATION_PATTERN = re.compile(
+    r"^(?:[💥⚡️❗️❗⚠️📍\s]*)(?:"
+    r"(?:росіяни|російські\s+військові|окупанти|війська\s+рф|вс\s+рф)\s+(?:скинули|вдарили|атакували|обстріляли)\s+(?:на\s+|по\s+)?(?:місто|місту|город|городу)|"
+    r"(?:скинули|вдарили|атакували|обстріляли)\s+(?:на\s+|по\s+)?(?:місто|місту|город|городу)|"
+    r"(?:на|в|у|по)\s+(?:місто|місті|місту|город|городе|городу)\b|"
+    r"(?:внаслідок|в\s+результаті|в\s+итоге)\s+(?:цього|обстрілу|удару|атаки|влучання|прильоту|этого|обстрела|удара|атаки|попадания|прилета)|"
+    r"(?:постраждалі|постраждалих|поранені|пострадавшие|пострадавших|раненые)\b|"
+    r"(?:ударом|влучанням|прильотом|попаданием|прилетом)\b"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def normalize_fragment_text(text: str) -> str:
     """Normalize text content for deterministic hashing and deduplication."""
@@ -48,8 +60,14 @@ def is_noise_or_classified(text: str) -> tuple[bool, str | None]:
 
 
 def is_dependent_continuation(text: str) -> bool:
-    """Return True if text begins with an operational/dependent prefix like 'Режим работы:' or 'Адрес:'."""
-    return bool(_DEPENDENT_PREFIX_PATTERN.search(text.strip()))
+    """Return True if text begins with an operational/dependent prefix like 'Режим работы:'
+    or an anaphoric continuation referring back to the previous paragraph (e.g. 'на місто', 'внаслідок обстрілу').
+    """
+    stripped = text.strip()
+    return bool(
+        _DEPENDENT_PREFIX_PATTERN.search(stripped)
+        or _ANAPHORIC_CONTINUATION_PATTERN.search(stripped)
+    )
 
 
 def extract_parent_anchor(text: str, max_len: int = 40) -> str:

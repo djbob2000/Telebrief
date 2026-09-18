@@ -11,6 +11,7 @@ import psycopg
 
 from src.config_loader import Config, EditionScopeConfig
 from src.domain.edition_geography import (
+    _COMMON_OUT_OF_SCOPE_LOCATIONS,
     EditionGeographyContext,
     resolve_edition_geography,
 )
@@ -235,3 +236,40 @@ def external_relocated_idp_event(
         return True
 
     return False
+
+
+def external_city_without_focus_impact(
+    *,
+    basis_texts: tuple[str, ...] | list[str],
+    scope: EditionScopeConfig,
+    geo_context: EditionGeographyContext | None,
+) -> bool:
+    """Detect if basis fragments mention an explicit out-of-scope city and zero focus anchors."""
+    if not basis_texts:
+        return False
+
+    focus_anchors: set[str] = set()
+    focus_anchors.update(scope.focus_places)
+    if geo_context is not None:
+        focus_anchors.update(geo_context.target_locations)
+        focus_anchors.update(geo_context.district_locations)
+
+    out_of_scope_locations: set[str] = set()
+    if geo_context is not None:
+        out_of_scope_locations.update(geo_context.out_of_scope_locations)
+    else:
+        out_of_scope_locations.update(_COMMON_OUT_OF_SCOPE_LOCATIONS)
+
+    norm_focus = {_norm_geo_text(a) for a in focus_anchors if a}
+    filtered_out_of_scope = {
+        loc for loc in out_of_scope_locations if loc and _norm_geo_text(loc) not in norm_focus
+    }
+
+    has_out_of_scope = False
+    for text in basis_texts:
+        if _contains_any_anchor(text, focus_anchors):
+            return False
+        if _contains_any_anchor(text, filtered_out_of_scope):
+            has_out_of_scope = True
+
+    return has_out_of_scope

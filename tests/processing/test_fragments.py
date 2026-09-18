@@ -213,3 +213,18 @@ def test_dependent_continuation_anchor_prefix_when_exceeding_max_chars():
         "Городская больница" in f.text_content and "Режим работы:" in f.text_content
         for f in fragments
     )
+
+
+@pytest.mark.unit
+def test_anaphoric_continuation_packing_preserves_location_context():
+    """Paragraphs continuing with anaphora ('Росіяни скинули на місто...') must pack into parent paragraph."""
+    text = (
+        "У Слов’янську внаслідок ворожого обстрілу постраждали троє цивільних, серед них дитина.\n\n"
+        "Росіяни скинули на місто авіабомбу ФАБ-250 з УМПК близько 16:40. Влучання зафіксоване в районі житлової забудови."
+    )
+    fragments = split_into_fragments(text, max_chars=1200)
+
+    # Must be packed into 1 fragment containing both Sloviansk and the FAB-250 strike
+    assert len(fragments) == 1
+    assert "Слов’янську" in fragments[0].text_content
+    assert "ФАБ-250" in fragments[0].text_content
