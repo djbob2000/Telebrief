@@ -127,11 +127,25 @@ class DigestRubricClassifier:
             "banking": ("civic_services", "economy"),
         }
 
+        _SAFETY_PRIORITY_RE = re.compile(
+            r"\b(?:"
+            r"взрыв\w*|обстрел\w*|пво\b|бпла\b|дрон\w*|прил[её]т\w*|атак\w*|"
+            r"бомб\w*|авиабомб\w*|фаб\b|каб\b|ракети?\w*|мин[аы]\b|"
+            r"пожар\w*|возгоран\w*|пострадавш\w*|ранен\w*|погиб\w*|контузи\w*"
+            r")\b",
+            re.IGNORECASE,
+        )
+
         # 1. Compatibility hint check: matching legacy category without embedding
         for card in cards:
             c_cat = (card.category or "").strip().lower()
             matched_rid = None
-            if c_cat in known_rubrics_by_id:
+            c_text = f"{card.topic} {card.summary}"
+
+            # Safety and strike events take priority over vehicle/transport mentions
+            if _SAFETY_PRIORITY_RE.search(c_text) and "safety" in known_rubrics_by_id:
+                matched_rid = "safety"
+            elif c_cat in known_rubrics_by_id:
                 matched_rid = c_cat
             elif c_cat in _CATEGORY_SYNONYMS:
                 for syn in _CATEGORY_SYNONYMS[c_cat]:

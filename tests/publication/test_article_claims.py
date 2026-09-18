@@ -187,3 +187,16 @@ def test_time_interval_zero_minute_normalization() -> None:
     draft = "Вода подаётся по графику с 17:00 до 21:00."
     unsupported = find_unsupported_claims(draft, support)
     assert not any(c.kind == "time" for c in unsupported)
+
+
+@pytest.mark.unit
+def test_number_claim_across_all_draft_supports_and_boundaries() -> None:
+    """Number claim like '50' matches when present in any draft support or within time '14:50'."""
+    support = ["Свет дали в 14:50, напряжение нестабильно."]
+    draft = "Свет дали около 50 минут назад."
+    unsupported = find_unsupported_claims(
+        draft,
+        ["Другой текст"],
+        all_known_draft_supports=support,
+    )
+    assert not any(c.kind == "number" for c in unsupported)

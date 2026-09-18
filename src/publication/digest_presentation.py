@@ -1147,24 +1147,7 @@ def _canonical_topic_family(card: Any, rubric_id: str = "") -> tuple[str, str, s
     } & tokens:
         return ("connectivity", "Связь и интернет", "🌐")
 
-    # 6. Transport & Roads
-    if {
-        "transport",
-        "транспорт",
-        "автобус",
-        "автобусы",
-        "маршрутка",
-        "маршрут",
-        "перевозки",
-        "дорога",
-        "дороги",
-        "чонгар",
-        "перекрытие",
-        "трасса",
-    } & tokens:
-        return ("transport", "Транспорт и дороги", "🚌")
-
-    # 7. Safety / Strikes / Air Defense
+    # 6. Safety / Strikes / Air Defense
     if {
         "взрыв",
         "взрывы",
@@ -1188,12 +1171,39 @@ def _canonical_topic_family(card: Any, rubric_id: str = "") -> tuple[str, str, s
         "ракета",
         "мина",
         "снаряд",
+        "атака",
+        "атаковал",
+        "атаковали",
+        "пострадали",
+        "ранены",
+        "погибли",
+        "авиаудар",
+        "удар",
+        "осколочн",
+        "контузи",
     } & tokens:
         return ("strikes", "Безопасность и происшествия", "💥")
 
-    # 8. Fires / Emergency
+    # 7. Fires / Emergency
     if {"пожар", "пожары", "возгорание", "мчс", "спасатели"} & tokens:
         return ("fire", "Пожары и происшествия", "🔥")
+
+    # 8. Transport & Roads
+    if {
+        "transport",
+        "транспорт",
+        "автобус",
+        "автобусы",
+        "маршрутка",
+        "маршрут",
+        "перевозки",
+        "дорога",
+        "дороги",
+        "чонгар",
+        "перекрытие",
+        "трасса",
+    } & tokens:
+        return ("transport", "Транспорт и дороги", "🚌")
 
     # 9. Civic services & Documents
     if {
@@ -1434,6 +1444,10 @@ def _is_fact_noise_sentence(text: str) -> bool:
         return True
     if _FACT_DIRECTORY_OR_PROMO_RE.search(t_l):
         return True
+    from src.publication.story_quality import _NON_EDITORIAL_PAYLOAD_RE
+
+    if _NON_EDITORIAL_PAYLOAD_RE.search(t_l):
+        return True
     if any(
         marker in t_l
         for marker in (
@@ -1447,6 +1461,20 @@ def _is_fact_noise_sentence(text: str) -> bool:
             "точнее не работает вообще",
             "всем мира",
             "город спит и пусть",
+            "ледян",
+            "пальцы рук онемели",
+            "издевательств",
+            "ваши улицы не касается",
+            "вечность будут обрезать",
+            "плохиши пилили",
+            "тишина полнейшая",
+            "болгаркой и дрелью",
+            "вилка горит",
+            "слабый для бойлера",
+            "кто то в курсе",
+            "кто-то в курсе",
+            "непонятно как они распределяют",
+            "суток не прошло",
         )
     ):
         return True
@@ -1515,6 +1543,7 @@ def _clean_fact_sentence(text: str) -> str:
     # Clean leading punctuation and trailing quote/parenthesis artifacts
     t = t.lstrip(" ,.-:;—")
     t = re.sub(r"[\"')\]]+\.?$", "", t).strip()
+    t = re.sub(r"[\U00010000-\U0010ffff]", "", t).strip()
     if t:
         t = t[:1].upper() + t[1:]
     return t.rstrip(". ") + "."
@@ -1530,6 +1559,11 @@ def _is_usable_fact_line(text: str) -> bool:
     if len(words) < 3:
         return False
     t_l = t.casefold()
+
+    from src.publication.story_quality import _NON_EDITORIAL_PAYLOAD_RE
+
+    if _NON_EDITORIAL_PAYLOAD_RE.search(t_l):
+        return False
 
     # Short chat reactions can acquire a predicate during Event-First
     # analysis, but they are not useful city-life facts on their own.
@@ -1825,20 +1859,77 @@ def build_thematic_topic_bundles(
             tk, _, _ = _canonical_topic_family(c, rid)
             family_counts[tk] = family_counts.get(tk, 0) + 1
 
+        other_tokens_by_group: dict[str, set[str]] = {}
         for c in r_cards:
             t_key, _, _ = _canonical_topic_family(c, rid)
             # A rubric fallback such as ``other_general`` is only a label, not
-            # evidence that two stories describe the same subject.  Merging all
-            # such cards creates mixed headlines/bodies (and makes the fallback
-            # print unrelated chat fragments together).  Keep unclassified
-            # topics separate until a stronger deterministic family is known.
+            # evidence that two stories describe the same subject. However, cards
+            # discussing the same specific event or subject (e.g. clip/song) should
+            # merge into one bundle rather than cluttering the digest with duplicates.
             if t_key == "other_general":
-                raw_fingerprint = (
-                    _clean_fact_sentence(getattr(c, "summary", "") or "")
-                    or _clean_fact_sentence(getattr(c, "topic", "") or "")
-                ).casefold()
-                fingerprint = re.sub(r"\W+", "_", raw_fingerprint).strip("_")[:96]
-                group_key = f"{t_key}:fact:{fingerprint}" if fingerprint else f"{t_key}:{c.id}"
+                c_text = f"{getattr(c, 'topic', '')} {getattr(c, 'summary', '')}".casefold()
+                _stop_words = {
+                    "в",
+                    "на",
+                    "с",
+                    "по",
+                    "о",
+                    "об",
+                    "от",
+                    "до",
+                    "из",
+                    "к",
+                    "у",
+                    "за",
+                    "что",
+                    "это",
+                    "как",
+                    "для",
+                    "так",
+                    "же",
+                    "не",
+                    "было",
+                    "был",
+                    "были",
+                    "есть",
+                    "будет",
+                    "сообщают",
+                    "сообщает",
+                    "жители",
+                    "житель",
+                    "горожане",
+                    "бердянск",
+                    "бердянске",
+                    "бердянска",
+                    "городе",
+                    "город",
+                    "также",
+                    "только",
+                    "очень",
+                    "своем",
+                    "своих",
+                    "время",
+                    "словам",
+                    "данным",
+                }
+                c_tokens = set(re.findall(r"[a-zа-яёіїєґ0-9]{3,}", c_text)) - _stop_words
+                matched_group_key = None
+                for g_key, g_tokens in other_tokens_by_group.items():
+                    inter = c_tokens & g_tokens
+                    if len(inter) >= 3 or (len(inter) >= 2 and len(c_tokens) <= 4):
+                        matched_group_key = g_key
+                        g_tokens.update(c_tokens)
+                        break
+                if matched_group_key:
+                    group_key = matched_group_key
+                else:
+                    raw_fingerprint = (
+                        _clean_fact_sentence(getattr(c, "summary", "") or "")
+                        or _clean_fact_sentence(getattr(c, "topic", "") or "")
+                    ).casefold()
+                    fingerprint = re.sub(r"\W+", "_", raw_fingerprint).strip("_")[:96]
+                    group_key = f"{t_key}:fact:{fingerprint}" if fingerprint else f"{t_key}:{c.id}"
+                    other_tokens_by_group[group_key] = set(c_tokens)
             else:
                 group_key = t_key
             groups_by_key.setdefault(group_key, []).append(c)

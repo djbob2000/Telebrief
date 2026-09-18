@@ -822,12 +822,36 @@ def find_unsupported_claims(
         elif claim.kind == "number":
             # Check if numeric literal or range is in support
             # E.g. "10-12" or "1.5" or "500"
-            if norm not in combined_support_norm:
+            found_number = (
+                norm in combined_support_norm
+                or any(norm in normalize_support_text(st) for st in norm_supports)
+                or any(norm in normalize_support_text(st) for st in all_known_draft_supports)
+                or bool(
+                    allowed_context_terms
+                    and any(norm in act.lower() for act in allowed_context_terms)
+                )
+            )
+            if not found_number:
+                all_sources = (
+                    [combined_support_norm]
+                    + [normalize_support_text(st) for st in norm_supports]
+                    + [normalize_support_text(st) for st in all_known_draft_supports]
+                )
+                num_pattern = re.compile(rf"(?:^|\D){re.escape(norm)}(?:\D|$)")
+                if any(num_pattern.search(src) for src in all_sources):
+                    found_number = True
+
+            if not found_number:
                 range_match = re.match(r"^(\d+)[-–—](\d+)$", norm)
                 if range_match:
                     n1, n2 = range_match.group(1), range_match.group(2)
-                    if re.search(rf"\b{n1}\b", combined_support_norm) and re.search(
-                        rf"\b{n2}\b", combined_support_norm
+                    all_sources = (
+                        [combined_support_norm]
+                        + [normalize_support_text(st) for st in norm_supports]
+                        + [normalize_support_text(st) for st in all_known_draft_supports]
+                    )
+                    if any(re.search(rf"\b{n1}\b", src) for src in all_sources) and any(
+                        re.search(rf"\b{n2}\b", src) for src in all_sources
                     ):
                         continue
                 unsupported.append(claim)
