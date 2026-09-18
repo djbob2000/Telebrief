@@ -380,21 +380,16 @@ def validate_story_publication_eligibility(
 
     # Rule 2b: Check for external city events without focus anchors
     from src.domain.edition_geography import resolve_edition_geography
+    from src.processing.edition_scope import _contains_any_anchor, _norm_geo_text
 
     geo = resolve_edition_geography(edition_slug or "berdyansk")
-    norm_story = all_story_text.replace("ё", "е")
-    focus_set = {
-        " ".join(a.lower().replace("ё", "е").split())
-        for a in (*geo.target_locations, *geo.district_locations)
-        if a
-    }
-    out_set = {
-        " ".join(a.lower().replace("ё", "е").split())
-        for a in geo.out_of_scope_locations
-        if a and " ".join(a.lower().replace("ё", "е").split()) not in focus_set
-    }
-    has_focus = any(f in norm_story for f in focus_set if f)
-    if not has_focus and any(o in norm_story for o in out_set if o):
+    focus_anchors = (*geo.target_locations, *geo.district_locations)
+    norm_focus = {_norm_geo_text(a) for a in focus_anchors if a}
+    out_of_scope = tuple(
+        loc for loc in geo.out_of_scope_locations if loc and _norm_geo_text(loc) not in norm_focus
+    )
+    has_focus = _contains_any_anchor(all_story_text, focus_anchors)
+    if not has_focus and _contains_any_anchor(all_story_text, out_of_scope):
         return False, "external_city_without_focus_impact"
 
     # A persisted Event-First revision may contain a fluent-looking headline

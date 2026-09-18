@@ -98,14 +98,26 @@ Focus Places: {focus_list}{notes_block}{geo_block}"""
 
 
 def _norm_geo_text(value: str) -> str:
-    return " ".join(value.casefold().replace("ё", "е").split())
+    return " ".join(value.casefold().replace("ё", "е").replace("’", "'").replace("`", "'").split())
 
 
-def _contains_any_anchor(text: str, anchors: set[str]) -> bool:
+def _geo_stem(name: str) -> str:
+    norm = _norm_geo_text(name)
+    for suffix in ("ськ", "ск", "е", "я", "а", "у", "і", "и", "о", "ь"):
+        if norm.endswith(suffix) and len(norm) - len(suffix) >= 4:
+            norm = norm[: -len(suffix)]
+            break
+    return norm.rstrip("ь'")
+
+
+def _contains_any_anchor(text: str, anchors: set[str] | tuple[str, ...] | list[str]) -> bool:
     norm_text = _norm_geo_text(text)
     for anchor in anchors:
         if not anchor:
             continue
+        stem = _geo_stem(anchor)
+        if stem and stem in norm_text:
+            return True
         norm_anchor = _norm_geo_text(anchor)
         if norm_anchor and norm_anchor in norm_text:
             return True
