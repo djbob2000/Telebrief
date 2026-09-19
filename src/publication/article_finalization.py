@@ -672,6 +672,24 @@ class ArticleFinalizer:
                     candidate_title = re.sub(r"\[.*?\]|\b\d+\b", "", writer_draft.title).strip()
                 if candidate_title:
                     candidate_title = re.sub(r"\s+", " ", candidate_title).strip(" -:;,.")
+                    from src.publication.article_validator import _CONTINUATION_RE
+
+                    if not _CONTINUATION_RE.search(candidate_title):
+                        clean_sups = tuple(
+                            sid
+                            for sid in candidate_sups
+                            if sid in context.support_by_id
+                            and context.support_by_id[sid].publication_use == "PUBLISH"
+                            and context.support_by_id[sid].temporal_role == "CURRENT_WINDOW"
+                        )
+                        if not clean_sups:
+                            clean_sups = tuple(
+                                s.support_id
+                                for s in context.supports
+                                if s.publication_use == "PUBLISH"
+                                and s.temporal_role == "CURRENT_WINDOW"
+                            )[:2]
+                        candidate_sups = clean_sups or candidate_sups
                     repaired_draft = StructuredArticleDraft(
                         title=candidate_title,
                         title_support_ids=candidate_sups,

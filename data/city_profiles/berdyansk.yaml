@@ -346,6 +346,19 @@ stable_context:
       - Универмаг
       - Илэар
       type: commercial
+    - id: supermarket_paket
+      name: супермаркет «Пакет»
+      aliases:
+      - Пакет
+      - супермаркет Пакет
+      - супермаркет «Пакет»
+      - магазин Пакет
+      - магазин «Пакет»
+      - в Пакете
+      - «Пакет»
+      type: commercial
+      area_hint: nahirna
+      description: "Сеть продуктовых супермаркетов в Бердянске (филиалы: ул. Мичурина, 85А на Горе; ул. Софиевская / Димитрова, 40; ул. Шевченко, 2А). Популярный ориентир для жителей при перекличках, покупках и снятии наличных в банкоматах."
     - id: park_schmidt
       name: Парк Шмидта
       type: park
@@ -3559,7 +3572,16 @@ stable_context:
       - entity_id: street:Мічуріна
         canonical_name: Мічуріна
         object_type: street
-        aliases: []
+        aliases:
+        - text: Мичурина
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
+        - text: улица Мичурина
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
+        - text: вул. Мічуріна
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
         area_memberships:
         - area_set: municipal_neighborhood_committees_2021
           area_id: koloniia_makorty

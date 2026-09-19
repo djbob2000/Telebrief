@@ -513,16 +513,43 @@ class ArticleEditor:
             raw_t = patches["TITLE"].strip()
             if raw_t.upper() not in ("", "[DELETE]", "DELETE", "NONE", "NULL", "[УДАЛИТЬ]"):
                 title = _normalize_homoglyphs(_strip_internal_handles(raw_t))
+                if context:
+                    regrounded = _reground_support_ids(title, context)
+                    if regrounded:
+                        title_sups = regrounded
+                    else:
+                        title_sups = (
+                            tuple(
+                                sid
+                                for sid in title_sups
+                                if sid in context.support_by_id
+                                and context.support_by_id[sid].publication_use == "PUBLISH"
+                                and context.support_by_id[sid].temporal_role == "CURRENT_WINDOW"
+                            )
+                            or title_sups
+                        )
                 title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_sups),)
 
         lead = draft.lead
         lead_claims = draft.lead_claims
+        lead_sups = draft.lead_support_ids
         if "LEAD" in patches:
             raw_l = patches["LEAD"]
             lead = _normalize_homoglyphs(_strip_internal_handles(raw_l))
+            lead_sups = _reground_support_ids(lead, context) if context else draft.lead_support_ids
+            if not lead_sups and context:
+                lead_sups = (
+                    tuple(
+                        sid
+                        for sid in draft.lead_support_ids
+                        if sid in context.support_by_id
+                        and context.support_by_id[sid].publication_use == "PUBLISH"
+                    )
+                    or draft.lead_support_ids
+                )
             lead_sentences = _split_sentences_safe(lead)
             lead_claims = tuple(
-                ArticleClaimAtom(text=s, cited_support_ids=draft.lead_support_ids)
+                ArticleClaimAtom(text=s, cited_support_ids=lead_sups)
                 for s in (lead_sentences or [lead])
             )
 
@@ -532,11 +559,15 @@ class ArticleEditor:
             h_id = f"H{s_idx:03d}"
             heading = sec.heading
             heading_claims = sec.heading_claims
+            h_sups = sec.heading_support_ids
             if h_id in patches:
                 heading = _normalize_homoglyphs(_strip_internal_handles(patches[h_id]))
-                heading_claims = (
-                    ArticleClaimAtom(text=heading, cited_support_ids=sec.heading_support_ids),
+                h_sups = (
+                    _reground_support_ids(heading, context) if context else sec.heading_support_ids
                 )
+                if not h_sups:
+                    h_sups = sec.heading_support_ids
+                heading_claims = (ArticleClaimAtom(text=heading, cited_support_ids=h_sups),)
 
             new_paragraphs: list[ArticleParagraph] = []
             for para in sec.paragraphs:
@@ -675,7 +706,7 @@ class ArticleEditor:
             title=title,
             title_support_ids=title_sups,
             lead=lead,
-            lead_support_ids=draft.lead_support_ids,
+            lead_support_ids=lead_sups,
             sections=tuple(new_sections),
             title_claims=title_claims,
             lead_claims=lead_claims,
