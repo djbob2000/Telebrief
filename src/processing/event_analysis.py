@@ -57,6 +57,7 @@ SERVICE-STATE CONTRACT:
 - For SCHEDULED, basis must be scheduled_change and effective_from is required.
 - Valid basis values: normal_operation, direct_failure, degraded_access, explicit_restriction, scheduled_change.
 - Broad regional totals or incidents that do not state a concrete consequence inside the edition focus area must not be promoted into local key_facts, service_access, or digest_summary merely because they share the edition's region.
+- Chat-room jargon and source leaks are strictly forbidden: never use words like "перекличка", "в перекличках", "в чатах", "в каналах" in topic, tags, headline, digest_summary, or key_facts. Translate informal community check-ins into objective neutral language ("по сообщениям жителей", "по наблюдениям горожан", "сведения с мест").
 
 Respond ONLY with a valid JSON object with the exact keys:
 {

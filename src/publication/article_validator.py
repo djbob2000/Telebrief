@@ -29,6 +29,17 @@ _META_OMISSION_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+_CHAT_KITCHEN_LEAK_PATTERN = re.compile(
+    r"\b(?:перекличк[а-я]*|"
+    r"в\s+перекличк[а-я]*|"
+    r"в\s+местных\s+чатах|"
+    r"в\s+городских\s+чатах|"
+    r"участник[а-я]*\s+чата|"
+    r"в\s+телеграм-канал[а-я]*|"
+    r"в\s+telegram-канал[а-я]*)\b",
+    re.IGNORECASE,
+)
+
 _WEEKLY_EXPANSION_RE = re.compile(
     r"\b(?:хроник[а-я]*\s+недел[а-я]*|итог[а-я]*\s+недел[а-я]*|событи[а-я]*\s+недел[а-я]*|обзор[а-я]*\s+недел[а-я]*|за\s+недел[а-я]*)\b",
     re.IGNORECASE,
@@ -350,6 +361,16 @@ def validate_article_draft(
                     code="LEAKED_META_OMISSION",
                     unit_id=unit_id,
                     message=f"Unit {unit_id} contains leaked meta-omission commentary",
+                )
+            )
+
+        # Check for leaked chat kitchen / source references
+        if _CHAT_KITCHEN_LEAK_PATTERN.search(unit_text):
+            issues.append(
+                ArticleValidationIssue(
+                    code="CHAT_KITCHEN_LEAK",
+                    unit_id=unit_id,
+                    message=f"Unit {unit_id} contains leaked chat-room kitchen or source reference",
                 )
             )
 

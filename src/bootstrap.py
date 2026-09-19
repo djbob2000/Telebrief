@@ -33,10 +33,10 @@ if TYPE_CHECKING:
 # publication intents land version 30, observation barriers/lookback
 # persistence land version 31, the legacy lookback repair lands version 32,
 # frozen publication knowledge snapshots land version 33, revision claim
-# leases land version 34, event processing cycle scopes land version 35, and
-# event authority query indexes land version 36.
+# leases land version 34, event processing cycle scopes land version 35,
+# event authority query indexes land version 36, and telegram_photo_post payload format lands version 37.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 36
+SCHEMA_VERSION_MAXIMUM = 37
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]

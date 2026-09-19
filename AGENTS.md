@@ -346,6 +346,7 @@ Agents must not make changes whose effect is to:
 - strengthen verification so aggressively that legitimate community news disappears;
 - reintroduce claim-first per-message LLM explosion as the default processing architecture;
 - hardcode one city's geography or examples into generic production prompt logic;
+- leak Telegram ingestion mechanics, chat kitchen, or source channel names into reader-facing text (e.g. "перекличка", "в чатах", "в каналах", "участник чата", "в пабликах" — translate community check-ins and reports into natural journalistic attribution without revealing technical kitchen);
 - configure or run AI models not explicitly declared in `.env` (strict runtime allowlist enforced in `src/ai_providers.py`).
 
 

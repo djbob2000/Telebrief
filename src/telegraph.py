@@ -250,3 +250,55 @@ class TelegraphPublisher:
                 if not data.get("ok"):
                     raise RuntimeError(f"Telegraph createPage failed: {data.get('error')}")
                 return str(data["result"]["url"])
+
+    async def edit_page(
+        self,
+        path: str,
+        title: str,
+        content_markdown: str,
+        author_name: str = "Бердянск Новости",
+        author_url: Optional[str] = None,
+    ) -> str:
+        """Edit an existing article on Telegra.ph.
+
+        Args:
+            path: Page path (slug from URL).
+            title: Page title.
+            content_markdown: Page content in Markdown.
+            author_name: Author display name.
+            author_url: Optional link for author.
+
+        Returns:
+            Edited page URL.
+        """
+        token = await self.get_or_create_access_token(author_name=author_name)
+
+        cleaned_markdown = content_markdown.strip()
+        lines = cleaned_markdown.splitlines()
+        if lines and lines[0].strip().startswith(("# ", "## ")):
+            header_text = re.sub(r"^#+\s*", "", lines[0].strip()).strip()
+            if header_text.lower() == title.strip().lower() or lines[0].strip().startswith("# "):
+                cleaned_markdown = "\n".join(lines[1:]).strip()
+
+        nodes = markdown_to_telegraph_nodes(cleaned_markdown)
+
+        if "telegra.ph/" in path:
+            path = path.split("telegra.ph/")[-1]
+
+        payload: Dict[str, Any] = {
+            "access_token": token,
+            "path": path,
+            "title": title[:256],
+            "author_name": author_name,
+            "content": json.dumps(nodes),
+            "return_content": False,
+        }
+        if author_url:
+            payload["author_url"] = author_url
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{TELEGRAPH_API_BASE}/editPage", data=payload) as resp:
+                data = await resp.json()
+                if not data.get("ok"):
+                    raise RuntimeError(f"Telegraph editPage failed: {data.get('error')}")
+                return str(data["result"]["url"])

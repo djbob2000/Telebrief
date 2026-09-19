@@ -259,6 +259,65 @@ def test_validator_rejects_leaked_meta_omission():
 
 
 @pytest.mark.unit
+def test_chat_kitchen_leak_fails_validation() -> None:
+    ctx = _make_sample_context()
+    config = PublicationEditorialConfig(
+        article_min_words=10,
+        article_max_words=200,
+        article_min_sections=1,
+        article_max_sections=4,
+    )
+
+    draft = StructuredArticleDraft(
+        title="Восстановительные работы в городе",
+        title_support_ids=("story:1:evidence:0:frag:101",),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Восстановительные работы в городе",
+                cited_support_ids=("story:1:evidence:0:frag:101",),
+            ),
+        ),
+        lead="В городе продолжаются восстановительные работы на ключевых объектах.",
+        lead_support_ids=("story:1:evidence:0:frag:101",),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В городе продолжаются восстановительные работы",
+                cited_support_ids=("story:1:evidence:0:frag:101",),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Энергетика и коммунальные службы",
+                heading_support_ids=("story:1:evidence:0:frag:101",),
+                heading_claims=(
+                    ArticleClaimAtom(
+                        text="Энергетика и коммунальные службы",
+                        cited_support_ids=("story:1:evidence:0:frag:101",),
+                    ),
+                ),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В то же время по другим адресам перекличка даёт обратный результат: свет есть.",
+                        cited_support_ids=("story:1:evidence:0:frag:101",),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В то же время по другим адресам перекличка даёт обратный результат",
+                                cited_support_ids=("story:1:evidence:0:frag:101",),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=35,
+    )
+
+    result = validate_article_draft(draft, ctx, config)
+    assert result.is_valid is False
+    assert any(i.code == "CHAT_KITCHEN_LEAK" for i in result.issues)
+
+
+@pytest.mark.unit
 def test_draft_missing_support_fails() -> None:
     ctx = _make_sample_context()
     config = PublicationEditorialConfig(article_min_words=5, article_min_sections=1)

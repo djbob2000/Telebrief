@@ -358,7 +358,9 @@ class PublicationDeliveryPayload:
     id: int
     publication_id: int
     destination_id: int
-    payload_format: str  # 'telegram_html', 'telegraph_nodes', 'facebook_post'
+    payload_format: (
+        str  # 'telegram_html', 'telegraph_nodes', 'facebook_post', 'telegram_photo_post'
+    )
     rendered_content: dict[str, Any]
     content_hash: str
     created_at: dt.datetime
