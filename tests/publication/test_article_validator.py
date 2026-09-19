@@ -2194,3 +2194,143 @@ def test_strip_non_allowlisted_quotes_converts_direct_speech_to_indirect():
         res_unallowed == "Житель признался, что света не будет до конца года, а другой подтвердил."
     )
     assert "признался:" not in res_unallowed
+
+
+def test_repeated_content_loop_detected():
+    ctx = _make_sample_context()
+    config = PublicationEditorialConfig(article_min_words=5, article_min_sections=1)
+
+    sup_id = "story:1:evidence:0:frag:101"
+    # Repeated identical sentences in paragraph
+    draft = StructuredArticleDraft(
+        title="Ситуация со светом в городе",
+        title_support_ids=(sup_id,),
+        title_claims=(
+            ArticleClaimAtom(text="Ситуация со светом в городе", cited_support_ids=(sup_id,)),
+        ),
+        lead="В городе продолжаются отключения электричества.",
+        lead_support_ids=(sup_id,),
+        lead_claims=(
+            ArticleClaimAtom(text="В городе продолжаются отключения", cited_support_ids=(sup_id,)),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Обстановка в районах",
+                heading_support_ids=(sup_id,),
+                heading_claims=(
+                    ArticleClaimAtom(text="Обстановка в районах", cited_support_ids=(sup_id,)),
+                ),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В Колонии продолжаются отключения света. В Колонии продолжаются отключения света. В Колонии продолжаются отключения света.",
+                        cited_support_ids=(sup_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В Колонии продолжаются отключения света",
+                                cited_support_ids=(sup_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=30,
+    )
+
+    res = validate_article_draft(draft, ctx, config)
+    assert res.is_valid is False
+    assert any(iss.code == "REPEATED_CONTENT_LOOP" and iss.blocking for iss in res.issues)
+
+
+def test_phantom_heading_topic_detected():
+    ctx = _make_sample_context()
+    config = PublicationEditorialConfig(article_min_words=5, article_min_sections=1)
+
+    sup_id = "story:1:evidence:0:frag:101"
+    # Heading promises "поиск кошки", but paragraph only discusses power
+    draft = StructuredArticleDraft(
+        title="Городские события и происшествия",
+        title_support_ids=(sup_id,),
+        title_claims=(
+            ArticleClaimAtom(text="Городские события и происшествия", cited_support_ids=(sup_id,)),
+        ),
+        lead="В городе продолжаются восстановительные работы.",
+        lead_support_ids=(sup_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В городе продолжаются восстановительные работы", cited_support_ids=(sup_id,)
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Связь и сервисы: мобильные операторы, интернет и поиск кошки",
+                heading_support_ids=(sup_id,),
+                heading_claims=(
+                    ArticleClaimAtom(text="Связь и сервисы", cited_support_ids=(sup_id,)),
+                ),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="Мобильные операторы восстанавливают базовые станции в центре города.",
+                        cited_support_ids=(sup_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Мобильные операторы восстанавливают базовые станции",
+                                cited_support_ids=(sup_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=30,
+    )
+
+    res = validate_article_draft(draft, ctx, config)
+    assert res.is_valid is False
+    assert any(iss.code == "PHANTOM_HEADING_TOPIC" and iss.blocking for iss in res.issues)
+
+
+def test_chat_slang_detected():
+    ctx = _make_sample_context()
+    config = PublicationEditorialConfig(article_min_words=5, article_min_sections=1)
+
+    sup_id = "story:1:evidence:0:frag:101"
+    draft = StructuredArticleDraft(
+        title="Городские события и хроника",
+        title_support_ids=(sup_id,),
+        title_claims=(
+            ArticleClaimAtom(text="Городские события и хроника", cited_support_ids=(sup_id,)),
+        ),
+        lead="В городе продолжаются восстановительные работы.",
+        lead_support_ids=(sup_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В городе продолжаются восстановительные работы", cited_support_ids=(sup_id,)
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Электроснабжение",
+                heading_support_ids=(sup_id,),
+                heading_claims=(
+                    ArticleClaimAtom(text="Электроснабжение", cited_support_ids=(sup_id,)),
+                ),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В Колонии тоже полная фигня со светом по сообщениям жителей.",
+                        cited_support_ids=(sup_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В Колонии со светом проблемы", cited_support_ids=(sup_id,)
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=30,
+    )
+
+    res = validate_article_draft(draft, ctx, config)
+    assert res.is_valid is False
+    assert any(iss.code == "CHAT_KITCHEN_LEAK" and iss.blocking for iss in res.issues)

@@ -22,6 +22,7 @@ from src.publication.article_models import (
     ArticleParagraph,
     ArticleSection,
     StructuredArticleDraft,
+    _normalize_for_dedup,
     _split_sentences_safe,
 )
 from src.publication.article_recovery import ArticleDeterministicComposer
@@ -219,7 +220,14 @@ def _merge_orphan_paragraphs(
             is_orphan = len(sentences) <= 1 and len(merged_paras) > 0
             if is_orphan:
                 prev = merged_paras[-1]
-                merged_text = prev.text.rstrip() + " " + p.text.lstrip()
+                p_sentences = _split_sentences_safe(p.text)
+                prev_sentences = _split_sentences_safe(prev.text)
+                prev_norms = {_normalize_for_dedup(s) for s in prev_sentences}
+                kept_p = [s for s in p_sentences if _normalize_for_dedup(s) not in prev_norms]
+                if not kept_p:
+                    changed = True
+                    continue
+                merged_text = prev.text.rstrip() + " " + " ".join(kept_p)
                 merged_supports = list(prev.cited_support_ids) + [
                     sid for sid in p.cited_support_ids if sid not in prev.cited_support_ids
                 ]
@@ -248,6 +256,205 @@ def _merge_orphan_paragraphs(
         )
     if not changed:
         return draft
+    return StructuredArticleDraft(
+        title=draft.title,
+        title_support_ids=draft.title_support_ids,
+        lead=draft.lead,
+        lead_support_ids=draft.lead_support_ids,
+        sections=tuple(new_sections),
+        title_claims=draft.title_claims,
+        lead_claims=draft.lead_claims,
+        cited_evidence_ids=draft.cited_evidence_ids,
+        word_count=draft.word_count,
+        title_generation_origin=draft.title_generation_origin,
+        lead_generation_origin=draft.lead_generation_origin,
+    )
+
+
+def _sanitize_phantom_heading_topics(
+    draft: StructuredArticleDraft,
+    heading_violations: Sequence[ArticleValidationIssue],
+    context: ArticleEditorialContext | None = None,
+) -> StructuredArticleDraft:
+    """Deterministically sanitize section headings that have phantom topics, invalid support policies, or question overclaims."""
+    bad_h_ids = {
+        iss.unit_id
+        for iss in heading_violations
+        if iss.code
+        in ("PHANTOM_HEADING_TOPIC", "INVALID_SUPPORT_POLICY", "QUESTION_CONTEXT_OVERCLAIM")
+    }
+    if not bad_h_ids:
+        return draft
+
+    changed = False
+    new_sections: list[ArticleSection] = []
+    for s_idx, sec in enumerate(draft.sections, start=1):
+        h_id = f"H{s_idx:03d}"
+        if h_id in bad_h_ids:
+            cur_heading = sec.heading
+            cur_sups: tuple[str, ...] = tuple(sec.heading_support_ids)
+
+            # 1. If heading has phantom topic after colon, sanitize prefix
+            has_phantom = any(
+                iss.unit_id == h_id and iss.code == "PHANTOM_HEADING_TOPIC"
+                for iss in heading_violations
+            )
+            if has_phantom and ":" in cur_heading:
+                prefix = cur_heading.split(":", 1)[0].strip()
+                if prefix and len(prefix) >= 5:
+                    cur_heading = prefix
+                    changed = True
+
+            # 2. If heading has INVALID_SUPPORT_POLICY or QUESTION_CONTEXT_OVERCLAIM,
+            # borrow valid PUBLISH / CURRENT_WINDOW supports from paragraphs in this section
+            needs_sup_repair = any(
+                iss.unit_id == h_id
+                and iss.code in ("INVALID_SUPPORT_POLICY", "QUESTION_CONTEXT_OVERCLAIM")
+                for iss in heading_violations
+            )
+            if needs_sup_repair and context is not None:
+                valid_para_sups = []
+                for p in sec.paragraphs:
+                    for sid in p.cited_support_ids:
+                        if sid in context.support_by_id:
+                            sup = context.support_by_id[sid]
+                            if sup.publication_use == "PUBLISH":
+                                valid_para_sups.append(sid)
+                if valid_para_sups:
+                    cur_sups = tuple(dict.fromkeys(valid_para_sups[:3]))
+                    changed = True
+                    logger.info(
+                        "Re-anchored heading %s supports from section paragraphs: %s",
+                        h_id,
+                        cur_sups,
+                    )
+
+            if changed:
+                new_claims = tuple(
+                    c for c in sec.heading_claims if c.text and c.text in cur_heading
+                )
+                new_sections.append(
+                    ArticleSection(
+                        heading=cur_heading,
+                        heading_support_ids=cur_sups,
+                        heading_claims=new_claims,
+                        paragraphs=sec.paragraphs,
+                        cited_evidence_ids=sec.cited_evidence_ids,
+                        heading_generation_origin=sec.heading_generation_origin,
+                    )
+                )
+                logger.info(
+                    "Sanitized heading %s: '%s' with %d supports",
+                    h_id,
+                    cur_heading,
+                    len(cur_sups),
+                )
+                continue
+        new_sections.append(sec)
+
+    if not changed:
+        return draft
+
+    return StructuredArticleDraft(
+        title=draft.title,
+        title_support_ids=draft.title_support_ids,
+        lead=draft.lead,
+        lead_support_ids=draft.lead_support_ids,
+        sections=tuple(new_sections),
+        title_claims=draft.title_claims,
+        lead_claims=draft.lead_claims,
+        cited_evidence_ids=draft.cited_evidence_ids,
+        word_count=draft.word_count,
+        title_generation_origin=draft.title_generation_origin,
+        lead_generation_origin=draft.lead_generation_origin,
+    )
+
+
+def _deduplicate_draft_content(
+    draft: StructuredArticleDraft,
+) -> StructuredArticleDraft:
+    """Deduplicate repeated sentences within paragraphs and duplicate paragraphs across sections."""
+    from src.publication.article_claims import _stem
+
+    tok_re = re.compile(r"[\w-]+", re.UNICODE)
+    changed = False
+    all_prior_paragraphs: list[ArticleParagraph] = []
+    new_sections: list[ArticleSection] = []
+
+    for sec in draft.sections:
+        new_paras: list[ArticleParagraph] = []
+        for p in sec.paragraphs:
+            # 1. Deduplicate sentences within paragraph
+            sentences = _split_sentences_safe(p.text)
+            if len(sentences) > 1:
+                seen_sent_norms: set[str] = set()
+                deduped_s: list[str] = []
+                for s in sentences:
+                    s_norm = _normalize_for_dedup(s)
+                    if s_norm in seen_sent_norms:
+                        changed = True
+                        continue
+                    seen_sent_norms.add(s_norm)
+                    deduped_s.append(s)
+                if len(deduped_s) < len(sentences):
+                    new_text = " ".join(deduped_s)
+                    new_claims = tuple(
+                        ArticleClaimAtom(text=s, cited_support_ids=p.cited_support_ids)
+                        for s in deduped_s
+                    )
+                    p = ArticleParagraph(
+                        text=new_text,
+                        cited_support_ids=p.cited_support_ids,
+                        claims=new_claims,
+                        generation_origin=p.generation_origin,
+                    )
+
+            # 2. Check for duplicate paragraph across current section and previous sections
+            p_norm = _normalize_for_dedup(p.text)
+            p_stems = {_stem(w.lower()) for w in tok_re.findall(p_norm) if len(w) >= 3}
+            is_dup = False
+            for existing in all_prior_paragraphs + new_paras:
+                e_norm = _normalize_for_dedup(existing.text)
+                if p_norm == e_norm or (len(p_norm) >= 20 and p_norm in e_norm):
+                    is_dup = True
+                    break
+                e_stems = {_stem(w.lower()) for w in tok_re.findall(e_norm) if len(w) >= 3}
+                if len(p_stems) >= 4 and len(e_stems) >= 4:
+                    p_nums = set(re.findall(r"\b\d+\b", p.text))
+                    e_nums = set(re.findall(r"\b\d+\b", existing.text))
+                    if not (p_nums and e_nums and p_nums != e_nums):
+                        overlap = len(p_stems & e_stems) / len(p_stems)
+                        if p_stems.issubset(e_stems) or overlap >= 0.85:
+                            is_dup = True
+                            break
+
+            if is_dup and len(sec.paragraphs) > 1:
+                changed = True
+                logger.info(
+                    "Omitted duplicate cross-section or in-section paragraph: %.60s...",
+                    p.text[:60],
+                )
+            else:
+                new_paras.append(p)
+
+        if not new_paras and sec.paragraphs:
+            new_paras.append(sec.paragraphs[0])
+
+        all_prior_paragraphs.extend(new_paras)
+        new_sections.append(
+            ArticleSection(
+                heading=sec.heading,
+                heading_support_ids=sec.heading_support_ids,
+                heading_claims=sec.heading_claims,
+                paragraphs=tuple(new_paras),
+                cited_evidence_ids=sec.cited_evidence_ids,
+                heading_generation_origin=sec.heading_generation_origin,
+            )
+        )
+
+    if not changed:
+        return draft
+
     return StructuredArticleDraft(
         title=draft.title,
         title_support_ids=draft.title_support_ids,
@@ -325,6 +532,7 @@ def _prune_unsupported_paragraph_claims(
 
     p_idx = 1
     new_sections: list[ArticleSection] = []
+    all_prior_paragraphs: list[ArticleParagraph] = []
     pruned_count = 0
     for sec in draft.sections:
         new_paragraphs: list[ArticleParagraph] = []
@@ -338,16 +546,28 @@ def _prune_unsupported_paragraph_claims(
             bad_texts = bad_claims_by_unit.get(p_id, set())
             sentences = _split_sentences_safe(p.text)
             kept_sentences: list[str] = []
-            if len(sentences) > 1 and bad_texts:
+            if len(sentences) > 1:
                 for s in sentences:
                     s_clean = s.strip()
-                    is_bad = any(
+                    is_bad = bool(bad_texts) and any(
                         bad == s_clean or bad in s_clean or s_clean in bad for bad in bad_texts
                     )
                     if is_bad:
                         pruned_count += 1
                     else:
                         kept_sentences.append(s_clean)
+
+                # Deduplicate identical sentences within the paragraph
+                seen_sent_norms: set[str] = set()
+                deduped_kept: list[str] = []
+                for s in kept_sentences:
+                    s_norm = _normalize_for_dedup(s)
+                    if s_norm in seen_sent_norms:
+                        pruned_count += 1
+                        continue
+                    seen_sent_norms.add(s_norm)
+                    deduped_kept.append(s)
+                kept_sentences = deduped_kept
 
             has_unsupported_name = any(
                 getattr(iss, "code", "") == "UNSUPPORTED_PROPER_NAME"
@@ -358,10 +578,7 @@ def _prune_unsupported_paragraph_claims(
             # If no sentences kept (or single-sentence invalid paragraph), synthesize from support evidence
             # unless it has an unverified proper name which must fail closed per AGENTS.md 0.7 & test_case_8.
             if not kept_sentences and not has_unsupported_name and context and p.cited_support_ids:
-                from src.publication.article_recovery import (
-                    _clean_support_text_for_reader,
-                    _normalize_for_dedup,
-                )
+                from src.publication.article_recovery import _clean_support_text_for_reader
 
                 existing_norms = {
                     _normalize_for_dedup(para.text) for s in new_sections for para in s.paragraphs
@@ -403,8 +620,6 @@ def _prune_unsupported_paragraph_claims(
                 new_text = " ".join(kept_sentences)
                 # Deduplicate against existing paragraphs in the section:
                 # If new_text is substantially redundant or already expressed, omit it.
-                from src.publication.article_recovery import _normalize_for_dedup
-
                 new_norm = _normalize_for_dedup(new_text)
                 is_duplicate = False
                 for ep in new_paragraphs:
@@ -470,34 +685,33 @@ def _prune_unsupported_paragraph_claims(
             new_paragraphs.append(p)
 
         if new_paragraphs:
-            # Deduplicate any duplicate paragraphs within the section
-            from src.publication.article_recovery import _normalize_for_dedup
+            # Deduplicate any duplicate paragraphs within the section and across earlier sections
+            from src.publication.article_claims import _stem
 
+            tok_re = re.compile(r"[\w-]+", re.UNICODE)
             deduped_paragraphs: list[ArticleParagraph] = []
             for para in new_paragraphs:
                 p_norm = _normalize_for_dedup(para.text)
                 dup = False
-                for existing in deduped_paragraphs:
+                for existing in all_prior_paragraphs + deduped_paragraphs:
                     e_norm = _normalize_for_dedup(existing.text)
-                    if p_norm in e_norm:
+                    if p_norm in e_norm or e_norm in p_norm:
                         dup = True
                         break
-                    from src.publication.article_claims import _stem
-
-                    tok_re = re.compile(r"[\w-]+", re.UNICODE)
                     p_stems = {_stem(w.lower()) for w in tok_re.findall(p_norm) if len(w) >= 3}
                     e_stems = {_stem(w.lower()) for w in tok_re.findall(e_norm) if len(w) >= 3}
-                    if len(p_stems) >= 3:
+                    if len(p_stems) >= 3 and len(e_stems) >= 3:
                         overlap = len(p_stems & e_stems) / len(p_stems)
                         if p_stems.issubset(e_stems) or overlap >= 0.75:
                             dup = True
                             break
-                if not dup:
+                if not dup or (len(new_paragraphs) == 1 and not deduped_paragraphs):
                     deduped_paragraphs.append(para)
                 else:
                     pruned_count += 1
 
             if deduped_paragraphs:
+                all_prior_paragraphs.extend(deduped_paragraphs)
                 new_sections.append(
                     ArticleSection(
                         heading=sec.heading,
@@ -642,7 +856,9 @@ class ArticleFinalizer:
                     config=editorial_config,
                     length_profile=length_profile,
                 )
-                if repaired_val.is_valid:
+                if repaired_val.is_valid or len(repaired_val.violations) < len(
+                    writer_validation.violations
+                ):
                     logger.info(
                         "Article writer draft repaired by pruning unsupported claim atom(s) from multi-sentence paragraph(s)"
                     )
@@ -655,14 +871,41 @@ class ArticleFinalizer:
                     )
 
         if not writer_validation.is_valid:
-            # Deterministic title repair: if only TITLE has blocking issues, sanitize or adopt section heading
+            # Deterministic heading repair: sanitize headings with phantom topics, invalid support policies or question overclaims
+            heading_violations = [
+                iss
+                for iss in writer_validation.issues
+                if iss.blocking
+                and iss.unit_id.startswith("H")
+                and iss.code
+                in ("PHANTOM_HEADING_TOPIC", "INVALID_SUPPORT_POLICY", "QUESTION_CONTEXT_OVERCLAIM")
+            ]
+            if heading_violations:
+                repaired_draft = _sanitize_phantom_heading_topics(
+                    writer_draft, heading_violations, context=context
+                )
+                repaired_val = validate_article_draft(
+                    repaired_draft,
+                    context,
+                    config=editorial_config,
+                    length_profile=length_profile,
+                )
+                if repaired_val.is_valid or len(repaired_val.violations) < len(
+                    writer_validation.violations
+                ):
+                    logger.info(
+                        "Article writer draft repaired by sanitizing %d heading violation(s)",
+                        len(heading_violations),
+                    )
+                    writer_draft = repaired_draft
+                    writer_validation = repaired_val
+
+        if not writer_validation.is_valid:
+            # Deterministic title repair: sanitize or adopt verified section heading and clean up supports
             title_violations = [
                 iss for iss in writer_validation.issues if iss.blocking and iss.unit_id == "TITLE"
             ]
-            other_blocking = [
-                iss for iss in writer_validation.issues if iss.blocking and iss.unit_id != "TITLE"
-            ]
-            if title_violations and not other_blocking:
+            if title_violations:
                 candidate_title = None
                 candidate_sups = writer_draft.title_support_ids
                 if writer_draft.sections and writer_draft.sections[0].heading:
@@ -757,7 +1000,10 @@ class ArticleFinalizer:
             )
 
         # 3. Writer draft is valid; apply deterministic structural improvements
-        # 3a. Merge single-sentence orphan paragraphs (AGENTS.md §0.9)
+        # 3a. Deduplicate identical sentences within paragraphs and duplicate cross-section paragraphs
+        writer_draft = _deduplicate_draft_content(writer_draft)
+
+        # 3b. Merge single-sentence orphan paragraphs (AGENTS.md §0.9)
         writer_draft = _merge_orphan_paragraphs(writer_draft)
 
         # Structural finalization changes the reader-facing draft. Never reuse

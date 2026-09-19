@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping, Sequence
 
@@ -127,6 +128,44 @@ def _normalize_homoglyphs(text: str) -> str:
 
 def _split_sentences_safe(text: str) -> list[str]:
     return [s.strip() for s in _ABBR_SAFE_SENTENCE_SPLIT.split(text) if s.strip()]
+
+
+def _normalize_for_dedup(text: str) -> str:
+    """Normalize text for conservative exact deduplication."""
+    t = unicodedata.normalize("NFC", text).strip().casefold()
+    for prefix in (
+        "по сообщениям жителей,",
+        "по сообщениям жителей",
+        "жители сообщают, что",
+        "жители сообщают,",
+        "жители сообщают",
+        "житель сообщает, что",
+        "житель сообщает,",
+        "житель сообщает",
+        "горожане сообщают, что",
+        "горожане сообщают,",
+        "горожане сообщают",
+        "по информации горожан,",
+        "по информации горожан",
+        "как отмечают в местных сообществах,",
+        "как отмечают в местных сообществах",
+        "как отмечают горожане,",
+        "как отмечают горожане",
+        "горожане обращают внимание:",
+        "горожане обращают внимание",
+        "по словам жителей,",
+        "по словам жителей",
+        "как сообщили,",
+        "как сообщили",
+        "ранее,",
+        "ранее",
+        "запланировано:",
+        "запланировано",
+    ):
+        if t.startswith(prefix):
+            t = t[len(prefix) :].strip()
+    t = re.sub(r"[^\w\s]", "", t)
+    return " ".join(t.split())
 
 
 ArticleGenerationOrigin = Literal["AI", "SUPPLEMENT", "FALLBACK"]

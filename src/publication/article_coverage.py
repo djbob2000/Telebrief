@@ -184,6 +184,22 @@ def _story_topic_signature(
         return "transport"
     if any(
         w in text
+        for w in (
+            "кошк",
+            "кот",
+            "собак",
+            "пес",
+            "пёс",
+            "щен",
+            "котен",
+            "котён",
+            "животн",
+            "питом",
+        )
+    ):
+        return "pets"
+    if any(
+        w in text
         for w in ("спорт", "футбол", "секц", "школ", "набор", "дети", "девоч", "тренировк")
     ):
         return "sports"
@@ -515,6 +531,22 @@ def _thematic_section_id(card: StoryCard | None) -> str:
     )
     if any(any(tok.startswith(p) for p in mob_prefixes) for tok in tokens):
         return "mobility"
+
+    # Priority 3.5: Pets and animals (stay in city_life, not hijacked by school landmarks or missing persons)
+    pet_prefixes = (
+        "кошк",
+        "кот",
+        "собак",
+        "пес",
+        "пёс",
+        "щен",
+        "котен",
+        "котён",
+        "животн",
+        "питом",
+    )
+    if any(any(tok.startswith(p) for p in pet_prefixes) for tok in tokens):
+        return "city_life"
 
     # Priority 4: Education, Children & Culture (genuine education/sports topics)
     edu_prefixes = (

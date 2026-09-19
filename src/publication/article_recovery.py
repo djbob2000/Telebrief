@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from collections import defaultdict
 from collections.abc import Sequence
 from typing import Literal
@@ -21,6 +20,7 @@ from src.publication.article_models import (
     ArticleParagraph,
     ArticleSection,
     StructuredArticleDraft,
+    _normalize_for_dedup,
 )
 from src.publication.article_writer_context import sanitize_writer_source_text
 
@@ -138,44 +138,6 @@ def resolve_article_theme(
 
     # 5. Fallback -> city_life
     return "city_life"
-
-
-def _normalize_for_dedup(text: str) -> str:
-    """Normalize text for conservative exact deduplication."""
-    t = unicodedata.normalize("NFC", text).strip().casefold()
-    for prefix in (
-        "по сообщениям жителей,",
-        "по сообщениям жителей",
-        "жители сообщают, что",
-        "жители сообщают,",
-        "жители сообщают",
-        "житель сообщает, что",
-        "житель сообщает,",
-        "житель сообщает",
-        "горожане сообщают, что",
-        "горожане сообщают,",
-        "горожане сообщают",
-        "по информации горожан,",
-        "по информации горожан",
-        "как отмечают в местных сообществах,",
-        "как отмечают в местных сообществах",
-        "как отмечают горожане,",
-        "как отмечают горожане",
-        "горожане обращают внимание:",
-        "горожане обращают внимание",
-        "по словам жителей,",
-        "по словам жителей",
-        "как сообщили,",
-        "как сообщили",
-        "ранее,",
-        "ранее",
-        "запланировано:",
-        "запланировано",
-    ):
-        if t.startswith(prefix):
-            t = t[len(prefix) :].strip()
-    t = re.sub(r"[^\w\s]", "", t)
-    return " ".join(t.split())
 
 
 _COMMUNITY_OPENERS = (

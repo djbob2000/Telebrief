@@ -8,10 +8,15 @@ from typing import Literal
 
 from src.config_loader import PublicationEditorialConfig
 from src.publication.article_claim_support import assess_claim_against_supports
-from src.publication.article_claims import ConcreteClaim, find_unsupported_claims
+from src.publication.article_claims import ConcreteClaim, _stem, find_unsupported_claims
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 from src.publication.article_length import ArticleLengthProfile
-from src.publication.article_models import ArticleClaimAtom, StructuredArticleDraft
+from src.publication.article_models import (
+    ArticleClaimAtom,
+    StructuredArticleDraft,
+    _normalize_for_dedup,
+    _split_sentences_safe,
+)
 from src.publication.article_semantic_lexicon import canonical_semantic_concepts
 from src.publication.article_semantic_support import assess_semantic_support
 
@@ -30,15 +35,101 @@ _META_OMISSION_PATTERN = re.compile(
 )
 
 _CHAT_KITCHEN_LEAK_PATTERN = re.compile(
-    r"\b(?:перекличк[а-я]*|"
+    r"\b(?:"
+    r"перекличк[а-я]*|"
     r"в\s+перекличк[а-я]*|"
-    r"в\s+местных\s+чатах|"
-    r"в\s+городских\s+чатах|"
+    r"в\s+(?:местных\s+|городских\s+)?(?:чатах|чате|пабликах|каналах|группах)|"
     r"участник[а-я]*\s+чата|"
-    r"в\s+телеграм-канал[а-я]*|"
-    r"в\s+telegram-канал[а-я]*)\b",
+    r"в\s+комментариях|"
+    r"в\s+(?:телеграм|telegram)-канал[а-я]*|"
+    r"фигн[яеиюей]|"
+    r"хрен[яеиюь]|"
+    r"херн[яеиюей]|"
+    r"хренов[а-я]*|"
+    r"нафиг|"
+    r"пофиг"
+    r")\b",
     re.IGNORECASE,
 )
+
+_HEADING_EDITORIAL_FILLER = {
+    "город",
+    "города",
+    "городской",
+    "городская",
+    "городские",
+    "жизнь",
+    "жизни",
+    "обстановка",
+    "обстановке",
+    "обстановки",
+    "хроника",
+    "хроники",
+    "хронике",
+    "ситуация",
+    "ситуации",
+    "ситуацию",
+    "события",
+    "событий",
+    "событиях",
+    "район",
+    "района",
+    "районы",
+    "районах",
+    "улица",
+    "улицы",
+    "улицах",
+    "улице",
+    "день",
+    "дня",
+    "днем",
+    "днях",
+    "ночь",
+    "ночи",
+    "ночью",
+    "утро",
+    "утром",
+    "вечер",
+    "вечером",
+    "вечерний",
+    "время",
+    "времени",
+    "неделя",
+    "недели",
+    "мелочи",
+    "мелочах",
+    "сервис",
+    "сервисы",
+    "сервисах",
+    "главное",
+    "фокус",
+    "фокусе",
+    "вопрос",
+    "вопросы",
+    "вопросах",
+    "проблема",
+    "проблемы",
+    "проблемах",
+    "решение",
+    "решения",
+    "решениях",
+    "картина",
+    "картине",
+    "новости",
+    "новостей",
+    "детали",
+    "деталях",
+    "сфера",
+    "сферы",
+    "перспективы",
+    "последствия",
+    "опыт",
+    "итоги",
+    "итог",
+    "итогах",
+    "другие",
+    "также",
+}
 
 _WEEKLY_EXPANSION_RE = re.compile(
     r"\b(?:хроник[а-я]*\s+недел[а-я]*|итог[а-я]*\s+недел[а-я]*|событи[а-я]*\s+недел[а-я]*|обзор[а-я]*\s+недел[а-я]*|за\s+недел[а-я]*)\b",
@@ -373,6 +464,51 @@ def validate_article_draft(
                     message=f"Unit {unit_id} contains leaked chat-room kitchen or source reference",
                 )
             )
+
+        # Check for repetitive sentence loops within a single paragraph / unit
+        if unit_type in ("lead", "paragraph"):
+            sentences = _split_sentences_safe(unit_text)
+            if len(sentences) >= 2:
+                seen_unit_norms: list[str] = []
+                loop_detected = False
+                for sent in sentences:
+                    norm = _normalize_for_dedup(sent)
+                    if len(norm) < 15:
+                        continue
+                    if norm in seen_unit_norms:
+                        loop_detected = True
+                        break
+                    toks = {_stem(w) for w in _TOKEN_RE.findall(norm.lower()) if len(w) >= 3}
+                    if len(toks) >= 5:
+                        s_nums = set(re.findall(r"\b\d+\b", norm))
+                        for prev_norm in seen_unit_norms:
+                            prev_toks = {
+                                _stem(w)
+                                for w in _TOKEN_RE.findall(prev_norm.lower())
+                                if len(w) >= 3
+                            }
+                            if len(prev_toks) >= 5:
+                                prev_s_nums = set(re.findall(r"\b\d+\b", prev_norm))
+                                if s_nums and prev_s_nums and s_nums != prev_s_nums:
+                                    continue
+                                shared = toks & prev_toks
+                                if len(shared) / max(len(toks), len(prev_toks)) >= 0.90:
+                                    loop_detected = True
+                                    break
+                        if loop_detected:
+                            break
+                    seen_unit_norms.append(norm)
+
+                if loop_detected:
+                    issues.append(
+                        ArticleValidationIssue(
+                            code="REPEATED_CONTENT_LOOP",
+                            unit_id=unit_id,
+                            message=f"Unit {unit_id} contains repeated identical or near-duplicate sentences within the paragraph",
+                            severity="error",
+                            blocking=True,
+                        )
+                    )
 
         # Check missing support IDs
         if not cited_ids:
@@ -788,6 +924,47 @@ def validate_article_draft(
                             support_ids=cited_ids,
                         )
                     )
+
+    # Section Heading vs Section Body Congruence (PHANTOM_HEADING_TOPIC)
+    # When a section heading explicitly enumerates subtopics after a colon (e.g. "Тема: подтема 1, подтема 2 и подтема 3"),
+    # verify that each promised subtopic is actually mentioned in the section paragraphs.
+    for s_idx, sec in enumerate(draft.sections, start=1):
+        h_id = f"H{s_idx:03d}"
+        h_text = sec.heading.strip()
+        if not h_text or ":" not in h_text:
+            continue
+        body_text = " ".join(p.text for p in sec.paragraphs if p.text)
+        body_words = _TOKEN_RE.findall(body_text.lower())
+        body_stems = {_stem(w) for w in body_words if len(w) >= 3}
+
+        pre, post = h_text.split(":", 1)
+        clauses = re.split(r"[,;]|\s+и\s+", post)
+
+        for clause in clauses:
+            clause_clean = clause.strip().lower()
+            if not clause_clean:
+                continue
+            c_words = [
+                w
+                for w in _TOKEN_RE.findall(clause_clean)
+                if len(w) >= 3 and w not in _HEADING_EDITORIAL_FILLER
+            ]
+            if not c_words:
+                continue
+            # At least one non-filler word from this enumerated clause must appear in the section body
+            c_stems = [_stem(w) for w in c_words]
+            if not any(s in body_stems for s in c_stems):
+                issues.append(
+                    ArticleValidationIssue(
+                        code="PHANTOM_HEADING_TOPIC",
+                        unit_id=h_id,
+                        message=f"Section heading {h_id} announces topic '{clause.strip()}' which is never mentioned in section paragraphs",
+                        support_ids=sec.heading_support_ids,
+                        severity="error",
+                        blocking=True,
+                    )
+                )
+                break
 
     is_valid = not any(iss.blocking for iss in issues)
 

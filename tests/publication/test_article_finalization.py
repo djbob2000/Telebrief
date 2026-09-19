@@ -540,3 +540,394 @@ async def test_writer_draft_repaired_by_sentence_pruning() -> None:
     rendered = result.draft.render_markdown()
     assert "космодром" not in rendered
     assert "В Бердянске восстановили подачу электроэнергии" in rendered
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_deduplicates_repeated_sentences_in_paragraph() -> None:
+    from src.publication.article_models import ArticleClaimAtom
+
+    sup = ArticleSupport(
+        support_id="story:1:evidence:0:frag:101",
+        text="В Бердянске восстановили подачу электроэнергии.",
+        source_text="В Бердянске восстановили подачу электроэнергии.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="established_fact",
+        story_id="story:1",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение",),
+        support_index=(sup,),
+        support_by_id={sup.support_id: sup},
+        recurring_topics=(),
+        edition_anchor_terms=("Бердянск",),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(sup.support_id,),
+                detail_support_ids=(sup.support_id,),
+            ),
+        )
+    )
+
+    draft_with_loop = StructuredArticleDraft(
+        title="Электроснабжение в Бердянске",
+        title_support_ids=(sup.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Электроснабжение в Бердянске", cited_support_ids=(sup.support_id,)
+            ),
+        ),
+        lead="В Бердянске восстановили подачу электроэнергии.",
+        lead_support_ids=(sup.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В Бердянске восстановили подачу электроэнергии",
+                cited_support_ids=(sup.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Электроснабжение",
+                heading_support_ids=(sup.support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В Бердянске восстановили подачу электроэнергии. В Бердянске восстановили подачу электроэнергии. В Бердянске восстановили подачу электроэнергии.",
+                        cited_support_ids=(sup.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В Бердянске восстановили подачу электроэнергии",
+                                cited_support_ids=(sup.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=30,
+    )
+
+    finalizer = ArticleFinalizer()
+    editorial_config = PublicationEditorialConfig(
+        article_min_sections=1,
+        article_min_words=5,
+        article_allow_deterministic_fallback=False,
+    )
+
+    result = await finalizer.finalize(
+        writer_draft=draft_with_loop,
+        writer_error=None,
+        writer_attempt_id=1,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=editorial_config,
+    )
+
+    assert result.writer_status == "passed"
+    para_text = result.draft.sections[0].paragraphs[0].text
+    # Must appear only once!
+    assert para_text.count("В Бердянске восстановили подачу электроэнергии.") == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_deduplicates_cross_section_paragraphs() -> None:
+    from src.publication.article_models import ArticleClaimAtom
+
+    sup1 = ArticleSupport(
+        support_id="story:1:evidence:0:frag:101",
+        text="В Бердянске восстановили подачу электроэнергии.",
+        source_text="В Бердянске восстановили подачу электроэнергии.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="established_fact",
+        story_id="story:1",
+    )
+    sup2 = ArticleSupport(
+        support_id="story:2:evidence:0:frag:201",
+        text="На проспекте Труда в общежитии газа нет совсем.",
+        source_text="На проспекте Труда в общежитии газа нет совсем.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:2",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="established_fact",
+        story_id="story:2",
+    )
+    sup3 = ArticleSupport(
+        support_id="story:1:evidence:1:frag:102",
+        text="Специалисты проверили состояние городских сетей.",
+        source_text="Специалисты проверили состояние городских сетей.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:3",),
+        fragment_ids=(3,),
+        source_item_ids=(3,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="established_fact",
+        story_id="story:1",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение", "Газоснабжение"),
+        support_index=(sup1, sup2, sup3),
+        support_by_id={sup1.support_id: sup1, sup2.support_id: sup2, sup3.support_id: sup3},
+        recurring_topics=(),
+        edition_anchor_terms=("Бердянск",),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(sup1.support_id, sup3.support_id),
+                detail_support_ids=(sup1.support_id, sup3.support_id),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:2",
+                topic="Газоснабжение",
+                rank=2,
+                prominence="WEAVE",
+                support_ids=(sup2.support_id,),
+                detail_support_ids=(sup2.support_id,),
+            ),
+        )
+    )
+
+    draft_with_dup_para = StructuredArticleDraft(
+        title="Городские события в Бердянске",
+        title_support_ids=(sup1.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Городские события в Бердянске", cited_support_ids=(sup1.support_id,)
+            ),
+        ),
+        lead="В Бердянске восстановили подачу электроэнергии.",
+        lead_support_ids=(sup1.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В Бердянске восстановили подачу электроэнергии",
+                cited_support_ids=(sup1.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Электроснабжение и газ",
+                heading_support_ids=(sup1.support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В Бердянске восстановили подачу электроэнергии.",
+                        cited_support_ids=(sup1.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В Бердянске восстановили подачу электроэнергии",
+                                cited_support_ids=(sup1.support_id,),
+                            ),
+                        ),
+                    ),
+                    ArticleParagraph(
+                        text="На проспекте Труда в общежитии газа нет совсем.",
+                        cited_support_ids=(sup2.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="На проспекте Труда в общежитии газа нет совсем",
+                                cited_support_ids=(sup2.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+            ArticleSection(
+                heading="Бытовые вопросы",
+                heading_support_ids=(sup2.support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="На проспекте Труда в общежитии газа нет совсем.",
+                        cited_support_ids=(sup2.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="На проспекте Труда в общежитии газа нет совсем",
+                                cited_support_ids=(sup2.support_id,),
+                            ),
+                        ),
+                    ),
+                    ArticleParagraph(
+                        text="Специалисты проверили состояние городских сетей.",
+                        cited_support_ids=(sup3.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Специалисты проверили состояние городских сетей",
+                                cited_support_ids=(sup3.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=50,
+    )
+
+    finalizer = ArticleFinalizer()
+    editorial_config = PublicationEditorialConfig(
+        article_min_sections=2,
+        article_min_words=5,
+        article_allow_deterministic_fallback=False,
+    )
+
+    result = await finalizer.finalize(
+        writer_draft=draft_with_dup_para,
+        writer_error=None,
+        writer_attempt_id=1,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=editorial_config,
+    )
+
+    assert result.writer_status == "passed"
+    rendered = result.draft.render_markdown()
+    # "газа нет совсем" was present in both sections; now it must appear only once!
+    assert rendered.count("На проспекте Труда в общежитии газа нет совсем.") == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_repairs_phantom_heading() -> None:
+    from src.publication.article_models import ArticleClaimAtom
+
+    sup1 = ArticleSupport(
+        support_id="story:1:evidence:0:frag:101",
+        text="В Бердянске восстановили подачу электроэнергии.",
+        source_text="В Бердянске восстановили подачу электроэнергии.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="established_fact",
+        story_id="story:1",
+    )
+    sup2 = ArticleSupport(
+        support_id="story:1:evidence:1:frag:102",
+        text="Ремонтные бригады завершили наладку оборудования.",
+        source_text="Ремонтные бригады завершили наладку оборудования.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:2",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="established_fact",
+        story_id="story:1",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение",),
+        support_index=(sup1, sup2),
+        support_by_id={sup1.support_id: sup1, sup2.support_id: sup2},
+        recurring_topics=(),
+        edition_anchor_terms=("Бердянск",),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:1",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(sup1.support_id, sup2.support_id),
+                detail_support_ids=(sup1.support_id, sup2.support_id),
+            ),
+        )
+    )
+
+    # Heading promises phantom topics after colon: "операторы, мобильный интернет и поиск кошки"
+    draft_phantom_heading = StructuredArticleDraft(
+        title="Электроснабжение в Бердянске",
+        title_support_ids=(sup1.support_id,),
+        title_claims=(
+            ArticleClaimAtom(
+                text="Электроснабжение в Бердянске", cited_support_ids=(sup1.support_id,)
+            ),
+        ),
+        lead="В Бердянске восстановили подачу электроэнергии.",
+        lead_support_ids=(sup1.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text="В Бердянске восстановили подачу электроэнергии",
+                cited_support_ids=(sup1.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Связь и сервисы: операторы, мобильный интернет и поиск кошки",
+                heading_support_ids=(sup1.support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text="В Бердянске восстановили подачу электроэнергии.",
+                        cited_support_ids=(sup1.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="В Бердянске восстановили подачу электроэнергии",
+                                cited_support_ids=(sup1.support_id,),
+                            ),
+                        ),
+                    ),
+                    ArticleParagraph(
+                        text="Ремонтные бригады завершили наладку оборудования.",
+                        cited_support_ids=(sup2.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text="Ремонтные бригады завершили наладку оборудования",
+                                cited_support_ids=(sup2.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        word_count=40,
+    )
+
+    finalizer = ArticleFinalizer()
+    editorial_config = PublicationEditorialConfig(
+        article_min_sections=1,
+        article_min_words=5,
+        article_allow_deterministic_fallback=False,
+    )
+
+    result = await finalizer.finalize(
+        writer_draft=draft_phantom_heading,
+        writer_error=None,
+        writer_attempt_id=1,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=editorial_config,
+    )
+
+    assert result.writer_status == "passed"
+    # Phantom subtopics trimmed from heading
+    assert result.draft.sections[0].heading == "Связь и сервисы"
+    assert "поиск кошки" not in result.draft.sections[0].heading

@@ -268,3 +268,27 @@ def test_article_coverage_plan_hierarchical_thematic_sections() -> None:
         assert sec.lead_story_id in [a.story_id for a in sec.story_assignments]
         assert sec.title
         assert sec.narrative_intent
+
+
+def test_pet_topic_signature_and_section_routing() -> None:
+    from src.publication.article_coverage import (
+        ArticleStoryCoverage,
+        _story_topic_signature,
+        _thematic_section_id,
+    )
+
+    story = ArticleStoryCoverage(
+        story_id="story:cat",
+        topic="Возле 5 школы сидит потерявшаяся кошка",
+        rank=1,
+        prominence="BRIEF",
+        support_ids=(),
+        detail_support_ids=(),
+    )
+    sig = _story_topic_signature(story, None)
+    assert sig == "pets"
+    assert sig != "sports"
+
+    sec_id = _thematic_section_id(story)
+    assert sec_id == "city_life"
+    assert sec_id != "culture_education"
