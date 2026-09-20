@@ -668,10 +668,20 @@ async def test_thin_safe_prose_under_800_words_not_rejected_as_fallback(conn, po
     mock_provider = AsyncMock()
     sup_id = f"story:{story_id}:evidence:0:frag:{frag_id}"
 
-    # Create a valid safe draft of ~200 words (between 180 and 800)
-    body_text = (
-        "В центральной части города зафиксировано аварийное отключение электроэнергии. " * 25
-    )
+    para_text = "В центральной части города зафиксировано аварийное отключение электроэнергии."
+    paragraphs = [
+        {
+            "text": para_text,
+            "cited_support_ids": [sup_id],
+            "claims": [
+                {
+                    "text": "В центральной части города аварийное отключение электроэнергии.",
+                    "cited_support_ids": [sup_id],
+                }
+            ],
+        }
+        for _ in range(25)
+    ]
     mock_provider.chat_completion.return_value = json.dumps(
         {
             "title": "Аварийное отключение электроэнергии в центральной части города",
@@ -700,18 +710,7 @@ async def test_thin_safe_prose_under_800_words_not_rejected_as_fallback(conn, po
                             "cited_support_ids": [sup_id],
                         }
                     ],
-                    "paragraphs": [
-                        {
-                            "text": body_text,
-                            "cited_support_ids": [sup_id],
-                            "claims": [
-                                {
-                                    "text": "В центральной части города аварийное отключение электроэнергии.",
-                                    "cited_support_ids": [sup_id],
-                                }
-                            ],
-                        }
-                    ],
+                    "paragraphs": paragraphs,
                 }
             ],
         }
