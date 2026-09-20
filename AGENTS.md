@@ -274,9 +274,13 @@ The writer must never invent or silently upgrade:
 - official confirmation;
 - city-wide scope from a single local observation;
 - trends from a single question;
-- answers to resident questions.
+- answers to resident questions;
+- spatial proximity between disparate neighborhoods or elevation zones (never transfer relative distance locators like «буквально через два квартала» between different districts);
+- routine service states from emotional chat sarcasm (never invent adverbs like «обычно» to turn neighbor envy into an operational fact).
 
 A community report may be published as a community report. It must not be rewritten as an official or established fact unless the evidence supports that upgrade.
+
+Recognized street aliases (e.g. Центральная = Карла Маркса = Тверская; Горбенко = Лютеранская) describe the same physical street; the writer must unify them rather than asserting mutually contradictory availability schedules for the same street in consecutive sentences.
 
 ### Direct quotes
 
@@ -353,6 +357,10 @@ Agents must not make changes whose effect is to:
 - reintroduce claim-first per-message LLM explosion as the default processing architecture;
 - hardcode one city's geography or examples into generic production prompt logic;
 - leak Telegram ingestion mechanics, chat kitchen, or source channel names into reader-facing text (e.g. "перекличка", "в чатах", "в каналах", "участник чата", "в пабликах" — translate community check-ins and reports into natural journalistic attribution without revealing technical kitchen);
+- transfer relative distance phrases across disparate neighborhoods or elevation zones (e.g. asserting that uphill plateau streets are "через два квартала" from downhill sea-level streets);
+- treat known street aliases (e.g. Центральная / Карла Маркса / Тверская; Горбенко / Лютеранская) as separate competing streets with contradictory schedules;
+- promote chat sarcasm, hyperbole, or neighbor complaints into operational baseline statements across digests or articles;
+- conflate utility domains (e.g. asserting water shutoffs based on electrical outage reports);
 - configure or run AI models not explicitly declared in `.env` (strict runtime allowlist enforced in `src/ai_providers.py`).
 
 

@@ -163,3 +163,92 @@ def test_normalize_zerkalny_toponym() -> None:
     assert (
         normalize_berdyansk_toponyms(t3) == "В Бердянске из супермаркета «Зеркальный» вывозят товар"
     )
+
+
+@pytest.mark.unit
+def test_normalize_gorbenko_center_misattribution() -> None:
+    t1 = "Сообщают, что в Колонии на Горбенко включили воду."
+    assert (
+        normalize_edition_toponyms(t1, edition_slug="berdyansk")
+        == "Сообщают, что в Центре на улице Горбенко включили воду."
+    )
+
+
+@pytest.mark.unit
+def test_berdyansk_toponym_rules_coverage() -> None:
+    from src.domain.edition_geography import _BERDYANSK_TOPONYM_RULES
+
+    rules_text = "\n".join(_BERDYANSK_TOPONYM_RULES)
+    # Check Central / Karl Marx / Tverskaya rule
+    assert "Центральная" in rules_text
+    assert "Карла Маркса" in rules_text
+    assert "Тверская" in rules_text
+    assert "ОДНА И ТА ЖЕ" in rules_text
+
+    # Check Gorbenko / Lyuteranskaya in Center, not Koloniya
+    assert "Горбенко" in rules_text
+    assert "Лютеранская" in rules_text
+    assert "НЕ относится к Колонии" in rules_text
+    assert "Розы Люксембург" in rules_text or "Грецкой" in rules_text
+
+    # Check 8 Marta distinction from Gora
+    assert "8 Марта" in rules_text
+    assert "НЕ входит в Нагорную часть" in rules_text
+
+    # Check relief and distance rules
+    assert "через два квартала" in rules_text
+    assert "50-метровым" in rules_text
+
+
+@pytest.mark.unit
+def test_berdyansk_city_profile_street_aliases() -> None:
+    from pathlib import Path
+
+    import yaml
+
+    profile_path = Path("data/city_profiles/berdyansk.yaml")
+    assert profile_path.exists()
+    with open(profile_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    geo = data["stable_context"]["geography"]
+
+    # Check Gora description doesn't claim 8 Marta is part of Gora
+    areas = []
+    for area_set in geo.get("area_sets", []):
+        areas.extend(area_set.get("areas", []))
+    named_areas = {a["id"]: a for a in areas if "id" in a}
+    assert "gora" in named_areas
+    assert "8 Марта" not in named_areas["gora"].get("description", "")
+
+    # Check street entities in street_gazetteer
+    entries = {
+        e["entity_id"]: e
+        for e in geo.get("street_gazetteer", {}).get("entries", [])
+        if "entity_id" in e
+    }
+
+    # street:Центральна has Тверская and Карла Маркса
+    central = entries.get("street:Центральна")
+    assert central is not None
+    alias_texts = [a["text"] for a in central.get("aliases", [])]
+    assert "Тверская" in alias_texts
+    assert "Карла Маркса" in alias_texts
+
+    # street:Земська has Красная
+    zemska = entries.get("street:Земська")
+    assert zemska is not None
+    zemska_aliases = [a["text"] for a in zemska.get("aliases", [])]
+    assert "Красная" in zemska_aliases
+
+    # street:Грецька has Грецкая
+    gretska = entries.get("street:Грецька")
+    assert gretska is not None
+    gretska_aliases = [a["text"] for a in gretska.get("aliases", [])]
+    assert "Грецкая" in gretska_aliases
+
+    # street:Лютеранська is in Center
+    lyut = entries.get("street:Лютеранська")
+    assert lyut is not None
+    area_ids = [m["area_id"] for m in lyut.get("area_memberships", [])]
+    assert "center" in area_ids

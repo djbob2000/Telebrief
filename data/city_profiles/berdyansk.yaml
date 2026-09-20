@@ -270,7 +270,7 @@ stable_context:
         - Гора
         - на горе
         - горе
-        description: Нагорная часть города (крупный исторический район на возвышенности, объединяющий АЗМОЛ, Скловолокно, АКЗ, РТС, Военный городок, 8 Марта; не является отдельным микрорайоном)
+        description: Нагорная часть города (крупный исторический район на возвышенности, объединяющий АЗМОЛ, Скловолокно, АКЗ, РТС, Военный городок; не является отдельным микрорайоном)
         status: probable_alias
         relation:
           type: probable_alias_of
@@ -1571,6 +1571,9 @@ stable_context:
         canonical_name: Грецька
         object_type: street
         aliases:
+        - text: Грецкая
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
         - text: Р. Люксембург
           status: historical_pre_2016
           source_ref: brd24_2016_renames
@@ -2154,6 +2157,9 @@ stable_context:
         canonical_name: Земська
         object_type: street
         aliases:
+        - text: Красная
+          status: common_ru_or_abbreviation
+          source_ref: editorial_normalization
         - text: Червона
           status: historical_pre_2016
           source_ref: brd24_2016_renames
@@ -5876,6 +5882,12 @@ stable_context:
         canonical_name: Центральна
         object_type: street
         aliases:
+        - text: Тверская
+          status: historical_pre_1920
+          source_ref: brd_historical_names
+        - text: Тверська
+          status: historical_pre_1920_ukr
+          source_ref: brd_historical_names
         - text: Карла Маркса
           status: historical_pre_2016
           source_ref: brd24_2016_renames
