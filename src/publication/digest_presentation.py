@@ -1866,14 +1866,15 @@ def build_thematic_topic_bundles(
             tk, _, _ = _canonical_topic_family(c, rid)
             family_counts[tk] = family_counts.get(tk, 0) + 1
 
-        other_tokens_by_group: dict[str, set[str]] = {}
+        _UNIFIED_UTILITY_TOPICS = frozenset(
+            {"electricity", "water", "gas", "heating", "connectivity"}
+        )
+        tokens_by_group: dict[str, set[str]] = {}
         for c in r_cards:
             t_key, _, _ = _canonical_topic_family(c, rid)
-            # A rubric fallback such as ``other_general`` is only a label, not
-            # evidence that two stories describe the same subject. However, cards
-            # discussing the same specific event or subject (e.g. clip/song) should
-            # merge into one bundle rather than cluttering the digest with duplicates.
-            if t_key == "other_general":
+            if t_key in _UNIFIED_UTILITY_TOPICS:
+                group_key = t_key
+            else:
                 c_text = f"{getattr(c, 'topic', '')} {getattr(c, 'summary', '')}".casefold()
                 _stop_words = {
                     "в",
@@ -1921,7 +1922,9 @@ def build_thematic_topic_bundles(
                 }
                 c_tokens = set(re.findall(r"[a-zа-яёіїєґ0-9]{3,}", c_text)) - _stop_words
                 matched_group_key = None
-                for g_key, g_tokens in other_tokens_by_group.items():
+                for g_key, g_tokens in tokens_by_group.items():
+                    if not g_key.startswith(f"{t_key}:"):
+                        continue
                     inter = c_tokens & g_tokens
                     if len(inter) >= 3 or (len(inter) >= 2 and len(c_tokens) <= 4):
                         matched_group_key = g_key
@@ -1936,9 +1939,7 @@ def build_thematic_topic_bundles(
                     ).casefold()
                     fingerprint = re.sub(r"\W+", "_", raw_fingerprint).strip("_")[:96]
                     group_key = f"{t_key}:fact:{fingerprint}" if fingerprint else f"{t_key}:{c.id}"
-                    other_tokens_by_group[group_key] = set(c_tokens)
-            else:
-                group_key = t_key
+                    tokens_by_group[group_key] = set(c_tokens)
             groups_by_key.setdefault(group_key, []).append(c)
 
         rubric_bundles: list[TopicBundle] = []

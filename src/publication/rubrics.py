@@ -131,7 +131,8 @@ class DigestRubricClassifier:
             r"\b(?:"
             r"взрыв\w*|обстрел\w*|пво\b|бпла\b|дрон\w*|прил[её]т\w*|атак\w*|"
             r"бомб\w*|авиабомб\w*|фаб\b|каб\b|ракети?\w*|мин[аы]\b|"
-            r"пожар\w*|возгоран\w*|пострадавш\w*|ранен\w*|погиб\w*|контузи\w*"
+            r"пожар\w*|возгоран\w*|пострадавш\w*|ранен\w*|погиб\w*|контузи\w*|"
+            r"разрушен\w*|разрух\w*|детонаци\w*|попадани\w*"
             r")\b",
             re.IGNORECASE,
         )
@@ -144,9 +145,16 @@ class DigestRubricClassifier:
             c_text = f"{card.topic} {card.summary}"
 
             # Safety and strike events take priority over vehicle/transport mentions
-            if _SAFETY_PRIORITY_RE.search(c_text) and "safety" in known_rubrics_by_id:
+            if (
+                _SAFETY_PRIORITY_RE.search(c_text)
+                or re.search(
+                    r"\bэкватор\w*\b[^.!?]{0,40}\b(?:прил[её]т|пожар|разруш|сгорел|пострада|удар)\b",
+                    c_text,
+                    re.IGNORECASE,
+                )
+            ) and "safety" in known_rubrics_by_id:
                 matched_rid = "safety"
-            elif c_cat in known_rubrics_by_id:
+            elif c_cat in known_rubrics_by_id and c_cat not in ("other", "general"):
                 matched_rid = c_cat
             elif c_cat in _CATEGORY_SYNONYMS:
                 for syn in _CATEGORY_SYNONYMS[c_cat]:
@@ -164,6 +172,45 @@ class DigestRubricClassifier:
                 if len(valid_candidates) == 1:
                     matched_rid = next(iter(valid_candidates))
                     matched_method = "family_fallback"
+                elif len(valid_candidates) > 1:
+                    # Resolve multi-family matches by topic focus
+                    c_topic_l = (card.topic or "").lower()
+                    if "communications" in valid_candidates and re.search(
+                        r"\b(?:интернет|провайдер|оптик|связ|wifi|wi-fi|7телеком|миранд|онэт|мобайл)\b",
+                        c_topic_l,
+                    ):
+                        matched_rid = "communications"
+                        matched_method = "family_fallback"
+                    elif "health" in valid_candidates and re.search(
+                        r"\b(?:врач|поликлиник|больниц|аптек|стоматолог|эндокринолог|невролог|анализ|лаборатор|кабинет)\b",
+                        c_topic_l,
+                    ):
+                        matched_rid = "health"
+                        matched_method = "family_fallback"
+                    elif "economy" in valid_candidates and re.search(
+                        r"\b(?:магазин|рынок|книжн|супермаркет|ozon|озон|wildberries|вайлдберриз|зоомагазин|товар|цен[ыа]|предприяти|бизнес)\b",
+                        c_topic_l,
+                    ):
+                        matched_rid = "economy"
+                        matched_method = "family_fallback"
+                    elif "society" in valid_candidates and re.search(
+                        r"\b(?:пенси|пенсион|выплат|пособи|гуманитарн|ецп|соцзащит)\b",
+                        c_topic_l,
+                    ):
+                        matched_rid = "society"
+                        matched_method = "family_fallback"
+                    elif "civic_services" in valid_candidates and re.search(
+                        r"\b(?:банк|банкомат|сбер|псб|паспорт|мфц|нотариус|документ)\b",
+                        c_topic_l,
+                    ):
+                        matched_rid = "civic_services"
+                        matched_method = "family_fallback"
+                    elif "infrastructure" in valid_candidates:
+                        matched_rid = "infrastructure"
+                        matched_method = "family_fallback"
+                    elif "mobility" in valid_candidates:
+                        matched_rid = "mobility"
+                        matched_method = "family_fallback"
 
             if matched_rid:
                 assignments_by_card_id[card.id] = RubricAssignment(

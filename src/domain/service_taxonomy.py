@@ -69,6 +69,15 @@ SERVICE_FAMILY_STEMS: dict[str, frozenset[str]] = {
             "сеть",
             "wi-fi",
             "wifi",
+            "оптик",
+            "7телеком",
+            "миранд",
+            "онэт",
+            "миртелеком",
+            "мобайл",
+            "сим-карт",
+            "симкарт",
+            "сотов",
             "telecom",
             "internet",
             "cellular",
@@ -77,7 +86,22 @@ SERVICE_FAMILY_STEMS: dict[str, frozenset[str]] = {
         }
     ),
     "banking": frozenset(
-        {"банк", "банкомат", "терминал", "платеж", "bank", "atm", "banking", "payment"}
+        {
+            "банк",
+            "банки",
+            "банкомат",
+            "банкоматы",
+            "терминал",
+            "платеж",
+            "наличн",
+            "сбер",
+            "псб",
+            "сбол",
+            "bank",
+            "atm",
+            "banking",
+            "payment",
+        }
     ),
     "transport": frozenset(
         {
@@ -102,6 +126,108 @@ SERVICE_FAMILY_STEMS: dict[str, frozenset[str]] = {
             "маршрутка",
             "трамвай",
             "троллейбус",
+        }
+    ),
+    "health": frozenset(
+        {
+            "больниц",
+            "поликлиник",
+            "аптек",
+            "врач",
+            "медицин",
+            "стоматолог",
+            "эндокринолог",
+            "невролог",
+            "педиатр",
+            "хирург",
+            "госпитал",
+            "скорая",
+            "медучрежден",
+            "анализ",
+            "лаборатор",
+            "health",
+            "hospital",
+            "clinic",
+            "pharmacy",
+            "doctor",
+        }
+    ),
+    "economy": frozenset(
+        {
+            "магазин",
+            "рынок",
+            "торгов",
+            "супермаркет",
+            "товар",
+            "цена",
+            "цены",
+            "стоимост",
+            "ozon",
+            "озон",
+            "wildberries",
+            "вайлдберриз",
+            "предприяти",
+            "бизнес",
+            "книжн",
+            "зоомагазин",
+            "retail",
+            "market",
+            "shop",
+            "supermarket",
+        }
+    ),
+    "social": frozenset(
+        {
+            "пенси",
+            "пенсион",
+            "соцвыплат",
+            "пособи",
+            "гуманитарн",
+            "гумпомощ",
+            "льгот",
+            "соцзащит",
+            "ецп",
+            "соцпомощ",
+        }
+    ),
+    "civic_services": frozenset(
+        {
+            "паспорт",
+            "мфц",
+            "госуслуг",
+            "нотариус",
+            "вытрезвител",
+            "администраци",
+            "загс",
+            "документ",
+        }
+    ),
+    "education_culture": frozenset(
+        {
+            "школ",
+            "детсад",
+            "училищ",
+            "вуз",
+            "музей",
+            "библиотек",
+            "театр",
+            "культур",
+            "образован",
+        }
+    ),
+    "safety": frozenset(
+        {
+            "взрыв",
+            "обстрел",
+            "пво",
+            "дрон",
+            "бпла",
+            "прилет",
+            "пожар",
+            "возгоран",
+            "разрушен",
+            "разрух",
+            "сирен",
         }
     ),
     "logistics": frozenset({"доставк", "почт", "курьер", "parcel", "postal", "delivery"}),
@@ -144,4 +270,16 @@ def map_family_to_rubric(family: str) -> str | None:
         return "mobility"
     if family in ("power", "water", "gas", "heating", "lift", "municipal"):
         return "infrastructure"
+    if family == "health":
+        return "health"
+    if family == "economy":
+        return "economy"
+    if family == "social":
+        return "society"
+    if family in ("civic_services", "banking"):
+        return "civic_services"
+    if family == "education_culture":
+        return "education_culture"
+    if family == "safety":
+        return "safety"
     return None

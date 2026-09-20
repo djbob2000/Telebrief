@@ -122,13 +122,12 @@ _NON_EDITORIAL_PAYLOAD_RE = re.compile(
     r"намерени\w*\s+порыбач\w*|порыбач\w*[^.!?]{0,80}снять\s+видео|"
     r"вакцинирован\w*[^.!?]{0,80}стерилизован\w*|"
     r"стерилизован\w*[^.!?]{0,80}разведени\w*|"
-    r"(?:кошк\w*|котён\w*|котен\w*)[^.!?]{0,100}(?:потеря\w*|стерилизован\w*)|"
     r"может\s+кто[- ]то\s+потерял|"
     r"ежедневн\w*\s+(?:автобусн\w*\s+)?(?:рейс\w*|пассажирск\w*\s+перевоз\w*)|"
     r"не\s+может\s+пройти\s+через\s+кпп|"
     r"не\s+вернул\w*\s+деньги|"
-    r"иронизиру\w*|вспомина\w*|делится\s+мнени\w*|"
-    r"врать\s+не\s+надо|как\s+раньше\s+уже\s+не\s+будет|"
+    r"иронизиру\w*|вспомина\w*|делится\s+(?:своим\s+)?опытом|делится\s+мнени\w*|рассказыва(?:ет|ют)\s+(?:о\s+сво[её]м|как\s+(?:он|она|они)|что\s+у\s+(?:него|неё|них))|"
+    r"(?:газов\w*\s+баллон\w*[^.!?]{0,40}(?:хватает|заправк\w*|деньги\s+на|купил|купили|есть\s+деньги))|"
     r"жив\w*\s+(?:дома|как\s+и\s+жил)|"
     r"упомина\w*\s+(?:район|бердянск)|"
     r"депутат\w*[^.!?]{0,80}(?:чат|пиар)|"
@@ -375,6 +374,19 @@ def validate_story_publication_eligibility(
         + [getattr(item, "text", "") for item in non_question_items]
     ).lower()
 
+    # Rule 2a: Exclude lost & found animals / pets and personal lost items
+    if re.search(
+        r"\b(?:нашли\s+собаку|найдена\s+собака|найденная\s+собака|найденной\s+собаке|найденную\s+собаку|"
+        r"найденного\s+кота|найденный\s+кот|найденная\s+кошка|нашли\s+щенка|"
+        r"ищ(?:ет|ут|ем)\s+хозяина|поиск\s+хозяев|поиски\s+хозяина|"
+        r"(?:пропавш\w*|потерявш\w*|потерян\w*|потерял\w*|пропал\w*|найден\w*|нашл\w*|ищ[еу]т)\s+[^.!?]{0,30}(?:кошк\w*|собак\w*|кот[а-я]*|п[её]с\w*|щен\w*|питомц\w*)|"
+        r"(?:кошк\w*|собак\w*|кот[а-я]*|п[её]с\w*|щен\w*|питомц\w*)[^.!?]{0,40}(?:пропавш\w*|потерявш\w*|потерян\w*|потерял\w*|пропал\w*|нашл\w*|найден\w*|видели\s+возле|сбежал\w*)|"
+        r"потерял\s+рюкзак|оставил\s+рюкзак|потеряли\s+вещи)\b",
+        all_story_text,
+        re.IGNORECASE,
+    ):
+        return False, "lost_and_found_pet"
+
     if _NON_EDITORIAL_PAYLOAD_RE.search(all_story_text):
         return False, "non_editorial_payload"
 
@@ -534,17 +546,6 @@ def validate_story_publication_eligibility(
             for item in non_question_items
         ):
             return False, "conversational_chatter_recipe"
-
-    # Rule 5: Exclude lost & found animals / pets and personal lost items
-    if re.search(
-        r"\b(?:нашли\s+собаку|найдена\s+собака|найденная\s+собака|найденной\s+собаке|найденную\s+собаку|"
-        r"найденного\s+кота|найденный\s+кот|найденная\s+кошка|нашли\s+щенка|"
-        r"ищ(?:ет|ут|ем)\s+хозяина|поиск\s+хозяев|поиски\s+хозяина|"
-        r"потерял\s+рюкзак|оставил\s+рюкзак|потеряли\s+вещи)\b",
-        all_story_text,
-        re.IGNORECASE,
-    ):
-        return False, "lost_and_found_pet"
 
     # Keep eligibility aligned with digest presentation.  Some stale
     # revisions have a predicate-bearing generated headline, while their only

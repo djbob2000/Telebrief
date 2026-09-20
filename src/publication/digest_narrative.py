@@ -205,6 +205,57 @@ def _fix_duplicated_attribution(headline: str, body: str) -> tuple[str, str]:
     return headline, body
 
 
+def _fix_chat_leaks(text: str) -> str:
+    """Normalize internal chat/channel references to natural journalistic attribution."""
+    if not text:
+        return text
+    # 1. "В городских чатах Бердянска обсуждают" -> "Жители Бердянска обсуждают"
+    t = re.sub(
+        r"\bв\s+(?:городских\s+|местных\s+|районных\s+)?чатах\s+([А-Яа-яA-Za-z-]+)\s+(обсужда\w*|сообща\w*|пиш\w*)\b",
+        r"Жители \1 \2",
+        text,
+        flags=re.IGNORECASE,
+    )
+    # 2. "В городских чатах обсуждают" -> "Жители обсуждают"
+    t = re.sub(
+        r"\bв\s+(?:городских\s+|местных\s+|районных\s+)?чатах\s+(обсужда\w*|сообща\w*|пиш\w*)\b",
+        r"Жители \1",
+        t,
+        flags=re.IGNORECASE,
+    )
+    # 3. "в городских чатах / в чатах / в чате / в пабликах / в каналах"
+    t = re.sub(
+        r"\bв\s+(?:городских\s+|местных\s+|районных\s+)?чатах(?:\s+[А-Яа-яA-Za-z-]+)?\b",
+        "в городе",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\bв\s+(?:городском\s+|местном\s+|районном\s+)?чате(?:\s+[А-Яа-яA-Za-z-]+)?\b",
+        "в городе",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(r"\bв\s+(?:местных\s+)?пабликах\b", "в городе", t, flags=re.IGNORECASE)
+    t = re.sub(
+        r"\bв\s+(?:телеграм[- ]каналах|telegram[- ]каналах|каналах)\b",
+        "в городе",
+        t,
+        flags=re.IGNORECASE,
+    )
+    # 4. "участник(и) чата" -> "жители / очевидцы"
+    t = re.sub(r"\bучастники?\s+чата\b", "жители", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bучастников\s+чата\b", "жителей", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bперекличк[а-я]*\b", "сообщения жителей", t, flags=re.IGNORECASE)
+    # Clean whitespace and ensure sentence starts with uppercase
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    if t and t[0].islower():
+        t = t[0].upper() + t[1:]
+    # Capitalize after sentence ends
+    t = re.sub(r"([.!?]\s+)([а-яё])", lambda m: m.group(1) + m.group(2).upper(), t)
+    return t
+
+
 def sanitize_digest_narrative_draft(draft: DigestNarrativeDraft) -> DigestNarrativeDraft:
     """Sanitize all items in a narrative digest draft before quality audit and rendering."""
     from src.publication.digest_quality_diagnostics import _TEMPORAL_CHAIN_RE
@@ -214,8 +265,11 @@ def sanitize_digest_narrative_draft(draft: DigestNarrativeDraft) -> DigestNarrat
         new_items = []
         for it in b.items:
             clean_hl = _TEMPORAL_CHAIN_RE.sub(" ", it.headline)
+            clean_hl = _fix_chat_leaks(clean_hl)
             clean_hl = re.sub(r"\s{2,}", " ", clean_hl).strip()
+
             clean_body = _TEMPORAL_CHAIN_RE.sub(" ", it.body)
+            clean_body = _fix_chat_leaks(clean_body)
             clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
 
             clean_hl, clean_body = _fix_redundant_headline_and_body(clean_hl, clean_body)
@@ -3271,7 +3325,8 @@ class DigestNarrativeWriter:
                 "- Never output meta-commentary like 'Новых сообщений не поступало' or 'тихий день'. Focus strictly on concrete reported facts.\n"
                 "- Natural, varied journalistic attribution: Do NOT repeat the phrase 'По сообщениям жителей' across items. Vary attribution naturally ('горожане отмечают', 'по словам жителей', 'в районе зафиксировали', 'жители сообщают') or state established civic events directly ('Провайдер приступил к работам', 'Вступил в силу запрет', 'Над городом фиксировались'). Never start consecutive items with the same attribution opening. Never place attribution in the headline.\n"
                 "- Filter out chat noise: do NOT mention chat polls, stickers, reactions, greetings, or off-topic conversational chatter.\n"
-                "- Never reveal collection mechanics or chat sources: do NOT write 'в чате', 'в Telegram-чате', 'в чате Бердянска', 'участники чата', 'со слов <имя>'. Synthesize into smooth civic news ('в городе', 'по словам горожан', 'жители сообщают', or state facts directly).\n"
+                "- NEVER mention chat sources or social channels: forbidden phrases include 'в чатах', 'в городских чатах', 'в каналах', 'участники чата', 'в пабликах', 'перекличка'. Always translate into natural journalistic language: 'жители сообщают', 'в городе отмечают', 'по сообщениям горожан' or state facts directly.\n"
+                "- Do NOT invent compound Frankenstein headlines merging unrelated topics, separate facilities, or distinct businesses (e.g. NEVER write 'X пострадал, где купить Y'). Keep separate businesses, different facilities, and unrelated incidents distinct.\n"
                 "- Rich local detail: preserve concrete micro-locations (districts, streets, landmarks), contrasts between neighborhoods, specific durations, equipment, and practical resident consequences from 'fact_ledger'. Do not flatten concrete lived reality into vague generic summaries.\n\n"
                 f"{narrative_contract}\n\n"
                 "OUTPUT FORMAT REQUIREMENTS:\n"
@@ -3347,6 +3402,8 @@ class DigestNarrativeWriter:
                 "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
                 "- State facts directly. NEVER invent or infer unverified causal relations or mechanisms (using phrases like 'из-за чего', 'по причине', 'вследствие', 'в результате') unless that causal relation is explicitly stated in the source evidence.\n"
                 "- Attribution: Attribute source role naturally ('По сообщениям жителей', 'По данным коммунальных служб') at most once per item. Never place attribution in the headline.\n"
+                "- NEVER mention chat sources or social channels: forbidden phrases include 'в чатах', 'в городских чатах', 'в каналах', 'участники чата', 'в пабликах', 'перекличка'. Always translate into natural journalistic language: 'жители сообщают', 'в городе отмечают', 'по сообщениям горожан' or state facts directly.\n"
+                "- Do NOT invent compound Frankenstein headlines merging unrelated topics, separate facilities, or distinct businesses (e.g. NEVER write 'X пострадал, где купить Y'). Keep separate businesses, different facilities, and unrelated incidents distinct.\n"
                 "- Claims must be short atomic factual statements supported by cited_support_ids.\n\n"
                 f"{narrative_contract}\n\n"
                 "OUTPUT FORMAT REQUIREMENTS:\n"

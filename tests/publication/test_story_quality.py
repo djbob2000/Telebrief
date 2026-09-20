@@ -319,7 +319,11 @@ def test_validate_story_publication_eligibility_rejects_meta_only_local_reports(
         is_valid, reason = validate_story_publication_eligibility(payload)
 
         assert is_valid is False
-        assert reason in {"non_editorial_payload", "lacks_meaningful_predicate"}
+        assert reason in {
+            "non_editorial_payload",
+            "lacks_meaningful_predicate",
+            "lost_and_found_pet",
+        }
 
 
 def test_validate_story_publication_eligibility_does_not_use_noun_headline_as_fact():
