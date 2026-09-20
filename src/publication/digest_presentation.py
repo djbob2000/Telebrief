@@ -1239,7 +1239,9 @@ def _canonical_topic_family(card: Any, rubric_id: str = "") -> tuple[str, str, s
         "пнкб",
         "карта",
         "перерасчет",
-    } & tokens:
+    } & tokens or bool(
+        re.search(r"\b(?:банк\w*|сбер\w*|псб\b|пнкб\b|сбол\b|наличн\w*)\b", text_corpus)
+    ):
         return ("banking", "Банки и наличные", "🏧")
 
     # 11. Medicine & Health
@@ -1291,7 +1293,22 @@ def _canonical_topic_family(card: Any, rubric_id: str = "") -> tuple[str, str, s
     } & tokens:
         return ("social", "Социальная помощь", "🏢")
 
-    # 14. Economy & Business
+    # 14. Logistics / Marketplaces & Deliveries
+    if {
+        "ozon",
+        "озон",
+        "wildberries",
+        "вайлдберриз",
+        "доставка",
+        "посылка",
+        "посылки",
+        "сдэк",
+        "маркетплейс",
+        "пвз",
+    } & tokens:
+        return ("logistics", "Доставка и маркетплейсы", "📦")
+
+    # 15. Economy & Business
     if {
         "магазин",
         "магазины",
@@ -1405,8 +1422,13 @@ _FACT_INTERNAL_METADATA_RE = re.compile(
     re.IGNORECASE,
 )
 _FACT_QUESTION_RE = re.compile(
-    r"(?:\?|\b(?:интересу(?:ется|ются|ются|ются)|спрашива(?:ет|ют|ют)|"
-    r"выясня(?:ет|ют)|узна(?:ет|ют)|подскажите|кто\s+знает)\b)",
+    r"(?:\?|\b(?:"
+    r"интересу(?:ется|ются)|спрашива(?:ет|ют)|"
+    r"выясня(?:ет|ют)|узна(?:ет|ют)|подскажите|кто\s+знает|"
+    r"где\s+(?:купить|найти|приобрести|заказать)|"
+    r"как\s+(?:доехать|проехать|попасть|добраться)|"
+    r"посоветуйте|ищу\s+(?:где|магазин|мастера|работу|квартиру)"
+    r")\b)",
     re.IGNORECASE,
 )
 _FACT_META_OR_ADVICE_RE = re.compile(
@@ -1428,7 +1450,9 @@ _FACT_DIRECTORY_OR_PROMO_RE = re.compile(
     r"атмосфер\w*\s+красот\w*|маленьк\w*\s+леди|"
     r"при[её]м\s+автомобил\w*\s+в\s+разбор|"
     r"задава(?:ть|йте)\s+вопрос\w*\s+в\s+личн\w*\s+сообщени\w*|"
-    r"сообщени[ея]\s+о\s+контактн\w*\s+телефон\w*"
+    r"сообщени[ея]\s+о\s+контактн\w*\s+телефон\w*|"
+    r"вступа(?:йте|ть)\s+в\b|подписыва(?:йтесь|ться)|переходи(?:те|ть)\s+по\s+ссылке|"
+    r"канал\s+max\b|чат\s+max\b|групп[а-я]\s+max\b"
     r")\b",
     re.IGNORECASE,
 )
@@ -1801,6 +1825,11 @@ def _is_usable_fact_line(text: str) -> bool:
             "за сотку",
             "напишите в лс",
             "написать в лс",
+            "вступайте",
+            "подписывайтесь",
+            "переходите в канал",
+            "канал max",
+            "чат max",
         )
     ):
         return False
@@ -1831,6 +1860,50 @@ def _is_usable_fact_line(text: str) -> bool:
         return False
 
     return True
+
+
+def _extract_distinctive_entities(text: str) -> set[str]:
+    """Extract distinctive anchor entities, quoted names, Latin brands, and specific facilities."""
+    entities: set[str] = set()
+    if not text:
+        return entities
+    t_l = text.casefold()
+    # 1. Quoted names: «...» or "..."
+    for match in re.findall(r'[«"“]([^»"”]{2,30})[»"”]', text):
+        clean_q = re.sub(r"[^\w\s-]", "", match).strip().casefold()
+        if len(clean_q) >= 3 and clean_q not in {
+            "город",
+            "бердянск",
+            "новости",
+            "внимание",
+            "справка",
+            "информация",
+            "официально",
+        }:
+            entities.add(clean_q)
+    # 2. Latin brands/words (e.g. ozon, wildberries, etc.)
+    for latin in re.findall(r"\b[a-z]{3,}\b", t_l):
+        if latin not in {"the", "and", "for", "com", "ru", "html", "http", "https"}:
+            entities.add(latin)
+    # 3. Specific Cyrillic facility / brand anchor stems
+    _ANCHOR_PATTERNS = {
+        r"\bэкватор\w*\b": "экватор",
+        r"\bозон\w*\b": "ozon",
+        r"\bвайлдберриз\w*\b": "wildberries",
+        r"\bсбер\w*\b": "сбер",
+        r"\bпсб\b": "псб",
+        r"\bпенсионн\w*\s+фонд\w*\b": "пенсионный_фонд",
+        r"\bшереметьев\w*\b": "шереметьево",
+        r"\bчонгар\w*\b": "чонгар",
+        r"\bводоканал\w*\b": "водоканал",
+        r"\bгоргаз\w*\b": "горгаз",
+        r"\bгорсвет\w*\b": "горсвет",
+        r"\bтеплосет\w*\b": "теплосеть",
+    }
+    for pat, canonical in _ANCHOR_PATTERNS.items():
+        if re.search(pat, t_l):
+            entities.add(canonical)
+    return entities
 
 
 def build_thematic_topic_bundles(
@@ -1866,16 +1939,32 @@ def build_thematic_topic_bundles(
             tk, _, _ = _canonical_topic_family(c, rid)
             family_counts[tk] = family_counts.get(tk, 0) + 1
 
-        _UNIFIED_UTILITY_TOPICS = frozenset(
-            {"electricity", "water", "gas", "heating", "connectivity"}
+        _UNIFIED_THEMATIC_TOPICS = frozenset(
+            {
+                "electricity",
+                "water",
+                "gas",
+                "heating",
+                "connectivity",
+                "logistics",
+                "banking",
+                "transport",
+                "health",
+                "civic_services",
+                "social",
+                "education",
+            }
         )
         tokens_by_group: dict[str, set[str]] = {}
+        entities_by_group: dict[str, set[str]] = {}
         for c in r_cards:
             t_key, _, _ = _canonical_topic_family(c, rid)
-            if t_key in _UNIFIED_UTILITY_TOPICS:
+            if t_key in _UNIFIED_THEMATIC_TOPICS:
                 group_key = t_key
             else:
-                c_text = f"{getattr(c, 'topic', '')} {getattr(c, 'summary', '')}".casefold()
+                c_full_text = f"{getattr(c, 'topic', '')} {getattr(c, 'summary', '')}"
+                c_text = c_full_text.casefold()
+                c_entities = _extract_distinctive_entities(c_full_text)
                 _stop_words = {
                     "в",
                     "на",
@@ -1919,26 +2008,62 @@ def build_thematic_topic_bundles(
                     "время",
                     "словам",
                     "данным",
+                    "городское",
+                    "городские",
+                    "событие",
+                    "события",
+                    "новости",
                 }
                 c_tokens = set(re.findall(r"[a-zа-яёіїєґ0-9]{3,}", c_text)) - _stop_words
                 matched_group_key = None
-                for g_key, g_tokens in tokens_by_group.items():
-                    if not g_key.startswith(f"{t_key}:"):
-                        continue
-                    inter = c_tokens & g_tokens
-                    if len(inter) >= 3 or (len(inter) >= 2 and len(c_tokens) <= 4):
-                        matched_group_key = g_key
-                        g_tokens.update(c_tokens)
-                        break
+
+                # 1. Try matching by distinctive named entity across the rubric
+                if c_entities:
+                    for g_key, g_ents in entities_by_group.items():
+                        if c_entities & g_ents:
+                            matched_group_key = g_key
+                            g_ents.update(c_entities)
+                            break
+
+                # 2. Try matching by token overlap
+                if not matched_group_key:
+                    for g_key, g_tokens in tokens_by_group.items():
+                        if not g_key.startswith(f"{t_key}:"):
+                            continue
+                        inter = c_tokens & g_tokens
+                        if len(inter) >= 3 or (len(inter) >= 2 and len(c_tokens) <= 4):
+                            matched_group_key = g_key
+                            g_tokens.update(c_tokens)
+                            break
+
                 if matched_group_key:
                     group_key = matched_group_key
+                    if c_entities:
+                        entities_by_group.setdefault(group_key, set()).update(c_entities)
                 else:
-                    raw_fingerprint = (
-                        _clean_fact_sentence(getattr(c, "summary", "") or "")
-                        or _clean_fact_sentence(getattr(c, "topic", "") or "")
-                    ).casefold()
-                    fingerprint = re.sub(r"\W+", "_", raw_fingerprint).strip("_")[:96]
-                    group_key = f"{t_key}:fact:{fingerprint}" if fingerprint else f"{t_key}:{c.id}"
+                    if c_entities:
+                        _PRIORITY_ANCHORS = (
+                            "экватор",
+                            "ozon",
+                            "wildberries",
+                            "сбер",
+                            "псб",
+                            "шереметьево",
+                            "чонгар",
+                        )
+                        p_anchors = [a for a in _PRIORITY_ANCHORS if a in c_entities]
+                        main_entity = p_anchors[0] if p_anchors else sorted(c_entities)[0]
+                        group_key = f"{t_key}:entity:{main_entity}"
+                        entities_by_group[group_key] = set(c_entities)
+                    else:
+                        raw_fingerprint = (
+                            _clean_fact_sentence(getattr(c, "summary", "") or "")
+                            or _clean_fact_sentence(getattr(c, "topic", "") or "")
+                        ).casefold()
+                        fingerprint = re.sub(r"\W+", "_", raw_fingerprint).strip("_")[:96]
+                        group_key = (
+                            f"{t_key}:fact:{fingerprint}" if fingerprint else f"{t_key}:{c.id}"
+                        )
                     tokens_by_group[group_key] = set(c_tokens)
             groups_by_key.setdefault(group_key, []).append(c)
 
@@ -1947,6 +2072,12 @@ def build_thematic_topic_bundles(
             bundle_counter += 1
             sample_card = g_cards[0]
             t_key, t_label, t_emoji = _canonical_topic_family(sample_card, rid)
+            # If group has multiple cards with different families, prioritize strikes/fire
+            for c in g_cards:
+                cand_k, cand_l, cand_e = _canonical_topic_family(c, rid)
+                if cand_k in ("strikes", "fire") and t_key not in ("strikes", "fire"):
+                    t_key, t_label, t_emoji = cand_k, cand_l, cand_e
+                    break
             story_ids = tuple(c.id for c in g_cards)
 
             # Collect allowed supports

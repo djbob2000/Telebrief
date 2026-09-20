@@ -350,3 +350,165 @@ def test_build_digest_presentation_plan_without_city_situation() -> None:
     for fact in plan.required_facts:
         assert fact.story_ids in (("story:1",), ("story:2",))
         assert len(fact.support_ids) > 0
+
+
+@pytest.mark.unit
+def test_build_thematic_topic_bundles_city_life_compression() -> None:
+    """Verify that multiple incident/brand cards collapse into single bundles and chatter is filtered."""
+    from src.publication.digest_presentation import build_thematic_topic_bundles
+
+    cards = [
+        # ТРЦ «Экватор» strike incident (5 cards -> 1 bundle)
+        StoryCard(
+            id="story:eq:1",
+            topic="Пожар на складе ТРЦ «Экватор»",
+            importance="high",
+            summary="В результате ночного удара горит склад ТРЦ «Экватор».",
+            rubric_id="safety",
+        ),
+        StoryCard(
+            id="story:eq:2",
+            topic="Магазин «Семья» пострадал в ТРЦ «Экватор»",
+            importance="medium",
+            summary="Магазин «Семья» сообщил о повреждениях торгового зала в ТРЦ «Экватор».",
+            rubric_id="safety",
+        ),
+        StoryCard(
+            id="story:eq:3",
+            topic="Супермаркет «Улей» переносит склад из ТРЦ «Экватор»",
+            importance="medium",
+            summary="Супермаркет «Улей» в «Экваторе» переносит складские запасы на резервную базу.",
+            rubric_id="safety",
+        ),
+        StoryCard(
+            id="story:eq:4",
+            topic="Пожар в «Экваторе» локализован спасателями",
+            importance="high",
+            summary="Сотрудники МЧС локализовали возгорание на территории ТРЦ «Экватор».",
+            rubric_id="safety",
+        ),
+        StoryCard(
+            id="story:eq:5",
+            topic="Повреждения конструкций ТРЦ «Экватор»",
+            importance="medium",
+            summary="Специалисты оценивают масштаб разрушений в здании ТРЦ «Экватор».",
+            rubric_id="safety",
+        ),
+        # Ozon logistics & delivery (4 cards -> 1 bundle)
+        StoryCard(
+            id="story:ozon:1",
+            topic="Задержка доставки Ozon",
+            importance="medium",
+            summary="Ozon предупредил о задержках доставки заказов на распределительный склад.",
+            rubric_id="economy",
+        ),
+        StoryCard(
+            id="story:ozon:2",
+            topic="Пункт выдачи Ozon на Восточном",
+            importance="low",
+            summary="Пункт выдачи Ozon на Восточном микрорайоне работает в штатном режиме.",
+            rubric_id="economy",
+        ),
+        StoryCard(
+            id="story:ozon:3",
+            topic="Режим работы складов Ozon",
+            importance="low",
+            summary="Склады Ozon переходят на усиленный график разгрузки товаров.",
+            rubric_id="economy",
+        ),
+        # Banking & Cash (2 cards -> 1 bundle)
+        StoryCard(
+            id="story:bank:1",
+            topic="Отделения Сбербанка работают штатно",
+            importance="medium",
+            summary="Все отделения Сбера открыты для обслуживания клиентов.",
+            rubric_id="civic_services",
+        ),
+        StoryCard(
+            id="story:bank:2",
+            topic="Наличные в банкоматах ПСБ",
+            importance="medium",
+            summary="В банкоматах ПСБ на площади доступно снятие наличных денег.",
+            rubric_id="civic_services",
+        ),
+        # Utilities: Power & Water (2 bundles)
+        StoryCard(
+            id="story:pwr:1",
+            topic="Отключение электричества на Косе",
+            importance="high",
+            summary="На Бердянской косе отсутствует свет из-за повреждения линии.",
+            rubric_id="utilities",
+        ),
+        StoryCard(
+            id="story:pwr:2",
+            topic="Низкое напряжение в Центре",
+            importance="medium",
+            summary="В центре города напряжение в сети упало до 160 вольт.",
+            rubric_id="utilities",
+        ),
+        StoryCard(
+            id="story:wtr:1",
+            topic="Возобновление подачи воды на Слободке",
+            importance="high",
+            summary="Водоканал восстановил водоснабжение в районе Слободка.",
+            rubric_id="utilities",
+        ),
+        # Transport (1 bundle)
+        StoryCard(
+            id="story:bus:1",
+            topic="Изменение маршрута автобуса №4",
+            importance="medium",
+            summary="Автобус №4 временно следует по измененной схеме движения через порт.",
+            rubric_id="mobility",
+        ),
+        # Chatter / pure questions (should not create independent bundles)
+        StoryCard(
+            id="story:chat:1",
+            topic="Где купить книги в городе?",
+            importance="low",
+            summary="Жители спрашивают, где купить книги и канцтовары в городе.",
+            rubric_id="economy",
+        ),
+        StoryCard(
+            id="story:chat:2",
+            topic="Реклама канала MAX",
+            importance="low",
+            summary="Вступайте в канал MAX для обсуждения городских тем.",
+            rubric_id="other",
+        ),
+    ]
+
+    bundles = build_thematic_topic_bundles(cards)
+
+    # 1. ТРЦ «Экватор» all 5 cards in 1 bundle
+    eq_bundles = [b for b in bundles if "story:eq:1" in b.story_ids]
+    assert len(eq_bundles) == 1
+    assert set(eq_bundles[0].story_ids) == {
+        "story:eq:1",
+        "story:eq:2",
+        "story:eq:3",
+        "story:eq:4",
+        "story:eq:5",
+    }
+
+    # 2. Ozon all 3 cards in 1 bundle
+    ozon_bundles = [b for b in bundles if "story:ozon:1" in b.story_ids]
+    assert len(ozon_bundles) == 1
+    assert set(ozon_bundles[0].story_ids) == {"story:ozon:1", "story:ozon:2", "story:ozon:3"}
+
+    # 3. Banking in 1 bundle
+    bank_bundles = [b for b in bundles if "story:bank:1" in b.story_ids]
+    assert len(bank_bundles) == 1
+    assert set(bank_bundles[0].story_ids) == {"story:bank:1", "story:bank:2"}
+
+    # 4. Power in 1 bundle
+    pwr_bundles = [b for b in bundles if "story:pwr:1" in b.story_ids]
+    assert len(pwr_bundles) == 1
+    assert set(pwr_bundles[0].story_ids) == {"story:pwr:1", "story:pwr:2"}
+
+    # 5. Chatter/ads dropped
+    assert "story:chat:1" not in {sid for b in bundles for sid in b.story_ids}
+    assert "story:chat:2" not in {sid for b in bundles for sid in b.story_ids}
+
+    # Total bundles: exactly 6 substantive bundles instead of 16!
+    assert len(bundles) == 6

@@ -3082,3 +3082,77 @@ def test_clean_fact_sentence_removes_chat_sources_and_artifacts():
     raw_4 = 'Жду звонка, не знаю, дали им свет или нет.").'
     assert not _clean_fact_sentence(raw_4).endswith('").')
     assert _clean_fact_sentence(raw_4).endswith(".")
+
+
+def test_topic_bundles_merge_shared_distinctive_entities():
+    from src.publication.digest_presentation import build_thematic_topic_bundles
+
+    cards = [
+        StoryCard(
+            id="story:equator-fire",
+            topic="Пожар на складе ТРЦ «Экватор»",
+            importance="high",
+            summary="В результате ночного удара горит склад ТРЦ «Экватор».",
+            rubric_id="safety",
+            useful_details=(),
+            hard_facts=(),
+        ),
+        StoryCard(
+            id="story:semya-damage",
+            topic="Магазин «Семья» пострадал в ТРЦ «Экватор»",
+            importance="medium",
+            summary="Магазин «Семья» сообщил о повреждениях в ТРЦ «Экватор».",
+            rubric_id="safety",
+            useful_details=(),
+            hard_facts=(),
+        ),
+        StoryCard(
+            id="story:uley-relocation",
+            topic="Супермаркет «Улей» переносит склад из ТРЦ «Экватор»",
+            importance="medium",
+            summary="Супермаркет «Улей» в «Экваторе» переносит склад на резервную площадку.",
+            rubric_id="safety",
+            useful_details=(),
+            hard_facts=(),
+        ),
+    ]
+
+    bundles = build_thematic_topic_bundles(cards)
+
+    assert len(bundles) == 1
+    assert set(bundles[0].story_ids) == {
+        "story:equator-fire",
+        "story:semya-damage",
+        "story:uley-relocation",
+    }
+
+
+def test_topic_bundles_merge_unified_banking_stories():
+    from src.publication.digest_presentation import build_thematic_topic_bundles
+
+    cards = [
+        StoryCard(
+            id="story:sber",
+            topic="Работа отделений Сбербанка",
+            importance="medium",
+            summary="Отделения Сбера работают по графику буднего дня.",
+            rubric_id="civic_services",
+            useful_details=(),
+            hard_facts=(),
+        ),
+        StoryCard(
+            id="story:psb-atms",
+            topic="Банкоматы ПСБ и наличные",
+            importance="medium",
+            summary="В банкоматах ПСБ на проспекте Ленина доступно снятие наличных.",
+            rubric_id="civic_services",
+            useful_details=(),
+            hard_facts=(),
+        ),
+    ]
+
+    bundles = build_thematic_topic_bundles(cards)
+
+    assert len(bundles) == 1
+    assert set(bundles[0].story_ids) == {"story:sber", "story:psb-atms"}
+    assert bundles[0].topic_key == "banking"

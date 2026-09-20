@@ -118,7 +118,14 @@ def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
             flags=re.IGNORECASE,
         ).strip()
 
-        if clean_body.startswith(f"# {title_text}") or clean_body.startswith(title_text):
+        title_clean = title_text.strip("* ")
+        body_stripped = clean_body.lstrip("*# ")
+        if (
+            clean_body.startswith(f"# {title_text}")
+            or clean_body.startswith(title_text)
+            or clean_body.startswith(f"*{title_text}*")
+            or (title_clean and body_stripped.startswith(title_clean))
+        ):
             raw_text = clean_body
         elif title_text:
             raw_text = f"{title_text}\n\n{clean_body}"

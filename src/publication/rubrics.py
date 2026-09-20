@@ -147,15 +147,29 @@ class DigestRubricClassifier:
             # Safety and strike events take priority over vehicle/transport mentions
             if (
                 _SAFETY_PRIORITY_RE.search(c_text)
-                or re.search(
-                    r"\bэкватор\w*\b[^.!?]{0,40}\b(?:прил[её]т|пожар|разруш|сгорел|пострада|удар)\b",
-                    c_text,
-                    re.IGNORECASE,
+                or (
+                    re.search(r"\bэкватор\w*\b", c_text, re.IGNORECASE)
+                    and re.search(
+                        r"\b(?:прил[её]т\w*|пожар\w*|разруш\w*|сгорел\w*|пострада\w*|удар\w*|склад\w*|переезд\w*|ночн\w*)\b",
+                        c_text,
+                        re.IGNORECASE,
+                    )
                 )
             ) and "safety" in known_rubrics_by_id:
                 matched_rid = "safety"
             elif c_cat in known_rubrics_by_id and c_cat not in ("other", "general"):
-                matched_rid = c_cat
+                if c_cat == "focus":
+                    is_lifestyle = bool(
+                        re.search(
+                            r"\b(?:закат\w*|рассвет\w*|погод\w*|день города|праздник\w*|конкурс\w*|фестивал\w*|поздравлен\w*|красот\w*)\b",
+                            c_text,
+                            re.IGNORECASE,
+                        )
+                    )
+                    if getattr(card, "importance", "") in ("high", "critical") and not is_lifestyle:
+                        matched_rid = "focus"
+                else:
+                    matched_rid = c_cat
             elif c_cat in _CATEGORY_SYNONYMS:
                 for syn in _CATEGORY_SYNONYMS[c_cat]:
                     if syn in known_rubrics_by_id:
@@ -295,14 +309,23 @@ class DigestRubricClassifier:
                         best_score = sim
                         best_rubric_id = rubric_id
 
+                c_text = f"{card.topic} {card.summary}".lower()
                 if best_score >= rubrics.min_similarity:
                     # Focus rubric guard: "В фокусе внимания" is strictly reserved for
                     # major high/critical priority citywide events. Never place low/medium
                     # importance stories or general chatter into "focus".
-                    if best_rubric_id == "focus" and getattr(card, "importance", "") not in (
-                        "high",
-                        "critical",
-                    ):
+                    is_lifestyle = bool(
+                        re.search(
+                            r"\b(?:закат\w*|рассвет\w*|погод\w*|день города|праздник\w*|конкурс\w*|фестивал\w*|поздравлен\w*|красот\w*)\b",
+                            c_text,
+                            re.IGNORECASE,
+                        )
+                    )
+                    is_emergency = (
+                        getattr(card, "importance", "") in ("high", "critical") and not is_lifestyle
+                    )
+
+                    if best_rubric_id == "focus" and not is_emergency:
                         second_best_id = fallback_rubric.id
                         second_best_score = -1.0
                         for r_id, r_vec in cached_dict.items():
@@ -315,18 +338,30 @@ class DigestRubricClassifier:
                         if second_best_score >= rubrics.min_similarity:
                             best_rubric_id = second_best_id
                             best_score = second_best_score
-                # Safety override: stories about explosions, shelling, drones, sirens
+                        else:
+                            best_rubric_id = fallback_rubric.id
+                            best_score = max(best_score, rubrics.min_similarity)
+
+                # Safety override: stories about explosions, shelling, drones, sirens, fires
                 # must not be classified into mobility or non-safety rubrics
-                c_text = f"{card.topic} {card.summary}".lower()
                 safety_rubric = None
                 for s_key in ("safety", "security"):
                     if s_key in known_rubrics_by_id:
                         safety_rubric = s_key
                         break
 
-                if safety_rubric and re.search(
-                    r"\b(?:взрыв\w*|обстрел\w*|пво|дрон\w*|бпла|бомб\w*|фаб[- ]\d+|прилет\w*|сирен\w*|хлоп[о-я]\w*)\b",
-                    c_text,
+                if safety_rubric and (
+                    re.search(
+                        r"\b(?:взрыв\w*|обстрел\w*|пво|дрон\w*|бпла|бомб\w*|фаб[- ]\d+|прилет\w*|сирен\w*|хлоп[о-я]\w*)\b",
+                        c_text,
+                    )
+                    or (
+                        re.search(r"\bэкватор\w*\b", c_text)
+                        and re.search(
+                            r"\b(?:прил[её]т\w*|пожар\w*|разруш\w*|сгорел\w*|пострада\w*|удар\w*|склад\w*|переезд\w*|ночн\w*)\b",
+                            c_text,
+                        )
+                    )
                 ):
                     if best_rubric_id != "focus":
                         best_rubric_id = safety_rubric
