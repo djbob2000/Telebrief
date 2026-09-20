@@ -767,7 +767,29 @@ def plan_digest_narrative_blocks(
     # Group cards by rubric, preserving rubric sequence
     cards_by_rubric: dict[str, list[StoryCard]] = {rid: [] for rid in rubric_ids}
     for card in cards:
+        c_full = f"{card.topic} {card.summary}".casefold()
         rid = card.rubric_id if card.rubric_id in cards_by_rubric else fallback_id
+        if "экватор" in c_full and "safety" in cards_by_rubric:
+            rid = "safety"
+        elif rid in ("other", fallback_id):
+            from src.publication.digest_presentation import _canonical_topic_family
+
+            t_key, _, _ = _canonical_topic_family(card, rid)
+            if (
+                t_key in ("electricity", "water", "gas", "heating")
+                and "infrastructure" in cards_by_rubric
+            ):
+                rid = "infrastructure"
+            elif t_key in ("connectivity",) and "communications" in cards_by_rubric:
+                rid = "communications"
+            elif t_key in ("banking", "civic_services") and "civic_services" in cards_by_rubric:
+                rid = "civic_services"
+            elif t_key in ("transport",) and "mobility" in cards_by_rubric:
+                rid = "mobility"
+            elif t_key in ("health",) and "health" in cards_by_rubric:
+                rid = "health"
+            elif t_key in ("social",) and "society" in cards_by_rubric:
+                rid = "society"
         if rid not in cards_by_rubric:
             cards_by_rubric[rid] = []
         cards_by_rubric[rid].append(card)
@@ -2634,16 +2656,40 @@ def enforce_telegram_single_message_limit(text: str, max_chars: int = 3900) -> s
     """Deterministic fallback: trims text along structural paragraph boundaries if still over limit."""
     if len(text) <= max_chars:
         return text
-    lines = text.splitlines(keepends=True)
+    paragraphs = text.split("\n\n")
     acc: list[str] = []
     cur_len = 0
-    for line in lines:
-        if cur_len + len(line) <= max_chars:
-            acc.append(line)
-            cur_len += len(line)
+    for p in paragraphs:
+        added_len = len(p) + (2 if acc else 0)
+        if cur_len + added_len <= max_chars:
+            acc.append(p)
+            cur_len += added_len
         else:
             break
-    return "".join(acc).strip()
+    res = "\n\n".join(acc).strip()
+    res_lines = res.splitlines()
+    if res_lines and not any(
+        sym in res_lines[-1]
+        for sym in (
+            "*",
+            "•",
+            "⚡",
+            "💧",
+            "💥",
+            "🔥",
+            "🚌",
+            "🌐",
+            "🏥",
+            "🏧",
+            "🏛",
+            "📦",
+            "💼",
+            "📌",
+            ":",
+        )
+    ):
+        res = "\n".join(res_lines[:-1]).strip()
+    return res
 
 
 def parse_journalistic_markdown_to_draft(
@@ -3319,6 +3365,7 @@ class DigestNarrativeWriter:
                 "Your task is to write a cohesive, scan-first, and strictly factual daily news digest in Russian.\n\n"
                 "EDITORIAL AND LANGUAGE RULES:\n"
                 "- Write in professional Russian regional news style matching top Telegram channels.\n"
+                "- Single Telegram post budget: The total rendered digest must fit into a single Telegram message (target 2500–3700 characters, technical maximum 4000 characters). Keep paragraphs dense, informative, and free of filler words. Each item must strictly consist of 2-3 concise sentences (target 180–280 characters, maximum 400 characters). Summarize locations compactly in parentheses, e.g. (на ул. Ленина, Шевченко, в Колонии).\n"
                 "- Never output bullet points ('•') or dashes ('—') at the beginning of items.\n"
                 "- For each topic bundle in 'topic_bundles', write ONE cohesive editorial item in 'items' (or up to TWO if the bundle covers distinct locations or situations that are clearer as separate items).\n"
                 "- Set 'bundle_id' to the bundle's input 'bundle_id'.\n"
@@ -3328,11 +3375,12 @@ class DigestNarrativeWriter:
                 "  1. What occurred + concrete micro-locations/districts/streets (in parentheses if listing multiple).\n"
                 "  2. Current state, contrast, or cause (from 'states' or 'fact_ledger').\n"
                 "  3. Practical consequences for residents only when explicitly present in the source facts; never give advice or recommendations.\n"
+                "- Localized contrast synthesis: When source reports or states from different streets/blocks within an area show varying service availability (e.g. water restored on Shevchenko, but absent on Dimitrova), articulate the situation as a localized contrast ('в нагорной части ситуация неоднородная: на одних улицах... тогда как на других...'). NEVER make mutually contradictory assertions in consecutive sentences (e.g. never claim that water is absent and available 24/7 in the same area simultaneously).\n"
                 "- If source facts or notes are in Ukrainian, accurately translate and paraphrase them into Russian.\n"
-                "- Cover every entry in 'required_facts' in the item's body and list every covered fact_id in 'covered_fact_ids'. Do not omit a required fact; synthesize related facts compactly instead of repeating them.\n"
+                "- Cover every entry in 'required_facts' in the item's body and list every covered fact_id in 'covered_fact_ids'. Do not omit a required fact; synthesize related facts and localized contrasts compactly instead of repeating them.\n"
                 "- In thematic items, never repeat the headline in the first sentence of the body text.\n"
                 "- Never chain repetitive transitional phrases like 'Также... Ранее также...'.\n"
-                "- State facts directly. NEVER invent or infer unverified causal relations or mechanisms (using phrases like 'из-за чего', 'по причине', 'вследствие', 'в результате') unless that causal relation is explicitly stated in the source facts.\n"
+                "- State facts directly. NEVER invent or infer unverified causal relations or mechanisms (strictly avoid causal phrases like 'из-за чего', 'по причине', 'вследствие', 'в результате', 'привело к'). State temporal sequence ('после...', 'в ходе...') or describe observed facts directly.\n"
                 '- Avoid direct quotes in quotation marks («...» or "..."). Always prefer smooth indirect speech and paraphrasing in Russian regional news style.\n'
                 "- Never invent resident advice, recommendations, or procedural tips (e.g. 'жителям советуют', 'рекомендуется') unless that specific instruction is explicitly stated in the source facts.\n"
                 "- Never output meta-commentary like 'Новых сообщений не поступало' or 'тихий день'. Focus strictly on concrete reported facts.\n"
@@ -3646,6 +3694,12 @@ class DigestNarrativeWriter:
                                 if headline
                                 else ""
                             )
+                            clean_headline = re.sub(
+                                r"\bв\s+результате\b", "после", clean_headline, flags=re.IGNORECASE
+                            )
+                            clean_headline = re.sub(
+                                r"\bпо\s+причине\b", "при", clean_headline, flags=re.IGNORECASE
+                            )
                             if clean_headline:
                                 clean_headline = re.sub(
                                     r"^(?:по\s+сообщениям\s+жителей|жители\s+сообщают|по\s+словам\s+горожан)[\s,:]*",
@@ -3718,6 +3772,27 @@ class DigestNarrativeWriter:
                                 clean_body = re.sub(
                                     r"\bиз-за\b", "при", clean_body, flags=re.IGNORECASE
                                 )
+                                clean_body = re.sub(
+                                    r"\bв\s+результате\b", "после", clean_body, flags=re.IGNORECASE
+                                )
+                                clean_body = re.sub(
+                                    r"\bпо\s+причине\b", "при", clean_body, flags=re.IGNORECASE
+                                )
+                                clean_body = re.sub(
+                                    r"\bвследствие\b", "при", clean_body, flags=re.IGNORECASE
+                                )
+                                clean_body = re.sub(
+                                    r"\b(?:жителям|горожанам)?\s*советуют\s+ехать\b",
+                                    "выезжают",
+                                    clean_body,
+                                    flags=re.IGNORECASE,
+                                )
+                                clean_body = re.sub(
+                                    r"\b(?:жителям|горожанам)\s+советуют\b",
+                                    "в городе отмечают",
+                                    clean_body,
+                                    flags=re.IGNORECASE,
+                                )
                                 clean_body = re.sub(r"«([^»]+)»", r"\1", clean_body)
                                 clean_body = re.sub(r'"([^"]+)"', r"\1", clean_body)
                                 if len(clean_body) > 1150:
@@ -3768,6 +3843,12 @@ class DigestNarrativeWriter:
                             base_claim_text = re.sub(
                                 r"\bиз-за\b", "при", base_claim_text, flags=re.IGNORECASE
                             )
+                            base_claim_text = re.sub(
+                                r"\bв\s+результате\b", "после", base_claim_text, flags=re.IGNORECASE
+                            )
+                            base_claim_text = re.sub(
+                                r"\bпо\s+причине\b", "при", base_claim_text, flags=re.IGNORECASE
+                            )
 
                             claims: list[dict[str, Any]] = [
                                 {
@@ -3792,6 +3873,12 @@ class DigestNarrativeWriter:
                                 rf_text = rf.text or base_claim_text
                                 rf_text = re.sub(r'["«»“„\']', "", rf_text)
                                 rf_text = re.sub(r"\bиз-за\b", "при", rf_text, flags=re.IGNORECASE)
+                                rf_text = re.sub(
+                                    r"\bв\s+результате\b", "после", rf_text, flags=re.IGNORECASE
+                                )
+                                rf_text = re.sub(
+                                    r"\bпо\s+причине\b", "при", rf_text, flags=re.IGNORECASE
+                                )
                                 allowed_fact_sups = set(rf.support_ids)
                                 story_sups_map = dict(plan_block.support_ids_by_story)
                                 for sid in rf.story_ids:

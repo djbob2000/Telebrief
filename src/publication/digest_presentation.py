@@ -588,6 +588,8 @@ def build_required_digest_facts(
 
             # Preserve subject_key, subject_label, and sanitized reader fact text
             fact_text = _detail_line(item)
+            if not _is_usable_fact_line(fact_text):
+                continue
 
             required_facts.append(
                 RequiredDigestFact(
@@ -1582,6 +1584,8 @@ def _clean_fact_sentence(text: str) -> str:
 
 def _is_usable_fact_line(text: str) -> bool:
     """Filter out chat noise, resident questions, classified ads, lost & found, and meta comments."""
+    if "in_reply_to" in text.casefold() or "in reply to" in text.casefold():
+        return False
     cleaned = _clean_fact_sentence(text)
     if not cleaned or len(cleaned) < 12:
         return False
@@ -1590,6 +1594,26 @@ def _is_usable_fact_line(text: str) -> bool:
     if len(words) < 3:
         return False
     t_l = t.casefold()
+
+    substantive_text = re.sub(r"\(in_reply_to:[^)]*\)", "", t_l).strip()
+    if not re.search(r"[a-zа-яё0-9]{4,}", substantive_text):
+        return False
+
+    if re.search(
+        r"(?:"
+        r"срамот\w*|"
+        r"боюсь\s+сглаз\w*|"
+        r"како\w*\s+круглосуточ\w*|"
+        r"не\s+балу\w*|"
+        r"в\s+итоге\s+вся\s+гора\s+с\s+водой|"
+        r"плохо\s+голосовал\w*|"
+        r"снова\s+цивилизаци\w*\s+покинул\w*|"
+        r"не\s+хваста\w*\s+удач\w*|"
+        r"каменн\w*\s+пещер\w*"
+        r")",
+        t_l,
+    ):
+        return False
 
     from src.publication.story_quality import _NON_EDITORIAL_PAYLOAD_RE
 
@@ -1924,16 +1948,17 @@ def build_thematic_topic_bundles(
     if not cards:
         return ()
 
-    target_cards = [
-        c for c in cards if rubric_id is None or getattr(c, "rubric_id", "") == rubric_id
-    ]
-    if not target_cards:
-        return ()
-
-    by_rubric: dict[str, list[Any]] = {}
-    for c in target_cards:
-        rid = getattr(c, "rubric_id", "") or "other"
-        by_rubric.setdefault(rid, []).append(c)
+    if rubric_id is not None:
+        by_rubric: dict[str, list[Any]] = {rubric_id: list(cards)}
+    else:
+        by_rubric = {}
+        for c in cards:
+            c_full_text = f"{getattr(c, 'topic', '')} {getattr(c, 'summary', '')}"
+            if "экватор" in _extract_distinctive_entities(c_full_text):
+                rid = "safety"
+            else:
+                rid = getattr(c, "rubric_id", "") or "other"
+            by_rubric.setdefault(rid, []).append(c)
 
     bundles: list[TopicBundle] = []
     bundle_counter = 0
@@ -1946,6 +1971,9 @@ def build_thematic_topic_bundles(
             tk, _, _ = _canonical_topic_family(c, rid)
             family_counts[tk] = family_counts.get(tk, 0) + 1
 
+        _PRIORITY_ANCHORS: tuple[str, ...] = ("экватор",)
+        if rid == "economy":
+            _PRIORITY_ANCHORS = ("ozon", "wildberries")
         _UNIFIED_THEMATIC_TOPICS = frozenset(
             {
                 "electricity",
@@ -1953,6 +1981,9 @@ def build_thematic_topic_bundles(
                 "gas",
                 "heating",
                 "connectivity",
+                "strikes",
+                "fire",
+                "safety",
                 "logistics",
                 "banking",
                 "transport",
@@ -1960,118 +1991,48 @@ def build_thematic_topic_bundles(
                 "civic_services",
                 "social",
                 "education",
+                "economy",
             }
         )
-        tokens_by_group: dict[str, set[str]] = {}
         entities_by_group: dict[str, set[str]] = {}
         for c in r_cards:
             t_key, _, _ = _canonical_topic_family(c, rid)
-            if t_key in _UNIFIED_THEMATIC_TOPICS:
-                group_key = t_key
-            else:
-                c_full_text = f"{getattr(c, 'topic', '')} {getattr(c, 'summary', '')}"
-                c_text = c_full_text.casefold()
-                c_entities = _extract_distinctive_entities(c_full_text)
-                _stop_words = {
-                    "в",
-                    "на",
-                    "с",
-                    "по",
-                    "о",
-                    "об",
-                    "от",
-                    "до",
-                    "из",
-                    "к",
-                    "у",
-                    "за",
-                    "что",
-                    "это",
-                    "как",
-                    "для",
-                    "так",
-                    "же",
-                    "не",
-                    "было",
-                    "был",
-                    "были",
-                    "есть",
-                    "будет",
-                    "сообщают",
-                    "сообщает",
-                    "жители",
-                    "житель",
-                    "горожане",
-                    "бердянск",
-                    "бердянске",
-                    "бердянска",
-                    "городе",
-                    "город",
-                    "также",
-                    "только",
-                    "очень",
-                    "своем",
-                    "своих",
-                    "время",
-                    "словам",
-                    "данным",
-                    "городское",
-                    "городские",
-                    "событие",
-                    "события",
-                    "новости",
-                }
-                c_tokens = set(re.findall(r"[a-zа-яёіїєґ0-9]{3,}", c_text)) - _stop_words
-                matched_group_key = None
+            # Rubric affinity: align cross-rubric card contamination with the rubric's purpose
+            if rid == "communications" and t_key in ("electricity", "connectivity_general"):
+                t_key = "connectivity"
+            elif rid == "mobility" and t_key in ("connectivity", "mobility_general"):
+                t_key = "transport"
+            elif rid == "health" and t_key in ("health_general",):
+                t_key = "health"
+            elif rid == "society" and t_key in ("civic_services", "social_general"):
+                t_key = "social"
+            elif rid == "infrastructure" and t_key in ("connectivity", "infrastructure_general"):
+                t_key = "electricity"
+            elif rid == "safety" and t_key in ("electricity", "water"):
+                t_key = "strikes"
 
-                # 1. Try matching by distinctive named entity across the rubric
-                if c_entities:
-                    for g_key, g_ents in entities_by_group.items():
-                        if c_entities & g_ents:
-                            matched_group_key = g_key
-                            g_ents.update(c_entities)
-                            break
+            c_full_text = f"{getattr(c, 'topic', '')} {getattr(c, 'summary', '')}"
+            c_entities = _extract_distinctive_entities(c_full_text)
+            p_anchors = [a for a in _PRIORITY_ANCHORS if a in c_entities] if c_entities else []
 
-                # 2. Try matching by token overlap
-                if not matched_group_key:
-                    for g_key, g_tokens in tokens_by_group.items():
-                        if not g_key.startswith(f"{t_key}:"):
-                            continue
-                        inter = c_tokens & g_tokens
-                        if len(inter) >= 3 or (len(inter) >= 2 and len(c_tokens) <= 4):
-                            matched_group_key = g_key
-                            g_tokens.update(c_tokens)
-                            break
-
-                if matched_group_key:
-                    group_key = matched_group_key
-                    if c_entities:
-                        entities_by_group.setdefault(group_key, set()).update(c_entities)
+            if p_anchors:
+                main_entity = p_anchors[0]
+                if main_entity == "экватор":
+                    group_key = "strikes:entity:экватор"
                 else:
-                    if c_entities:
-                        _PRIORITY_ANCHORS = (
-                            "экватор",
-                            "ozon",
-                            "wildberries",
-                            "сбер",
-                            "псб",
-                            "шереметьево",
-                            "чонгар",
-                        )
-                        p_anchors = [a for a in _PRIORITY_ANCHORS if a in c_entities]
-                        main_entity = p_anchors[0] if p_anchors else sorted(c_entities)[0]
-                        group_key = f"{t_key}:entity:{main_entity}"
-                        entities_by_group[group_key] = set(c_entities)
-                    else:
-                        raw_fingerprint = (
-                            _clean_fact_sentence(getattr(c, "summary", "") or "")
-                            or _clean_fact_sentence(getattr(c, "topic", "") or "")
-                        ).casefold()
-                        fingerprint = re.sub(r"\W+", "_", raw_fingerprint).strip("_")[:96]
-                        group_key = (
-                            f"{t_key}:fact:{fingerprint}" if fingerprint else f"{t_key}:{c.id}"
-                        )
-                    tokens_by_group[group_key] = set(c_tokens)
+                    group_key = f"{t_key}:entity:{main_entity}"
+                entities_by_group.setdefault(group_key, set()).update(c_entities)
+            elif t_key in _UNIFIED_THEMATIC_TOPICS:
+                group_key = t_key
+            elif rid == "other" and len(r_cards) > 3:
+                group_key = "other:city_life"
+            else:
+                raw_fingerprint = (
+                    _clean_fact_sentence(getattr(c, "summary", "") or "")
+                    or _clean_fact_sentence(getattr(c, "topic", "") or "")
+                ).casefold()
+                fingerprint = re.sub(r"\W+", "_", raw_fingerprint).strip("_")[:96]
+                group_key = f"{t_key}:fact:{fingerprint}" if fingerprint else f"{t_key}:{c.id}"
             groups_by_key.setdefault(group_key, []).append(c)
 
         rubric_bundles: list[TopicBundle] = []

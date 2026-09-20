@@ -115,12 +115,15 @@ Rules:
 - One Story must not automatically become one headline or one bullet.
 - Coverage validation applies to the claims contained inside synthesized items, not to the number of visible items.
 - Compression should remove repetition and fragmentation, not supported facts or concrete local detail.
-- Every selected substantive digest Story must be represented in the final digest.
+- **Telegram single-message budget:** The channel digest is sized to be read in seconds as a **single Telegram post** (technical ceiling 4096 characters, target editorial range 2500–3700 characters). When source material is voluminous, Selection & Presentation prioritize high-impact urban domains (utilities, power, water, strikes/safety, connectivity, public transit, essential civic services) into a focused presentation plan (target 12–16 topic bundles). Secondary private inquiries (e.g. where to buy books, individual pet shops, routine commercial notices) are filtered at the Selection/Budgeting stage and must not inflate the digest into a multi-message document.
+- **100% Story Coverage Scope:** Every selected substantive digest Story approved in `DigestPresentationPlan` must be represented in the final digest (100% final Story coverage of selected stories). Once approved into the plan, an item cannot be dropped by the writer.
 - Every required material fact must be represented by at least one grounded claim in the final digest.
 - Final Story coverage and material-fact coverage must remain 100%.
 - A single reader-facing item may satisfy coverage for multiple Stories and multiple material facts.
 - Every covered Story/fact must remain traceable to valid supporting evidence.
 - `service_access` represents a concrete current or scheduled availability/access state of an external resident-facing utility or service (utilities, transport, communications, banking/municipal). Operational observations must be grounded in `service_access` evidence.
+- Subjective chat disputes, sarcasm, rhetorical exclamations, and emotional neighbor complaints (e.g. «вся гора с водой круглосуточно, а тут срамота», «какое круглосуточно», «боюсь сглазить») are conversational context/frustration, NOT operational `service_access` facts, and must never be promoted to mandatory `RequiredDigestFact`s.
+- **Localized contrast synthesis:** When reports from different streets/blocks within the same district exhibit differing availability (e.g. water restored on Shevchenko, but absent on Dimitrova due to a pump generator breakdown), the narrative must synthesize them as a **localized contrast** («в нагорной части ситуация неоднородная: на одних улицах... тогда как на других...»), rather than asserting mutually contradictory claims as simultaneous truths in consecutive sentences.
 - Resident coping behaviors such as household generators, battery workarounds, or neighbor assistance are community reports and should be represented editorially as such rather than promoted to an operational service state.
 - `resident_question` is context, not a fact and not an operational status.
 - A question such as "Работает ли пенсионный фонд?" must not become "пенсионный фонд не работает" or create an operational state by itself, and must not become meta-news ("жители интересуются...") in thematic headlines.
@@ -135,7 +138,7 @@ Rules:
 - Deterministic fallback rendering is strictly prohibited (`digest_allow_deterministic_fallback: false`). The digest must either be published as a cohesive, verified journalistic AI narrative or fail closed (`PublicationGenerationError`). Never publish technical message concatenations, raw fragment dumps, or fallback boilerplate.
 
 
-**Digest optimization target:** broad coverage + fast scanning + operational usefulness.
+**Digest optimization target:** broad coverage + fast scanning + operational usefulness (within the single Telegram post budget).
 
 
 ## 0.3 Article product contract: city-life long read
@@ -333,6 +336,8 @@ Agents must not make changes whose effect is to:
 - silently drop major storylines from the coverage plan;
 - append raw fragment dumps, synthetic filler paragraphs, or deterministic boilerplate to the article draft;
 - sacrifice literary cohesion, narrative bridges, or readability to chase mechanical coverage metrics;
+- force mutually contradictory assertions in consecutive digest sentences to satisfy mechanical check-lists (when local reports vary across streets, synthesize them as localized contrast/heterogeneity);
+- inflate the scan-first digest beyond the single Telegram post budget (4096 characters) by including low-priority private inquiries or directory noise when the city situation is rich with major news;
 - turn the article into a disconnected collection of single-sentence bullet-like paragraphs;
 - fall back to deterministic concatenation, raw fragment dumps, or legacy message-based generation for digests or articles (`digest_allow_deterministic_fallback: false`, `article_allow_deterministic_fallback: false` — fail closed: either a verified, cohesive journalistic publication or `PublicationGenerationError` / `ArticlePublicationRejected`). Technical concatenation fallbacks are strictly prohibited;
 - turn digest presentation caps into knowledge-loss caps;
