@@ -11,6 +11,10 @@ on:
         required: false
         default: 'dev'
 
+concurrency:
+  group: deploy-dev-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   packages: write
