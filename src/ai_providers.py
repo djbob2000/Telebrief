@@ -1,6 +1,7 @@
 """AI provider abstraction for multiple LLM backends."""
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -12,8 +13,10 @@ from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 import httpx
+from openai import APIConnectionError as OpenAIAPIConnectionError
 from openai import AsyncOpenAI
 from openai import BadRequestError as OpenAIBadRequestError
+from openai import InternalServerError as OpenAIInternalServerError
 
 from src.llm_telemetry import get_llm_call_context
 
@@ -699,12 +702,35 @@ class OpenAIProvider(AIProvider):
                 # provider operation, including compatibility retries, by the
                 # configured API timeout.
                 async with asyncio.timeout(self.request_timeout):
-                    try:
-                        response = await self.client.chat.completions.create(**create_kwargs)
-                    except OpenAIBadRequestError as exc:
-                        response = await self._handle_bad_request(
-                            create_kwargs, exc, reasoning_effort
-                        )
+                    max_gateway_retries = 1
+                    for gateway_attempt in range(max_gateway_retries + 1):
+                        try:
+                            response = await self.client.chat.completions.create(**create_kwargs)
+                            break
+                        except OpenAIBadRequestError as exc:
+                            response = await self._handle_bad_request(
+                                create_kwargs, exc, reasoning_effort
+                            )
+                            break
+                        except (
+                            json.JSONDecodeError,
+                            httpx.DecodingError,
+                            httpx.RemoteProtocolError,
+                            OpenAIAPIConnectionError,
+                            OpenAIInternalServerError,
+                        ) as exc:
+                            if gateway_attempt < max_gateway_retries:
+                                self.logger.warning(
+                                    "⚠️ %s upstream gateway glitch (%s: %s); retrying in 2.0s (attempt %d/%d)...",
+                                    provider_label,
+                                    type(exc).__name__,
+                                    exc,
+                                    gateway_attempt + 1,
+                                    max_gateway_retries,
+                                )
+                                await asyncio.sleep(2.0)
+                                continue
+                            raise
         except TimeoutError:
             _elapsed = time.monotonic() - _t0
             self.logger.warning(

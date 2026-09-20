@@ -1,6 +1,7 @@
 """Tests for ai_providers module."""
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -305,6 +306,39 @@ async def test_openai_provider_chat_completion(mock_logger):
         assert "max_completion_tokens" in call_kwargs
         assert "max_tokens" not in call_kwargs
         assert call_kwargs["max_completion_tokens"] == 500
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_openai_provider_retries_transient_gateway_glitch(mock_logger, monkeypatch):
+    """Test OpenAI provider retries once upon transient gateway glitch (e.g. JSONDecodeError)."""
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = OpenAIProvider(
+            api_key="sk-test", base_url="https://openrouter.ai/api/v1", logger=mock_logger
+        )
+
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(message=MagicMock(content="Success after retry"), finish_reason="stop")
+        ]
+        mock_response.usage = None
+
+        glitch = json.JSONDecodeError("Expecting value", "doc", 0)
+        provider.client.chat.completions.create = AsyncMock(side_effect=[glitch, mock_response])
+
+        result = await provider.chat_completion(
+            messages=[{"role": "user", "content": "Hello"}],
+            model="deepseek/deepseek-v4-flash-0731",
+            max_tokens=500,
+        )
+
+        assert result == "Success after retry"
+        assert provider.client.chat.completions.create.await_count == 2
+        assert any(
+            "upstream gateway glitch" in str(call.args[0])
+            for call in mock_logger.warning.call_args_list
+        )
 
 
 @pytest.mark.unit
