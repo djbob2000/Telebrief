@@ -1448,7 +1448,7 @@ class ArticleGenerator:
                     editor_max_tokens = getattr(
                         getattr(self.config.settings, "article", None),
                         "editorial_repair_max_output_tokens",
-                        16384,
+                        32768,
                     )
                     editor = ArticleEditor(
                         provider=self.provider,

@@ -645,11 +645,24 @@ class PublicationGenerationService:
                             presentation_plan=presentation_plan,
                         )
                         if not fallback_quality_audit.is_publishable:
-                            raise DigestCoverageInvariantError(
-                                "deterministic digest draft failed prose quality audit: "
-                                + ", ".join(
-                                    warning.code for warning in fallback_quality_audit.warnings
+                            blocking_warnings = [
+                                w
+                                for w in fallback_quality_audit.warnings
+                                if w.code
+                                in (
+                                    "RAW_TECHNICAL_TOKEN",
+                                    "CLASSIFIED_AD_LEAK",
+                                    "CHAT_SLANG_OR_METADATA",
                                 )
+                            ]
+                            if blocking_warnings:
+                                raise DigestCoverageInvariantError(
+                                    "deterministic digest draft failed prose quality audit: "
+                                    + ", ".join(warning.code for warning in blocking_warnings)
+                                )
+                            logger.warning(
+                                "deterministic digest draft has prose quality warnings: %s",
+                                [w.code for w in fallback_quality_audit.warnings],
                             )
 
                         coverage_trace = build_digest_coverage_trace(

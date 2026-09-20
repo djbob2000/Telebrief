@@ -1541,6 +1541,12 @@ def _clean_fact_sentence(text: str) -> str:
         t,
         flags=re.IGNORECASE,
     ).strip()
+    # Clean repetitive temporal replay chains that cause TEMPORAL_REPLAY_CHAIN diagnostics
+    t = re.sub(
+        r"\bтакже\s+сообщается,\s+что\s+ранее\b", "ранее сообщалось, что", t, flags=re.IGNORECASE
+    )
+    t = re.sub(r"\bранее\s+также\b", "ранее", t, flags=re.IGNORECASE)
+    t = re.sub(r"\bтакже\s+ранее\b", "ранее", t, flags=re.IGNORECASE)
     # Clean leading punctuation and trailing quote/parenthesis artifacts
     t = t.lstrip(" ,.-:;—")
     t = re.sub(r"[\"')\]]+\.?$", "", t).strip()

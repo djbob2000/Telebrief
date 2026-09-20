@@ -651,22 +651,26 @@ class OpenAIProvider(AIProvider):
                 raw_max_reasoning = (
                     os.environ.get("OPENROUTER_REASONING_MAX_TOKENS") or ""
                 ).strip()
-                reasoning: dict[str, Any]
+                reasoning: dict[str, Any] = {}
                 if reasoning_effort is not None:
-                    reasoning = {"effort": reasoning_effort}
+                    reasoning["effort"] = reasoning_effort
                 elif env_effort:
-                    reasoning = {"effort": env_effort}
-                elif raw_max_reasoning.isdigit() and int(raw_max_reasoning) > 0:
-                    reasoning = {"max_tokens": int(raw_max_reasoning)}
+                    reasoning["effort"] = env_effort
                 else:
-                    reasoning = {"effort": "low"}
+                    reasoning["effort"] = "low"
+
+                if raw_max_reasoning.isdigit() and int(raw_max_reasoning) > 0:
+                    reasoning["max_tokens"] = int(raw_max_reasoning)
+                elif "max_tokens" not in reasoning and reasoning.get("effort") != "none":
+                    reasoning["max_tokens"] = 4096
+
                 extra["reasoning"] = reasoning
                 if (
                     "max_tokens" in reasoning
                     and isinstance(reasoning["max_tokens"], int)
                     and reasoning["max_tokens"] > 0
                 ):
-                    needed_tokens = reasoning["max_tokens"] + 4096
+                    needed_tokens = reasoning["max_tokens"] + 8192
                     if effective_max_tokens < needed_tokens:
                         effective_max_tokens = needed_tokens
                         create_kwargs["max_tokens"] = effective_max_tokens

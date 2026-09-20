@@ -82,12 +82,12 @@ class ArticleEditor:
         model: str,
         *,
         temperature: float = 0.2,
-        max_output_tokens: int = 16384,
+        max_output_tokens: int = 32768,
     ) -> None:
         self.provider = provider
         self.model = model
         self.temperature = temperature
-        self.max_output_tokens = min(max_output_tokens, 16384)
+        self.max_output_tokens = min(max_output_tokens, 32768)
 
     async def edit_draft(
         self,

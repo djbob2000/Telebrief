@@ -1599,6 +1599,15 @@ def build_deterministic_digest_draft(
                 headline = headline.lstrip(" ,.-:;—")
                 if headline and headline[0].islower():
                     headline = headline[0].upper() + headline[1:]
+                headline = re.sub(
+                    r"\bтакже\s+сообщается,\s+что\s+ранее\b",
+                    "ранее сообщалось, что",
+                    headline,
+                    flags=re.IGNORECASE,
+                )
+                headline = re.sub(
+                    r"\b(?:ранее\s+также|также\s+ранее)\b", "ранее", headline, flags=re.IGNORECASE
+                )
                 if len(headline) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
                     headline = (
                         headline[:DIGEST_ITEM_HEADLINE_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ")
