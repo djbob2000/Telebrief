@@ -5,6 +5,10 @@ on:
   pull_request:
     branches: [ main, custom ]
 
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint Code

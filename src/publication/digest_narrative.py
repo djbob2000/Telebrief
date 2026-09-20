@@ -89,13 +89,15 @@ def _headline_from_digest_fact(fact: str) -> str:
 
 def _strip_redundant_headline_from_body(headline: str, body: str) -> str:
     """Strip redundant verbatim repetition of headline from the beginning of body."""
-    norm_h = " ".join((headline or "").casefold().split()).strip(" .:,!-–—")
+    norm_h = " ".join((headline or "").casefold().split()).strip(" .,:;!-–—")
     norm_b = (body or "").strip()
     if not norm_h or not norm_b:
         return norm_b
 
     if norm_b.casefold().startswith(norm_h):
-        stripped = norm_b[len(norm_h) :].lstrip(" :.-–—")
+        stripped = norm_b[len(norm_h) :].lstrip(" ,:.-–—")
+        # Strip leading conversational connectors like 'но ', 'а ', 'что '
+        stripped = re.sub(r"^(?:но|а|что)\s+", "", stripped, flags=re.IGNORECASE).strip()
         if stripped:
             return stripped[:1].upper() + stripped[1:]
 
@@ -108,13 +110,14 @@ def _strip_redundant_headline_from_body(headline: str, body: str) -> str:
         prefix = att_m.group(1)
         rest = norm_b[len(prefix) :].strip()
         if rest.casefold().startswith(norm_h):
-            stripped = rest[len(norm_h) :].lstrip(" :.-–—")
+            stripped = rest[len(norm_h) :].lstrip(" ,:.-–—")
+            stripped = re.sub(r"^(?:но|а|что)\s+", "", stripped, flags=re.IGNORECASE).strip()
             if stripped:
                 return f"{prefix}{stripped[:1].lower() + stripped[1:]}"
 
     parts = re.split(r"([.!?]\s+)", norm_b, maxsplit=1)
     if len(parts) >= 3:
-        first_sent = parts[0].strip(" .:,!-–—")
+        first_sent = parts[0].strip(" .,:;!-–—")
         if first_sent.casefold() == norm_h:
             remaining = parts[2].strip()
             if remaining:
@@ -134,31 +137,41 @@ def _fix_redundant_headline_and_body(
     if not _check_redundant_headline_in_body(headline, body):
         return headline, body
 
-    # 1. Try stripping headline from beginning of body if multiple sentences remain
+    # 1. Try stripping headline from beginning of body if a clean sentence remains
     stripped_b = _strip_redundant_headline_from_body(headline, body)
     if (
         stripped_b
-        and len(stripped_b) >= 20
+        and len(stripped_b) >= 15
         and not _check_redundant_headline_in_body(headline, stripped_b)
     ):
         return headline, stripped_b
 
-    # 2. Differentiate the headline by framing it as a thematic topic header
+    # 2. Differentiate the headline by framing it with the topic label
     lbl = (topic_label or "").strip()
     if lbl and not _GENERIC_DIGEST_TOPIC_RE.fullmatch(lbl):
-        new_headline = f"{lbl}: ключевые данные"
+        new_headline = lbl
         if not _check_redundant_headline_in_body(new_headline, body):
             return new_headline, body
 
-    # 3. Form headline from the first 2-3 words + ': текущий статус'
-    words = headline.split()
-    if len(words) >= 2:
-        short_topic = " ".join(words[:3]).rstrip(".,;:!—–- ")
-        new_headline = f"{short_topic}: текущий статус"
-        if not _check_redundant_headline_in_body(new_headline, body):
-            return new_headline, body
+    # 3. Clean leading conversational or attribution noise from headline
+    clean_h = re.sub(
+        r"^(?:по\s+(?:информации|словам|сообщениям|данным)\s+[^\s,:]+[\s,:]*|(?:сообщается|пишут|отмечают)[,\s]*(?:что\s+)?|жител\w*\s+сообща\w*[\s,:]*(?:что\s+)?|в\s+городе\s+)",
+        "",
+        headline,
+        flags=re.IGNORECASE,
+    ).strip()
+    if clean_h and len(clean_h) >= 10:
+        clean_h = clean_h[0].upper() + clean_h[1:]
+        first_clause = re.split(r"[,;—–]", clean_h)[0].strip()
+        if len(first_clause) >= 10 and not _check_redundant_headline_in_body(first_clause, body):
+            return first_clause, body
+        if not _check_redundant_headline_in_body(clean_h, body):
+            return clean_h, body
 
-    new_headline = "Городские события: оперативная информация"
+    # 4. Fallback to clean topic without boilerplate
+    new_headline = (
+        lbl if (lbl and not _GENERIC_DIGEST_TOPIC_RE.fullmatch(lbl)) else "Городские события"
+    )
     return new_headline, body
 
 
@@ -3310,7 +3323,7 @@ class DigestNarrativeWriter:
                 "- For each topic bundle in 'topic_bundles', write ONE cohesive editorial item in 'items' (or up to TWO if the bundle covers distinct locations or situations that are clearer as separate items).\n"
                 "- Set 'bundle_id' to the bundle's input 'bundle_id'.\n"
                 "- Set 'emoji' using the bundle's emoji.\n"
-                "- Headline and storytelling: headline must be a concise, informative theme header answering what occurred (e.g. 'Массовые сообщения о запахе газа в городе', 'Ремонт магистральных интернет-сетей', 'Обновление квитанций за коммунальные услуги'). Never write generic headlines like 'текущая обстановка' or 'обзор сообщений'.\n"
+                "- Headline and storytelling: headline must be a concise, informative theme header answering what occurred (e.g. 'Запах газа на улицах города', 'Ремонт магистральных интернет-сетей', 'Обновление квитанций за коммунальные услуги'). Never write generic headlines like 'текущая обстановка' or 'обзор сообщений'. Never place attribution phrases in the headline ('сообщается', 'по информации', 'по словам').\n"
                 "- Craft rich, 2-3 sentence journalistic paragraphs following a cohesive storytelling structure:\n"
                 "  1. What occurred + concrete micro-locations/districts/streets (in parentheses if listing multiple).\n"
                 "  2. Current state, contrast, or cause (from 'states' or 'fact_ledger').\n"
