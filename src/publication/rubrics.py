@@ -354,18 +354,47 @@ class DigestRubricClassifier:
                     re.search(
                         r"\b(?:взрыв\w*|обстрел\w*|пво|дрон\w*|бпла|бомб\w*|фаб[- ]\d+|прилет\w*|сирен\w*|хлоп[о-я]\w*)\b",
                         c_text,
+                        re.IGNORECASE,
                     )
                     or (
-                        re.search(r"\bэкватор\w*\b", c_text)
+                        re.search(r"\b[еэ]кватор\w*\b", c_text, re.IGNORECASE)
                         and re.search(
-                            r"\b(?:прил[её]т\w*|пожар\w*|разруш\w*|сгорел\w*|пострада\w*|удар\w*|склад\w*|переезд\w*|ночн\w*)\b",
+                            r"\b(?:прил[её]т\w*|пожар\w*|разруш\w*|сгорел\w*|пострада\w*|удар\w*|склад\w*|переезд\w*|перенос\w*|ночн\w*|магазин\w*|маркет\w*|супермаркет\w*)\b",
                             c_text,
+                            re.IGNORECASE,
+                        )
+                    )
+                    or (
+                        re.search(
+                            r"\b(?:магазин|супермаркет|склад)\w*\s+[«\"“]?семь[яеи]",
+                            c_text,
+                            re.IGNORECASE,
+                        )
+                        and re.search(
+                            r"\b(?:пожар\w*|прил[её]т\w*|пострада\w*|склад\w*|улей|экватор|екватор|переезд\w*|перенос\w*)\b",
+                            c_text,
+                            re.IGNORECASE,
+                        )
+                    )
+                    or (
+                        re.search(r"\b[«\"“]семь[яеи][»\"”]", c_text, re.IGNORECASE)
+                        and re.search(
+                            r"\b(?:пожар\w*|прил[её]т\w*|удар\w*|склад\w*|улей|экватор|екватор)\b",
+                            c_text,
+                            re.IGNORECASE,
                         )
                     )
                 ):
                     if best_rubric_id != "focus":
                         best_rubric_id = safety_rubric
                         best_score = max(best_score, rubrics.min_similarity)
+                elif "environment" in known_rubrics_by_id and re.search(
+                    r"\b(?:закат\w*|рассвет\w*|погод\w*|шторм\w*|температур\w*|дожд\w*|море|залив\w*|пляж\w*|ветер|мороз\w*)\b",
+                    c_text,
+                    re.IGNORECASE,
+                ):
+                    best_rubric_id = "environment"
+                    best_score = max(best_score, rubrics.min_similarity)
 
                 if best_score >= rubrics.min_similarity:
                     assignments_by_card_id[card.id] = RubricAssignment(

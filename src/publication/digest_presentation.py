@@ -1871,7 +1871,9 @@ def _extract_distinctive_entities(text: str) -> set[str]:
     # 1. Quoted names: «...» or "..."
     for match in re.findall(r'[«"“]([^»"”]{2,30})[»"”]', text):
         clean_q = re.sub(r"[^\w\s-]", "", match).strip().casefold()
-        if len(clean_q) >= 3 and clean_q not in {
+        if clean_q in {"семья", "улей", "экватор", "екватор"}:
+            entities.add("экватор")
+        elif len(clean_q) >= 3 and clean_q not in {
             "город",
             "бердянск",
             "новости",
@@ -1887,7 +1889,10 @@ def _extract_distinctive_entities(text: str) -> set[str]:
             entities.add(latin)
     # 3. Specific Cyrillic facility / brand anchor stems
     _ANCHOR_PATTERNS = {
-        r"\bэкватор\w*\b": "экватор",
+        r"\b[еэ]кватор\w*\b": "экватор",
+        r'\b(?:магазин|супермаркет|склад)\w*\s+[«"“]?семь[яеи]': "экватор",
+        r'\bпомещени[ея]\s+[«"“]?улей': "экватор",
+        r"\b(?:прил[её]т|пожар|удар|дрон\w*)\b[^.!?]{0,40}\b(?:супермаркет\w*|маркет\w*|тц|[еэ]кватор\w*)": "экватор",
         r"\bозон\w*\b": "ozon",
         r"\bвайлдберриз\w*\b": "wildberries",
         r"\bсбер\w*\b": "сбер",
@@ -2078,6 +2083,13 @@ def build_thematic_topic_bundles(
                 if cand_k in ("strikes", "fire") and t_key not in ("strikes", "fire"):
                     t_key, t_label, t_emoji = cand_k, cand_l, cand_e
                     break
+            if "экватор" in group_key or any(
+                "экватор" in _extract_distinctive_entities(f"{c.topic} {c.summary}")
+                for c in g_cards
+            ):
+                t_key = "strikes"
+                t_label = "Инцидент в ТРЦ «Экватор»"
+                t_emoji = "💥"
             story_ids = tuple(c.id for c in g_cards)
 
             # Collect allowed supports

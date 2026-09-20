@@ -510,5 +510,25 @@ def test_build_thematic_topic_bundles_city_life_compression() -> None:
     assert "story:chat:1" not in {sid for b in bundles for sid in b.story_ids}
     assert "story:chat:2" not in {sid for b in bundles for sid in b.story_ids}
 
+    assert eq_bundles[0].topic_label == "Инцидент в ТРЦ «Экватор»"
+    assert eq_bundles[0].emoji == "💥"
+
     # Total bundles: exactly 6 substantive bundles instead of 16!
     assert len(bundles) == 6
+
+
+def test_extract_distinctive_entities_equator_and_brands() -> None:
+    """Verify that Ukrainian spelling, tenant stores, and co-occurrences map to equator."""
+    from src.publication.digest_presentation import _extract_distinctive_entities
+
+    # Ukrainian spelling
+    assert "экватор" in _extract_distinctive_entities("Влучання дрона в ТРЦ «Екватор»")
+    # Quoted tenant stores
+    assert "экватор" in _extract_distinctive_entities("Супермаркет «Семья» переезжает")
+    assert "экватор" in _extract_distinctive_entities("Переезд магазина в помещение «Улей»")
+    # Store with склад/магазин
+    assert "экватор" in _extract_distinctive_entities("Пожар на складе магазина Семья")
+    # Co-occurrence
+    assert "экватор" in _extract_distinctive_entities(
+        "Ночной прилёт по супермаркету возле переезда"
+    )
