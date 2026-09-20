@@ -3426,6 +3426,8 @@ class DigestNarrativeWriter:
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0.2,
+            "reasoning_effort": "none",
+            "thinking": False,
         }
         if model:
             chat_kwargs["model"] = model
