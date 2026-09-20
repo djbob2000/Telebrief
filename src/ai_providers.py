@@ -651,26 +651,22 @@ class OpenAIProvider(AIProvider):
                 raw_max_reasoning = (
                     os.environ.get("OPENROUTER_REASONING_MAX_TOKENS") or ""
                 ).strip()
-                reasoning: dict[str, Any] = {}
+                reasoning: dict[str, Any]
                 if reasoning_effort is not None:
-                    reasoning["effort"] = reasoning_effort
+                    reasoning = {"effort": reasoning_effort}
                 elif env_effort:
-                    reasoning["effort"] = env_effort
+                    reasoning = {"effort": env_effort}
+                elif raw_max_reasoning.isdigit() and int(raw_max_reasoning) > 0:
+                    reasoning = {"max_tokens": int(raw_max_reasoning)}
                 else:
-                    reasoning["effort"] = "low"
-
-                if raw_max_reasoning.isdigit() and int(raw_max_reasoning) > 0:
-                    reasoning["max_tokens"] = int(raw_max_reasoning)
-                elif "max_tokens" not in reasoning and reasoning.get("effort") != "none":
-                    reasoning["max_tokens"] = 4096
-
+                    reasoning = {"effort": "low"}
                 extra["reasoning"] = reasoning
                 if (
                     "max_tokens" in reasoning
                     and isinstance(reasoning["max_tokens"], int)
                     and reasoning["max_tokens"] > 0
                 ):
-                    needed_tokens = reasoning["max_tokens"] + 8192
+                    needed_tokens = reasoning["max_tokens"] + 4096
                     if effective_max_tokens < needed_tokens:
                         effective_max_tokens = needed_tokens
                         create_kwargs["max_tokens"] = effective_max_tokens
@@ -709,6 +705,18 @@ class OpenAIProvider(AIProvider):
                         response = await self._handle_bad_request(
                             create_kwargs, exc, reasoning_effort
                         )
+        except TimeoutError:
+            _elapsed = time.monotonic() - _t0
+            self.logger.warning(
+                "✗ %s request timed out after %.1fs: model=%s max_tokens=%s prompt_chars=%s timeout=%ss",
+                provider_label,
+                _elapsed,
+                model,
+                effective_max_tokens,
+                prompt_chars,
+                self.request_timeout,
+            )
+            raise
         except Exception as exc:
             _elapsed = time.monotonic() - _t0
             self.logger.warning(
@@ -788,8 +796,19 @@ class OpenAIProvider(AIProvider):
                     return await self.client.chat.completions.create(**create_kwargs)
                 except OpenAIBadRequestError as exc:
                     self.logger.warning("retry with effort='low' failed: %s", exc)
+            elif "max_tokens" in reasoning_cfg:
+                self.logger.warning(
+                    "OpenRouter reasoning.max_tokens rejected for %s (%s); retrying with effort='low'",
+                    create_kwargs.get("model"),
+                    original_exc,
+                )
+                create_kwargs["extra_body"]["reasoning"] = {"effort": "low"}
+                try:
+                    return await self.client.chat.completions.create(**create_kwargs)
+                except OpenAIBadRequestError as exc:
+                    self.logger.warning("retry with effort='low' failed: %s", exc)
             elif (
-                "Reasoning is mandatory" not in str(original_exc)
+                "reasoning is mandatory" not in str(original_exc).lower()
                 and reasoning_cfg.get("effort") != "none"
             ):
                 raise original_exc
