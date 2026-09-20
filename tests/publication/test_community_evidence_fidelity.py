@@ -638,7 +638,7 @@ async def test_resident_question_full_lifecycle_suppression_and_context_propagat
                     "heading_claims": [],
                     "paragraphs": [
                         {
-                            "text": "Службы города ведут плановые работы. При этом жители в чатах спрашивают, работает ли пенсионный фонд.",
+                            "text": "Службы города ведут плановые работы. При этом жители интересуются, работает ли пенсионный фонд.",
                             "cited_support_ids": [main_support.support_id, q_support.support_id],
                             "claims": [
                                 {
@@ -646,7 +646,7 @@ async def test_resident_question_full_lifecycle_suppression_and_context_propagat
                                     "cited_support_ids": [main_support.support_id],
                                 },
                                 {
-                                    "text": "Жители спрашивают, работает ли пенсионный фонд",
+                                    "text": "Жители интересуются, работает ли пенсионный фонд",
                                     "cited_support_ids": [q_support.support_id],
                                 },
                             ],
@@ -660,7 +660,7 @@ async def test_resident_question_full_lifecycle_suppression_and_context_propagat
 
     title, lead, body = await gen.generate_from_frozen_input(editorial)
     assert title == "Городские службы ведут плановые работы"
-    assert "спрашивают" in body
+    assert "интересуются" in body
 
     # 7. Trace validation
     trace = build_article_claim_trace(

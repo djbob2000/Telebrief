@@ -914,21 +914,21 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
 
     generator = ArticleGenerator(config=config, logger=logging.getLogger("test"))
     mock_provider = AsyncMock()
-    # Return draft with invented duration "полтора часа"
+    # Return draft that cannot be deterministically repaired
     mock_provider.chat_completion.return_value = json.dumps(
         {
-            "title": "Отключение света в центре",
-            "title_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
+            "title": "Фантастический заголовок",
+            "title_support_ids": ["invalid_sup_id"],
             "lead": "В центре города ликвидируют аварию на подстанции.",
-            "lead_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
+            "lead_support_ids": ["invalid_sup_id"],
             "sections": [
                 {
-                    "heading": "Энергоснабжение",
-                    "heading_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
+                    "heading": "Несуществующий раздел",
+                    "heading_support_ids": ["invalid_sup_id"],
                     "paragraphs": [
                         {
-                            "text": "Бригады восстановили питание в течение полутора часов.",
-                            "cited_support_ids": [f"story:{story_id}:evidence:0:frag:{frag_id}"],
+                            "text": "Бригады восстановили питание в течение полутора часов на Марсе.",
+                            "cited_support_ids": ["invalid_sup_id"],
                         }
                     ],
                 }
@@ -2429,7 +2429,7 @@ async def test_event_first_digest_narrative_writer_failure_falls_back_to_determi
 
 
 @pytest.mark.postgres
-async def test_event_first_digest_narrative_writer_failure_falls_back_by_default(
+async def test_event_first_digest_narrative_writer_failure_fails_closed_by_default(
     conn, pool, edition
 ):
     import datetime as dt
@@ -2440,6 +2440,7 @@ async def test_event_first_digest_narrative_writer_failure_falls_back_by_default
     from src.article_generator import ArticleGenerator
     from src.config_loader import Config, PublicationEditorialConfig, Settings
     from src.db.uow import DatabaseUnitOfWork
+    from src.publication.errors import PublicationGenerationError
     from src.publication.generation import PublicationGenerationService
     from src.publication.models import PublicationSelectionDecision
     from src.publication.repository import PublicationRepository
@@ -2609,7 +2610,5 @@ async def test_event_first_digest_narrative_writer_failure_falls_back_by_default
         generator=generator,
     )
 
-    pub = await service.generate(run.id, defer_delivery=True)
-    assert pub is not None
-    assert pub.metadata["deterministic_digest_fallback_used"] is True
-    assert pub.metadata["final_digest_story_coverage"] == 1.0
+    with pytest.raises(PublicationGenerationError):
+        await service.generate(run.id, defer_delivery=True)

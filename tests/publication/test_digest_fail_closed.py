@@ -184,6 +184,7 @@ async def test_structured_digest_writer_exception_uses_event_first_fallback(
         digest_narrative_timeout_seconds=1,
         digest_city_situation_max_items=5,
         digest_city_situation_max_details_per_item=2,
+        digest_allow_deterministic_fallback=True,
     )
     settings = Settings(
         schedule_time="09:00",
@@ -364,6 +365,7 @@ async def test_structured_digest_empty_candidate_uses_event_first_fallback(
         digest_narrative_mode="single_call",
         digest_city_situation_max_items=5,
         digest_city_situation_max_details_per_item=2,
+        digest_allow_deterministic_fallback=True,
     )
     settings = Settings(
         schedule_time="09:00",

@@ -162,6 +162,76 @@ def _fix_redundant_headline_and_body(
     return new_headline, body
 
 
+_HEADLINE_ATTRIBUTION_PREFIX_RE = re.compile(
+    r"^(?:(?:"
+    r"по\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев)"
+    r"|(?:(?:местный\s+)?жител(?:и|ь)|горожан(?:е|ин)|очевид(?:цы|ец))\s+(?:сообща(?:ют|ет)|пиш(?:ут|ет)|отмеча(?:ют|ет)|жалу(?:ются|ется)|делят(?:ся|ся)|рассказыва(?:ют|ет))"
+    r"|(?:в\s+(?:соцсетях|местных\s+пабликах|сети|каналах)\s+(?:пишут|сообщают|появились))"
+    r"|сообщают\s+(?:жители|горожане|очевидцы)"
+    r")\s*(?:о\s+|об\s+|про\s+)?[,:]?\s*(?:что\s+)?)",
+    re.IGNORECASE,
+)
+
+_BODY_ATTRIBUTION_PREFIX_RE = re.compile(
+    r"^(?:(?:"
+    r"по\s+(?:сообщениям|словам|информации|данным)\s+(?:жителей|горожан|очевидцев)"
+    r"|(?:(?:местный\s+)?жител(?:и|ь)|горожан(?:е|ин)|очевид(?:цы|ец))\s+(?:сообща(?:ют|ет)|пиш(?:ут|ет)|отмеча(?:ют|ет)|жалу(?:ются|ется)|делят(?:ся|ся)|рассказыва(?:ют|ет))"
+    r")\s*[,:]?\s*(?:что\s+)?)",
+    re.IGNORECASE,
+)
+
+
+def _fix_duplicated_attribution(headline: str, body: str) -> tuple[str, str]:
+    """Ensure headline and body do not trigger DUPLICATED_ATTRIBUTION."""
+    from src.publication.digest_quality_diagnostics import _check_duplicated_attribution
+
+    if not _check_duplicated_attribution(headline, body):
+        return headline, body
+
+    # 1. Prefer stripping conversational attribution from headline so headline is a crisp subject
+    new_headline = _HEADLINE_ATTRIBUTION_PREFIX_RE.sub("", headline).strip()
+    if new_headline and len(new_headline) >= 5:
+        new_headline = new_headline[0].upper() + new_headline[1:]
+        if not _check_duplicated_attribution(new_headline, body):
+            return new_headline, body
+
+    # 2. If headline still has attribution, strip attribution from beginning of body
+    new_body = _BODY_ATTRIBUTION_PREFIX_RE.sub("", body).strip()
+    if new_body and len(new_body) >= 15:
+        new_body = new_body[0].upper() + new_body[1:]
+        if not _check_duplicated_attribution(headline, new_body):
+            return headline, new_body
+
+    return headline, body
+
+
+def sanitize_digest_narrative_draft(draft: DigestNarrativeDraft) -> DigestNarrativeDraft:
+    """Sanitize all items in a narrative digest draft before quality audit and rendering."""
+    from src.publication.digest_quality_diagnostics import _TEMPORAL_CHAIN_RE
+
+    new_blocks = []
+    for b in draft.blocks:
+        new_items = []
+        for it in b.items:
+            clean_hl = _TEMPORAL_CHAIN_RE.sub(" ", it.headline)
+            clean_hl = re.sub(r"\s{2,}", " ", clean_hl).strip()
+            clean_body = _TEMPORAL_CHAIN_RE.sub(" ", it.body)
+            clean_body = re.sub(r"\s{2,}", " ", clean_body).strip()
+
+            clean_hl, clean_body = _fix_redundant_headline_and_body(clean_hl, clean_body)
+            clean_hl, clean_body = _fix_duplicated_attribution(clean_hl, clean_body)
+
+            new_items.append(
+                replace(
+                    it,
+                    headline=clean_hl,
+                    body=clean_body,
+                )
+            )
+        new_blocks.append(replace(b, items=tuple(new_items)))
+    return replace(draft, blocks=tuple(new_blocks))
+
+
 def _clean_str_list(items: Any) -> list[str]:
     """Recursively extract non-empty trimmed strings from single items, lists, sets, or tuples."""
     out: list[str] = []
@@ -3589,6 +3659,10 @@ class DigestNarrativeWriter:
                                 clean_it_headline,
                                 clean_it_body,
                                 matched_tb.topic_label if matched_tb else "",
+                            )
+                            clean_it_headline, clean_it_body = _fix_duplicated_attribution(
+                                clean_it_headline,
+                                clean_it_body,
                             )
                             it["headline"] = clean_it_headline
                             it["body"] = clean_it_body

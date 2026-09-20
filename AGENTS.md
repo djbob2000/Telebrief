@@ -132,6 +132,7 @@ Rules:
 - The digest should be compact and easy to scan, but not so aggressively compressed that meaningful local facts disappear.
 - Grouped/channel digests render directly with title -> thematic blocks -> stats (when enabled); the publication lead is intentionally empty (`lead = ""`) to avoid duplicating the lead story.
 - Render statistics only when statistics are enabled by configuration. When `include_statistics: false`, the final digest must contain no statistics section or synthetic replacement footer.
+- Deterministic fallback rendering is strictly prohibited (`digest_allow_deterministic_fallback: false`). The digest must either be published as a cohesive, verified journalistic AI narrative or fail closed (`PublicationGenerationError`). Never publish technical message concatenations, raw fragment dumps, or fallback boilerplate.
 
 
 **Digest optimization target:** broad coverage + fast scanning + operational usefulness.
@@ -333,7 +334,7 @@ Agents must not make changes whose effect is to:
 - append raw fragment dumps, synthetic filler paragraphs, or deterministic boilerplate to the article draft;
 - sacrifice literary cohesion, narrative bridges, or readability to chase mechanical coverage metrics;
 - turn the article into a disconnected collection of single-sentence bullet-like paragraphs;
-- fall back to legacy message-based generation or deterministic concatenation (`article_allow_deterministic_fallback: false` — fail closed: either a verified, cohesive journalistic article or `ArticlePublicationRejected`);
+- fall back to deterministic concatenation, raw fragment dumps, or legacy message-based generation for digests or articles (`digest_allow_deterministic_fallback: false`, `article_allow_deterministic_fallback: false` — fail closed: either a verified, cohesive journalistic publication or `PublicationGenerationError` / `ArticlePublicationRejected`). Technical concatenation fallbacks are strictly prohibited;
 - turn digest presentation caps into knowledge-loss caps;
 - require official confirmation or 2+ sources for legitimate local reports;
 - treat resident questions as established facts or operational service states;

@@ -2408,7 +2408,7 @@ def test_publication_editorial_config_defaults(temp_config_file, mock_env_vars):
     assert pub_edit.digest_narrative_max_cards_per_block == 6
     assert pub_edit.digest_narrative_max_output_tokens == 4096
     assert pub_edit.digest_narrative_timeout_seconds == 120
-    assert pub_edit.digest_allow_deterministic_fallback is True
+    assert pub_edit.digest_allow_deterministic_fallback is False
     assert pub_edit.selection_max_output_tokens == 4096
     assert pub_edit.selection_reasoning_effort == "low"
 
@@ -2422,7 +2422,7 @@ def test_production_config_uses_contract_safe_digest_mode():
     assert raw_config["settings"]["publication_editorial"]["digest_narrative_mode"] == "single_call"
     assert (
         raw_config["settings"]["publication_editorial"]["digest_allow_deterministic_fallback"]
-        is True
+        is False
     )
 
 

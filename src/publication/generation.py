@@ -417,10 +417,15 @@ class PublicationGenerationService:
 
                         if val_res.is_valid:
                             from src.publication.digest_coverage import build_digest_coverage_trace
+                            from src.publication.digest_narrative import (
+                                sanitize_digest_narrative_draft,
+                            )
                             from src.publication.digest_quality_diagnostics import (
                                 audit_digest_prose_quality,
                             )
                             from src.publication.errors import DigestCoverageInvariantError
+
+                            draft_cand = sanitize_digest_narrative_draft(draft_cand)
 
                             quality_audit = audit_digest_prose_quality(
                                 draft_cand,
@@ -436,27 +441,47 @@ class PublicationGenerationService:
                                 raise DigestCoverageInvariantError(
                                     f"material fact coverage incomplete: {coverage_trace.material_fact_coverage:.2f} < 1.0"
                                 )
-                            if not quality_audit.is_publishable:
-                                quality_violations = [
-                                    f"DIGEST_PROSE_QUALITY:{warning.code}"
-                                    for warning in quality_audit.warnings
-                                ]
-                                logger.warning(
-                                    "digest narrative prose quality failed; using deterministic fallback: %s",
-                                    quality_violations,
+                            fatal_violations = [
+                                f"DIGEST_PROSE_QUALITY:{warning.code}"
+                                for warning in quality_audit.warnings
+                                if warning.code
+                                in {
+                                    "RAW_TECHNICAL_TOKEN",
+                                    "CHAT_SLANG_OR_METADATA",
+                                    "CLASSIFIED_AD_LEAK",
+                                }
+                            ]
+                            if fatal_violations:
+                                logger.error(
+                                    "digest narrative contains fatal quality violations: %s",
+                                    fatal_violations,
                                 )
+                                allow_fallback = getattr(
+                                    pub_edit,
+                                    "digest_allow_deterministic_fallback",
+                                    False,
+                                )
+                                if not allow_fallback:
+                                    raise PublicationGenerationError(
+                                        f"Digest narrative contained fatal quality violations: {fatal_violations}"
+                                    )
                                 await observer.attempt_finished(
                                     att_id,
                                     "failed",
                                     error_kind="digest_prose_quality_failed",
                                     metadata={
-                                        "error_message": "; ".join(quality_violations),
-                                        "violations": quality_violations,
+                                        "error_message": "; ".join(fatal_violations),
+                                        "violations": fatal_violations,
                                         "validation": {"is_valid": False},
                                         "prose_quality_audit": quality_audit.as_metadata(),
                                     },
                                 )
                             else:
+                                if not quality_audit.is_clean:
+                                    logger.warning(
+                                        "digest narrative has non-fatal prose warnings (publishing anyway): %s",
+                                        [w.code for w in quality_audit.warnings],
+                                    )
                                 narrative_draft = draft_cand
                                 final_digest_draft = draft_cand
                                 title, lead, body = renderer.render_grouped_digest(
@@ -554,7 +579,7 @@ class PublicationGenerationService:
                 if narrative_draft is None:
                     if not allow_fallback and narrative_mode == "single_call":
                         raise PublicationGenerationError(
-                            "Digest narrative generation failed: AI writer was unable to produce a valid draft"
+                            "Digest narrative generation failed: AI writer was unable to produce a valid draft and fallback is disabled"
                         )
                     fallback_attempt_id = await observer.attempt_started(
                         "story_renderer_fallback", metadata={"renderer": run.publication_type}

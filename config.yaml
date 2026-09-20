@@ -167,7 +167,7 @@ settings:
     digest_city_situation_max_items: 7
     digest_city_situation_max_details_per_item: 2
     digest_city_situation_max_positive_items: 2
-    digest_allow_deterministic_fallback: true
+    digest_allow_deterministic_fallback: false
     article_allow_deterministic_fallback: false
     article_editor_enabled: true
     article_editor_max_attempts: 3
