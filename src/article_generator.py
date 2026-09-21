@@ -1430,16 +1430,22 @@ class ArticleGenerator:
             ]
 
             async def call_writer(slot_name: str | None = None) -> str:
-                common_kwargs = {
-                    "messages": messages,
-                    "model": self.model,
-                    "temperature": article_temp,
-                    "max_tokens": writer_max_tokens,
-                    "reasoning_effort": writer_reasoning_effort,
-                }
                 if slot_name and isinstance(self.provider, ProviderCascade):
-                    return await self.provider.chat_completion_for_slot(slot_name, **common_kwargs)
-                return await self.provider.chat_completion(**common_kwargs)
+                    return await self.provider.chat_completion_for_slot(
+                        slot_name,
+                        messages,
+                        self.model,
+                        temperature=article_temp,
+                        max_tokens=writer_max_tokens,
+                        reasoning_effort=writer_reasoning_effort,
+                    )
+                return await self.provider.chat_completion(
+                    messages=messages,
+                    model=self.model,
+                    temperature=article_temp,
+                    max_tokens=writer_max_tokens,
+                    reasoning_effort=writer_reasoning_effort,
+                )
 
             def evaluate_writer_response(
                 raw_response: str,

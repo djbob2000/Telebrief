@@ -692,9 +692,9 @@ async def test_case_9_grounding_path_preserves_writer_coverage_without_regenerat
     grounded_draft = StructuredArticleDraft.from_dict(grounded_dict)
 
     # Verify length is long enough to exceed word count minimum (>= 150 words)
-    assert grounded_draft.word_count >= 150, (
-        f"Expected >= 150 words, got {grounded_draft.word_count}"
-    )
+    assert (
+        grounded_draft.word_count >= 150
+    ), f"Expected >= 150 words, got {grounded_draft.word_count}"
 
     # Verify coverage diagnostics on grounded draft
     diag = diagnose_article_coverage(grounded_draft, plan)
@@ -705,9 +705,9 @@ async def test_case_9_grounding_path_preserves_writer_coverage_without_regenerat
 
     val = validate_article_draft(grounded_draft, context)
     is_incomplete = _is_globally_incomplete(val, diag)
-    assert is_incomplete is True, (
-        "Draft covering only 1 of 17 stories must be classified as globally incomplete"
-    )
+    assert (
+        is_incomplete is True
+    ), "Draft covering only 1 of 17 stories must be classified as globally incomplete"
 
     # 2. Generator must not trigger a second full writer request.
     generator = _make_article_generator(
