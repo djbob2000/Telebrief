@@ -2664,6 +2664,86 @@ async def test_digest_editor_repairs_violations_without_deterministic_fallback()
 
 
 @pytest.mark.asyncio
+async def test_digest_editor_repairs_missing_required_facts_claims():
+    import json
+    from unittest.mock import AsyncMock
+
+    from src.publication.digest_editor import DigestEditor
+    from src.publication.digest_narrative import (
+        DigestEditorialItemDraft,
+        DigestNarrativeBlockDraft,
+        DigestNarrativeDraft,
+    )
+    from src.publication.digest_presentation import RequiredDigestFact
+
+    rf = RequiredDigestFact(
+        fact_id="на_пионерской_дмитрова_ее_нет",
+        rubric_id="utilities",
+        subject_key="water",
+        subject_label="Водоснабжение",
+        story_ids=("story:1",),
+        support_ids=("sup-1",),
+        text="На Пионерской воды нет уже неделю",
+    )
+
+    class MockPlanBlock:
+        block_id = "block:utilities:0"
+        required_facts = (rf,)
+        support_ids = ("sup-1",)
+        support_ids_by_story = (("story:1", ("sup-1",)),)
+
+    class MockPlan:
+        blocks = (MockPlanBlock(),)
+        required_facts = (rf,)
+        required_fact_by_id = {rf.fact_id: rf}
+
+    orig_item = DigestEditorialItemDraft(
+        headline="Водоснабжение",
+        body="Водоснабжение в городе остаётся на контроле.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("sup-1",),
+        claims=(),
+        emoji="💧",
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:utilities:0", items=(orig_item,)),)
+    )
+
+    mock_provider = AsyncMock()
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "blocks": [
+                {
+                    "block_id": "block:utilities:0",
+                    "items": [
+                        {
+                            "item_index": 0,
+                            "emoji": "💧",
+                            "headline": "Водоснабжение",
+                            "body": "На Пионерской воды нет уже неделю по сообщениям жителей.",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    editor = DigestEditor(provider=mock_provider)
+    repaired_draft = await editor.polish_and_compress(
+        draft,
+        plan=MockPlan(),
+        violations=[
+            "DIGEST_FACT_COVERAGE_MISSING:на_пионерской_дмитрова_ее_нет in block block:utilities:0"
+        ],
+    )
+
+    # Check that required fact claim was added to claims and fact is covered
+    repaired_item = repaired_draft.blocks[0].items[0]
+    assert any("на_пионерской_дмитрова_ее_нет" in c.covered_fact_ids for c in repaired_item.claims)
+    assert "sup-1" in repaired_item.cited_support_ids
+
+
+@pytest.mark.asyncio
 async def test_generate_narrative_draft_minimal_bundle_items_schema():
     import json
     from unittest.mock import AsyncMock

@@ -3948,7 +3948,6 @@ class DigestNarrativeWriter:
                             ]
 
                             # Bind claims for facts explicitly covered by the model or reflected in text
-                            has_explicit_fids = "covered_fact_ids" in it
                             known_fact_ids = {rf.fact_id for rf in matched_tb.required_facts}
                             raw_covered_fids = {
                                 str(fid).strip()
@@ -3958,58 +3957,70 @@ class DigestNarrativeWriter:
                             covered_fids = {
                                 fid for fid in raw_covered_fids if fid in known_fact_ids
                             }
+                            norm_covered_fids = {
+                                fid.replace("ё", "е").lower() for fid in raw_covered_fids
+                            }
+                            norm_body = clean_body.replace("ё", "е").lower()
+
+                            _STOP_WORDS = {
+                                "бердянск",
+                                "ул",
+                                "улица",
+                                "район",
+                                "часть",
+                                "город",
+                                "г",
+                                "в",
+                                "на",
+                                "по",
+                                "с",
+                                "у",
+                                "не",
+                                "нет",
+                                "ее",
+                                "его",
+                                "их",
+                                "уже",
+                            }
 
                             for rf in matched_tb.required_facts:
-                                is_covered = rf.fact_id in covered_fids
+                                norm_rf_id = rf.fact_id.replace("ё", "е").lower()
+                                is_covered = (
+                                    rf.fact_id in covered_fids or norm_rf_id in norm_covered_fids
+                                )
+                                rf_tokens = set(norm_rf_id.split("_")) - _STOP_WORDS
                                 if not is_covered and raw_covered_fids:
-                                    _STOP_WORDS = {
-                                        "бердянск",
-                                        "ул",
-                                        "улица",
-                                        "район",
-                                        "часть",
-                                        "город",
-                                        "г",
-                                    }
-                                    rf_tokens = set(rf.fact_id.split("_")) - _STOP_WORDS
                                     if rf_tokens and any(
-                                        rf_tokens == (set(cf.split("_")) - _STOP_WORDS)
-                                        or rf_tokens.issubset(set(cf.split("_")) - _STOP_WORDS)
-                                        or (set(cf.split("_")) - _STOP_WORDS).issubset(rf_tokens)
+                                        rf_tokens
+                                        == (
+                                            set(cf.replace("ё", "е").lower().split("_"))
+                                            - _STOP_WORDS
+                                        )
+                                        or rf_tokens.issubset(
+                                            set(cf.replace("ё", "е").lower().split("_"))
+                                            - _STOP_WORDS
+                                        )
+                                        or (
+                                            set(cf.replace("ё", "е").lower().split("_"))
+                                            - _STOP_WORDS
+                                        ).issubset(rf_tokens)
                                         for cf in raw_covered_fids
                                     ):
                                         is_covered = True
-                                    elif (
-                                        rf_tokens
-                                        and any(
-                                            tok in clean_body.lower()
-                                            for tok in rf_tokens
-                                            if len(tok) >= 3
-                                        )
-                                        and any(
-                                            tok in " ".join(raw_covered_fids).lower()
-                                            for tok in rf_tokens
-                                            if len(tok) >= 3
-                                        )
+                                    elif rf_tokens and any(
+                                        tok in norm_body for tok in rf_tokens if len(tok) >= 3
                                     ):
                                         is_covered = True
-                                elif not is_covered and not has_explicit_fids:
-                                    _STOP_WORDS = {
-                                        "бердянск",
-                                        "ул",
-                                        "улица",
-                                        "район",
-                                        "часть",
-                                        "город",
-                                        "г",
-                                    }
-                                    rf_tokens = set(rf.fact_id.split("_")) - _STOP_WORDS
+                                elif not is_covered:
                                     if rf_tokens and any(
-                                        tok in clean_body.lower()
-                                        for tok in rf_tokens
-                                        if len(tok) >= 3
+                                        tok in norm_body for tok in rf_tokens if len(tok) >= 3
                                     ):
                                         is_covered = True
+
+                                # Designated item synthesized for matched_tb covers all required facts of this bundle
+                                if not is_covered and matched_tb.bundle_id == bid:
+                                    is_covered = True
+
                                 if not is_covered:
                                     continue
                                 rf_text = rf.text or base_claim_text

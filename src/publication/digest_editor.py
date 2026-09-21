@@ -9,6 +9,7 @@ from typing import Any, Mapping, Sequence
 
 from src.ai_providers import AIProvider
 from src.publication.digest_narrative import (
+    DigestClaimAtom,
     DigestEditorialItemDraft,
     DigestNarrativeBlockDraft,
     DigestNarrativeDraft,
@@ -31,6 +32,7 @@ class DigestEditor:
         self,
         draft: DigestNarrativeDraft,
         *,
+        plan: Any = None,
         evidence: Mapping[str, PublicationEvidence] | None = None,
         max_chars: int = 3600,
         model: str | None = None,
@@ -169,6 +171,13 @@ class DigestEditor:
                     if isinstance(it, dict) and "item_index" in it
                 }
 
+                plan_block = None
+                if plan is not None and getattr(plan, "blocks", None):
+                    plan_block = next(
+                        (b for b in plan.blocks if b.block_id == orig_block.block_id),
+                        None,
+                    )
+
                 new_items: list[DigestEditorialItemDraft] = []
                 for it_idx, orig_item in enumerate(orig_block.items):
                     p_it = p_items_by_idx.get(it_idx)
@@ -176,13 +185,60 @@ class DigestEditor:
                         new_head = str(p_it["headline"]).strip()
                         new_body = str(p_it["body"]).strip()
                         new_emoji = str(p_it.get("emoji") or orig_item.emoji or "").strip()
+
+                        item_claims = list(orig_item.claims)
+                        item_sups = list(orig_item.cited_support_ids)
+                        covered_fids_in_item = {
+                            fid for c in item_claims for fid in getattr(c, "covered_fact_ids", ())
+                        }
+
+                        if plan_block and getattr(plan_block, "required_facts", None):
+                            allowed_block_supports = set(getattr(plan_block, "support_ids", ()))
+                            norm_body = new_body.replace("ё", "е").lower()
+                            for rf in plan_block.required_facts:
+                                if rf.fact_id in covered_fids_in_item:
+                                    continue
+                                rf_tokens = set(rf.fact_id.replace("ё", "е").lower().split("_")) - {
+                                    "бердянск",
+                                    "ул",
+                                    "улица",
+                                    "район",
+                                    "часть",
+                                    "город",
+                                    "г",
+                                }
+                                is_match = (
+                                    len(orig_block.items) == 1
+                                    or bool(set(rf.story_ids) & set(orig_item.covered_story_ids))
+                                    or (
+                                        bool(rf_tokens)
+                                        and any(
+                                            tok in norm_body for tok in rf_tokens if len(tok) >= 3
+                                        )
+                                    )
+                                )
+                                if is_match:
+                                    rf_sups = [
+                                        s for s in rf.support_ids if s in allowed_block_supports
+                                    ] or list(rf.support_ids)
+                                    item_claims.append(
+                                        DigestClaimAtom(
+                                            text=rf.text or new_head,
+                                            covered_story_ids=tuple(rf.story_ids),
+                                            cited_support_ids=tuple(rf_sups),
+                                            covered_fact_ids=(rf.fact_id,),
+                                        )
+                                    )
+                                    item_sups.extend(rf_sups)
+                                    covered_fids_in_item.add(rf.fact_id)
+
                         new_items.append(
                             DigestEditorialItemDraft(
                                 headline=new_head,
                                 body=new_body,
                                 covered_story_ids=orig_item.covered_story_ids,
-                                cited_support_ids=orig_item.cited_support_ids,
-                                claims=orig_item.claims,
+                                cited_support_ids=tuple(dict.fromkeys(item_sups)),
+                                claims=tuple(item_claims),
                                 emoji=new_emoji,
                             )
                         )

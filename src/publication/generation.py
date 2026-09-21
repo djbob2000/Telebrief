@@ -399,6 +399,7 @@ class PublicationGenerationService:
                             try:
                                 repaired_cand = await editor.polish_and_compress(
                                     draft_cand,
+                                    plan=plan,
                                     evidence=evidence_dict,
                                     max_chars=3600,
                                     model=getattr(self.config.settings, "openai_model", None)
@@ -499,6 +500,7 @@ class PublicationGenerationService:
                                 try:
                                     polished_draft = await editor.polish_and_compress(
                                         draft_cand,
+                                        plan=plan,
                                         evidence=evidence_dict,
                                         max_chars=3600,
                                         model=getattr(self.config.settings, "openai_model", None)
