@@ -449,8 +449,101 @@ class PublicationGenerationService:
                                     "RAW_TECHNICAL_TOKEN",
                                     "CHAT_SLANG_OR_METADATA",
                                     "CLASSIFIED_AD_LEAK",
+                                    "PROFANITY_OR_ABUSIVE_LANGUAGE",
+                                    "MALFORMED_CHAT_SYNTAX",
+                                    "REPETITIVE_GENERIC_HEADLINES",
+                                    "GENERIC_PLACEHOLDER_HEADLINE",
+                                    "DIGEST_OVER_BUDGET",
                                 }
                             ]
+                            if fatal_violations or not quality_audit.is_clean:
+                                from src.publication.digest_editor import DigestEditor
+
+                                editor = DigestEditor(provider=writer_provider)
+                                edit_att_id = await observer.attempt_started(
+                                    "repair",
+                                    metadata={
+                                        "subkind": "digest_editor_polish_and_compress",
+                                        "prior_warnings": [w.code for w in quality_audit.warnings],
+                                    },
+                                )
+                                try:
+                                    polished_draft = await editor.polish_and_compress(
+                                        draft_cand,
+                                        evidence=evidence_dict,
+                                        max_chars=3600,
+                                        model=getattr(self.config.settings, "openai_model", None)
+                                        or getattr(self.config.settings, "ai_model", None),
+                                    )
+                                    polished_val = validate_digest_narrative(
+                                        polished_draft,
+                                        plan,
+                                        support_text_by_id=support_text_index,
+                                        situation_plan=presentation_plan.city_situation,
+                                        allowed_context_terms=allowed_digest_terms,
+                                        all_known_draft_supports=all_draft_support_texts,
+                                    )
+                                    if polished_val.is_valid:
+                                        polished_audit = audit_digest_prose_quality(
+                                            polished_draft,
+                                            evidence=evidence_dict,
+                                            presentation_plan=presentation_plan,
+                                        )
+                                        polished_fatal = [
+                                            f"DIGEST_PROSE_QUALITY:{warning.code}"
+                                            for warning in polished_audit.warnings
+                                            if warning.code
+                                            in {
+                                                "RAW_TECHNICAL_TOKEN",
+                                                "CHAT_SLANG_OR_METADATA",
+                                                "CLASSIFIED_AD_LEAK",
+                                                "PROFANITY_OR_ABUSIVE_LANGUAGE",
+                                                "MALFORMED_CHAT_SYNTAX",
+                                                "REPETITIVE_GENERIC_HEADLINES",
+                                                "GENERIC_PLACEHOLDER_HEADLINE",
+                                                "DIGEST_OVER_BUDGET",
+                                            }
+                                        ]
+                                        if not polished_fatal:
+                                            logger.info(
+                                                "DigestEditor polish and compression succeeded"
+                                            )
+                                            draft_cand = polished_draft
+                                            quality_audit = polished_audit
+                                            fatal_violations = []
+                                            await observer.attempt_finished(
+                                                edit_att_id,
+                                                "succeeded",
+                                                metadata={
+                                                    "validation": {"is_valid": True},
+                                                    "prose_quality_audit": polished_audit.as_metadata(),
+                                                },
+                                            )
+                                        else:
+                                            await observer.attempt_finished(
+                                                edit_att_id,
+                                                "failed",
+                                                error_kind="digest_editor_fatal_violations",
+                                                metadata={"violations": polished_fatal},
+                                            )
+                                    else:
+                                        await observer.attempt_finished(
+                                            edit_att_id,
+                                            "failed",
+                                            error_kind="digest_editor_validation_failed",
+                                            metadata={
+                                                "violations": list(polished_val.violations[:5])
+                                            },
+                                        )
+                                except Exception as edit_exc:
+                                    logger.warning("DigestEditor failed: %s", edit_exc)
+                                    await observer.attempt_finished(
+                                        edit_att_id,
+                                        "failed",
+                                        error_kind="digest_editor_exception",
+                                        metadata={"error_message": str(edit_exc)},
+                                    )
+
                             if fatal_violations:
                                 logger.error(
                                     "digest narrative contains fatal quality violations: %s",
@@ -678,6 +771,11 @@ class PublicationGenerationService:
                                     "RAW_TECHNICAL_TOKEN",
                                     "CLASSIFIED_AD_LEAK",
                                     "CHAT_SLANG_OR_METADATA",
+                                    "PROFANITY_OR_ABUSIVE_LANGUAGE",
+                                    "MALFORMED_CHAT_SYNTAX",
+                                    "REPETITIVE_GENERIC_HEADLINES",
+                                    "GENERIC_PLACEHOLDER_HEADLINE",
+                                    "DIGEST_OVER_BUDGET",
                                 )
                             ]
                             if blocking_warnings:

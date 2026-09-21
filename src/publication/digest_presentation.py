@@ -730,6 +730,22 @@ def build_required_digest_facts(
     return tuple(required_facts)
 
 
+_PRIORITY_RUBRIC_WEIGHTS = {
+    "infrastructure": 100,
+    "security": 90,
+    "civic_services": 80,
+    "transport": 70,
+    "communications": 70,
+    "social": 60,
+    "economy": 40,
+    "education": 30,
+    "culture": 30,
+    "weather": 20,
+    "environment": 20,
+    "other": 10,
+}
+
+
 def build_digest_presentation_plan(
     *,
     cards: Sequence[Any],
@@ -739,10 +755,25 @@ def build_digest_presentation_plan(
 ) -> DigestPresentationPlan:
     """Build the reader-independent presentation plan containing selected story IDs and required facts."""
     evidence_map = evidence if isinstance(evidence, Mapping) else {}
+
+    max_cards = kwargs.get("max_presentation_cards", 24)
+    selected_cards = list(cards)
+    if len(selected_cards) > max_cards:
+
+        def _card_priority(c: Any) -> tuple[int, int, float]:
+            rub = getattr(c, "rubric_id", "other") or "other"
+            w = _PRIORITY_RUBRIC_WEIGHTS.get(rub, 10)
+            has_ops = 1 if getattr(c, "operational_observations", None) else 0
+            imp = float(getattr(c, "importance", 0.5) or 0.5)
+            return (has_ops, w, imp)
+
+        selected_cards.sort(key=_card_priority, reverse=True)
+        selected_cards = selected_cards[:max_cards]
+
     return DigestPresentationPlan(
-        story_ids=tuple(card.id for card in cards),
+        story_ids=tuple(card.id for card in selected_cards),
         required_facts=build_required_digest_facts(
-            cards=cards,
+            cards=selected_cards,
             evidence=evidence_map,
             city_situation=city_situation,
         ),
@@ -1592,8 +1623,30 @@ def _clean_fact_sentence(text: str) -> str:
 
     # Keep concrete sentences from a mixed summary while dropping appended
     # questions, chat reactions, and advice boilerplate.
+    from src.publication.digest_quality_diagnostics import _PROFANITY_AND_ABUSE_RE
+
     sentences = re.split(r"(?<=[.!?])\s+", t)
-    kept = [sentence.strip() for sentence in sentences if not _is_fact_noise_sentence(sentence)]
+    kept = []
+    for sentence in sentences:
+        s_clean = sentence.strip()
+        if not s_clean:
+            continue
+        if _is_fact_noise_sentence(s_clean):
+            continue
+        if _PROFANITY_AND_ABUSE_RE.search(s_clean):
+            continue
+        # Strip reply syntax and machine tokens
+        s_clean = re.sub(
+            r"\s*\((?:в\s+ответ\s+на|в\s+ответ)\b.*$", "", s_clean, flags=re.IGNORECASE
+        ).strip()
+        s_clean = re.sub(
+            r"\b(?:AVAILABLE|UNAVAILABLE|STATUS_\w+|service_access)\b\s*(?:—|-)?\s*",
+            "",
+            s_clean,
+            flags=re.IGNORECASE,
+        ).strip()
+        if s_clean:
+            kept.append(s_clean)
     t = " ".join(kept).strip()
     if not t:
         return ""
@@ -1612,6 +1665,9 @@ def _clean_fact_sentence(text: str) -> str:
     # Clean leading punctuation and trailing quote/parenthesis artifacts
     t = t.lstrip(" ,.-:;—")
     t = re.sub(r"[\"')\]]+\.?$", "", t).strip()
+    # Clean unclosed parenthesis if any
+    if "(" in t and ")" not in t:
+        t = re.sub(r"\s*\([^\)]*$", "", t).strip()
     t = re.sub(r"[\U00010000-\U0010ffff]", "", t).strip()
     if t:
         t = t[:1].upper() + t[1:]
@@ -1913,8 +1969,19 @@ def _is_usable_fact_line(text: str) -> bool:
     ):
         return False
 
-    # 6. Emojis / technical metadata / chat profanity
+    # 6. Emojis / technical metadata / chat profanity / abuse
     if "эмодзи" in t_l or "смайлик" in t_l or "стикер" in t_l:
+        return False
+    from src.publication.digest_quality_diagnostics import (
+        _MALFORMED_CHAT_SYNTAX_RE,
+        _PROFANITY_AND_ABUSE_RE,
+    )
+
+    if _PROFANITY_AND_ABUSE_RE.search(t_l):
+        return False
+    if _MALFORMED_CHAT_SYNTAX_RE.search(t_l):
+        return False
+    if "available" in t_l or "unavailable" in t_l or "service_access" in t_l:
         return False
     if any(
         k in t_l

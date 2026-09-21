@@ -464,3 +464,138 @@ def test_detects_classified_ad_leak():
     audit = audit_digest_prose_quality(draft, {"evi:1": evi})
     codes = [w.code for w in audit.warnings]
     assert "CLASSIFIED_AD_LEAK" in codes
+
+
+def test_detects_profanity_and_abusive_language():
+    evi = _make_evidence("evi:1", 1, "Перепалка")
+    item = DigestEditorialItemDraft(
+        headline="Городские события",
+        body="Сука ты тупая, до того как вы со своим уебком не приперлись в Бердянск, в городе хуй знал слово укрытие.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:soc", items=(item,)),)
+    )
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+    codes = [w.code for w in audit.warnings]
+    assert "PROFANITY_OR_ABUSIVE_LANGUAGE" in codes
+    assert audit.is_clean is False
+    assert audit.is_publishable is False
+
+
+def test_detects_unavailable_and_available_tokens():
+    evi = _make_evidence("evi:1", 1, "Статус связи")
+    item = DigestEditorialItemDraft(
+        headline="Связь",
+        body="Бердянск UNAVAILABLE — без стабильного света второй месяц.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:telecom", items=(item,)),)
+    )
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+    codes = [w.code for w in audit.warnings]
+    assert "RAW_TECHNICAL_TOKEN" in codes
+
+
+def test_detects_malformed_chat_syntax():
+    evi = _make_evidence("evi:1", 1, "Ответ на сообщение")
+    item = DigestEditorialItemDraft(
+        headline="Городские события",
+        body="(в ответ на 6 суток уже нет света.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:power", items=(item,)),)
+    )
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+    codes = [w.code for w in audit.warnings]
+    assert "MALFORMED_CHAT_SYNTAX" in codes
+
+
+def test_detects_generic_and_repetitive_headlines():
+    evi = _make_evidence("evi:1", 1, "Событие")
+    item1 = DigestEditorialItemDraft(
+        headline="Городские события",
+        body="Пожар генератора ликвидирован спасателями.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    item2 = DigestEditorialItemDraft(
+        headline="Городские события",
+        body="На автовокзале возобновлена работа касс.",
+        covered_story_ids=("story:2",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(
+            DigestNarrativeBlockDraft(block_id="block:1", items=(item1,)),
+            DigestNarrativeBlockDraft(block_id="block:2", items=(item2,)),
+        )
+    )
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+    codes = [w.code for w in audit.warnings]
+    assert "GENERIC_PLACEHOLDER_HEADLINE" in codes
+    assert "REPETITIVE_GENERIC_HEADLINES" in codes
+
+
+def test_detects_digest_over_budget():
+    evi = _make_evidence("evi:1", 1, "Длинный текст")
+    long_body = "Очень длинный текст о ситуации в городе. " * 120
+    item = DigestEditorialItemDraft(
+        headline="Обзор обстановки",
+        body=long_body,
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:1", items=(item,)),)
+    )
+    audit = audit_digest_prose_quality(draft, {"evi:1": evi})
+    codes = [w.code for w in audit.warnings]
+    assert "DIGEST_OVER_BUDGET" in codes
+
+
+@pytest.mark.asyncio
+async def test_digest_editor_polishes_and_compresses():
+    from src.publication.digest_editor import DigestEditor
+
+    class _MockProvider:
+        async def chat_completion(self, **kwargs):
+            return """
+            {
+              "blocks": [
+                {
+                  "block_id": "block:power",
+                  "items": [
+                    {
+                      "item_index": 0,
+                      "emoji": "⚡️",
+                      "headline": "Электроснабжение на ул. Пионерской",
+                      "body": "Подача электричества восстановлена на большинстве участков."
+                    }
+                  ]
+                }
+              ]
+            }
+            """
+
+    evi = _make_evidence("evi:1", 1, "Свет")
+    item = DigestEditorialItemDraft(
+        headline="Городские события",
+        body="Длинный черновик с водой.",
+        covered_story_ids=("story:1",),
+        cited_support_ids=("evi:1",),
+    )
+    draft = DigestNarrativeDraft(
+        blocks=(DigestNarrativeBlockDraft(block_id="block:power", items=(item,)),)
+    )
+
+    editor = DigestEditor(provider=_MockProvider())
+    polished = await editor.polish_and_compress(draft, evidence={"evi:1": evi})
+    assert len(polished.blocks) == 1
+    assert polished.blocks[0].items[0].headline == "Электроснабжение на ул. Пионерской"
+    assert polished.blocks[0].items[0].emoji == "⚡️"

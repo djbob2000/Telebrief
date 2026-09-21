@@ -37,7 +37,7 @@ _QUESTION_META_PATTERNS = [
 ]
 
 _TECHNICAL_TOKEN_RE = re.compile(
-    r"\b(?:story:\w+|frag:\w+|evidence:\w+|situation:\w+|block:\w+)\b",
+    r"\b(?:story:\w+|frag:\w+|evidence:\w+|situation:\w+|block:\w+|AVAILABLE|UNAVAILABLE|STATUS_\w+|service_access)\b",
     re.IGNORECASE,
 )
 _TEMPORAL_CHAIN_RE = re.compile(
@@ -57,6 +57,42 @@ _CHAT_SLANG_OR_METADATA_RE = re.compile(
 )
 _CLASSIFIED_AD_RE = re.compile(
     r"(?:\b(?:куплю|продам|купить\s+стекло|цена\s+от|позвонить\s+по\s+номеру)\b)",
+    re.IGNORECASE,
+)
+_PROFANITY_AND_ABUSE_RE = re.compile(
+    r"\b(?:"
+    r"ху[йяеёюиы]\w*|"
+    r"[нп]аху[йяе]\w*|"
+    r"поху[йяе]\w*|"
+    r"пизд\w*|"
+    r"[её]б[аеёиуытлн]\w*|"
+    r"у[её]б\w*|"
+    r"в[ъь][её]б\w*|"
+    r"за[её]б\w*|"
+    r"от[её]б\w*|"
+    r"раз[её]б\w*|"
+    r"до[её]б\w*|"
+    r"пере[её]б\w*|"
+    r"бл[яя]т\w*|"
+    r"бляд\w*|"
+    r"сук[аиоуые]\w*|"
+    r"мудак\w*|"
+    r"мудил\w*|"
+    r"залуп\w*|"
+    r"срак\w*|"
+    r"г[іие]вн\w*|"
+    r"дерьм\w*|"
+    r"хер\w*|"
+    r"жоп\w*"
+    r")\b",
+    re.IGNORECASE,
+)
+_MALFORMED_CHAT_SYNTAX_RE = re.compile(
+    r"(?:\(в\s+ответ\s+на\b|\(в\s+ответ\b|при\s+генератора\b)",
+    re.IGNORECASE,
+)
+_GENERIC_HEADLINE_RE = re.compile(
+    r"^(?:городские\s+события|события\s+в\s+городе|новости\s+города|городские\s+новости)$",
     re.IGNORECASE,
 )
 
@@ -273,6 +309,76 @@ def audit_digest_prose_quality(
                         headline=item.headline,
                     )
                 )
+
+            if _PROFANITY_AND_ABUSE_RE.search(item_full_text):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="PROFANITY_OR_ABUSIVE_LANGUAGE",
+                        message="Headline or body contains profanity, abusive language, or severe chat toxicity.",
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
+            if _MALFORMED_CHAT_SYNTAX_RE.search(item_full_text):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="MALFORMED_CHAT_SYNTAX",
+                        message="Headline or body contains malformed chat reply markers or broken grammar substitutions.",
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
+            norm_hl = " ".join(item.headline.strip().casefold().split()).rstrip(" :.-")
+            if _GENERIC_HEADLINE_RE.match(norm_hl):
+                warnings.append(
+                    DigestQualityWarning(
+                        code="GENERIC_PLACEHOLDER_HEADLINE",
+                        message=f"Headline '{item.headline}' is a generic placeholder and lacks specific topical value.",
+                        block_id=block.block_id,
+                        item_index=idx,
+                        headline=item.headline,
+                    )
+                )
+
+    # Check for repetitive generic headlines across blocks
+    all_headlines = [
+        item.headline.strip()
+        for block in draft.blocks
+        for item in block.items
+        if item.headline and item.headline.strip()
+    ]
+    from collections import Counter
+
+    hl_counts = Counter(" ".join(h.casefold().split()).rstrip(" :.-") for h in all_headlines)
+    for norm_h, count in hl_counts.items():
+        if count > 1:
+            matching_hl = next(
+                h for h in all_headlines if " ".join(h.casefold().split()).rstrip(" :.-") == norm_h
+            )
+            warnings.append(
+                DigestQualityWarning(
+                    code="REPETITIVE_GENERIC_HEADLINES",
+                    message=f"Headline '{matching_hl}' is repeated {count} times across digest items.",
+                    headline=matching_hl,
+                )
+            )
+
+    # Check total text budget
+    total_text_chars = sum(
+        len(h) + len(b)
+        for h, b in ((item.headline, item.body) for block in draft.blocks for item in block.items)
+    )
+    if total_text_chars > 3900:
+        warnings.append(
+            DigestQualityWarning(
+                code="DIGEST_OVER_BUDGET",
+                message=f"Total digest items character length ({total_text_chars}) exceeds Telegram single-post budget (max 3900 chars).",
+            )
+        )
 
     dashboard_group_count = 0
     covered_stories_dash = 0
