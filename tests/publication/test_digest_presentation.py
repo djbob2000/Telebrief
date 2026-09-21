@@ -621,3 +621,45 @@ def test_build_digest_presentation_plan_handles_string_importance_capping():
     # Passing max_presentation_cards=10 triggers candidate capping and sorting by _card_priority
     plan = build_digest_presentation_plan(cards=cards, max_presentation_cards=10)
     assert len(plan.story_ids) == 10
+
+
+def test_build_digest_presentation_plan_ignores_in_reply_to_chat_noise_in_city_situation():
+    from src.editorial_models import StoryCard
+    from src.publication.city_situation import CitySituationItem, CitySituationRollup
+    from src.publication.digest_presentation import build_digest_presentation_plan
+
+    cards = [
+        StoryCard(
+            id="story:1",
+            topic="Электроснабжение",
+            importance="high",
+            summary="В центре города пониженное напряжение.",
+            rubric_id="infrastructure",
+            hard_facts=[],
+        )
+    ]
+    # City rollup contains a chat reply noise item from an unmapped or excluded message
+    noisy_rollup = CitySituationRollup(
+        items=(
+            CitySituationItem(
+                subject_key="electricity",
+                subject_label="Электроснабжение",
+                dimension="power_supply",
+                state="DEGRADED",
+                location="Центр",
+                entity="",
+                detail='(in_reply_to: "сейчас я д...") Да, подтверждаю',
+                source_refs=("telegram:888",),
+                first_observed_at=_NOW,
+                last_observed_at=_NOW,
+                observation_count=1,
+            ),
+        )
+    )
+
+    # Should not raise UNMAPPED_REQUIRED_FACT:in_reply_to_...
+    plan = build_digest_presentation_plan(
+        cards=cards,
+        city_situation=noisy_rollup,
+    )
+    assert len(plan.required_facts) == 0

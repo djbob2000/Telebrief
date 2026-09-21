@@ -483,6 +483,8 @@ def sanitize_operational_detail(text: str) -> str:
     if not text:
         return ""
     cleaned = text.strip()
+    # 0. Strip in_reply_to annotations
+    cleaned = re.sub(r"\s*\(in_reply_to:[^)]*\)", "", cleaned, flags=re.IGNORECASE).strip()
     had_end = cleaned.endswith((".", "!", "…", "?"))
     # 1. Remove parenthetical questions: (где вода?), (кто знает...?), (спрашивает...)
     cleaned = re.sub(

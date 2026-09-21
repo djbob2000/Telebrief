@@ -390,6 +390,7 @@ def _derive_situation_fact_id(group_id: str, item: CitySituationItem, idx: int) 
         return str(item.fact_id).strip()
     loc = (item.location or "").strip()
     detail = (item.detail or "").strip()
+    detail = re.sub(r"\s*\(in_reply_to:[^)]*\)", "", detail, flags=re.IGNORECASE).strip()
     if "центр" in loc.casefold() and ("170" in detail or "напряжен" in detail.casefold()):
         return "center_voltage"
 
@@ -534,6 +535,15 @@ def build_required_digest_facts(
             if canonical_subj is None:
                 continue
 
+            orig_detail = (getattr(item, "detail", "") or "").casefold()
+            if "in_reply_to" in orig_detail or "in reply to" in orig_detail:
+                continue
+
+            # Preserve subject_key, subject_label, and sanitized reader fact text
+            fact_text = _detail_line(item)
+            if not fact_text or not _is_usable_fact_line(fact_text):
+                continue
+
             group_id = f"situation:{canonical_subj}"
             fact_id = _derive_situation_fact_id(group_id, item, f_idx)
 
@@ -585,11 +595,6 @@ def build_required_digest_facts(
             # Derive rubric_id from the first owning StoryCard
             first_owning_card = card_by_id.get(fact_stories[0])
             rubric_id = getattr(first_owning_card, "rubric_id", "") or "infrastructure"
-
-            # Preserve subject_key, subject_label, and sanitized reader fact text
-            fact_text = _detail_line(item)
-            if not _is_usable_fact_line(fact_text):
-                continue
 
             required_facts.append(
                 RequiredDigestFact(
@@ -763,10 +768,52 @@ def build_digest_presentation_plan(
     evidence_map = evidence if isinstance(evidence, Mapping) else {}
 
     max_cards = kwargs.get("max_presentation_cards", 24)
+
+    # Pre-identify cards associated with usable operational city situation items
+    cards_with_city_situation: set[str] = set()
+    if city_situation and city_situation.items:
+        card_refs_map: dict[str, set[str]] = {}
+        for c in cards:
+            refs: set[str] = set()
+            all_refs_fn = getattr(c, "all_source_refs", None)
+            if callable(all_refs_fn):
+                refs.update(r for r in all_refs_fn() if r)
+            else:
+                refs.update(r for r in getattr(c, "representative_source_refs", []) or [] if r)
+            for elem_list in (
+                getattr(c, "hard_facts", []) or [],
+                getattr(c, "community_observations", []) or [],
+                getattr(c, "useful_details", []) or [],
+                getattr(c, "operational_observations", []) or [],
+            ):
+                for elem in elem_list:
+                    refs.update(r for r in getattr(elem, "source_refs", []) or [] if r)
+            card_refs_map[c.id] = refs
+
+        for item in city_situation.items:
+            if _canonical_city_situation_subject(item) is None:
+                continue
+            orig_d = (getattr(item, "detail", "") or "").casefold()
+            if "in_reply_to" in orig_d or "in reply to" in orig_d:
+                continue
+            f_text = _detail_line(item)
+            if not f_text or not _is_usable_fact_line(f_text):
+                continue
+            item_refs = {
+                r for r in (getattr(item, "current_source_refs", ()) or item.source_refs) if r
+            }
+            for c in cards:
+                if bool(item_refs & card_refs_map.get(c.id, set())):
+                    cards_with_city_situation.add(c.id)
+
+    if cards_with_city_situation and len(cards_with_city_situation) > max_cards:
+        max_cards = len(cards_with_city_situation)
+
     selected_cards = list(cards)
     if len(selected_cards) > max_cards:
 
-        def _card_priority(c: Any) -> tuple[int, int, float]:
+        def _card_priority(c: Any) -> tuple[int, int, int, float]:
+            owns_sit = 1 if c.id in cards_with_city_situation else 0
             rub = getattr(c, "rubric_id", "other") or "other"
             w = _PRIORITY_RUBRIC_WEIGHTS.get(rub, 10)
             has_ops = 1 if getattr(c, "operational_observations", None) else 0
@@ -775,7 +822,7 @@ def build_digest_presentation_plan(
                 imp = float(raw_imp)
             else:
                 imp = _STORY_IMPORTANCE_WEIGHTS.get(str(raw_imp).strip().lower(), 0.5)
-            return (has_ops, w, imp)
+            return (owns_sit, has_ops, w, imp)
 
         selected_cards.sort(key=_card_priority, reverse=True)
         selected_cards = selected_cards[:max_cards]
