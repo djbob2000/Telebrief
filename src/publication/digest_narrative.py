@@ -3603,7 +3603,8 @@ class DigestNarrativeWriter:
                             break
 
                 # 4. Match by semantic topic or service family tokens in bid
-                # (e.g. "bundle:infrastructure:internet" -> "internet" is connectivity -> rubric "communications")
+                # (e.g. "bundle:infrastructure:internet" -> "internet" is connectivity -> rubric "communications"
+                #  or "bundle:infrastructure:roads" -> "roads" is transport)
                 if not target_block_id and bid:
                     bid_tokens = [p.casefold() for p in re.split(r"[:_\W]+", bid) if p]
                     _SYNONYM_TO_TOPIC = {
@@ -3612,23 +3613,74 @@ class DigestNarrativeWriter:
                         "wifi": "connectivity",
                         "cellular": "connectivity",
                         "mobile": "connectivity",
+                        "network": "connectivity",
                         "power": "electricity",
                         "blackout": "electricity",
                         "light": "electricity",
+                        "energy": "electricity",
                         "aqueduct": "water",
+                        "water": "water",
                         "heat": "heating",
+                        "heating": "heating",
+                        "gas": "gas",
                         "transport": "transport",
+                        "roads": "transport",
+                        "road": "transport",
+                        "traffic": "transport",
+                        "street": "transport",
+                        "streets": "transport",
                         "bus": "transport",
+                        "strike": "strikes",
+                        "strikes": "strikes",
+                        "attack": "strikes",
+                        "explosion": "strikes",
+                        "fire": "fire",
+                        "fires": "fire",
+                        "emergency": "safety",
+                        "safety": "safety",
+                        "bank": "banking",
+                        "banks": "banking",
+                        "banking": "banking",
+                        "cash": "banking",
+                        "pension": "social",
+                        "aid": "social",
+                        "social": "social",
+                        "society": "social",
+                        "hospital": "health",
+                        "medicine": "health",
+                        "health": "health",
+                        "school": "education",
+                        "education": "education",
+                        "market": "economy",
+                        "business": "economy",
+                        "trade": "economy",
+                        "economy": "economy",
                     }
                     candidate_topics = [
                         _SYNONYM_TO_TOPIC.get(t, t)
                         for t in bid_tokens
                         if t not in ("bundle", "fact", "item", "unknown")
                     ]
+                    # Check rubric-qualified matches first (e.g. infrastructure + transport)
                     for c_top in candidate_topics:
-                        if c_top in global_topic_key_to_bundle:
-                            target_block_id, target_bundle_id = global_topic_key_to_bundle[c_top]
+                        for (r_id, t_k), (b_id, tb_id) in topic_key_to_bundle.items():
+                            if (t_k == c_top or c_top in t_k or t_k in c_top) and (
+                                r_id in bid_tokens
+                            ):
+                                target_block_id = b_id
+                                target_bundle_id = tb_id
+                                break
+                        if target_block_id:
                             break
+
+                    # Then check global topic match
+                    if not target_block_id:
+                        for c_top in candidate_topics:
+                            if c_top in global_topic_key_to_bundle:
+                                target_block_id, target_bundle_id = global_topic_key_to_bundle[
+                                    c_top
+                                ]
+                                break
 
                     if not target_block_id:
                         detected_families = detect_service_families(" ".join(bid_tokens))
@@ -3642,25 +3694,38 @@ class DigestNarrativeWriter:
                                         break
                                 break
 
-                # 5. Match by content semantics if text contains strong service family signals
+                # 5. Match by content semantics using canonical topic family classifier
                 if not target_block_id:
-                    item_text = f"{it.get('headline', '')} {it.get('body', '')}"
-                    if item_text.strip():
-                        detected_families = detect_service_families(item_text)
-                        for fam in detected_families:
-                            mapped_rid = map_family_to_rubric(fam)
-                            if mapped_rid and mapped_rid in rubric_to_block_id:
-                                for (r_id, t_k), (b_id, tb_id) in topic_key_to_bundle.items():
-                                    if r_id == mapped_rid and (
-                                        t_k == fam
-                                        or (fam == "telecom" and t_k == "connectivity")
-                                        or (fam == "power" and t_k == "electricity")
-                                    ):
-                                        target_block_id = b_id
-                                        target_bundle_id = tb_id
+                    item_text = f"{it.get('headline', '')} {it.get('body', '')}".strip()
+                    if item_text:
+                        from src.publication.digest_presentation import _canonical_topic_family
+
+                        class _TextProxyCard:
+                            def __init__(self, text: str) -> None:
+                                self.topic = text
+                                self.summary = ""
+                                self.category = ""
+                                self.tags = ()
+
+                        c_family, _, _ = _canonical_topic_family(_TextProxyCard(item_text))
+                        if c_family in global_topic_key_to_bundle:
+                            target_block_id, target_bundle_id = global_topic_key_to_bundle[c_family]
+                        elif not target_block_id:
+                            detected_families = detect_service_families(item_text)
+                            for fam in detected_families:
+                                mapped_rid = map_family_to_rubric(fam)
+                                if mapped_rid and mapped_rid in rubric_to_block_id:
+                                    for (r_id, t_k), (b_id, tb_id) in topic_key_to_bundle.items():
+                                        if r_id == mapped_rid and (
+                                            t_k == fam
+                                            or (fam == "telecom" and t_k == "connectivity")
+                                            or (fam == "power" and t_k == "electricity")
+                                        ):
+                                            target_block_id = b_id
+                                            target_bundle_id = tb_id
+                                            break
+                                    if target_block_id:
                                         break
-                                if target_block_id:
-                                    break
 
                 if not target_block_id:
                     raise ValueError(f"unknown bundle_id: {bid}")

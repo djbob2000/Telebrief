@@ -2990,6 +2990,85 @@ async def test_generate_narrative_draft_minimal_bundle_items_schema():
     assert comm_block.items[0].covered_story_ids == ("story:20",)
 
 
+@pytest.mark.asyncio
+async def test_generate_narrative_draft_roads_synonym_resolution():
+    """Verify that hallucinated bundle:infrastructure:roads correctly resolves to transport."""
+    import json
+    from unittest.mock import AsyncMock
+
+    from src.publication.digest_narrative import DigestNarrativeWriter
+    from src.publication.digest_presentation import (
+        CitySituationPresentationPlan,
+        DigestPresentationPlan,
+        DigestStoryPresentation,
+        RequiredDigestFact,
+    )
+
+    mock_provider = AsyncMock()
+    writer = DigestNarrativeWriter(provider=mock_provider)
+
+    road_card = StoryCard(
+        id="story:30",
+        topic="Ремонт дорожного покрытия на ул. Шевченко",
+        importance="medium",
+        summary="Дорожные службы приступили к укладке асфальта.",
+        rubric_id="mobility",
+        useful_details=(),
+        hard_facts=(),
+    )
+    evidence_road = {
+        "sup:30": _make_evidence("sup:30", 30, "Ремонт дороги на ул. Шевченко."),
+    }
+    pres_plan = DigestPresentationPlan(
+        story_presentations=(
+            DigestStoryPresentation(
+                story_id="story:30",
+                mode="DETAIL_ONLY",
+                detail_support_ids=("sup:30",),
+            ),
+        ),
+        city_situation=CitySituationPresentationPlan(),
+        required_facts=(
+            RequiredDigestFact(
+                fact_id="rf:roads",
+                rubric_id="mobility",
+                subject_key="transport",
+                subject_label="Транспорт и дороги",
+                story_ids=("story:30",),
+                support_ids=("sup:30",),
+                text="Ремонт дороги на ул. Шевченко.",
+            ),
+        ),
+    )
+    narrative_plan = plan_digest_narrative_blocks(
+        cards=[road_card],
+        evidence=evidence_road,
+        rubrics=[{"id": "mobility", "title": "Транспорт и дороги"}],
+        presentation_plan=pres_plan,
+    )
+    # Model generates bundle:infrastructure:roads
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "items": [
+                {
+                    "bundle_id": "bundle:infrastructure:roads",
+                    "emoji": "🚌",
+                    "headline": "Ремонт дороги на ул. Шевченко",
+                    "body": "Дорожные службы приступили к укладке асфальта на улице Шевченко.",
+                    "covered_fact_ids": ["rf:roads"],
+                }
+            ]
+        }
+    )
+    draft = await writer.generate_narrative_draft(
+        plan=narrative_plan,
+        cards=[road_card],
+        evidence=evidence_road,
+    )
+    assert len(draft.blocks) == 1
+    assert draft.blocks[0].items[0].headline == "Ремонт дороги на ул. Шевченко"
+
+
 def test_usable_fact_line_keeps_concrete_report_with_conversational_prefix():
     from src.publication.digest_presentation import _clean_fact_sentence, _is_usable_fact_line
 
