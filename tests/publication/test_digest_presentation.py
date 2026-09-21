@@ -602,3 +602,22 @@ def test_build_required_digest_facts_filters_chat_sarcasm():
     )
     facts = build_required_digest_facts(cards=[card])
     assert len(facts) == 0
+
+
+def test_build_digest_presentation_plan_handles_string_importance_capping():
+    from src.editorial_models import StoryCard
+    from src.publication.digest_presentation import build_digest_presentation_plan
+
+    cards = [
+        StoryCard(
+            id=f"story:{i}",
+            topic=f"Topic {i}",
+            importance="high" if i % 3 == 0 else ("medium" if i % 3 == 1 else "low"),
+            summary=f"Summary for story {i}",
+            rubric_id="infrastructure" if i % 2 == 0 else "other",
+        )
+        for i in range(30)
+    ]
+    # Passing max_presentation_cards=10 triggers candidate capping and sorting by _card_priority
+    plan = build_digest_presentation_plan(cards=cards, max_presentation_cards=10)
+    assert len(plan.story_ids) == 10

@@ -745,6 +745,12 @@ _PRIORITY_RUBRIC_WEIGHTS = {
     "other": 10,
 }
 
+_STORY_IMPORTANCE_WEIGHTS = {
+    "high": 1.0,
+    "medium": 0.5,
+    "low": 0.2,
+}
+
 
 def build_digest_presentation_plan(
     *,
@@ -764,7 +770,11 @@ def build_digest_presentation_plan(
             rub = getattr(c, "rubric_id", "other") or "other"
             w = _PRIORITY_RUBRIC_WEIGHTS.get(rub, 10)
             has_ops = 1 if getattr(c, "operational_observations", None) else 0
-            imp = float(getattr(c, "importance", 0.5) or 0.5)
+            raw_imp = getattr(c, "importance", "medium")
+            if isinstance(raw_imp, (int, float)):
+                imp = float(raw_imp)
+            else:
+                imp = _STORY_IMPORTANCE_WEIGHTS.get(str(raw_imp).strip().lower(), 0.5)
             return (has_ops, w, imp)
 
         selected_cards.sort(key=_card_priority, reverse=True)
