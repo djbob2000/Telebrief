@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 import psycopg
@@ -141,6 +141,15 @@ class HeuristicSelectionModel:
                     rank=rank,
                 )
             )
+        if is_article and not lead_assigned:
+            # Fail-open guarantee: if no candidate met the publishability/urgency
+            # threshold (e.g. features are absent because the AI event pipeline
+            # hasn't run yet), promote the top-ranked included story to 'lead'
+            # so the article always has a primary item.
+            for i, p in enumerate(proposals):
+                if p.decision == "INCLUDE":
+                    proposals[i] = replace(p, presentation_intent="lead")
+                    break
         return proposals
 
 

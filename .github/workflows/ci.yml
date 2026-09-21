@@ -101,9 +101,7 @@ jobs:
         python -c "import asyncio, os; from src.jobs.admin import ensure_official_tables; asyncio.run(ensure_official_tables(os.environ['DATABASE_URL'], 'procrastinate'))"
 
     - name: Run pytest
-      # The PostgreSQL fixtures share one database; run them serially so
-      # xdist workers cannot collide on test data or migration ledgers.
-      run: pytest -o addopts="-v --asyncio-mode=auto --timeout=300 -n0" --cov=src --cov-report=xml --cov-report=term-missing
+      run: pytest --cov=src --cov-report=xml --cov-report=term-missing
 
     - name: Upload coverage to Codecov
       if: matrix.python-version == '3.14'

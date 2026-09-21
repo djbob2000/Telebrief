@@ -84,7 +84,7 @@ jobs:
       - name: Run Pytest
         run: |
           set -o pipefail
-          pytest -o addopts="-v --asyncio-mode=auto --timeout=300" 2>&1 | tee /tmp/pytest.log
+          pytest 2>&1 | tee /tmp/pytest.log
 
       - name: Upload Test Failure Log to Server
         if: failure()
