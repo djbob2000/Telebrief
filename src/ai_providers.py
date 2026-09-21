@@ -433,6 +433,9 @@ class ProviderCascade(AIProvider):
                     or getattr(self, "request_timeout", 300.0)
                     or 300.0
                 )
+                has_more_slots = slot_index + 1 < len(available_slots)
+                if has_more_slots and slot_timeout > 240.0:
+                    slot_timeout = 240.0
                 async with asyncio.timeout(slot_timeout):
                     response = await provider.chat_completion(
                         messages=messages,

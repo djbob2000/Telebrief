@@ -2253,3 +2253,37 @@ async def test_provider_cascade_slot_timeout_failover(mock_logger):
     assert result == "fast response"
     assert slot1.chat_completion.called
     assert slot2.chat_completion.called
+
+
+@pytest.mark.asyncio
+async def test_provider_cascade_caps_slot_timeout_when_more_slots_available(mock_logger):
+    """When a provider has a high request_timeout (e.g. 900s), cascade caps it to 240s if more slots exist."""
+    slot1 = MagicMock()
+    slot1.request_timeout = 900.0
+    slot1.chat_completion = AsyncMock(return_value="primary response")
+
+    slot2 = MagicMock()
+    slot2.request_timeout = 900.0
+    slot2.chat_completion = AsyncMock(return_value="secondary response")
+
+    cascade = ProviderCascade(
+        providers=[("slot-1", slot1), ("slot-2", slot2)],
+        logger=mock_logger,
+    )
+
+    timeouts_used = []
+
+    original_timeout = asyncio.timeout
+
+    def tracking_timeout(delay):
+        timeouts_used.append(delay)
+        return original_timeout(delay)
+
+    with patch("src.ai_providers.asyncio.timeout", side_effect=tracking_timeout):
+        res = await cascade.chat_completion(
+            messages=[{"role": "user", "content": "hello"}],
+            model="test-model",
+        )
+
+    assert res == "primary response"
+    assert timeouts_used == [240.0]
