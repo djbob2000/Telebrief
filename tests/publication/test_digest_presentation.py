@@ -709,3 +709,82 @@ def test_build_required_digest_facts_filters_non_operational_infrastructure_hard
     facts = build_required_digest_facts(cards=[card], evidence={})
     # Both hard facts must be rejected because they are not operational service facts
     assert len(facts) == 0
+
+
+def test_build_digest_presentation_plan_balanced_rubric_selection():
+    from src.editorial_models import StoryCard
+    from src.publication.digest_presentation import build_digest_presentation_plan
+
+    cards = []
+    # 50 infrastructure cards
+    for i in range(50):
+        cards.append(
+            StoryCard(
+                id=f"story:infra:{i}",
+                topic=f"Электроснабжение {i}",
+                importance="medium",
+                summary=f"Отключение света на улице {i}",
+                rubric_id="infrastructure",
+            )
+        )
+    # Diverse city cards
+    for i in range(5):
+        cards.append(
+            StoryCard(
+                id=f"story:mobility:{i}",
+                topic=f"Автобусный маршрут {i}",
+                importance="high",
+                summary=f"Изменения в движении автобусов {i}",
+                rubric_id="mobility",
+            )
+        )
+    for i in range(4):
+        cards.append(
+            StoryCard(
+                id=f"story:health:{i}",
+                topic=f"Стоматология {i}",
+                importance="medium",
+                summary=f"Прием врачей в клинике {i}",
+                rubric_id="health",
+            )
+        )
+    for i in range(4):
+        cards.append(
+            StoryCard(
+                id=f"story:comm:{i}",
+                topic=f"Связь {i}",
+                importance="high",
+                summary=f"Мобильная связь в районе {i}",
+                rubric_id="communications",
+            )
+        )
+    for i in range(4):
+        cards.append(
+            StoryCard(
+                id=f"story:civic:{i}",
+                topic=f"Пенсионный фонд {i}",
+                importance="medium",
+                summary=f"Прием документов в отделении {i}",
+                rubric_id="civic_services",
+            )
+        )
+
+    plan = build_digest_presentation_plan(cards=cards)
+    selected_ids = set(plan.story_ids)
+
+    # Infrastructure should be capped (20 cards) rather than consuming all slots
+    infra_selected = [sid for sid in selected_ids if "story:infra:" in sid]
+    assert len(infra_selected) == 20
+
+    # Diverse rubrics must NOT be starved out
+    mobility_selected = [sid for sid in selected_ids if "story:mobility:" in sid]
+    assert len(mobility_selected) == 5
+
+    health_selected = [sid for sid in selected_ids if "story:health:" in sid]
+    assert len(health_selected) == 4
+
+    comm_selected = [sid for sid in selected_ids if "story:comm:" in sid]
+    assert len(comm_selected) == 4
+
+    civic_selected = [sid for sid in selected_ids if "story:civic:" in sid]
+    assert len(civic_selected) == 4

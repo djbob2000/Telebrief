@@ -738,18 +738,45 @@ def build_required_digest_facts(
 
 
 _PRIORITY_RUBRIC_WEIGHTS = {
+    "focus": 110,
     "infrastructure": 100,
     "security": 90,
+    "safety": 90,
     "civic_services": 80,
-    "transport": 70,
+    "mobility": 75,
+    "transport": 75,
     "communications": 70,
-    "social": 60,
-    "economy": 40,
-    "education": 30,
-    "culture": 30,
-    "weather": 20,
-    "environment": 20,
-    "other": 10,
+    "health": 65,
+    "economy": 50,
+    "society": 45,
+    "social": 45,
+    "education": 40,
+    "education_culture": 40,
+    "culture": 40,
+    "weather": 25,
+    "environment": 25,
+    "other": 15,
+}
+
+_DEFAULT_RUBRIC_CARD_CAPS = {
+    "focus": 4,
+    "infrastructure": 20,
+    "security": 6,
+    "safety": 6,
+    "civic_services": 6,
+    "mobility": 6,
+    "transport": 6,
+    "communications": 6,
+    "health": 6,
+    "economy": 6,
+    "society": 6,
+    "social": 6,
+    "education": 4,
+    "education_culture": 4,
+    "culture": 4,
+    "weather": 3,
+    "environment": 3,
+    "other": 6,
 }
 
 _STORY_IMPORTANCE_WEIGHTS = {
@@ -768,8 +795,6 @@ def build_digest_presentation_plan(
 ) -> DigestPresentationPlan:
     """Build the reader-independent presentation plan containing selected story IDs and required facts."""
     evidence_map = evidence if isinstance(evidence, Mapping) else {}
-
-    max_cards = kwargs.get("max_presentation_cards", 24)
 
     # Pre-identify cards associated with usable operational city situation items
     cards_with_city_situation: set[str] = set()
@@ -808,16 +833,43 @@ def build_digest_presentation_plan(
                 if bool(item_refs & card_refs_map.get(c.id, set())):
                     cards_with_city_situation.add(c.id)
 
-    if cards_with_city_situation and len(cards_with_city_situation) > max_cards:
-        max_cards = len(cards_with_city_situation)
+    user_max_cards = kwargs.get("max_presentation_cards")
 
-    selected_cards = list(cards)
-    if len(selected_cards) > max_cards:
+    # Group cards by rubric to ensure broad, balanced city coverage across multiple domains
+    cards_by_rubric: dict[str, list[Any]] = {}
+    for c in cards:
+        r_id = getattr(c, "rubric_id", "other") or "other"
+        cards_by_rubric.setdefault(r_id, []).append(c)
 
-        def _card_priority(c: Any) -> tuple[int, int, int, float]:
+    # Sort and cap cards within each rubric so one high-volume rubric cannot starve the rest
+    balanced_cards: list[Any] = []
+    for r_id, r_cards in cards_by_rubric.items():
+        cap = _DEFAULT_RUBRIC_CARD_CAPS.get(r_id, 6)
+
+        def _card_key(c: Any) -> tuple[int, int, float]:
             owns_sit = 1 if c.id in cards_with_city_situation else 0
-            rub = getattr(c, "rubric_id", "other") or "other"
-            w = _PRIORITY_RUBRIC_WEIGHTS.get(rub, 10)
+            has_ops = 1 if getattr(c, "operational_observations", None) else 0
+            raw_imp = getattr(c, "importance", "medium")
+            if isinstance(raw_imp, (int, float)):
+                imp = float(raw_imp)
+            else:
+                imp = _STORY_IMPORTANCE_WEIGHTS.get(str(raw_imp).strip().lower(), 0.5)
+            return (owns_sit, has_ops, imp)
+
+        r_cards.sort(key=_card_key, reverse=True)
+        # Always retain cards backing operational city situation, plus top cards up to cap
+        owns_sit_count = sum(1 for c in r_cards if c.id in cards_with_city_situation)
+        effective_cap = max(cap, owns_sit_count)
+        balanced_cards.extend(r_cards[:effective_cap])
+
+    # If caller explicitly requested a strict card limit (e.g. in test fixtures):
+    if user_max_cards is not None and len(balanced_cards) > user_max_cards:
+        effective_max = max(user_max_cards, len(cards_with_city_situation))
+
+        def _global_priority(c: Any) -> tuple[int, int, int, float]:
+            owns_sit = 1 if c.id in cards_with_city_situation else 0
+            r_id = getattr(c, "rubric_id", "other") or "other"
+            w = _PRIORITY_RUBRIC_WEIGHTS.get(r_id, 10)
             has_ops = 1 if getattr(c, "operational_observations", None) else 0
             raw_imp = getattr(c, "importance", "medium")
             if isinstance(raw_imp, (int, float)):
@@ -826,8 +878,10 @@ def build_digest_presentation_plan(
                 imp = _STORY_IMPORTANCE_WEIGHTS.get(str(raw_imp).strip().lower(), 0.5)
             return (owns_sit, has_ops, w, imp)
 
-        selected_cards.sort(key=_card_priority, reverse=True)
-        selected_cards = selected_cards[:max_cards]
+        balanced_cards.sort(key=_global_priority, reverse=True)
+        balanced_cards = balanced_cards[:effective_max]
+
+    selected_cards = balanced_cards
 
     return DigestPresentationPlan(
         story_ids=tuple(card.id for card in selected_cards),
