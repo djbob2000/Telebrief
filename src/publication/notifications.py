@@ -72,13 +72,18 @@ class PublicationFailureNotificationService:
                 "- publication readiness timeout waiting for event processing"
                 f" ({intent.error_kind})"
             )
+        elif intent.error_kind == "article_validation_rejected":
+            sources = (
+                "- no source-level blocker recorded; source collection completed "
+                "before article writer validation rejected the draft"
+            )
         else:
-            sources = "- no enabled source completed a qualifying scan"
+            sources = "- no source-level diagnostics were recorded"
         return (
             "❌ Publication not published.\n"
             f"Type: {intent.publication_type}; target: {intent.slot_at.isoformat()}\n"
             f"Reason: {intent.error_kind or 'readiness failure'}\n"
-            "Problematic sources:\n"
+            f"{'Diagnostics' if intent.error_kind == 'article_validation_rejected' else 'Problematic sources'}:\n"
             f"{sources}\n"
             "No stale fallback data was used."
         )

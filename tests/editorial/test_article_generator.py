@@ -5,11 +5,12 @@
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.article_generator import ArticleGenerator, UnsafeDraftError
+from src.article_generator import ArticleGenerator, UnsafeDraftError, _build_writer_attempt_metadata
 from src.collector import Message
 from src.config_loader import Config, Settings
 from src.editorial_analysis import ContextSizeRejectedError, EditorialAnalysisError
@@ -87,6 +88,55 @@ _SIMPLE_REGISTRY = json.dumps(
         ]
     }
 )
+
+
+@pytest.mark.unit
+def test_writer_attempt_metadata_keeps_materialization_and_actual_provider_details():
+    validation = SimpleNamespace(
+        word_count=91,
+        section_count=1,
+        violations=("EMPTY_LEAD:LEAD",),
+    )
+    coverage = SimpleNamespace(
+        planned_story_count=107,
+        covered_story_count=0,
+        story_coverage=0.0,
+        uncovered_story_ids=("story:power",),
+    )
+    provider = SimpleNamespace(
+        last_metadata={
+            "provider_slot": "openrouter-secondary",
+            "actual_provider": "OpenRouter",
+            "actual_model": "z-ai/glm-5.3-flash",
+            "finish_reason": "stop",
+            "total_tokens": 123,
+        }
+    )
+
+    metadata = _build_writer_attempt_metadata(
+        attempt_number=1,
+        provider_name="openrouter",
+        model_name="deepseek/deepseek-v4-flash-0731,z-ai/glm-5.3-flash",
+        response_text="short draft",
+        val=validation,
+        diag=coverage,
+        provider_obj=provider,
+        materialization={
+            "coverage_story_count": 107,
+            "story_packet_count": 107,
+            "packets_with_citable_support": 105,
+            "citable_support_count": 168,
+        },
+        context_chars=98765,
+        prompt_chars=100123,
+    )
+
+    assert metadata["materialization"]["story_packet_count"] == 107
+    assert metadata["context_chars"] == 98765
+    assert metadata["prompt_chars"] == 100123
+    assert metadata["provider_slot"] == "openrouter-secondary"
+    assert metadata["actual_model"] == "z-ai/glm-5.3-flash"
+
 
 _SIMPLE_DRAFT = json.dumps(
     {

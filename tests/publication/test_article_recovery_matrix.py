@@ -10,7 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -254,7 +254,7 @@ def _make_article_generator(
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_case_1_catastrophically_incomplete_draft_is_not_regenerated() -> None:
-    """A catastrophic draft fails closed after one writer call; no giant retry is sent."""
+    """A short but populated invalid draft is not mistaken for an empty refusal."""
     context, plan = _make_17_story_setup()
     generator = _make_article_generator(
         article_editor_enabled=False,
@@ -278,6 +278,48 @@ async def test_case_1_catastrophically_incomplete_draft_is_not_regenerated() -> 
     assert "global_incompleteness_retry" not in {
         item.get("kwargs", {}).get("error_kind") for item in observer.finished_attempts.values()
     }
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_case_1_catastrophic_draft_falls_back_to_second_model_after_same_provider_retry():
+    """A repeated refusal uses the next configured model, not deterministic fallback."""
+    from src.ai_providers import ProviderCascade
+
+    context, plan = _make_17_story_setup()
+    generator = _make_article_generator(
+        article_editor_enabled=False,
+        article_allow_deterministic_fallback=False,
+    )
+    first_response = json.dumps(
+        {
+            "title": "Пожалуйста, предоставьте материалы для подготовки хроники.",
+            "lead": "",
+            "sections": [],
+        }
+    )
+    primary = MagicMock()
+    primary.chat_completion = AsyncMock(side_effect=[first_response, first_response])
+    backup = MagicMock()
+    backup.chat_completion = AsyncMock(
+        return_value=_build_complete_longread_response(list(context.support_index))
+    )
+    generator.provider = ProviderCascade(
+        [("primary", primary), ("secondary", backup)], generator.logger
+    )
+
+    observer = RecordingAttemptObserver()
+    title, lead, body = await generator.generate_from_event_article_context(
+        context,
+        coverage_plan=plan,
+        attempt_observer=observer,
+    )
+
+    assert title
+    assert lead
+    assert body
+    assert primary.chat_completion.call_count == 2
+    assert backup.chat_completion.call_count == 1
 
 
 @pytest.mark.unit
@@ -650,9 +692,9 @@ async def test_case_9_grounding_path_preserves_writer_coverage_without_regenerat
     grounded_draft = StructuredArticleDraft.from_dict(grounded_dict)
 
     # Verify length is long enough to exceed word count minimum (>= 150 words)
-    assert (
-        grounded_draft.word_count >= 150
-    ), f"Expected >= 150 words, got {grounded_draft.word_count}"
+    assert grounded_draft.word_count >= 150, (
+        f"Expected >= 150 words, got {grounded_draft.word_count}"
+    )
 
     # Verify coverage diagnostics on grounded draft
     diag = diagnose_article_coverage(grounded_draft, plan)
@@ -663,9 +705,9 @@ async def test_case_9_grounding_path_preserves_writer_coverage_without_regenerat
 
     val = validate_article_draft(grounded_draft, context)
     is_incomplete = _is_globally_incomplete(val, diag)
-    assert (
-        is_incomplete is True
-    ), "Draft covering only 1 of 17 stories must be classified as globally incomplete"
+    assert is_incomplete is True, (
+        "Draft covering only 1 of 17 stories must be classified as globally incomplete"
+    )
 
     # 2. Generator must not trigger a second full writer request.
     generator = _make_article_generator(

@@ -130,6 +130,25 @@ async def test_provider_cascade_switches_after_primary_error(mock_logger):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_provider_cascade_records_successful_slot_metadata(mock_logger):
+    provider = MagicMock()
+    provider.chat_completion = AsyncMock(return_value="response")
+    provider.last_metadata = {
+        "finish_reason": "stop",
+        "total_tokens": 42,
+    }
+    cascade = ProviderCascade([("openrouter-secondary", provider, "provider-model")], mock_logger)
+
+    await cascade.chat_completion(messages=[], model="configured-model", max_tokens=100)
+
+    assert cascade.last_metadata["provider_slot"] == "openrouter-secondary"
+    assert cascade.last_metadata["actual_model"] == "provider-model"
+    assert cascade.last_metadata["finish_reason"] == "stop"
+    assert cascade.last_metadata["total_tokens"] == 42
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_provider_cascade_reports_all_slot_failures(mock_logger):
     """Exhausting the cascade raises one actionable error with provider names."""
     primary = MagicMock()
@@ -511,6 +530,42 @@ async def test_openai_provider_logs_response_metadata(mock_logger):
         assert "finish_reason" in debug_text
         assert "stop" in debug_text
         assert "prompt_tokens" in debug_text
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_openai_provider_exposes_response_metadata(mock_logger):
+    with patch("src.ai_providers.AsyncOpenAI"):
+        provider = OpenAIProvider(api_key="sk-test", logger=mock_logger)
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Valid response"
+        mock_choice.message.refusal = None
+        mock_choice.finish_reason = "stop"
+        mock_response = MagicMock()
+        mock_response.id = "response-123"
+        mock_response.choices = [mock_choice]
+        mock_response.usage.prompt_tokens = 500
+        mock_response.usage.completion_tokens = 100
+        mock_response.usage.total_tokens = 600
+        mock_response.usage.completion_tokens_details = MagicMock(reasoning_tokens=7)
+        provider.client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+        await provider.chat_completion(
+            messages=[{"role": "user", "content": "Hello"}],
+            model="gpt-5-nano",
+            max_tokens=500,
+        )
+
+        assert provider.last_metadata == {
+            "actual_provider": "OpenAI",
+            "actual_model": "gpt-5-nano",
+            "response_id": "response-123",
+            "finish_reason": "stop",
+            "prompt_tokens": 500,
+            "completion_tokens": 100,
+            "total_tokens": 600,
+            "reasoning_tokens": 7,
+        }
 
 
 @pytest.mark.unit

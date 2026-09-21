@@ -352,6 +352,77 @@ class ProviderCascade(AIProvider):
         ]
         self.logger = logger
         self.cooldown_seconds = cooldown_seconds
+        self.last_metadata: dict[str, Any] = {}
+
+    def next_slot_name(self, slot_name: str | None) -> str | None:
+        """Return the next configured slot after ``slot_name`` for quality fallback."""
+        if not slot_name:
+            return None
+        names = [slot[0] for slot in self.providers]
+        try:
+            index = names.index(slot_name)
+        except ValueError:
+            return None
+        return names[index + 1] if index + 1 < len(names) else None
+
+    async def chat_completion_for_slot(  # pylint: disable=too-many-positional-arguments
+        self,
+        slot_name: str,
+        messages: List[Dict[str, str]],
+        model: str,
+        temperature: float | None = None,
+        max_tokens: int = 65536,
+        reasoning_effort: str | None = None,
+        thinking: bool | None = None,
+        response_format: Dict[str, Any] | None = None,
+    ) -> str:
+        """Run one quality-retry request on exactly one configured slot.
+
+        Normal cascade calls still handle transport failures.  This narrow
+        method is for article-quality recovery after a provider returned a
+        technically successful but unusable draft; it must not silently jump
+        to another model so the caller can explicitly retry the same slot
+        before moving to the next one.
+        """
+        slot = next((item for item in self.providers if item[0] == slot_name), None)
+        if slot is None:
+            raise ValueError(f"unknown AI provider slot: {slot_name}")
+
+        label, provider, model_override = slot
+        selected_model = model_override or model
+        self.logger.info(
+            "Retrying AI provider slot %s for unusable article draft (model=%s)",
+            label,
+            selected_model,
+        )
+        slot_timeout = float(
+            getattr(provider, "request_timeout", None)
+            or getattr(self, "request_timeout", 300.0)
+            or 300.0
+        )
+        async with asyncio.timeout(slot_timeout):
+            response = await provider.chat_completion(
+                messages=messages,
+                model=selected_model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+                thinking=thinking,
+                response_format=response_format,
+            )
+        if not isinstance(response, str) or not response.strip():
+            raise RuntimeError("provider returned an empty response")
+
+        ProviderCascade._global_slot_cooldowns.pop(label, None)
+        provider_metadata = getattr(provider, "last_metadata", None)
+        self.last_metadata = dict(provider_metadata) if isinstance(provider_metadata, dict) else {}
+        self.last_metadata.update(
+            {
+                "provider_slot": label,
+                "actual_model": selected_model,
+            }
+        )
+        return response
 
     async def chat_completion(  # pylint: disable=too-many-positional-arguments
         self,
@@ -450,6 +521,7 @@ class ProviderCascade(AIProvider):
                     raise RuntimeError("provider returned an empty response")
                 # Clear any global cooldown upon a successful response for this slot
                 ProviderCascade._global_slot_cooldowns.pop(label, None)
+                self._record_successful_slot_metadata(label, provider, selected_model)
                 return response
             except Exception as exc:  # every provider error is eligible for failover
                 exc_type = type(exc).__name__
@@ -544,6 +616,18 @@ class ProviderCascade(AIProvider):
             slot_failures=slot_failures,
         )
 
+    def _record_successful_slot_metadata(
+        self, label: str, provider: AIProvider, selected_model: str
+    ) -> None:
+        provider_metadata = getattr(provider, "last_metadata", None)
+        self.last_metadata = dict(provider_metadata) if isinstance(provider_metadata, dict) else {}
+        self.last_metadata.update(
+            {
+                "provider_slot": label,
+                "actual_model": selected_model,
+            }
+        )
+
 
 def _extract_chat_completion_text(response: Any, logger: logging.Logger, provider: str) -> str:
     """Extract visible text from an OpenAI-compatible chat response."""
@@ -619,6 +703,7 @@ class OpenAIProvider(AIProvider):
             max_concurrency = 4
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._mandatory_reasoning_models: set[str] = set()
+        self.last_metadata: dict[str, Any] = {}
 
     async def chat_completion(  # pylint: disable=too-many-positional-arguments
         self,
@@ -761,22 +846,40 @@ class OpenAIProvider(AIProvider):
 
         result = _extract_chat_completion_text(response, self.logger, provider_label)
         usage = response.usage
+        finish_reason = response.choices[0].finish_reason if response.choices else None
+        if not isinstance(finish_reason, str):
+            finish_reason = None
+        response_id = getattr(response, "id", None)
+        if not isinstance(response_id, str):
+            response_id = None
+        details = getattr(usage, "completion_tokens_details", None) if usage else None
+        reasoning_tokens = (
+            details.get("reasoning_tokens")
+            if isinstance(details, dict)
+            else getattr(details, "reasoning_tokens", None)
+        )
+        if not isinstance(reasoning_tokens, (int, float)):
+            reasoning_tokens = None
+        self.last_metadata = {
+            "actual_provider": provider_label,
+            "actual_model": model,
+            "response_id": response_id,
+            "finish_reason": finish_reason,
+            "prompt_tokens": getattr(usage, "prompt_tokens", None) if usage else None,
+            "completion_tokens": getattr(usage, "completion_tokens", None) if usage else None,
+            "total_tokens": getattr(usage, "total_tokens", None) if usage else None,
+            "reasoning_tokens": reasoning_tokens,
+        }
         self.logger.info(
             "← %s response: elapsed=%.1fs finish_reason=%s prompt_tokens=%s completion_tokens=%s",
             provider_label,
             _elapsed,
-            response.choices[0].finish_reason if response.choices else "?",
+            finish_reason or "?",
             usage.prompt_tokens if usage else None,
             usage.completion_tokens if usage else None,
         )
         call_context = get_llm_call_context()
         if call_context is not None:
-            details = getattr(usage, "completion_tokens_details", None) if usage else None
-            reasoning_tokens = (
-                details.get("reasoning_tokens")
-                if isinstance(details, dict)
-                else getattr(details, "reasoning_tokens", None)
-            )
             self.logger.info(
                 "llm_usage stage=%s prompt_hash=%s response_id=%s model=%s max_tokens=%s "
                 "reasoning_effort=%s story_count=%s prompt_tokens=%s completion_tokens=%s "
@@ -791,7 +894,7 @@ class OpenAIProvider(AIProvider):
                 usage.prompt_tokens if usage else None,
                 usage.completion_tokens if usage else None,
                 reasoning_tokens,
-                response.choices[0].finish_reason if response.choices else "?",
+                finish_reason or "?",
             )
         return result
 

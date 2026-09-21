@@ -1,6 +1,29 @@
 from pathlib import Path
 
 WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "deploy-dev.yml"
+CI_WORKFLOW = Path(__file__).parents[1] / ".github" / "workflows" / "ci.yml"
+
+
+def test_dev_push_uses_one_sequential_verify_build_deploy_job():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "  deploy:\n" in workflow
+    assert "  test:\n" not in workflow
+    assert "  build-and-push:\n" not in workflow
+    assert workflow.count("actions/checkout@v6") == 1
+    assert "pre-commit run --all-files --show-diff-on-failure" in workflow
+    assert "safety==3.7.0" in workflow
+    assert "safety check --json" in workflow
+    assert "python -m pytest --cov=src" in workflow
+    assert "docker/build-push-action@v7" in workflow
+    assert "Execute Remote Deployment" in workflow
+
+
+def test_general_ci_does_not_duplicate_dev_push_checks():
+    workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "push:\n    branches: [main, custom]" in workflow
+    assert "push:\n" not in workflow.replace("push:\n    branches: [main, custom]", "")
 
 
 def test_dev_deploy_is_immutable_noninteractive_and_verifies_all_runtime_services():

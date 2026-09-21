@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from src.publication.article_context import (
     ArticleEditorialContext,
@@ -25,6 +26,35 @@ _PACKET_FACT_MAX_CHARS = 420
 _PACKET_COMPACT_FACT_MAX_CHARS = 180
 _PACKET_SUPPORT_LIMIT = {"DEVELOP": 3, "WEAVE": 2, "BRIEF": 1}
 _QUOTE_ALLOWLIST_MAX_CHARS = 12_000
+
+
+@dataclass(frozen=True)
+class ArticleWriterMaterializationStats:
+    """Counts describing the material projected into the writer prompt."""
+
+    coverage_story_count: int
+    story_packet_count: int
+    packets_with_citable_support: int
+    citable_support_count: int
+
+    def to_prompt_block(self) -> str:
+        return "\n".join(
+            (
+                "ARTICLE MATERIAL INVENTORY",
+                f"coverage stories: {self.coverage_story_count}",
+                f"story packets: {self.story_packet_count}",
+                f"packets with citable support: {self.packets_with_citable_support}",
+                f"citable support entries: {self.citable_support_count}",
+            )
+        )
+
+    def to_metadata(self) -> dict[str, int]:
+        return {
+            "coverage_story_count": self.coverage_story_count,
+            "story_packet_count": self.story_packet_count,
+            "packets_with_citable_support": self.packets_with_citable_support,
+            "citable_support_count": self.citable_support_count,
+        }
 
 
 def sanitize_writer_source_text(text: str) -> str:
@@ -135,7 +165,7 @@ def _render_coverage_plan(
 def _render_article_story_packets(
     context: ArticleEditorialContext,
     coverage_plan: ArticleCoveragePlan,
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], ArticleWriterMaterializationStats]:
     """Materialize the zero-loss coverage plan into bounded writer packets.
 
     The complete plan and support index remain available to deterministic
@@ -151,6 +181,8 @@ def _render_article_story_packets(
 
     packets: list[str] = []
     compact_packets: list[str] = []
+    packets_with_citable_support = 0
+    citable_support_count = 0
     for item in coverage_plan.stories:
         depth = str(item.prominence)
         limit = _PACKET_SUPPORT_LIMIT.get(depth, 1)
@@ -166,6 +198,9 @@ def _render_article_story_packets(
         ]
         selected_ids = list(dict.fromkeys((*own_ids, *planned_ids)))[:limit]
         selected_supports = [support_by_id[sid] for sid in selected_ids if sid in support_by_id]
+        if selected_supports:
+            packets_with_citable_support += 1
+            citable_support_count += len(selected_supports)
 
         header = (
             f"[ARTICLE STORY PACKET {item.story_id}] depth={depth} "
@@ -193,7 +228,16 @@ def _render_article_story_packets(
         packets.append("\n".join(full_lines))
         compact_packets.append("\n".join(compact_lines))
 
-    return packets, compact_packets
+    return (
+        packets,
+        compact_packets,
+        ArticleWriterMaterializationStats(
+            coverage_story_count=len(coverage_plan.stories),
+            story_packet_count=len(packets),
+            packets_with_citable_support=packets_with_citable_support,
+            citable_support_count=citable_support_count,
+        ),
+    )
 
 
 def _fit_story_packets(
@@ -220,13 +264,13 @@ def _fit_story_packets(
     return "\n\n".join(part for part in (prefix, body) if part).strip()
 
 
-def render_article_writer_context(
+def render_article_writer_context_with_stats(
     context: ArticleEditorialContext,
     coverage_plan: ArticleCoveragePlan | None = None,
     *,
     include_coverage_plan: bool = True,
-) -> str:
-    """Render coverage-aware and sanitized support context for single-call writer."""
+) -> tuple[str, ArticleWriterMaterializationStats | None]:
+    """Render writer context and return the materialization stats used to build it."""
     blocks: list[str] = []
     if context.edition_name:
         blocks.append(f"EDITION CONTEXT: {context.edition_name}")
@@ -286,8 +330,21 @@ def render_article_writer_context(
             allowed_support_ids.update(item.detail_support_ids)
 
         prefix = "\n\n".join(blocks).strip()
-        packet_blocks, compact_packet_blocks = _render_article_story_packets(context, coverage_plan)
-        return _fit_story_packets(prefix, packet_blocks, compact_packet_blocks)
+        packet_blocks, compact_packet_blocks, stats = _render_article_story_packets(
+            context, coverage_plan
+        )
+        if stats.story_packet_count != stats.coverage_story_count:
+            raise ValueError(
+                "article story packet materialization lost coverage stories: "
+                f"{stats.story_packet_count}/{stats.coverage_story_count}"
+            )
+        prefix_with_inventory = "\n\n".join(
+            part for part in (prefix, stats.to_prompt_block()) if part
+        ).strip()
+        return (
+            _fit_story_packets(prefix_with_inventory, packet_blocks, compact_packet_blocks),
+            stats,
+        )
 
     # Several evidence rows often carry the same fact and source text (for
     # example, one fact linked to multiple fragments).  They all remain
@@ -399,4 +456,19 @@ def render_article_writer_context(
         rendered = rendered[: ARTICLE_WRITER_CONTEXT_MAX_CHARS - 40].rstrip()
         rendered += "\n[SUPPORT CONTEXT TRUNCATED]"
 
+    return rendered, None
+
+
+def render_article_writer_context(
+    context: ArticleEditorialContext,
+    coverage_plan: ArticleCoveragePlan | None = None,
+    *,
+    include_coverage_plan: bool = True,
+) -> str:
+    """Render coverage-aware and sanitized support context for single-call writer."""
+    rendered, _stats = render_article_writer_context_with_stats(
+        context,
+        coverage_plan,
+        include_coverage_plan=include_coverage_plan,
+    )
     return rendered

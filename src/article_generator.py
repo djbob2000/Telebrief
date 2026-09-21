@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple
 
 from src.ai_providers import (
     AIProvider,
+    ProviderCascade,
     ProviderCascadeError,
     create_provider,
     ensure_provider_cascade,
@@ -398,6 +399,20 @@ def _is_globally_incomplete(
     return has_draft_blocking or (not all_develop_covered) or low_coverage or many_missing
 
 
+def _is_catastrophic_writer_response(
+    draft: StructuredArticleDraft,
+    validation_result: ArticleValidationResult,
+    diagnostics: ArticleCoverageDiagnostics,
+) -> bool:
+    """Identify a refusal/empty response, not an ordinary coverage shortfall."""
+    return (
+        validation_result.word_count < 120
+        and not draft.lead.strip()
+        and validation_result.section_count <= 1
+        and diagnostics.covered_story_count == 0
+    )
+
+
 def _build_writer_attempt_metadata(
     attempt_number: int,
     provider_name: str,
@@ -407,6 +422,10 @@ def _build_writer_attempt_metadata(
     diag: ArticleCoverageDiagnostics,
     provider_obj: Any = None,
     regeneration_reason: str | None = None,
+    materialization: dict[str, int] | None = None,
+    context_chars: int | None = None,
+    prompt_chars: int | None = None,
+    retry_history: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     meta: dict[str, Any] = {
         "attempt_number": attempt_number,
@@ -423,9 +442,27 @@ def _build_writer_attempt_metadata(
     }
     if regeneration_reason:
         meta["regeneration_reason"] = regeneration_reason
+    if materialization is not None:
+        meta["materialization"] = dict(materialization)
+    if context_chars is not None:
+        meta["context_chars"] = context_chars
+    if prompt_chars is not None:
+        meta["prompt_chars"] = prompt_chars
+    if retry_history:
+        meta["writer_retry_history"] = retry_history
     prov_meta = getattr(provider_obj, "last_metadata", None)
     if isinstance(prov_meta, dict):
-        for k in ("finish_reason", "completion_tokens", "reasoning_tokens", "total_tokens"):
+        for k in (
+            "provider_slot",
+            "actual_provider",
+            "actual_model",
+            "response_id",
+            "finish_reason",
+            "prompt_tokens",
+            "completion_tokens",
+            "reasoning_tokens",
+            "total_tokens",
+        ):
             if k in prov_meta:
                 meta[k] = prov_meta[k]
     return meta
@@ -1172,7 +1209,9 @@ class ArticleGenerator:
         is_longitudinal = lookback_hours >= 120
 
         from src.publication.article_coverage import build_article_coverage_plan
-        from src.publication.article_writer_context import render_article_writer_context
+        from src.publication.article_writer_context import (
+            render_article_writer_context_with_stats,
+        )
 
         if coverage_plan is None and getattr(article_ctx, "coverage_plan", None) is not None:
             coverage_plan = article_ctx.coverage_plan
@@ -1201,10 +1240,13 @@ class ArticleGenerator:
                     develop_story_budget=develop_story_budget,
                 )
 
-        context_str = render_article_writer_context(
+        context_str, materialization_stats = render_article_writer_context_with_stats(
             article_ctx,
             coverage_plan,
             include_coverage_plan=False,
+        )
+        materialization_metadata = (
+            materialization_stats.to_metadata() if materialization_stats is not None else None
         )
         system_prompt = self._build_event_article_system_prompt(
             length_profile=length_profile,
@@ -1347,12 +1389,20 @@ class ArticleGenerator:
             len(system_prompt) + len(user_prompt),
         )
 
+        writer_input_metadata: dict[str, Any] = {
+            "context_chars": len(context_str),
+            "prompt_chars": len(system_prompt) + len(user_prompt),
+        }
+        if materialization_metadata is not None:
+            writer_input_metadata["materialization"] = materialization_metadata
+
         from src.publication.article_finalization import ArticleFinalizer
 
         writer_draft: StructuredArticleDraft | None = None
         writer_error: Exception | None = None
         writer_attempt_id = 0
         writer_validation: ArticleValidationResult | None = None
+        writer_retry_history: list[dict[str, Any]] = []
 
         quote_allowlist = build_article_quote_allowlist(article_ctx)
 
@@ -1361,7 +1411,7 @@ class ArticleGenerator:
                 "writer",
                 provider=self.config.settings.ai_provider,
                 model=self.model,
-                metadata={"attempt": 1},
+                metadata={"attempt": 1, **writer_input_metadata},
             )
 
         try:
@@ -1378,28 +1428,134 @@ class ArticleGenerator:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ]
-            response = await self.provider.chat_completion(
-                messages=messages,
-                model=self.model,
-                temperature=article_temp,
-                max_tokens=writer_max_tokens,
-                reasoning_effort=writer_reasoning_effort,
+
+            async def call_writer(slot_name: str | None = None) -> str:
+                common_kwargs = {
+                    "messages": messages,
+                    "model": self.model,
+                    "temperature": article_temp,
+                    "max_tokens": writer_max_tokens,
+                    "reasoning_effort": writer_reasoning_effort,
+                }
+                if slot_name and isinstance(self.provider, ProviderCascade):
+                    return await self.provider.chat_completion_for_slot(slot_name, **common_kwargs)
+                return await self.provider.chat_completion(**common_kwargs)
+
+            def evaluate_writer_response(
+                raw_response: str,
+            ) -> tuple[StructuredArticleDraft, ArticleValidationResult, ArticleCoverageDiagnostics]:
+                raw_parsed = self._parse_event_article_response(raw_response)
+                parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
+                draft = StructuredArticleDraft.from_dict(parsed, quote_allowlist=quote_allowlist)
+                validation = validate_article_draft(
+                    draft,
+                    article_ctx,
+                    config=editorial_config,
+                    length_profile=length_profile,
+                )
+                diagnostics = diagnose_article_coverage(draft, coverage_plan, context=article_ctx)
+                return draft, validation, diagnostics
+
+            def current_provider_slot() -> str | None:
+                metadata = getattr(self.provider, "last_metadata", None)
+                if isinstance(metadata, dict):
+                    slot = metadata.get("provider_slot")
+                    return slot if isinstance(slot, str) else None
+                return None
+
+            def record_writer_attempt(
+                attempt_number: int,
+                raw_response: str,
+                validation: ArticleValidationResult,
+                diagnostics: ArticleCoverageDiagnostics,
+                catastrophic: bool,
+                error: Exception | None = None,
+            ) -> None:
+                metadata = getattr(self.provider, "last_metadata", None)
+                item: dict[str, Any] = {
+                    "attempt_number": attempt_number,
+                    "response_chars": len(raw_response),
+                    "parsed_word_count": validation.word_count,
+                    "parsed_section_count": validation.section_count,
+                    "planned_story_count": diagnostics.planned_story_count,
+                    "covered_story_count": diagnostics.covered_story_count,
+                    "story_coverage": diagnostics.story_coverage,
+                    "catastrophic": catastrophic,
+                }
+                if isinstance(metadata, dict):
+                    for key in (
+                        "provider_slot",
+                        "actual_provider",
+                        "actual_model",
+                        "finish_reason",
+                    ):
+                        if key in metadata:
+                            item[key] = metadata[key]
+                if error is not None:
+                    item["error_type"] = type(error).__name__
+                writer_retry_history.append(item)
+
+            response = await call_writer()
+            candidate_draft, candidate_val, candidate_diag = evaluate_writer_response(response)
+            catastrophic = _is_catastrophic_writer_response(
+                candidate_draft, candidate_val, candidate_diag
             )
-            raw_parsed = self._parse_event_article_response(response)
-            parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
-            candidate_draft = StructuredArticleDraft.from_dict(
-                parsed, quote_allowlist=quote_allowlist
-            )
-            candidate_val = validate_article_draft(
-                candidate_draft,
-                article_ctx,
-                config=editorial_config,
-                length_profile=length_profile,
-            )
+            record_writer_attempt(1, response, candidate_val, candidate_diag, catastrophic)
+
+            if catastrophic:
+                initial_slot = current_provider_slot()
+                self.logger.warning(
+                    "Writer returned a catastrophic refusal/empty draft (%d words, %d/%d stories); "
+                    "retrying the same provider slot once",
+                    candidate_val.word_count,
+                    candidate_diag.covered_story_count,
+                    candidate_diag.planned_story_count,
+                )
+                for retry_index in range(2):
+                    if retry_index == 1 and not isinstance(self.provider, ProviderCascade):
+                        break
+                    retry_slot = initial_slot
+                    if retry_index == 1 and isinstance(self.provider, ProviderCascade):
+                        retry_slot = self.provider.next_slot_name(initial_slot)
+                        if retry_slot is None:
+                            break
+                        self.logger.warning(
+                            "Writer refusal repeated on slot %s; switching to next provider slot %s",
+                            initial_slot or "unknown",
+                            retry_slot,
+                        )
+                    try:
+                        response = await call_writer(retry_slot)
+                        candidate_draft, candidate_val, candidate_diag = evaluate_writer_response(
+                            response
+                        )
+                    except Exception as retry_exc:
+                        record_writer_attempt(
+                            retry_index + 2,
+                            "",
+                            candidate_val,
+                            candidate_diag,
+                            True,
+                            error=retry_exc,
+                        )
+                        if retry_index == 1:
+                            raise
+                        continue
+                    catastrophic = _is_catastrophic_writer_response(
+                        candidate_draft, candidate_val, candidate_diag
+                    )
+                    record_writer_attempt(
+                        retry_index + 2,
+                        response,
+                        candidate_val,
+                        candidate_diag,
+                        catastrophic,
+                    )
+                    if not catastrophic:
+                        break
+                    initial_slot = current_provider_slot() or initial_slot
+
             writer_validation = candidate_val
-            candidate_diag = diagnose_article_coverage(
-                candidate_draft, coverage_plan, context=article_ctx
-            )
 
             is_incomplete = _is_globally_incomplete(candidate_val, candidate_diag)
             attempt_1_meta = _build_writer_attempt_metadata(
@@ -1411,6 +1567,10 @@ class ArticleGenerator:
                 diag=candidate_diag,
                 provider_obj=self.provider,
                 regeneration_reason=None,
+                materialization=materialization_metadata,
+                context_chars=len(context_str),
+                prompt_chars=len(system_prompt) + len(user_prompt),
+                retry_history=writer_retry_history,
             )
 
             # Coverage diagnostics must not trigger a second full writer call.

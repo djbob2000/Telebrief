@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main, custom]
   pull_request:
     branches: [ main, custom ]
 
@@ -100,8 +101,27 @@ jobs:
         python scripts/migrate.py
         python -c "import asyncio, os; from src.jobs.admin import ensure_official_tables; asyncio.run(ensure_official_tables(os.environ['DATABASE_URL'], 'procrastinate'))"
 
+    - name: Show test tool versions
+      run: |
+        python --version
+        python -m pytest --version
+
     - name: Run pytest
-      run: pytest --cov=src --cov-report=xml --cov-report=term-missing
+      run: |
+        set -o pipefail
+        python -m pytest --cov=src --cov-report=xml --cov-report=term-missing 2>&1 | tee /tmp/pytest.log
+
+    - name: Publish Test Failure Summary
+      if: failure()
+      run: |
+        echo "## Pytest Failures" >> "$GITHUB_STEP_SUMMARY"
+        echo '```text' >> "$GITHUB_STEP_SUMMARY"
+        if [ -f /tmp/pytest.log ]; then
+          grep -A 100 "=== FAILURES ===" /tmp/pytest.log >> "$GITHUB_STEP_SUMMARY" || tail -n 100 /tmp/pytest.log >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo "pytest did not produce a log" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        echo '```' >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload coverage to Codecov
       if: matrix.python-version == '3.14'
@@ -136,7 +156,7 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install ruff safety
+        pip install ruff safety==3.7.0
 
     - name: Run security checks (Ruff security rules)
       run: ruff check --select S src/

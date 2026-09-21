@@ -12,6 +12,7 @@ from src.publication.article_coverage import build_article_coverage_plan
 from src.publication.article_writer_context import (
     ARTICLE_WRITER_CONTEXT_MAX_CHARS,
     render_article_writer_context,
+    render_article_writer_context_with_stats,
     sanitize_writer_source_text,
 )
 
@@ -121,6 +122,84 @@ def test_render_article_writer_context_includes_plan_and_sanitizes_sources():
 
     # Raw support source text is NOT mutated
     assert s4.source_text == raw_source
+
+
+def test_render_article_writer_context_includes_material_inventory_for_story_packets():
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    cards = [
+        StoryCard(id="story:power", topic="Энергетика", importance="high", summary="Свет"),
+        StoryCard(id="story:water", topic="Вода", importance="medium", summary="Вода"),
+    ]
+    supports = tuple(
+        ArticleSupport(
+            support_id=f"{card.id}:evidence:0:frag:{index}",
+            text=f"Подтверждённый факт для {card.topic}.",
+            source_text=f"Сообщение жителей о теме {card.topic}.",
+            support_kind="evidence",
+            publication_use="PUBLISH",
+            source_refs=(f"ref-{index}",),
+            fragment_ids=(index,),
+            source_item_ids=(index,),
+            observed_at=now,
+            evidence_kind="community_report",
+            story_id=card.id,
+        )
+        for index, card in enumerate(cards, start=1)
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=tuple(card.topic for card in cards),
+        support_index=supports,
+        support_by_id={support.support_id: support for support in supports},
+        recurring_topics=(),
+        edition_name="Бердянск",
+    )
+    plan = build_article_coverage_plan(cards, context)
+
+    rendered = render_article_writer_context(context, plan, include_coverage_plan=False)
+
+    assert "ARTICLE MATERIAL INVENTORY" in rendered
+    assert "coverage stories: 2" in rendered
+    assert "story packets: 2" in rendered
+    assert "packets with citable support: 2" in rendered
+
+
+def test_render_article_writer_context_with_stats_returns_materialization_counts():
+    now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+    card = StoryCard(id="story:power", topic="Энергетика", importance="high", summary="Свет")
+    support = ArticleSupport(
+        support_id="story:power:evidence:0:frag:1",
+        text="Света нет",
+        source_text="Света нет нигде",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=now,
+        evidence_kind="community_report",
+        story_id="story:power",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Энергетика",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+        publication_window=PublicationWindow(snapshot_at=now, lookback_start=now),
+        edition_name="Бердянск",
+    )
+    plan = build_article_coverage_plan([card], context)
+
+    rendered, stats = render_article_writer_context_with_stats(
+        context, plan, include_coverage_plan=False
+    )
+
+    assert "ARTICLE MATERIAL INVENTORY" in rendered
+    assert stats.to_metadata() == {
+        "coverage_story_count": 1,
+        "story_packet_count": 1,
+        "packets_with_citable_support": 1,
+        "citable_support_count": 1,
+    }
 
 
 def test_render_article_writer_context_is_bounded_and_deduplicates_repeated_support():

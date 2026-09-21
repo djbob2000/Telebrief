@@ -136,6 +136,25 @@ def test_notification_message_renders_readiness_deadline_when_sources_empty(samp
 
 
 @pytest.mark.unit
+def test_notification_does_not_blame_sources_for_article_validation_rejection(sample_config):
+    service = PublicationFailureNotificationService(config=sample_config)
+    intent = replace(
+        _intent("manual"),
+        publication_type="daily_article",
+        publication_run_id=182,
+        error_kind="article_validation_rejected",
+    )
+
+    message = service.render_message(intent, [])
+
+    assert "article writer" in message.lower()
+    assert "source" in message.lower()
+    assert "Diagnostics:" in message
+    assert "Problematic sources:" not in message
+    assert "no enabled source completed a qualifying scan" not in message
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_redrive_requeues_durable_pending_notification(monkeypatch, sample_config):
     from src import runtime
