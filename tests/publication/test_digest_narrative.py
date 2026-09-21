@@ -2875,6 +2875,30 @@ async def test_generate_narrative_draft_minimal_bundle_items_schema():
             evidence=evidence,
         )
 
+    # Prefix bundle ID (e.g. model returned bundle:utilities:water omitting trailing parts)
+    prefix_bid = ":".join(bundle_id.split(":")[:3]) if len(bundle_id.split(":")) >= 3 else bundle_id
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "items": [
+                {
+                    "bundle_id": prefix_bid,
+                    "emoji": "💧",
+                    "headline": "В Лисках переподключают водопровод",
+                    "body": "По информации коммунальных служб, в микрорайоне Лиски ведутся работы по переподключению водопровода.",
+                    "covered_fact_ids": ["rf:water"],
+                }
+            ]
+        }
+    )
+    draft_prefix = await writer.generate_narrative_draft(
+        plan=narrative_plan,
+        cards=cards,
+        evidence=evidence,
+    )
+    assert len(draft_prefix.blocks) == 1
+    assert len(draft_prefix.blocks[0].items) == 1
+    assert draft_prefix.blocks[0].items[0].covered_story_ids == ("story:10",)
+
 
 def test_usable_fact_line_keeps_concrete_report_with_conversational_prefix():
     from src.publication.digest_presentation import _clean_fact_sentence, _is_usable_fact_line

@@ -3527,7 +3527,9 @@ class DigestNarrativeWriter:
             and not parsed.get("blocks")
         ):
             bundle_to_block_id: dict[str, str] = {}
+            rubric_to_block_id: dict[str, str] = {}
             for pb in plan.blocks:
+                rubric_to_block_id[pb.rubric_id] = pb.block_id
                 for tb in getattr(pb, "topic_bundles", ()):
                     bundle_to_block_id[tb.bundle_id] = pb.block_id
 
@@ -3539,6 +3541,15 @@ class DigestNarrativeWriter:
                 if not bid:
                     raise ValueError(f"items[{item_index}] is missing bundle_id")
                 target_block_id = bundle_to_block_id.get(bid)
+
+                # Resilient fallback matching for shortened prefix of a known bundle_id
+                # (e.g. model omitted :fact:... suffix: "bundle:economy:economy_general" for "bundle:economy:economy_general:fact:...")
+                if not target_block_id:
+                    for tb_bid, blk_id in bundle_to_block_id.items():
+                        if tb_bid.startswith(bid):
+                            target_block_id = blk_id
+                            break
+
                 if not target_block_id:
                     raise ValueError(f"unknown bundle_id: {bid}")
                 blocks_map.setdefault(target_block_id, []).append(it)
@@ -3640,12 +3651,13 @@ class DigestNarrativeWriter:
                         it_sids = {str(x) for x in (it.get("covered_story_ids") or [])}
                         matched_tb = None
 
-                        # 1. Match by bundle_id
+                        # 1. Match by bundle_id (exact or prefix/suffix)
                         if it_bid:
                             for tb in plan_block.topic_bundles:
-                                if (
-                                    tb.bundle_id not in assigned_bundle_ids
-                                    and tb.bundle_id == it_bid
+                                if tb.bundle_id not in assigned_bundle_ids and (
+                                    tb.bundle_id == it_bid
+                                    or tb.bundle_id.startswith(it_bid)
+                                    or it_bid.startswith(tb.bundle_id)
                                 ):
                                     matched_tb = tb
                                     break

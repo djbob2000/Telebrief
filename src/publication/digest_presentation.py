@@ -2008,8 +2008,14 @@ def build_thematic_topic_bundles(
                 t_key = "social"
             elif rid == "infrastructure" and t_key in ("connectivity", "infrastructure_general"):
                 t_key = "electricity"
-            elif rid == "safety" and t_key in ("electricity", "water"):
+            elif rid == "safety" and t_key in ("electricity", "water", "safety_general"):
                 t_key = "strikes"
+            elif rid == "economy" and t_key in ("economy_general", "logistics_general", "trade"):
+                t_key = "economy"
+            elif rid == "civic_services" and t_key in ("civic_general",):
+                t_key = "civic_services"
+            elif rid == "education" and t_key in ("education_general",):
+                t_key = "education"
 
             c_full_text = f"{getattr(c, 'topic', '')} {getattr(c, 'summary', '')}"
             c_entities = _extract_distinctive_entities(c_full_text)

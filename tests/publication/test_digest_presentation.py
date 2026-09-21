@@ -532,3 +532,29 @@ def test_extract_distinctive_entities_equator_and_brands() -> None:
     assert "экватор" in _extract_distinctive_entities(
         "Ночной прилёт по супермаркету возле переезда"
     )
+
+
+def test_build_thematic_topic_bundles_economy_general_consolidation() -> None:
+    from src.publication.digest_presentation import build_thematic_topic_bundles
+
+    cards = [
+        StoryCard(
+            id="story:16219",
+            topic="Магазин «Амстор» в Бердянске закрыт с июля",
+            importance="medium",
+            summary="Житель сообщает, что продуктовый магазин «Амстор» в Бердянске закрыт с июля, завтра начнётся ремонт.",
+            rubric_id="economy",
+        ),
+        StoryCard(
+            id="story:16230",
+            topic="Пункт выдачи заказов в Бердянске закрыт",
+            importance="medium",
+            summary="Жительница сообщает, что при попытке заказать товар пункт выдачи заказов в Бердянске закрыт, система предлагает ввести другой адрес.",
+            rubric_id="economy",
+        ),
+    ]
+    bundles = build_thematic_topic_bundles(cards, rubric_id="economy")
+    assert len(bundles) == 1
+    assert bundles[0].rubric_id == "economy"
+    assert bundles[0].topic_key == "economy"
+    assert set(bundles[0].story_ids) == {"story:16219", "story:16230"}
