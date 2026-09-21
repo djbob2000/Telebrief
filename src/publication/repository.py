@@ -427,6 +427,22 @@ def _candidate_universe_sql() -> str:
                     WHERE sse.story_id = lr.story_id
                       AND sse.observed_at <= %(snapshot_at)s
                       AND sse.observed_at <= %(source_cutoff_at)s
+                    UNION ALL
+                    -- Event-first stories carry activity exclusively via story_fragments;
+                    -- without this branch their last_activity_at is NULL and ordering
+                    -- degrades to story_id ASC, elevating the oldest (lowest-id) story
+                    -- to lead regardless of editorial relevance.
+                    SELECT MAX(COALESCE(si2.published_at, si2.first_collected_at, f2.created_at)) AS event_time
+                    FROM story_fragments sf2
+                    JOIN source_fragments f2 ON f2.id = sf2.fragment_id
+                    JOIN source_item_revisions sir2 ON sir2.id = f2.source_item_revision_id
+                    JOIN source_items si2 ON si2.id = sir2.source_item_id
+                    JOIN sources src2 ON src2.id = si2.source_id
+                    WHERE sf2.story_id = lr.story_id
+                      AND sf2.assigned_at <= %(snapshot_at)s
+                      AND COALESCE(si2.published_at, si2.first_collected_at, f2.created_at)
+                          <= %(source_cutoff_at)s
+                      AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src2.platform <> ALL(%(excluded_platforms)s::text[]))
                 ) t
             ) AS last_activity_at,
             (
@@ -483,7 +499,24 @@ def _candidate_universe_sql() -> str:
                   AND sse2.observed_at >= %(window_start)s
                   AND sse2.observed_at <= %(snapshot_at)s
                   AND sse2.observed_at <= %(source_cutoff_at)s
-            ) AS has_recent_event
+            ) AS has_recent_event,
+            COALESCE(
+                (
+                    SELECT count(DISTINCT sf3.fragment_id)
+                    FROM story_fragments sf3
+                    JOIN source_fragments f3 ON f3.id = sf3.fragment_id
+                    JOIN source_item_revisions sir3 ON sir3.id = f3.source_item_revision_id
+                    JOIN source_items si3 ON si3.id = sir3.source_item_id
+                    JOIN sources src3 ON src3.id = si3.source_id
+                    WHERE sf3.story_id = lr.story_id
+                      AND sf3.assigned_at >= %(window_start)s
+                      AND sf3.assigned_at <= %(snapshot_at)s
+                      AND COALESCE(si3.published_at, si3.first_collected_at, f3.created_at)
+                          BETWEEN %(window_start)s AND %(source_cutoff_at)s
+                      AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src3.platform <> ALL(%(excluded_platforms)s::text[]))
+                ),
+                0
+            ) AS new_fragment_count
         FROM latest_revs lr
         JOIN stories s ON s.id = lr.story_id
         WHERE lr.current_state NOT IN ('invalid', 'archived', 'rejected')
@@ -818,7 +851,8 @@ class PublicationRepository:
             newest_source_published_at,
             newest_source_temporal_fidelity,
             knowledge_source,
-            event_payload
+            event_payload,
+            new_fragment_count
         FROM candidate_universe cu
         WHERE (
             knowledge_source <> 'event_first'
@@ -937,6 +971,7 @@ class PublicationRepository:
             newest_source_temporal_fidelity = r[16]
             knowledge_source = r[17]
             event_payload = r[18]
+            new_fragment_count = r[19]
 
             source_age_hours = (
                 round((snapshot_at - newest_source_published_at).total_seconds() / 3600.0, 1)
@@ -995,6 +1030,18 @@ class PublicationRepository:
                         ),
                         "source_age_hours": source_age_hours,
                         "temporal_fidelity": newest_source_temporal_fidelity or "unknown",
+                        # Expose event_payload publishability/urgency so downstream
+                        # selectors (e.g. HeuristicSelectionModel) can rank event_first
+                        # stories without needing the full payload.
+                        "publishability": (
+                            (event_payload or {}).get("publishability") if event_payload else None
+                        ),
+                        "urgency": (
+                            (event_payload or {}).get("urgency") if event_payload else None
+                        ),
+                        # Number of in-window source fragments — key signal for
+                        # heuristic ranking of event_first stories.
+                        "new_fragment_count": new_fragment_count,
                     },
                 }
             )

@@ -61,7 +61,25 @@ class SelectionModel(Protocol):
 
 
 class HeuristicSelectionModel:
-    """Default rule-based selection model for deterministic / digest selection."""
+    """Default rule-based selection model for deterministic / digest selection.
+
+    For digest publications the model preserves the legacy behaviour:
+      rank-1 → lead, all others → normal.
+
+    For article publications (triggered when the candidate count exceeds the
+    AI selection ceiling) a simple priority overlay is applied:
+      - Commercial classifieds → OMIT.
+      - Stories flagged publishability='news' OR with ≥3 in-window fragments
+        get intent='normal' (eligible for DEVELOP/WEAVE in coverage_plan).
+      - rank-1 among normal-eligible stories → intent='lead'.
+      - Everything else → intent='brief'.
+
+    This prevents directory-payload or single-comment stories from being
+    elevated to DEVELOP merely because they have a low story_id.
+    """
+
+    # Minimum in-window fragment count for heuristic 'normal' promotion.
+    _ARTICLE_FRAGMENT_THRESHOLD = 3
 
     async def select_stories(
         self,
@@ -69,7 +87,10 @@ class HeuristicSelectionModel:
         run: PublicationRun,
         candidates: list[PublicationCandidate],
     ) -> list[SelectionProposal]:
+        is_article = run.publication_type in ARTICLE_PUBLICATION_TYPES
+
         proposals: list[SelectionProposal] = []
+        lead_assigned = False
         for rank, cand in enumerate(candidates, start=1):
             features = cand.snapshot_features or {}
             if (
@@ -89,7 +110,26 @@ class HeuristicSelectionModel:
                 )
                 continue
 
-            intent = "lead" if rank == 1 else "normal"
+            if is_article:
+                publishability = features.get("publishability")
+                urgency = features.get("urgency")
+                # Only promote to lead/normal when event analysis explicitly
+                # flagged the story as publishability='news' or urgency='high'.
+                # Fragment count alone is NOT a sufficient signal — chatty single-
+                # word confirmation threads (e.g. "работает", "работает же") can
+                # accumulate many fragments without containing substantive news.
+                is_substantive = (publishability == "news") or (urgency == "high")
+
+                if is_substantive and not lead_assigned:
+                    intent = "lead"
+                    lead_assigned = True
+                elif is_substantive:
+                    intent = "normal"
+                else:
+                    intent = "brief"
+            else:
+                intent = "lead" if rank == 1 else "normal"
+
             proposals.append(
                 SelectionProposal(
                     story_id=cand.story_id,
@@ -97,7 +137,7 @@ class HeuristicSelectionModel:
                     decision="INCLUDE",
                     presentation_intent=intent,
                     confidence=1.0,
-                    reason="Coverage-preserving heuristic digest selection",
+                    reason="Coverage-preserving heuristic selection",
                     rank=rank,
                 )
             )
