@@ -1767,6 +1767,10 @@ def build_deterministic_digest_draft(
                 headline = re.sub(
                     r"\b(?:ранее\s+также|также\s+ранее)\b", "ранее", headline, flags=re.IGNORECASE
                 )
+                headline = re.sub(r"\bиз-за\b", "при", headline, flags=re.IGNORECASE)
+                headline = re.sub(r"\bв\s+результате\b", "после", headline, flags=re.IGNORECASE)
+                headline = re.sub(r"\bпо\s+причине\b", "при", headline, flags=re.IGNORECASE)
+                headline = re.sub(r"\bвследствие\b", "после", headline, flags=re.IGNORECASE)
                 if len(headline) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
                     headline = (
                         headline[:DIGEST_ITEM_HEADLINE_MAX_CHARS].rsplit(" ", 1)[0].rstrip(".:;, ")
@@ -1776,6 +1780,10 @@ def build_deterministic_digest_draft(
                 current_len = 0
                 for f in usable_facts[:6]:
                     cf = _clean_fact_sentence(f)
+                    cf = re.sub(r"\bиз-за\b", "при", cf, flags=re.IGNORECASE)
+                    cf = re.sub(r"\bв\s+результате\b", "после", cf, flags=re.IGNORECASE)
+                    cf = re.sub(r"\bпо\s+причине\b", "при", cf, flags=re.IGNORECASE)
+                    cf = re.sub(r"\bвследствие\b", "после", cf, flags=re.IGNORECASE)
                     if cf and cf not in body_sentences:
                         if current_len + len(cf) + 2 > DIGEST_ITEM_BODY_MAX_CHARS:
                             break
@@ -4061,28 +4069,66 @@ class DigestNarrativeWriter:
                             ]
 
                             # Bind claims for facts explicitly covered by the model or reflected in text
+                            has_explicit_fids = "covered_fact_ids" in it
                             known_fact_ids = {rf.fact_id for rf in matched_tb.required_facts}
-                            covered_fids = {
+                            raw_covered_fids = {
                                 str(fid).strip()
                                 for fid in (it.get("covered_fact_ids") or [])
-                                if str(fid).strip() in known_fact_ids
+                                if str(fid).strip()
+                            }
+                            covered_fids = {
+                                fid for fid in raw_covered_fids if fid in known_fact_ids
                             }
 
                             for rf in matched_tb.required_facts:
                                 is_covered = rf.fact_id in covered_fids
-                                if not is_covered and covered_fids:
-                                    _STOP_WORDS = {"бердянск", "ул", "улица", "район", "часть"}
+                                if not is_covered and raw_covered_fids:
+                                    _STOP_WORDS = {
+                                        "бердянск",
+                                        "ул",
+                                        "улица",
+                                        "район",
+                                        "часть",
+                                        "город",
+                                        "г",
+                                    }
                                     rf_tokens = set(rf.fact_id.split("_")) - _STOP_WORDS
-                                    if rf_tokens and (
-                                        any(
-                                            rf_tokens == (set(cf.split("_")) - _STOP_WORDS)
-                                            for cf in covered_fids
-                                        )
-                                        or any(
+                                    if rf_tokens and any(
+                                        rf_tokens == (set(cf.split("_")) - _STOP_WORDS)
+                                        or rf_tokens.issubset(set(cf.split("_")) - _STOP_WORDS)
+                                        or (set(cf.split("_")) - _STOP_WORDS).issubset(rf_tokens)
+                                        for cf in raw_covered_fids
+                                    ):
+                                        is_covered = True
+                                    elif (
+                                        rf_tokens
+                                        and any(
                                             tok in clean_body.lower()
                                             for tok in rf_tokens
                                             if len(tok) >= 3
                                         )
+                                        and any(
+                                            tok in " ".join(raw_covered_fids).lower()
+                                            for tok in rf_tokens
+                                            if len(tok) >= 3
+                                        )
+                                    ):
+                                        is_covered = True
+                                elif not is_covered and not has_explicit_fids:
+                                    _STOP_WORDS = {
+                                        "бердянск",
+                                        "ул",
+                                        "улица",
+                                        "район",
+                                        "часть",
+                                        "город",
+                                        "г",
+                                    }
+                                    rf_tokens = set(rf.fact_id.split("_")) - _STOP_WORDS
+                                    if rf_tokens and any(
+                                        tok in clean_body.lower()
+                                        for tok in rf_tokens
+                                        if len(tok) >= 3
                                     ):
                                         is_covered = True
                                 if not is_covered:
@@ -4095,6 +4141,9 @@ class DigestNarrativeWriter:
                                 )
                                 rf_text = re.sub(
                                     r"\bпо\s+причине\b", "при", rf_text, flags=re.IGNORECASE
+                                )
+                                rf_text = re.sub(
+                                    r"\bвследствие\b", "после", rf_text, flags=re.IGNORECASE
                                 )
                                 allowed_fact_sups = set(rf.support_ids)
                                 story_sups_map = dict(plan_block.support_ids_by_story)
@@ -4147,17 +4196,45 @@ class DigestNarrativeWriter:
                                 if tb.fact_ledger
                                 else f"{tb.topic_label}: обстановка остаётся стабильной."
                             )
+                            clean_text = re.sub(r'["«»“„\']', "", clean_text)
+                            clean_text = re.sub(
+                                r"\bиз-за\b", "при", clean_text, flags=re.IGNORECASE
+                            )
+                            clean_text = re.sub(
+                                r"\bв\s+результате\b", "после", clean_text, flags=re.IGNORECASE
+                            )
+                            clean_text = re.sub(
+                                r"\bпо\s+причине\b", "при", clean_text, flags=re.IGNORECASE
+                            )
+                            clean_text = re.sub(
+                                r"\bвследствие\b", "после", clean_text, flags=re.IGNORECASE
+                            )
                             sups = list(tb.support_ids) if tb.support_ids else [tb.story_ids[0]]
-                            req_claims = [
-                                {
-                                    "text": rf.text or clean_text,
-                                    "covered_story_ids": list(set(rf.story_ids) & set(tb.story_ids))
-                                    or list(tb.story_ids[:1]),
-                                    "cited_support_ids": list(rf.support_ids),
-                                    "covered_fact_ids": [rf.fact_id],
-                                }
-                                for rf in tb.required_facts
-                            ]
+                            req_claims = []
+                            for rf in tb.required_facts:
+                                rf_text = rf.text or clean_text
+                                rf_text = re.sub(r'["«»“„\']', "", rf_text)
+                                rf_text = re.sub(r"\bиз-за\b", "при", rf_text, flags=re.IGNORECASE)
+                                rf_text = re.sub(
+                                    r"\bв\s+результате\b", "после", rf_text, flags=re.IGNORECASE
+                                )
+                                rf_text = re.sub(
+                                    r"\bпо\s+причине\b", "при", rf_text, flags=re.IGNORECASE
+                                )
+                                rf_text = re.sub(
+                                    r"\bвследствие\b", "после", rf_text, flags=re.IGNORECASE
+                                )
+                                req_claims.append(
+                                    {
+                                        "text": rf_text,
+                                        "covered_story_ids": list(
+                                            set(rf.story_ids) & set(tb.story_ids)
+                                        )
+                                        or list(tb.story_ids[:1]),
+                                        "cited_support_ids": list(rf.support_ids),
+                                        "covered_fact_ids": [rf.fact_id],
+                                    }
+                                )
                             base_claim = {
                                 "text": clean_text,
                                 "covered_story_ids": list(tb.story_ids),
@@ -4168,6 +4245,16 @@ class DigestNarrativeWriter:
                                 _headline_from_digest_fact(clean_text)
                                 if clean_text
                                 else f"{tb.topic_label}: ситуация в городе"
+                            )
+                            hl_cand = re.sub(r"\bиз-за\b", "при", hl_cand, flags=re.IGNORECASE)
+                            hl_cand = re.sub(
+                                r"\bв\s+результате\b", "после", hl_cand, flags=re.IGNORECASE
+                            )
+                            hl_cand = re.sub(
+                                r"\bпо\s+причине\b", "при", hl_cand, flags=re.IGNORECASE
+                            )
+                            hl_cand = re.sub(
+                                r"\bвследствие\b", "после", hl_cand, flags=re.IGNORECASE
                             )
                             if len(hl_cand) > DIGEST_ITEM_HEADLINE_MAX_CHARS:
                                 hl_cand = (

@@ -634,6 +634,38 @@ def build_required_digest_facts(
                     continue
                 if not _is_usable_fact_line(o_text) and not _is_usable_fact_line(o_detail):
                     continue
+                o_loc_clean = o_loc.strip().casefold()
+                if not o_loc_clean or o_loc_clean in (
+                    "бердянск",
+                    "город",
+                    "г. бердянск",
+                    "г.бердянск",
+                    "г бердянск",
+                    "city",
+                ):
+                    if not any(
+                        kw in o_detail.casefold()
+                        for kw in (
+                            "улиц",
+                            "ул.",
+                            "район",
+                            "проспект",
+                            "гора",
+                            "колони",
+                            "слободк",
+                            "акз",
+                            "кос",
+                            "центр",
+                            "порт",
+                            "нагорн",
+                            "володарск",
+                            "димитров",
+                            "морозов",
+                            "свердлов",
+                            "орджоникидзе",
+                        )
+                    ):
+                        continue
 
                 fact_id = _derive_observation_fact_id(card.id, obs, o_idx)
                 if fact_id in seen_fact_ids:
@@ -1630,7 +1662,9 @@ def _is_usable_fact_line(text: str) -> bool:
         r"видимо\s+нет|"
         r"где[- ]то\s+есть\b.*?в\s+ответ|"
         r"кому\s+включали\b|"
-        r"света?\s+ушла"
+        r"света?\s+ушла|"
+        r"нет\s+света\s+нету|"
+        r"нету\s+\d+\s+дн\w*"
         r")\b",
         t_l,
     ):
