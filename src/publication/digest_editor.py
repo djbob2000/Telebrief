@@ -207,6 +207,12 @@ class DigestEditor:
                                     "город",
                                     "г",
                                 }
+                                claim_story_ids = tuple(
+                                    s for s in rf.story_ids if s in orig_item.covered_story_ids
+                                )
+                                if not claim_story_ids:
+                                    continue
+
                                 is_match = (
                                     len(orig_block.items) == 1
                                     or bool(set(rf.story_ids) & set(orig_item.covered_story_ids))
@@ -218,13 +224,26 @@ class DigestEditor:
                                     )
                                 )
                                 if is_match:
-                                    rf_sups = [
-                                        s for s in rf.support_ids if s in allowed_block_supports
-                                    ] or list(rf.support_ids)
+                                    rf_sups: list[str] = []
+                                    for sid in claim_story_ids:
+                                        story_allowed = set(
+                                            dict(plan_block.support_ids_by_story).get(sid, ())
+                                        )
+                                        matching = [s for s in rf.support_ids if s in story_allowed]
+                                        if matching:
+                                            rf_sups.extend(matching)
+                                        elif story_allowed:
+                                            rf_sups.extend(sorted(story_allowed)[:1])
+                                    rf_sups = list(dict.fromkeys(rf_sups))
+                                    if not rf_sups:
+                                        rf_sups = [
+                                            s for s in rf.support_ids if s in allowed_block_supports
+                                        ] or list(rf.support_ids)
+
                                     item_claims.append(
                                         DigestClaimAtom(
                                             text=rf.text or new_head,
-                                            covered_story_ids=tuple(rf.story_ids),
+                                            covered_story_ids=claim_story_ids,
                                             cited_support_ids=tuple(rf_sups),
                                             covered_fact_ids=(rf.fact_id,),
                                         )

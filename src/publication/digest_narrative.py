@@ -168,11 +168,12 @@ def _fix_redundant_headline_and_body(
         if not _check_redundant_headline_in_body(clean_h, body):
             return clean_h, body
 
-    # 4. Fallback to clean topic without boilerplate
-    new_headline = (
-        lbl if (lbl and not _GENERIC_DIGEST_TOPIC_RE.fullmatch(lbl)) else "Городские события"
-    )
-    return new_headline, body
+    # 4. NEVER return a generic placeholder like "Городские события" or "Новости города".
+    # If topic_label is valid and specific, use it. Otherwise, preserve the original headline.
+    if lbl and not _GENERIC_DIGEST_TOPIC_RE.fullmatch(lbl):
+        return lbl, body
+
+    return headline, body
 
 
 _HEADLINE_ATTRIBUTION_PREFIX_RE = re.compile(
