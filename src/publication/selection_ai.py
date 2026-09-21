@@ -422,11 +422,15 @@ class AIPublicationSelectionModel:
 class FailOpenSelectionModel:
     """Fail-open editorial selector: uses primary AI model with fallback to heuristic selection."""
 
-    # Article selection is a priority overlay, not a publication gate. Once
-    # the candidate set grows past this bound, serializing it for an AI
-    # selection response only adds latency and creates a catastrophic
-    # all-candidates fallback when the response is truncated.
-    ARTICLE_AI_SELECTION_MAX_CANDIDATES = 40
+    # Article selection uses the compact `included` format: the AI returns only
+    # a short priority list and every unmentioned candidate defaults to 'brief'.
+    # This means the token cost is O(input candidates) but the output is small
+    # regardless of candidate count, so large sets are handled well by the AI.
+    # The cap exists only as a last-resort safety rail against pathologically
+    # large candidate explosions (e.g. > 200 stories in a single window).
+    # At 40, typical active-day candidate sets (50–150 event_first stories)
+    # triggered the heuristic fallback on every run, defeating AI selection.
+    ARTICLE_AI_SELECTION_MAX_CANDIDATES = 200
 
     def __init__(
         self,
@@ -454,11 +458,12 @@ class FailOpenSelectionModel:
             and len(candidates) > self.ARTICLE_AI_SELECTION_MAX_CANDIDATES
         ):
             logger.info(
-                "article candidate set has %d stories; using deterministic priority overlay "
-                "instead of unbounded AI selection",
+                "article candidate set has %d stories (> %d cap); using deterministic priority overlay",
                 len(candidates),
+                self.ARTICLE_AI_SELECTION_MAX_CANDIDATES,
             )
             return await self.fallback.select_stories(run=run, candidates=candidates)
+
         try:
             proposals = await self.primary.select_stories(run=run, candidates=candidates)
             cand_keys = {(c.story_id, c.story_revision_id) for c in candidates}

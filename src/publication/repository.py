@@ -270,6 +270,44 @@ def _candidate_universe_sql() -> str:
               <= %(source_cutoff_at)s
         ORDER BY sf.story_id, sf.assigned_at DESC, sf.id DESC
     ),
+    -- Pre-aggregate fragment timestamps up to the snapshot cutoff once for all stories.
+    -- Used for last_activity_at on event_first stories (which carry no story_claims).
+    -- Without this, those stories have last_activity_at = NULL, causing ordering by
+    -- story_id ASC and always elevating the oldest story to lead.
+    story_fragment_cutoff_times AS (
+        SELECT
+            sf.story_id,
+            MAX(COALESCE(si.published_at, si.first_collected_at, f.created_at)) AS max_fragment_time
+        FROM story_fragments sf
+        JOIN source_fragments f ON f.id = sf.fragment_id
+        JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
+        JOIN source_items si ON si.id = sir.source_item_id
+        JOIN sources src ON src.id = si.source_id
+        WHERE sf.assigned_at <= %(snapshot_at)s
+          AND COALESCE(si.published_at, si.first_collected_at, f.created_at)
+              <= %(source_cutoff_at)s
+          AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
+        GROUP BY sf.story_id
+    ),
+    -- Pre-aggregate in-window fragment counts once for all stories.
+    -- Replaces a correlated COUNT subquery per row for new_fragment_count,
+    -- and a correlated EXISTS per row for has_recent_fragment.
+    story_window_fragment_counts AS (
+        SELECT
+            sf.story_id,
+            count(DISTINCT sf.fragment_id) AS window_fragment_count
+        FROM story_fragments sf
+        JOIN source_fragments f ON f.id = sf.fragment_id
+        JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
+        JOIN source_items si ON si.id = sir.source_item_id
+        JOIN sources src ON src.id = si.source_id
+        WHERE sf.assigned_at >= %(window_start)s
+          AND sf.assigned_at <= %(snapshot_at)s
+          AND COALESCE(si.published_at, si.first_collected_at, f.created_at)
+              BETWEEN %(window_start)s AND %(source_cutoff_at)s
+          AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
+        GROUP BY sf.story_id
+    ),
     latest_revs AS (
         SELECT DISTINCT ON (sr.story_id)
             sr.story_id,
@@ -395,21 +433,25 @@ def _candidate_universe_sql() -> str:
                 ORDER BY COALESCE(si.published_at, si.first_collected_at) DESC NULLS LAST
                 LIMIT 1
             ) AS newest_source_temporal_fidelity,
-            (
-                SELECT MAX(event_time)
-                FROM (
-                    SELECT lr.revision_created_at AS event_time
-                    WHERE cardinality(%(excluded_platforms)s::text[]) = 0
-                      AND lr.reason NOT IN (
-                          'event_gate_v2_brief',
-                          'event_analysis_v6',
-                          'event_gate_v2_brief_merge',
-                          'reanalysis',
-                          'backfill'
-                      )
-                      AND lr.reason NOT LIKE 'event_%%'
-                    UNION ALL
-                    SELECT MAX(sc.attached_at) AS event_time
+            -- last_activity_at: GREATEST of all activity signals.
+            -- sfct.max_fragment_time is essential for event_first stories (no story_claims).
+            -- Using GREATEST() instead of nested SELECT MAX(UNION ALL) lets PostgreSQL
+            -- optimize each branch independently.
+            GREATEST(
+                CASE
+                    WHEN cardinality(%(excluded_platforms)s::text[]) = 0
+                     AND lr.reason NOT IN (
+                         'event_gate_v2_brief',
+                         'event_analysis_v6',
+                         'event_gate_v2_brief_merge',
+                         'reanalysis',
+                         'backfill'
+                     )
+                     AND lr.reason NOT LIKE 'event_%%'
+                    THEN lr.revision_created_at
+                END,
+                (
+                    SELECT MAX(sc.attached_at)
                     FROM story_claims sc
                     JOIN claims c ON c.id = sc.claim_id
                     JOIN source_item_revisions sir ON sir.id = c.source_item_revision_id
@@ -421,29 +463,15 @@ def _candidate_universe_sql() -> str:
                       AND COALESCE(si.published_at, si.first_collected_at, c.created_at)
                           <= %(source_cutoff_at)s
                       AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src.platform <> ALL(%(excluded_platforms)s::text[]))
-                    UNION ALL
-                    SELECT MAX(sse.observed_at) AS event_time
+                ),
+                (
+                    SELECT MAX(sse.observed_at)
                     FROM story_state_events sse
                     WHERE sse.story_id = lr.story_id
                       AND sse.observed_at <= %(snapshot_at)s
                       AND sse.observed_at <= %(source_cutoff_at)s
-                    UNION ALL
-                    -- Event-first stories carry activity exclusively via story_fragments;
-                    -- without this branch their last_activity_at is NULL and ordering
-                    -- degrades to story_id ASC, elevating the oldest (lowest-id) story
-                    -- to lead regardless of editorial relevance.
-                    SELECT MAX(COALESCE(si2.published_at, si2.first_collected_at, f2.created_at)) AS event_time
-                    FROM story_fragments sf2
-                    JOIN source_fragments f2 ON f2.id = sf2.fragment_id
-                    JOIN source_item_revisions sir2 ON sir2.id = f2.source_item_revision_id
-                    JOIN source_items si2 ON si2.id = sir2.source_item_id
-                    JOIN sources src2 ON src2.id = si2.source_id
-                    WHERE sf2.story_id = lr.story_id
-                      AND sf2.assigned_at <= %(snapshot_at)s
-                      AND COALESCE(si2.published_at, si2.first_collected_at, f2.created_at)
-                          <= %(source_cutoff_at)s
-                      AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src2.platform <> ALL(%(excluded_platforms)s::text[]))
-                ) t
+                ),
+                sfct.max_fragment_time
             ) AS last_activity_at,
             (
                 cardinality(%(excluded_platforms)s::text[]) = 0
@@ -463,20 +491,8 @@ def _candidate_universe_sql() -> str:
                       AND sr2.reason NOT LIKE 'event_%%'
                 )
             ) AS has_recent_revision,
-            EXISTS (
-                SELECT 1
-                FROM story_fragments sf2
-                JOIN source_fragments f2 ON f2.id = sf2.fragment_id
-                JOIN source_item_revisions sir2 ON sir2.id = f2.source_item_revision_id
-                JOIN source_items si2 ON si2.id = sir2.source_item_id
-                JOIN sources src2 ON src2.id = si2.source_id
-                WHERE sf2.story_id = lr.story_id
-                  AND sf2.assigned_at >= %(window_start)s
-                  AND sf2.assigned_at <= %(snapshot_at)s
-                  AND COALESCE(si2.published_at, si2.first_collected_at, f2.created_at)
-                      BETWEEN %(window_start)s AND %(source_cutoff_at)s
-                  AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src2.platform <> ALL(%(excluded_platforms)s::text[]))
-            ) AS has_recent_fragment,
+            -- has_recent_fragment: derived from pre-aggregated CTE, no per-row EXISTS scan
+            (COALESCE(swfc.window_fragment_count, 0) > 0) AS has_recent_fragment,
             EXISTS (
                 SELECT 1
                 FROM story_claims sc2
@@ -500,25 +516,12 @@ def _candidate_universe_sql() -> str:
                   AND sse2.observed_at <= %(snapshot_at)s
                   AND sse2.observed_at <= %(source_cutoff_at)s
             ) AS has_recent_event,
-            COALESCE(
-                (
-                    SELECT count(DISTINCT sf3.fragment_id)
-                    FROM story_fragments sf3
-                    JOIN source_fragments f3 ON f3.id = sf3.fragment_id
-                    JOIN source_item_revisions sir3 ON sir3.id = f3.source_item_revision_id
-                    JOIN source_items si3 ON si3.id = sir3.source_item_id
-                    JOIN sources src3 ON src3.id = si3.source_id
-                    WHERE sf3.story_id = lr.story_id
-                      AND sf3.assigned_at >= %(window_start)s
-                      AND sf3.assigned_at <= %(snapshot_at)s
-                      AND COALESCE(si3.published_at, si3.first_collected_at, f3.created_at)
-                          BETWEEN %(window_start)s AND %(source_cutoff_at)s
-                      AND (cardinality(%(excluded_platforms)s::text[]) = 0 OR src3.platform <> ALL(%(excluded_platforms)s::text[]))
-                ),
-                0
-            ) AS new_fragment_count
+            -- new_fragment_count: from pre-aggregated CTE, replaces correlated COUNT subquery
+            COALESCE(swfc.window_fragment_count, 0) AS new_fragment_count
         FROM latest_revs lr
         JOIN stories s ON s.id = lr.story_id
+        LEFT JOIN story_fragment_cutoff_times sfct ON sfct.story_id = lr.story_id
+        LEFT JOIN story_window_fragment_counts swfc ON swfc.story_id = lr.story_id
         WHERE lr.current_state NOT IN ('invalid', 'archived', 'rejected')
           AND COALESCE(
               (
