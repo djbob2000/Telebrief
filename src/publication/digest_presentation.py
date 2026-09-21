@@ -2006,7 +2006,7 @@ def build_thematic_topic_bundles(
                 t_key = "health"
             elif rid == "society" and t_key in ("civic_services", "social_general"):
                 t_key = "social"
-            elif rid == "infrastructure" and t_key in ("connectivity", "infrastructure_general"):
+            elif rid == "infrastructure" and t_key in ("infrastructure_general",):
                 t_key = "electricity"
             elif rid == "safety" and t_key in ("electricity", "water", "safety_general"):
                 t_key = "strikes"

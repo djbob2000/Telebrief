@@ -3526,12 +3526,35 @@ class DigestNarrativeWriter:
             and isinstance(parsed.get("items"), list)
             and not parsed.get("blocks")
         ):
+            from src.domain.service_taxonomy import detect_service_families, map_family_to_rubric
+
             bundle_to_block_id: dict[str, str] = {}
             rubric_to_block_id: dict[str, str] = {}
+            fact_to_block_id: dict[str, str] = {}
+            fact_to_bundle_id: dict[str, str] = {}
+            story_to_block_id: dict[str, str] = {}
+            story_to_bundle_id: dict[str, str] = {}
+            topic_key_to_bundle: dict[tuple[str, str], tuple[str, str]] = {}
+            global_topic_key_to_bundle: dict[str, tuple[str, str]] = {}
+
             for pb in plan.blocks:
                 rubric_to_block_id[pb.rubric_id] = pb.block_id
                 for tb in getattr(pb, "topic_bundles", ()):
                     bundle_to_block_id[tb.bundle_id] = pb.block_id
+                    t_key = getattr(tb, "topic_key", "")
+                    if t_key:
+                        topic_key_to_bundle[(pb.rubric_id, t_key)] = (pb.block_id, tb.bundle_id)
+                        global_topic_key_to_bundle.setdefault(t_key, (pb.block_id, tb.bundle_id))
+                    for s_id in getattr(tb, "story_ids", ()):
+                        story_to_block_id[str(s_id)] = pb.block_id
+                        story_to_bundle_id[str(s_id)] = tb.bundle_id
+                    for rf in getattr(tb, "required_facts", ()):
+                        fact_to_block_id[str(rf.fact_id)] = pb.block_id
+                        fact_to_bundle_id[str(rf.fact_id)] = tb.bundle_id
+                for s_id in getattr(pb, "story_ids", ()):
+                    story_to_block_id.setdefault(str(s_id), pb.block_id)
+                for rf in getattr(pb, "required_facts", ()):
+                    fact_to_block_id.setdefault(str(rf.fact_id), pb.block_id)
 
             blocks_map: dict[str, list[dict[str, Any]]] = {}
             for item_index, it in enumerate(parsed["items"]):
@@ -3540,18 +3563,111 @@ class DigestNarrativeWriter:
                 bid = str(it.get("bundle_id") or "").strip()
                 if not bid:
                     raise ValueError(f"items[{item_index}] is missing bundle_id")
-                target_block_id = bundle_to_block_id.get(bid)
 
-                # Resilient fallback matching for shortened prefix of a known bundle_id
+                target_block_id = bundle_to_block_id.get(bid)
+                target_bundle_id = bid if target_block_id else None
+
+                # 1. Resilient fallback matching for shortened prefix or extension of a known bundle_id
                 # (e.g. model omitted :fact:... suffix: "bundle:economy:economy_general" for "bundle:economy:economy_general:fact:...")
                 if not target_block_id:
                     for tb_bid, blk_id in bundle_to_block_id.items():
-                        if tb_bid.startswith(bid):
+                        if tb_bid.startswith(bid) or bid.startswith(tb_bid):
                             target_block_id = blk_id
+                            target_bundle_id = tb_bid
                             break
+
+                # 2. Match via covered_fact_ids (ground truth provenance link to bundle and block)
+                if not target_block_id:
+                    fids = [
+                        str(x).strip()
+                        for x in (it.get("covered_fact_ids") or it.get("fact_ids") or [])
+                        if x
+                    ]
+                    for fid in fids:
+                        if fid in fact_to_block_id:
+                            target_block_id = fact_to_block_id[fid]
+                            target_bundle_id = fact_to_bundle_id.get(fid)
+                            break
+
+                # 3. Match via covered_story_ids / story_ids
+                if not target_block_id:
+                    sids = [
+                        str(x).strip()
+                        for x in (it.get("covered_story_ids") or it.get("story_ids") or [])
+                        if x
+                    ]
+                    for sid in sids:
+                        if sid in story_to_block_id:
+                            target_block_id = story_to_block_id[sid]
+                            target_bundle_id = story_to_bundle_id.get(sid)
+                            break
+
+                # 4. Match by semantic topic or service family tokens in bid
+                # (e.g. "bundle:infrastructure:internet" -> "internet" is connectivity -> rubric "communications")
+                if not target_block_id and bid:
+                    bid_tokens = [p.casefold() for p in re.split(r"[:_\W]+", bid) if p]
+                    _SYNONYM_TO_TOPIC = {
+                        "internet": "connectivity",
+                        "telecom": "connectivity",
+                        "wifi": "connectivity",
+                        "cellular": "connectivity",
+                        "mobile": "connectivity",
+                        "power": "electricity",
+                        "blackout": "electricity",
+                        "light": "electricity",
+                        "aqueduct": "water",
+                        "heat": "heating",
+                        "transport": "transport",
+                        "bus": "transport",
+                    }
+                    candidate_topics = [
+                        _SYNONYM_TO_TOPIC.get(t, t)
+                        for t in bid_tokens
+                        if t not in ("bundle", "fact", "item", "unknown")
+                    ]
+                    for c_top in candidate_topics:
+                        if c_top in global_topic_key_to_bundle:
+                            target_block_id, target_bundle_id = global_topic_key_to_bundle[c_top]
+                            break
+
+                    if not target_block_id:
+                        detected_families = detect_service_families(" ".join(bid_tokens))
+                        for fam in detected_families:
+                            mapped_rid = map_family_to_rubric(fam)
+                            if mapped_rid and mapped_rid in rubric_to_block_id:
+                                target_block_id = rubric_to_block_id[mapped_rid]
+                                for tb_bid, blk_id in bundle_to_block_id.items():
+                                    if blk_id == target_block_id:
+                                        target_bundle_id = tb_bid
+                                        break
+                                break
+
+                # 5. Match by content semantics if text contains strong service family signals
+                if not target_block_id:
+                    item_text = f"{it.get('headline', '')} {it.get('body', '')}"
+                    if item_text.strip():
+                        detected_families = detect_service_families(item_text)
+                        for fam in detected_families:
+                            mapped_rid = map_family_to_rubric(fam)
+                            if mapped_rid and mapped_rid in rubric_to_block_id:
+                                for (r_id, t_k), (b_id, tb_id) in topic_key_to_bundle.items():
+                                    if r_id == mapped_rid and (
+                                        t_k == fam
+                                        or (fam == "telecom" and t_k == "connectivity")
+                                        or (fam == "power" and t_k == "electricity")
+                                    ):
+                                        target_block_id = b_id
+                                        target_bundle_id = tb_id
+                                        break
+                                if target_block_id:
+                                    break
 
                 if not target_block_id:
                     raise ValueError(f"unknown bundle_id: {bid}")
+
+                if target_bundle_id:
+                    it["bundle_id"] = target_bundle_id
+
                 blocks_map.setdefault(target_block_id, []).append(it)
 
             parsed["blocks"] = [
@@ -3662,12 +3778,20 @@ class DigestNarrativeWriter:
                                     matched_tb = tb
                                     break
 
-                        # 2. Match by story_ids or topic_key
+                        # 2. Match by covered_fact_ids, story_ids, or topic_key
                         if matched_tb is None:
+                            it_fids = {
+                                str(x).strip() for x in (it.get("covered_fact_ids") or []) if x
+                            }
                             for tb in plan_block.topic_bundles:
                                 if tb.bundle_id not in assigned_bundle_ids:
+                                    tb_fids = {
+                                        str(rf.fact_id).strip()
+                                        for rf in getattr(tb, "required_facts", ())
+                                    }
                                     if (
-                                        bool(it_sids & set(tb.story_ids))
+                                        bool(it_fids & tb_fids)
+                                        or bool(it_sids & set(tb.story_ids))
                                         or tb.bundle_id in it_sids
                                         or tb.topic_key in it_sids
                                     ):

@@ -2899,6 +2899,96 @@ async def test_generate_narrative_draft_minimal_bundle_items_schema():
     assert len(draft_prefix.blocks[0].items) == 1
     assert draft_prefix.blocks[0].items[0].covered_story_ids == ("story:10",)
 
+    # Cross-rubric / synonym bundle ID hallucination (e.g. bundle:infrastructure:internet for communications)
+    comm_card = StoryCard(
+        id="story:20",
+        topic="Связь и интернет",
+        importance="medium",
+        summary="В Бердянске наблюдаются перебои с мобильным интернетом",
+        rubric_id="communications",
+        useful_details=(),
+        hard_facts=(),
+    )
+    evidence_comm = {
+        **evidence,
+        "sup:20": _make_evidence(
+            "sup:20", 20, "В Бердянске наблюдаются перебои с мобильным интернетом."
+        ),
+    }
+    pres_plan_multi = DigestPresentationPlan(
+        story_presentations=(
+            DigestStoryPresentation(
+                story_id="story:10", mode="DETAIL_ONLY", detail_support_ids=("sup:10",)
+            ),
+            DigestStoryPresentation(
+                story_id="story:20", mode="DETAIL_ONLY", detail_support_ids=("sup:20",)
+            ),
+        ),
+        city_situation=CitySituationPresentationPlan(),
+        required_facts=(
+            RequiredDigestFact(
+                fact_id="rf:water",
+                rubric_id="utilities",
+                subject_key="water",
+                subject_label="Водоснабжение",
+                story_ids=("story:10",),
+                support_ids=("sup:10",),
+                text="В Лисках переподключение водопровода.",
+            ),
+            RequiredDigestFact(
+                fact_id="rf:internet",
+                rubric_id="communications",
+                subject_key="connectivity",
+                subject_label="Связь и интернет",
+                story_ids=("story:20",),
+                support_ids=("sup:20",),
+                text="В Бердянске перебои со связью и интернетом.",
+            ),
+        ),
+    )
+    narrative_plan_multi = plan_digest_narrative_blocks(
+        cards=[card, comm_card],
+        evidence=evidence_comm,
+        rubrics=[
+            {"id": "utilities", "title": "ЖКХ"},
+            {"id": "communications", "title": "Связь и интернет"},
+        ],
+        presentation_plan=pres_plan_multi,
+    )
+    # Model hallucinated "bundle:infrastructure:internet" instead of "bundle:communications:connectivity"
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "items": [
+                {
+                    "bundle_id": bundle_id,
+                    "emoji": "💧",
+                    "headline": "В Лисках переподключают водопровод",
+                    "body": "По информации коммунальных служб, в микрорайоне Лиски ведутся работы по переподключению водопровода.",
+                    "covered_fact_ids": ["rf:water"],
+                },
+                {
+                    "bundle_id": "bundle:infrastructure:internet",
+                    "emoji": "🌐",
+                    "headline": "Перебои со связью и мобильным интернетом",
+                    "body": "Горожане сообщают о нестабильной работе мобильного интернета в ряде районов.",
+                    "covered_fact_ids": ["rf:internet"],
+                },
+            ]
+        }
+    )
+    draft_resilient = await writer.generate_narrative_draft(
+        plan=narrative_plan_multi,
+        cards=[card, comm_card],
+        evidence=evidence_comm,
+    )
+    assert len(draft_resilient.blocks) == 2
+    # Verify the internet item was correctly placed in the communications block
+    comm_block = next(
+        b for b in draft_resilient.blocks if b.block_id.startswith("block:communications:")
+    )
+    assert len(comm_block.items) == 1
+    assert comm_block.items[0].covered_story_ids == ("story:20",)
+
 
 def test_usable_fact_line_keeps_concrete_report_with_conversational_prefix():
     from src.publication.digest_presentation import _clean_fact_sentence, _is_usable_fact_line
