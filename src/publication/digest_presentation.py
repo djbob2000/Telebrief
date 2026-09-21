@@ -708,6 +708,8 @@ def build_required_digest_facts(
                     continue
                 if not _is_usable_fact_line(hf_text):
                     continue
+                if is_operational and not _OPERATIONAL_SERVICE_KW_RE.search(hf_text):
+                    continue
                 fact_id = _derive_hard_fact_id(card.id, hf_text, h_idx)
                 if fact_id in seen_fact_ids:
                     fact_id = f"{fact_id}_{h_idx + 1}"
@@ -1583,6 +1585,18 @@ _FACT_DIRECTORY_OR_PROMO_RE = re.compile(
     re.IGNORECASE,
 )
 
+_OPERATIONAL_SERVICE_KW_RE = re.compile(
+    r"\b(?:"
+    r"свет\w*|электр\w*|напряжен\w*|вольт\w*|обесточ\w*|отключ\w*|генератор\w*|"
+    r"вод\w*|водоснаб\w*|водоканал\w*|напор\w*|порыв\w*|скважин\w*|труб\w*|"
+    r"газ\w*|отоплен\w*|котельн\w*|тепл\w*|"
+    r"связ\w*|интернет\w*|провайдер\w*|вышк\w*|сигнал\w*|"
+    r"маршрут\w*|автобус\w*|транспорт\w*|рейс\w*|проезд\w*|дорог\w*|"
+    r"банк\w*|банкомат\w*|почт\w*|пенсион\w*|мфц|больниц\w*|поликлиник\w*|аптек\w*"
+    r")\b",
+    re.IGNORECASE,
+)
+
 
 def _is_fact_noise_sentence(text: str) -> bool:
     """Return whether a sentence is chat metadata, a question, or unsolicited advice."""
@@ -1777,7 +1791,16 @@ def _is_usable_fact_line(text: str) -> bool:
         r"кому\s+включали\b|"
         r"света?\s+ушла|"
         r"нет\s+света\s+нету|"
-        r"нету\s+\d+\s+дн\w*"
+        r"нету\s+\d+\s+дн\w*|"
+        r"нашим\s+животн\w*|"
+        r"ветклиник\w*|"
+        r"ветеринар\w*|"
+        r"конкурирующ\w*|"
+        r"второй\s+день\s+решают|"
+        r"ремонтировать\s+или\s+новый|"
+        r"может\s+где[- ]?то\s+и\s+есть|"
+        r"с\s+первыми\s+петух\w*|"
+        r"подстроит\w*"
         r")\b",
         t_l,
     ):

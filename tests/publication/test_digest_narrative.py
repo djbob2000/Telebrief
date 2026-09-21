@@ -2425,10 +2425,7 @@ async def test_generate_narrative_draft_builds_missing_block_fallback_once(mocke
     from unittest.mock import AsyncMock
 
     from src.publication.digest_narrative import (
-        DigestEditorialItemDraft,
         DigestNarrativeBlock,
-        DigestNarrativeBlockDraft,
-        DigestNarrativeDraft,
         DigestNarrativeWriter,
     )
 
@@ -2445,38 +2442,16 @@ async def test_generate_narrative_draft_builds_missing_block_fallback_once(mocke
             for idx in range(2)
         )
     )
-    deterministic = DigestNarrativeDraft(
-        blocks=tuple(
-            DigestNarrativeBlockDraft(
-                block_id=f"block:utilities:{idx}",
-                items=(
-                    DigestEditorialItemDraft(
-                        headline=f"Тема {idx}",
-                        body=f"Факт {idx}.",
-                        covered_story_ids=(f"story:{idx}",),
-                        cited_support_ids=(f"support:{idx}",),
-                    ),
-                ),
-            )
-            for idx in range(2)
-        )
-    )
 
     provider = AsyncMock()
     provider.chat_completion.return_value = json.dumps({"blocks": []})
-    build_fallback = mocker.patch(
-        "src.publication.digest_narrative.build_deterministic_digest_draft",
-        return_value=deterministic,
-    )
 
-    draft = await DigestNarrativeWriter(provider).generate_narrative_draft(
-        plan=plan,
-        cards=[],
-        evidence={},
-    )
-
-    assert len(draft.blocks) == 2
-    assert build_fallback.call_count == 1
+    with pytest.raises(ValueError, match="must contain at least one item"):
+        await DigestNarrativeWriter(provider).generate_narrative_draft(
+            plan=plan,
+            cards=[],
+            evidence={},
+        )
 
 
 def test_build_deterministic_digest_draft_multi_story_topic_bundle_grounding() -> None:
@@ -2577,14 +2552,18 @@ def test_build_deterministic_digest_draft_multi_story_topic_bundle_grounding() -
     assert val_res.is_valid, f"Validation failed: {val_res.violations}"
 
 
-def test_patch_failing_digest_bundles_replaces_only_failing_block():
+@pytest.mark.asyncio
+async def test_digest_editor_repairs_violations_without_deterministic_fallback():
+    import json
+    from unittest.mock import AsyncMock
+
+    from src.publication.digest_editor import DigestEditor
     from src.publication.digest_narrative import (
         DigestClaimAtom,
         DigestEditorialItemDraft,
         DigestNarrativeBlockDraft,
         DigestNarrativeDraft,
         build_digest_support_text_index,
-        patch_failing_digest_bundles,
         plan_digest_narrative_blocks,
         validate_digest_narrative,
     )
@@ -2603,39 +2582,20 @@ def test_patch_failing_digest_bundles_replaces_only_failing_block():
         useful_details=(),
         hard_facts=(),
     )
-    card2 = StoryCard(
-        id="story:2",
-        topic="Транспорт",
-        importance="medium",
-        summary="Маршрут 27 курсирует штатно",
-        rubric_id="transport",
-        useful_details=(),
-        hard_facts=(),
-    )
-
     evidence = {
         "sup-1": _make_evidence("sup-1", 1, "Водоснабжение в Лисках отключено."),
-        "sup-2": _make_evidence("sup-2", 2, "Маршрут 27 курсирует штатно."),
     }
-
     pres_plan = DigestPresentationPlan(
         story_presentations=(
             DigestStoryPresentation(
                 story_id="story:1", mode="DETAIL_ONLY", detail_support_ids=("sup-1",)
             ),
-            DigestStoryPresentation(
-                story_id="story:2", mode="DETAIL_ONLY", detail_support_ids=("sup-2",)
-            ),
         ),
         city_situation=CitySituationPresentationPlan(),
     )
-    rubrics = [
-        {"id": "utilities", "title": "Коммунальная сфера"},
-        {"id": "transport", "title": "Транспорт"},
-    ]
-    cards = [card1, card2]
+    rubrics = [{"id": "utilities", "title": "Коммунальная сфера"}]
+    cards = [card1]
     support_index = build_digest_support_text_index(evidence=evidence, cards=cards)
-
     narrative_plan = plan_digest_narrative_blocks(
         cards=cards,
         evidence=evidence,
@@ -2643,21 +2603,6 @@ def test_patch_failing_digest_bundles_replaces_only_failing_block():
         presentation_plan=pres_plan,
     )
 
-    # Construct an artificial draft where block:utilities:0 has an ungrounded claim violation
-    good_item = DigestEditorialItemDraft(
-        headline="Транспорт: маршрут 27 работает",
-        body="Автобус 27 курсирует в обычном режиме по городу.",
-        covered_story_ids=("story:2",),
-        cited_support_ids=("sup-2",),
-        claims=(
-            DigestClaimAtom(
-                text="Маршрут 27 курсирует штатно",
-                covered_story_ids=("story:2",),
-                cited_support_ids=("sup-2",),
-            ),
-        ),
-        emoji="🚌",
-    )
     bad_item = DigestEditorialItemDraft(
         headline="Водоснабжение",
         body="Воды нет из-за аварии на 500 километрах труб.",
@@ -2672,15 +2617,10 @@ def test_patch_failing_digest_bundles_replaces_only_failing_block():
         ),
         emoji="💧",
     )
-
     draft_with_failure = DigestNarrativeDraft(
-        blocks=(
-            DigestNarrativeBlockDraft(block_id="block:utilities:0", items=(bad_item,)),
-            DigestNarrativeBlockDraft(block_id="block:transport:0", items=(good_item,)),
-        )
+        blocks=(DigestNarrativeBlockDraft(block_id="block:utilities:0", items=(bad_item,)),)
     )
 
-    # Initial validation fails on block:utilities:0
     val_res = validate_digest_narrative(
         draft_with_failure,
         narrative_plan,
@@ -2688,36 +2628,39 @@ def test_patch_failing_digest_bundles_replaces_only_failing_block():
         all_known_draft_supports=list(support_index.values()),
     )
     assert not val_res.is_valid
-    assert any("block:utilities:0" in v for v in val_res.violations)
 
-    # Patch only failing bundles
-    patched_draft = patch_failing_digest_bundles(
+    # Mock provider that fixes the draft using LLM repair
+    mock_provider = AsyncMock()
+    mock_provider.chat_completion.return_value = json.dumps(
+        {
+            "blocks": [
+                {
+                    "block_id": "block:utilities:0",
+                    "items": [
+                        {
+                            "item_index": 0,
+                            "emoji": "💧",
+                            "headline": "Водоснабжение",
+                            "body": "В Лисках водоснабжение временно отключено по сообщениям жителей.",
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    editor = DigestEditor(provider=mock_provider)
+    repaired_draft = await editor.polish_and_compress(
         draft_with_failure,
-        narrative_plan,
-        val_res.violations,
-        cards=cards,
         evidence=evidence,
-        rubrics=rubrics,
-        presentation_plan=pres_plan,
-        support_text_by_id=support_index,
+        violations=val_res.violations,
     )
-
-    # Transport block must remain identical to good_item
-    assert patched_draft.blocks[1].items[0].headline == good_item.headline
-    assert patched_draft.blocks[1].items[0].body == good_item.body
-
-    # Utilities block was replaced with deterministic bundle fallback
-    assert patched_draft.blocks[0].items[0].body != bad_item.body
-    assert "По информации коммунальных служб" in patched_draft.blocks[0].items[0].body
-
-    # Patched draft must now pass validation completely
-    patched_val = validate_digest_narrative(
-        patched_draft,
-        narrative_plan,
-        support_text_by_id=support_index,
-        all_known_draft_supports=list(support_index.values()),
-    )
-    assert patched_val.is_valid, f"Patched draft failed: {patched_val.violations}"
+    assert repaired_draft.blocks[0].items[0].headline == "Водоснабжение"
+    assert "Лисках" in repaired_draft.blocks[0].items[0].body
+    assert "500 километрах" not in repaired_draft.blocks[0].items[0].body
+    # Ensure violations were passed in prompt
+    prompt_sent = mock_provider.chat_completion.call_args[1]["messages"][0]["content"]
+    assert "CRITICAL VALIDATION REPAIRS REQUIRED" in prompt_sent
 
 
 @pytest.mark.asyncio

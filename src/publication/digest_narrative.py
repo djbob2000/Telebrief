@@ -2312,88 +2312,6 @@ def build_deterministic_digest_draft(
     return DigestNarrativeDraft(blocks=tuple(block_drafts), situation_items=())
 
 
-def patch_failing_digest_bundles(
-    draft: DigestNarrativeDraft,
-    plan: DigestNarrativePlan,
-    violations: Sequence[str],
-    *,
-    cards: Sequence[StoryCard],
-    evidence: Mapping[str, PublicationEvidence],
-    rubrics: Sequence[dict[str, Any]],
-    presentation_plan: Any = None,
-    support_text_by_id: Mapping[str, str] | None = None,
-) -> DigestNarrativeDraft:
-    """Replace failing narrative blocks/bundles with clean deterministic equivalents."""
-    import re
-
-    failing_block_ids: set[str] = set()
-    for v in violations:
-        # 1. Check direct block_id match
-        for b in draft.blocks:
-            if b.block_id in v:
-                failing_block_ids.add(b.block_id)
-        # 2. Regex match for block identifier
-        m = re.search(r"\b(block:[a-zA-Z0-9_:-]+)", v)
-        if m:
-            failing_block_ids.add(m.group(1).strip())
-        # 3. If violation mentions story_id
-        m_sid = re.search(r"(?:STORY_CLAIM_COVERAGE_MISSING|story)\s*[:\s]\s*([a-zA-Z0-9_:-]+)", v)
-        if m_sid:
-            target_sid = m_sid.group(1).strip()
-            for pb in plan.blocks:
-                if target_sid in pb.story_ids:
-                    failing_block_ids.add(pb.block_id)
-        # 4. If violation mentions fact_id
-        m_fid = re.search(r"FACT[a-zA-Z0-9_]*[:\s]+([a-zA-Z0-9_:-]+)", v)
-        if m_fid:
-            target_fid = m_fid.group(1).strip()
-            for pb in plan.blocks:
-                if any(rf.fact_id == target_fid for rf in pb.required_facts):
-                    failing_block_ids.add(pb.block_id)
-
-    if not failing_block_ids and violations:
-        failing_block_ids = {b.block_id for b in draft.blocks}
-
-    if not failing_block_ids:
-        return draft
-
-    det_draft = build_deterministic_digest_draft(
-        cards=cards,
-        evidence=evidence,
-        rubrics=rubrics,
-        presentation_plan=presentation_plan,
-        support_text_by_id=support_text_by_id,
-    )
-    det_blocks_by_id = {b.block_id: b for b in det_draft.blocks}
-
-    new_blocks = []
-    for b in draft.blocks:
-        if b.block_id in failing_block_ids:
-            det_b = det_blocks_by_id.get(b.block_id)
-            if not det_b:
-                b_parts = b.block_id.split(":")
-                rubric_prefix = f"block:{b_parts[1]}:" if len(b_parts) > 1 else b.block_id
-                det_b = next(
-                    (db for db in det_draft.blocks if db.block_id.startswith(rubric_prefix)),
-                    None,
-                )
-            if det_b:
-                logger.info(
-                    "Replacing failing narrative block %s with deterministic bundle fallback",
-                    b.block_id,
-                )
-                new_blocks.append(det_b)
-            else:
-                new_blocks.append(b)
-        else:
-            new_blocks.append(b)
-
-    return DigestNarrativeDraft(
-        blocks=tuple(new_blocks),
-        situation_items=draft.situation_items,
-    )
-
-
 def format_digest_date_ru(snapshot_at: dt.datetime) -> str:
     """Format date in Russian: e.g. 04 сентября 2026."""
     months_ru = (
@@ -3768,7 +3686,6 @@ class DigestNarrativeWriter:
 
             # Ensure all plan blocks exist and are strictly ordered
             final_blocks: list[dict[str, Any]] = []
-            deterministic_missing_block_drafts: dict[str, DigestNarrativeDraft] = {}
 
             for plan_block in plan.blocks:
                 b_raw = block_by_id.get(plan_block.block_id)
@@ -3783,45 +3700,7 @@ class DigestNarrativeWriter:
                         None,
                     )
                 if b_raw is None:
-                    # Synthesize missing block cleanly
-                    if plan_block.rubric_id not in deterministic_missing_block_drafts:
-                        deterministic_missing_block_drafts[plan_block.rubric_id] = (
-                            build_deterministic_digest_draft(
-                                cards=cards,
-                                evidence=evidence,
-                                rubrics=[
-                                    {"id": plan_block.rubric_id, "name": plan_block.rubric_title}
-                                ],
-                                presentation_plan=None,
-                            )
-                        )
-                    det_draft = deterministic_missing_block_drafts[plan_block.rubric_id]
-                    matching_det = next(
-                        (
-                            db
-                            for db in det_draft.blocks
-                            if db.block_id == plan_block.block_id
-                            or db.block_id.startswith(f"block:{plan_block.rubric_id}:")
-                        ),
-                        None,
-                    )
-                    if matching_det:
-                        b_raw = {
-                            "block_id": plan_block.block_id,
-                            "items": [
-                                {
-                                    "headline": it.headline,
-                                    "body": it.body,
-                                    "emoji": it.emoji,
-                                    "covered_story_ids": list(it.covered_story_ids),
-                                    "cited_support_ids": list(it.cited_support_ids),
-                                    "claims": [c.to_dict() for c in it.claims],
-                                }
-                                for it in matching_det.items
-                            ],
-                        }
-                    else:
-                        b_raw = {"block_id": plan_block.block_id, "items": []}
+                    b_raw = {"block_id": plan_block.block_id, "items": []}
                 else:
                     b_raw["block_id"] = plan_block.block_id
 

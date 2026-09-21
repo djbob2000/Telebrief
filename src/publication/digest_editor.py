@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from src.ai_providers import AIProvider
 from src.publication.digest_narrative import (
@@ -34,6 +34,7 @@ class DigestEditor:
         evidence: Mapping[str, PublicationEvidence] | None = None,
         max_chars: int = 3600,
         model: str | None = None,
+        violations: Sequence[str] | None = None,
     ) -> DigestNarrativeDraft:
         """Apply targeted journalistic polish, contrast synthesis, and length compression."""
         if self._provider is None:
@@ -60,9 +61,22 @@ class DigestEditor:
                 }
             )
 
+        repair_section = ""
+        if violations:
+            v_list = "\n".join(f"- {v}" for v in violations[:10])
+            repair_section = (
+                "\nCRITICAL VALIDATION REPAIRS REQUIRED:\n"
+                "The draft failed automated editorial validation with the following violations:\n"
+                f"{v_list}\n"
+                "- If a fact, story claim, or required mention is missing, smoothly integrate the missing information into the relevant block's item body.\n"
+                "- If a statement was unverified, over-specified, or unsupported, tone it down or state it faithfully.\n"
+                "- Do NOT drop facts or invent unsupported new details.\n\n"
+            )
+
         system_prompt = (
             "You are a chief copy-editor of a respected regional Telegram news channel.\n"
             "Your task is to refine, polish, and tighten a daily city news digest in Russian.\n\n"
+            f"{repair_section}"
             "EDITORIAL PRINCIPLES:\n"
             "1. REFINED JOURNALISTIC STYLE:\n"
             "   - Transform choppy, fragmented, or dry bureaucratic phrases into smooth, engaging, and professional Russian prose.\n"
@@ -97,7 +111,10 @@ class DigestEditor:
             "}\n"
         )
 
-        user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
+        user_content: dict[str, Any] = {"blocks": blocks_payload}
+        if violations:
+            user_content["validation_violations_to_fix"] = list(violations[:10])
+        user_prompt = json.dumps(user_content, ensure_ascii=False, indent=2)
 
         chat_kwargs: dict[str, Any] = {
             "messages": [

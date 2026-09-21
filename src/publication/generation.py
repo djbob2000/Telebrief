@@ -382,38 +382,67 @@ class PublicationGenerationService:
                             all_known_draft_supports=all_draft_support_texts,
                         )
                         if not val_res.is_valid:
-                            from src.publication.digest_narrative import (
-                                patch_failing_digest_bundles,
-                            )
+                            from src.publication.digest_editor import DigestEditor
 
                             logger.info(
-                                "digest narrative validation found violations (%s); attempting localized bundle patch",
-                                val_res.violations[:3],
+                                "digest narrative validation found violations (%s); attempting DigestEditor repair",
+                                val_res.violations[:5],
                             )
-                            patched_cand = patch_failing_digest_bundles(
-                                draft_cand,
-                                plan,
-                                val_res.violations,
-                                cards=frozen.analysis.cards,
-                                evidence=evidence_dict,
-                                rubrics=renderer.rubrics,
-                                presentation_plan=presentation_plan,
-                                support_text_by_id=support_text_index,
+                            editor = DigestEditor(provider=writer_provider)
+                            edit_att_id = await observer.attempt_started(
+                                "repair",
+                                metadata={
+                                    "subkind": "digest_editor_validation_repair",
+                                    "violations": list(val_res.violations[:5]),
+                                },
                             )
-                            patched_val = validate_digest_narrative(
-                                patched_cand,
-                                plan,
-                                support_text_by_id=support_text_index,
-                                situation_plan=presentation_plan.city_situation,
-                                allowed_context_terms=allowed_digest_terms,
-                                all_known_draft_supports=all_draft_support_texts,
-                            )
-                            if patched_val.is_valid:
-                                logger.info(
-                                    "localized bundle patch succeeded; replacing draft with patched version"
+                            try:
+                                repaired_cand = await editor.polish_and_compress(
+                                    draft_cand,
+                                    evidence=evidence_dict,
+                                    max_chars=3600,
+                                    model=getattr(self.config.settings, "openai_model", None)
+                                    or getattr(self.config.settings, "ai_model", None),
+                                    violations=val_res.violations,
                                 )
-                                draft_cand = patched_cand
-                                val_res = patched_val
+                                repaired_val = validate_digest_narrative(
+                                    repaired_cand,
+                                    plan,
+                                    support_text_by_id=support_text_index,
+                                    situation_plan=presentation_plan.city_situation,
+                                    allowed_context_terms=allowed_digest_terms,
+                                    all_known_draft_supports=all_draft_support_texts,
+                                )
+                                if repaired_val.is_valid:
+                                    logger.info(
+                                        "DigestEditor repair succeeded; using repaired draft"
+                                    )
+                                    draft_cand = repaired_cand
+                                    val_res = repaired_val
+                                    await observer.attempt_finished(
+                                        edit_att_id,
+                                        "succeeded",
+                                        metadata={"validation": {"is_valid": True}},
+                                    )
+                                else:
+                                    logger.warning(
+                                        "DigestEditor repair did not resolve violations: %s",
+                                        repaired_val.violations[:5],
+                                    )
+                                    await observer.attempt_finished(
+                                        edit_att_id,
+                                        "failed",
+                                        error_kind="digest_editor_repair_failed",
+                                        metadata={"violations": list(repaired_val.violations[:5])},
+                                    )
+                            except Exception as edit_exc:
+                                logger.warning("DigestEditor repair failed: %s", edit_exc)
+                                await observer.attempt_finished(
+                                    edit_att_id,
+                                    "failed",
+                                    error_kind="digest_editor_repair_exception",
+                                    metadata={"error_message": str(edit_exc)},
+                                )
 
                         if val_res.is_valid:
                             from src.publication.digest_coverage import build_digest_coverage_trace

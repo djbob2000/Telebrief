@@ -663,3 +663,49 @@ def test_build_digest_presentation_plan_ignores_in_reply_to_chat_noise_in_city_s
         city_situation=noisy_rollup,
     )
     assert len(plan.required_facts) == 0
+
+
+def test_is_usable_fact_line_filters_veterinary_and_clinic_arguments():
+    from src.publication.digest_presentation import _is_usable_fact_line
+
+    assert not _is_usable_fact_line("Нашим животным только там качественно и помогают в городе.")
+    assert not _is_usable_fact_line("Ветклиника и конкурирующие врачи спорят в чате.")
+    assert not _is_usable_fact_line(
+        "Второй день решают ремонтировать или новый заказать генератор."
+    )
+    assert not _is_usable_fact_line("Может где то и есть вода но на Орджоникидзе нету.")
+    assert not _is_usable_fact_line("С первыми петухами надо вставать чтобы набрать воду.")
+    assert not _is_usable_fact_line("Приходится подстроиться под этот сложный график.")
+
+    # Legitimate operational facts must still pass
+    assert _is_usable_fact_line("На улице Морозова отсутствует водоснабжение из-за аварии.")
+    assert _is_usable_fact_line("В нагорной части Бердянска отключено электричество.")
+
+
+def test_build_required_digest_facts_filters_non_operational_infrastructure_hard_facts():
+    from src.editorial_models import StoryCard, StoryElement
+    from src.publication.digest_presentation import build_required_digest_facts
+
+    # A card categorized as infrastructure, but its hard fact is veterinary/animal clinic chatter
+    card = StoryCard(
+        id="story:vet:1",
+        topic="Ветеринарная помощь",
+        importance="low",
+        summary="Жители обсуждают городскую ветклинику",
+        rubric_id="infrastructure",
+        useful_details=(),
+        hard_facts=[
+            StoryElement(
+                text="Нашим животным только там качественно и помогают",
+                source_refs=["S001"],
+            ),
+            StoryElement(
+                text="В ветклинике на проспекте Труда работает опытный хирург",
+                source_refs=["S001"],
+            ),
+        ],
+    )
+
+    facts = build_required_digest_facts(cards=[card], evidence={})
+    # Both hard facts must be rejected because they are not operational service facts
+    assert len(facts) == 0
