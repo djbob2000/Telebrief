@@ -558,3 +558,47 @@ def test_build_thematic_topic_bundles_economy_general_consolidation() -> None:
     assert bundles[0].rubric_id == "economy"
     assert bundles[0].topic_key == "economy"
     assert set(bundles[0].story_ids) == {"story:16219", "story:16230"}
+
+
+def test_build_thematic_topic_bundles_preserves_topic_when_summary_filtered():
+    from src.editorial_models import StoryCard
+    from src.publication.digest_presentation import build_thematic_topic_bundles
+
+    card = StoryCard(
+        id="story:461",
+        topic="Пожар из-за генератора в Бердянске",
+        importance="medium",
+        summary="Обсуждение пожара и проблем с электричеством в Бердянске, но без конкретных деталей.",
+        rubric_id="safety",
+    )
+    bundles = build_thematic_topic_bundles([card], rubric_id="safety")
+    assert len(bundles) == 1
+    assert "story:461" in bundles[0].story_ids
+    assert "Пожар из-за генератора в Бердянске." in bundles[0].fact_ledger
+
+
+def test_build_required_digest_facts_filters_chat_sarcasm():
+    from types import SimpleNamespace
+
+    from src.editorial_models import StoryCard
+    from src.publication.digest_presentation import build_required_digest_facts
+
+    card = StoryCard(
+        id="story:16960",
+        topic="Отключение электроэнергии",
+        importance="high",
+        summary="Житель сообщает, что электричество снова отключили.",
+        rubric_id="infrastructure",
+    )
+    card.operational_observations = (
+        SimpleNamespace(
+            location="Бердянск",
+            detail="Всеее, недолго музыка играла. Света ушла",
+            subject_key="electricity",
+            subject_label="Электроснабжение",
+            source_refs=(),
+            source_fragment_ids=(),
+        ),
+    )
+    facts = build_required_digest_facts(cards=[card])
+    assert len(facts) == 0

@@ -632,6 +632,8 @@ def build_required_digest_facts(
                 o_text = f"{o_loc}: {o_detail}".strip(": ") if o_loc else o_detail
                 if not o_text:
                     continue
+                if not _is_usable_fact_line(o_text) and not _is_usable_fact_line(o_detail):
+                    continue
 
                 fact_id = _derive_observation_fact_id(card.id, obs, o_idx)
                 if fact_id in seen_fact_ids:
@@ -666,6 +668,8 @@ def build_required_digest_facts(
             for h_idx, hf in enumerate(hf_list):
                 hf_text = getattr(hf, "text", "").strip()
                 if not hf_text:
+                    continue
+                if not _is_usable_fact_line(hf_text):
                     continue
                 fact_id = _derive_hard_fact_id(card.id, hf_text, h_idx)
                 if fact_id in seen_fact_ids:
@@ -1584,7 +1588,17 @@ def _clean_fact_sentence(text: str) -> str:
 
 def _is_usable_fact_line(text: str) -> bool:
     """Filter out chat noise, resident questions, classified ads, lost & found, and meta comments."""
-    if "in_reply_to" in text.casefold() or "in reply to" in text.casefold():
+    raw_l = text.casefold()
+    if any(
+        k in raw_l
+        for k in (
+            "in_reply_to",
+            "in reply to",
+            "обсуждение в чате",
+            "обсуждения в чате",
+            "перекличка в чате",
+        )
+    ):
         return False
     cleaned = _clean_fact_sentence(text)
     if not cleaned or len(cleaned) < 12:
@@ -1600,7 +1614,7 @@ def _is_usable_fact_line(text: str) -> bool:
         return False
 
     if re.search(
-        r"(?:"
+        r"\b(?:"
         r"срамот\w*|"
         r"боюсь\s+сглаз\w*|"
         r"како\w*\s+круглосуточ\w*|"
@@ -1609,8 +1623,15 @@ def _is_usable_fact_line(text: str) -> bool:
         r"плохо\s+голосовал\w*|"
         r"снова\s+цивилизаци\w*\s+покинул\w*|"
         r"не\s+хваста\w*\s+удач\w*|"
-        r"каменн\w*\s+пещер\w*"
-        r")",
+        r"каменн\w*\s+пещер\w*|"
+        r"не\s*долго\s+музыка\s+играла|"
+        r"музыка\s+играла|"
+        r"в\s+ответ\s+на\s+вопрос|"
+        r"видимо\s+нет|"
+        r"где[- ]то\s+есть\b.*?в\s+ответ|"
+        r"кому\s+включали\b|"
+        r"света?\s+ушла"
+        r")\b",
         t_l,
     ):
         return False
@@ -1882,6 +1903,10 @@ def _is_usable_fact_line(text: str) -> bool:
         return False
     if "эмоциональное сообщение" in t_l:
         return False
+    if "обсуждение в чате" in t_l or "обсуждения в чате" in t_l:
+        return False
+    if "реклама" in t_l or "рекламы" in t_l:
+        return False
 
     return True
 
@@ -2144,15 +2169,13 @@ def build_thematic_topic_bundles(
 
             # If all raw lines were filtered as chatter, preserve cleaned summary/topic
             if not dedup_facts:
-                fallback_source = sample_card.summary or sample_card.topic
-                fallback_cand = (
-                    _clean_fact_sentence(fallback_source)
-                    if _is_usable_fact_line(fallback_source)
-                    else ""
-                )
-                if fallback_cand:
-                    dedup_facts.append(fallback_cand)
-
+                for candidate in (sample_card.summary, sample_card.topic):
+                    if not candidate or not _is_usable_fact_line(candidate):
+                        continue
+                    cleaned = _clean_fact_sentence(candidate)
+                    if _is_usable_fact_line(cleaned):
+                        dedup_facts.append(cleaned)
+                        break
             # Determine epistemic kind
             is_official = False
             if evidence:

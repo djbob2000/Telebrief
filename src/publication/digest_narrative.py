@@ -4060,7 +4060,7 @@ class DigestNarrativeWriter:
                                 }
                             ]
 
-                            # Bind claims for facts explicitly covered by the model
+                            # Bind claims for facts explicitly covered by the model or reflected in text
                             known_fact_ids = {rf.fact_id for rf in matched_tb.required_facts}
                             covered_fids = {
                                 str(fid).strip()
@@ -4069,7 +4069,23 @@ class DigestNarrativeWriter:
                             }
 
                             for rf in matched_tb.required_facts:
-                                if rf.fact_id not in covered_fids:
+                                is_covered = rf.fact_id in covered_fids
+                                if not is_covered and covered_fids:
+                                    _STOP_WORDS = {"бердянск", "ул", "улица", "район", "часть"}
+                                    rf_tokens = set(rf.fact_id.split("_")) - _STOP_WORDS
+                                    if rf_tokens and (
+                                        any(
+                                            rf_tokens == (set(cf.split("_")) - _STOP_WORDS)
+                                            for cf in covered_fids
+                                        )
+                                        or any(
+                                            tok in clean_body.lower()
+                                            for tok in rf_tokens
+                                            if len(tok) >= 3
+                                        )
+                                    ):
+                                        is_covered = True
+                                if not is_covered:
                                     continue
                                 rf_text = rf.text or base_claim_text
                                 rf_text = re.sub(r'["«»“„\']', "", rf_text)
