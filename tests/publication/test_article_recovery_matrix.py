@@ -324,6 +324,44 @@ async def test_case_1_catastrophic_draft_falls_back_to_second_model_after_same_p
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_case_1_empty_lead_retries_even_when_body_has_content() -> None:
+    """A substantive body with no lead is treated as a truncated writer response."""
+    from src.ai_providers import ProviderCascade
+
+    context, plan = _make_17_story_setup()
+    generator = _make_article_generator(
+        article_editor_enabled=False,
+        article_allow_deterministic_fallback=False,
+    )
+    incomplete = json.loads(_build_complete_longread_response(list(context.support_index)))
+    incomplete["lead"] = ""
+    incomplete["lead_support_ids"] = []
+    incomplete["lead_claims"] = []
+    incomplete_response = json.dumps(incomplete)
+    complete_response = _build_complete_longread_response(list(context.support_index))
+
+    primary = MagicMock()
+    primary.chat_completion = AsyncMock(side_effect=[incomplete_response, complete_response])
+    backup = MagicMock()
+    backup.chat_completion = AsyncMock()
+    generator.provider = ProviderCascade(
+        [("primary", primary), ("secondary", backup)], generator.logger
+    )
+
+    title, lead, body = await generator.generate_from_event_article_context(
+        context,
+        coverage_plan=plan,
+    )
+
+    assert title
+    assert lead
+    assert body
+    assert primary.chat_completion.call_count == 2
+    assert backup.chat_completion.call_count == 0
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_case_2_local_issue_triggers_targeted_article_editor_repair() -> None:
     """A valid writer draft with a local issue gets targeted repair, not full regeneration."""
     context, plan = _make_17_story_setup(lead_temporal_role="HISTORICAL_CONTEXT")

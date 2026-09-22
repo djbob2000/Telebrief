@@ -404,13 +404,8 @@ def _is_catastrophic_writer_response(
     validation_result: ArticleValidationResult,
     diagnostics: ArticleCoverageDiagnostics,
 ) -> bool:
-    """Identify a refusal/empty response, not an ordinary coverage shortfall."""
-    return (
-        validation_result.word_count < 120
-        and not draft.lead.strip()
-        and validation_result.section_count <= 1
-        and diagnostics.covered_story_count == 0
-    )
+    """Identify a refusal/truncated response, not an ordinary coverage shortfall."""
+    return not draft.lead.strip()
 
 
 def _build_writer_attempt_metadata(
