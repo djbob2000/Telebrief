@@ -11,6 +11,7 @@ from src.publication.article_context import (
     PublicationWindow,
 )
 from src.publication.article_coverage import build_article_coverage_plan
+from src.publication.article_material import project_article_material
 from src.publication.article_writer_context import (
     ARTICLE_WRITER_CONTEXT_MAX_CHARS,
     _render_article_story_packets,
@@ -181,6 +182,58 @@ def test_render_article_writer_context_includes_plan_and_sanitizes_sources():
 
     # Raw support source text is NOT mutated
     assert s4.source_text == raw_source
+
+
+def test_render_article_writer_context_uses_material_projection_for_packets_and_no_plan():
+    ad = ArticleSupport(
+        support_id="story:ad:evidence:0:frag:1",
+        text="Продаётся квартира. Цена 100 рублей, звоните +79900000000.",
+        source_text="Продаётся квартира. Цена 100 рублей, звоните +79900000000.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-ad",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:ad",
+    )
+    report = ArticleSupport(
+        support_id="story:outage:evidence:0:frag:2",
+        text="На улице Садовой нет света.",
+        source_text="На улице Садовой нет света.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-outage",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:outage",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Квартира", "Электричество"),
+        support_index=(ad, report),
+        support_by_id={ad.support_id: ad, report.support_id: report},
+        recurring_topics=(),
+        edition_name="Бердянск",
+    )
+    cards = (
+        StoryCard(id="story:ad", topic="Квартира", importance="low", summary="Квартира"),
+        StoryCard(id="story:outage", topic="Электричество", importance="high", summary="Свет"),
+    )
+    plan = build_article_coverage_plan(cards, context)
+    projection = project_article_material(context)
+
+    packet_context = render_article_writer_context(
+        context, plan, include_coverage_plan=False, material_projection=projection
+    )
+    no_plan_context = render_article_writer_context(context, material_projection=projection)
+
+    for rendered in (packet_context, no_plan_context):
+        assert "+79900000000" not in rendered
+        assert "story:ad" not in rendered
+        assert "На улице Садовой нет света" in rendered
 
 
 def test_render_article_writer_context_includes_material_inventory_for_story_packets():

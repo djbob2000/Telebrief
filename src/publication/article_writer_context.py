@@ -5,6 +5,7 @@ import re
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.publication.article_context import (
@@ -13,6 +14,9 @@ from src.publication.article_context import (
     _support_framing,
 )
 from src.publication.article_coverage import ArticleCoveragePlan
+
+if TYPE_CHECKING:
+    from src.publication.article_material import ArticleMaterialProjection
 
 _PHONE_RE = re.compile(r"(?:\+?\d[\d\s()\-–—]{8,}\d)")
 _URL_RE = re.compile(r"https?://\S+|\bwww\.\S+|\bt\.me/\S+", re.IGNORECASE)
@@ -95,6 +99,7 @@ def _extract_story_microdetails(
     story_id: str,
     support_ids: Sequence[str],
     context: ArticleEditorialContext | None,
+    material_projection: ArticleMaterialProjection | None = None,
 ) -> list[str]:
     if context is None or not hasattr(context, "support_by_id"):
         return []
@@ -104,13 +109,23 @@ def _extract_story_microdetails(
         sup = context.support_by_id.get(sid)
         if not sup:
             continue
-        # Prefer rich source text if it provides concrete details, otherwise text
-        raw = (
-            sup.source_text if (sup.source_text and len(sup.source_text.strip()) > 10) else sup.text
-        )
+        if material_projection is not None:
+            if sid in material_projection.text_by_support_id:
+                if material_projection.actions_by_support_id.get(sid) == "SUPPRESS_PROMOTION_ONLY":
+                    continue
+                raw = material_projection.text_by_support_id[sid]
+            else:
+                raw = ""
+        else:
+            # Prefer rich source text if it provides concrete details, otherwise text
+            raw = (
+                sup.source_text
+                if (sup.source_text and len(sup.source_text.strip()) > 10)
+                else sup.text
+            )
         if not raw:
             continue
-        cleaned = sanitize_writer_source_text(raw)
+        cleaned = sanitize_writer_source_text(raw) if material_projection is None else raw
         # Collapse multiple spaces / newlines
         cleaned = " ".join(cleaned.split()).strip()
         if len(cleaned) > 130:
@@ -124,9 +139,13 @@ def _extract_story_microdetails(
 def _render_coverage_plan(
     plan: ArticleCoveragePlan,
     context: ArticleEditorialContext | None = None,
+    material_projection: ArticleMaterialProjection | None = None,
 ) -> str:
     lines = ["ARTICLE COVERAGE PLAN"]
-    develop_stories = [s for s in plan.stories if s.prominence == "DEVELOP"]
+    suppressed = set(material_projection.suppressed_story_ids) if material_projection else set()
+    develop_stories = [
+        s for s in plan.stories if s.prominence == "DEVELOP" and s.story_id not in suppressed
+    ]
     if develop_stories:
         lines.append(
             "\nОБЯЗАТЕЛЬНЫЕ КЛЮЧЕВЫЕ ТЕМЫ (DEVELOP) — КАЖДАЯ ДОЛЖНА БЫТЬ ПОДРОБНО ОТРАЖЕНА В ТЕКСТЕ:"
@@ -140,10 +159,18 @@ def _render_coverage_plan(
         lines.append(f"\nTHEMATIC SECTIONS COUNT: {len(plan.sections)}")
         plan_by_id = plan.by_story_id
         for sec in plan.sections:
+            visible_assignments = [a for a in sec.story_assignments if a.story_id not in suppressed]
+            if not visible_assignments:
+                continue
             lines.append(f"\nSECTION: {sec.title}")
             lines.append(f"NARRATIVE INTENT: {sec.narrative_intent}")
-            lines.append(f"LEAD STORY: {sec.lead_story_id}")
-            for a in sec.story_assignments:
+            visible_lead = (
+                sec.lead_story_id
+                if sec.lead_story_id not in suppressed
+                else visible_assignments[0].story_id
+            )
+            lines.append(f"LEAD STORY: {visible_lead}")
+            for a in visible_assignments:
                 item = plan_by_id.get(a.story_id)
                 topic = item.topic if item else a.story_id
                 sups = item.support_ids if item else a.primary_evidence_ids
@@ -155,7 +182,9 @@ def _render_coverage_plan(
 
                 # Extract rich human-readable microdetails
                 micro_targets = list(det_sups) if det_sups else list(sups[:2])
-                micro_details = _extract_story_microdetails(a.story_id, micro_targets, context)
+                micro_details = _extract_story_microdetails(
+                    a.story_id, micro_targets, context, material_projection
+                )
                 if not micro_details and a.concrete_details:
                     micro_details = [
                         d
@@ -166,12 +195,17 @@ def _render_coverage_plan(
                     lines.append(f"  MICRODETAILS: {' | '.join(micro_details)}")
     else:
         for item in plan.stories:
+            if item.story_id in suppressed:
+                continue
             lines.append(f"- {item.prominence} {item.story_id}: {item.topic}")
             lines.append(f"  SUPPORTS: {', '.join(item.support_ids)}")
             if item.detail_support_ids:
                 lines.append(f"  DETAIL SUPPORTS: {', '.join(item.detail_support_ids)}")
             micro_details = _extract_story_microdetails(
-                item.story_id, item.detail_support_ids or item.support_ids[:2], context
+                item.story_id,
+                item.detail_support_ids or item.support_ids[:2],
+                context,
+                material_projection,
             )
             if micro_details:
                 lines.append(f"  MICRODETAILS: {' | '.join(micro_details)}")
@@ -181,6 +215,7 @@ def _render_coverage_plan(
 def _render_article_story_packets(
     context: ArticleEditorialContext,
     coverage_plan: ArticleCoveragePlan,
+    material_projection: ArticleMaterialProjection | None = None,
 ) -> tuple[list[str], list[str], ArticleWriterMaterializationStats]:
     """Materialize the zero-loss coverage plan into bounded writer packets.
 
@@ -199,7 +234,10 @@ def _render_article_story_packets(
     compact_packets: list[str] = []
     packets_with_citable_support = 0
     citable_support_count = 0
+    suppressed = set(material_projection.suppressed_story_ids) if material_projection else set()
     for item in coverage_plan.stories:
+        if item.story_id in suppressed:
+            continue
         depth = str(item.prominence)
         limit = _PACKET_SUPPORT_LIMIT.get(depth, 1)
         planned_ids = list(dict.fromkeys((*item.detail_support_ids, *item.support_ids)))
@@ -213,7 +251,19 @@ def _render_article_story_packets(
             if support.support_id in planned_ids
         ]
         selected_ids = list(dict.fromkeys((*own_ids, *planned_ids)))[:limit]
-        selected_supports = [support_by_id[sid] for sid in selected_ids if sid in support_by_id]
+        selected_supports = [
+            support_by_id[sid]
+            for sid in selected_ids
+            if sid in support_by_id
+            and (
+                material_projection is None
+                or material_projection.actions_by_support_id.get(sid) != "SUPPRESS_PROMOTION_ONLY"
+            )
+            and (
+                material_projection is None
+                or material_projection.text_by_support_id.get(sid, "").strip()
+            )
+        ]
         if selected_supports:
             packets_with_citable_support += 1
             citable_support_count += len(selected_supports)
@@ -225,7 +275,11 @@ def _render_article_story_packets(
         full_lines = [header]
         compact_lines = [header]
         for support in selected_supports:
-            raw_fact = sanitize_writer_source_text(support.text or support.source_text)
+            raw_fact = (
+                material_projection.text_by_support_id.get(support.support_id, "")
+                if material_projection is not None
+                else sanitize_writer_source_text(support.text or support.source_text)
+            )
             full_fact = _compact_text(raw_fact, _PACKET_FACT_MAX_CHARS)
             compact_fact = _compact_text(raw_fact, _PACKET_COMPACT_FACT_MAX_CHARS)
             framing = _support_framing(support)
@@ -296,6 +350,7 @@ def render_article_writer_context_with_stats(
     coverage_plan: ArticleCoveragePlan | None = None,
     *,
     include_coverage_plan: bool = True,
+    material_projection: ArticleMaterialProjection | None = None,
 ) -> tuple[str, ArticleWriterMaterializationStats | None]:
     """Render writer context and return the materialization stats used to build it."""
     blocks: list[str] = []
@@ -332,7 +387,11 @@ def render_article_writer_context_with_stats(
             )
 
     if coverage_plan is not None and include_coverage_plan:
-        blocks.append(_render_coverage_plan(coverage_plan, context=context))
+        blocks.append(
+            _render_coverage_plan(
+                coverage_plan, context=context, material_projection=material_projection
+            )
+        )
 
     from src.publication.article_quote_allowlist import build_article_quote_allowlist
 
@@ -364,12 +423,18 @@ def render_article_writer_context_with_stats(
 
         prefix = "\n\n".join(blocks).strip()
         packet_blocks, compact_packet_blocks, stats = _render_article_story_packets(
-            context, coverage_plan
+            context, coverage_plan, material_projection
         )
-        if stats.story_packet_count != stats.coverage_story_count:
+        plan_story_ids = {item.story_id for item in coverage_plan.stories}
+        suppressed_count = (
+            len(set(material_projection.suppressed_story_ids) & plan_story_ids)
+            if material_projection
+            else 0
+        )
+        if stats.story_packet_count + suppressed_count != stats.coverage_story_count:
             raise ValueError(
                 "article story packet materialization lost coverage stories: "
-                f"{stats.story_packet_count}/{stats.coverage_story_count}"
+                f"{stats.story_packet_count + suppressed_count}/{stats.coverage_story_count}"
             )
         prefix_with_inventory = "\n\n".join(
             part for part in (prefix, stats.to_prompt_block()) if part
@@ -391,9 +456,26 @@ def render_article_writer_context_with_stats(
         if allowed_support_ids is not None and sup.support_id not in allowed_support_ids:
             # Exclude supports that do not belong to selected stories in the coverage plan
             continue
-        source_text = sanitize_writer_source_text(sup.source_text)
+        if material_projection is not None:
+            if sup.story_id in material_projection.suppressed_story_ids:
+                continue
+            if (
+                material_projection.actions_by_support_id.get(sup.support_id)
+                == "SUPPRESS_PROMOTION_ONLY"
+            ):
+                continue
+            projected_text = material_projection.text_by_support_id.get(sup.support_id, "")
+            if not projected_text.strip():
+                continue
+            # The projection combines claim text with any useful source detail;
+            # render it once as the fact to avoid duplicating the same payload.
+            source_text = ""
+            fact_text = projected_text
+        else:
+            source_text = sanitize_writer_source_text(sup.source_text)
+            fact_text = sanitize_writer_source_text(sup.text)
         group_key = (
-            _compact_text(sup.text, _SUPPORT_FACT_MAX_CHARS),
+            _compact_text(fact_text, _SUPPORT_FACT_MAX_CHARS),
             _compact_text(source_text, _SUPPORT_SOURCE_MAX_CHARS),
             sup.support_kind,
             sup.publication_use,
@@ -431,7 +513,7 @@ def render_article_writer_context_with_stats(
             lines.append(f"effective_from={sup.effective_from.isoformat()}")
         if sup.effective_until:
             lines.append(f"effective_until={sup.effective_until.isoformat()}")
-        lines.append(f"fact={_compact_text(sup.text, _SUPPORT_FACT_MAX_CHARS)}")
+        lines.append(f"fact={_compact_text(fact_text, _SUPPORT_FACT_MAX_CHARS)}")
         if source_text:
             lines.append(f"source={_compact_text(source_text, _SUPPORT_SOURCE_MAX_CHARS)}")
         support_blocks.append("\n".join(lines))
@@ -443,7 +525,7 @@ def render_article_writer_context_with_stats(
                     f"kind={sup.support_kind} publication_use={sup.publication_use}",
                     f"evidence_kind={sup.evidence_kind} source_roles={roles}",
                     f"framing={_support_framing(sup)}",
-                    f"fact={_compact_text(sup.text, _SUPPORT_COMPACT_FACT_MAX_CHARS)}",
+                    f"fact={_compact_text(fact_text, _SUPPORT_COMPACT_FACT_MAX_CHARS)}",
                 ]
             )
         )
@@ -497,11 +579,13 @@ def render_article_writer_context(
     coverage_plan: ArticleCoveragePlan | None = None,
     *,
     include_coverage_plan: bool = True,
+    material_projection: ArticleMaterialProjection | None = None,
 ) -> str:
     """Render coverage-aware and sanitized support context for single-call writer."""
     rendered, _stats = render_article_writer_context_with_stats(
         context,
         coverage_plan,
         include_coverage_plan=include_coverage_plan,
+        material_projection=material_projection,
     )
     return rendered

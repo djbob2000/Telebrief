@@ -1204,6 +1204,7 @@ class ArticleGenerator:
         is_longitudinal = lookback_hours >= 120
 
         from src.publication.article_coverage import build_article_coverage_plan
+        from src.publication.article_material import project_article_material
         from src.publication.article_writer_context import (
             render_article_writer_context_with_stats,
         )
@@ -1235,10 +1236,12 @@ class ArticleGenerator:
                     develop_story_budget=develop_story_budget,
                 )
 
+        material_projection = project_article_material(article_ctx)
         context_str, materialization_stats = render_article_writer_context_with_stats(
             article_ctx,
             coverage_plan,
             include_coverage_plan=False,
+            material_projection=material_projection,
         )
         materialization_metadata = (
             materialization_stats.to_metadata() if materialization_stats is not None else None
@@ -1257,10 +1260,16 @@ class ArticleGenerator:
                 # the evidence context and are summarized as a compact group.
                 story_items = []
                 explicit_assignments = [
-                    assign for assign in sec.story_assignments if assign.depth == "DEVELOP"
+                    assign
+                    for assign in sec.story_assignments
+                    if assign.depth == "DEVELOP"
+                    and assign.story_id not in material_projection.suppressed_story_ids
                 ]
                 explicit_assignments.extend(
-                    assign for assign in sec.story_assignments if assign.depth == "WEAVE"
+                    assign
+                    for assign in sec.story_assignments
+                    if assign.depth == "WEAVE"
+                    and assign.story_id not in material_projection.suppressed_story_ids
                 )
                 explicit_assignments = explicit_assignments[:12]
                 explicit_ids = {assign.story_id for assign in explicit_assignments}
@@ -1268,6 +1277,7 @@ class ArticleGenerator:
                     assign
                     for assign in sec.story_assignments
                     if assign.story_id not in explicit_ids
+                    and assign.story_id not in material_projection.suppressed_story_ids
                 ]
 
                 for assign in explicit_assignments:
@@ -1276,8 +1286,13 @@ class ArticleGenerator:
                     sup_snippet = ""
                     if article_ctx and s and s.support_ids:
                         sup_obj = getattr(article_ctx, "support_by_id", {}).get(s.support_ids[0])
-                        if sup_obj and sup_obj.text:
-                            sup_snippet = f" — {sup_obj.text[:100]}"
+                        projected = (
+                            material_projection.text_by_support_id.get(s.support_ids[0], "")
+                            if sup_obj
+                            else ""
+                        )
+                        if projected:
+                            sup_snippet = f" — {projected[:100]}"
                     story_items.append(
                         f"     • [{assign.depth}] [{assign.story_id}] {topic[:180]}{sup_snippet}"
                     )
@@ -1314,18 +1329,25 @@ class ArticleGenerator:
                 theme_heading = _THEME_DEFAULT_HEADINGS.get(theme_key, "Городская жизнь")
                 story_items = []
                 for s in theme_stories:
-                    story_items.append(f"     • [{s.prominence}] [{s.story_id}] {s.topic}")
-                plan_sections_lines.append(
-                    f"   Глава «{theme_heading}»:\n" + "\n".join(story_items)
-                )
+                    if s.story_id not in material_projection.suppressed_story_ids:
+                        story_items.append(f"     • [{s.prominence}] [{s.story_id}] {s.topic}")
+                if story_items:
+                    plan_sections_lines.append(
+                        f"   Глава «{theme_heading}»:\n" + "\n".join(story_items)
+                    )
 
         if coverage_plan and getattr(coverage_plan, "stories", None):
             for s in coverage_plan.stories:
-                if s.prominence == "DEVELOP":
+                if (
+                    s.prominence == "DEVELOP"
+                    and s.story_id not in material_projection.suppressed_story_ids
+                ):
                     sup_details = []
                     for sid in s.support_ids[:3]:
                         sup_obj = getattr(article_ctx, "support_by_id", {}).get(sid)
-                        t = (sup_obj.text if sup_obj else "") or sid
+                        t = (
+                            material_projection.text_by_support_id.get(sid, "") if sup_obj else ""
+                        ) or sid
                         sup_details.append(f"{t}")
                     dev_stories_lines.append(
                         f"   ★ [{s.story_id}] {s.topic}\n"
@@ -1390,6 +1412,7 @@ class ArticleGenerator:
         }
         if materialization_metadata is not None:
             writer_input_metadata["materialization"] = materialization_metadata
+        writer_input_metadata["material_projection"] = material_projection.to_metadata()
 
         from src.publication.article_finalization import ArticleFinalizer
 
