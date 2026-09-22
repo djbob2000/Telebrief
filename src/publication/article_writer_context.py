@@ -395,7 +395,22 @@ def render_article_writer_context_with_stats(
 
     from src.publication.article_quote_allowlist import build_article_quote_allowlist
 
-    allowlist = build_article_quote_allowlist(context)
+    suppressed_support_ids = (
+        {
+            support_id
+            for support_id, action in material_projection.actions_by_support_id.items()
+            if action == "SUPPRESS_PROMOTION_ONLY"
+        }
+        if material_projection is not None
+        else set()
+    )
+    allowlist = build_article_quote_allowlist(
+        context,
+        excluded_support_ids=suppressed_support_ids,
+        candidate_text_by_support_id=(
+            material_projection.text_by_support_id if material_projection is not None else None
+        ),
+    )
     if allowlist:
         quote_lines = [
             'QUOTE ALLOWLIST (ONLY these exact primary-source phrases may be in quotation marks «...» / "..."):'

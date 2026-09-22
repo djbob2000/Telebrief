@@ -84,8 +84,11 @@ def _has_useful_fact(text: str) -> bool:
     return bool(_USEFUL_FACT_RE.search(text))
 
 
-def _is_high_confidence_promotion(text: str) -> bool:
+def _is_high_confidence_promotion(support: ArticleSupport) -> bool:
     """Require multiple independent classified-ad cues and no useful fact."""
+    if support.evidence_kind == "service_access" or support.support_kind == "operational":
+        return False
+    text = _combined_text(support)
     if _has_useful_fact(text):
         return False
     cues = detect_classified_cues(text)
@@ -165,9 +168,7 @@ def project_article_material(context: ArticleEditorialContext) -> ArticleMateria
             continue
         if support.story_id:
             publishable_by_story.setdefault(support.story_id, []).append(support)
-        high_promotion_by_support[support.support_id] = _is_high_confidence_promotion(
-            _combined_text(support)
-        )
+        high_promotion_by_support[support.support_id] = _is_high_confidence_promotion(support)
 
     suppressed_stories = tuple(
         sorted(

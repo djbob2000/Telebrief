@@ -12,6 +12,7 @@ from src.publication.article_context import (
 )
 from src.publication.article_coverage import build_article_coverage_plan
 from src.publication.article_material import project_article_material
+from src.publication.article_quote_allowlist import build_article_quote_allowlist
 from src.publication.article_writer_context import (
     ARTICLE_WRITER_CONTEXT_MAX_CHARS,
     _render_article_story_packets,
@@ -234,6 +235,66 @@ def test_render_article_writer_context_uses_material_projection_for_packets_and_
         assert "+79900000000" not in rendered
         assert "story:ad" not in rendered
         assert "На улице Садовой нет света" in rendered
+
+
+def test_projected_writer_quote_allowlist_excludes_suppressed_promotion_support():
+    support = ArticleSupport(
+        support_id="story:ad:evidence:0:frag:1",
+        text="Продаётся квартира по цене 100 рублей.",
+        source_text="Продаётся квартира по цене 100 рублей.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-ad",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:ad",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Квартира",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+    )
+    projection = project_article_material(context)
+
+    assert build_article_quote_allowlist(context) == (support.text,)
+    rendered = render_article_writer_context(context, material_projection=projection)
+    assert support.text not in rendered
+
+
+def test_projected_writer_quote_allowlist_uses_trimmed_support_text():
+    support = ArticleSupport(
+        support_id="story:enrollment:evidence:0:frag:1",
+        text="Спортивная школа открыла бесплатную запись детей.",
+        source_text="Спортивная школа открыла бесплатную запись детей. Обращайтесь для записи.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-enrollment",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:enrollment",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Спорт",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+    )
+    projection = project_article_material(context)
+
+    assert projection.actions_by_support_id[support.support_id] == "TRIM_DIRECTORY"
+    assert build_article_quote_allowlist(context) == (support.text,)
+    assert build_article_quote_allowlist(
+        context,
+        candidate_text_by_support_id=projection.text_by_support_id,
+    ) == (support.text,)
+    rendered = render_article_writer_context(context, material_projection=projection)
+    assert "Спортивная школа открыла бесплатную запись детей." in rendered
+    assert "Обращайтесь для записи." not in rendered
 
 
 def test_render_article_writer_context_includes_material_inventory_for_story_packets():

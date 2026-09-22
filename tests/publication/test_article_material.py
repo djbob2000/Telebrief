@@ -93,6 +93,21 @@ def test_project_article_material_does_not_rescue_classified_ad_with_address():
     assert projection.actions_by_support_id[ad.support_id] == "SUPPRESS_PROMOTION_ONLY"
 
 
+def test_project_article_material_keeps_priced_service_access_fact():
+    support = make_support(
+        story_id="story:water-kiosk",
+        evidence_kind="service_access",
+        text="Вода на розлив по 3 ₽/литр в киоске на Восточном.",
+        source_text="Вода на розлив по 3 ₽/литр в киоске на Восточном.",
+    )
+
+    projection = project_article_material(make_context((support,)))
+
+    assert "story:water-kiosk" not in projection.suppressed_story_ids
+    assert projection.actions_by_support_id[support.support_id] == "KEEP"
+    assert "Вода на розлив" in projection.text_by_support_id[support.support_id]
+
+
 def test_project_article_material_keeps_one_source_community_report():
     support = make_support(
         story_id="story:water",

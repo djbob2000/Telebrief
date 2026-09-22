@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from typing import TYPE_CHECKING
 
 from src.publication.article_claims import _quote_tokens_match, quote_words
@@ -13,6 +14,9 @@ _TRIVIAL_WORDS = frozenset({"да", "нет", "ок", "не", "хорошо", "�
 
 def build_article_quote_allowlist(
     context: ArticleEditorialContext,
+    *,
+    excluded_support_ids: Collection[str] = (),
+    candidate_text_by_support_id: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
     """Extract verifiable verbatim primary-source snippets eligible for direct quotation marks.
 
@@ -27,7 +31,10 @@ def build_article_quote_allowlist(
     allowlist: list[str] = []
     seen: set[str] = set()
 
+    excluded = set(excluded_support_ids)
     for sup in context.support_index:
+        if sup.support_id in excluded:
+            continue
         if sup.publication_use != "PUBLISH":
             continue
         if sup.evidence_kind == "resident_question":
@@ -35,6 +42,10 @@ def build_article_quote_allowlist(
         if sup.support_kind == "operational":
             continue
         cand = sup.text.strip()
+        if candidate_text_by_support_id is not None:
+            projected_text = candidate_text_by_support_id.get(sup.support_id, "")
+            if not cand or cand not in projected_text:
+                continue
         if not cand or len(cand) < 3:
             continue
         tokens = quote_words(cand)
