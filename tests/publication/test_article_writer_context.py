@@ -5,21 +5,35 @@ import datetime as dt
 import pytest
 
 from src.editorial_models import StoryCard
+from src.publication.article_composition import build_article_composition_plan
 from src.publication.article_context import (
     ArticleEditorialContext,
     ArticleSupport,
     PublicationWindow,
 )
-from src.publication.article_coverage import build_article_coverage_plan
+from src.publication.article_coverage import (
+    ArticleCoveragePlan,
+    ArticleStoryAssignment,
+    ArticleStoryCoverage,
+    ArticleThematicSection,
+    build_article_coverage_plan,
+)
 from src.publication.article_material import project_article_material
 from src.publication.article_quote_allowlist import build_article_quote_allowlist
 from src.publication.article_writer_context import (
     ARTICLE_WRITER_CONTEXT_MAX_CHARS,
     _render_article_story_packets,
+    _render_composition_plan,
     format_article_context_time,
     render_article_writer_context,
     render_article_writer_context_with_stats,
     sanitize_writer_source_text,
+)
+from src.publication.story_threads import (
+    StoryThread,
+    ThreadEditorialWeight,
+    TrajectoryKind,
+    build_longitudinal_coverage_plan,
 )
 
 
@@ -448,3 +462,225 @@ def test_render_article_writer_context_compacts_large_corpus_to_writer_budget():
     rendered = render_article_writer_context(ctx)
 
     assert len(rendered) <= 320_000
+
+
+def test_composition_plan_renders_each_member_owned_support_line():
+    now = dt.datetime(2026, 9, 22, 18, 2, tzinfo=dt.timezone.utc)
+    cards = (
+        StoryCard(id="story:water-a", topic="Вода на Садовой", summary="Вода", importance="medium"),
+        StoryCard(id="story:power", topic="Свет на Садовой", summary="Свет", importance="medium"),
+        StoryCard(id="story:water-b", topic="Вода на Морской", summary="Вода", importance="medium"),
+    )
+    supports = tuple(
+        ArticleSupport(
+            support_id=support_id,
+            text=text,
+            source_text=text,
+            support_kind="evidence",
+            publication_use="PUBLISH",
+            source_refs=(support_id,),
+            fragment_ids=(index,),
+            source_item_ids=(index,),
+            observed_at=now,
+            evidence_kind="community_report",
+            story_id=story_id,
+        )
+        for index, (story_id, support_id, text) in enumerate(
+            (
+                (
+                    "story:water-a",
+                    "story:water-a:evidence:0:frag:1",
+                    "На улице Садовой воду восстановили.",
+                ),
+                (
+                    "story:power",
+                    "story:power:evidence:0:frag:2",
+                    "На улице Садовой света нет.",
+                ),
+                (
+                    "story:water-b",
+                    "story:water-b:evidence:0:frag:3",
+                    "На улице Морской подача воды ограничена.",
+                ),
+            ),
+            start=1,
+        )
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=tuple(card.topic for card in cards),
+        support_index=supports,
+        support_by_id={support.support_id: support for support in supports},
+        recurring_topics=(),
+    )
+    plan = build_article_coverage_plan(cards, context)
+    composition = build_article_composition_plan(plan, context, project_article_material(context))
+
+    rendered_plan = _render_composition_plan(plan, composition, context=context)
+
+    assert "SUPPORTS: story:water-a:evidence:0:frag:1" in rendered_plan
+    assert "SUPPORTS: story:power:evidence:0:frag:2" in rendered_plan
+    assert "SUPPORTS: story:water-b:evidence:0:frag:3" in rendered_plan
+
+
+def test_interleaved_story_packets_repeat_bundle_context_for_each_member():
+    now = dt.datetime(2026, 9, 22, 18, 2, tzinfo=dt.timezone.utc)
+    cards = (
+        StoryCard(id="story:water-a", topic="Вода на Садовой", summary="Вода", importance="medium"),
+        StoryCard(id="story:power", topic="Свет на Садовой", summary="Свет", importance="medium"),
+        StoryCard(id="story:water-b", topic="Вода на Морской", summary="Вода", importance="medium"),
+    )
+    supports = tuple(
+        ArticleSupport(
+            support_id=f"{story_id}:evidence:0:frag:{index}",
+            text=text,
+            source_text=text,
+            support_kind="evidence",
+            publication_use="PUBLISH",
+            source_refs=(f"ref-{index}",),
+            fragment_ids=(index,),
+            source_item_ids=(index,),
+            observed_at=now,
+            evidence_kind="community_report",
+            story_id=story_id,
+        )
+        for index, (story_id, text) in enumerate(
+            (
+                ("story:water-a", "На улице Садовой воду восстановили."),
+                ("story:power", "На улице Садовой света нет."),
+                ("story:water-b", "На улице Морской подача воды ограничена."),
+            ),
+            start=1,
+        )
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=tuple(card.topic for card in cards),
+        support_index=supports,
+        support_by_id={support.support_id: support for support in supports},
+        recurring_topics=(),
+    )
+    coverages = tuple(
+        ArticleStoryCoverage(
+            story_id=card.id,
+            topic=card.topic,
+            rank=index,
+            prominence="BRIEF",
+            support_ids=(support.support_id,),
+        )
+        for index, (card, support) in enumerate(zip(cards, supports), start=1)
+    )
+    assignments = tuple(
+        ArticleStoryAssignment(
+            story_id=coverage.story_id,
+            section_id="infrastructure",
+            depth=coverage.prominence,
+            rank=coverage.rank,
+            primary_evidence_ids=coverage.support_ids,
+        )
+        for coverage in coverages
+    )
+    plan = ArticleCoveragePlan(
+        stories=coverages,
+        sections=(
+            ArticleThematicSection(
+                section_id="infrastructure",
+                title="Коммунальная обстановка",
+                lead_story_id=coverages[0].story_id,
+                story_assignments=assignments,
+                narrative_intent="Состояние городских сетей.",
+            ),
+        ),
+    )
+    composition = build_article_composition_plan(plan, context, project_article_material(context))
+
+    packets, _compact_packets, _stats = _render_article_story_packets(
+        context, plan, composition_plan=composition
+    )
+
+    packets_by_story = {
+        next(
+            line for line in packet.splitlines() if line.startswith("[ARTICLE STORY PACKET")
+        ): packet
+        for packet in packets
+    }
+    water_a = packets_by_story[
+        "[ARTICLE STORY PACKET story:water-a] depth=BRIEF topic=Вода на Садовой"
+    ]
+    power = packets_by_story["[ARTICLE STORY PACKET story:power] depth=BRIEF topic=Свет на Садовой"]
+    water_b = packets_by_story[
+        "[ARTICLE STORY PACKET story:water-b] depth=BRIEF topic=Вода на Морской"
+    ]
+
+    assert "members=story:water-a,story:water-b" in water_a
+    assert "members=story:water-a,story:water-b" in water_b
+    assert "members=story:water-a,story:water-b" not in power
+    assert "members=story:power" in power
+
+
+def test_longitudinal_pooled_supports_stay_with_their_own_story_packet():
+    now = dt.datetime(2026, 9, 22, 18, 2, tzinfo=dt.timezone.utc)
+    support_a = ArticleSupport(
+        support_id="story:water-a:evidence:0:frag:1",
+        text="На Садовой воду восстановили.",
+        source_text="На Садовой воду восстановили.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-a",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=now,
+        evidence_kind="community_report",
+        story_id="story:water-a",
+    )
+    support_b = ArticleSupport(
+        support_id="story:water-b:evidence:0:frag:2",
+        text="На Морской вода остаётся ограниченной.",
+        source_text="На Морской вода остаётся ограниченной.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-b",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=now,
+        evidence_kind="community_report",
+        story_id="story:water-b",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Вода на Садовой", "Вода на Морской"),
+        support_index=(support_a, support_b),
+        support_by_id={support_a.support_id: support_a, support_b.support_id: support_b},
+        recurring_topics=(),
+    )
+    thread = StoryThread(
+        id="thread:water",
+        title="Подача воды",
+        rubric="ЖКХ",
+        story_ids=("story:water-a", "story:water-b"),
+        trajectory=TrajectoryKind.ACUTE_PIVOTAL,
+        weight=ThreadEditorialWeight.WEAVE_THREAD,
+        support_ids=(support_a.support_id, support_b.support_id),
+    )
+    coverage_plan = build_longitudinal_coverage_plan((thread,))
+    composition = build_article_composition_plan(
+        coverage_plan, context, project_article_material(context)
+    )
+
+    packets, _compact_packets, _stats = _render_article_story_packets(
+        context, coverage_plan, composition_plan=composition
+    )
+    packets_by_story = {
+        next(
+            line for line in packet.splitlines() if line.startswith("[ARTICLE STORY PACKET")
+        ): packet
+        for packet in packets
+    }
+    packet_a = packets_by_story[
+        "[ARTICLE STORY PACKET story:water-a] depth=WEAVE topic=Подача воды"
+    ]
+    packet_b = packets_by_story[
+        "[ARTICLE STORY PACKET story:water-b] depth=WEAVE topic=Подача воды"
+    ]
+
+    assert support_a.support_id in packet_a
+    assert support_a.support_id not in packet_b
+    assert support_b.support_id in packet_b
+    assert support_b.support_id not in packet_a

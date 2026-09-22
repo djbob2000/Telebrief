@@ -258,11 +258,9 @@ def _render_composition_plan(
             for support_id in planned_ids:
                 support = context.support_by_id.get(support_id) if context is not None else None
                 owner = getattr(support, "story_id", "") if support is not None else ""
-            if not owner:
-                owner = _support_story_id(support_id)
-                if owner != story_id:
-                    continue
-                if support_id not in story_support_ids:
+                if not owner:
+                    owner = _support_story_id(support_id)
+                if owner == story_id and support_id not in story_support_ids:
                     story_support_ids.append(support_id)
             lines.append(f"- {item.prominence} {story_id}: {item.topic}")
             if story_support_ids:
@@ -310,7 +308,6 @@ def _render_article_story_packets(
     citable_support_count = 0
     suppressed = set(material_projection.suppressed_story_ids) if material_projection else set()
     bundle_by_story_id = composition_plan.bundle_by_story_id if composition_plan is not None else {}
-    emitted_bundle_ids: set[str] = set()
     for item in coverage_plan.stories:
         if item.story_id in suppressed:
             continue
@@ -318,9 +315,10 @@ def _render_article_story_packets(
         limit = _PACKET_SUPPORT_LIMIT.get(depth, 1)
         planned_ids = list(dict.fromkeys((*item.detail_support_ids, *item.support_ids)))
 
-        # Longitudinal plans may pool support IDs across a thread. Prefer the
-        # Story's own evidence first, then use pooled evidence only to fill
-        # the small packet budget.
+        # Longitudinal plans may pool support IDs across a thread. Resolve the
+        # pooled list back to the owning Story before materialization: every
+        # support remains available through the packet for its original Story,
+        # and is never attributed to a neighboring member of the thread.
         def belongs_to_story(support_id: str, story_id: str = item.story_id) -> bool:
             support = support_by_id.get(support_id)
             owner = getattr(support, "story_id", "") if support is not None else ""
@@ -358,16 +356,16 @@ def _render_article_story_packets(
         full_lines = []
         compact_lines = []
         bundle = bundle_by_story_id.get(item.story_id)
-        if bundle is not None and bundle.bundle_id not in emitted_bundle_ids:
+        if bundle is not None:
             bundle_header = (
                 f"[ARTICLE COMPOSITION BUNDLE {bundle.bundle_id}] "
                 f"section={bundle.section_id} theme={bundle.theme_key} "
+                f"members={','.join(bundle.story_ids)} "
                 f"lead={bundle.lead_story_id} lead_depth={bundle.prominence}; "
                 "member depths are shown on their Story packets"
             )
             full_lines.append(bundle_header)
             compact_lines.append(bundle_header)
-            emitted_bundle_ids.add(bundle.bundle_id)
         full_lines.append(header)
         compact_lines.append(header)
         for support in selected_supports:
