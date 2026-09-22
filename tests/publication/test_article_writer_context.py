@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime as dt
 
+import pytest
+
 from src.editorial_models import StoryCard
 from src.publication.article_context import (
     ArticleEditorialContext,
@@ -11,6 +13,8 @@ from src.publication.article_context import (
 from src.publication.article_coverage import build_article_coverage_plan
 from src.publication.article_writer_context import (
     ARTICLE_WRITER_CONTEXT_MAX_CHARS,
+    _render_article_story_packets,
+    format_article_context_time,
     render_article_writer_context,
     render_article_writer_context_with_stats,
     sanitize_writer_source_text,
@@ -33,6 +37,61 @@ def test_writer_source_sanitizer_does_not_strip_non_contact_numbers():
     sanitized = sanitize_writer_source_text(raw)
     assert "300" in sanitized
     assert "8" in sanitized
+
+
+def test_compact_packet_uses_edition_local_as_of_and_support_times():
+    snapshot = dt.datetime(2026, 9, 22, 18, 2, tzinfo=dt.timezone.utc)
+    observed = dt.datetime(2026, 9, 22, 17, 0, tzinfo=dt.timezone.utc)
+    support = ArticleSupport(
+        support_id="story:water:evidence:1:frag:7",
+        text="Жители сообщили об ограничении подачи воды.",
+        source_text="На улице Садовой подача воды ограничена.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-7",),
+        fragment_ids=(7,),
+        source_item_ids=(7,),
+        observed_at=observed,
+        effective_from=dt.datetime(2026, 9, 22, 18, 15, tzinfo=dt.timezone.utc),
+        effective_until=dt.datetime(2026, 9, 22, 19, 0, tzinfo=dt.timezone.utc),
+        temporal_role="FUTURE_SCHEDULED",
+        evidence_kind="service_access",
+        story_id="story:water",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Подача воды",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+        publication_window=PublicationWindow(
+            snapshot_at=snapshot,
+            lookback_start=snapshot - dt.timedelta(hours=24),
+        ),
+        edition_name="Test edition",
+        edition_timezone="Europe/Kyiv",
+    )
+    card = StoryCard(
+        id="story:water", topic="Подача воды", summary="Подача воды", importance="high"
+    )
+    plan = build_article_coverage_plan((card,), context)
+
+    rendered = render_article_writer_context(context, plan, include_coverage_plan=False)
+    full_packets, compact_packets, _stats = _render_article_story_packets(context, plan)
+
+    assert "PUBLICATION AS OF: 2026-09-22 21:02 (Europe/Kyiv)" in rendered
+    for packet in (*full_packets, *compact_packets):
+        assert "role=FUTURE_SCHEDULED" in packet
+        assert "observed_at=2026-09-22 20:00 (Europe/Kyiv)" in packet
+        assert "effective_from=2026-09-22 21:15 (Europe/Kyiv)" in packet
+        assert "effective_until=2026-09-22 22:00 (Europe/Kyiv)" in packet
+
+
+def test_format_article_context_time_rejects_invalid_timezone():
+    with pytest.raises(ValueError):
+        format_article_context_time(
+            dt.datetime(2026, 9, 22, 18, 2, tzinfo=dt.timezone.utc),
+            "Invalid/EditionZone",
+        )
 
 
 def test_render_article_writer_context_includes_plan_and_sanitizes_sources():

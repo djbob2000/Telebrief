@@ -201,6 +201,11 @@ async def test_event_editorial_adapter_exact_observation_provenance(conn, pool, 
     repo = PublicationRepository()
     policy_repo = PublicationPolicyRepository()
 
+    await conn.execute(
+        "UPDATE editions SET timezone = 'Europe/Kyiv' WHERE id = %s",
+        (edition.id,),
+    )
+
     elig = await policy_repo.get_or_create_eligibility_policy(
         conn,
         edition_id=edition.id,
@@ -377,6 +382,7 @@ async def test_event_editorial_adapter_exact_observation_provenance(conn, pool, 
     assert f"frag:{f2_id}" in obs2.source_refs[0]
     assert f"frag:{f1_id}" not in obs2.source_refs[0]
     assert editorial_input.analysis.article_context.edition_name == edition.name
+    assert editorial_input.analysis.article_context.edition_timezone == "Europe/Kyiv"
 
 
 @pytest.mark.postgres

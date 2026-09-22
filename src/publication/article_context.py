@@ -190,6 +190,7 @@ class ArticleEditorialContext:
     resident_observations: tuple[PublicationEvidence, ...] = ()
     publication_window: PublicationWindow | None = None
     edition_name: str = ""
+    edition_timezone: str = "UTC"
     edition_anchor_terms: tuple[str, ...] = ()
     story_cards: tuple[StoryCard, ...] = ()
     selection_by_story: dict[str, ArticleSelectionSignal] = field(default_factory=dict)
@@ -300,6 +301,7 @@ def build_article_editorial_context(
     lookback_hours: int | None = None,
     publication_window: PublicationWindow | None = None,
     edition_name: str = "",
+    edition_timezone: str = "UTC",
     selection_by_story: dict[str, ArticleSelectionSignal] | None = None,
 ) -> ArticleEditorialContext:
     """Build structured ArticleEditorialContext with unified ArticleSupport packets."""
@@ -482,6 +484,7 @@ def build_article_editorial_context(
         resident_observations=tuple(resident_obs),
         publication_window=pub_win,
         edition_name=edition_name,
+        edition_timezone=edition_timezone,
         edition_anchor_terms=_edition_anchor_terms(edition_name),
         story_cards=tuple(cards),
         selection_by_story=selection_by_story or {},

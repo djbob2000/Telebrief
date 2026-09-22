@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import datetime as dt
 import re
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.publication.article_context import (
     ArticleEditorialContext,
@@ -64,6 +66,20 @@ def sanitize_writer_source_text(text: str) -> str:
     out = _URL_RE.sub("[link omitted]", text)
     out = _PHONE_RE.sub("[contact omitted]", out)
     return out
+
+
+def format_article_context_time(value: dt.datetime | None, timezone_name: str) -> str | None:
+    """Format a stored UTC timestamp in the edition's local timezone."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=dt.timezone.utc)
+    try:
+        zone = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValueError(f"Invalid article context timezone: {timezone_name!r}") from exc
+    local_value = value.astimezone(zone)
+    return f"{local_value:%Y-%m-%d %H:%M} ({timezone_name})"
 
 
 def _compact_text(text: str, max_chars: int) -> str:
@@ -213,12 +229,23 @@ def _render_article_story_packets(
             full_fact = _compact_text(raw_fact, _PACKET_FACT_MAX_CHARS)
             compact_fact = _compact_text(raw_fact, _PACKET_COMPACT_FACT_MAX_CHARS)
             framing = _support_framing(support)
+            temporal_fields = [f"role={support.temporal_role}"]
+            for field_name, value in (
+                ("observed_at", support.observed_at),
+                ("effective_from", support.effective_from),
+                ("effective_until", support.effective_until),
+            ):
+                formatted = format_article_context_time(value, context.edition_timezone)
+                if formatted is not None:
+                    temporal_fields.append(f"{field_name}={formatted}")
+            temporal = " ".join(temporal_fields)
             full_lines.append(
                 f"  support={support.support_id} kind={support.evidence_kind} "
-                f"framing={framing} fact={full_fact}"
+                f"framing={framing} {temporal} fact={full_fact}"
             )
             compact_lines.append(
-                f"  support={support.support_id} kind={support.evidence_kind} fact={compact_fact}"
+                f"  support={support.support_id} kind={support.evidence_kind} "
+                f"{temporal} fact={compact_fact}"
             )
 
         if not selected_supports:
@@ -284,6 +311,12 @@ def render_article_writer_context_with_stats(
         blocks.append(
             f"REPORT WINDOW: {context.publication_window.lookback_start.isoformat()} .. {context.publication_window.snapshot_at.isoformat()}"
         )
+        publication_as_of = format_article_context_time(
+            context.publication_window.snapshot_at,
+            context.edition_timezone,
+        )
+        if publication_as_of is not None:
+            blocks.append(f"PUBLICATION AS OF: {publication_as_of}")
         lookback_hours = int(
             (
                 context.publication_window.snapshot_at - context.publication_window.lookback_start

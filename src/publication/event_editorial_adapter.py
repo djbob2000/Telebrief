@@ -537,7 +537,7 @@ class EventEditorialAdapter:
             edition_name = ""
             cur = await conn.execute(
                 """
-                SELECT e.name
+                SELECT e.name, e.timezone
                 FROM publication_runs pr
                 JOIN editions e ON e.id = pr.edition_id
                 WHERE pr.id = %s
@@ -545,8 +545,11 @@ class EventEditorialAdapter:
                 (run.id,),
             )
             ed_row = await cur.fetchone()
+            edition_timezone = "UTC"
             if ed_row and ed_row[0]:
                 edition_name = str(ed_row[0])
+            if ed_row and ed_row[1]:
+                edition_timezone = str(ed_row[1])
 
             article_ctx = build_article_editorial_context(
                 cards=story_cards,
@@ -556,6 +559,7 @@ class EventEditorialAdapter:
                 snapshot_at=run.snapshot_at,
                 lookback_hours=lookback_hours,
                 edition_name=edition_name,
+                edition_timezone=edition_timezone,
                 selection_by_story=sel_signals,
             )
 

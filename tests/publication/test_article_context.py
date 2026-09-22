@@ -195,6 +195,17 @@ def test_build_article_editorial_context_preserves_evidence_and_timeline():
     assert "Порыв трубы d=500мм на АКЗ" in prompt_str
 
 
+def test_build_article_editorial_context_stores_edition_timezone():
+    context = build_article_editorial_context(
+        cards=(),
+        evidence_items=(),
+        edition_name="Test edition",
+        edition_timezone="Europe/Kyiv",
+    )
+
+    assert context.edition_timezone == "Europe/Kyiv"
+
+
 def test_build_article_editorial_context_epistemic_propagation():
     now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
     evi = PublicationEvidence(
