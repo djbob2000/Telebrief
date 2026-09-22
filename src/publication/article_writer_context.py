@@ -16,10 +16,12 @@ from src.publication.article_context import (
 from src.publication.article_coverage import ArticleCoveragePlan
 
 if TYPE_CHECKING:
+    from src.publication.article_composition import ArticleCompositionPlan
     from src.publication.article_material import ArticleMaterialProjection
 
 _PHONE_RE = re.compile(r"(?:\+?\d[\d\s()\-–—]{8,}\d)")
 _URL_RE = re.compile(r"https?://\S+|\bwww\.\S+|\bt\.me/\S+", re.IGNORECASE)
+_SUPPORT_STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 
 # Keep the writer request compact enough that the model has room for a
 # coherent article response.  The complete ArticleEditorialContext remains
@@ -42,6 +44,7 @@ class ArticleWriterMaterializationStats:
     story_packet_count: int
     packets_with_citable_support: int
     citable_support_count: int
+    bundle_count: int = 0
 
     def to_prompt_block(self) -> str:
         return "\n".join(
@@ -49,6 +52,7 @@ class ArticleWriterMaterializationStats:
                 "ARTICLE MATERIAL INVENTORY",
                 f"coverage stories: {self.coverage_story_count}",
                 f"story packets: {self.story_packet_count}",
+                f"composition bundles: {self.bundle_count}",
                 f"packets with citable support: {self.packets_with_citable_support}",
                 f"citable support entries: {self.citable_support_count}",
             )
@@ -58,6 +62,7 @@ class ArticleWriterMaterializationStats:
         return {
             "coverage_story_count": self.coverage_story_count,
             "story_packet_count": self.story_packet_count,
+            "bundle_count": self.bundle_count,
             "packets_with_citable_support": self.packets_with_citable_support,
             "citable_support_count": self.citable_support_count,
         }
@@ -93,6 +98,11 @@ def _compact_text(text: str, max_chars: int) -> str:
     if max_chars <= 3:
         return cleaned[:max_chars]
     return cleaned[: max_chars - 3].rstrip() + "..."
+
+
+def _support_story_id(support_id: str) -> str:
+    match = _SUPPORT_STORY_ID_RE.search(support_id)
+    return match.group(0) if match else ""
 
 
 def _extract_story_microdetails(
@@ -212,10 +222,74 @@ def _render_coverage_plan(
     return "\n".join(lines)
 
 
+def _render_composition_plan(
+    plan: ArticleCoveragePlan,
+    composition_plan: ArticleCompositionPlan,
+    *,
+    context: ArticleEditorialContext | None = None,
+    material_projection: ArticleMaterialProjection | None = None,
+) -> str:
+    """Render bundle intent while keeping each member's support line distinct."""
+    lines = ["ARTICLE COMPOSITION PLAN"]
+    plan_by_id = plan.by_story_id
+    section_by_id = plan.by_section_id
+    suppressed = set(composition_plan.suppressed_story_ids)
+    current_section_id = ""
+    for bundle in composition_plan.bundles:
+        section = section_by_id.get(bundle.section_id)
+        if bundle.section_id != current_section_id:
+            current_section_id = bundle.section_id
+            if section is not None:
+                lines.append(f"\nSECTION: {section.title}")
+                lines.append(f"NARRATIVE INTENT: {section.narrative_intent}")
+        lines.append(
+            f"\nBUNDLE {bundle.bundle_id}: theme={bundle.theme_key} "
+            f"lead={bundle.lead_story_id} lead_depth={bundle.prominence}; "
+            "member depths are shown below"
+        )
+        for story_id in bundle.story_ids:
+            if story_id in suppressed:
+                continue
+            item = plan_by_id.get(story_id)
+            if item is None:
+                continue
+            planned_ids = tuple(dict.fromkeys((*item.detail_support_ids, *item.support_ids)))
+            story_support_ids: list[str] = []
+            for support_id in planned_ids:
+                support = context.support_by_id.get(support_id) if context is not None else None
+                owner = getattr(support, "story_id", "") if support is not None else ""
+            if not owner:
+                owner = _support_story_id(support_id)
+                if owner != story_id:
+                    continue
+                if support_id not in story_support_ids:
+                    story_support_ids.append(support_id)
+            lines.append(f"- {item.prominence} {story_id}: {item.topic}")
+            if story_support_ids:
+                lines.append(f"  SUPPORTS: {', '.join(story_support_ids)}")
+                detail_ids = tuple(
+                    support_id
+                    for support_id in item.detail_support_ids
+                    if support_id in story_support_ids
+                )
+                if detail_ids:
+                    lines.append(f"  DETAIL SUPPORTS: {', '.join(detail_ids)}")
+                micro_details = _extract_story_microdetails(
+                    story_id,
+                    detail_ids or tuple(story_support_ids[:2]),
+                    context,
+                    material_projection,
+                )
+                if micro_details:
+                    lines.append(f"  MICRODETAILS: {' | '.join(micro_details)}")
+    return "\n".join(lines)
+
+
 def _render_article_story_packets(
     context: ArticleEditorialContext,
     coverage_plan: ArticleCoveragePlan,
     material_projection: ArticleMaterialProjection | None = None,
+    composition_plan: ArticleCompositionPlan | None = None,
 ) -> tuple[list[str], list[str], ArticleWriterMaterializationStats]:
     """Materialize the zero-loss coverage plan into bounded writer packets.
 
@@ -235,6 +309,8 @@ def _render_article_story_packets(
     packets_with_citable_support = 0
     citable_support_count = 0
     suppressed = set(material_projection.suppressed_story_ids) if material_projection else set()
+    bundle_by_story_id = composition_plan.bundle_by_story_id if composition_plan is not None else {}
+    emitted_bundle_ids: set[str] = set()
     for item in coverage_plan.stories:
         if item.story_id in suppressed:
             continue
@@ -245,25 +321,32 @@ def _render_article_story_packets(
         # Longitudinal plans may pool support IDs across a thread. Prefer the
         # Story's own evidence first, then use pooled evidence only to fill
         # the small packet budget.
+        def belongs_to_story(support_id: str, story_id: str = item.story_id) -> bool:
+            support = support_by_id.get(support_id)
+            owner = getattr(support, "story_id", "") if support is not None else ""
+            if not owner:
+                owner = _support_story_id(support_id)
+            return owner == story_id
+
         own_ids = [
             support.support_id
             for support in supports_by_story.get(item.story_id, ())
-            if support.support_id in planned_ids
+            if support.support_id in planned_ids and belongs_to_story(support.support_id)
         ]
-        selected_ids = list(dict.fromkeys((*own_ids, *planned_ids)))[:limit]
-        selected_supports = [
-            support_by_id[sid]
-            for sid in selected_ids
-            if sid in support_by_id
-            and (
-                material_projection is None
-                or material_projection.actions_by_support_id.get(sid) != "SUPPRESS_PROMOTION_ONLY"
-            )
-            and (
-                material_projection is None
-                or material_projection.text_by_support_id.get(sid, "").strip()
-            )
+        eligible_planned_ids = [
+            support_id for support_id in planned_ids if belongs_to_story(support_id)
         ]
+        selected_ids = list(dict.fromkeys((*own_ids, *eligible_planned_ids)))
+        if material_projection is not None:
+            selected_ids = [
+                support_id
+                for support_id in selected_ids
+                if material_projection.actions_by_support_id.get(support_id)
+                != "SUPPRESS_PROMOTION_ONLY"
+                and material_projection.text_by_support_id.get(support_id, "").strip()
+            ]
+        selected_ids = selected_ids[:limit]
+        selected_supports = [support_by_id[sid] for sid in selected_ids if sid in support_by_id]
         if selected_supports:
             packets_with_citable_support += 1
             citable_support_count += len(selected_supports)
@@ -272,8 +355,21 @@ def _render_article_story_packets(
             f"[ARTICLE STORY PACKET {item.story_id}] depth={depth} "
             f"topic={_compact_text(item.topic, 180)}"
         )
-        full_lines = [header]
-        compact_lines = [header]
+        full_lines = []
+        compact_lines = []
+        bundle = bundle_by_story_id.get(item.story_id)
+        if bundle is not None and bundle.bundle_id not in emitted_bundle_ids:
+            bundle_header = (
+                f"[ARTICLE COMPOSITION BUNDLE {bundle.bundle_id}] "
+                f"section={bundle.section_id} theme={bundle.theme_key} "
+                f"lead={bundle.lead_story_id} lead_depth={bundle.prominence}; "
+                "member depths are shown on their Story packets"
+            )
+            full_lines.append(bundle_header)
+            compact_lines.append(bundle_header)
+            emitted_bundle_ids.add(bundle.bundle_id)
+        full_lines.append(header)
+        compact_lines.append(header)
         for support in selected_supports:
             raw_fact = (
                 material_projection.text_by_support_id.get(support.support_id, "")
@@ -317,6 +413,7 @@ def _render_article_story_packets(
             story_packet_count=len(packets),
             packets_with_citable_support=packets_with_citable_support,
             citable_support_count=citable_support_count,
+            bundle_count=(len(composition_plan.bundles) if composition_plan is not None else 0),
         ),
     )
 
@@ -338,7 +435,15 @@ def _fit_story_packets(
         # Headers are the last-resort materialization. This keeps the full
         # coverage map in the prompt while deterministic validation retains
         # the complete evidence index outside the prompt.
-        headers = [packet.split("\n", 1)[0] for packet in compact_packets]
+        headers = []
+        for packet in compact_packets:
+            retained = [
+                line
+                for line in packet.splitlines()
+                if line.startswith("[ARTICLE COMPOSITION BUNDLE ")
+                or line.startswith("[ARTICLE STORY PACKET ")
+            ]
+            headers.append("\n".join(retained) or packet.split("\n", 1)[0])
         body = join_if_fits(headers)
     if body is None:
         raise ValueError("article story packet headers exceed writer context budget")
@@ -351,6 +456,7 @@ def render_article_writer_context_with_stats(
     *,
     include_coverage_plan: bool = True,
     material_projection: ArticleMaterialProjection | None = None,
+    composition_plan: ArticleCompositionPlan | None = None,
 ) -> tuple[str, ArticleWriterMaterializationStats | None]:
     """Render writer context and return the materialization stats used to build it."""
     blocks: list[str] = []
@@ -388,7 +494,14 @@ def render_article_writer_context_with_stats(
 
     if coverage_plan is not None and include_coverage_plan:
         blocks.append(
-            _render_coverage_plan(
+            _render_composition_plan(
+                coverage_plan,
+                composition_plan,
+                context=context,
+                material_projection=material_projection,
+            )
+            if composition_plan is not None
+            else _render_coverage_plan(
                 coverage_plan, context=context, material_projection=material_projection
             )
         )
@@ -438,7 +551,7 @@ def render_article_writer_context_with_stats(
 
         prefix = "\n\n".join(blocks).strip()
         packet_blocks, compact_packet_blocks, stats = _render_article_story_packets(
-            context, coverage_plan, material_projection
+            context, coverage_plan, material_projection, composition_plan
         )
         plan_story_ids = {item.story_id for item in coverage_plan.stories}
         suppressed_count = (
@@ -595,6 +708,7 @@ def render_article_writer_context(
     *,
     include_coverage_plan: bool = True,
     material_projection: ArticleMaterialProjection | None = None,
+    composition_plan: ArticleCompositionPlan | None = None,
 ) -> str:
     """Render coverage-aware and sanitized support context for single-call writer."""
     rendered, _stats = render_article_writer_context_with_stats(
@@ -602,5 +716,6 @@ def render_article_writer_context(
         coverage_plan,
         include_coverage_plan=include_coverage_plan,
         material_projection=material_projection,
+        composition_plan=composition_plan,
     )
     return rendered

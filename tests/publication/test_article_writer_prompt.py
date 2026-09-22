@@ -134,6 +134,16 @@ def test_article_writer_prompt_forbids_brief_topic_dumping():
     assert "вплетаться в связный абзац" in prompt.lower() or "bullet-like" in prompt.lower()
 
 
+def test_article_writer_prompt_uses_adaptive_bundle_depth_without_fixed_quotas():
+    generator = ArticleGenerator.__new__(ArticleGenerator)
+    generator.output_language = "Russian"
+    prompt = generator._build_event_article_system_prompt()
+
+    assert "СТРУКТУРА ГЛАВЫ (АДАПТИВНАЯ)" in prompt
+    assert "2–3 развёрнутых абзаца" not in prompt
+    assert "2–4 связных предложения" not in prompt
+
+
 def test_article_writer_prompt_forbids_meta_reporting():
     generator = ArticleGenerator.__new__(ArticleGenerator)
     generator.output_language = "Russian"

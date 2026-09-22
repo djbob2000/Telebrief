@@ -37,7 +37,7 @@ def test_article_narrative_contract_invariants():
     assert "phone numbers" in contract_lower
     assert "quotation dumps" in contract_lower
     assert "chat rolls" in contract_lower
-    assert ARTICLE_NARRATIVE_PROMPT_VERSION == "event-article-narrative-v6"
+    assert ARTICLE_NARRATIVE_PROMPT_VERSION == "event-article-narrative-v7"
 
 
 def test_digest_narrative_contract_invariants():

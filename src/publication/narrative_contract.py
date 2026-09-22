@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v6"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v7"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v5"
 
 
@@ -40,7 +40,7 @@ def build_article_narrative_contract(
 - Support items and Claim Atoms are reporting and validation metadata, not sentence templates.
 - Title and Lead must cite active PUBLISH support IDs with CURRENT_WINDOW temporal role from the main lead/DEVELOP storylines.
 - A single natural paragraph may combine several independently supported claims when they form one coherent narrative thought.
-- Group 2–5 related supports into a cohesive narrative section under an intuitive thematic heading.
+- Group related supports into a cohesive narrative section under an intuitive thematic heading.
 - Section headings are thematic titles and do not require claim atoms unless they contain concrete numbers, dates, or prices.
 - Do not mechanically generate one sentence per support. Synthesize related observations into natural, flowing prose.
 
@@ -50,7 +50,7 @@ def build_article_narrative_contract(
 - Prominence controls depth, not inclusion.
 - DEVELOP stories deserve substantial narrative depth when evidence exists.
 - WEAVE stories should be integrated into related sections with compact but concrete treatment.
-- BRIEF stories should usually receive at least one factual sentence and may be grouped into a natural city-life section.
+- BRIEF stories should receive compact factual treatment and may be grouped into a natural city-life section.
 - Do not omit a legitimate PUBLISH Story merely because it is smaller than the main themes.
 - Do not give all Stories equal space.
 

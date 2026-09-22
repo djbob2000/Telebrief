@@ -39,6 +39,7 @@ from src.editorial_fallback import (
 from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, EditorialWriter
+from src.publication.article_composition import build_article_composition_plan
 from src.publication.article_context import ArticleEditorialContext
 from src.publication.article_coverage_diagnostics import (
     ArticleCoverageDiagnostics,
@@ -1078,11 +1079,11 @@ class ArticleGenerator:
 1. ОБЪЁМ И ГЛУБИНА:
    - Статья должна представлять собой обстоятельное вечернее чтение городской хроники. Используйте диапазон объёма из переданного профиля длины; не добавляйте абзацы ради достижения нижней границы, если материал этого не поддерживает.
    - Категорически запрещен телеграфный стиль, сухое конспектирование или превращение статьи в короткую выжимку из 3 пунктов. Городская жизнь многогранна, и читатель хочет видеть полную картину дня.
-2. СТРУКТУРА ГЛАВЫ (2–3 РАЗВЁРНУТЫХ АБЗАЦА НА ТЕМАТИЧЕСКИЙ РАЗДЕЛ):
-   Каждая тематическая глава должна разворачиваться как полноценное журналистское повествование из 2–3 содержательных абзацев:
-   • Первый абзац: ядро событий, точная география (улицы, микрорайоны, районы города), хронология и проверенные факты.
-   • Второй абзац: практические последствия для повседневной жизни горожан, быт, коммунальная обстановка, влияние на работу транспорта, связи или учреждений.
-   • Третий абзац: адаптация жителей, взаимопомощь, действия коммунальных служб, официальные комментарии и остающиеся нерешенными вопросы / неопределенности.
+2. СТРУКТУРА ГЛАВЫ (АДАПТИВНАЯ):
+   Каждая тематическая глава должна разворачиваться как полноценное журналистское повествование с формой и глубиной, которые диктует материал:
+   • Начните с ядра событий, точной географии (улицы, микрорайоны, районы города), хронологии и проверенных фактов.
+   • Затем покажите практические последствия для повседневной жизни горожан, быт, коммунальную обстановку, влияние на работу транспорта, связи или учреждений, если это поддержано материалом.
+   • Завершайте линию адаптацией жителей, взаимопомощью, действиями коммунальных служб, официальными комментариями и остающимися нерешенными вопросами, когда такие сведения есть.
 3. ВЫРАЗИТЕЛЬНЫЕ ЖУРНАЛИСТСКИЕ ЗАГОЛОВКИ РАЗДЕЛОВ (heading):
    Заголовки глав (`sections[].heading`) должны быть живыми, сюжетными и информативными газетными подзаголовками, отражающими суть происходящего в городе (например: «Кратковременные включения и скачки напряжения: обстановка в микрорайонах», «Перебои со связью и локальные решения: как горожане остаются на связи», «Городская хроника, транспорт и социальные службы»). Категорически запрещено использовать скучные однословные метки («Связь», «ЖКХ», «Транспорт»).
 4. СТРУКТУРА И ПЛАН ПОКРЫТИЯ (ARTICLE COVERAGE PLAN):
@@ -1237,11 +1238,17 @@ class ArticleGenerator:
                 )
 
         material_projection = project_article_material(article_ctx)
+        composition_plan = build_article_composition_plan(
+            coverage_plan,
+            article_ctx,
+            material_projection,
+        )
         context_str, materialization_stats = render_article_writer_context_with_stats(
             article_ctx,
             coverage_plan,
             include_coverage_plan=False,
             material_projection=material_projection,
+            composition_plan=composition_plan,
         )
         materialization_metadata = (
             materialization_stats.to_metadata() if materialization_stats is not None else None
@@ -1250,125 +1257,57 @@ class ArticleGenerator:
             length_profile=length_profile,
             is_longitudinal=is_longitudinal,
         )
-        dev_stories_lines = []
         plan_sections_lines = []
-        if coverage_plan and getattr(coverage_plan, "sections", None):
-            for sec in coverage_plan.sections:
-                # Keep the complete plan for deterministic coverage diagnostics, but do not
-                # turn the writer prompt into a 100-item checklist.  Develop stories and a
-                # small number of weave stories remain explicit; the rest stay available in
-                # the evidence context and are summarized as a compact group.
-                story_items = []
-                explicit_assignments = [
-                    assign
-                    for assign in sec.story_assignments
-                    if assign.depth == "DEVELOP"
-                    and assign.story_id not in material_projection.suppressed_story_ids
-                ]
-                explicit_assignments.extend(
-                    assign
-                    for assign in sec.story_assignments
-                    if assign.depth == "WEAVE"
-                    and assign.story_id not in material_projection.suppressed_story_ids
-                )
-                explicit_assignments = explicit_assignments[:12]
-                explicit_ids = {assign.story_id for assign in explicit_assignments}
-                grouped_assignments = [
-                    assign
-                    for assign in sec.story_assignments
-                    if assign.story_id not in explicit_ids
-                    and assign.story_id not in material_projection.suppressed_story_ids
-                ]
-
-                for assign in explicit_assignments:
-                    s = coverage_plan.by_story_id.get(assign.story_id)
-                    topic = s.topic if s else assign.story_id
-                    sup_snippet = ""
-                    if article_ctx and s and s.support_ids:
-                        sup_obj = getattr(article_ctx, "support_by_id", {}).get(s.support_ids[0])
-                        projected = (
-                            material_projection.text_by_support_id.get(s.support_ids[0], "")
-                            if sup_obj
-                            else ""
-                        )
-                        if projected:
-                            sup_snippet = f" — {projected[:100]}"
-                    story_items.append(
-                        f"     • [{assign.depth}] [{assign.story_id}] {topic[:180]}{sup_snippet}"
+        if coverage_plan and composition_plan.bundles:
+            current_section_id = ""
+            for bundle in composition_plan.bundles:
+                section = coverage_plan.by_section_id.get(bundle.section_id)
+                if bundle.section_id != current_section_id:
+                    current_section_id = bundle.section_id
+                    section_title = section.title if section is not None else "Городская жизнь"
+                    section_intent = section.narrative_intent if section is not None else ""
+                    plan_sections_lines.append(f"   Глава «{section_title}» ({section_intent}):")
+                member_lines = []
+                for story_id in bundle.story_ids:
+                    story = coverage_plan.by_story_id.get(story_id)
+                    if story is None:
+                        continue
+                    planned_support_ids = tuple(
+                        dict.fromkeys((*story.detail_support_ids, *story.support_ids))
                     )
-                if grouped_assignments:
-                    grouped_topics = []
-                    for assign in grouped_assignments:
-                        s = coverage_plan.by_story_id.get(assign.story_id)
-                        if s and s.topic:
-                            grouped_topics.append(s.topic[:100])
-                    grouped_label = ", ".join(grouped_topics[:12])
-                    if len(grouped_topics) > 12:
-                        grouped_label += f" и ещё {len(grouped_topics) - 12}"
-                    story_items.append(
-                        "     • [BRIEF/WEAVE GROUP] "
-                        f"{len(grouped_assignments)} небольших сюжетов: {grouped_label}. "
-                        "Выбирайте конкретные факты из материалов выше и органично вплетайте их, "
-                        "не превращая текст в перечень."
+                    own_support_ids = []
+                    for support_id in planned_support_ids:
+                        support = article_ctx.support_by_id.get(support_id)
+                        owner = getattr(support, "story_id", "") if support is not None else ""
+                        if not owner:
+                            owner_match = re.search(r"story:(?:[^:]+|\d+)", support_id)
+                            owner = owner_match.group(0) if owner_match else ""
+                        if owner == story_id:
+                            own_support_ids.append(support_id)
+                    support_text = ""
+                    if own_support_ids:
+                        support_text = "; supports: " + ", ".join(own_support_ids[:3])
+                    member_lines.append(
+                        f"     • [{story.prominence}] [{story_id}] {story.topic[:180]}{support_text}"
                     )
                 plan_sections_lines.append(
-                    f"   Глава «{sec.title}» ({sec.narrative_intent}):\n" + "\n".join(story_items)
+                    f"      BUNDLE {bundle.bundle_id} ({bundle.theme_key}; lead={bundle.lead_story_id}; "
+                    f"lead_depth={bundle.prominence}; member depths follow):\n"
+                    + "\n".join(member_lines)
                 )
-        elif coverage_plan and getattr(coverage_plan, "stories", None):
-            from src.publication.article_recovery import (
-                _THEME_DEFAULT_HEADINGS,
-                _resolve_story_theme,
-            )
 
-            stories_by_theme: dict[str, list[Any]] = {}
-            for s in coverage_plan.stories:
-                th = _resolve_story_theme(s, article_ctx, coverage_plan)
-                stories_by_theme.setdefault(th, []).append(s)
-
-            for theme_key, theme_stories in stories_by_theme.items():
-                theme_heading = _THEME_DEFAULT_HEADINGS.get(theme_key, "Городская жизнь")
-                story_items = []
-                for s in theme_stories:
-                    if s.story_id not in material_projection.suppressed_story_ids:
-                        story_items.append(f"     • [{s.prominence}] [{s.story_id}] {s.topic}")
-                if story_items:
-                    plan_sections_lines.append(
-                        f"   Глава «{theme_heading}»:\n" + "\n".join(story_items)
-                    )
-
-        if coverage_plan and getattr(coverage_plan, "stories", None):
-            for s in coverage_plan.stories:
-                if (
-                    s.prominence == "DEVELOP"
-                    and s.story_id not in material_projection.suppressed_story_ids
-                ):
-                    sup_details = []
-                    for sid in s.support_ids[:3]:
-                        sup_obj = getattr(article_ctx, "support_by_id", {}).get(sid)
-                        t = (
-                            material_projection.text_by_support_id.get(sid, "") if sup_obj else ""
-                        ) or sid
-                        sup_details.append(f"{t}")
-                    dev_stories_lines.append(
-                        f"   ★ [{s.story_id}] {s.topic}\n"
-                        f"     Ключевые факты для приоритетного раскрытия:\n"
-                        f"     - " + "\n     - ".join(sup_details)
-                    )
-        dev_instruction = ""
-        if dev_stories_lines:
-            dev_instruction = (
-                "\n════════════════════════════════════════\n"
-                "ГЛАВНЫЕ СЮЖЕТЫ (DEVELOP / LEAD):\n"
-                "В первую очередь раскройте эти сюжеты в лиде или отдельных абзацах, сохраняя конкретные детали.\n"
-                + "\n".join(dev_stories_lines)
-                + "\n════════════════════════════════════════\n\n"
-            )
+        dev_instruction = (
+            "Используйте проминентность bundle и его member Story IDs как редакционную иерархию: "
+            "DEVELOP получает больше пространства, WEAVE вплетается в движение темы, BRIEF остаётся "
+            "коротким, но конкретным.\n"
+        )
         plan_instruction = ""
         if plan_sections_lines:
             plan_instruction = (
                 "СТРУКТУРА СТАТЬИ ПО ГЛАВАМ:\n"
                 "Сформируйте содержательные главы по основным разделам ниже. "
-                "В каждой главе напишите 2–3 развёрнутых, связных абзаца, синтезируя подходящие темы в плавное журналистское повествование с естественными связками между предложениями:\n"
+                "Внутри каждого bundle синтезируйте близкие Story в плавное журналистское повествование, "
+                "сохраняя отдельные доказательные линии и естественные связки между абзацами:\n"
                 + "\n\n".join(plan_sections_lines)
                 + "\n════════════════════════════════════════\n\n"
             )
@@ -1382,13 +1321,12 @@ class ArticleGenerator:
             f"{plan_instruction}"
             "ТРЕБОВАНИЯ К ПОКРЫТИЮ И СТРУКТУРЕ:\n"
             "1. ПРИОРИТЕТЫ ПОКРЫТИЯ: Стремитесь органично охватить сюжеты из плана выше (DEVELOP, WEAVE и BRIEF), но сохраняйте цельность повествования и редакционную иерархию.\n"
-            "   - DEVELOP: ключевые сюжеты дня, раскрываются подробно (1-2 богатых абзаца со всеми деталями).\n"
-            "   - WEAVE: важные городские темы, органично вплетаются в повествование главы (1-2 абзаца).\n"
+            "   - DEVELOP: ключевые сюжеты дня, получают больше пространства и конкретных деталей.\n"
+            "   - WEAVE: важные городские темы органично вплетаются в повествование главы.\n"
             "   - BRIEF: краткие городские факты, упоминаются конкретными деталями внутри подходящих глав. Синтезируйте однородные факты вместе в плавные предложения (НЕ создавайте изолированные однострочные абзацы-выжимки!).\n"
             "2. ФОРМАТ MARKDOWN: первая строка — заголовок, затем лид, затем главы с заголовками `##`. Каждый абзац отделяйте пустой строкой. Не добавляйте технических идентификаторов.\n"
             "3. ЛИТЕРАТУРНАЯ СВЯЗНОСТЬ И ЗАПРЕТ НА ОДНОСТРОЧНЫЕ ОБРЫВКИ: Для каждой содержательной главы из плана создайте отдельный section с выразительным сюжетным подзаголовком (`heading`).\n"
-            "   - Для крупных тем пишите 2–3 развёрнутых абзаца, для компактных тем — один полноценный абзац; не создавайте пустые главы ради формального покрытия.\n"
-            "   - КАЖДЫЙ абзац ОБЯЗАТЕЛЬНО должен состоять минимум из 2–4 связных предложений! КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ абзацы из одного предложения или телеграфные выжимки.\n"
+            "   - Число и форма абзацев определяются материалом: связывайте факты переходами, не создавайте пустые главы ради формального покрытия и не оставляйте тему телеграфной выжимкой.\n"
             "   - Используйте естественные журналистские связки и мостики между предложениями («В то же время...», «Впрочем, по сообщениям жителей...», «При этом...», «Параллельно с этим...»).\n"
             "   - В каждой теме объединяйте близкие подтверждённые сообщения и практические последствия в единый связный рассказ. Не добавляйте детали, которых нет в материалах, и не делайте выводов о причинах или завершении событий без прямой опоры на источник.\n"
             "4. ЯЗЫК И ГРАМОТНОСТЬ: Пишите на грамотном русском литературном языке стандартной кириллицей. Не допускайте орфографических ошибок, опечаток, случайных пробелов внутри слов или разорванных окончаний слов. Соблюдайте правила орфографии и пунктуации.\n"
@@ -1413,6 +1351,7 @@ class ArticleGenerator:
         if materialization_metadata is not None:
             writer_input_metadata["materialization"] = materialization_metadata
         writer_input_metadata["material_projection"] = material_projection.to_metadata()
+        writer_input_metadata["composition"] = composition_plan.to_metadata()
 
         from src.publication.article_finalization import ArticleFinalizer
 

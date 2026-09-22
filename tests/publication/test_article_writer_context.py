@@ -370,6 +370,7 @@ def test_render_article_writer_context_with_stats_returns_materialization_counts
     assert stats.to_metadata() == {
         "coverage_story_count": 1,
         "story_packet_count": 1,
+        "bundle_count": 0,
         "packets_with_citable_support": 1,
         "citable_support_count": 1,
     }
