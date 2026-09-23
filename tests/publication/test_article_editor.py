@@ -660,6 +660,56 @@ def test_editor_context_includes_neighbors_without_their_support_ids(
 
 
 @pytest.mark.unit
+def test_roster_quality_prompt_includes_all_attached_supports(
+    sample_context: ArticleEditorialContext,
+    sample_draft: StructuredArticleDraft,
+) -> None:
+    """Roster repairs must see every attached place/state before rewriting the paragraph."""
+    base_support = sample_context.supports[0]
+    extra_supports = tuple(
+        replace(
+            base_support,
+            support_id=f"story:roster-{index}:evidence:0:frag:{index}",
+            text=f"На улице {index} вечером нет света.",
+            source_text=f"На улице {index} вечером нет света.",
+            fragment_ids=(index,),
+            source_item_ids=(index,),
+            story_id=f"story:roster-{index}",
+        )
+        for index in range(1, 7)
+    )
+    context = replace(
+        sample_context,
+        support_index=extra_supports,
+        support_by_id={support.support_id: support for support in extra_supports},
+    )
+    support_ids = tuple(support.support_id for support in extra_supports)
+    paragraph = ArticleParagraph(
+        text=" ".join(support.text for support in extra_supports),
+        cited_support_ids=support_ids,
+    )
+    draft = replace(
+        sample_draft,
+        sections=(replace(sample_draft.sections[0], paragraphs=(paragraph,)),),
+    )
+    finding = ArticleReaderQualityFinding(
+        code="OVERLOADED_ROSTER_PARAGRAPH",
+        unit_id="P001",
+        message="Сгруппируйте адреса и сохраните различия.",
+        support_ids=support_ids,
+        severity="blocking",
+    )
+
+    editor = ArticleEditor(AsyncMock(), "test-model")
+    units = editor._build_unit_contexts(draft, {"P001": [finding]}, context)
+    prompt = editor._build_user_prompt(units)
+
+    assert "На улице 6 вечером нет света." in prompt
+    assert "используя все подтверждающие факты ниже" in prompt
+    assert "не придумывайте контраст" in prompt
+
+
+@pytest.mark.unit
 def test_heading_editor_context_includes_comparison_headings_without_new_targets(
     sample_context: ArticleEditorialContext,
     sample_draft: StructuredArticleDraft,

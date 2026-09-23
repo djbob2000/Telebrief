@@ -604,7 +604,15 @@ class ArticleEditor:
 
             if supports:
                 blocks.append("\nПодтверждающие факты (источники):")
-                for s_text in supports[:5]:
+                # A roster repair needs the complete evidence set.  The old
+                # five-line budget hid later places/states from the editor,
+                # which made it impossible to produce a faithful localized
+                # contrast when the finding carried more than five supports.
+                has_roster_finding = any(
+                    getattr(issue, "code", "") == "OVERLOADED_ROSTER_PARAGRAPH" for issue in issues
+                )
+                support_lines = supports if has_roster_finding else supports[:5]
+                for s_text in support_lines:
                     blocks.append(f"  - {s_text}")
 
                 # Check topical overlap using stemming
@@ -644,9 +652,12 @@ class ArticleEditor:
     def _quality_repair_instruction(code: str) -> str:
         instructions = {
             "OVERLOADED_ROSTER_PARAGRAPH": (
-                " -> Сгруппируйте сообщения в локальные сравнения или временную последовательность. "
-                "Сохраните важные поддержанные исключения и конкретные различия, уберите только "
-                "повторный перечень; не переносите детали между местами и не добавляйте причины."
+                " -> Перепишите весь целевой абзац, используя все подтверждающие факты ниже. "
+                "Объединяйте наблюдения только в поддержанное локальное сравнение или временную "
+                "последовательность; если такой связи в источниках нет, используйте нейтральную "
+                "связку и сохраните факты раздельно. Сохраните важные поддержанные исключения и "
+                "конкретные различия, уберите только повторный перечень; не придумывайте контраст, "
+                "хронологию, причины или детали и не переносите состояние между местами."
             ),
             "CROSS_SECTION_REPETITION": (
                 " -> Оставьте повторяющееся утверждение в части, где оно лучше всего подтверждено; "
