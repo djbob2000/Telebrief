@@ -42,6 +42,10 @@ _SERVICE_HEADINGS = {
     "internet": "Связь и интернет",
     "transport": "Транспорт",
 }
+_PRACTICAL_BRIDGE_PATTERN = re.compile(
+    r"\b(?:поэтому|так\s+что|из-за\s+чего|в\s+результате\s+чего|"
+    r"привело\s+к\s+тому,\s+что|для\s+того,\s+чтобы|чтобы)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,17 @@ class _NarrativeLineDraft:
     narrative_intent: str
     prominence: ArticleProminence
     group_ids: list[str]
+
+
+@dataclass(frozen=True)
+class _StoryRelationFeatures:
+    """Relation inputs resolved once per Story for composition comparisons."""
+
+    service: str | None
+    state: str | None
+    places: frozenset[str]
+    intervals: tuple[tuple[dt.datetime | None, dt.datetime | None], ...]
+    practical_service_pairs: frozenset[frozenset[str]]
 
 
 @dataclass(frozen=True)
@@ -292,6 +307,62 @@ def _effective_intervals(
     return tuple(intervals)
 
 
+def _practical_service_pairs(
+    story: ArticleStoryCoverage, context: ArticleEditorialContext
+) -> frozenset[frozenset[str]]:
+    """Index service pairs explicitly linked across a connective in one support."""
+    pairs: set[frozenset[str]] = set()
+    for support_id in story.support_ids:
+        support = context.support_by_id.get(support_id)
+        if support is None:
+            continue
+        for source_text in (support.text, support.source_text):
+            for sentence in re.split(r"(?<=[.!?])\s+", source_text.casefold()):
+                for connective in _PRACTICAL_BRIDGE_PATTERN.finditer(sentence):
+                    before = sentence[: connective.start()]
+                    after = sentence[connective.end() :]
+                    before_services = {
+                        service
+                        for service, markers in _SERVICE_MARKERS
+                        if any(marker in before for marker in markers)
+                    }
+                    after_services = {
+                        service
+                        for service, markers in _SERVICE_MARKERS
+                        if any(marker in after for marker in markers)
+                    }
+                    pairs.update(
+                        frozenset((left, right))
+                        for left in before_services
+                        for right in after_services
+                        if left != right
+                    )
+    return frozenset(pairs)
+
+
+def _relation_features(
+    story: ArticleStoryCoverage,
+    context: ArticleEditorialContext,
+    resolver: CityContextResolver | None,
+) -> _StoryRelationFeatures:
+    service = _service_key(story, context)
+    if not service:
+        return _StoryRelationFeatures(
+            service=None,
+            state=None,
+            places=frozenset(),
+            intervals=(),
+            practical_service_pairs=frozenset(),
+        )
+    return _StoryRelationFeatures(
+        service=service,
+        state=_state_key(story, context),
+        places=frozenset(_place_keys(story, context, resolver)),
+        intervals=_effective_intervals(story, context),
+        practical_service_pairs=_practical_service_pairs(story, context),
+    )
+
+
 def _strictly_ordered_non_overlapping(
     left: tuple[tuple[dt.datetime | None, dt.datetime | None], ...],
     right: tuple[tuple[dt.datetime | None, dt.datetime | None], ...],
@@ -365,40 +436,54 @@ def _relation(
     context: ArticleEditorialContext,
     resolver: CityContextResolver | None,
 ) -> CompositionRelation:
-    left_service = _service_key(left, context)
-    right_service = _service_key(right, context)
-    left_state = _state_key(left, context)
-    right_state = _state_key(right, context)
+    return _relation_from_features(
+        _relation_features(left, context, resolver),
+        _relation_features(right, context, resolver),
+    )
+
+
+def _relation_from_features(
+    left: _StoryRelationFeatures,
+    right: _StoryRelationFeatures,
+) -> CompositionRelation:
+    left_service = left.service
+    right_service = right.service
+    left_state = left.state
+    right_state = right.state
     if not left_service or not right_service:
         return "independent"
 
-    left_places = _place_keys(left, context, resolver)
-    right_places = _place_keys(right, context, resolver)
+    left_places = left.places
+    right_places = right.places
     same_service = left_service == right_service
-    same_place = bool(left_places and right_places and set(left_places) == set(right_places))
+    same_place = bool(left_places and right_places and left_places == right_places)
     if (
         same_service
         and left_state
         and right_state
         and left_places
         and right_places
-        and set(left_places).isdisjoint(right_places)
+        and left_places.isdisjoint(right_places)
         and left_state != right_state
     ):
         return "localized_contrast"
 
-    left_intervals = _effective_intervals(left, context)
-    right_intervals = _effective_intervals(right, context)
     if (
         same_service
         and same_place
         and left_state
         and right_state
         and left_state != right_state
-        and _strictly_ordered_non_overlapping(left_intervals, right_intervals)
+        and _strictly_ordered_non_overlapping(left.intervals, right.intervals)
     ):
         return "temporal_progression"
-    if _explicit_practical_consequence(left, right, context, resolver):
+    if (
+        left_places
+        and right_places
+        and same_place
+        and frozenset((left_service, right_service))
+        in left.practical_service_pairs | right.practical_service_pairs
+    ):
         return "practical_consequence"
     if same_service and same_place and left_state and left_state == right_state:
         return "shared_condition"
@@ -425,14 +510,28 @@ def build_article_composition_plan(
     )
     visible = [story for story in coverage_plan.stories if story.story_id not in suppressed_set]
     resolver = _place_resolver(context)
+    relation_features = {
+        story.story_id: _relation_features(story, context, resolver) for story in visible
+    }
+    relation_cache: dict[tuple[str, str], CompositionRelation] = {}
+
+    def relation_for_pair(
+        left: ArticleStoryCoverage, right: ArticleStoryCoverage
+    ) -> CompositionRelation:
+        pair_key = (min(left.story_id, right.story_id), max(left.story_id, right.story_id))
+        cached = relation_cache.get(pair_key)
+        if cached is None:
+            cached = _relation_from_features(
+                relation_features[left.story_id], relation_features[right.story_id]
+            )
+            relation_cache[pair_key] = cached
+        return cached
 
     grouped: list[tuple[list[ArticleStoryCoverage], ArticleCompositionRelation]] = []
     for story in visible:
         placed = False
         for group_index, (members, current_relation) in enumerate(grouped):
-            candidate_relations = {
-                _relation(story, member, context, resolver) for member in members
-            }
+            candidate_relations = {relation_for_pair(story, member) for member in members}
             if len(candidate_relations) == 1 and "independent" not in candidate_relations:
                 relation = next(iter(candidate_relations))
                 if current_relation in {"independent", relation}:
@@ -465,7 +564,7 @@ def build_article_composition_plan(
     for group_index, (stories, _) in enumerate(grouped, start=1):
         ordered = sorted(stories, key=lambda item: (item.rank, item.story_id))
         relations = {
-            _relation(left, right, context, resolver)
+            relation_for_pair(left, right)
             for index, left in enumerate(ordered)
             for right in ordered[index + 1 :]
         }
@@ -483,7 +582,7 @@ def build_article_composition_plan(
             )
             for story in ordered
         )
-        service = _service_key(ordered[0], context) or "independent"
+        service = relation_features[ordered[0].story_id].service or "independent"
         lead = ordered[0]
         group_id = f"group:{group_index}:{group_relation}:{service}"
         prominence = max(

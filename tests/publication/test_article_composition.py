@@ -5,6 +5,7 @@ import datetime as dt
 import pytest
 
 import src.publication.article_writer_context as writer_context
+from src.city_context import CityContextResolver
 from src.editorial_models import StoryCard
 from src.publication.article_composition import build_article_composition_plan
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
@@ -152,6 +153,46 @@ def test_composition_bundle_groups_related_reports_without_merging_local_evidenc
     assert "остаётся ограниченной" in rendered
     assert "story:water-a" in rendered
     assert "story:water-b" in rendered
+
+
+def test_composition_resolves_each_story_place_once_for_all_pair_comparisons(monkeypatch):
+    cards = tuple(
+        StoryCard(
+            id=f"story:water-{index}",
+            topic="Водоснабжение на Садовой",
+            summary="Воды нет",
+            importance="medium",
+        )
+        for index in range(3)
+    )
+    supports = tuple(
+        _support(
+            card.id,
+            f"{card.id}:evidence:0:frag:{index}",
+            "На улице Садовая воды нет.",
+        )
+        for index, card in enumerate(cards, start=1)
+    )
+    context = _context(cards, supports, edition_slug="berdyansk")
+    plan = _manual_plan(cards, supports)
+    projection = project_article_material(context)
+
+    original_resolve = CityContextResolver.resolve
+    resolve_count = 0
+
+    def counted_resolve(resolver, text):
+        nonlocal resolve_count
+        resolve_count += 1
+        return original_resolve(resolver, text)
+
+    monkeypatch.setattr(CityContextResolver, "resolve", counted_resolve)
+
+    composition = build_article_composition_plan(plan, context, projection)
+
+    assert resolve_count == len(supports)
+    assert set(composition.group_by_story_id) == set(plan.story_ids)
+    assert len(composition.groups) == 1
+    assert composition.groups[0].relation == "shared_condition"
 
 
 def test_composition_separates_same_place_different_service_domains():
