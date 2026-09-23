@@ -657,7 +657,63 @@ def test_render_article_writer_context_compacts_large_corpus_to_writer_budget():
 
     rendered = render_article_writer_context(ctx)
 
-    assert len(rendered) <= 320_000
+    assert len(rendered) <= ARTICLE_WRITER_CONTEXT_MAX_CHARS
+
+
+def test_render_article_writer_context_keeps_all_374_selected_stories():
+    story_count = 374
+    supports = tuple(
+        ArticleSupport(
+            support_id=f"story:city-life-{index}:evidence:0:frag:{index}",
+            text=(
+                f"Сюжет {index}: жители сообщили о местном событии и его последствиях. "
+                "Подробности сохраняют место, обстоятельства и последствия. " * 5
+            ),
+            source_text=f"Первичное сообщение для сюжета {index}.",
+            support_kind="evidence",
+            publication_use="PUBLISH",
+            source_refs=(f"ref-{index}",),
+            fragment_ids=(index,),
+            source_item_ids=(index,),
+            observed_at=None,
+            evidence_kind="community_report",
+            story_id=f"story:city-life-{index}",
+        )
+        for index in range(story_count)
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=(),
+        support_index=supports,
+        support_by_id={support.support_id: support for support in supports},
+        recurring_topics=(),
+        edition_name="Бердянск",
+    )
+    plan = ArticleCoveragePlan(
+        stories=tuple(
+            ArticleStoryCoverage(
+                story_id=support.story_id,
+                topic=f"Городская жизнь, сюжет {index}",
+                rank=index + 1,
+                prominence="BRIEF",
+                support_ids=(support.support_id,),
+                detail_support_ids=(support.support_id,),
+            )
+            for index, support in enumerate(supports)
+        )
+    )
+
+    rendered, stats = render_article_writer_context_with_stats(context, plan)
+
+    assert stats is not None
+    assert stats.coverage_story_count == story_count
+    assert stats.story_packet_count == story_count
+    assert len(rendered) > 120_000
+    assert len(rendered) <= ARTICLE_WRITER_CONTEXT_MAX_CHARS
+    assert all(f"story:city-life-{index}" in rendered for index in range(story_count))
+    assert all(
+        f"story:city-life-{index}:evidence:0:frag:{index}" in rendered
+        for index in range(story_count)
+    )
 
 
 def test_composition_roadmap_and_story_packets_do_not_repeat_the_inventory():
