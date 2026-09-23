@@ -22,11 +22,15 @@ _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
 @pytest.mark.unit
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("adapter_options", "expected_anchor_queries"),
-    [({"include_anchor_publications": False}, 0), ({}, 1)],
+    ("adapter_options", "expected_anchor_queries", "source_timezone", "expected_timezone"),
+    [
+        ({"include_anchor_publications": False}, 0, "Europe/Kyiv", "Europe/Kyiv"),
+        ({}, 1, "Europe/Zaporozhye", "Europe/Kyiv"),
+        ({}, 1, "Europe/Kiev", "Europe/Kyiv"),
+    ],
 )
 async def test_longitudinal_adapter_anchor_lookup_is_opt_out_for_frozen_replay(
-    adapter_options, expected_anchor_queries
+    adapter_options, expected_anchor_queries, source_timezone, expected_timezone
 ):
     payload = {
         "headline": "На улице временно перекрыли движение",
@@ -54,7 +58,7 @@ async def test_longitudinal_adapter_anchor_lookup_is_opt_out_for_frozen_replay(
             if "FROM source_fragments f" in query:
                 return Cursor(rows=[])
             if "SELECT e.name, e.timezone, e.slug" in query:
-                return Cursor(row=("Berdyansk", "Europe/Kyiv", "berdyansk"))
+                return Cursor(row=("Berdyansk", source_timezone, "berdyansk"))
             raise AssertionError(f"unexpected query: {query}")
 
     class Repository:
@@ -99,6 +103,7 @@ async def test_longitudinal_adapter_anchor_lookup_is_opt_out_for_frozen_replay(
         story.story_id for story in editorial.analysis.article_context.coverage_plan.stories
     ] == ["story:42"]
     assert [card.id for card in editorial.analysis.cards] == ["story:42"]
+    assert editorial.analysis.article_context.edition_timezone == expected_timezone
 
 
 @pytest.mark.postgres

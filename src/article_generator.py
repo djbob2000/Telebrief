@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import logging
@@ -62,6 +63,7 @@ from src.publication.article_validator import (
     validate_article_draft,
 )
 from src.publication.narrative_contract import build_article_narrative_contract
+from src.timezones import get_timezone, normalize_timezone_name
 
 
 class UnsafeDraftError(RuntimeError):
@@ -108,6 +110,20 @@ RUN_DEBUG_ARTIFACTS = (
     "fact_check_failure.json",
     "final_article.md",
 )
+
+
+def _article_as_of_metadata(snapshot_at: dt.datetime, timezone_name: str) -> dict[str, str]:
+    """Build article timestamp metadata in the edition's canonical local zone."""
+    canonical_timezone = normalize_timezone_name(timezone_name)
+    edition_zone = get_timezone(canonical_timezone)
+    utc_zone = ZoneInfo("UTC")
+    if snapshot_at.tzinfo is None:
+        snapshot_at = snapshot_at.replace(tzinfo=utc_zone)
+    return {
+        "as_of": snapshot_at.astimezone(edition_zone).isoformat(),
+        "as_of_utc": snapshot_at.astimezone(utc_zone).isoformat(),
+        "edition_timezone": canonical_timezone,
+    }
 
 
 def _ground_draft_in_coverage_plan(
@@ -1349,16 +1365,12 @@ class ArticleGenerator:
             ).hexdigest(),
         }
         if article_ctx.publication_window is not None:
-            snapshot_at = article_ctx.publication_window.snapshot_at
-            try:
-                edition_zone = ZoneInfo(article_ctx.edition_timezone or "UTC")
-            except Exception:
-                edition_zone = ZoneInfo("UTC")
-            if snapshot_at.tzinfo is None:
-                snapshot_at = snapshot_at.replace(tzinfo=ZoneInfo("UTC"))
-            writer_input_metadata["as_of"] = snapshot_at.astimezone(edition_zone).isoformat()
-            writer_input_metadata["as_of_utc"] = snapshot_at.astimezone(ZoneInfo("UTC")).isoformat()
-            writer_input_metadata["edition_timezone"] = article_ctx.edition_timezone
+            writer_input_metadata.update(
+                _article_as_of_metadata(
+                    article_ctx.publication_window.snapshot_at,
+                    article_ctx.edition_timezone,
+                )
+            )
         if materialization_metadata is not None:
             writer_input_metadata["materialization"] = materialization_metadata
         writer_input_metadata["material_projection"] = material_projection.to_metadata()

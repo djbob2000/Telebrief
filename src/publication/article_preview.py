@@ -7,7 +7,6 @@ import logging
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.article_generator import ArticleGenerator
 from src.config_loader import Config
@@ -15,6 +14,7 @@ from src.publication.event_editorial_adapter import EventEditorialAdapter
 from src.publication.policies import ARTICLE_PUBLICATION_TYPES
 from src.publication.repository import PublicationRepository
 from src.runtime import get_runtime
+from src.timezones import get_timezone, normalize_timezone_name
 
 logger = logging.getLogger(__name__)
 
@@ -233,8 +233,9 @@ async def build_article_preview_from_run(
         if not timezone_name:
             raise ValueError(f"publication run {run_id} edition is missing timezone")
         try:
-            ZoneInfo(timezone_name)
-        except (ZoneInfoNotFoundError, ValueError) as exc:
+            timezone_name = normalize_timezone_name(timezone_name)
+            get_timezone(timezone_name)
+        except ValueError as exc:
             raise ValueError(
                 f"publication run {run_id} edition has invalid timezone {timezone_name!r}"
             ) from exc

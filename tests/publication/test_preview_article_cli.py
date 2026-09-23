@@ -198,7 +198,17 @@ async def test_default_cli_keeps_berdyansk_24_hour_new_snapshot_preview(monkeypa
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_explicit_date_uses_selected_edition_timezone(monkeypatch, capsys):
+@pytest.mark.parametrize(
+    ("stored_timezone", "expected_timezone"),
+    [
+        ("Europe/Kyiv", "Europe/Kyiv"),
+        ("Europe/Zaporozhye", "Europe/Kyiv"),
+        ("Europe/Kiev", "Europe/Kyiv"),
+    ],
+)
+async def test_explicit_date_uses_selected_edition_timezone(
+    monkeypatch, capsys, stored_timezone, expected_timezone
+):
     calls = []
 
     class Connection:
@@ -208,7 +218,7 @@ async def test_explicit_date_uses_selected_edition_timezone(monkeypatch, capsys)
             return SimpleNamespace(fetchone=self.fetchone)
 
         async def fetchone(self):
-            return ("Europe/Kyiv",)
+            return (stored_timezone,)
 
     class UnitOfWork:
         @asynccontextmanager
@@ -242,7 +252,7 @@ async def test_explicit_date_uses_selected_edition_timezone(monkeypatch, capsys)
     await preview_article.main()
 
     snapshot_at = calls[0]["snapshot_at"]
-    assert snapshot_at.tzinfo == ZoneInfo("Europe/Kyiv")
+    assert snapshot_at.tzinfo == ZoneInfo(expected_timezone)
     assert snapshot_at.astimezone(dt.timezone.utc) == dt.datetime(
         2026, 9, 23, 17, 0, tzinfo=dt.timezone.utc
     )

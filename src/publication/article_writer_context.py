@@ -6,7 +6,6 @@ from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from src.publication.article_context import (
     ArticleEditorialContext,
@@ -14,6 +13,7 @@ from src.publication.article_context import (
     _support_framing,
 )
 from src.publication.article_coverage import ArticleCoveragePlan
+from src.timezones import get_timezone, normalize_timezone_name
 
 if TYPE_CHECKING:
     from src.publication.article_composition import ArticleCompositionPlan
@@ -98,8 +98,9 @@ def format_article_context_time(value: dt.datetime | None, timezone_name: str) -
     if value.tzinfo is None:
         value = value.replace(tzinfo=dt.timezone.utc)
     try:
-        zone = ZoneInfo(timezone_name)
-    except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+        timezone_name = normalize_timezone_name(timezone_name)
+        zone = get_timezone(timezone_name)
+    except ValueError as exc:
         raise ValueError(f"Invalid article context timezone: {timezone_name!r}") from exc
     local_value = value.astimezone(zone)
     return f"{local_value:%Y-%m-%d %H:%M} ({timezone_name})"
@@ -485,8 +486,8 @@ def render_article_writer_context_with_stats(
     # Validate even when this particular context has no timestamps. Article metadata
     # and all future packet times must use the configured edition timezone.
     try:
-        ZoneInfo(context.edition_timezone)
-    except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+        get_timezone(context.edition_timezone)
+    except ValueError as exc:
         raise ValueError(f"Invalid article context timezone: {context.edition_timezone!r}") from exc
     blocks: list[str] = []
     if context.edition_name:

@@ -223,6 +223,20 @@ def test_format_article_context_time_rejects_invalid_timezone():
         )
 
 
+@pytest.mark.parametrize("legacy_timezone", ["Europe/Zaporozhye", "Europe/Kiev"])
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        dt.datetime(2026, 1, 15, 12, 0, tzinfo=dt.timezone.utc),
+        dt.datetime(2026, 7, 15, 12, 0, tzinfo=dt.timezone.utc),
+    ],
+)
+def test_legacy_edition_timezone_formats_with_kyiv_rules(legacy_timezone, timestamp):
+    assert format_article_context_time(timestamp, legacy_timezone) == format_article_context_time(
+        timestamp, "Europe/Kyiv"
+    )
+
+
 def test_render_article_writer_context_includes_plan_and_sanitizes_sources():
     now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
     raw_source = "Рейсы в Бердянск. Телефон +79901112233"

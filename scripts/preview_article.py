@@ -18,7 +18,6 @@ import datetime as dt
 import json
 import sys
 from pathlib import Path
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -27,6 +26,7 @@ from src.config_loader import load_config
 from src.publication.article_preview import build_article_preview_from_run
 from src.publication.facade import build_publication_preview
 from src.runtime import install_runtime
+from src.timezones import get_timezone, normalize_timezone_name
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -77,7 +77,15 @@ def _snapshot_at(date_value: str | None, timezone: str) -> dt.datetime | None:
     if date_value is None:
         return None
     parsed = dt.date.fromisoformat(date_value)
-    return dt.datetime(parsed.year, parsed.month, parsed.day, 20, 0, tzinfo=ZoneInfo(timezone))
+    canonical_timezone = normalize_timezone_name(timezone)
+    return dt.datetime(
+        parsed.year,
+        parsed.month,
+        parsed.day,
+        20,
+        0,
+        tzinfo=get_timezone(canonical_timezone),
+    )
 
 
 async def main() -> None:
@@ -151,10 +159,10 @@ async def _load_edition_timezone(infra: object, edition_slug: str) -> str:
         row = await cursor.fetchone()
     if row is None or not row[0]:
         raise ValueError(f"edition {edition_slug!r} has no configured timezone")
-    timezone_name = str(row[0]).strip()
+    timezone_name = normalize_timezone_name(str(row[0]).strip())
     try:
-        ZoneInfo(timezone_name)
-    except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+        get_timezone(timezone_name)
+    except ValueError as exc:
         raise ValueError(
             f"edition {edition_slug!r} has invalid timezone {timezone_name!r}"
         ) from exc

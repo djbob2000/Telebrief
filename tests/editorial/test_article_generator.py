@@ -10,7 +10,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.article_generator import ArticleGenerator, UnsafeDraftError, _build_writer_attempt_metadata
+from src.article_generator import (
+    ArticleGenerator,
+    UnsafeDraftError,
+    _article_as_of_metadata,
+    _build_writer_attempt_metadata,
+)
 from src.collector import Message
 from src.config_loader import Config, Settings
 from src.editorial_analysis import ContextSizeRejectedError, EditorialAnalysisError
@@ -137,6 +142,38 @@ def test_writer_attempt_metadata_keeps_materialization_and_actual_provider_detai
     assert metadata["prompt_chars"] == 100123
     assert metadata["provider_slot"] == "openrouter-secondary"
     assert metadata["actual_model"] == "z-ai/glm-5.3-flash"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("timezone_name", "timestamp", "expected_as_of"),
+    [
+        (
+            "Europe/Zaporozhye",
+            datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc),
+            "2026-01-15T14:00:00+02:00",
+        ),
+        (
+            "Europe/Kiev",
+            datetime(2026, 7, 15, 12, 0, tzinfo=timezone.utc),
+            "2026-07-15T15:00:00+03:00",
+        ),
+    ],
+)
+def test_article_as_of_metadata_uses_canonical_legacy_timezone(
+    timezone_name, timestamp, expected_as_of
+):
+    metadata = _article_as_of_metadata(timestamp, timezone_name)
+
+    assert metadata["as_of"] == expected_as_of
+    assert metadata["as_of_utc"] == timestamp.isoformat()
+    assert metadata["edition_timezone"] == "Europe/Kyiv"
+
+
+@pytest.mark.unit
+def test_article_as_of_metadata_rejects_unknown_timezone():
+    with pytest.raises(ValueError, match="Invalid timezone"):
+        _article_as_of_metadata(datetime(2026, 1, 15, 12, 0, tzinfo=timezone.utc), "No/Such_Zone")
 
 
 _SIMPLE_DRAFT = json.dumps(

@@ -27,6 +27,7 @@ from src.publication.editorial_adapter import FrozenEditorialInput
 from src.publication.models import PublicationInput
 from src.publication.policies import ARTICLE_PUBLICATION_TYPES
 from src.publication.repository import PublicationRepository
+from src.timezones import normalize_timezone_name
 
 logger = logging.getLogger(__name__)
 
@@ -557,7 +558,7 @@ class EventEditorialAdapter:
             if ed_row and ed_row[0]:
                 edition_name = str(ed_row[0])
             if ed_row and ed_row[1]:
-                edition_timezone = str(ed_row[1])
+                edition_timezone = normalize_timezone_name(str(ed_row[1]))
             if ed_row and len(ed_row) > 2 and ed_row[2]:
                 edition_slug = str(ed_row[2])
 

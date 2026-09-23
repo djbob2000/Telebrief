@@ -11,7 +11,10 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.publication import article_preview
+from src.publication.article_context import ArticleEditorialContext
+from src.publication.editorial_adapter import FrozenEditorialInput
 
 _SNAPSHOT = dt.datetime(2026, 9, 23, 18, 0, tzinfo=dt.timezone.utc)
 
@@ -72,8 +75,20 @@ def _setup_preview(monkeypatch, *, publication_type="daily_article", inputs=None
             repo_calls.append(("load_sealed_inputs", used_conn, run_id))
             return sealed_inputs
 
-    frozen = SimpleNamespace(
-        analysis=SimpleNamespace(article_context=None),
+    frozen = FrozenEditorialInput(
+        analysis=EditorialAnalysis(
+            cards=[],
+            article_context=ArticleEditorialContext(
+                headline_candidates=(),
+                support_index=(),
+                support_by_id={},
+                recurring_topics=(),
+                edition_timezone=(conn.edition_row[1] if conn.edition_row else "Europe/Kyiv"),
+            ),
+        ),
+        writer_bundle=PreparedBundle(
+            records={}, prompt_text="", total_messages=0, candidate_count=0
+        ),
         edition_slug="test-edition",
         run_id=189,
     )
@@ -199,6 +214,21 @@ async def test_longitudinal_frozen_replay_passes_only_sealed_inputs_without_anch
 
     assert preview.publication_type == publication_type
     assert adapter_calls == [(_conn, 189, sealed_inputs, False)]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_frozen_run_replay_normalizes_legacy_edition_timezone(monkeypatch):
+    _run, _inputs, _conn, _uow, _repo_calls, _adapter_calls, generator_calls = _setup_preview(
+        monkeypatch,
+        edition_row=("test-edition", "Europe/Zaporozhye"),
+    )
+
+    preview = await article_preview.build_article_preview_from_run(189, config=_preview_config())
+
+    frozen = generator_calls[0][0]
+    assert frozen.analysis.article_context.edition_timezone == "Europe/Kyiv"
+    assert preview.diagnostics["edition_timezone"] == "Europe/Kyiv"
 
 
 @pytest.mark.unit
