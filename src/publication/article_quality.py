@@ -1071,56 +1071,74 @@ def diagnose_article_quality(
                 )
             p_idx += 1
 
-    # A packed roster is a paragraph-level shape, not a length or address
-    # quota.  Require several independently supported Story observations,
-    # distinct places and service states; leave a supported contrast or
-    # progression alone.
+    # A packed roster is a sentence/claim-level shape, not a paragraph-wide
+    # length or address quota.  A paragraph may weave several small place-based
+    # reports together without making any one sentence a roster.
     p_idx = 1
     for section in draft.sections:
         for paragraph in section.paragraphs:
-            paragraph_support_ids = _citable_support_ids(
-                (
-                    *_support_ids_for_unit(paragraph),
-                    *(sid for claim in paragraph.claims for sid in claim.cited_support_ids),
-                ),
-                context,
-                material_projection,
-            )
-            paragraph_story_ids = _claim_story_ids(paragraph_support_ids, context)
-            source_observations: list[tuple[str, str, str, ArticleSupport]] = []
-            seen_observations: set[tuple[str, str, str, str]] = set()
-            relevant_support_ids: list[str] = []
-            for support_id in paragraph_support_ids:
-                support = context.support_by_id[support_id]
-                source_text = " ".join((support.text, support.source_text)).strip()
-                service, place = _service_and_place(source_text, place_resolver)
-                state = _state_polarity(source_text)
-                if not service or not state:
-                    continue
-                source_places = (
-                    {place} if place else _extract_place_keys(source_text, place_resolver)
-                )
-                if not source_places:
-                    continue
-                for source_place in source_places:
-                    observation_key = (
-                        service,
-                        source_place,
-                        state,
-                        support.support_id,
+            if paragraph.claims:
+                sentence_supports = (
+                    (
+                        sentence,
+                        _citable_support_ids(
+                            claim.cited_support_ids
+                            if claim.cited_support_ids
+                            else _support_ids_for_unit(paragraph),
+                            context,
+                            material_projection,
+                        ),
                     )
-                    if observation_key not in seen_observations:
-                        seen_observations.add(observation_key)
-                        source_observations.append((service, source_place, state, support))
-                relevant_support_ids.append(support_id)
-            paragraph_places = _extract_place_keys(paragraph.text, place_resolver)
-            if (
-                len(paragraph_story_ids) >= 3
-                and len(paragraph_support_ids) >= 4
-                and len(paragraph_places) >= 4
-                and len(source_observations) >= 4
-                and not _has_narrative_relation(paragraph.text, source_observations, place_resolver)
-            ):
+                    for claim in paragraph.claims
+                    for sentence in _split_sentences_safe(claim.text)
+                )
+            else:
+                paragraph_support_ids = _citable_support_ids(
+                    _support_ids_for_unit(paragraph),
+                    context,
+                    material_projection,
+                )
+                sentence_supports = (
+                    (sentence, paragraph_support_ids)
+                    for sentence in _split_sentences_safe(paragraph.text)
+                )
+
+            overloaded_support_ids: list[str] = []
+            for sentence, sentence_support_ids in sentence_supports:
+                if not sentence_support_ids:
+                    continue
+                source_observations: list[tuple[str, str, str, ArticleSupport]] = []
+                seen_observations: set[tuple[str, str, str, str]] = set()
+                for support_id in sentence_support_ids:
+                    support = context.support_by_id[support_id]
+                    source_text = " ".join((support.text, support.source_text)).strip()
+                    service, place = _service_and_place(source_text, place_resolver)
+                    state = _state_polarity(source_text)
+                    if not service or not state:
+                        continue
+                    source_places = (
+                        {place} if place else _extract_place_keys(source_text, place_resolver)
+                    )
+                    for source_place in source_places:
+                        observation_key = (
+                            service,
+                            source_place,
+                            state,
+                            support.support_id,
+                        )
+                        if observation_key not in seen_observations:
+                            seen_observations.add(observation_key)
+                            source_observations.append((service, source_place, state, support))
+
+                sentence_places = _extract_place_keys(sentence, place_resolver)
+                if (
+                    len(sentence_places) >= 4
+                    and len(source_observations) >= 4
+                    and not _has_narrative_relation(sentence, source_observations, place_resolver)
+                ):
+                    overloaded_support_ids.extend(sentence_support_ids)
+
+            if overloaded_support_ids:
                 findings.append(
                     ArticleReaderQualityFinding(
                         code="OVERLOADED_ROSTER_PARAGRAPH",
@@ -1129,7 +1147,7 @@ def diagnose_article_quality(
                             "В одном абзаце собран перечень разных адресов и состояний без "
                             "связующего сравнения; сгруппируйте наблюдения и сохраните важные различия."
                         ),
-                        support_ids=tuple(dict.fromkeys(relevant_support_ids)),
+                        support_ids=tuple(dict.fromkeys(overloaded_support_ids)),
                         severity="blocking",
                     )
                 )

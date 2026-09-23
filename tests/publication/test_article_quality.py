@@ -743,6 +743,11 @@ def _packed_roster_case():
     return draft, plan, context
 
 
+def _replace_packed_roster_text(paragraph: ArticleParagraph, text: str) -> ArticleParagraph:
+    claim = replace(paragraph.claims[0], text=text)
+    return replace(paragraph, text=text, claims=(claim,))
+
+
 def test_quality_report_flags_one_supported_overloaded_roster_paragraph():
     draft, plan, context = _packed_roster_case()
 
@@ -755,12 +760,56 @@ def test_quality_report_flags_one_supported_overloaded_roster_paragraph():
     assert findings[0].severity == "blocking"
 
 
+def test_quality_report_does_not_combine_separate_small_claims_into_a_roster():
+    draft, plan, context = _packed_roster_case()
+    paragraph = draft.sections[0].paragraphs[0]
+    support_ids = paragraph.cited_support_ids
+    first_claim_text = "На улице Садовой и на улице Морской вечером нет света."
+    second_claim_text = "На проспекте Труда и на улице Центральной вечером нет света."
+    first_claim = ArticleClaimAtom(
+        text=first_claim_text,
+        cited_support_ids=support_ids[:2],
+    )
+    second_claim = ArticleClaimAtom(
+        text=second_claim_text,
+        cited_support_ids=support_ids[2:],
+    )
+    composed = replace(
+        paragraph,
+        text=f"{first_claim_text} {second_claim_text}",
+        claims=(first_claim, second_claim),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(composed,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert not any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
+def test_quality_report_falls_back_to_paragraph_supports_for_uncited_claim():
+    draft, plan, context = _packed_roster_case()
+    paragraph = draft.sections[0].paragraphs[0]
+    claim = replace(paragraph.claims[0], cited_support_ids=())
+    uncited = replace(paragraph, claims=(claim,))
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(uncited,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
 def test_quality_report_allows_one_shared_condition_for_all_supported_places():
     draft, plan, context = _packed_roster_case()
     paragraph = draft.sections[0].paragraphs[0]
-    shared_condition = replace(
+    shared_condition = _replace_packed_roster_text(
         paragraph,
-        text=(
+        (
             "Вечером на улице Садовой, на улице Морской, на проспекте Труда "
             "и на улице Центральной света нет."
         ),
@@ -778,9 +827,9 @@ def test_quality_report_allows_one_shared_condition_for_all_supported_places():
 def test_quality_report_keeps_repeated_per_place_common_state_as_roster():
     draft, plan, context = _packed_roster_case()
     paragraph = draft.sections[0].paragraphs[0]
-    repeated = replace(
+    repeated = _replace_packed_roster_text(
         paragraph,
-        text=(
+        (
             "На улице Садовой вечером нет света, на улице Морской вечером нет света, "
             "на проспекте Труда вечером нет света, на улице Центральной вечером нет света."
         ),
@@ -798,9 +847,9 @@ def test_quality_report_keeps_repeated_per_place_common_state_as_roster():
 def test_quality_report_rejects_unsupported_extra_place_in_shared_condition():
     draft, plan, context = _packed_roster_case()
     paragraph = draft.sections[0].paragraphs[0]
-    shared_condition = replace(
+    shared_condition = _replace_packed_roster_text(
         paragraph,
-        text=(
+        (
             "Вечером на улице Садовой, на улице Морской, на проспекте Труда, "
             "на улице Центральной и на улице Лесной света нет."
         ),
@@ -818,9 +867,9 @@ def test_quality_report_rejects_unsupported_extra_place_in_shared_condition():
 def test_quality_report_rejects_negative_wording_that_denies_an_outage():
     draft, plan, context = _packed_roster_case()
     paragraph = draft.sections[0].paragraphs[0]
-    denied_outage = replace(
+    denied_outage = _replace_packed_roster_text(
         paragraph,
-        text=(
+        (
             "Вечером на улице Садовой, на улице Морской, на проспекте Труда "
             "и на улице Центральной свет не отключен."
         ),
@@ -851,9 +900,9 @@ def test_quality_report_rejects_nonoverlapping_common_condition_intervals():
         support_by_id={support.support_id: support for support in supports},
     )
     paragraph = draft.sections[0].paragraphs[0]
-    shared_condition = replace(
+    shared_condition = _replace_packed_roster_text(
         paragraph,
-        text=(
+        (
             "Вечером на улице Садовой, на улице Морской, на проспекте Труда "
             "и на улице Центральной света нет."
         ),
@@ -886,9 +935,9 @@ def test_quality_report_does_not_hide_mixed_source_states_in_shared_condition():
         support_by_id={support.support_id: support for support in mixed_supports},
     )
     paragraph = draft.sections[0].paragraphs[0]
-    shared_condition = replace(
+    shared_condition = _replace_packed_roster_text(
         paragraph,
-        text=(
+        (
             "Вечером на улице Садовой, на улице Морской, на проспекте Труда "
             "и на улице Центральной света нет."
         ),
@@ -998,9 +1047,9 @@ def test_quality_report_resolves_article_place_aliases_in_supported_contrasts():
 def test_quality_report_does_not_exempt_incidental_roster_connectors():
     draft, plan, context = _packed_roster_case()
     paragraph = draft.sections[0].paragraphs[0]
-    incidental = replace(
+    incidental = _replace_packed_roster_text(
         paragraph,
-        text=(
+        (
             "На улице Садовой вечером нет света; на улице Морской вечером нет света, "
             "при этом на проспекте Труда вечером нет света, однако на улице Центральной "
             "вечером света тоже нет."
