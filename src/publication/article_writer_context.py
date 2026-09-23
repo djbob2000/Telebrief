@@ -304,6 +304,7 @@ def _render_article_story_packets(
 
     packets: list[str] = []
     compact_packets: list[str] = []
+    compact_bundle_headers_seen: set[str] = set()
     packets_with_citable_support = 0
     citable_support_count = 0
     suppressed = set(material_projection.suppressed_story_ids) if material_projection else set()
@@ -365,7 +366,9 @@ def _render_article_story_packets(
                 "member depths are shown on their Story packets"
             )
             full_lines.append(bundle_header)
-            compact_lines.append(bundle_header)
+            if bundle.bundle_id not in compact_bundle_headers_seen:
+                compact_lines.append(bundle_header)
+                compact_bundle_headers_seen.add(bundle.bundle_id)
         full_lines.append(header)
         compact_lines.append(header)
         for support in selected_supports:
