@@ -21,6 +21,7 @@ from src.editorial_audit import (
 )
 from src.editorial_models import EditorialAnalysis, PreparedBundle, SourceRecord, StoryCard
 from src.editorial_writer import ArticleDraft
+from src.publication.article_context import ArticleEditorialContext
 
 _VALID_REGISTRY = json.dumps(
     {
@@ -1215,6 +1216,37 @@ def test_article_generator_loads_city_context_and_handles_missing_file(sample_co
     generator_fallback = ArticleGenerator(sample_config, mock_logger)
     assert generator_fallback.city_context_resolver is None
     assert generator_fallback.story_context_enricher is None
+
+
+@pytest.mark.unit
+def test_article_generator_resolves_city_profile_for_each_article_edition(
+    sample_config, mock_logger
+):
+    generator = ArticleGenerator(sample_config, mock_logger)
+    berdyansk_context = ArticleEditorialContext(
+        headline_candidates=(),
+        support_index=(),
+        support_by_id={},
+        recurring_topics=(),
+        edition_name="Бердянск",
+        edition_slug="berdyansk",
+    )
+    other_context = ArticleEditorialContext(
+        headline_candidates=(),
+        support_index=(),
+        support_by_id={},
+        recurring_topics=(),
+        edition_name="Другой город",
+        edition_slug="another-city",
+    )
+
+    berdyansk_resolver = generator._place_resolver_for_article_context(berdyansk_context)
+    other_resolver = generator._place_resolver_for_article_context(other_context)
+
+    assert berdyansk_resolver is generator.city_context_resolver
+    assert berdyansk_resolver is not None
+    # Reusing this generator for a second edition must not reuse Berdyansk's aliases.
+    assert other_resolver is None
 
 
 @pytest.mark.unit

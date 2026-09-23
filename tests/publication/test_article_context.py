@@ -200,10 +200,12 @@ def test_build_article_editorial_context_stores_edition_timezone():
         cards=(),
         evidence_items=(),
         edition_name="Test edition",
+        edition_slug="test-edition",
         edition_timezone="Europe/Kyiv",
     )
 
     assert context.edition_timezone == "Europe/Kyiv"
+    assert context.edition_slug == "test-edition"
 
 
 def test_build_article_editorial_context_epistemic_propagation():

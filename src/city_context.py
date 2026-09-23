@@ -677,6 +677,12 @@ class CityContextResolver:
         self._validate_profile()
         self._build_indexes()
 
+    @property
+    def profile_id(self) -> str:
+        """Return the city-profile identity used to match an edition slug."""
+        value = self._profile.get("profile_id", "")
+        return str(value).strip() if value is not None else ""
+
     @classmethod
     def from_yaml(cls, path: str | Path) -> CityContextResolver:
         """Load profile from YAML file. FileNotFoundError propagates; YAML/schema errors raise CityProfileError."""

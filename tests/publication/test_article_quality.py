@@ -258,8 +258,12 @@ def test_quality_report_resolves_street_aliases_from_the_edition_profile(
     )
     resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
 
+    generic_edition_report = diagnose_article_quality(draft, plan, context)
     report = diagnose_article_quality(draft, plan, context, place_resolver=resolver)
 
+    assert not any(
+        finding.code == "CONTRADICTORY_SERVICE_STATE" for finding in generic_edition_report.findings
+    )
     assert sum(f.code == "CONTRADICTORY_SERVICE_STATE" for f in report.findings) == 1
 
 

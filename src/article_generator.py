@@ -505,9 +505,11 @@ class ArticleGenerator:
         city_profile_path = getattr(
             config.settings.article, "city_profile_path", "data/city_profiles/berdyansk.yaml"
         )
+        self.city_profile_path = Path(city_profile_path)
+        self._place_resolvers_by_edition: dict[str, CityContextResolver | None] = {}
         try:
             self.city_context_resolver: CityContextResolver | None = CityContextResolver.from_yaml(
-                city_profile_path
+                self.city_profile_path
             )
             self.story_context_enricher: StoryContextEnricher | None = StoryContextEnricher(
                 self.city_context_resolver
@@ -580,6 +582,59 @@ class ArticleGenerator:
         except Exception as exc:
             self.logger.debug("Historical context retriever not initialized: %s", exc)
             self.historical_retriever = None
+
+    def _place_resolver_for_article_context(
+        self,
+        article_ctx: ArticleEditorialContext,
+    ) -> CityContextResolver | None:
+        """Resolve geographic aliases only from the current edition's profile."""
+        edition_slug = (article_ctx.edition_slug or "").strip().casefold()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", edition_slug):
+            return None
+        if edition_slug in self._place_resolvers_by_edition:
+            return self._place_resolvers_by_edition[edition_slug]
+
+        configured_profile_id = (
+            self.city_context_resolver.profile_id.casefold()
+            if self.city_context_resolver is not None
+            else ""
+        )
+        if not configured_profile_id:
+            configured_profile_id = self.city_profile_path.stem.casefold()
+        if self.city_context_resolver is not None and configured_profile_id == edition_slug:
+            self._place_resolvers_by_edition[edition_slug] = self.city_context_resolver
+            return self.city_context_resolver
+
+        edition_profile_path = self.city_profile_path.parent / f"{edition_slug}.yaml"
+        if edition_profile_path.resolve() == self.city_profile_path.resolve():
+            # A configured profile whose own identity disagrees with this run
+            # is not safe to reuse under a different edition slug.
+            self._place_resolvers_by_edition[edition_slug] = None
+            return None
+
+        try:
+            resolver = CityContextResolver.from_yaml(edition_profile_path)
+        except FileNotFoundError:
+            resolver = None
+        except CityProfileError as exc:
+            self.logger.warning(
+                "Edition city context profile unavailable for %s: %s", edition_slug, exc
+            )
+            resolver = None
+
+        if (
+            resolver is not None
+            and resolver.profile_id
+            and resolver.profile_id.casefold() != edition_slug
+        ):
+            self.logger.warning(
+                "Edition city context profile %s identifies as %s",
+                edition_profile_path,
+                resolver.profile_id,
+            )
+            resolver = None
+        self._place_resolvers_by_edition[edition_slug] = resolver
+        return resolver
 
     def _compose_system_prompt(self) -> str:
         """Compatibility helper exposing the single writer prompt owner."""
@@ -1187,6 +1242,7 @@ class ArticleGenerator:
         """Synthesize long-form editorial article directly from ArticleEditorialContext in one LLM call."""
         if article_ctx is None:
             raise NoSubstantiveEditorialError("no article editorial context present")
+        place_resolver = self._place_resolver_for_article_context(article_ctx)
 
         if (
             not article_ctx.support_index
@@ -1459,7 +1515,7 @@ class ArticleGenerator:
                     coverage_plan,
                     article_ctx,
                     material_projection=material_projection,
-                    place_resolver=self.city_context_resolver,
+                    place_resolver=place_resolver,
                 )
                 return draft, validation, diagnostics, quality
 
@@ -1666,14 +1722,14 @@ class ArticleGenerator:
                         quality_report=candidate_quality,
                         coverage_plan=coverage_plan,
                         material_projection=material_projection,
-                        place_resolver=self.city_context_resolver,
+                        place_resolver=place_resolver,
                     )
                     edited_quality = diagnose_article_quality(
                         edited_draft,
                         coverage_plan,
                         article_ctx,
                         material_projection=material_projection,
-                        place_resolver=self.city_context_resolver,
+                        place_resolver=place_resolver,
                     )
                     if edited_val.is_valid and not edited_quality.needs_edit:
                         self.logger.info(
@@ -1719,7 +1775,7 @@ class ArticleGenerator:
             writer_metadata=writer_meta,
             writer_validation=writer_validation,
             material_projection=material_projection,
-            place_resolver=self.city_context_resolver,
+            place_resolver=place_resolver,
         )
 
         body = finalization_result.draft.render_markdown()

@@ -535,9 +535,10 @@ class EventEditorialAdapter:
                     )
                 )
             edition_name = ""
+            edition_slug = ""
             cur = await conn.execute(
                 """
-                SELECT e.name, e.timezone
+                SELECT e.name, e.timezone, e.slug
                 FROM publication_runs pr
                 JOIN editions e ON e.id = pr.edition_id
                 WHERE pr.id = %s
@@ -550,6 +551,8 @@ class EventEditorialAdapter:
                 edition_name = str(ed_row[0])
             if ed_row and ed_row[1]:
                 edition_timezone = str(ed_row[1])
+            if ed_row and len(ed_row) > 2 and ed_row[2]:
+                edition_slug = str(ed_row[2])
 
             article_ctx = build_article_editorial_context(
                 cards=story_cards,
@@ -559,6 +562,7 @@ class EventEditorialAdapter:
                 snapshot_at=run.snapshot_at,
                 lookback_hours=lookback_hours,
                 edition_name=edition_name,
+                edition_slug=edition_slug,
                 edition_timezone=edition_timezone,
                 selection_by_story=sel_signals,
             )
