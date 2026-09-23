@@ -27,6 +27,7 @@ class FrozenEditorialInput:
     analysis: EditorialAnalysis
     writer_bundle: PreparedBundle
     run_id: int | None = None
+    edition_slug: str = ""
 
 
 class GenerationAttemptObserver(Protocol):
@@ -188,6 +189,12 @@ class KnowledgeEditorialAdapter:
             if run is None:
                 raise ValueError(f"publication run {run_id} not found")
 
+            edition_cursor = await conn.execute(
+                "SELECT slug FROM editions WHERE id = %s", (run.edition_id,)
+            )
+            edition_row = await edition_cursor.fetchone()
+            edition_slug = str(edition_row[0]).strip() if edition_row and edition_row[0] else ""
+
             inputs = await self.repo.load_sealed_inputs(conn, run_id)
             if not inputs:
                 if run.publication_type in ("digest_grouped", "digest_channel", "digest"):
@@ -196,6 +203,7 @@ class KnowledgeEditorialAdapter:
                         writer_bundle=PreparedBundle(
                             records={}, total_messages=0, candidate_count=0, prompt_text=""
                         ),
+                        edition_slug=edition_slug,
                     )
                 raise ValueError(f"publication run {run_id} has no sealed inputs")
 
@@ -480,4 +488,9 @@ class KnowledgeEditorialAdapter:
                 candidate_count=len(records),
             )
             analysis = EditorialAnalysis(cards=cards)
-            return FrozenEditorialInput(analysis=analysis, writer_bundle=bundle, run_id=run_id)
+            return FrozenEditorialInput(
+                analysis=analysis,
+                writer_bundle=bundle,
+                run_id=run_id,
+                edition_slug=edition_slug,
+            )

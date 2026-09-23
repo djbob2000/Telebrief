@@ -491,6 +491,7 @@ class EventEditorialAdapter:
 
         # Build ArticleEditorialContext for article runs
         article_ctx = None
+        edition_slug = ""
         if run is not None and run.publication_type in ARTICLE_PUBLICATION_TYPES:
             eligibility = await self.repo.get_eligibility_policy_by_id(
                 conn, run.eligibility_policy_id
@@ -535,7 +536,6 @@ class EventEditorialAdapter:
                     )
                 )
             edition_name = ""
-            edition_slug = ""
             cur = await conn.execute(
                 """
                 SELECT e.name, e.timezone, e.slug
@@ -617,6 +617,7 @@ class EventEditorialAdapter:
             analysis=analysis,
             writer_bundle=bundle,
             run_id=run_id,
+            edition_slug=edition_slug,
         )
 
 

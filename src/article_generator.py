@@ -599,9 +599,11 @@ class ArticleGenerator:
             if self.city_context_resolver is not None
             else ""
         )
-        if not configured_profile_id:
-            configured_profile_id = self.city_profile_path.stem.casefold()
-        if self.city_context_resolver is not None and configured_profile_id == edition_slug:
+        if (
+            self.city_context_resolver is not None
+            and configured_profile_id
+            and configured_profile_id == edition_slug
+        ):
             self._place_resolvers_by_edition[edition_slug] = self.city_context_resolver
             return self.city_context_resolver
 
@@ -622,11 +624,7 @@ class ArticleGenerator:
             )
             resolver = None
 
-        if (
-            resolver is not None
-            and resolver.profile_id
-            and resolver.profile_id.casefold() != edition_slug
-        ):
+        if resolver is not None and resolver.profile_id.casefold() != edition_slug:
             self.logger.warning(
                 "Edition city context profile %s identifies as %s",
                 edition_profile_path,
@@ -1106,6 +1104,7 @@ class ArticleGenerator:
             analysis=frozen_input.analysis,
             writer_bundle=frozen_input.writer_bundle,
             attempt_observer=attempt_observer,
+            edition_slug=getattr(frozen_input, "edition_slug", ""),
         )
 
     def _build_event_article_system_prompt(
@@ -1934,6 +1933,7 @@ class ArticleGenerator:
         writer_bundle: PreparedBundle,
         attempt_observer: Any | None = None,
         bundle_for_fallback: PreparedBundle | None = None,
+        edition_slug: str = "",
     ) -> Tuple[str, str, str]:
         """Core writer and fallback pipeline from pre-built Story Cards and source bundle."""
         if not analysis.cards:
@@ -1982,10 +1982,10 @@ class ArticleGenerator:
             )
 
         historical_background_str = ""
-        if self.historical_retriever is not None:
+        if self.historical_retriever is not None and edition_slug.strip():
             try:
                 hist_backgrounds = await self.historical_retriever.retrieve_for_stories(
-                    analysis, edition_slug="berdyansk"
+                    analysis, edition_slug=edition_slug.strip()
                 )
                 historical_background_str = self.historical_retriever.render_context(
                     hist_backgrounds
@@ -2092,7 +2092,10 @@ class ArticleGenerator:
             raise
 
     async def generate_article(  # noqa: C901
-        self, messages_by_channel: Dict[str, List[Message]]
+        self,
+        messages_by_channel: Dict[str, List[Message]],
+        *,
+        edition_slug: str = "",
     ) -> Tuple[str, str, str]:
         """Generate the main article or a thematic fallback for substantive input."""
         self._clear_debug_artifacts()
@@ -2130,4 +2133,5 @@ class ArticleGenerator:
             analysis=analysis,
             writer_bundle=writer_bundle,
             bundle_for_fallback=bundle,
+            edition_slug=edition_slug,
         )

@@ -328,7 +328,7 @@ def test_zerkalny_closure_claim_supported() -> None:
         source_text="Магазин біля колишнього супермаркету «Дзеркальний» вже вивозить товар. Про це «Бердянськ 24» дізнався з власних джерел. Раніше в мережі повідомляли, що виробництво припиняє роботу з 1 вересня через відсутність електроенергії.",
         support_id="story:2:evidence:0:frag:2",
     )
-    anchors = _edition_anchor_terms("Бердянск")
+    anchors = _edition_anchor_terms("Бердянск", "berdyansk")
 
     # Claim that the Zerkalniy supermarket is probably closing as goods are being moved out
     claim = (

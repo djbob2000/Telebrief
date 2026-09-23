@@ -233,7 +233,7 @@ class ArticleEditorialContext:
         return "\n\n".join(blocks).strip()
 
 
-def _edition_anchor_terms(edition_name: str) -> tuple[str, ...]:
+def _edition_anchor_terms(edition_name: str, edition_slug: str = "") -> tuple[str, ...]:
     clean = edition_name.strip()
     if not clean:
         return ()
@@ -244,16 +244,16 @@ def _edition_anchor_terms(edition_name: str) -> tuple[str, ...]:
 
         from src.domain.edition_geography import resolve_edition_geography
 
-        slug = clean.lower()
-        if "бердян" in slug:
-            slug = "berdyansk"
+        slug = (edition_slug or "").strip().casefold()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", slug):
+            slug = ""
         geo = resolve_edition_geography(slug, clean)
         terms = {clean}
         terms.update(geo.target_locations)
         terms.update(geo.district_locations)
 
-        profile_path = Path(f"data/city_profiles/{slug}.yaml")
-        if profile_path.exists():
+        profile_path = Path("data/city_profiles") / f"{slug}.yaml" if slug else None
+        if profile_path is not None and profile_path.exists():
             with open(profile_path, "r", encoding="utf-8") as f:
                 pdata = yaml.safe_load(f) or {}
             c_geo = pdata.get("stable_context", {}).get("geography", {})
@@ -488,7 +488,7 @@ def build_article_editorial_context(
         edition_name=edition_name,
         edition_timezone=edition_timezone,
         edition_slug=edition_slug,
-        edition_anchor_terms=_edition_anchor_terms(edition_name),
+        edition_anchor_terms=_edition_anchor_terms(edition_name, edition_slug),
         story_cards=tuple(cards),
         selection_by_story=selection_by_story or {},
     )
