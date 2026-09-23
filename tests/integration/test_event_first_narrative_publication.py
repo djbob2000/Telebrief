@@ -436,7 +436,7 @@ async def test_event_first_article_city_life_broad_coverage():
     from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 
     now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
-    config = _make_config(article_min_words=100)
+    config = _make_config(article_min_words=40)
 
     card_power = StoryCard(
         id="story:power", topic="Электроснабжение", importance="high", summary="Свет"
@@ -467,7 +467,7 @@ async def test_event_first_article_city_life_broad_coverage():
     )
     s_p2 = ArticleSupport(
         support_id="story:power:2",
-        text="Жильцы дома скидываются по 300 рублей на генератор",
+        text="Жильцы дома скидываются по 300 рублей на генератор для воды",
         source_text="Жильцы дома скидываются по 300 рублей на генератор для воды",
         support_kind="evidence",
         publication_use="PUBLISH",
@@ -534,15 +534,13 @@ async def test_event_first_article_city_life_broad_coverage():
         "title_claims": [
             {"text": "Света нет около месяца", "cited_support_ids": ["story:power:1"]}
         ],
-        "lead": "По сообщениям жителей, в городе около месяца нет света, жильцы скидываются на генератор, а в ночное время очевидцы видели две вспышки над морем.",
-        "lead_support_ids": ["story:power:1", "story:power:2", "story:safety:1"],
+        "lead": "По сообщениям жителей, в некоторых районах света нет около месяца.",
+        "lead_support_ids": ["story:power:1"],
         "lead_claims": [
-            {"text": "Света нет около месяца", "cited_support_ids": ["story:power:1"]},
             {
-                "text": "Жильцы дома скидываются по 300 рублей на генератор",
-                "cited_support_ids": ["story:power:2"],
-            },
-            {"text": "Видели две вспышки над морем", "cited_support_ids": ["story:safety:1"]},
+                "text": "По сообщениям жителей, в некоторых районах света нет около месяца.",
+                "cited_support_ids": ["story:power:1"],
+            }
         ],
         "sections": [
             {
@@ -551,13 +549,9 @@ async def test_event_first_article_city_life_broad_coverage():
                 "heading_claims": [],
                 "paragraphs": [
                     {
-                        "text": "По сообщениям жителей, света нет около месяца во многих домах города. Жители рассказывают о продолжающихся сложностях и делятся способами организации быта. Жильцы дома скидываются по 300 рублей на генератор, чтобы организовать подачу воды в помещения. Такое совместное решение жильцов дома позволяет регулярно обеспечивать водой квартиры в период длительных отключений электроэнергии.",
-                        "cited_support_ids": ["story:power:1", "story:power:2"],
+                        "text": "Жильцы дома скидываются по 300 рублей на генератор для воды.",
+                        "cited_support_ids": ["story:power:2"],
                         "claims": [
-                            {
-                                "text": "Света нет около месяца",
-                                "cited_support_ids": ["story:power:1"],
-                            },
                             {
                                 "text": "Жильцы дома скидываются по 300 рублей на генератор",
                                 "cited_support_ids": ["story:power:2"],
@@ -572,11 +566,11 @@ async def test_event_first_article_city_life_broad_coverage():
                 "heading_claims": [],
                 "paragraphs": [
                     {
-                        "text": "Жители сообщают о ночных наблюдениях в прибрежной части города. Очевидцы рассказывают, что видели две вспышки над морем в ночное время. Жители обсуждают увиденные две вспышки над морем и делятся информацией в городских сообществах, описывая события ночи.",
+                        "text": "Ночью жители видели две вспышки над морем.",
                         "cited_support_ids": ["story:safety:1"],
                         "claims": [
                             {
-                                "text": "Видели две вспышки над морем",
+                                "text": "Ночью жители видели две вспышки над морем",
                                 "cited_support_ids": ["story:safety:1"],
                             },
                         ],
@@ -589,7 +583,7 @@ async def test_event_first_article_city_life_broad_coverage():
                 "heading_claims": [],
                 "paragraphs": [
                     {
-                        "text": "В сфере коммуникаций жители находят способы оставаться на связи. Оборудование провайдера работает от генератора для поддержания доступа к сервисам. Кроме того, спортивная школа объявила бесплатный набор детей на футбол. Бесплатный набор детей на футбол открывает возможность для регулярных занятий спортом.",
+                        "text": "Оборудование провайдера работает от генератора. Спортивная школа объявила бесплатный набор детей на футбол.",
                         "cited_support_ids": ["story:telecom:1", "story:sport:1"],
                         "claims": [
                             {
@@ -623,7 +617,7 @@ async def test_event_first_article_city_life_broad_coverage():
     assert mock_provider.chat_completion.call_count == 1
     call_kwargs = mock_provider.chat_completion.call_args.kwargs
     user_prompt = next(m["content"] for m in call_kwargs["messages"] if m["role"] == "user")
-    assert "СТРУКТУРА СТАТЬИ ПО ГЛАВАМ" in user_prompt
+    assert "ARTICLE COMPOSITION ROADMAP" in user_prompt
     assert "ARTICLE COVERAGE PLAN" not in user_prompt
     assert "DETAIL SUPPORTS:" not in user_prompt
 

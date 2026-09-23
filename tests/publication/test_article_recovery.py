@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -457,6 +458,13 @@ async def test_finalizer_safe_incomplete_writer_is_accepted_without_supplement()
     from src.publication.article_finalization import ArticleFinalizer
 
     plan, context = _make_5_story_plan_and_context()
+    plan = replace(
+        plan,
+        stories=tuple(
+            replace(story, prominence="BRIEF") if story.story_id == "story:1" else story
+            for story in plan.stories
+        ),
+    )
     sup1 = context.support_by_id["story:1:evidence:0:frag:101"]
     sup2 = context.support_by_id["story:2:evidence:0:frag:202"]
     sup3 = context.support_by_id["story:3:evidence:0:frag:303"]
@@ -656,6 +664,13 @@ async def test_finalizer_partial_writer_does_not_escalate_to_fallback() -> None:
     from src.publication.article_finalization import ArticleFinalizer
 
     plan, context = _make_5_story_plan_and_context()
+    plan = replace(
+        plan,
+        stories=tuple(
+            replace(story, prominence="BRIEF") if story.story_id == "story:1" else story
+            for story in plan.stories
+        ),
+    )
     sup1 = context.support_by_id["story:1:evidence:0:frag:101"]
     sup2 = context.support_by_id["story:2:evidence:0:frag:202"]
     sup3 = context.support_by_id["story:3:evidence:0:frag:303"]
@@ -836,6 +851,96 @@ def multi_story_context() -> ArticleEditorialContext:
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_generator_uses_one_writer_and_bounded_editor_with_quality_metadata(
+    article_generator,
+) -> None:
+    import json
+
+    plan, context = _make_plan_and_context()
+    plan = replace(
+        plan,
+        stories=tuple(replace(story, prominence="BRIEF") for story in plan.stories),
+    )
+    config = article_generator.config.settings.publication_editorial
+    article_generator.config.settings.publication_editorial = replace(
+        config,
+        article_editor_enabled=True,
+        article_editor_max_attempts=1,
+        article_allow_deterministic_fallback=False,
+    )
+
+    supports = context.supports
+    writer_response = json.dumps(
+        {
+            "title": supports[0].text,
+            "title_support_ids": [supports[0].support_id],
+            "title_claims": [
+                {"text": supports[0].text, "cited_support_ids": [supports[0].support_id]}
+            ],
+            "lead": supports[0].text,
+            "lead_support_ids": [supports[0].support_id],
+            "lead_claims": [
+                {"text": supports[0].text, "cited_support_ids": [supports[0].support_id]}
+            ],
+            "sections": [
+                {
+                    "heading": "Электроэнергия, транспорт и городские занятия",
+                    "heading_support_ids": [support.support_id for support in supports],
+                    "paragraphs": [
+                        {
+                            "text": support.text,
+                            "cited_support_ids": [support.support_id],
+                            "claims": [
+                                {"text": support.text, "cited_support_ids": [support.support_id]}
+                            ],
+                        }
+                        for support in supports
+                    ],
+                }
+            ],
+        }
+    )
+    editor_response = json.dumps(
+        {
+            "units": {
+                "P001": f"{supports[0].text} Сейчас в микрорайоне подача электроэнергии восстановлена.",
+                "P002": f"{supports[1].text} Этот же автобус ходит с получасовым интервалом.",
+                "P003": f"{supports[2].text} В спорткомплексе продолжается набор в секцию плавания.",
+            }
+        }
+    )
+    article_generator.provider.chat_completion.side_effect = [
+        writer_response,
+        editor_response,
+    ]
+    observer = RecordingAttemptObserver()
+
+    title, lead, body = await article_generator.generate_from_event_article_context(
+        context,
+        coverage_plan=plan,
+        attempt_observer=observer,
+    )
+
+    assert title and lead and body
+    assert article_generator.provider.chat_completion.call_count == 2
+    assert observer.started_kinds.count("writer") == 1
+    assert observer.started_kinds.count("repair") == 1
+    writer_finish = observer.finished_attempts[1]
+    metadata = writer_finish["kwargs"]["metadata"]
+    writer_attempt = metadata["writer_attempt"]
+    assert writer_attempt["editor_retry_count"] == 1
+    assert writer_attempt["editor_patched_unit_ids"] == ["P001", "P002", "P003"]
+    assert writer_attempt["quality_before_edit"]["version"] == "article-reader-quality-v3"
+    assert (
+        writer_attempt["quality_after_edit"]["counts_by_code"].get("ARTICLE_INVENTORY_RHYTHM", 0)
+        == 0
+    )
+    assert metadata["evidence_boundary_passed"] is True
+    assert metadata["quality_gate_passed"] is True
+
+
+@pytest.mark.unit
 def test_article_publication_rejected_exposes_stable_reason_and_metadata() -> None:
     from src.publication.errors import ArticlePublicationRejected
 
@@ -948,6 +1053,13 @@ async def test_event_article_safe_incomplete_is_accepted_without_supplement(
     import json
 
     plan, context = _make_5_story_plan_and_context()
+    plan = replace(
+        plan,
+        stories=tuple(
+            replace(story, prominence="BRIEF") if story.story_id == "story:1" else story
+            for story in plan.stories
+        ),
+    )
     sup1 = context.support_by_id["story:1:evidence:0:frag:101"]
     sup2 = context.support_by_id["story:2:evidence:0:frag:202"]
     sup3 = context.support_by_id["story:3:evidence:0:frag:303"]
@@ -1101,7 +1213,7 @@ async def test_event_article_prompt_contains_epistemic_fidelity_and_no_corrobora
     assert "Epistemic Fidelity" in system_content or "epistemic" in system_content.lower()
     assert "ARTICLE COVERAGE PLAN" not in user_content
     assert "DETAIL SUPPORTS:" not in user_content
-    assert "формате Markdown" in user_content
+    assert "Markdown статьи" in user_content
 
     # No second-source / corroboration gate
     assert "two independent sources" not in system_content.lower()

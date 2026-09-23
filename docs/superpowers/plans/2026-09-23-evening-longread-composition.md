@@ -39,6 +39,7 @@
 - `src/publication/article_coverage.py` — coverage ranking/depth and thematic assignment; remove synthetic section spreading, catch-all placement, and support pooling while keeping all coverage Stories.
 - `src/publication/article_composition.py` — replace broad keyword-only bundles with narrative lines and relation-aware evidence groups; enforce exactly-once visible Story membership.
 - `src/publication/article_writer_context.py` — materialize the concise roadmap and one set of writer-facing Story/support packets, preserving edition-local time context and material projection.
+- `src/publication/article_material.py` — retain short, meaningful qualifiers present only in source text when removing near-duplicate text.
 - `src/article_generator.py` and `src/publication/narrative_contract.py` — remove the duplicate plan roster, refine long-read instructions, trigger targeted quality edits, and keep prompt/context diagnostics.
 - `src/publication/article_quality.py` — deterministic, evidence-aware article-level diagnostics for roster paragraphs, cross-section repetition, headings, lead/body progression, and existing quality findings.
 - `src/publication/article_editor.py` — provide adjacent prose/headings to targeted patches and map each finding code to a narrow editing instruction without broadening its evidence.
@@ -213,6 +214,7 @@ git commit -m "feat: compose article stories by supported relations"
 **Files:**
 
 - Modify: `src/publication/article_writer_context.py`
+- Modify: `src/publication/article_material.py`
 - Modify: `src/article_generator.py`
 - Modify: `src/publication/narrative_contract.py`
 - Test: `tests/publication/test_article_writer_context.py`
@@ -250,6 +252,8 @@ Add prompt/context tests where `observed_at` is known but effective event time i
 - [ ] **Step 6: Preserve edition-local as-of context and projection boundaries**
 
 Keep `PUBLICATION AS OF` rendered from the configured edition timezone and fail before the writer call when that timezone is invalid or unavailable. Verify a mixed commercial/community source keeps the useful fact, a short community report survives, phone numbers/URLs remain sanitized from writer context, and raw `ArticleSupport.source_text` remains unchanged for validation.
+
+When `ArticleSupport.source_text` adds a short but material qualifier absent from `ArticleSupport.text` (for example, a generator report that specifies it is for water), do not erase the qualifier as a near-duplicate. Add a regression for the projected writer packet and adjust duplicate detection conservatively so redundant wording is removed while distinct supported detail remains.
 
 - [ ] **Step 7: Run the writer-context and prompt regression set**
 

@@ -112,6 +112,42 @@ def test_project_article_material_keeps_priced_service_access_fact():
     assert "Вода на розлив" in projection.text_by_support_id[support.support_id]
 
 
+def test_service_access_projection_preserves_location_state_and_hours_while_removing_cta():
+    support = make_support(
+        story_id="story:water-delivery",
+        evidence_kind="service_access",
+        text=("Пункт подвоза воды на ул. Восточной открыт до 20:00, звоните диспетчеру."),
+        source_text=(
+            "Пункт подвоза воды на ул. Восточной открыт до 20:00, "
+            "звоните по номеру +79900000000; подробности https://example.test."
+        ),
+    )
+
+    projection = project_article_material(make_context((support,)))
+
+    projected = projection.text_by_support_id[support.support_id]
+    assert "подвоза воды" in projected
+    assert "ул. Восточной" in projected
+    assert "открыт до 20:00" in projected
+    assert "звоните" not in projected.casefold()
+    assert "диспетчеру" not in projected.casefold()
+    assert "+79900000000" not in projected
+    assert "https://example.test" not in projected
+
+
+def test_service_access_projection_drops_contact_only_cta_sentences():
+    support = make_support(
+        story_id="story:water-contact",
+        evidence_kind="service_access",
+        text="Звоните диспетчеру по номеру +79900000000, подробности по ссылке.",
+        source_text="Звоните диспетчеру по номеру +79900000000, подробности по ссылке.",
+    )
+
+    projection = project_article_material(make_context((support,)))
+
+    assert projection.text_by_support_id[support.support_id] == ""
+
+
 def test_project_article_material_keeps_one_source_community_report():
     support = make_support(
         story_id="story:water",

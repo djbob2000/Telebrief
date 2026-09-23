@@ -752,15 +752,15 @@ class TestPublicationGenerationService:
 
 
 @pytest.mark.postgres
-async def test_event_first_article_validation_failure_fallback_attempt(conn, pool, edition):
-    """When the 1 AI writer attempt returns unsupported claims, it records failed writer attempt
-
-    and successful story_renderer_fallback attempt without making a 2nd AI call.
-    """
+async def test_event_first_article_validation_failure_fails_closed_without_fallback(
+    conn, pool, edition
+):
+    """An invalid Event-First draft fails closed without publishing deterministic prose."""
     from unittest.mock import AsyncMock
 
     from src.article_generator import ArticleGenerator
     from src.config_loader import Config, PublicationEditorialConfig, Settings
+    from src.publication.errors import ArticlePublicationRejected
 
     uow = DatabaseUnitOfWork(pool)
     repo = PublicationRepository()
@@ -897,7 +897,7 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
         publication_editorial=PublicationEditorialConfig(
             article_min_words=5,
             article_min_sections=1,
-            article_allow_deterministic_fallback=True,
+            article_allow_deterministic_fallback=False,
         ),
     )
     config = Config(
@@ -944,11 +944,9 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
         generator=generator,
     )
 
-    pub = await service.generate(run.id, defer_delivery=False)
-    assert pub is not None
-    assert pub.metadata["recovery_mode"] == "full_fallback"
-    assert pub.metadata["winning_kind"] == "event_article_deterministic_fallback"
-    assert pub.metadata["final_story_coverage"] == 1.0
+    with pytest.raises(ArticlePublicationRejected) as exc_info:
+        await service.generate(run.id, defer_delivery=False)
+    assert exc_info.value.reason == "validation_failed"
 
     # Assert provider was called exactly ONCE
     assert mock_provider.chat_completion.call_count == 1
@@ -960,7 +958,8 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
             (run.id,),
         )
     ).fetchone()
-    assert run_row == ("succeeded", None)
+    assert run_row[0] == "failed"
+    assert run_row[1] == "article_validation_rejected"
 
     # Check publication created
     pub_count = await (
@@ -969,9 +968,9 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
             (run.id,),
         )
     ).fetchone()
-    assert pub_count[0] == 1
+    assert pub_count[0] == 0
 
-    # Check generation attempts in DB: writer failed, deterministic_fallback succeeded
+    # Only the rejected writer attempt is recorded; no deterministic renderer ran.
     cur = await conn.execute(
         """
         SELECT kind, status, error_kind, metadata
@@ -982,12 +981,10 @@ async def test_event_first_article_validation_failure_fallback_attempt(conn, poo
         (run.id,),
     )
     attempts = await cur.fetchall()
-    assert len(attempts) == 2
+    assert len(attempts) == 1
     assert attempts[0][0] == "writer"
     assert attempts[0][1] == "failed"
     assert attempts[0][2] == "article_validation_rejected"
-    assert attempts[1][0] == "deterministic_fallback"
-    assert attempts[1][1] == "succeeded"
 
 
 @pytest.mark.postgres
@@ -1000,6 +997,7 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
 
     from src.article_generator import ArticleGenerator
     from src.config_loader import Config, PublicationEditorialConfig, Settings
+    from src.publication.errors import ArticlePublicationRejected
 
     uow = DatabaseUnitOfWork(pool)
     repo = PublicationRepository()
@@ -1136,7 +1134,7 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
         publication_editorial=PublicationEditorialConfig(
             article_min_words=5,
             article_min_sections=1,
-            article_allow_deterministic_fallback=True,
+            article_allow_deterministic_fallback=False,
         ),
     )
     config = Config(
@@ -1161,10 +1159,9 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
         generator=generator,
     )
 
-    pub = await service.generate(run.id, defer_delivery=False)
-    assert pub is not None
-    assert pub.metadata["recovery_mode"] == "full_fallback"
-    assert pub.metadata["winning_kind"] == "event_article_deterministic_fallback"
+    with pytest.raises(ArticlePublicationRejected) as exc_info:
+        await service.generate(run.id, defer_delivery=False)
+    assert exc_info.value.reason == "writer_failed"
 
     run_row = await (
         await conn.execute(
@@ -1172,7 +1169,8 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
             (run.id,),
         )
     ).fetchone()
-    assert run_row == ("succeeded", None)
+    assert run_row[0] == "failed"
+    assert run_row[1] == "article_writer_rejected"
 
     pub_count = await (
         await conn.execute(
@@ -1180,7 +1178,7 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
             (run.id,),
         )
     ).fetchone()
-    assert pub_count[0] == 1
+    assert pub_count[0] == 0
 
     cur = await conn.execute(
         """
@@ -1192,12 +1190,10 @@ async def test_event_first_article_writer_error_rejects_and_creates_no_publicati
         (run.id,),
     )
     attempts = await cur.fetchall()
-    assert len(attempts) == 2
+    assert len(attempts) == 1
     assert attempts[0][0] == "writer"
     assert attempts[0][1] == "failed"
     assert attempts[0][2] == "article_writer_rejected"
-    assert attempts[1][0] == "deterministic_fallback"
-    assert attempts[1][1] == "succeeded"
 
 
 @pytest.mark.postgres
@@ -1245,7 +1241,7 @@ async def test_event_first_article_successful_writer_records_claim_trace(conn, p
     cur = await conn.execute(
         """
         INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
-        VALUES (%s, 1, 'h2', 'Авария на подстанции: временно обесточен центр города.')
+        VALUES (%s, 1, 'h2', 'Авария на подстанции: временно обесточен центр города. Бригады продолжают восстановительные работы.')
         RETURNING id
         """,
         (item_id,),
@@ -1254,12 +1250,15 @@ async def test_event_first_article_successful_writer_records_claim_trace(conn, p
     cur = await conn.execute(
         """
         INSERT INTO source_fragments (source_item_revision_id, ordinal, text_content, normalized_hash, fragmenter_version, is_candidate, created_at)
-        VALUES (%s, 0, 'Авария на подстанции: временно обесточен центр города.', 'hf2', 'v1', TRUE, %s)
+        VALUES
+            (%s, 0, 'Авария на подстанции: временно обесточен центр города.', 'hf2-outage', 'v1', TRUE, %s),
+            (%s, 1, 'Бригады продолжают восстановительные работы.', 'hf2-repair', 'v1', TRUE, %s)
         RETURNING id
         """,
-        (sir_id, _NOW),
+        (sir_id, _NOW, sir_id, _NOW),
     )
-    frag_id = (await cur.fetchone())[0]
+    frag_rows = await cur.fetchall()
+    outage_frag_id, repair_frag_id = (row[0] for row in frag_rows)
 
     event_payload = {
         "topic": "Авария на подстанции",
@@ -1270,8 +1269,14 @@ async def test_event_first_article_successful_writer_records_claim_trace(conn, p
                 "text": "Авария на подстанции в центре",
                 "kind": "established_fact",
                 "publication_use": "PUBLISH",
-                "source_fragment_ids": [frag_id],
-            }
+                "source_fragment_ids": [outage_frag_id],
+            },
+            {
+                "text": "Бригады продолжают восстановительные работы",
+                "kind": "established_fact",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [repair_frag_id],
+            },
         ],
     }
 
@@ -1329,7 +1334,7 @@ async def test_event_first_article_successful_writer_records_claim_trace(conn, p
         selection_decision_id=dec.id,
         presentation_intent="lead",
         rank=1,
-        fragment_ids=[frag_id],
+        fragment_ids=[outage_frag_id, repair_frag_id],
     )
     await repo.transition_run(conn, run.id, "selected_inputs_sealed")
 
@@ -1359,7 +1364,8 @@ async def test_event_first_article_successful_writer_records_claim_trace(conn, p
 
     generator = ArticleGenerator(config=config, logger=logging.getLogger("test"))
     mock_provider = AsyncMock()
-    sup_id = f"story:{story_id}:evidence:0:frag:{frag_id}"
+    sup_id = f"story:{story_id}:evidence:0:frag:{outage_frag_id}"
+    repair_sup_id = f"story:{story_id}:evidence:1:frag:{repair_frag_id}"
     mock_provider.chat_completion.return_value = json.dumps(
         {
             "title": "Авария на подстанции в центре",
@@ -1381,12 +1387,12 @@ async def test_event_first_article_successful_writer_records_claim_trace(conn, p
                     ],
                     "paragraphs": [
                         {
-                            "text": "Авария на подстанции в центре.",
-                            "cited_support_ids": [sup_id],
+                            "text": "Бригады продолжают восстановительные работы.",
+                            "cited_support_ids": [repair_sup_id],
                             "claims": [
                                 {
-                                    "text": "Авария на подстанции в центре",
-                                    "cited_support_ids": [sup_id],
+                                    "text": "Бригады продолжают восстановительные работы",
+                                    "cited_support_ids": [repair_sup_id],
                                 }
                             ],
                         }

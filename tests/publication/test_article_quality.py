@@ -128,6 +128,16 @@ def test_quality_report_does_not_flag_one_short_paragraph_as_a_long_read_failure
     report = diagnose_article_quality(draft, plan, context)
 
     assert not any(f.code == "ARTICLE_INVENTORY_RHYTHM" for f in report.findings)
+    assert not any(
+        f.code
+        in {
+            "OVERLOADED_ROSTER_PARAGRAPH",
+            "CROSS_SECTION_REPETITION",
+            "DUPLICATE_ARTICLE_HEADING",
+            "UNDEVELOPED_LEAD_PROMISE",
+        }
+        for f in report.findings
+    )
 
 
 def test_quality_report_flags_a_quote_roll_in_one_paragraph():
@@ -137,7 +147,8 @@ def test_quality_report_flags_a_quote_roll_in_one_paragraph():
 
     report = diagnose_article_quality(draft, plan, context)
 
-    assert any(f.code == "QUOTE_ROLL_PARAGRAPH" for f in report.findings)
+    quote_roll = next(f for f in report.findings if f.code == "QUOTE_ROLL_PARAGRAPH")
+    assert quote_roll.severity == "blocking"
 
 
 def test_quality_report_points_to_support_for_a_missing_develop_story():
@@ -698,3 +709,466 @@ def test_quality_report_excludes_only_explicitly_suppressed_story_ids():
     projection = type("Projection", (), {"suppressed_story_ids": ("story:2",)})()
     report = diagnose_article_quality(draft, plan, context, material_projection=projection)
     assert not any(f.code == "MISSING_DEVELOP_STORY" for f in report.findings)
+
+
+def _packed_roster_case():
+    reports = (
+        ("story:power-1", "На улице Садовой вечером нет света."),
+        ("story:power-2", "На улице Морской вечером нет света."),
+        ("story:power-3", "На проспекте Труда вечером нет света."),
+        ("story:power-4", "На улице Центральной вечером нет света."),
+    )
+    draft, plan, context = _article_case(reports)
+    support_ids = tuple(support.support_id for support in context.supports)
+    packed = ArticleParagraph(
+        text=(
+            "На улице Садовой вечером нет света; на улице Морской вечером нет света; "
+            "на проспекте Труда вечером нет света; на улице Центральной вечером нет света."
+        ),
+        cited_support_ids=support_ids,
+        claims=(
+            ArticleClaimAtom(
+                text=(
+                    "На улице Садовой вечером нет света; на улице Морской вечером нет света; "
+                    "на проспекте Труда вечером нет света; на улице Центральной вечером нет света."
+                ),
+                cited_support_ids=support_ids,
+            ),
+        ),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(packed,)),),
+    )
+    return draft, plan, context
+
+
+def test_quality_report_flags_one_supported_overloaded_roster_paragraph():
+    draft, plan, context = _packed_roster_case()
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    findings = [f for f in report.findings if f.code == "OVERLOADED_ROSTER_PARAGRAPH"]
+    assert len(findings) == 1
+    assert findings[0].unit_id == "P001"
+    assert len(findings[0].support_ids) == 4
+    assert findings[0].severity == "blocking"
+
+
+def test_quality_report_allows_a_supported_localized_contrast_roster():
+    draft, plan, context = _packed_roster_case()
+    contrast_supports = tuple(
+        replace(
+            support,
+            text="На улице Морской вечером восстановили свет.",
+            source_text="На улице Морской вечером восстановили свет.",
+        )
+        if support.story_id == "story:power-2"
+        else replace(
+            support,
+            text="На улице Центральной вечером свет работает.",
+            source_text="На улице Центральной вечером свет работает.",
+        )
+        if support.story_id == "story:power-4"
+        else support
+        for support in context.support_index
+    )
+    context = replace(
+        context,
+        support_index=contrast_supports,
+        support_by_id={support.support_id: support for support in contrast_supports},
+    )
+    paragraph = draft.sections[0].paragraphs[0]
+    contrast = replace(
+        paragraph,
+        text=(
+            "На улице Садовой и проспекте Труда вечером света нет, а "
+            "на улице Морской свет восстановили, а на улице Центральной свет работает."
+        ),
+        claims=(
+            ArticleClaimAtom(
+                text=(
+                    "На улице Садовой и проспекте Труда вечером света нет, а "
+                    "на улице Морской свет восстановили, а на улице Центральной свет работает."
+                ),
+                cited_support_ids=paragraph.cited_support_ids,
+            ),
+        ),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(contrast,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert not any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
+def test_quality_report_resolves_article_place_aliases_in_supported_contrasts():
+    draft, plan, context = _packed_roster_case()
+    source_text_by_story = {
+        "story:power-1": "На улице Карла Маркса вечером нет света.",
+        "story:power-2": "На улице Морской вечером восстановили свет.",
+        "story:power-3": "На проспекте Труда вечером нет света.",
+        "story:power-4": "На улице Садовой вечером свет работает.",
+    }
+    alias_supports = tuple(
+        replace(
+            support,
+            text=source_text_by_story[support.story_id],
+            source_text=source_text_by_story[support.story_id],
+        )
+        for support in context.support_index
+    )
+    context = replace(
+        context,
+        support_index=alias_supports,
+        support_by_id={support.support_id: support for support in alias_supports},
+    )
+    support_ids = tuple(support.support_id for support in alias_supports)
+    contrast_text = (
+        "На улице Тверской вечером света нет, а на улице Морской его восстановили; "
+        "на проспекте Труда света нет, а на улице Садовой он работает."
+    )
+    paragraph = ArticleParagraph(
+        text=contrast_text,
+        cited_support_ids=support_ids,
+        claims=(ArticleClaimAtom(text=contrast_text, cited_support_ids=support_ids),),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(paragraph,)),),
+    )
+    resolver = CityContextResolver.from_yaml("data/city_profiles/berdyansk.yaml")
+
+    report = diagnose_article_quality(draft, plan, context, place_resolver=resolver)
+
+    assert not any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
+def test_quality_report_does_not_exempt_incidental_roster_connectors():
+    draft, plan, context = _packed_roster_case()
+    paragraph = draft.sections[0].paragraphs[0]
+    incidental = replace(
+        paragraph,
+        text=(
+            "На улице Садовой вечером нет света; на улице Морской вечером нет света, "
+            "при этом на проспекте Труда вечером нет света, однако на улице Центральной "
+            "вечером света тоже нет."
+        ),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(incidental,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    finding = next(
+        finding for finding in report.findings if finding.code == "OVERLOADED_ROSTER_PARAGRAPH"
+    )
+    assert finding.unit_id == "P001"
+
+
+def test_quality_report_allows_a_supported_progression_outside_common_phrases():
+    reports = (
+        ("story:sadovaya-morning", "На улице Садовой утром нет света."),
+        ("story:sadovaya-later", "На улице Садовой позже восстановили свет."),
+        ("story:morskaya-morning", "На улице Морской утром нет света."),
+        ("story:morskaya-later", "На улице Морской позже восстановили свет."),
+        ("story:truda-morning", "На проспекте Труда утром нет света."),
+        ("story:truda-later", "На проспекте Труда позже восстановили свет."),
+        ("story:central-morning", "На улице Центральной утром нет света."),
+        ("story:central-later", "На улице Центральной позже восстановили свет."),
+    )
+    draft, plan, context = _article_case(reports)
+    supports: list[ArticleSupport] = []
+    for support in context.supports:
+        is_early = "morning" in support.story_id
+        supports.append(
+            replace(
+                support,
+                effective_from=dt.datetime(
+                    2026, 9, 22, 7 if is_early else 13, 0, tzinfo=dt.timezone.utc
+                ),
+                effective_until=dt.datetime(
+                    2026, 9, 22, 8 if is_early else 14, 0, tzinfo=dt.timezone.utc
+                ),
+            )
+        )
+    context = replace(
+        context,
+        support_index=tuple(supports),
+        support_by_id={support.support_id: support for support in supports},
+    )
+    support_ids = tuple(support.support_id for support in supports)
+    progression_text = (
+        "За несколько часов картина на улицах изменилась: на улице Садовой, "
+        "на улице Морской, на проспекте Труда и на улице Центральной света утром не было, "
+        "позднее его восстановили."
+    )
+    paragraph = ArticleParagraph(
+        text=progression_text,
+        cited_support_ids=support_ids,
+        claims=(ArticleClaimAtom(text=progression_text, cited_support_ids=support_ids),),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(paragraph,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert not any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
+def test_quality_report_flags_the_same_develop_story_repeated_across_sections():
+    draft, plan, context = _article_case(
+        (("story:power-main", "На улице Садовой вечером не было электричества."),)
+    )
+    support_id = context.supports[0].support_id
+    plan = replace(plan, stories=(replace(plan.stories[0], prominence="DEVELOP"),))
+    repeated_claim = ArticleClaimAtom(
+        text="На улице Садовой вечером не было электричества.",
+        cited_support_ids=(support_id,),
+    )
+    first_paragraph = ArticleParagraph(
+        text=repeated_claim.text,
+        cited_support_ids=(support_id,),
+        claims=(repeated_claim,),
+    )
+    closing_paragraph = ArticleParagraph(
+        text="На улице Садовой вечером не было электричества.",
+        cited_support_ids=(support_id,),
+        claims=(repeated_claim,),
+    )
+    draft = replace(
+        draft,
+        lead=repeated_claim.text,
+        lead_support_ids=(support_id,),
+        lead_claims=(repeated_claim,),
+        sections=(
+            replace(draft.sections[0], paragraphs=(first_paragraph,)),
+            ArticleSection(heading="Итоги", paragraphs=(closing_paragraph,)),
+        ),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    repeated = [f for f in report.findings if f.code == "CROSS_SECTION_REPETITION"]
+    assert repeated
+    assert any(f.unit_id == "P002" for f in repeated)
+    assert all(f.severity == "blocking" for f in repeated)
+    assert all(f.support_ids == (support_id,) for f in repeated)
+
+
+def test_quality_report_preserves_a_new_state_and_time_for_the_same_story():
+    draft, plan, context = _article_case(
+        (
+            ("story:water-main", "На улице Садовой утром не было воды."),
+            ("story:water-main", "На улице Садовой к вечеру подачу воды восстановили."),
+        )
+    )
+    morning, evening = context.supports
+    plan = replace(
+        plan,
+        stories=(
+            replace(
+                plan.stories[0],
+                prominence="DEVELOP",
+                support_ids=(morning.support_id, evening.support_id),
+            ),
+        ),
+    )
+    lead_claim = ArticleClaimAtom(
+        text=morning.text,
+        cited_support_ids=(morning.support_id,),
+    )
+    update_claim = ArticleClaimAtom(
+        text=evening.text,
+        cited_support_ids=(evening.support_id,),
+    )
+    draft = replace(
+        draft,
+        lead=morning.text,
+        lead_support_ids=(morning.support_id,),
+        lead_claims=(lead_claim,),
+        sections=(
+            ArticleSection(
+                heading="Изменения за день",
+                paragraphs=(
+                    ArticleParagraph(
+                        text=evening.text,
+                        cited_support_ids=(evening.support_id,),
+                        claims=(update_claim,),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert not any(f.code == "CROSS_SECTION_REPETITION" for f in report.findings)
+
+
+def test_quality_report_preserves_new_effective_time_for_same_supported_state():
+    draft, plan, context = _article_case(
+        (
+            ("story:water-main", "На улице Садовой нет воды."),
+            ("story:water-main", "На улице Садовой нет воды."),
+        )
+    )
+    earlier, later = context.supports
+    plan = replace(
+        plan,
+        stories=(
+            replace(
+                plan.stories[0],
+                prominence="DEVELOP",
+                support_ids=(earlier.support_id, later.support_id),
+            ),
+        ),
+    )
+    earlier = replace(
+        earlier,
+        effective_from=dt.datetime(2026, 9, 22, 8, 0, tzinfo=dt.timezone.utc),
+        effective_until=dt.datetime(2026, 9, 22, 9, 0, tzinfo=dt.timezone.utc),
+    )
+    later = replace(
+        later,
+        effective_from=dt.datetime(2026, 9, 22, 10, 0, tzinfo=dt.timezone.utc),
+        effective_until=dt.datetime(2026, 9, 22, 11, 0, tzinfo=dt.timezone.utc),
+    )
+    context = replace(
+        context,
+        support_index=(earlier, later),
+        support_by_id={earlier.support_id: earlier, later.support_id: later},
+    )
+    first_claim = ArticleClaimAtom(
+        text=earlier.text,
+        cited_support_ids=(earlier.support_id,),
+    )
+    second_claim = ArticleClaimAtom(
+        text=later.text,
+        cited_support_ids=(later.support_id,),
+    )
+    draft = replace(
+        draft,
+        lead=earlier.text,
+        lead_support_ids=(earlier.support_id,),
+        lead_claims=(first_claim,),
+        sections=(
+            ArticleSection(
+                heading="Состояние к вечеру",
+                paragraphs=(
+                    ArticleParagraph(
+                        text=later.text,
+                        cited_support_ids=(later.support_id,),
+                        claims=(second_claim,),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert not any(f.code == "CROSS_SECTION_REPETITION" for f in report.findings)
+
+
+def test_quality_report_preserves_a_new_resident_consequence_for_the_same_story():
+    draft, plan, context = _article_case(
+        (
+            ("story:water-main", "На улице Садовой нет воды."),
+            ("story:water-main", "Жители набирают воду у соседей из-за отключения."),
+        )
+    )
+    first, consequence = context.supports
+    plan = replace(
+        plan,
+        stories=(
+            replace(
+                plan.stories[0],
+                prominence="DEVELOP",
+                support_ids=(first.support_id, consequence.support_id),
+            ),
+        ),
+    )
+    lead_claim = ArticleClaimAtom(
+        text=first.text,
+        cited_support_ids=(first.support_id,),
+    )
+    consequence_claim = ArticleClaimAtom(
+        text="На улице Садовой нет воды, поэтому жители набирают воду у соседей.",
+        cited_support_ids=(consequence.support_id,),
+    )
+    draft = replace(
+        draft,
+        lead=first.text,
+        lead_support_ids=(first.support_id,),
+        lead_claims=(lead_claim,),
+        sections=(
+            ArticleSection(
+                heading="Как справляются жители",
+                paragraphs=(
+                    ArticleParagraph(
+                        text=consequence_claim.text,
+                        cited_support_ids=(consequence.support_id,),
+                        claims=(consequence_claim,),
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert not any(f.code == "CROSS_SECTION_REPETITION" for f in report.findings)
+
+
+def test_quality_report_flags_normalized_heading_duplicates():
+    draft, plan, context = _article_case((("story:1", "На улице Садовой нет света."),))
+    duplicate_heading = ArticleSection(
+        heading="городская хроника!!!",
+        heading_support_ids=draft.sections[0].heading_support_ids,
+        paragraphs=(),
+    )
+    draft = replace(
+        draft,
+        title="Городская хроника",
+        sections=(duplicate_heading, replace(duplicate_heading, heading="  Городская Хроника. ")),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    heading_findings = [f for f in report.findings if f.code == "DUPLICATE_ARTICLE_HEADING"]
+    assert {f.unit_id for f in heading_findings} == {"H001", "H002"}
+    assert all(f.severity == "blocking" for f in heading_findings)
+
+
+def test_quality_report_flags_supported_develop_promise_missing_from_body():
+    draft, plan, context = _article_case(
+        (("story:water-main", "На улице Садовой весь день отсутствовала вода."),)
+    )
+    support_id = context.supports[0].support_id
+    plan = replace(plan, stories=(replace(plan.stories[0], prominence="DEVELOP"),))
+    claim = ArticleClaimAtom(
+        text="На улице Садовой весь день отсутствовала вода.",
+        cited_support_ids=(support_id,),
+    )
+    draft = replace(
+        draft,
+        lead=claim.text,
+        lead_support_ids=(support_id,),
+        lead_claims=(claim,),
+        sections=(),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    finding = next(f for f in report.findings if f.code == "UNDEVELOPED_LEAD_PROMISE")
+    assert finding.unit_id == "LEAD"
+    assert finding.support_ids == (support_id,)
+    assert finding.severity == "blocking"

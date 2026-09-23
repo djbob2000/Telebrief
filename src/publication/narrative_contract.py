@@ -25,9 +25,8 @@ def build_article_narrative_contract(
     if length_profile is not None:
         target_str = (
             f"\n- Target Editorial Profile ({length_profile.richness.upper()}): "
-            f"{length_profile.target_min_words}–{length_profile.target_max_words} words "
-            f"across {length_profile.target_min_sections}–{length_profile.target_max_sections} thematic sections. "
-            f"Focus on natural narrative depth without padding."
+            f"{length_profile.target_min_words}–{length_profile.target_max_words} words when the material supports it. "
+            f"Let the number and shape of thematic sections follow the reporting; do not pad."
         )
 
     return f"""### Journalistic Synthesis & Narrative Standards (Output Language: {output_language})
@@ -35,6 +34,7 @@ def build_article_narrative_contract(
 1. Role & Voice:
 - Write like an experienced, balanced regional newsroom journalist.
 - Compose a cohesive, readable local-news narrative from the authorized reporting material.
+- Open on a supported central development and give the reader a natural edition-local as-of frame when available. Never infer an event start time from when a report was observed.
 
 2. Presentation vs. Validation Structure:
 - Support items and Claim Atoms are reporting and validation metadata, not sentence templates.
@@ -53,6 +53,12 @@ def build_article_narrative_contract(
 - BRIEF stories should receive compact factual treatment and may be grouped into a natural city-life section.
 - Do not omit a legitimate PUBLISH Story merely because it is smaller than the main themes.
 - Do not give all Stories equal space.
+- Use the composition roadmap as one editorial guide, not as a chapter quota or checklist. Follow only the relationships it names; keep independent Stories independent unless their packets support a clear connection.
+- Let the article's shape follow the evidence; do not impose fixed heading, address, paragraph, or one-paragraph-per-Story quotas.
+- Preserve meaningful place, service-state, and event-time contrasts. Use effective_from/effective_until for event chronology; observed_at describes report chronology and attribution only.
+- Give each useful local notice one natural home. Synthesize related reports without listing every address merely to demonstrate coverage.
+- Develop the lead's central line in the body without repeating its premise in every section or restating it as a generic conclusion.
+- Keep unrelated subjects in their own narrative context; do not pour leftover items into a catch-all closing paragraph.
 
 
 4. Microdetail Preservation:
@@ -106,7 +112,7 @@ def build_article_narrative_contract(
 - Logical clarity and natural precision:
   * Distinguish technical infrastructure from human actions cleanly (e.g. do not produce awkward compression like «делятся интернетом через оптоволокно» — write naturally: «подключают оптоволокно (GPON) и делятся Wi-Fi с соседями» or «раздают интернет по Wi-Fi»). Keep technical mechanisms and social actions logically accurate.
   * Brand and service naming: Always enclose commercial brands and courier services in quotation marks with an explanatory noun (e.g. write «служба доставки „+7“», «маркетплейс „Озон“», never bare digits like «+7» or «Доставка (+7)»).
-  * Relocation services and external geography: When describing assistance centers, administrative services, or cultural events for displaced residents in other cities (e.g. Zaporizhzhia), always explicitly state the host city before the street address (e.g. write «в Запорожье по адресу: ул. Независимой Украины, 86-А», NEVER cite an external street without its host city name).
+  * Relocation services and external geography: When describing assistance centers, administrative services, or cultural events outside the edition city, state the host city before the street address; never cite an external street without its host city name.
 - Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented mechanisms, or speculative interpretations.
 
 
@@ -173,7 +179,7 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 - Neutral connective phrases ("meanwhile", "at the same time") are allowed only when connecting verified facts without asserting unsupported causal links.
 - No speculation, sensationalism, or decorative filler.
 - Brand and service naming: Enclose brands and courier services in quotation marks with explanatory nouns (e.g. «служба доставки „+7“», «маркетплейс „Озон“»).
-- Relocation services and external geography: Always prefix external street addresses with their host city name (e.g. «в Запорожье по адресу: ул. Независимой Украины, 86-А»).
+- Relocation services and external geography: Prefix external street addresses with their host city name.
 - Community/single-source reports marked as authorized support are publishable. Attribute them naturally; do not omit them only for lack of corroboration and do not present them as officially confirmed.
 - Resident questions (`resident_question` / `framing=question_context` / `publication_use=CONTEXT`):
   * Resident questions are background context, NOT standalone news items or established facts.

@@ -192,6 +192,8 @@ def _build_final_metadata(
     final_diag: ArticleCoverageDiagnostics,
     trace: Sequence[ArticleClaimTraceUnit],
     quality_report: ArticleReaderQualityReport | None = None,
+    quality_report_before_edit: ArticleReaderQualityReport | None = None,
+    quality_report_after_edit: ArticleReaderQualityReport | None = None,
     material_projection: ArticleMaterialProjection | None = None,
 ) -> dict[str, Any]:
     planned_story_count = len(coverage_plan.story_ids)
@@ -258,15 +260,286 @@ def _build_final_metadata(
             "unsupported_claim_count": 0,
             "unit_count": len(trace),
         },
+        "evidence_boundary_passed": True,
+        "quality_gate_passed": True,
         "unsupported_final_claim_count": 0,
         "leaked_directory_payload_count": len(final_diag.leaked_contact_payloads),
         "claim_trace": trace_meta,
     }
     if quality_report is not None:
-        meta["reader_quality"] = quality_report.to_metadata()
+        meta["reader_quality"] = _compact_quality_metadata(quality_report)
+    if quality_report_before_edit is not None:
+        compact_before = _compact_quality_metadata(quality_report_before_edit)
+        meta["quality_before_edit"] = compact_before
+        meta["reader_quality_before_edit"] = compact_before
+    if quality_report_after_edit is not None:
+        compact_after = _compact_quality_metadata(quality_report_after_edit)
+        meta["quality_after_edit"] = compact_after
+        meta["reader_quality_after_edit"] = compact_after
+    elif quality_report is not None:
+        meta["quality_after_edit"] = _compact_quality_metadata(quality_report)
     if material_projection is not None:
         meta["material_projection"] = material_projection.to_metadata()
     return meta
+
+
+def _compact_quality_metadata(report: ArticleReaderQualityReport) -> dict[str, Any]:
+    metadata = report.to_metadata()
+    return {
+        "version": metadata["version"],
+        "finding_count": metadata["finding_count"],
+        "needs_edit": metadata["needs_edit"],
+        "counts_by_severity": metadata["counts_by_severity"],
+        "counts_by_code": metadata["counts_by_code"],
+        "findings": [
+            {
+                "code": finding.code,
+                "unit_id": finding.unit_id,
+                "severity": finding.severity,
+            }
+            for finding in report.findings
+        ],
+    }
+
+
+def _compact_validation_metadata(result: ArticleValidationResult) -> dict[str, Any]:
+    return {
+        "is_valid": result.is_valid,
+        "violation_count": len(result.issues),
+        "issue_codes_and_units": [
+            f"{issue.code}:{issue.unit_id}" for issue in result.issues if issue.blocking
+        ],
+    }
+
+
+def _compact_quality_value(value: Any) -> dict[str, Any] | None:
+    """Keep versioned quality counts and unit references, never prose payload."""
+    if not isinstance(value, dict):
+        return None
+    findings = value.get("findings", ())
+    compact_findings = []
+    if isinstance(findings, Sequence) and not isinstance(findings, (str, bytes)):
+        for finding in findings:
+            if not isinstance(finding, dict):
+                continue
+            code = finding.get("code")
+            unit_id = finding.get("unit_id")
+            severity = finding.get("severity")
+            if all(isinstance(item, str) for item in (code, unit_id, severity)):
+                compact_findings.append({"code": code, "unit_id": unit_id, "severity": severity})
+    compact: dict[str, Any] = {
+        "version": value.get("version")
+        if isinstance(value.get("version"), str)
+        else "article-reader-quality-v3",
+        "finding_count": value.get("finding_count", len(compact_findings)),
+        "needs_edit": bool(value.get("needs_edit", False)),
+        "counts_by_severity": value.get("counts_by_severity", {}),
+        "counts_by_code": value.get("counts_by_code", {}),
+        "findings": compact_findings,
+    }
+    return compact
+
+
+def _compact_composition_value(value: Any) -> dict[str, Any] | None:
+    """Retain composition topology and provenance IDs, not writer-facing prose."""
+    if not isinstance(value, dict):
+        return None
+    result: dict[str, Any] = {}
+    for key in ("line_count", "group_count", "bundle_count", "suppressed_story_ids"):
+        if key in value:
+            result[key] = value[key]
+    lines = value.get("narrative_lines")
+    if isinstance(lines, Sequence) and not isinstance(lines, (str, bytes)):
+        result["narrative_lines"] = [
+            {key: line[key] for key in ("line_id", "prominence", "group_ids") if key in line}
+            for line in lines
+            if isinstance(line, dict)
+        ]
+    groups = value.get("groups")
+    if isinstance(groups, Sequence) and not isinstance(groups, (str, bytes)):
+        result["groups"] = [
+            {
+                key: group[key]
+                for key in (
+                    "group_id",
+                    "narrative_line_id",
+                    "relation",
+                    "lead_story_id",
+                    "theme_key",
+                    "members",
+                )
+                if key in group
+            }
+            for group in groups
+            if isinstance(group, dict)
+        ]
+    return result
+
+
+def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Whitelist compact diagnostics before persisting writer-attempt metadata.
+
+    Writer metadata is assembled across providers and can grow as integrations
+    evolve. Copying it wholesale risks persisting a prompt, draft, raw response,
+    provider exception, or credential introduced by a future caller.
+    """
+    if not writer_metadata:
+        return {}
+
+    scalar_keys = {
+        "attempt_number",
+        "provider",
+        "model",
+        "response_chars",
+        "parsed_word_count",
+        "parsed_section_count",
+        "planned_story_count",
+        "covered_story_count",
+        "story_coverage",
+        "uncovered_story_ids",
+        "provider_slot",
+        "actual_provider",
+        "actual_model",
+        "response_id",
+        "finish_reason",
+        "prompt_tokens",
+        "completion_tokens",
+        "reasoning_tokens",
+        "total_tokens",
+        "context_chars",
+        "prompt_chars",
+        "context_hash",
+        "prompt_hash",
+        "as_of",
+        "as_of_utc",
+        "edition_timezone",
+        "editor_retry_count",
+        "editor_patched_unit_ids",
+        "coverage_retry_suppressed",
+    }
+    result: dict[str, Any] = {
+        key: writer_metadata[key] for key in scalar_keys if key in writer_metadata
+    }
+    for key in ("quality", "quality_before_edit", "quality_after_edit"):
+        compact_quality = _compact_quality_value(writer_metadata.get(key))
+        if compact_quality is not None:
+            result[key] = compact_quality
+    composition = _compact_composition_value(writer_metadata.get("composition"))
+    if composition is not None:
+        result["composition"] = composition
+
+    projection = writer_metadata.get("material_projection")
+    if isinstance(projection, dict):
+        result["material_projection"] = {
+            key: projection[key]
+            for key in (
+                "actions_by_support_id",
+                "reasons_by_support_id",
+                "suppressed_story_ids",
+                "trimmed_support_ids",
+                "suppressed_story_count",
+                "trimmed_support_count",
+            )
+            if key in projection
+        }
+
+    materialization = writer_metadata.get("materialization")
+    if isinstance(materialization, dict):
+        result["materialization"] = {
+            key: materialization[key]
+            for key in (
+                "coverage_story_count",
+                "story_packet_count",
+                "bundle_count",
+                "narrative_line_count",
+                "composition_group_count",
+                "group_size_distribution",
+                "rendered_packet_representation",
+                "packets_with_citable_support",
+                "citable_support_count",
+            )
+            if key in materialization
+        }
+
+    retry_history = writer_metadata.get("writer_retry_history")
+    if isinstance(retry_history, Sequence) and not isinstance(retry_history, (str, bytes)):
+        safe_retries: list[dict[str, Any]] = []
+        for item in retry_history:
+            if not isinstance(item, dict):
+                continue
+            retry = {
+                key: item[key]
+                for key in (
+                    "attempt_number",
+                    "response_chars",
+                    "parsed_word_count",
+                    "parsed_section_count",
+                    "planned_story_count",
+                    "covered_story_count",
+                    "story_coverage",
+                    "catastrophic",
+                    "provider_slot",
+                    "actual_provider",
+                    "actual_model",
+                    "finish_reason",
+                    "error_type",
+                )
+                if key in item
+            }
+            retry_quality = _compact_quality_value(item.get("quality"))
+            if retry_quality is not None:
+                retry["quality"] = retry_quality
+            safe_retries.append(retry)
+        result["writer_retry_history"] = safe_retries
+    return result
+
+
+def _quality_rejection_metadata(
+    report: ArticleReaderQualityReport,
+    *,
+    quality_report_before_edit: ArticleReaderQualityReport | None,
+    quality_report_after_edit: ArticleReaderQualityReport | None,
+    writer_metadata: dict[str, Any] | None,
+    validation: ArticleValidationResult,
+) -> dict[str, Any]:
+    safe_writer_metadata = _safe_writer_metadata(writer_metadata)
+    unresolved = [
+        {"code": finding.code, "unit_id": finding.unit_id, "severity": finding.severity}
+        for finding in report.blocking_findings
+    ]
+    metadata: dict[str, Any] = {
+        "stage": "post_finalization_quality",
+        "quality_version": "article-reader-quality-v3",
+        "quality_before_edit": (
+            _compact_quality_metadata(quality_report_before_edit)
+            if quality_report_before_edit is not None
+            else None
+        ),
+        "quality_after_edit": (_compact_quality_metadata(quality_report_after_edit or report)),
+        "quality_after_finalization": _compact_quality_metadata(report),
+        "unresolved_quality_findings": unresolved,
+        "editor_attempt_count": safe_writer_metadata.get("editor_retry_count", 0),
+        "patched_unit_ids": safe_writer_metadata.get("editor_patched_unit_ids", []),
+        "factual_validation": _compact_validation_metadata(validation),
+        "evidence_boundary_passed": validation.is_valid,
+        "quality_gate_passed": False,
+    }
+    if safe_writer_metadata:
+        for key in (
+            "composition",
+            "material_projection",
+            "materialization",
+            "context_hash",
+            "context_chars",
+            "prompt_hash",
+            "prompt_chars",
+            "as_of",
+            "as_of_utc",
+            "edition_timezone",
+        ):
+            if key in safe_writer_metadata:
+                metadata[key] = safe_writer_metadata[key]
+    return metadata
 
 
 def _sanitize_unsupported_quotes(
@@ -886,6 +1159,8 @@ class ArticleFinalizer:
         attempt_observer: GenerationAttemptObserver | None = None,
         writer_metadata: dict[str, Any] | None = None,
         writer_validation: ArticleValidationResult | None = None,
+        quality_report: ArticleReaderQualityReport | None = None,
+        quality_report_after_edit: ArticleReaderQualityReport | None = None,
         material_projection: ArticleMaterialProjection | None = None,
         place_resolver: Any | None = None,
     ) -> ArticleFinalizationResult:
@@ -905,10 +1180,13 @@ class ArticleFinalizer:
             if attempt_observer:
                 err_meta: dict[str, Any] = {
                     "writer_status": "failed",
-                    "error": str(writer_error) if writer_error else "empty writer response",
+                    "exception_type": type(writer_error).__name__
+                    if writer_error
+                    else "EmptyWriterResponse",
                 }
-                if writer_metadata:
-                    err_meta["writer_attempt"] = writer_metadata
+                safe_writer_metadata = _safe_writer_metadata(writer_metadata)
+                if safe_writer_metadata:
+                    err_meta["writer_attempt"] = safe_writer_metadata
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
                     status="failed",
@@ -918,9 +1196,16 @@ class ArticleFinalizer:
             if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
                 raise ArticlePublicationRejected(
                     reason="writer_failed",
-                    message=f"Article writer failed: {writer_error}",
+                    message=(
+                        "Article writer failed: "
+                        f"{type(writer_error).__name__ if writer_error else 'EmptyWriterResponse'}"
+                    ),
                     metadata={
-                        "error": str(writer_error) if writer_error else "empty writer response"
+                        "stage": "writer",
+                        "exception_type": type(writer_error).__name__
+                        if writer_error
+                        else "EmptyWriterResponse",
+                        "writer_attempt": _safe_writer_metadata(writer_metadata),
                     },
                 )
             return await self._run_full_fallback(
@@ -933,6 +1218,8 @@ class ArticleFinalizer:
                 length_profile=length_profile,
                 attempt_observer=attempt_observer,
                 writer_metadata=writer_metadata,
+                quality_report_before_edit=quality_report,
+                quality_report_after_edit=quality_report_after_edit,
                 material_projection=material_projection,
                 place_resolver=place_resolver,
             )
@@ -1110,11 +1397,11 @@ class ArticleFinalizer:
             if attempt_observer:
                 val_meta: dict[str, Any] = {
                     "writer_status": "rejected",
-                    "violations": list(writer_validation.violations),
-                    "draft": writer_draft.to_dict(),
+                    "factual_validation": _compact_validation_metadata(writer_validation),
                 }
-                if writer_metadata:
-                    val_meta["writer_attempt"] = writer_metadata
+                safe_writer_metadata = _safe_writer_metadata(writer_metadata)
+                if safe_writer_metadata:
+                    val_meta["writer_attempt"] = safe_writer_metadata
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
                     status="failed",
@@ -1124,10 +1411,28 @@ class ArticleFinalizer:
             if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
                 raise ArticlePublicationRejected(
                     reason="validation_failed",
-                    message=f"Article writer draft failed validation: {list(writer_validation.violations)}",
+                    message="Article writer draft failed Evidence Boundary validation",
                     metadata={
-                        "violations": list(writer_validation.violations),
-                        "draft": writer_draft.to_dict(),
+                        "stage": "writer_validation",
+                        "factual_validation": _compact_validation_metadata(writer_validation),
+                        "quality_before_edit": (
+                            _compact_quality_metadata(quality_report)
+                            if quality_report is not None
+                            else None
+                        ),
+                        "quality_after_edit": (
+                            _compact_quality_metadata(quality_report_after_edit)
+                            if quality_report_after_edit is not None
+                            else None
+                        ),
+                        "editor_attempt_count": _safe_writer_metadata(writer_metadata).get(
+                            "editor_retry_count", 0
+                        ),
+                        "patched_unit_ids": _safe_writer_metadata(writer_metadata).get(
+                            "editor_patched_unit_ids", []
+                        ),
+                        "evidence_boundary_passed": False,
+                        "quality_gate_passed": None,
                     },
                 )
             return await self._run_full_fallback(
@@ -1140,6 +1445,8 @@ class ArticleFinalizer:
                 length_profile=length_profile,
                 attempt_observer=attempt_observer,
                 writer_metadata=writer_metadata,
+                quality_report_before_edit=quality_report,
+                quality_report_after_edit=quality_report_after_edit,
                 material_projection=material_projection,
                 place_resolver=place_resolver,
             )
@@ -1169,12 +1476,12 @@ class ArticleFinalizer:
             if attempt_observer:
                 final_val_meta: dict[str, Any] = {
                     "writer_status": "rejected",
-                    "violations": list(final_validation.violations),
-                    "draft": writer_draft.to_dict(),
+                    "factual_validation": _compact_validation_metadata(final_validation),
                     "stage": "post_finalization_validation",
                 }
-                if writer_metadata:
-                    final_val_meta["writer_attempt"] = writer_metadata
+                safe_writer_metadata = _safe_writer_metadata(writer_metadata)
+                if safe_writer_metadata:
+                    final_val_meta["writer_attempt"] = safe_writer_metadata
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
                     status="failed",
@@ -1184,14 +1491,28 @@ class ArticleFinalizer:
             if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
                 raise ArticlePublicationRejected(
                     reason="validation_failed",
-                    message=(
-                        "Finalized article draft failed Evidence Boundary validation: "
-                        f"{list(final_validation.violations)}"
-                    ),
+                    message=("Finalized article draft failed Evidence Boundary validation"),
                     metadata={
-                        "violations": list(final_validation.violations),
+                        "factual_validation": _compact_validation_metadata(final_validation),
                         "stage": "post_finalization_validation",
-                        "draft": writer_draft.to_dict(),
+                        "quality_before_edit": (
+                            _compact_quality_metadata(quality_report)
+                            if quality_report is not None
+                            else None
+                        ),
+                        "quality_after_edit": (
+                            _compact_quality_metadata(quality_report_after_edit)
+                            if quality_report_after_edit is not None
+                            else None
+                        ),
+                        "editor_attempt_count": _safe_writer_metadata(writer_metadata).get(
+                            "editor_retry_count", 0
+                        ),
+                        "patched_unit_ids": _safe_writer_metadata(writer_metadata).get(
+                            "editor_patched_unit_ids", []
+                        ),
+                        "evidence_boundary_passed": False,
+                        "quality_gate_passed": None,
                     },
                 )
             return await self._run_full_fallback(
@@ -1204,6 +1525,8 @@ class ArticleFinalizer:
                 length_profile=length_profile,
                 attempt_observer=attempt_observer,
                 writer_metadata=writer_metadata,
+                quality_report_before_edit=quality_report,
+                quality_report_after_edit=quality_report_after_edit,
                 material_projection=material_projection,
                 place_resolver=place_resolver,
             )
@@ -1220,7 +1543,6 @@ class ArticleFinalizer:
             place_resolver=place_resolver,
         )
         if final_quality.blocking_findings:
-            quality_metadata = final_quality.to_metadata()
             logger.info(
                 "Finalized article draft failed reader-quality gate: %s",
                 [
@@ -1231,39 +1553,37 @@ class ArticleFinalizer:
             if attempt_observer:
                 quality_meta: dict[str, Any] = {
                     "writer_status": "rejected",
-                    "quality": quality_metadata,
-                    "draft": writer_draft.to_dict(),
+                    **_quality_rejection_metadata(
+                        final_quality,
+                        quality_report_before_edit=quality_report,
+                        quality_report_after_edit=quality_report_after_edit,
+                        writer_metadata=writer_metadata,
+                        validation=writer_validation,
+                    ),
                     "stage": "post_finalization_quality",
                 }
-                if writer_metadata:
-                    quality_meta["writer_attempt"] = writer_metadata
+                safe_writer_metadata = _safe_writer_metadata(writer_metadata)
+                if safe_writer_metadata:
+                    quality_meta["writer_attempt"] = safe_writer_metadata
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
                     status="failed",
                     error_kind="article_quality_rejected",
                     metadata=quality_meta,
                 )
-            if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
-                raise ArticlePublicationRejected(
-                    reason="quality_failed",
-                    message=(
-                        "Finalized article draft failed reader-quality validation: "
-                        f"{[finding.code for finding in final_quality.blocking_findings]}"
-                    ),
-                    metadata={"quality": quality_metadata, "stage": "post_finalization_quality"},
-                )
-            return await self._run_full_fallback(
-                writer_status="rejected",
-                ai_diag=None,
-                ai_covered_story_ids=(),
-                context=context,
-                coverage_plan=coverage_plan,
-                editorial_config=editorial_config,
-                length_profile=length_profile,
-                attempt_observer=attempt_observer,
-                writer_metadata=writer_metadata,
-                material_projection=material_projection,
-                place_resolver=place_resolver,
+            raise ArticlePublicationRejected(
+                reason="quality_failed",
+                message=(
+                    "Finalized article draft failed reader-quality validation: "
+                    f"{[finding.code for finding in final_quality.blocking_findings]}"
+                ),
+                metadata=_quality_rejection_metadata(
+                    final_quality,
+                    quality_report_before_edit=quality_report,
+                    quality_report_after_edit=quality_report_after_edit,
+                    writer_metadata=writer_metadata,
+                    validation=writer_validation,
+                ),
             )
 
         # 3b. Detect chat-roll patterns for editorial logging (AGENTS.md §0.6)
@@ -1289,11 +1609,14 @@ class ArticleFinalizer:
                 final_diag=final_diag,
                 trace=trace,
                 quality_report=final_quality,
+                quality_report_before_edit=quality_report,
+                quality_report_after_edit=quality_report_after_edit,
                 material_projection=material_projection,
             )
-            if writer_metadata:
-                meta["writer_attempt"] = writer_metadata
-                for key, value in writer_metadata.items():
+            safe_writer_metadata = _safe_writer_metadata(writer_metadata)
+            if safe_writer_metadata:
+                meta["writer_attempt"] = safe_writer_metadata
+                for key, value in safe_writer_metadata.items():
                     if key not in meta:
                         meta[key] = value
             if attempt_observer:
@@ -1337,12 +1660,15 @@ class ArticleFinalizer:
                 final_diag=ai_diag,
                 trace=trace,
                 quality_report=final_quality,
+                quality_report_before_edit=quality_report,
+                quality_report_after_edit=quality_report_after_edit,
                 material_projection=material_projection,
             )
             meta["coverage_only_diagnostic"] = True
-            if writer_metadata:
-                meta["writer_attempt"] = writer_metadata
-                for key, value in writer_metadata.items():
+            safe_writer_metadata = _safe_writer_metadata(writer_metadata)
+            if safe_writer_metadata:
+                meta["writer_attempt"] = safe_writer_metadata
+                for key, value in safe_writer_metadata.items():
                     if key not in meta:
                         meta[key] = value
             if attempt_observer:
@@ -1374,6 +1700,8 @@ class ArticleFinalizer:
         length_profile: ArticleLengthProfile | None,
         attempt_observer: GenerationAttemptObserver | None,
         writer_metadata: dict[str, Any] | None = None,
+        quality_report_before_edit: ArticleReaderQualityReport | None = None,
+        quality_report_after_edit: ArticleReaderQualityReport | None = None,
         material_projection: ArticleMaterialProjection | None = None,
         place_resolver: Any | None = None,
     ) -> ArticleFinalizationResult:
@@ -1463,11 +1791,14 @@ class ArticleFinalizer:
                 final_diag=final_diag,
                 trace=trace,
                 quality_report=fallback_quality,
+                quality_report_before_edit=quality_report_before_edit,
+                quality_report_after_edit=quality_report_after_edit,
                 material_projection=material_projection,
             )
-            if writer_metadata:
-                meta["writer_attempt"] = writer_metadata
-                for key, value in writer_metadata.items():
+            safe_writer_metadata = _safe_writer_metadata(writer_metadata)
+            if safe_writer_metadata:
+                meta["writer_attempt"] = safe_writer_metadata
+                for key, value in safe_writer_metadata.items():
                     if key not in meta:
                         meta[key] = value
             if attempt_observer:
@@ -1491,7 +1822,7 @@ class ArticleFinalizer:
                 await attempt_observer.attempt_finished(
                     fb_attempt_id,
                     status="failed",
-                    metadata={"error": str(exc)},
+                    metadata={"exception_type": type(exc).__name__},
                 )
             if isinstance(exc, ArticlePublicationRejected):
                 raise

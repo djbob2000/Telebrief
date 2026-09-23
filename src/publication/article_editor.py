@@ -36,7 +36,11 @@ logger = logging.getLogger(__name__)
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
-def _reground_support_ids(text: str, context: ArticleEditorialContext) -> tuple[str, ...]:
+def _reground_support_ids(
+    text: str,
+    context: ArticleEditorialContext,
+    allowed_support_ids: tuple[str, ...] | list[str] | None = None,
+) -> tuple[str, ...]:
     """Return only support packets with a concrete lexical anchor in ``text``.
 
     Editor patches replace reader-facing prose, so citations from the old
@@ -64,7 +68,10 @@ def _reground_support_ids(text: str, context: ArticleEditorialContext) -> tuple[
     text_stems = distinctive_stems(text)
     text_numbers = set(re.findall(r"\b\d+\b", text))
     matched: list[str] = []
+    allowed = set(allowed_support_ids) if allowed_support_ids is not None else None
     for support in context.supports:
+        if allowed is not None and support.support_id not in allowed:
+            continue
         if support.publication_use != "PUBLISH":
             continue
         support_text = f"{support.text} {support.source_text}"
@@ -195,6 +202,12 @@ class ArticleEditor:
                     response_format={"type": "json_object"},
                 )
                 patches = self._parse_editor_response(response)
+                requested_units = {unit["unit_id"] for unit in prompt_data}
+                patches = {
+                    unit_id: value
+                    for unit_id, value in patches.items()
+                    if unit_id in requested_units
+                }
                 if not patches:
                     logger.warning("ArticleEditor returned no valid unit patches")
                     if attempt_observer is not None:
@@ -207,7 +220,10 @@ class ArticleEditor:
                     current_draft,
                     patches,
                     context=validation_context,
-                    preserve_unmatched_supports=material_projection is None,
+                    preserve_unmatched_supports=False,
+                    allowed_support_ids_by_unit={
+                        unit["unit_id"]: tuple(unit["support_ids"]) for unit in prompt_data
+                    },
                 )
                 patched_unit_ids.extend(patches)
                 self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
@@ -263,7 +279,6 @@ class ArticleEditor:
                         obs_att_id,
                         "failed",
                         error_kind=type(exc).__name__,
-                        metadata={"error": str(exc)},
                     )
                 break
 
@@ -302,7 +317,11 @@ class ArticleEditor:
 
         # Index units across draft
         # 1. Title
-        def unit_supports(unit_ids: list[str], unit_issues: list[Any]) -> list[str]:
+        def unit_supports(
+            unit_ids: list[str],
+            claim_ids: list[str],
+            unit_issues: list[Any],
+        ) -> list[str]:
             # Required support IDs from a quality finding must appear first so
             # the prompt's bounded five-support display cannot hide the exact
             # evidence that the editor is asked to restore.
@@ -310,14 +329,15 @@ class ArticleEditor:
             for issue in unit_issues:
                 ids.extend(getattr(issue, "support_ids", ()) or ())
             ids.extend(unit_ids)
+            ids.extend(claim_ids)
             return list(dict.fromkeys(ids))
 
         if "TITLE" in issues_by_unit:
-            t_sups = unit_supports(list(draft.title_support_ids), issues_by_unit["TITLE"])
-            if not t_sups:
-                t_sups = list(draft.lead_support_ids) or (
-                    list(draft.sections[0].heading_support_ids) if draft.sections else []
-                )
+            t_sups = unit_supports(
+                list(draft.title_support_ids),
+                [sid for claim in draft.title_claims for sid in claim.cited_support_ids],
+                issues_by_unit["TITLE"],
+            )
             unit_data.append(
                 {
                     "unit_id": "TITLE",
@@ -337,7 +357,11 @@ class ArticleEditor:
 
         # 2. Lead
         if "LEAD" in issues_by_unit:
-            lead_sups = unit_supports(list(draft.lead_support_ids), issues_by_unit["LEAD"])
+            lead_sups = unit_supports(
+                list(draft.lead_support_ids),
+                [sid for claim in draft.lead_claims for sid in claim.cited_support_ids],
+                issues_by_unit["LEAD"],
+            )
             unit_data.append(
                 {
                     "unit_id": "LEAD",
@@ -360,12 +384,24 @@ class ArticleEditor:
         for s_idx, sec in enumerate(draft.sections, start=1):
             h_id = f"H{s_idx:03d}"
             if h_id in issues_by_unit:
-                h_sups = unit_supports(list(sec.heading_support_ids), issues_by_unit[h_id])
+                h_sups = unit_supports(
+                    list(sec.heading_support_ids),
+                    [sid for claim in sec.heading_claims for sid in claim.cited_support_ids],
+                    issues_by_unit[h_id],
+                )
                 unit_data.append(
                     {
                         "unit_id": h_id,
                         "unit_type": "heading",
                         "text": sec.heading,
+                        "reader_context": {
+                            "article_title": draft.title,
+                            "other_section_headings": tuple(
+                                other_section.heading
+                                for other_index, other_section in enumerate(draft.sections, start=1)
+                                if other_index != s_idx
+                            ),
+                        },
                         "support_ids": h_sups,
                         "supports": [
                             rendered
@@ -378,12 +414,25 @@ class ArticleEditor:
                     }
                 )
 
-            for p in sec.paragraphs:
+            for paragraph_index, p in enumerate(sec.paragraphs):
                 p_id = f"P{p_idx:03d}"
                 if p_id in issues_by_unit:
-                    p_sups = unit_supports(list(p.cited_support_ids), issues_by_unit[p_id])
-                    if not p_sups:
-                        p_sups = list(sec.heading_support_ids)
+                    p_sups = unit_supports(
+                        list(p.cited_support_ids),
+                        [sid for claim in p.claims for sid in claim.cited_support_ids],
+                        issues_by_unit[p_id],
+                    )
+                    reader_context = {
+                        "section_heading": sec.heading,
+                        "previous_paragraph": (
+                            sec.paragraphs[paragraph_index - 1].text if paragraph_index > 0 else ""
+                        ),
+                        "next_paragraph": (
+                            sec.paragraphs[paragraph_index + 1].text
+                            if paragraph_index + 1 < len(sec.paragraphs)
+                            else ""
+                        ),
+                    }
                     unit_data.append(
                         {
                             "unit_id": p_id,
@@ -398,6 +447,7 @@ class ArticleEditor:
                                 if rendered
                             ],
                             "issues": issues_by_unit[p_id],
+                            "reader_context": reader_context,
                         }
                     )
                 p_idx += 1
@@ -477,6 +527,22 @@ class ArticleEditor:
             blocks.append("════════════════════════════════════════")
             blocks.append(f"ФРАГМЕНТ [{uid}] (тип: {utype})")
             blocks.append(f"Текущий текст:\n{text}\n")
+            reader_context = u.get("reader_context") or {}
+            if any(reader_context.values()):
+                blocks.append(
+                    "Неизменяемый контекст для связности (эти строки нельзя редактировать; "
+                    "исправляйте только целевой фрагмент):"
+                )
+                if reader_context.get("section_heading"):
+                    blocks.append(f"  Заголовок раздела: {reader_context['section_heading']}")
+                if reader_context.get("article_title"):
+                    blocks.append(f"  Заголовок статьи: {reader_context['article_title']}")
+                for heading in reader_context.get("other_section_headings", ()):
+                    blocks.append(f"  Заголовок другой главы: {heading}")
+                if reader_context.get("previous_paragraph"):
+                    blocks.append(f"  Предыдущий абзац: {reader_context['previous_paragraph']}")
+                if reader_context.get("next_paragraph"):
+                    blocks.append(f"  Следующий абзац: {reader_context['next_paragraph']}")
             blocks.append("Замечания валидатора:")
             if utype == "title":
                 blocks.append(
@@ -499,6 +565,7 @@ class ArticleEditor:
                             " -> Сохраните подтверждённые детали и опирайтесь именно на support IDs: "
                             + ", ".join(iss.support_ids)
                         )
+                    msg += self._quality_repair_instruction(iss.code)
                     blocks.append(msg)
                     continue
                 if iss.code == "UNSUPPORTED_CLAIM_ATOM":
@@ -573,6 +640,44 @@ class ArticleEditor:
         )
         return "\n".join(blocks)
 
+    @staticmethod
+    def _quality_repair_instruction(code: str) -> str:
+        instructions = {
+            "OVERLOADED_ROSTER_PARAGRAPH": (
+                " -> Сгруппируйте сообщения в локальные сравнения или временную последовательность. "
+                "Сохраните важные поддержанные исключения и конкретные различия, уберите только "
+                "повторный перечень; не переносите детали между местами и не добавляйте причины."
+            ),
+            "CROSS_SECTION_REPETITION": (
+                " -> Оставьте повторяющееся утверждение в части, где оно лучше всего подтверждено; "
+                "в этом целевом фрагменте удалите повтор или сохраните только новое поддержанное "
+                "состояние, время либо последствие. Соседние части статьи не редактируйте."
+            ),
+            "DUPLICATE_ARTICLE_HEADING": (
+                " -> Локально уточните только этот заголовок по подтверждённому содержанию раздела, "
+                "чтобы он отличался от заголовка статьи и других глав."
+            ),
+            "UNDEVELOPED_LEAD_PROMISE": (
+                " -> Локально исправьте лид: уберите обещание, которое основной текст не раскрывает, "
+                "или сформулируйте его только в пределах подтверждённого материала. Не добавляйте "
+                "новые утверждения и не переписывайте тело статьи."
+            ),
+            "ARTICLE_INVENTORY_RHYTHM": (
+                " -> Свяжите соседние короткие сюжеты естественным переходом и сохраните их "
+                "конкретные детали; не превращайте абзац в перечень и не добавляйте факты."
+            ),
+            "QUOTE_ROLL_PARAGRAPH": (
+                " -> Сведите сообщения к плавной косвенной речи; оставьте не более двух точных "
+                "дословных цитат, если они нужны. Не исправляйте и не меняйте слова внутри прямой цитаты."
+            ),
+            "CONTRADICTORY_SERVICE_STATE": (
+                " -> Передайте подтверждённое локальное различие для одной услуги, места и времени "
+                "как явный контраст. Не обобщайте состояние на весь город, не выводите причину и "
+                "не переносите состояние между адресами."
+            ),
+        }
+        return instructions.get(code, "")
+
     def _parse_editor_response(self, response: str) -> dict[str, str]:
         """Extract unit_id -> edited_text mapping from model response."""
         cleaned = (response or "").strip()
@@ -621,19 +726,29 @@ class ArticleEditor:
         patches: Mapping[str, str],
         context: ArticleEditorialContext | None = None,
         *,
-        preserve_unmatched_supports: bool = True,
+        preserve_unmatched_supports: bool = False,
+        allowed_support_ids_by_unit: Mapping[str, tuple[str, ...]] | None = None,
     ) -> StructuredArticleDraft:
-        """Apply targeted text patches while preserving structure and provenance.
+        """Apply targeted text patches while preserving structure and valid provenance.
 
         Projected validation contexts intentionally omit suppressed material.  In
-        that mode an editor patch that cannot be re-grounded must not inherit the
-        old citation IDs, because doing so would reattach filtered evidence.
+        every mode, replacement prose must be strictly re-grounded before the
+        patch is accepted. A failed or unavailable re-grounding rejects the
+        patch, leaving the original text and its original provenance for final
+        validation. The legacy ``preserve_unmatched_supports`` argument remains
+        accepted for call compatibility, but cannot authorize citations for new
+        prose.
         """
         if not patches:
             return draft
 
+        def allowed_ids(unit_id: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
+            if allowed_support_ids_by_unit is not None:
+                return tuple(allowed_support_ids_by_unit.get(unit_id, ()))
+            return tuple(fallback)
+
         title_sups = draft.title_support_ids
-        if not title_sups:
+        if not title_sups and allowed_support_ids_by_unit is None:
             title_sups = draft.lead_support_ids or (
                 draft.sections[0].heading_support_ids if draft.sections else ()
             )
@@ -643,50 +758,42 @@ class ArticleEditor:
         if "TITLE" in patches:
             raw_t = patches["TITLE"].strip()
             if raw_t.upper() not in ("", "[DELETE]", "DELETE", "NONE", "NULL", "[УДАЛИТЬ]"):
-                title = _normalize_homoglyphs(_strip_internal_handles(raw_t))
-                if context:
-                    regrounded = _reground_support_ids(title, context)
-                    if regrounded:
-                        title_sups = regrounded
-                    else:
-                        filtered_title_sups = tuple(
-                            sid
-                            for sid in title_sups
-                            if sid in context.support_by_id
-                            and context.support_by_id[sid].publication_use == "PUBLISH"
-                            and context.support_by_id[sid].temporal_role == "CURRENT_WINDOW"
-                        )
-                        title_sups = (
-                            filtered_title_sups
-                            if not preserve_unmatched_supports
-                            else filtered_title_sups or title_sups
-                        )
-                title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_sups),)
+                candidate_title = _normalize_homoglyphs(_strip_internal_handles(raw_t))
+                regrounded_title_sups = (
+                    _reground_support_ids(
+                        candidate_title, context, allowed_ids("TITLE", tuple(title_sups))
+                    )
+                    if context is not None
+                    else ()
+                )
+                if regrounded_title_sups:
+                    title = candidate_title
+                    title_sups = regrounded_title_sups
+                    title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_sups),)
 
         lead = draft.lead
         lead_claims = draft.lead_claims
         lead_sups = draft.lead_support_ids
         if "LEAD" in patches:
             raw_l = patches["LEAD"]
-            lead = _normalize_homoglyphs(_strip_internal_handles(raw_l))
-            lead_sups = _reground_support_ids(lead, context) if context else draft.lead_support_ids
-            if not lead_sups and context:
-                filtered_lead_sups = tuple(
-                    sid
-                    for sid in draft.lead_support_ids
-                    if sid in context.support_by_id
-                    and context.support_by_id[sid].publication_use == "PUBLISH"
+            candidate_lead = _normalize_homoglyphs(_strip_internal_handles(raw_l))
+            regrounded_lead_sups = (
+                _reground_support_ids(
+                    candidate_lead,
+                    context,
+                    allowed_ids("LEAD", tuple(draft.lead_support_ids)),
                 )
-                lead_sups = (
-                    filtered_lead_sups
-                    if not preserve_unmatched_supports
-                    else filtered_lead_sups or draft.lead_support_ids
-                )
-            lead_sentences = _split_sentences_safe(lead)
-            lead_claims = tuple(
-                ArticleClaimAtom(text=s, cited_support_ids=lead_sups)
-                for s in (lead_sentences or [lead])
+                if context is not None
+                else ()
             )
+            if regrounded_lead_sups:
+                lead = candidate_lead
+                lead_sups = regrounded_lead_sups
+                lead_sentences = _split_sentences_safe(lead)
+                lead_claims = tuple(
+                    ArticleClaimAtom(text=s, cited_support_ids=lead_sups)
+                    for s in (lead_sentences or [lead])
+                )
 
         p_idx = 1
         new_sections: list[ArticleSection] = []
@@ -696,131 +803,137 @@ class ArticleEditor:
             heading_claims = sec.heading_claims
             h_sups = sec.heading_support_ids
             if h_id in patches:
-                heading = _normalize_homoglyphs(_strip_internal_handles(patches[h_id]))
-                h_sups = (
-                    _reground_support_ids(heading, context) if context else sec.heading_support_ids
+                candidate_heading = _normalize_homoglyphs(_strip_internal_handles(patches[h_id]))
+                regrounded_heading_sups = (
+                    _reground_support_ids(
+                        candidate_heading,
+                        context,
+                        allowed_ids(h_id, tuple(sec.heading_support_ids)),
+                    )
+                    if context is not None
+                    else ()
                 )
-                if not h_sups:
-                    h_sups = sec.heading_support_ids if preserve_unmatched_supports else ()
-                heading_claims = (ArticleClaimAtom(text=heading, cited_support_ids=h_sups),)
+                if regrounded_heading_sups:
+                    heading = candidate_heading
+                    h_sups = regrounded_heading_sups
+                    heading_claims = (ArticleClaimAtom(text=heading, cited_support_ids=h_sups),)
 
             new_paragraphs: list[ArticleParagraph] = []
             for para in sec.paragraphs:
                 p_id = f"P{p_idx:03d}"
-                text = para.text
-                claims = para.claims
-                p_sups = para.cited_support_ids or sec.heading_support_ids
-                if p_id in patches:
-                    raw_patch = patches[p_id].strip()
-                    if raw_patch.upper() in (
-                        "",
-                        "[DELETE]",
-                        "DELETE",
-                        "УДАЛИТЬ",
-                        "[УДАЛИТЬ]",
-                        "NONE",
-                        "NULL",
-                    ):
-                        # AGENTS.md 0.3, 0.7: do not drop substantive paragraphs with valid supports.
-                        # If supports exist, synthesize safe factual sentences from evidence instead of deleting.
-                        if context and p_sups:
-                            sup_texts = [
-                                context.support_by_id[s_id].text
-                                for s_id in p_sups
-                                if s_id in context.support_by_id
-                                and context.support_by_id[s_id].text
-                            ]
-                            if sup_texts:
-                                from src.publication.article_recovery import (
-                                    _clean_support_text_for_reader,
-                                    _normalize_for_dedup,
-                                )
-
-                                existing_norms = {
-                                    _normalize_for_dedup(p.text)
-                                    for s in new_sections
-                                    for p in s.paragraphs
-                                } | {_normalize_for_dedup(p.text) for p in new_paragraphs}
-                                safe_sentences: list[str] = []
-                                for st in sup_texts[:3]:
-                                    cleaned_s = _clean_support_text_for_reader(st.strip())
-                                    if (
-                                        cleaned_s
-                                        and _normalize_for_dedup(cleaned_s) not in existing_norms
-                                    ):
-                                        safe_sentences.append(cleaned_s)
-                                if safe_sentences:
-                                    safe_text = " ".join(safe_sentences)
-                                    sentences = _split_sentences_safe(safe_text)
-                                    claims = tuple(
-                                        ArticleClaimAtom(text=s, cited_support_ids=p_sups)
-                                        for s in (sentences or [safe_text])
-                                    )
-                                    new_paragraphs.append(
-                                        ArticleParagraph(
-                                            text=safe_text,
-                                            cited_support_ids=p_sups,
-                                            claims=claims,
-                                        )
-                                    )
-                                p_idx += 1
-                                continue
-                        p_idx += 1
-                        continue
-                    text = _normalize_homoglyphs(_strip_internal_handles(raw_patch))
-                    # A patch replaces the prose; recompute its provenance
-                    # instead of retaining citations from the old paragraph.
-                    p_sups = _reground_support_ids(text, context) if context else p_sups
-                    if not p_sups and context and not preserve_unmatched_supports:
-                        p_sups = ()
-                    sentences = _split_sentences_safe(text)
-                    from src.publication.article_models import _normalize_for_dedup
-
-                    seen_sn: set[str] = set()
-                    deduped_s: list[str] = []
-                    for s in sentences:
-                        sn = _normalize_for_dedup(s)
-                        if sn in seen_sn:
-                            continue
-                        seen_sn.add(sn)
-                        deduped_s.append(s)
-                    if deduped_s and len(deduped_s) < len(sentences):
-                        text = " ".join(deduped_s)
-                        sentences = deduped_s
-                    claims = tuple(
-                        ArticleClaimAtom(text=s, cited_support_ids=p_sups)
-                        for s in (sentences or [text])
-                    )
-
-                if not p_sups:
-                    # If paragraph lacks supports, try to find matching supports from context
-                    if context and getattr(context, "supports", None):
-                        matched = []
-                        tok_re = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
-                        p_words = {w.lower() for w in tok_re.findall(text) if len(w) >= 3}
-                        p_nums = set(re.findall(r"\b\d+\b", text))
-                        for sup in context.supports:
-                            if sup.publication_use == "PUBLISH" and sup.text:
-                                s_words = {
-                                    w.lower() for w in tok_re.findall(sup.text) if len(w) >= 3
-                                }
-                                s_nums = set(re.findall(r"\b\d+\b", sup.text))
-                                if len(p_words & s_words) >= 2 or (
-                                    p_nums and s_nums and (p_nums & s_nums)
-                                ):
-                                    matched.append(sup.support_id)
-                        if matched:
-                            p_sups = tuple(dict.fromkeys(matched))
-                            sentences = _split_sentences_safe(text)
-                            claims = tuple(
-                                ArticleClaimAtom(text=s, cited_support_ids=p_sups)
-                                for s in (sentences or [text])
-                            )
-
-                if not p_sups:
-                    # Paragraph has zero evidence in source material; omit to uphold Evidence Boundary
+                if p_id not in patches:
+                    # Keep unpatched claim/citation tuples byte-for-byte intact.
+                    # Rebuilding paragraph citations from their claims loses
+                    # intentional distinctions between unit and claim support.
+                    new_paragraphs.append(para)
                     p_idx += 1
                     continue
+
+                text = para.text
+                claims = para.claims
+                existing_supports = tuple(
+                    dict.fromkeys(
+                        (
+                            *para.cited_support_ids,
+                            *(sid for claim in para.claims for sid in claim.cited_support_ids),
+                        )
+                    )
+                )
+                raw_patch = patches[p_id].strip()
+                if raw_patch.upper() in (
+                    "",
+                    "[DELETE]",
+                    "DELETE",
+                    "УДАЛИТЬ",
+                    "[УДАЛИТЬ]",
+                    "NONE",
+                    "NULL",
+                ):
+                    # AGENTS.md 0.3, 0.7: do not drop substantive paragraphs with valid supports.
+                    # If supports exist, synthesize safe factual sentences from evidence instead of deleting.
+                    if context and existing_supports:
+                        sup_texts = [
+                            context.support_by_id[s_id].text
+                            for s_id in existing_supports
+                            if s_id in context.support_by_id and context.support_by_id[s_id].text
+                        ]
+                        if sup_texts:
+                            from src.publication.article_recovery import (
+                                _clean_support_text_for_reader,
+                                _normalize_for_dedup,
+                            )
+
+                            existing_norms = {
+                                _normalize_for_dedup(p.text)
+                                for s in new_sections
+                                for p in s.paragraphs
+                            } | {_normalize_for_dedup(p.text) for p in new_paragraphs}
+                            safe_sentences: list[str] = []
+                            for st in sup_texts[:3]:
+                                cleaned_s = _clean_support_text_for_reader(st.strip())
+                                if (
+                                    cleaned_s
+                                    and _normalize_for_dedup(cleaned_s) not in existing_norms
+                                ):
+                                    safe_sentences.append(cleaned_s)
+                            if safe_sentences:
+                                safe_text = " ".join(safe_sentences)
+                                sentences = _split_sentences_safe(safe_text)
+                                claims = tuple(
+                                    ArticleClaimAtom(
+                                        text=sentence,
+                                        cited_support_ids=existing_supports,
+                                    )
+                                    for sentence in (sentences or [safe_text])
+                                )
+                                new_paragraphs.append(
+                                    ArticleParagraph(
+                                        text=safe_text,
+                                        cited_support_ids=existing_supports,
+                                        claims=claims,
+                                    )
+                                )
+                            p_idx += 1
+                            continue
+                    p_idx += 1
+                    continue
+
+                candidate_text = _normalize_homoglyphs(_strip_internal_handles(raw_patch))
+                p_sups = (
+                    _reground_support_ids(
+                        candidate_text,
+                        context,
+                        allowed_ids(p_id, existing_supports),
+                    )
+                    if context is not None
+                    else ()
+                )
+                if not p_sups:
+                    # Reject unsupported replacement prose. The original unit
+                    # remains intact so final validation still sees its claims.
+                    new_paragraphs.append(para)
+                    p_idx += 1
+                    continue
+
+                text = candidate_text
+                sentences = _split_sentences_safe(text)
+                from src.publication.article_models import _normalize_for_dedup
+
+                seen_sn: set[str] = set()
+                deduped_s: list[str] = []
+                for sentence in sentences:
+                    sn = _normalize_for_dedup(sentence)
+                    if sn in seen_sn:
+                        continue
+                    seen_sn.add(sn)
+                    deduped_s.append(sentence)
+                if deduped_s and len(deduped_s) < len(sentences):
+                    text = " ".join(deduped_s)
+                    sentences = deduped_s
+                claims = tuple(
+                    ArticleClaimAtom(text=sentence, cited_support_ids=p_sups)
+                    for sentence in (sentences or [text])
+                )
 
                 new_paragraphs.append(
                     ArticleParagraph(

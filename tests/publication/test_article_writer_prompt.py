@@ -129,9 +129,29 @@ def test_article_writer_prompt_forbids_brief_topic_dumping():
     generator.output_language = "Russian"
     prompt = generator._build_event_article_system_prompt()
 
-    assert "РАЗДЕЛЕНИЕ НА АБЗАЦЫ" in prompt
-    assert "свалку" in prompt.lower() or "сваливать" in prompt.lower()
-    assert "вплетаться в связный абзац" in prompt.lower() or "bullet-like" in prompt.lower()
+    assert "не перечисляйте адреса ради демонстрации охвата" in prompt.lower()
+    assert "one natural home" in prompt.lower()
+    assert "catch-all closing paragraph" in prompt.lower()
+
+
+def test_article_writer_prompt_uses_event_time_and_report_time_without_shape_quotas():
+    generator = ArticleGenerator.__new__(ArticleGenerator)
+    generator.output_language = "Russian"
+    prompt = generator._build_event_article_system_prompt()
+    lowered = prompt.lower()
+
+    assert "effective_from" in prompt
+    assert "effective_until" in prompt
+    assert "observed_at" in prompt
+    assert "не устанавливает начало события" in lowered
+    assert "не задавайте квот" in lowered
+    assert "one-paragraph-per-story quota" in lowered
+    assert "число заголовков, адресов и абзацев определяет материал" in lowered
+    assert "обычно 3–5 разделов" not in lowered
+    assert "3–5 тематических глав" not in lowered
+    assert "городской горизонт" not in lowered
+    assert "в запорожье" not in lowered
+    assert "независимой украины" not in lowered
 
 
 def test_article_writer_prompt_uses_adaptive_bundle_depth_without_fixed_quotas():
@@ -139,7 +159,9 @@ def test_article_writer_prompt_uses_adaptive_bundle_depth_without_fixed_quotas()
     generator.output_language = "Russian"
     prompt = generator._build_event_article_system_prompt()
 
-    assert "СТРУКТУРА ГЛАВЫ (АДАПТИВНАЯ)" in prompt
+    assert "ARTICLE COMPOSITION ROADMAP" in prompt
+    assert "prominence controls depth, not inclusion" in prompt.lower()
+    assert "не задавайте квот" in prompt.lower()
     assert "2–3 развёрнутых абзаца" not in prompt
     assert "2–4 связных предложения" not in prompt
 

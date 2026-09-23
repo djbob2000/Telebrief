@@ -33,6 +33,19 @@ _USEFUL_FACT_RE = re.compile(
     r"(?:откры(?:лась|ли|т)|закры(?:лась|ли|т)).*(?:школ\w*|секци\w*|круж\w*))",
     re.IGNORECASE,
 )
+_OPERATIONAL_FACT_RE = re.compile(
+    r"(?:\b(?:пункт\w*|подвоз\w*|выдач\w*|доставк\w*|подач\w*|"
+    r"открыт\w*|закрыт\w*|работа(?:ет|ют)|доступ\w*|обслужив\w*|"
+    r"принима(?:ют|ет)|график\w*|режим\w*|адрес\w*|улиц\w*|район\w*|"
+    r"до\s+\d|с\s+\d|\d{1,2}:\d{2}|руб\w*|₽|литр\w*|бесплатн\w*|"
+    r"восстанов\w*|ограничен\w*|нет\s+(?:света|воды|связи))|\bул\.)",
+    re.IGNORECASE,
+)
+_OPERATIONAL_CLAUSE_SPLIT_RE = re.compile(
+    r"\s*[,;—–]\s*|\s+(?=(?:звон(?:ите|ить)?|подробност\w*|"
+    r"брониров\w*|запис(?:ь|аться)|пишите|обращайт\w*|ссылка|личк\w*))",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -95,14 +108,26 @@ def _is_high_confidence_promotion(support: ArticleSupport) -> bool:
     return len(cues) >= 2
 
 
-def _strip_directory_sentences(text: str) -> str:
+def _strip_directory_sentences(text: str, *, preserve_operational: bool = False) -> str:
     """Remove sentences that contain only contact, booking, or CTA payload."""
     parts = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text or "") if part.strip()]
     retained: list[str] = []
     for part in parts:
-        if _CONTACT_OR_CTA_RE.search(part) and not _has_useful_fact(part):
+        if not _CONTACT_OR_CTA_RE.search(part):
+            retained.append(part)
             continue
-        retained.append(part)
+        if _has_useful_fact(part) and not preserve_operational:
+            retained.append(part)
+            continue
+        if preserve_operational:
+            useful_clauses = [
+                clause
+                for clause in _OPERATIONAL_CLAUSE_SPLIT_RE.split(part)
+                if clause.strip()
+                and (_OPERATIONAL_FACT_RE.search(clause) or not _CONTACT_OR_CTA_RE.search(clause))
+            ]
+            if useful_clauses:
+                retained.append(", ".join(clause.strip() for clause in useful_clauses))
     return " ".join(retained).strip()
 
 
@@ -116,8 +141,11 @@ def _project_support_text(support: ArticleSupport) -> tuple[str, bool]:
 
     cleaned_candidates: list[str] = []
     payload_changed = False
+    preserve_operational = (
+        support.evidence_kind == "service_access" or support.support_kind == "operational"
+    )
     for raw in candidates:
-        trimmed = _strip_directory_sentences(raw)
+        trimmed = _strip_directory_sentences(raw, preserve_operational=preserve_operational)
         sanitized = sanitize_writer_source_text(trimmed)
         payload_changed = payload_changed or sanitized != raw
         cleaned = " ".join(sanitized.split()).strip()
@@ -130,31 +158,27 @@ def _project_support_text(support: ArticleSupport) -> tuple[str, bool]:
     primary = cleaned_candidates[0]
     primary_sentences = [part.strip() for part in _SENTENCE_SPLIT_RE.split(primary) if part.strip()]
     result = list(primary_sentences)
-    seen = {" ".join(part.split()).casefold() for part in result}
 
-    def is_duplicate(sentence: str) -> bool:
-        key = sentence.casefold()
-        if key in seen:
-            return True
-        sentence_words = set(re.findall(r"[\wа-яё]+", key, re.IGNORECASE))
-        if not sentence_words:
-            return True
-        for existing in result:
-            existing_words = set(re.findall(r"[\wа-яё]+", existing.casefold(), re.IGNORECASE))
-            overlap = len(sentence_words & existing_words) / max(
-                1, min(len(sentence_words), len(existing_words))
-            )
-            if overlap >= 0.8 and abs(len(sentence_words) - len(existing_words)) <= 2:
-                return True
-        return False
+    def normalized_sentence_key(sentence: str) -> tuple[str, ...]:
+        """Normalize punctuation and spacing without changing word order or meaning."""
+        return tuple(re.findall(r"[\wа-яё]+", sentence.casefold(), re.IGNORECASE))
+
+    seen = {normalized_sentence_key(part) for part in result}
 
     for candidate in cleaned_candidates[1:]:
         for sentence in _SENTENCE_SPLIT_RE.split(candidate):
             sentence = " ".join(sentence.split()).strip()
-            key = sentence.casefold()
-            if sentence and not is_duplicate(sentence):
-                result.append(sentence)
-                seen.add(key)
+            key = normalized_sentence_key(sentence)
+            if not sentence:
+                continue
+            if not key:
+                continue
+            if key in seen:
+                continue
+            # Near-duplicates are deliberately retained: a token-set comparison
+            # can erase scope, time, purpose, negation, or a change in word order.
+            result.append(sentence)
+            seen.add(key)
     return " ".join(result).strip(), payload_changed
 
 

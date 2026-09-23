@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Literal, Sequence
 
@@ -97,7 +98,7 @@ class ArticleReaderQualityReport:
         for finding in self.findings:
             by_code[finding.code] = by_code.get(finding.code, 0) + 1
         return {
-            "version": "article-reader-quality-v2",
+            "version": "article-reader-quality-v3",
             "finding_count": len(self.findings),
             "needs_edit": self.needs_edit,
             "counts_by_severity": by_severity,
@@ -142,6 +143,273 @@ def _projected_support_is_citable(
 def _support_ids_for_unit(unit: object) -> tuple[str, ...]:
     ids = getattr(unit, "cited_support_ids", ())
     return tuple(dict.fromkeys(str(sid) for sid in ids if sid))
+
+
+def _citable_support_ids(
+    support_ids: Sequence[str],
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection | None,
+) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            support_id
+            for support_id in support_ids
+            if _projected_support_is_citable(support_id, context, material_projection)
+        )
+    )
+
+
+def _claim_story_ids(
+    support_ids: Sequence[str], context: ArticleEditorialContext
+) -> tuple[str, ...]:
+    stories: list[str] = []
+    for support_id in support_ids:
+        support = context.support_by_id.get(support_id)
+        if support is None:
+            continue
+        story_id = _support_story_id(support)
+        if story_id and story_id not in stories:
+            stories.append(story_id)
+    return tuple(stories)
+
+
+def _unit_claims(
+    unit: object, text: str, support_ids: Sequence[str]
+) -> tuple[tuple[str, tuple[str, ...]], ...]:
+    claims = getattr(unit, "claims", ())
+    if claims:
+        return tuple(
+            (str(claim.text), tuple(str(sid) for sid in claim.cited_support_ids if sid))
+            for claim in claims
+            if getattr(claim, "text", "").strip()
+        )
+    return ((text, tuple(support_ids)),) if text.strip() else ()
+
+
+def _extract_place_keys(text: str, place_resolver: Any | None = None) -> set[str]:
+    if place_resolver is not None:
+        try:
+            resolved = place_resolver.resolve(text).entities
+        except Exception:
+            resolved = ()
+        accepted_types = {
+            "street",
+            "lane",
+            "boulevard",
+            "prospect",
+            "highway",
+            "district",
+            "neighborhood",
+            "settlement",
+            "village",
+            "city",
+        }
+        resolved_places = {
+            unicodedata.normalize("NFKC", entity.canonical_name).casefold().replace("ё", "е")
+            for entity in resolved
+            if entity.kind == "place"
+            and entity.object_type in accepted_types
+            and entity.canonical_name
+        }
+        if resolved_places:
+            return resolved_places
+
+    matched_places: set[str] = set()
+    for match in _STREET_RE.finditer(text):
+        place = match.group(1).casefold().replace("ё", "е")
+        place = re.sub(r"(?:ого|ому|ой|ая|ое|ые|ым|ем|ом|и|ы|а|у|е)$", "", place)
+        if place:
+            matched_places.add(place)
+    return matched_places
+
+
+def _effective_intervals_are_disjoint(first: ArticleSupport, second: ArticleSupport) -> bool:
+    if not (
+        first.effective_from
+        and first.effective_until
+        and second.effective_from
+        and second.effective_until
+    ):
+        return False
+
+    def normalize(value: dt.datetime) -> dt.datetime:
+        if value.tzinfo is None:
+            return value.replace(tzinfo=dt.timezone.utc)
+        return value.astimezone(dt.timezone.utc)
+
+    first_start = normalize(first.effective_from)
+    first_end = normalize(first.effective_until)
+    second_start = normalize(second.effective_from)
+    second_end = normalize(second.effective_until)
+    if first_start >= first_end or second_start >= second_end:
+        return False
+    return first_end < second_start or second_end < first_start
+
+
+def _has_narrative_relation(
+    text: str,
+    observations: Sequence[tuple[str, str, str, ArticleSupport]],
+    place_resolver: Any | None = None,
+) -> bool:
+    """Return true only when prose structure and its cited sources agree.
+
+    A connector word is never sufficient by itself. Contrasts need the same
+    service reported in different states at the named places. Progressions
+    need the same service/place, different supported states, a progression
+    phrase, and non-overlapping explicit effective intervals.
+    """
+    lowered = text.casefold()
+    contrast_marker = bool(
+        re.search(
+            r"(?:тогда\s+как|в\s+то\s+время\s+как|при\s+этом|в\s+отличие\s+от|"
+            r"однако|между\s+тем|но|а)\s+(?:на|в|у)\b|"
+            r"одни\b.{0,180}\bдругие\b",
+            lowered,
+        )
+    )
+    progression_cue = bool(
+        re.search(
+            r"\b(?:за\s+(?:(?:несколько|пару|\d+)\s+)?(?:час\w*|дн\w*)|"
+            r"в\s+течение\s+(?:дня|нескольких\s+час\w*)|"
+            r"через\s+несколько\s+час\w*)\b",
+            lowered,
+        )
+        and re.search(r"\b(?:измен\w*|смен\w*|перемен\w*)\b", lowered)
+    )
+    if not contrast_marker and not progression_cue:
+        return False
+
+    mentioned_places = _extract_place_keys(text, place_resolver)
+    if not mentioned_places:
+        return False
+
+    covered_support_ids: set[str] = set()
+    for index, (first_service, first_place, first_state, first_support) in enumerate(observations):
+        if first_place not in mentioned_places:
+            continue
+        for second_service, second_place, second_state, second_support in observations[index + 1 :]:
+            if (
+                first_support.support_id == second_support.support_id
+                or first_service != second_service
+                or first_state == second_state
+            ):
+                continue
+            places_are_contrasted = (
+                contrast_marker and first_place != second_place and second_place in mentioned_places
+            )
+            effective_progression = (
+                progression_cue
+                and first_place == second_place
+                and _effective_intervals_are_disjoint(first_support, second_support)
+            )
+            if places_are_contrasted or effective_progression:
+                covered_support_ids.update((first_support.support_id, second_support.support_id))
+
+    relevant_support_ids = {observation[3].support_id for observation in observations}
+    return bool(relevant_support_ids) and relevant_support_ids <= covered_support_ids
+
+
+def _temporal_markers(text: str) -> set[str]:
+    return {name for name, pattern in _TEMPORAL_MARKERS.items() if pattern.search(text)}
+
+
+def _has_temporal_progression(first: str, second: str) -> bool:
+    return any(
+        frozenset((first_marker, second_marker)) in _TEMPORAL_VARIATION_PAIRS
+        for first_marker in _temporal_markers(first)
+        for second_marker in _temporal_markers(second)
+    )
+
+
+def _normalized_heading(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
+    return " ".join(re.sub(r"[^\w\s]", " ", normalized).split())
+
+
+def _material_tokens(text: str) -> set[str]:
+    ignored = {
+        "это",
+        "для",
+        "что",
+        "как",
+        "или",
+        "при",
+        "после",
+        "перед",
+        "около",
+        "сообщают",
+        "сообщили",
+        "жители",
+        "житель",
+        "городе",
+        "города",
+        "улице",
+        "улица",
+    }
+    normalized = unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
+    return {
+        token
+        for token in re.findall(r"[\w-]+", normalized)
+        if len(token) >= 3 and token not in ignored
+    }
+
+
+def _claim_is_materially_new(first_text: str, second_text: str) -> bool:
+    first_service, first_place = _service_and_place(first_text)
+    second_service, second_place = _service_and_place(second_text)
+    first_state, second_state = _state_polarity(first_text), _state_polarity(second_text)
+    if first_service and second_service and first_service != second_service:
+        return True
+    if first_place and second_place and first_place != second_place:
+        return True
+    if first_state and second_state and first_state != second_state:
+        return True
+    if _has_temporal_progression(first_text, second_text):
+        return True
+
+    consequence_pattern = re.compile(
+        r"(?:из-за\s+этого|поэтому|в\s+результате|в\s+итоге|чтобы|для\s+того\s+чтобы|"
+        r"пришлось|что\s+позволило)\s+([^.!?]{3,140})",
+        re.IGNORECASE,
+    )
+    first_consequence = consequence_pattern.search(first_text)
+    second_consequence = consequence_pattern.search(second_text)
+    if bool(first_consequence) != bool(second_consequence):
+        return True
+    if first_consequence and second_consequence:
+        first_result = _material_tokens(first_consequence.group(1))
+        second_result = _material_tokens(second_consequence.group(1))
+        if first_result and second_result and first_result != second_result:
+            return True
+
+    first_tokens, second_tokens = _material_tokens(first_text), _material_tokens(second_text)
+    if not first_tokens or not second_tokens:
+        return False
+    similarity = len(first_tokens & second_tokens) / len(first_tokens | second_tokens)
+    return similarity < 0.68
+
+
+def _supports_show_distinct_effective_times(
+    first_ids: Sequence[str],
+    second_ids: Sequence[str],
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection | None,
+) -> bool:
+    first_supports = [
+        context.support_by_id[sid]
+        for sid in _citable_support_ids(first_ids, context, material_projection)
+        if sid in context.support_by_id
+    ]
+    second_supports = [
+        context.support_by_id[sid]
+        for sid in _citable_support_ids(second_ids, context, material_projection)
+        if sid in context.support_by_id
+    ]
+    first_timed = [s for s in first_supports if s.effective_from and s.effective_until]
+    second_timed = [s for s in second_supports if s.effective_from and s.effective_until]
+    return bool(first_timed and second_timed) and not any(
+        _time_overlap(first, second) for first in first_timed for second in second_timed
+    )
 
 
 def _support_unit_index(draft: StructuredArticleDraft) -> dict[str, tuple[str, ...]]:
@@ -523,6 +791,149 @@ def diagnose_article_quality(
 ) -> ArticleReaderQualityReport:
     findings: list[ArticleReaderQualityFinding] = []
 
+    heading_units: list[tuple[str, str, tuple[str, ...]]] = [
+        (
+            "TITLE",
+            draft.title,
+            _citable_support_ids(
+                (
+                    *draft.title_support_ids,
+                    *(sid for claim in draft.title_claims for sid in claim.cited_support_ids),
+                ),
+                context,
+                material_projection,
+            ),
+        )
+    ]
+    for section_index, section in enumerate(draft.sections, start=1):
+        heading_units.append(
+            (
+                f"H{section_index:03d}",
+                section.heading,
+                _citable_support_ids(
+                    (
+                        *section.heading_support_ids,
+                        *(
+                            sid
+                            for claim in section.heading_claims
+                            for sid in claim.cited_support_ids
+                        ),
+                    ),
+                    context,
+                    material_projection,
+                ),
+            )
+        )
+    duplicate_headings: dict[str, list[str]] = {}
+    for index, (first_id, first_text, first_support_ids) in enumerate(heading_units):
+        normalized = _normalized_heading(first_text)
+        if not normalized:
+            continue
+        for later_id, later_text, later_support_ids in heading_units[index + 1 :]:
+            if normalized != _normalized_heading(later_text):
+                continue
+            target_id = later_id if later_id.startswith("H") else first_id
+            if target_id.startswith("H"):
+                duplicate_headings.setdefault(target_id, []).extend(
+                    (*first_support_ids, *later_support_ids)
+                )
+    for target_id, support_ids in duplicate_headings.items():
+        findings.append(
+            ArticleReaderQualityFinding(
+                code="DUPLICATE_ARTICLE_HEADING",
+                unit_id=target_id,
+                message="Заголовок повторяет название статьи или другой главы; уточните его тему.",
+                support_ids=tuple(dict.fromkeys(support_ids)),
+                severity="blocking",
+            )
+        )
+
+    # A lead may introduce a DEVELOP storyline, but it should not be the only
+    # place where that supported storyline appears.  The coverage diagnostics
+    # validate claim-to-Story links here; prose style alone cannot trigger it.
+    lead_only = diagnose_article_coverage(
+        StructuredArticleDraft(
+            title="",
+            title_support_ids=(),
+            lead=draft.lead,
+            lead_support_ids=draft.lead_support_ids,
+            lead_claims=draft.lead_claims,
+            sections=(),
+        ),
+        coverage_plan,
+        context=context,
+    )
+    body_only = diagnose_article_coverage(
+        StructuredArticleDraft(
+            title="",
+            title_support_ids=(),
+            lead="",
+            lead_support_ids=(),
+            sections=draft.sections,
+        ),
+        coverage_plan,
+        context=context,
+    )
+    suppressed_story_ids = set(
+        getattr(material_projection, "suppressed_story_ids", ()) if material_projection else ()
+    )
+    lead_citable_story_ids = set(
+        _claim_story_ids(
+            _citable_support_ids(
+                tuple(sid for claim in draft.lead_claims for sid in claim.cited_support_ids),
+                context,
+                material_projection,
+            ),
+            context,
+        )
+    )
+    body_claim_support_ids = tuple(
+        sid
+        for section in draft.sections
+        for paragraph in section.paragraphs
+        for claim in _unit_claims(paragraph, paragraph.text, _support_ids_for_unit(paragraph))
+        for sid in claim[1]
+    )
+    body_citable_story_ids = set(
+        _claim_story_ids(
+            _citable_support_ids(body_claim_support_ids, context, material_projection), context
+        )
+    )
+    body_story_ids = set(body_only.covered_story_ids) & body_citable_story_ids
+    for story in coverage_plan.stories:
+        if (
+            story.prominence != "DEVELOP"
+            or story.story_id in suppressed_story_ids
+            or story.story_id not in lead_only.covered_story_ids
+            or story.story_id not in lead_citable_story_ids
+            or story.story_id in body_story_ids
+        ):
+            continue
+        story_support_ids = set(story.support_ids) | set(story.detail_support_ids)
+        lead_support_ids = tuple(
+            dict.fromkeys(
+                sid
+                for claim in draft.lead_claims
+                for sid in claim.cited_support_ids
+                if sid in story_support_ids
+                and _projected_support_is_citable(sid, context, material_projection)
+            )
+        )
+        if not lead_support_ids:
+            continue
+        findings.append(
+            ArticleReaderQualityFinding(
+                code="UNDEVELOPED_LEAD_PROMISE",
+                unit_id="LEAD",
+                message=(
+                    f"Вводная часть обещает раскрыть ключевой сюжет «{story.topic}», "
+                    "но основной текст к нему не возвращается."
+                ),
+                support_ids=lead_support_ids,
+                severity="blocking",
+            )
+        )
+
     # A run is actionable only when it looks like one paragraph per unrelated
     # Story.  A single short paragraph is a valid compact mention.
     p_idx = 1
@@ -571,10 +982,165 @@ def diagnose_article_quality(
                         unit_id=f"P{p_idx:03d}",
                         message="В одном абзаце больше двух прямых цитат; объедините сообщения косвенной речью.",
                         support_ids=_support_ids_for_unit(paragraph),
-                        severity="repair",
+                        # The editor should repair this locally, but an
+                        # unresolved quote roll violates the reader-facing
+                        # quote contract and must not pass finalization.
+                        severity="blocking",
                     )
                 )
             p_idx += 1
+
+    # A packed roster is a paragraph-level shape, not a length or address
+    # quota.  Require several independently supported Story observations,
+    # distinct places and service states; leave a supported contrast or
+    # progression alone.
+    p_idx = 1
+    for section in draft.sections:
+        for paragraph in section.paragraphs:
+            paragraph_support_ids = _citable_support_ids(
+                (
+                    *_support_ids_for_unit(paragraph),
+                    *(sid for claim in paragraph.claims for sid in claim.cited_support_ids),
+                ),
+                context,
+                material_projection,
+            )
+            paragraph_story_ids = _claim_story_ids(paragraph_support_ids, context)
+            source_observations: list[tuple[str, str, str, ArticleSupport]] = []
+            seen_observations: set[tuple[str, str, str, str]] = set()
+            relevant_support_ids: list[str] = []
+            for support_id in paragraph_support_ids:
+                support = context.support_by_id[support_id]
+                source_text = " ".join((support.text, support.source_text)).strip()
+                service, place = _service_and_place(source_text, place_resolver)
+                state = _state_polarity(source_text)
+                if not service or not state:
+                    continue
+                source_places = (
+                    {place} if place else _extract_place_keys(source_text, place_resolver)
+                )
+                if not source_places:
+                    continue
+                for source_place in source_places:
+                    observation_key = (
+                        service,
+                        source_place,
+                        state,
+                        support.support_id,
+                    )
+                    if observation_key not in seen_observations:
+                        seen_observations.add(observation_key)
+                        source_observations.append((service, source_place, state, support))
+                relevant_support_ids.append(support_id)
+            paragraph_places = _extract_place_keys(paragraph.text, place_resolver)
+            if (
+                len(paragraph_story_ids) >= 3
+                and len(paragraph_support_ids) >= 4
+                and len(paragraph_places) >= 4
+                and len(source_observations) >= 4
+                and not _has_narrative_relation(paragraph.text, source_observations, place_resolver)
+            ):
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="OVERLOADED_ROSTER_PARAGRAPH",
+                        unit_id=f"P{p_idx:03d}",
+                        message=(
+                            "В одном абзаце собран перечень разных адресов и состояний без "
+                            "связующего сравнения; сгруппируйте наблюдения и сохраните важные различия."
+                        ),
+                        support_ids=tuple(dict.fromkeys(relevant_support_ids)),
+                        severity="blocking",
+                    )
+                )
+            p_idx += 1
+
+    # Compare supported claims across the lead and distinct chapters.  Shared
+    # Story/support linkage is required, and a different state, effective
+    # interval, explicit time progression, or consequence is reader value.
+    quality_units: list[dict[str, Any]] = []
+    if draft.lead:
+        quality_units.append(
+            {
+                "unit_id": "LEAD",
+                "section_index": -1,
+                "text": draft.lead,
+                "support_ids": tuple(draft.lead_support_ids),
+                "claims": _unit_claims(draft, draft.lead, draft.lead_support_ids),
+            }
+        )
+    p_idx = 1
+    for section_index, section in enumerate(draft.sections):
+        for paragraph in section.paragraphs:
+            unit_support_ids = _support_ids_for_unit(paragraph)
+            quality_units.append(
+                {
+                    "unit_id": f"P{p_idx:03d}",
+                    "section_index": section_index,
+                    "text": paragraph.text,
+                    "support_ids": unit_support_ids,
+                    "claims": _unit_claims(paragraph, paragraph.text, unit_support_ids),
+                }
+            )
+            p_idx += 1
+    repetition_findings: dict[str, tuple[list[str], set[str]]] = {}
+    for index, first_unit in enumerate(quality_units):
+        for later_unit in quality_units[index + 1 :]:
+            if first_unit["section_index"] == later_unit["section_index"]:
+                continue
+            duplicate_support_ids: set[str] = set()
+            repeated_story_ids: set[str] = set()
+            for first_text, first_ids in first_unit["claims"]:
+                first_citable_ids = _citable_support_ids(first_ids, context, material_projection)
+                first_stories = set(_claim_story_ids(first_citable_ids, context))
+                for later_text, later_ids in later_unit["claims"]:
+                    later_citable_ids = _citable_support_ids(
+                        later_ids, context, material_projection
+                    )
+                    later_stories = set(_claim_story_ids(later_citable_ids, context))
+                    shared_stories = first_stories & later_stories
+                    shared_supports = set(first_citable_ids) & set(later_citable_ids)
+                    if not shared_stories and not shared_supports:
+                        continue
+                    if _claim_is_materially_new(first_text, later_text):
+                        continue
+                    if _supports_show_distinct_effective_times(
+                        first_citable_ids,
+                        later_citable_ids,
+                        context,
+                        material_projection,
+                    ):
+                        continue
+                    duplicate_support_ids.update((*first_citable_ids, *later_citable_ids))
+                    repeated_story_ids.update(shared_stories)
+            if not duplicate_support_ids:
+                continue
+            existing = repetition_findings.get(later_unit["unit_id"])
+            if existing is None:
+                repetition_findings[later_unit["unit_id"]] = (
+                    list(duplicate_support_ids),
+                    repeated_story_ids,
+                )
+            else:
+                existing[0].extend(duplicate_support_ids)
+                existing[1].update(repeated_story_ids)
+    for unit_id, (repeated_support_ids, repeated_story_ids) in repetition_findings.items():
+        major_story_repeated = any(
+            coverage_plan.by_story_id.get(story_id) is not None
+            and coverage_plan.by_story_id[story_id].prominence == "DEVELOP"
+            for story_id in repeated_story_ids
+        )
+        findings.append(
+            ArticleReaderQualityFinding(
+                code="CROSS_SECTION_REPETITION",
+                unit_id=unit_id,
+                message=(
+                    "Этот поддержанный факт уже прозвучал в другой части статьи без нового "
+                    "состояния, времени или последствия."
+                ),
+                support_ids=tuple(dict.fromkeys(repeated_support_ids)),
+                severity="blocking" if major_story_repeated else "repair",
+            )
+        )
 
     coverage = diagnose_article_coverage(draft, coverage_plan, context=context)
     suppressed_ids = set(
@@ -585,14 +1151,14 @@ def diagnose_article_quality(
             continue
         if story.story_id not in coverage.uncovered_story_ids:
             continue
-        support_ids = tuple(
+        missing_story_support_ids = tuple(
             sid
             for sid in (*story.support_ids, *story.detail_support_ids)
             if sid in context.support_by_id
             and _support_story_id(context.support_by_id[sid]) == story.story_id
             and _projected_support_is_citable(sid, context, material_projection)
         )
-        if not support_ids:
+        if not missing_story_support_ids:
             continue
         findings.append(
             ArticleReaderQualityFinding(
@@ -602,7 +1168,7 @@ def diagnose_article_quality(
                     f"Ключевой сюжет «{story.topic}» не раскрыт; добавьте его в этот фрагмент "
                     "по указанным подтверждениям."
                 ),
-                support_ids=tuple(dict.fromkeys(support_ids)),
+                support_ids=tuple(dict.fromkeys(missing_story_support_ids)),
                 severity="blocking",
             )
         )

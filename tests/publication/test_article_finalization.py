@@ -30,10 +30,20 @@ from tests.publication.test_article_recovery import RecordingAttemptObserver
 _NOW = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
 
 
+@pytest.fixture
+def quality_gate_clear(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep tests focused on finalizer behavior unrelated to style diagnostics."""
+    monkeypatch.setattr(
+        "src.publication.article_finalization.diagnose_article_quality",
+        lambda *args, **kwargs: ArticleReaderQualityReport(),
+    )
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_finalizer_revalidates_writer_draft_after_structural_finalization(
     monkeypatch: pytest.MonkeyPatch,
+    quality_gate_clear: None,
 ) -> None:
     """The finalizer validates the exact draft that it will render."""
     from src.publication.article_models import ArticleClaimAtom
@@ -211,10 +221,10 @@ async def test_finalizer_warning_only_quality_finding_passes_without_rejection(
     warning = ArticleReaderQualityReport(
         findings=(
             ArticleReaderQualityFinding(
-                code="STYLE_NOTE",
+                code="MISSING_DETAIL_SUPPORT",
                 unit_id="P001",
-                message="Можно добавить плавную связку.",
-                severity="warning",
+                message="Можно сохранить полезную деталь.",
+                severity="repair",
             ),
         )
     )
@@ -241,14 +251,16 @@ async def test_finalizer_warning_only_quality_finding_passes_without_rejection(
     )
 
     assert result.writer_status == "passed"
-    assert result.metadata["reader_quality"]["counts_by_severity"]["warning"] == 1
+    assert result.metadata["reader_quality"]["counts_by_severity"]["repair"] == 1
     assert observer.finished_attempts[writer_id]["status"] == "succeeded"
     assert all(item["status"] != "failed" for item in observer.finished_attempts.values())
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_fallback_uses_only_surviving_material_projection() -> None:
+async def test_fallback_uses_only_surviving_material_projection(
+    quality_gate_clear: None,
+) -> None:
     retained = ArticleSupport(
         support_id="story:retained:evidence:0:frag:1",
         text="На улице Садовой восстановили свет.",
@@ -586,17 +598,53 @@ async def test_finalizer_rejects_contradiction_after_orphan_merge_with_quality_m
     config = PublicationEditorialConfig(
         article_min_sections=1,
         article_min_words=1,
-        article_allow_deterministic_fallback=False,
+        article_allow_deterministic_fallback=True,
     )
+    observer = RecordingAttemptObserver()
+    writer_id = await observer.attempt_started("writer")
+    before_edit = ArticleReaderQualityReport(
+        findings=(
+            ArticleReaderQualityFinding(
+                code="MISSING_DETAIL_SUPPORT",
+                unit_id="P001",
+                message="Canary detail text must not be persisted.",
+                severity="repair",
+            ),
+        )
+    )
+    after_edit = ArticleReaderQualityReport(
+        findings=(
+            ArticleReaderQualityFinding(
+                code="OVERLOADED_ROSTER_PARAGRAPH",
+                unit_id="P002",
+                message="Another private diagnostic detail.",
+                severity="blocking",
+            ),
+        )
+    )
+    writer_metadata = {
+        "editor_retry_count": 2,
+        "editor_patched_unit_ids": ["P001", "P004"],
+        "context_hash": "context-hash",
+        "prompt_hash": "prompt-hash",
+        "prompt_chars": 1234,
+        "raw_prompt": "RAW PROMPT CANARY",
+        "raw_response": "RAW RESPONSE CANARY",
+        "provider_secret": "RAW SECRET CANARY",
+    }
 
     with pytest.raises(ArticlePublicationRejected) as exc_info:
         await ArticleFinalizer().finalize(
             writer_draft=draft,
             writer_error=None,
-            writer_attempt_id=1,
+            writer_attempt_id=writer_id,
             context=context,
             coverage_plan=plan,
             editorial_config=config,
+            attempt_observer=observer,
+            writer_metadata=writer_metadata,
+            quality_report=before_edit,
+            quality_report_after_edit=after_edit,
             writer_validation=None,
         )
 
@@ -604,12 +652,35 @@ async def test_finalizer_rejects_contradiction_after_orphan_merge_with_quality_m
     assert error.reason == "quality_failed"
     assert error.error_kind == "article_quality_rejected"
     assert error.metadata["stage"] == "post_finalization_quality"
-    assert error.metadata["quality"]["counts_by_code"]["CONTRADICTORY_SERVICE_STATE"] == 1
+    assert error.metadata["quality_version"] == "article-reader-quality-v3"
+    assert error.metadata["unresolved_quality_findings"] == [
+        {
+            "code": "CONTRADICTORY_SERVICE_STATE",
+            "unit_id": "LEAD",
+            "severity": "blocking",
+        }
+    ]
+    assert error.metadata["editor_attempt_count"] == 2
+    assert error.metadata["patched_unit_ids"] == ["P001", "P004"]
+    assert error.metadata["factual_validation"]["is_valid"] is True
+    assert error.metadata["evidence_boundary_passed"] is True
+    assert error.metadata["quality_gate_passed"] is False
+    assert error.metadata["quality_before_edit"]["version"] == "article-reader-quality-v3"
+    assert error.metadata["quality_after_edit"]["findings"][0]["code"] == (
+        "OVERLOADED_ROSTER_PARAGRAPH"
+    )
+    assert error.metadata["quality_after_edit"]["findings"][0].get("message") is None
+    observed_metadata = observer.finished_attempts[writer_id]["kwargs"]["metadata"]
+    assert observed_metadata["writer_attempt"]["prompt_hash"] == "prompt-hash"
+    assert "raw_prompt" not in observed_metadata["writer_attempt"]
+    for private_payload in ("RAW PROMPT CANARY", "RAW RESPONSE CANARY", "RAW SECRET CANARY"):
+        assert private_payload not in repr(error.metadata)
+        assert private_payload not in repr(observed_metadata)
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_forced_writer_failure_fallback_regression() -> None:
+async def test_forced_writer_failure_fallback_regression(quality_gate_clear: None) -> None:
     """Test 10A: When writer fails/produces invalid draft, fallback draft passes validation with 100% coverage."""
     sup1 = ArticleSupport(
         support_id="story:1:evidence:0:frag:101",
@@ -775,7 +846,9 @@ async def test_forced_writer_failure_fallback_regression() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_finalizer_repairs_unsupported_quote_without_full_fallback() -> None:
+async def test_finalizer_repairs_unsupported_quote_without_full_fallback(
+    quality_gate_clear: None,
+) -> None:
     """Test: When writer draft has an unverified quote, finalizer converts to indirect speech without fallback."""
     from src.publication.article_models import ArticleClaimAtom
 
@@ -1014,7 +1087,9 @@ async def test_writer_draft_repaired_by_sentence_pruning() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_finalizer_deduplicates_repeated_sentences_in_paragraph() -> None:
+async def test_finalizer_deduplicates_repeated_sentences_in_paragraph(
+    quality_gate_clear: None,
+) -> None:
     from src.publication.article_models import ArticleClaimAtom
 
     sup = ArticleSupport(
@@ -1112,7 +1187,9 @@ async def test_finalizer_deduplicates_repeated_sentences_in_paragraph() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_finalizer_deduplicates_cross_section_paragraphs() -> None:
+async def test_finalizer_deduplicates_cross_section_paragraphs(
+    quality_gate_clear: None,
+) -> None:
     from src.publication.article_models import ArticleClaimAtom
 
     sup1 = ArticleSupport(
@@ -1282,7 +1359,7 @@ async def test_finalizer_deduplicates_cross_section_paragraphs() -> None:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_finalizer_repairs_phantom_heading() -> None:
+async def test_finalizer_repairs_phantom_heading(quality_gate_clear: None) -> None:
     from src.publication.article_models import ArticleClaimAtom
 
     sup1 = ArticleSupport(

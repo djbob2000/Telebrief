@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,88 @@ from src.publication.models import PublicationSelectionDecision
 from src.publication.repository import PublicationPolicyRepository, PublicationRepository
 
 _NOW = dt.datetime(2026, 8, 22, 20, 0, tzinfo=dt.timezone.utc)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("adapter_options", "expected_anchor_queries"),
+    [({"include_anchor_publications": False}, 0), ({}, 1)],
+)
+async def test_longitudinal_adapter_anchor_lookup_is_opt_out_for_frozen_replay(
+    adapter_options, expected_anchor_queries
+):
+    payload = {
+        "headline": "На улице временно перекрыли движение",
+        "digest_summary": "Движение на улице временно перекрыто",
+        "key_facts": ["Проезд временно закрыт"],
+        "category": "transport",
+    }
+
+    class Cursor:
+        def __init__(self, *, row=None, rows=None):
+            self.row = row
+            self.rows = rows or []
+
+        async def fetchone(self):
+            return self.row
+
+        async def fetchall(self):
+            return self.rows
+
+    class Connection:
+        async def execute(self, query, params=()):
+            del params
+            if "FROM story_revisions sr" in query:
+                return Cursor(row=(42, "title", "summary", "semantic", payload, _NOW, _NOW))
+            if "FROM source_fragments f" in query:
+                return Cursor(rows=[])
+            if "SELECT e.name, e.timezone, e.slug" in query:
+                return Cursor(row=("Berdyansk", "Europe/Kyiv", "berdyansk"))
+            raise AssertionError(f"unexpected query: {query}")
+
+    class Repository:
+        def __init__(self):
+            self.anchor_queries = []
+
+        async def get_run_by_id(self, conn, run_id):
+            del conn, run_id
+            return SimpleNamespace(
+                id=189,
+                edition_id=7,
+                publication_type="weekly_article",
+                eligibility_policy_id=3,
+                snapshot_at=_NOW,
+            )
+
+        async def get_eligibility_policy_by_id(self, conn, policy_id):
+            del conn, policy_id
+            return SimpleNamespace(config={"lookback_hours": 168})
+
+        async def query_anchor_publications(self, conn, **kwargs):
+            del conn, kwargs
+            self.anchor_queries.append(True)
+            return [SimpleNamespace(title="Persisted anchor outside the sealed run")]
+
+    repo = Repository()
+    selected_input = SimpleNamespace(
+        story_revision_id=420,
+        story_id=42,
+        fragment_ids=[],
+        rank=1,
+        presentation_intent="develop",
+    )
+    adapter = EventEditorialAdapter(uow=SimpleNamespace(), repo=repo)
+
+    editorial = await adapter.adapt_inputs_on(
+        Connection(), 189, inputs=[selected_input], **adapter_options
+    )
+
+    assert len(repo.anchor_queries) == expected_anchor_queries
+    assert [
+        story.story_id for story in editorial.analysis.article_context.coverage_plan.stories
+    ] == ["story:42"]
+    assert [card.id for card in editorial.analysis.cards] == ["story:42"]
 
 
 @pytest.mark.postgres

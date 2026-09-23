@@ -4,6 +4,7 @@ import datetime as dt
 
 import pytest
 
+import src.publication.article_writer_context as writer_context
 from src.editorial_models import StoryCard
 from src.publication.article_composition import build_article_composition_plan
 from src.publication.article_context import (
@@ -18,7 +19,7 @@ from src.publication.article_coverage import (
     ArticleThematicSection,
     build_article_coverage_plan,
 )
-from src.publication.article_material import project_article_material
+from src.publication.article_material import ArticleMaterialProjection, project_article_material
 from src.publication.article_quote_allowlist import build_article_quote_allowlist
 from src.publication.article_writer_context import (
     ARTICLE_WRITER_CONTEXT_MAX_CHARS,
@@ -100,6 +101,118 @@ def test_compact_packet_uses_edition_local_as_of_and_support_times():
         assert "observed_at=2026-09-22 20:00 (Europe/Kyiv)" in packet
         assert "effective_from=2026-09-22 21:15 (Europe/Kyiv)" in packet
         assert "effective_until=2026-09-22 22:00 (Europe/Kyiv)" in packet
+
+
+def test_develop_story_packet_contains_every_planned_support_above_depth_detail_limit():
+    support_count = 6
+    supports = tuple(
+        ArticleSupport(
+            support_id=f"story:power:evidence:{index}:frag:{index}",
+            text=f"Электроснабжение восстановилось на улице Садовой, дом {index}.",
+            source_text=f"Электроснабжение восстановилось на улице Садовой, дом {index}.",
+            support_kind="evidence",
+            publication_use="PUBLISH",
+            source_refs=(f"ref-{index}",),
+            fragment_ids=(index,),
+            source_item_ids=(index,),
+            observed_at=None,
+            evidence_kind="community_report",
+            story_id="story:power",
+        )
+        for index in range(1, support_count + 1)
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение",),
+        support_index=supports,
+        support_by_id={support.support_id: support for support in supports},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:power",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=tuple(support.support_id for support in supports),
+            ),
+        )
+    )
+
+    packets, compact_packets, stats = _render_article_story_packets(context, plan)
+
+    assert len(packets) == 1
+    assert len(compact_packets) == 1
+    for support in supports:
+        assert packets[0].count(f"support={support.support_id}") == 1
+        assert packets[0].count(support.text) == 1
+    assert stats.citable_support_count == support_count
+
+
+def test_compact_story_packets_preserve_support_framing_facts_and_all_time_fields(monkeypatch):
+    observed = dt.datetime(2026, 9, 22, 17, 0, tzinfo=dt.timezone.utc)
+    effective_from = dt.datetime(2026, 9, 22, 18, 15, tzinfo=dt.timezone.utc)
+    effective_until = dt.datetime(2026, 9, 22, 19, 0, tzinfo=dt.timezone.utc)
+    supports = tuple(
+        ArticleSupport(
+            support_id=f"story:water:evidence:{index}:frag:{index}",
+            text=f"Жители сообщили об ограничении воды на улице Садовой, дом {index}.",
+            source_text=f"Жители сообщили об ограничении воды на улице Садовой, дом {index}.",
+            support_kind="evidence",
+            publication_use="PUBLISH",
+            source_refs=(f"ref-{index}",),
+            fragment_ids=(index,),
+            source_item_ids=(index,),
+            observed_at=observed,
+            effective_from=effective_from,
+            effective_until=effective_until,
+            temporal_role="FUTURE_SCHEDULED",
+            evidence_kind="community_report",
+            story_id="story:water",
+        )
+        for index in range(1, 4)
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Вода",),
+        support_index=supports,
+        support_by_id={support.support_id: support for support in supports},
+        recurring_topics=(),
+        edition_timezone="Europe/Kyiv",
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:water",
+                topic="Вода",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=tuple(support.support_id for support in supports),
+            ),
+        )
+    )
+    full_packets, compact_packets, _stats = _render_article_story_packets(context, plan)
+    prefix = "inventory"
+    compact_body = "\n\n".join(compact_packets)
+    assert len("\n\n".join(full_packets)) > len(compact_body)
+    monkeypatch.setattr(
+        writer_context,
+        "ARTICLE_WRITER_CONTEXT_MAX_CHARS",
+        len(prefix) + len(compact_body),
+    )
+
+    rendered, representation = writer_context._fit_story_packets(
+        prefix, full_packets, compact_packets
+    )
+
+    assert representation == "compact"
+    for support in supports:
+        assert rendered.count(support.support_id) == 1
+        assert rendered.count(support.text) == 1
+    assert "framing=attributed_report" in rendered
+    assert "role=FUTURE_SCHEDULED" in rendered
+    assert "observed_at=2026-09-22 20:00 (Europe/Kyiv)" in rendered
+    assert "effective_from=2026-09-22 21:15 (Europe/Kyiv)" in rendered
+    assert "effective_until=2026-09-22 22:00 (Europe/Kyiv)" in rendered
 
 
 def test_format_article_context_time_rejects_invalid_timezone():
@@ -186,12 +299,13 @@ def test_render_article_writer_context_includes_plan_and_sanitizes_sources():
     rendered = render_article_writer_context(ctx, plan)
 
     assert "ARTICLE COVERAGE PLAN" in rendered
-    assert "SECTION:" in rendered
-    assert "NARRATIVE INTENT:" in rendered
+    assert "SECTION:" not in rendered
+    assert "NARRATIVE INTENT:" not in rendered
     assert "DEVELOP story:power: Энергетика" in rendered
     assert "WEAVE story:telecom: Связь" in rendered
     assert "BRIEF story:sport: Спорт" in rendered
     assert "DETAIL SUPPORTS:" in rendered
+    assert "Света нет" in rendered
     assert "+79901112233" not in rendered
     assert "[contact omitted]" in rendered
 
@@ -311,6 +425,70 @@ def test_projected_writer_quote_allowlist_uses_trimmed_support_text():
     assert "Обращайтесь для записи." not in rendered
 
 
+def test_story_packet_skips_empty_cta_support_without_losing_service_access_fact():
+    fact = ArticleSupport(
+        support_id="story:water-delivery:evidence:0:frag:1",
+        text="Пункт подвоза воды на ул. Восточной открыт до 20:00.",
+        source_text="Пункт подвоза воды на ул. Восточной открыт до 20:00.",
+        support_kind="operational",
+        publication_use="PUBLISH",
+        source_refs=("ref-fact",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="service_access",
+        story_id="story:water-delivery",
+    )
+    cta = ArticleSupport(
+        support_id="story:water-delivery:evidence:1:frag:2",
+        text="Звоните диспетчеру по номеру +79900000000, подробности по ссылке.",
+        source_text="Звоните диспетчеру по номеру +79900000000, подробности по ссылке.",
+        support_kind="operational",
+        publication_use="PUBLISH",
+        source_refs=("ref-cta",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=None,
+        evidence_kind="service_access",
+        story_id="story:water-delivery",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Пункт подвоза воды",),
+        support_index=(fact, cta),
+        support_by_id={fact.support_id: fact, cta.support_id: cta},
+        recurring_topics=(),
+    )
+    coverage = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:water-delivery",
+                topic="Пункт подвоза воды",
+                rank=1,
+                prominence="WEAVE",
+                support_ids=(fact.support_id, cta.support_id),
+                detail_support_ids=(fact.support_id, cta.support_id),
+            ),
+        )
+    )
+    projection = project_article_material(context)
+    composition = build_article_composition_plan(coverage, context, projection)
+
+    rendered, stats = render_article_writer_context_with_stats(
+        context,
+        coverage,
+        material_projection=projection,
+        composition_plan=composition,
+    )
+
+    assert "подвоза воды" in rendered
+    assert "ул. Восточной" in rendered
+    assert "открыт до 20:00" in rendered
+    assert "звоните" not in rendered.casefold()
+    assert "+79900000000" not in rendered
+    assert "подробности по ссылке" not in rendered.casefold()
+    assert stats is not None and stats.citable_support_count == 1
+
+
 def test_render_article_writer_context_includes_material_inventory_for_story_packets():
     now = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
     cards = [
@@ -385,6 +563,10 @@ def test_render_article_writer_context_with_stats_returns_materialization_counts
         "coverage_story_count": 1,
         "story_packet_count": 1,
         "bundle_count": 0,
+        "narrative_line_count": 0,
+        "composition_group_count": 0,
+        "group_size_distribution": {},
+        "rendered_packet_representation": "full",
         "packets_with_citable_support": 1,
         "citable_support_count": 1,
     }
@@ -464,6 +646,412 @@ def test_render_article_writer_context_compacts_large_corpus_to_writer_budget():
     assert len(rendered) <= 320_000
 
 
+def test_composition_roadmap_and_story_packets_do_not_repeat_the_inventory():
+    now = dt.datetime(2026, 9, 22, 18, 2, tzinfo=dt.timezone.utc)
+    specs = (
+        (
+            "story:water-sadovaya",
+            "Вода на Садовой",
+            "На улице Садовой воду восстановили.",
+            "На улице Садовой воду восстановили.",
+        ),
+        (
+            "story:water-morskaya",
+            "Вода на Морской",
+            "На улице Морской воды нет.",
+            "На улице Морской воды нет.",
+        ),
+        (
+            "story:short-report",
+            "Состояние двора",
+            "Во дворе темно.",
+            "Во дворе темно.",
+        ),
+        (
+            "story:children-enrollment",
+            "Бесплатная запись детей",
+            "Спортивная школа открыла бесплатную запись детей для района.",
+            "Спортивная школа открыла бесплатную запись детей для района. "
+            "Телефон +79901112233, подробности https://example.test/enroll",
+        ),
+    )
+    cards = tuple(
+        StoryCard(id=story_id, topic=topic, summary=topic, importance="low")
+        for story_id, topic, _fact, _source in specs
+    )
+    supports = tuple(
+        ArticleSupport(
+            support_id=f"{story_id}:evidence:0:frag:{index}",
+            text=fact,
+            source_text=source,
+            support_kind="evidence",
+            publication_use="PUBLISH",
+            source_refs=(f"ref-{index}",),
+            fragment_ids=(index,),
+            source_item_ids=(index,),
+            observed_at=now,
+            evidence_kind="community_report",
+            story_id=story_id,
+        )
+        for index, (story_id, _topic, fact, source) in enumerate(specs, start=1)
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=tuple(card.topic for card in cards),
+        support_index=supports,
+        support_by_id={support.support_id: support for support in supports},
+        recurring_topics=(),
+        edition_timezone="Europe/Kyiv",
+    )
+    plan = build_article_coverage_plan(cards, context)
+    projection = project_article_material(context)
+    composition = build_article_composition_plan(plan, context, projection)
+
+    rendered, stats = render_article_writer_context_with_stats(
+        context,
+        plan,
+        material_projection=projection,
+        composition_plan=composition,
+    )
+
+    assert rendered.count("ARTICLE COMPOSITION ROADMAP") == 1
+    assert rendered.count("ARTICLE MATERIAL INVENTORY") == 1
+    assert "relation=localized_contrast" in rendered
+    assert "story:water-sadovaya[BRIEF]" not in rendered
+    assert "story:water-morskaya[BRIEF]" not in rendered
+    assert rendered.count("[ARTICLE STORY PACKET story:") == len(specs)
+    assert rendered.count("line=") == len(specs)
+    assert rendered.count("group=") == len(specs)
+    assert "[ARTICLE COMPOSITION BUNDLE" not in rendered
+    assert "members=story:" not in rendered
+    assert "SUPPORTS:" not in rendered
+    for support in supports:
+        assert rendered.count(support.support_id) == 1
+    assert "fact=Во дворе темно." in rendered
+    assert "framing=attributed_report" in rendered
+    assert "Спортивная школа открыла бесплатную запись детей для района." in rendered
+    assert "+79901112233" not in rendered
+    assert "example.test" not in rendered
+    assert supports[-1].source_text.endswith("https://example.test/enroll")
+    assert stats is not None
+    assert stats.narrative_line_count == 3
+    assert stats.composition_group_count == 3
+    assert stats.group_size_distribution == ((1, 2), (2, 1))
+    assert stats.rendered_packet_representation == "full"
+    assert "rendered packet representation: full" in rendered
+
+
+def test_observed_report_time_does_not_stand_in_for_unknown_event_time():
+    observed = dt.datetime(2026, 9, 22, 18, 2, tzinfo=dt.timezone.utc)
+    support = ArticleSupport(
+        support_id="story:water:evidence:0:frag:1",
+        text="Жители сообщают, что на улице Садовой нет воды.",
+        source_text="На улице Садовой нет воды.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=observed,
+        evidence_kind="community_report",
+        story_id="story:water",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Нет воды",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+        edition_timezone="Europe/Kyiv",
+    )
+    plan = build_article_coverage_plan(
+        (StoryCard(id="story:water", topic="Нет воды", summary="Вода", importance="high"),),
+        context,
+    )
+    composition = build_article_composition_plan(plan, context, project_article_material(context))
+
+    rendered = render_article_writer_context(context, plan, composition_plan=composition)
+
+    assert "observed_at=2026-09-22 21:02 (Europe/Kyiv)" in rendered
+    assert "effective_from=" not in rendered
+    assert "effective_until=" not in rendered
+    assert (
+        "observed_at describes when a report was made and does not establish an event start"
+        in rendered
+    )
+
+
+@pytest.mark.parametrize("edition_timezone", ["Invalid/EditionZone", None])
+def test_writer_context_rejects_invalid_or_missing_edition_timezone_without_timestamps(
+    edition_timezone,
+):
+    context = ArticleEditorialContext(
+        headline_candidates=(),
+        support_index=(),
+        support_by_id={},
+        recurring_topics=(),
+        edition_timezone=edition_timezone,
+    )
+
+    with pytest.raises(ValueError, match="Invalid article context timezone"):
+        render_article_writer_context(context)
+
+
+def test_projected_writer_packet_preserves_short_material_source_qualifier():
+    support = ArticleSupport(
+        support_id="story:water-generator:evidence:0:frag:1",
+        text="Житель установил генератор.",
+        source_text="Житель установил генератор для подачи воды.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:water-generator",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Генератор для воды",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+    )
+    card = StoryCard(
+        id="story:water-generator",
+        topic="Генератор для воды",
+        summary="Генератор",
+        importance="medium",
+    )
+    plan = build_article_coverage_plan((card,), context)
+    projection = project_article_material(context)
+    composition = build_article_composition_plan(plan, context, projection)
+
+    rendered = render_article_writer_context(
+        context,
+        plan,
+        material_projection=projection,
+        composition_plan=composition,
+    )
+    packets, _compact_packets, _stats = _render_article_story_packets(
+        context, plan, projection, composition
+    )
+
+    assert "Житель установил генератор для подачи воды." in rendered
+    assert (
+        "fact=Житель установил генератор. Житель установил генератор для подачи воды." in packets[0]
+    )
+    assert (
+        packets[0].count("Житель установил генератор. Житель установил генератор для подачи воды.")
+        == 1
+    )
+    assert support.source_text == "Житель установил генератор для подачи воды."
+
+
+def test_projected_writer_packet_preserves_source_only_state_negation():
+    support = ArticleSupport(
+        support_id="story:power:evidence:0:frag:1",
+        text="Свет подаётся.",
+        source_text="Свет не подаётся.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:power",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+    )
+    card = StoryCard(
+        id="story:power",
+        topic="Электроснабжение",
+        summary="Электроснабжение",
+        importance="medium",
+    )
+    plan = build_article_coverage_plan((card,), context)
+    projection = project_article_material(context)
+    composition = build_article_composition_plan(plan, context, projection)
+
+    packets, _compact_packets, _stats = _render_article_story_packets(
+        context, plan, projection, composition
+    )
+
+    assert projection.text_by_support_id[support.support_id] == "Свет подаётся. Свет не подаётся."
+    assert "fact=Свет подаётся. Свет не подаётся." in packets[0]
+    assert "Свет подаётся. Свет не подаётся." in packets[0]
+
+
+@pytest.mark.parametrize(
+    ("claim", "source", "qualifier"),
+    (
+        (
+            "На улице Садовой нет света.",
+            "На улице Садовой нет света во всех домах.",
+            "во всех домах",
+        ),
+        ("Света нет.", "Света нет до утра.", "до утра"),
+        (
+            "Житель установил генератор.",
+            "Житель установил генератор для подачи воды.",
+            "для подачи воды",
+        ),
+        ("Свет подаётся.", "Свет не подаётся.", "не подаётся"),
+    ),
+)
+def test_projected_material_keeps_source_only_scope_time_purpose_and_polarity(
+    claim: str, source: str, qualifier: str
+):
+    support = ArticleSupport(
+        support_id="story:local:evidence:0:frag:1",
+        text=claim,
+        source_text=source,
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:local",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Городская история",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+    )
+
+    projection = project_article_material(context)
+
+    projected = projection.text_by_support_id[support.support_id]
+    assert qualifier in projected
+    assert source in projected
+
+
+def test_story_packet_fails_closed_when_planned_support_is_missing_from_support_map():
+    support = ArticleSupport(
+        support_id="story:power:evidence:0:frag:1",
+        text="На улице Садовой нет света.",
+        source_text="На улице Садовой нет света.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:power",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение",),
+        support_index=(support,),
+        support_by_id={},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:power",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(support.support_id,),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="references missing support"):
+        _render_article_story_packets(context, plan)
+
+
+def test_story_packet_fails_closed_when_planned_support_has_no_projected_text():
+    support = ArticleSupport(
+        support_id="story:power:evidence:0:frag:1",
+        text="На улице Садовой нет света.",
+        source_text="На улице Садовой нет света.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:power",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:power",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(support.support_id,),
+            ),
+        )
+    )
+    projection = ArticleMaterialProjection(
+        text_by_support_id={support.support_id: ""},
+        actions_by_support_id={support.support_id: "KEEP"},
+        reasons_by_support_id={support.support_id: "supported_material_retained"},
+    )
+
+    with pytest.raises(ValueError, match="has no projected citable text"):
+        _render_article_story_packets(context, plan, projection)
+
+
+def test_story_packet_fails_closed_when_support_id_and_owner_conflict():
+    support = ArticleSupport(
+        support_id="story:power:evidence:0:frag:1",
+        text="На улице Садовой нет света.",
+        source_text="На улице Садовой нет света.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:water",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Электроснабжение", "Водоснабжение"),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:power",
+                topic="Электроснабжение",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(support.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:water",
+                topic="Водоснабжение",
+                rank=2,
+                prominence="BRIEF",
+                support_ids=(),
+            ),
+        )
+    )
+
+    with pytest.raises(ValueError, match="encodes owner 'story:power'.*belongs to 'story:water'"):
+        _render_article_story_packets(context, plan)
+
+
 def test_composition_plan_renders_each_member_owned_support_line():
     now = dt.datetime(2026, 9, 22, 18, 2, tzinfo=dt.timezone.utc)
     cards = (
@@ -517,9 +1105,13 @@ def test_composition_plan_renders_each_member_owned_support_line():
 
     rendered_plan = _render_composition_plan(plan, composition, context=context)
 
-    assert "SUPPORTS: story:water-a:evidence:0:frag:1" in rendered_plan
-    assert "SUPPORTS: story:power:evidence:0:frag:2" in rendered_plan
-    assert "SUPPORTS: story:water-b:evidence:0:frag:3" in rendered_plan
+    assert "ARTICLE COMPOSITION ROADMAP" in rendered_plan
+    assert "relation=localized_contrast" in rendered_plan
+    assert "story:water-a" not in rendered_plan
+    assert "story:power" not in rendered_plan
+    assert "story:water-b" not in rendered_plan
+    assert "LINE line:" in rendered_plan
+    assert "SUPPORTS:" not in rendered_plan
 
 
 def test_interleaved_story_packets_repeat_bundle_context_for_each_member():
@@ -602,18 +1194,28 @@ def test_interleaved_story_packets_repeat_bundle_context_for_each_member():
         ): packet
         for packet in packets
     }
+    group_by_story = composition.group_by_story_id
     water_a = packets_by_story[
-        "[ARTICLE STORY PACKET story:water-a] depth=BRIEF topic=Вода на Садовой"
+        f"[ARTICLE STORY PACKET story:water-a] depth=BRIEF "
+        f"line={group_by_story['story:water-a'].narrative_line_id} "
+        f"group={group_by_story['story:water-a'].group_id} topic=Вода на Садовой"
     ]
-    power = packets_by_story["[ARTICLE STORY PACKET story:power] depth=BRIEF topic=Свет на Садовой"]
+    power = packets_by_story[
+        f"[ARTICLE STORY PACKET story:power] depth=BRIEF "
+        f"line={group_by_story['story:power'].narrative_line_id} "
+        f"group={group_by_story['story:power'].group_id} topic=Свет на Садовой"
+    ]
     water_b = packets_by_story[
-        "[ARTICLE STORY PACKET story:water-b] depth=BRIEF topic=Вода на Морской"
+        f"[ARTICLE STORY PACKET story:water-b] depth=BRIEF "
+        f"line={group_by_story['story:water-b'].narrative_line_id} "
+        f"group={group_by_story['story:water-b'].group_id} topic=Вода на Морской"
     ]
 
-    assert "members=story:water-a,story:water-b" in water_a
-    assert "members=story:water-a,story:water-b" in water_b
-    assert "members=story:water-a,story:water-b" not in power
-    assert "members=story:power" in power
+    assert "[ARTICLE COMPOSITION BUNDLE" not in "\n".join(packets)
+    assert "members=" not in "\n".join(packets)
+    assert "support=story:water-a:evidence:0:frag:1" in water_a
+    assert "support=story:water-b:evidence:0:frag:3" in water_b
+    assert "support=story:power:evidence:0:frag:2" in power
 
 
 def test_longitudinal_pooled_supports_stay_with_their_own_story_packet():
@@ -644,10 +1246,27 @@ def test_longitudinal_pooled_supports_stay_with_their_own_story_packet():
         evidence_kind="community_report",
         story_id="story:water-b",
     )
+    support_context = ArticleSupport(
+        support_id="story:water-a:context:0:frag:3",
+        text="Жители спрашивали, когда дадут воду.",
+        source_text="Когда дадут воду?",
+        support_kind="evidence",
+        publication_use="CONTEXT",
+        source_refs=("ref-context",),
+        fragment_ids=(3,),
+        source_item_ids=(3,),
+        observed_at=now,
+        evidence_kind="community_report",
+        story_id="story:water-a",
+    )
     context = ArticleEditorialContext(
         headline_candidates=("Вода на Садовой", "Вода на Морской"),
-        support_index=(support_a, support_b),
-        support_by_id={support_a.support_id: support_a, support_b.support_id: support_b},
+        support_index=(support_a, support_b, support_context),
+        support_by_id={
+            support_a.support_id: support_a,
+            support_b.support_id: support_b,
+            support_context.support_id: support_context,
+        },
         recurring_topics=(),
     )
     thread = StoryThread(
@@ -657,7 +1276,7 @@ def test_longitudinal_pooled_supports_stay_with_their_own_story_packet():
         story_ids=("story:water-a", "story:water-b"),
         trajectory=TrajectoryKind.ACUTE_PIVOTAL,
         weight=ThreadEditorialWeight.WEAVE_THREAD,
-        support_ids=(support_a.support_id, support_b.support_id),
+        support_ids=(support_a.support_id, support_b.support_id, support_context.support_id),
     )
     coverage_plan = build_longitudinal_coverage_plan((thread,))
     composition = build_article_composition_plan(
@@ -673,14 +1292,23 @@ def test_longitudinal_pooled_supports_stay_with_their_own_story_packet():
         ): packet
         for packet in packets
     }
-    packet_a = packets_by_story[
-        "[ARTICLE STORY PACKET story:water-a] depth=WEAVE topic=Подача воды"
-    ]
-    packet_b = packets_by_story[
-        "[ARTICLE STORY PACKET story:water-b] depth=WEAVE topic=Подача воды"
-    ]
+    packet_a_header = next(
+        header
+        for header in packets_by_story
+        if header.startswith("[ARTICLE STORY PACKET story:water-a]")
+    )
+    packet_b_header = next(
+        header
+        for header in packets_by_story
+        if header.startswith("[ARTICLE STORY PACKET story:water-b]")
+    )
+    packet_a = packets_by_story[packet_a_header]
+    packet_b = packets_by_story[packet_b_header]
 
     assert support_a.support_id in packet_a
     assert support_a.support_id not in packet_b
     assert support_b.support_id in packet_b
     assert support_b.support_id not in packet_a
+    assert support_context.support_id not in packet_a
+    assert support_context.text not in packet_a
+    assert support_context.source_text not in packet_a

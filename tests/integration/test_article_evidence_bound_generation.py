@@ -302,7 +302,7 @@ async def test_end_to_end_article_generation_multi_claim_narrative_paragraph_pas
     cur = await conn.execute(
         """
         INSERT INTO source_item_revisions (source_item_id, revision_no, content_hash, text_content)
-        VALUES (%s, 1, 'h-e2e-3', 'Авария на электросетях в центре. Аптеки перешли на генераторы. В Колонии свет есть.')
+        VALUES (%s, 1, 'h-e2e-3', 'Авария на электросетях в центре. Аптеки перешли на генераторы. В Колонии свет есть. На Азовском свет отсутствовал около двух часов.')
         RETURNING id
         """,
         (item_id,),
@@ -314,10 +314,11 @@ async def test_end_to_end_article_generation_multi_claim_narrative_paragraph_pas
         VALUES
             (%s, 0, 'Авария на электросетях в центре города.', 'hf-e2e-3a', 'v1', TRUE, %s),
             (%s, 1, 'Аптеки и магазины перешли на генераторы.', 'hf-e2e-3b', 'v1', TRUE, %s),
-            (%s, 2, 'В микрорайоне Колония свет есть без перебоев.', 'hf-e2e-3c', 'v1', TRUE, %s)
+            (%s, 2, 'В микрорайоне Колония свет есть без перебоев.', 'hf-e2e-3c', 'v1', TRUE, %s),
+            (%s, 3, 'На Азовском свет отсутствовал около двух часов.', 'hf-e2e-3d', 'v1', TRUE, %s)
         RETURNING id
         """,
-        (sir_id, _NOW, sir_id, _NOW, sir_id, _NOW),
+        (sir_id, _NOW, sir_id, _NOW, sir_id, _NOW, sir_id, _NOW),
     )
     frag_rows = await cur.fetchall()
     frag_ids = [r[0] for r in frag_rows]
@@ -325,7 +326,7 @@ async def test_end_to_end_article_generation_multi_claim_narrative_paragraph_pas
     event_payload = {
         "topic": "Энергоснабжение",
         "headline": "Перебои с электричеством",
-        "digest_summary": "Авария на сетях в центре, аптеки на генераторах, в Колонии порядок.",
+        "digest_summary": "Авария на сетях в центре, аптеки на генераторах, а в разных районах свет включали по-разному.",
         "evidence_items": [
             {
                 "text": "Авария на электросетях в центре города",
@@ -344,6 +345,12 @@ async def test_end_to_end_article_generation_multi_claim_narrative_paragraph_pas
                 "kind": "established_fact",
                 "publication_use": "PUBLISH",
                 "source_fragment_ids": [frag_ids[2]],
+            },
+            {
+                "text": "На Азовском свет отсутствовал около двух часов",
+                "kind": "established_fact",
+                "publication_use": "PUBLISH",
+                "source_fragment_ids": [frag_ids[3]],
             },
         ],
     }
@@ -435,8 +442,9 @@ async def test_end_to_end_article_generation_multi_claim_narrative_paragraph_pas
     sup0 = f"story:{story_id}:evidence:0:frag:{frag_ids[0]}"
     sup1 = f"story:{story_id}:evidence:1:frag:{frag_ids[1]}"
     sup2 = f"story:{story_id}:evidence:2:frag:{frag_ids[2]}"
+    sup3 = f"story:{story_id}:evidence:3:frag:{frag_ids[3]}"
 
-    # Single paragraph combining 3 supported claims and citing 3 support IDs
+    # A lead introduces the outage; the body develops three distinct local details.
     mock_provider.chat_completion.return_value = json.dumps(
         {
             "title": "Авария на электросетях в центре города",
@@ -458,13 +466,9 @@ async def test_end_to_end_article_generation_multi_claim_narrative_paragraph_pas
                     ],
                     "paragraphs": [
                         {
-                            "text": "В центре города произошла авария на электросетях; местные аптеки и магазины перешли на генераторы, тогда как в микрорайоне Колония свет есть без перебоев.",
-                            "cited_support_ids": [sup0, sup1, sup2],
+                            "text": "Местные аптеки и магазины перешли на генераторы; в микрорайоне Колония свет есть без перебоев, а на Азовском он отсутствовал около двух часов.",
+                            "cited_support_ids": [sup1, sup2, sup3],
                             "claims": [
-                                {
-                                    "text": "Авария на электросетях в центре города",
-                                    "cited_support_ids": [sup0],
-                                },
                                 {
                                     "text": "Аптеки и магазины перешли на генераторы",
                                     "cited_support_ids": [sup1],
@@ -472,6 +476,10 @@ async def test_end_to_end_article_generation_multi_claim_narrative_paragraph_pas
                                 {
                                     "text": "В микрорайоне Колония свет есть без перебоев",
                                     "cited_support_ids": [sup2],
+                                },
+                                {
+                                    "text": "На Азовском свет отсутствовал около двух часов",
+                                    "cited_support_ids": [sup3],
                                 },
                             ],
                         }
@@ -516,7 +524,7 @@ async def test_end_to_end_article_generation_multi_claim_narrative_paragraph_pas
 
 @pytest.mark.postgres
 @pytest.mark.integration
-async def test_thin_safe_prose_under_800_words_not_rejected_as_fallback(conn, pool, edition):
+async def test_repetitive_prose_under_800_words_fails_reader_quality_gate(conn, pool, edition):
     uow = DatabaseUnitOfWork(pool)
     repo = PublicationRepository()
     policy_ids = await _seed_policies(conn, edition.id)
@@ -724,8 +732,18 @@ async def test_thin_safe_prose_under_800_words_not_rejected_as_fallback(conn, po
         generator=generator,
     )
 
-    pub = await service.generate(run.id, defer_delivery=False)
-    assert pub.publication_run_id == run.id
+    from src.publication.errors import ArticlePublicationRejected
+
+    with pytest.raises(ArticlePublicationRejected) as exc_info:
+        await service.generate(run.id, defer_delivery=False)
+
+    assert exc_info.value.reason == "quality_failed"
+
+    cur = await conn.execute(
+        "SELECT count(*) FROM publications WHERE publication_run_id = %s",
+        (run.id,),
+    )
+    assert (await cur.fetchone())[0] == 0
 
     cur = await conn.execute(
         """
@@ -739,4 +757,4 @@ async def test_thin_safe_prose_under_800_words_not_rejected_as_fallback(conn, po
     )
     row = await cur.fetchone()
     assert row[0] == "writer"
-    assert row[1] == "succeeded"
+    assert row[1] == "failed"

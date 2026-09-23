@@ -51,7 +51,10 @@ def _make_17_story_setup(
         role = lead_temporal_role if i == 1 else "CURRENT_WINDOW"
         if i <= 3:
             prominence = "DEVELOP"
-            text = f"В микрорайоне {i} Бердянска специалисты завершили восстановление электросетей и подстанции."
+            text = (
+                f"В микрорайоне {i} Бердянска специалисты завершили восстановление электросетей "
+                f"и подстанции. После работ подача электричества вернулась в дома микрорайона {i}."
+            )
         elif i <= 10:
             prominence = "WEAVE"
             text = f"Городские службы Бердянска проводят плановый ремонт дорожного покрытия на участке {i}."
@@ -149,35 +152,42 @@ def _build_complete_longread_response(
     sup_map = {s.story_id: s for s in supports}
     t_text = title_text or "Восстановление сетей и ремонтные работы в Бердянске"
     t_sups = title_sups or [supports[0].support_id]
-    l_text = lead_text or supports[0].text
+    l_text = lead_text or supports[0].text.split(". ", maxsplit=1)[0] + "."
     l_sups = lead_sups or [supports[0].support_id]
 
-    # Section 1: Stories 1..5
-    sec1_paras = []
-    sec1_sups = []
-    for i in range(1, 6):
-        sid = f"story:{i}"
-        s = sup_map[sid]
-        sec1_sups.append(s.support_id)
-        sec1_paras.append({"text": s.text, "cited_support_ids": [s.support_id]})
+    def grouped_paragraphs(story_numbers: range) -> tuple[list[dict[str, object]], list[str]]:
+        section_stories = [sup_map[f"story:{number}"] for number in story_numbers]
+        section_support_ids = [support.support_id for support in section_stories]
+        paragraphs: list[dict[str, object]] = []
+        for offset in range(0, len(section_stories), 3):
+            group = section_stories[offset : offset + 3]
+            group_support_ids = [support.support_id for support in group]
+            claims = [
+                {
+                    "text": (
+                        support.text.partition(". ")[2]
+                        if support.support_id in l_sups and ". " in support.text
+                        else support.text
+                    ),
+                    "cited_support_ids": [support.support_id],
+                }
+                for support in group
+            ]
+            paragraphs.append(
+                {
+                    "text": " ".join(support.text for support in group),
+                    "cited_support_ids": group_support_ids,
+                    "claims": claims,
+                }
+            )
+        return paragraphs, section_support_ids
 
-    # Section 2: Stories 6..11
-    sec2_paras = []
-    sec2_sups = []
-    for i in range(6, 12):
-        sid = f"story:{i}"
-        s = sup_map[sid]
-        sec2_sups.append(s.support_id)
-        sec2_paras.append({"text": s.text, "cited_support_ids": [s.support_id]})
-
-    # Section 3: Stories 12..17
-    sec3_paras = []
-    sec3_sups = []
-    for i in range(12, 18):
-        sid = f"story:{i}"
-        s = sup_map[sid]
-        sec3_sups.append(s.support_id)
-        sec3_paras.append({"text": s.text, "cited_support_ids": [s.support_id]})
+    # Each body paragraph develops a small group of related source claims. When
+    # a DEVELOP Story also appears in the lead, the body uses its distinct
+    # supported consequence rather than repeating the lead's setup.
+    sec1_paras, sec1_sups = grouped_paragraphs(range(1, 6))
+    sec2_paras, sec2_sups = grouped_paragraphs(range(6, 12))
+    sec3_paras, sec3_sups = grouped_paragraphs(range(12, 18))
 
     return json.dumps(
         {
@@ -377,7 +387,9 @@ async def test_case_2_local_issue_triggers_targeted_article_editor_repair() -> N
     sup1 = supports[1]  # CURRENT_WINDOW
 
     # Lead has historical sup0 + current window sup1, but lacks continuation framing -> HISTORICAL_CONTEXT_UNFRAMED:LEAD
-    unframed_lead = f"{sup0.text} {sup1.text}"
+    unframed_lead = (
+        f"{sup0.text.split('. ', maxsplit=1)[0]}. {sup1.text.split('. ', maxsplit=1)[0]}."
+    )
     resp_attempt_1 = _build_complete_longread_response(
         supports,
         lead_text=unframed_lead,
@@ -405,13 +417,13 @@ async def test_case_2_local_issue_triggers_targeted_article_editor_repair() -> N
 
     assert title
     assert "Как сообщалось ранее" in lead
-    # One writer call plus the bounded two-pass editor loop. The second editor
-    # pass may be unable to improve the synthetic inventory-shaped fixture.
-    assert generator.provider.chat_completion.call_count == 3
+    # The one local lead issue is repaired in one targeted editor call; the
+    # lead's Story is not duplicated in the body fixture.
+    assert generator.provider.chat_completion.call_count == 2
 
     # ArticleEditor was called for targeted repair after the single writer call
     repair_attempts = [att for att in observer.started_attempts if att.get("kind") == "repair"]
-    assert len(repair_attempts) == 2
+    assert len(repair_attempts) == 1
     assert repair_attempts[0]["kwargs"]["metadata"]["strategy"] == "article_editor"
     assert "LEAD" in repair_attempts[0]["kwargs"]["metadata"]["units"]
 
@@ -419,20 +431,32 @@ async def test_case_2_local_issue_triggers_targeted_article_editor_repair() -> N
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_quality_only_generator_repair_uses_one_writer_and_bounded_editor_calls() -> None:
-    """Reader-quality repair must reuse the writer draft and revalidate facts."""
+    """A writer inventory gets bounded unit edits and final structural validation."""
     context, plan = _make_17_story_setup()
     generator = _make_article_generator(
         article_editor_enabled=True,
         article_allow_deterministic_fallback=False,
     )
     supports = list(context.support_index)
-    writer_response = _build_complete_longread_response(supports)
-    editor_units = {
-        f"P{index:03d}": f"{support.text} Ситуация описана в Бердянске."
-        for index, support in enumerate(supports, start=1)
-    }
-    editor_response = json.dumps({"units": editor_units})
-    generator.provider.chat_completion.side_effect = [writer_response, editor_response]
+    writer_dict = json.loads(_build_complete_longread_response(supports))
+    middle_groups = writer_dict["sections"][1]["paragraphs"]
+    writer_dict["sections"][1]["paragraphs"] = [
+        {
+            "text": claim["text"],
+            "cited_support_ids": claim["cited_support_ids"],
+            "claims": [claim],
+        }
+        for group in middle_groups
+        for claim in group["claims"]
+    ]
+    first_inventory_text = writer_dict["sections"][1]["paragraphs"][0]["text"]
+    writer_response = json.dumps(writer_dict)
+    editor_response = json.dumps({"units": {"P003": first_inventory_text}})
+    generator.provider.chat_completion.side_effect = [
+        writer_response,
+        editor_response,
+        editor_response,
+    ]
     observer = RecordingAttemptObserver()
 
     title, lead, body = await generator.generate_from_event_article_context(
@@ -442,16 +466,16 @@ async def test_quality_only_generator_repair_uses_one_writer_and_bounded_editor_
     )
 
     assert title and lead and body
-    assert generator.provider.chat_completion.call_count == 2
+    assert generator.provider.chat_completion.call_count == 3
     repairs = [item for item in observer.started_attempts if item["kind"] == "repair"]
-    assert repairs
+    assert len(repairs) == 2
     assert all(
         "ARTICLE_INVENTORY_RHYTHM" in violation
         for violation in repairs[0]["kwargs"]["metadata"]["violations"]
     )
     writer_finish = observer.finished_attempts[1]
     assert writer_finish["status"] == "succeeded"
-    assert writer_finish["kwargs"]["metadata"]["writer_attempt"]["editor_retry_count"] == 1
+    assert writer_finish["kwargs"]["metadata"]["writer_attempt"]["editor_retry_count"] == 2
 
 
 @pytest.mark.unit
@@ -496,12 +520,23 @@ async def test_case_5_valid_partial_draft_is_accepted_without_supplement() -> No
     raw_draft = _build_complete_longread_response(supports)
     draft_dict = json.loads(raw_draft)
 
-    # Remove story:17 from section 3
-    draft_dict["sections"][2]["paragraphs"] = [
-        p
-        for p in draft_dict["sections"][2]["paragraphs"]
-        if "story:17" not in str(p.get("cited_support_ids", []))
-    ]
+    # Remove only story:17 from its grouped paragraph while retaining the
+    # neighboring BRIEF stories synthesized in that same paragraph.
+    for paragraph in draft_dict["sections"][2]["paragraphs"]:
+        claims = paragraph["claims"]
+        remaining_claims = [
+            claim for claim in claims if "story:17" not in str(claim.get("cited_support_ids", []))
+        ]
+        if len(remaining_claims) != len(claims):
+            paragraph["claims"] = remaining_claims
+            paragraph["cited_support_ids"] = list(
+                dict.fromkeys(
+                    support_id
+                    for claim in remaining_claims
+                    for support_id in claim["cited_support_ids"]
+                )
+            )
+            paragraph["text"] = " ".join(claim["text"] for claim in remaining_claims)
     draft_dict["sections"][2]["heading_support_ids"] = [
         sid for sid in draft_dict["sections"][2]["heading_support_ids"] if "story:17" not in sid
     ]
@@ -629,7 +664,7 @@ async def test_case_7_missing_develop_story_fails_closed() -> None:
     sup2_id = supports[1].support_id
     raw_draft = _build_complete_longread_response(
         supports,
-        lead_text=supports[1].text,
+        lead_text=supports[1].text.split(". ", maxsplit=1)[0] + ".",
         lead_sups=[sup2_id],
         title_text="Восстановление сетей в микрорайоне 2 Бердянска",
         title_sups=[sup2_id],
@@ -637,10 +672,23 @@ async def test_case_7_missing_develop_story_fails_closed() -> None:
     draft_dict = json.loads(raw_draft)
 
     # Remove story:1 from section 0
+    for paragraph in draft_dict["sections"][0]["paragraphs"]:
+        claims = paragraph["claims"]
+        remaining_claims = [
+            claim for claim in claims if "story:1:" not in str(claim.get("cited_support_ids", []))
+        ]
+        if len(remaining_claims) != len(claims):
+            paragraph["claims"] = remaining_claims
+            paragraph["cited_support_ids"] = list(
+                dict.fromkeys(
+                    support_id
+                    for claim in remaining_claims
+                    for support_id in claim["cited_support_ids"]
+                )
+            )
+            paragraph["text"] = " ".join(claim["text"] for claim in remaining_claims)
     draft_dict["sections"][0]["paragraphs"] = [
-        p
-        for p in draft_dict["sections"][0]["paragraphs"]
-        if "story:1:" not in str(p.get("cited_support_ids", []))
+        paragraph for paragraph in draft_dict["sections"][0]["paragraphs"] if paragraph["claims"]
     ]
     draft_dict["sections"][0]["heading_support_ids"] = [
         sid for sid in draft_dict["sections"][0]["heading_support_ids"] if "story:1:" not in sid
@@ -668,7 +716,12 @@ async def test_case_7_missing_develop_story_fails_closed() -> None:
         )
 
     assert exc_info.value.reason == "quality_failed"
-    assert exc_info.value.metadata["quality"]["counts_by_code"]["MISSING_DEVELOP_STORY"] == 1
+    assert (
+        exc_info.value.metadata["quality_after_finalization"]["counts_by_code"][
+            "MISSING_DEVELOP_STORY"
+        ]
+        == 1
+    )
     assert exc_info.value.metadata["stage"] == "post_finalization_quality"
 
 
@@ -686,6 +739,12 @@ async def test_case_8_final_article_enforces_evidence_boundary() -> None:
     draft_dict["sections"][0]["paragraphs"][0]["text"] = (
         "По заявлению префекта Парижа Иванова, в Бердянске завершились восстановительные работы."
     )
+    draft_dict["sections"][0]["paragraphs"][0]["claims"] = [
+        {
+            "text": draft_dict["sections"][0]["paragraphs"][0]["text"],
+            "cited_support_ids": draft_dict["sections"][0]["paragraphs"][0]["cited_support_ids"],
+        }
+    ]
 
     hallucinated_draft = StructuredArticleDraft.from_dict(draft_dict)
     finalizer = ArticleFinalizer()
@@ -710,7 +769,7 @@ async def test_case_8_final_article_enforces_evidence_boundary() -> None:
 
     # Evidence boundary rejection is fail-closed
     assert exc_info.value.reason == "validation_failed"
-    violations = exc_info.value.metadata.get("violations", [])
+    violations = exc_info.value.metadata["factual_validation"]["issue_codes_and_units"]
     assert any("UNSUPPORTED_" in v for v in violations)
 
 
@@ -886,7 +945,11 @@ async def test_case_10_missing_develop_story_gets_bounded_editor_attempts_then_r
     }
 
     resp_attempt_1 = json.dumps(valid_1_story_dict)
-    generator.provider.chat_completion.return_value = resp_attempt_1
+    generator.provider.chat_completion.side_effect = [
+        resp_attempt_1,
+        json.dumps({"units": {"P001": t}}),
+        json.dumps({"units": {"P001": t}}),
+    ]
 
     observer = RecordingAttemptObserver()
     with pytest.raises(ArticlePublicationRejected) as exc_info:
@@ -900,10 +963,18 @@ async def test_case_10_missing_develop_story_gets_bounded_editor_attempts_then_r
     assert generator.provider.chat_completion.call_count == 3
     repair_attempts = [att for att in observer.started_attempts if att.get("kind") == "repair"]
     assert len(repair_attempts) == 2
-    assert all(
+    assert any(
         any(
             "MISSING_DEVELOP_STORY" in violation
             for violation in repair["kwargs"]["metadata"]["violations"]
         )
         for repair in repair_attempts
+    )
+    assert (
+        exc_info.value.metadata["quality_before_edit"]["counts_by_code"]["MISSING_DEVELOP_STORY"]
+        == 2
+    )
+    assert all(
+        item["code"] == "CROSS_SECTION_REPETITION"
+        for item in exc_info.value.metadata["unresolved_quality_findings"]
     )

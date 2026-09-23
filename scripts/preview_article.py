@@ -1,12 +1,13 @@
-"""Generate a canonical daily article preview without delivery side effects.
+"""Generate an article preview without delivery side effects.
 
 Usage:
     python scripts/preview_article.py [--edition berdyansk] [--hours 24]
         [--date YYYY-MM-DD] [--output PATH]
+    python scripts/preview_article.py --run-id ID [--output PATH]
 
-The preview uses the same Event-First snapshot, selection, and generation
-pipeline as production publication. It creates no Telegraph page, cover image,
-delivery payload, delivery attempt, or Telegram message.
+Ordinary preview mode uses the Event-First snapshot and selection pipeline.
+Frozen-run mode replays only the sealed inputs from an existing article run.
+Neither mode delivers the article.
 """
 
 from __future__ import annotations
@@ -14,27 +15,35 @@ from __future__ import annotations
 import argparse
 import asyncio
 import datetime as dt
+import json
 import sys
 from pathlib import Path
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.bootstrap import build_infrastructure
 from src.config_loader import load_config
+from src.publication.article_preview import build_article_preview_from_run
 from src.publication.facade import build_publication_preview
 from src.runtime import install_runtime
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Generate a daily Event-First article preview without delivery."
     )
-    parser.add_argument("--edition", default="berdyansk", help="Edition slug")
+    parser.add_argument("--edition", default=None, help="Edition slug")
+    parser.add_argument(
+        "--run-id",
+        type=int,
+        default=None,
+        help="Replay the sealed inputs of an existing article publication run",
+    )
     parser.add_argument(
         "--hours",
         type=int,
-        default=24,
+        default=None,
         help="Lookback window in hours (default: 24)",
     )
     parser.add_argument(
@@ -48,7 +57,20 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Optional local path for the Markdown preview",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--diagnostics-output",
+        type=Path,
+        default=None,
+        help="Optional local path for compact generation diagnostics JSON (frozen-run mode)",
+    )
+    args = parser.parse_args(argv)
+    if args.run_id is not None and (args.date is not None or args.hours is not None):
+        parser.error("--run-id cannot be combined with --date or --hours")
+    if args.run_id is not None and args.run_id <= 0:
+        parser.error("--run-id must be a positive integer")
+    if args.run_id is None and args.diagnostics_output is not None:
+        parser.error("--diagnostics-output is available only with --run-id")
+    return args
 
 
 def _snapshot_at(date_value: str | None, timezone: str) -> dt.datetime | None:
@@ -65,19 +87,46 @@ async def main() -> None:
     install_runtime(infra)
 
     try:
-        preview = await build_publication_preview(
-            publication_type="daily_article",
-            edition_slug=args.edition,
-            snapshot_at=_snapshot_at(args.date, config.settings.timezone),
-            lookback_hours=args.hours,
-            config=config,
-        )
-        parts = [f"# {preview.title}" if preview.title else "# Вечерняя статья"]
-        if preview.lead and not (preview.body and preview.body.startswith(preview.lead)):
-            parts.extend(["", preview.lead])
-        if preview.body:
-            parts.extend(["", preview.body])
-        article = "\n".join(parts).rstrip() + "\n"
+        if args.run_id is not None:
+            article_preview = await build_article_preview_from_run(
+                args.run_id,
+                config=config,
+                expected_edition_slug=args.edition,
+            )
+            article = article_preview.markdown
+            if args.diagnostics_output is not None:
+                args.diagnostics_output.parent.mkdir(parents=True, exist_ok=True)
+                args.diagnostics_output.write_text(
+                    json.dumps(article_preview.diagnostics, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                print(f"Diagnostics saved to {args.diagnostics_output}", file=sys.stderr)
+        else:
+            edition_slug = args.edition or "berdyansk"
+            snapshot_at = None
+            if args.date is not None:
+                edition_timezone = await _load_edition_timezone(infra, edition_slug)
+                snapshot_at = _snapshot_at(args.date, edition_timezone)
+            publication_preview = await build_publication_preview(
+                publication_type="daily_article",
+                edition_slug=edition_slug,
+                snapshot_at=snapshot_at,
+                lookback_hours=args.hours if args.hours is not None else 24,
+                config=config,
+            )
+            parts = [
+                f"# {publication_preview.title}"
+                if publication_preview.title
+                else "# Вечерняя статья"
+            ]
+            if publication_preview.lead and not (
+                publication_preview.body
+                and publication_preview.body.startswith(publication_preview.lead)
+            ):
+                parts.extend(["", publication_preview.lead])
+            if publication_preview.body:
+                parts.extend(["", publication_preview.body])
+            article = "\n".join(parts).rstrip() + "\n"
 
         if args.output is not None:
             args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -87,6 +136,29 @@ async def main() -> None:
             print(article, end="")
     finally:
         await infra.close()
+
+
+async def _load_edition_timezone(infra: object, edition_slug: str) -> str:
+    """Read the selected edition's timezone for explicit local-date previews."""
+    uow = getattr(infra, "uow", None)
+    if uow is None:
+        raise ValueError("edition timezone lookup requires database infrastructure")
+    async with uow.transaction() as conn:
+        cursor = await conn.execute(
+            "SELECT timezone FROM editions WHERE slug = %s",
+            (edition_slug,),
+        )
+        row = await cursor.fetchone()
+    if row is None or not row[0]:
+        raise ValueError(f"edition {edition_slug!r} has no configured timezone")
+    timezone_name = str(row[0]).strip()
+    try:
+        ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+        raise ValueError(
+            f"edition {edition_slug!r} has invalid timezone {timezone_name!r}"
+        ) from exc
+    return timezone_name
 
 
 if __name__ == "__main__":

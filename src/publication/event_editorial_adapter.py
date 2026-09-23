@@ -82,10 +82,16 @@ class EventEditorialAdapter:
         run_id: int,
         *,
         inputs: list[PublicationInput] | None = None,
+        include_anchor_publications: bool = True,
     ) -> FrozenEditorialInput:
         """Load frozen publication inputs and map rich event payloads into StoryCards and source bundles."""
         async with self.uow.transaction() as conn:
-            return await self.adapt_inputs_on(conn, run_id, inputs=inputs)
+            return await self.adapt_inputs_on(
+                conn,
+                run_id,
+                inputs=inputs,
+                include_anchor_publications=include_anchor_publications,
+            )
 
     async def adapt_inputs_on(
         self,
@@ -93,6 +99,7 @@ class EventEditorialAdapter:
         run_id: int,
         *,
         inputs: list[PublicationInput] | None = None,
+        include_anchor_publications: bool = True,
     ) -> FrozenEditorialInput:
         if inputs is None:
             inputs = await self.repo.load_sealed_inputs(conn, run_id)
@@ -585,15 +592,17 @@ class EventEditorialAdapter:
                     story_support_ids=story_sups_map,
                 )
                 since = run.snapshot_at - dt.timedelta(hours=lookback_hours)
-                try:
-                    anchor_pubs = await self.repo.query_anchor_publications(
-                        conn,
-                        edition_id=run.edition_id,
-                        since=since,
-                        until=run.snapshot_at,
-                    )
-                except Exception:
-                    anchor_pubs = []
+                anchor_pubs = []
+                if include_anchor_publications:
+                    try:
+                        anchor_pubs = await self.repo.query_anchor_publications(
+                            conn,
+                            edition_id=run.edition_id,
+                            since=since,
+                            until=run.snapshot_at,
+                        )
+                    except Exception:
+                        anchor_pubs = []
 
                 longitudinal_plan = build_longitudinal_coverage_plan(
                     threads, anchor_pubs=anchor_pubs

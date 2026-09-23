@@ -6,6 +6,7 @@ import asyncio
 import datetime as dt
 import logging
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass
 
 from src.config_loader import Config
@@ -252,7 +253,9 @@ async def build_publication_preview(
     selector = EditorialSelectionService(uow=runtime.uow, config=config)
     await selector.select(run_id, defer_generation=False)
 
-    generator = PublicationGenerationService(uow=runtime.uow, config=config)
+    preview_config = deepcopy(config)
+    preview_config.settings.article.save_debug_artifacts = False
+    generator = PublicationGenerationService(uow=runtime.uow, config=preview_config)
     pub = await generator.generate(
         run_id,
         defer_delivery=False,

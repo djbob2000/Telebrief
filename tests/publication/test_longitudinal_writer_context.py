@@ -228,4 +228,5 @@ def test_render_article_writer_context_includes_longitudinal_directive():
     ctx = _make_ctx(window=window)
     rendered = render_article_writer_context(ctx)
     assert "LONGITUDINAL PUBLICATION DIRECTIVE:" in rendered
-    assert "Городской горизонт" in rendered
+    assert "Finish on a supported development, consequence, or unresolved question" in rendered
+    assert "Городской горизонт" not in rendered

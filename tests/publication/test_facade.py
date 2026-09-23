@@ -1,6 +1,8 @@
 """Tests for publication facade request and preview orchestration (Plan 4 Task 8 & Unification)."""
 
 import datetime as dt
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 import psycopg
 import pytest
@@ -41,6 +43,94 @@ async def test_preview_waits_for_worker_readiness_without_deferring_preparation(
     )
 
     assert orchestrator.calls == [(586, False), (586, False)]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_ordinary_preview_disables_debug_artifacts_on_copied_config(monkeypatch):
+    from src import runtime as runtime_module
+    from src.jobs import publication as publication_jobs
+    from src.publication import generation, orchestrator, selection
+
+    config = SimpleNamespace(
+        database=SimpleNamespace(enabled=True),
+        settings=SimpleNamespace(
+            persistent_ingestion=True,
+            article=SimpleNamespace(save_debug_artifacts=True),
+        ),
+    )
+    generation_configs = []
+
+    class Connection:
+        async def execute(self, _query, _params):
+            return None
+
+    class UnitOfWork:
+        @asynccontextmanager
+        async def transaction(self):
+            yield Connection()
+
+    runtime = SimpleNamespace(uow=UnitOfWork())
+
+    class FakeOrchestrator:
+        def __init__(self, *, uow, config):
+            assert uow is runtime.uow
+            assert config is config_original
+
+        async def request(self, **_kwargs):
+            return SimpleNamespace(
+                readiness_status="ready_for_preparation",
+                intent_id=586,
+                target_at=_NOW,
+            )
+
+    class FakeSelector:
+        def __init__(self, *, uow, config):
+            assert uow is runtime.uow
+            assert config is config_original
+
+        async def select(self, _run_id, *, defer_generation):
+            assert defer_generation is False
+
+    class FakeGenerationService:
+        def __init__(self, *, uow, config):
+            assert uow is runtime.uow
+            generation_configs.append(config)
+
+        async def generate(self, _run_id, *, defer_delivery, publication_metadata):
+            assert defer_delivery is False
+            assert publication_metadata == {"preview": True, "preview_mode": "no_delivery"}
+            return SimpleNamespace(
+                id=17,
+                title="Вечер",
+                lead="",
+                body="Текст.",
+                publication_type="daily_article",
+            )
+
+    config_original = config
+
+    async def prepare_run(*_args, **_kwargs):
+        return 586
+
+    monkeypatch.setattr(runtime_module, "get_runtime", lambda: runtime)
+    monkeypatch.setattr(publication_jobs, "_prepare_publication_from_intent_once", prepare_run)
+    monkeypatch.setattr(orchestrator, "PublicationOrchestrator", FakeOrchestrator)
+    monkeypatch.setattr(selection, "EditorialSelectionService", FakeSelector)
+    monkeypatch.setattr(generation, "PublicationGenerationService", FakeGenerationService)
+
+    preview = await build_publication_preview(
+        publication_type="daily_article",
+        edition_slug="test-edition",
+        snapshot_at=_NOW,
+        config=config,
+    )
+
+    assert preview.body == "Текст."
+    assert len(generation_configs) == 1
+    assert generation_configs[0] is not config
+    assert generation_configs[0].settings.article.save_debug_artifacts is False
+    assert config.settings.article.save_debug_artifacts is True
 
 
 @pytest.mark.postgres

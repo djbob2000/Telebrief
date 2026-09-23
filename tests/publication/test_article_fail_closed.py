@@ -153,7 +153,10 @@ def test_editor_patch_does_not_preserve_old_support_for_unrelated_text() -> None
         context=context,
     )
 
-    assert not edited.sections
+    # An unsupported replacement is rejected; retaining the original issue
+    # lets the final validation reject the article instead of hiding the claim.
+    assert edited.sections[0].paragraphs[0].text == "Интернет работает."
+    assert edited.sections[0].paragraphs[0].cited_support_ids == (support_id,)
 
 
 @pytest.mark.unit
