@@ -336,59 +336,12 @@ def build_article_coverage_plan(
             )
 
     card_map = {c.id: c for c in valid_cards}
-
-    # Subtopic support pooling:
-    # When multiple stories describe the same practical subject within a domain
-    # (e.g. multiple reports about outages and voltage drops across different streets, or multiple retail closures),
-    # pool their support IDs so that comprehensive narrative coverage of the topic credits all related stories.
-    subtopic_sups: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for s in stories:
-        c_item = card_map.get(s.story_id)
-        sec_id = _thematic_section_id(c_item) if c_item else "city_life"
-        subtopic_signature = _story_topic_signature(s, context)
-        subtopic_sups[(sec_id, subtopic_signature)].extend(s.support_ids)
-
-    pooled_stories: list[ArticleStoryCoverage] = []
-    for s in stories:
-        c_item = card_map.get(s.story_id)
-        sec_id = _thematic_section_id(c_item) if c_item else "city_life"
-        subtopic_signature = _story_topic_signature(s, context)
-        cluster_sups = tuple(
-            dict.fromkeys(list(s.support_ids) + subtopic_sups[(sec_id, subtopic_signature)])
-        )
-        pooled_stories.append(
-            ArticleStoryCoverage(
-                story_id=s.story_id,
-                topic=s.topic,
-                rank=s.rank,
-                prominence=s.prominence,
-                support_ids=cluster_sups,
-                detail_support_ids=s.detail_support_ids,
-            )
-        )
-    stories = pooled_stories
-
     stories_by_section: dict[str, list[ArticleStoryCoverage]] = defaultdict(list)
     for s in stories:
         c_item = card_map.get(s.story_id)
-        sec_id = _thematic_section_id(c_item) if c_item else "city_life"
-        stories_by_section[sec_id].append(s)
-
-    sec_defs = list(_THEMATIC_SECTIONS_DEF)
-    active_sec_ids = [sdef[0] for sdef in sec_defs if stories_by_section.get(sdef[0])]
-    if len(active_sec_ids) < 3 and len(stories) >= 3:
-        for sdef in sec_defs:
-            sid = sdef[0]
-            if sid not in stories_by_section or not stories_by_section[sid]:
-                active_donor_keys = [
-                    k for k in stories_by_section.keys() if len(stories_by_section[k]) >= 2
-                ]
-                if active_donor_keys:
-                    donor_sid = max(active_donor_keys, key=lambda k: len(stories_by_section[k]))
-                    moved = stories_by_section[donor_sid].pop()
-                    stories_by_section[sid].append(moved)
-            if len([k for k, v in stories_by_section.items() if v]) >= 3:
-                break
+        sec_id = _thematic_section_id(c_item) if c_item else None
+        if sec_id is not None:
+            stories_by_section[sec_id].append(s)
 
     sections: list[ArticleThematicSection] = []
     for sec_id, sec_title, sec_intent in _THEMATIC_SECTIONS_DEF:
@@ -455,15 +408,15 @@ _THEMATIC_SECTIONS_DEF: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _thematic_section_id(card: StoryCard | None) -> str:
+def _thematic_section_id(card: StoryCard | None) -> str | None:
     if card is None:
-        return "city_life"
+        return None
     rid = (getattr(card, "rubric_id", "") or "").casefold()
     cat = (getattr(card, "category", "") or "").casefold()
-    topic = (getattr(card, "topic", "") or "").casefold()
-    summary = (getattr(card, "summary", "") or "").casefold()
     tags = {str(t).casefold() for t in getattr(card, "tags", []) or []}
-    text = f"{rid} {cat} {topic} {summary} {' '.join(tags)}".casefold()
+    text = f"{rid} {cat} {' '.join(tags)}".casefold()
+    if not text.strip():
+        return None
     tokens = set(re.findall(r"[a-zа-яё0-9]+", text))
 
     # Priority 1: Infrastructure (power, water, gas, heating, utilities)
@@ -584,4 +537,4 @@ def _thematic_section_id(card: StoryCard | None) -> str:
     if any(any(tok.startswith(p) for p in soc_prefixes) for tok in tokens):
         return "society"
 
-    return "city_life"
+    return None

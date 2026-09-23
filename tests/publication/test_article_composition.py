@@ -20,7 +20,14 @@ from src.publication.article_writer_context import (
 )
 
 
-def _support(story_id: str, support_id: str, text: str) -> ArticleSupport:
+def _support(
+    story_id: str,
+    support_id: str,
+    text: str,
+    *,
+    effective_from: dt.datetime | None = None,
+    effective_until: dt.datetime | None = None,
+) -> ArticleSupport:
     now = dt.datetime(2026, 9, 22, 18, 2, tzinfo=dt.timezone.utc)
     return ArticleSupport(
         support_id=support_id,
@@ -32,19 +39,22 @@ def _support(story_id: str, support_id: str, text: str) -> ArticleSupport:
         fragment_ids=(1,),
         source_item_ids=(1,),
         observed_at=now,
+        effective_from=effective_from,
+        effective_until=effective_until,
         evidence_kind="community_report",
         story_id=story_id,
     )
 
 
 def _context(
-    cards: tuple[StoryCard, ...], supports: tuple[ArticleSupport, ...]
+    cards: tuple[StoryCard, ...], supports: tuple[ArticleSupport, ...], *, edition_slug: str = ""
 ) -> ArticleEditorialContext:
     return ArticleEditorialContext(
         headline_candidates=tuple(card.topic for card in cards),
         support_index=supports,
         support_by_id={support.support_id: support for support in supports},
         recurring_topics=(),
+        edition_slug=edition_slug,
     )
 
 
@@ -119,9 +129,10 @@ def test_composition_bundle_groups_related_reports_without_merging_local_evidenc
         bundle for bundle in composition.bundles if "story:water-a" in bundle.story_ids
     )
     assert set(water_bundle.story_ids) == {"story:water-a", "story:water-b"}
-    assert set(water_bundle.support_ids) == {
-        "story:water-a:evidence:0:frag:1",
-        "story:water-b:evidence:0:frag:2",
+    assert water_bundle.relation == "localized_contrast"
+    assert {member.story_id: member.support_ids for member in water_bundle.members} == {
+        "story:water-a": ("story:water-a:evidence:0:frag:1",),
+        "story:water-b": ("story:water-b:evidence:0:frag:2",),
     }
     power_bundle = composition.bundle_by_story_id["story:power"]
     assert power_bundle.bundle_id != water_bundle.bundle_id
@@ -191,6 +202,84 @@ def test_composition_suppresses_only_projection_marked_stories_and_keeps_plan_im
     metadata = composition.to_metadata()
     assert metadata["bundle_count"] == len(composition.bundles)
     assert metadata["suppressed_story_ids"] == ["story:ad"]
+
+
+def test_composition_groups_only_supported_service_place_and_time_relations():
+    cards = (
+        StoryCard(
+            id="story:outage",
+            topic="Электричество на Морозова",
+            summary="Отключение",
+            importance="medium",
+        ),
+        StoryCard(
+            id="story:voltage",
+            topic="Электричество на Пионерской",
+            summary="Напряжение",
+            importance="medium",
+        ),
+        StoryCard(
+            id="story:solar", topic="Электроснабжение", summary="Панель", importance="medium"
+        ),
+        StoryCard(
+            id="story:water-old", topic="Вода на Центральной", summary="Утром", importance="medium"
+        ),
+        StoryCard(
+            id="story:water-new",
+            topic="Вода на Карла Маркса",
+            summary="Вечером",
+            importance="medium",
+        ),
+    )
+    supports = (
+        _support("story:outage", "story:outage:s1", "На улице Морозова нет электричества."),
+        _support("story:voltage", "story:voltage:s1", "На улице Пионерской пониженное напряжение."),
+        _support("story:solar", "story:solar:s1", "В доме установили солнечную панель."),
+        _support(
+            "story:water-old",
+            "story:water-old:s1",
+            "На улице Тверская вода подавалась утром.",
+            effective_from=dt.datetime(2026, 9, 22, 6, tzinfo=dt.timezone.utc),
+            effective_until=dt.datetime(2026, 9, 22, 12, tzinfo=dt.timezone.utc),
+        ),
+        _support(
+            "story:water-new",
+            "story:water-new:s1",
+            "На улице Карла Маркса воды нет вечером.",
+            effective_from=dt.datetime(2026, 9, 22, 18, tzinfo=dt.timezone.utc),
+            effective_until=dt.datetime(2026, 9, 22, 23, tzinfo=dt.timezone.utc),
+        ),
+    )
+    context = _context(cards, supports, edition_slug="berdyansk")
+    plan = _manual_plan(cards, supports)
+    composition = build_article_composition_plan(plan, context, project_article_material(context))
+
+    by_story = composition.bundle_by_story_id
+    assert by_story["story:outage"].relation == "localized_contrast"
+    assert by_story["story:outage"].bundle_id == by_story["story:voltage"].bundle_id
+    assert by_story["story:solar"].relation == "independent"
+    assert by_story["story:solar"].bundle_id not in {
+        by_story["story:outage"].bundle_id,
+        by_story["story:voltage"].bundle_id,
+    }
+    assert by_story["story:water-old"].relation == "temporal_progression"
+    assert by_story["story:water-old"].bundle_id == by_story["story:water-new"].bundle_id
+    visible_story_ids = set(plan.story_ids)
+    memberships = [member.story_id for bundle in composition.bundles for member in bundle.members]
+    assert len(memberships) == len(set(memberships))
+    assert set(memberships) == visible_story_ids
+    for bundle in composition.bundles:
+        for member in bundle.members:
+            assert member.prominence == plan.by_story_id[member.story_id].prominence
+            assert all(
+                context.support_by_id[support_id].story_id == member.story_id
+                for support_id in member.support_ids
+            )
+    metadata = composition.to_metadata()
+    assert metadata["line_count"] == metadata["group_count"] == len(composition.bundles)
+    assert {
+        member["story_id"] for group in metadata["groups"] for member in group["members"]
+    } == visible_story_ids
 
 
 def test_packet_budget_fallback_keeps_bundle_and_member_story_ids():

@@ -174,6 +174,44 @@ def test_article_coverage_plan_exposes_canonical_indexes():
         assert plan.support_ids_by_story[story_id] == plan.by_story_id[story_id].support_ids
 
 
+def test_coverage_does_not_spread_stories_or_pool_supports_to_fill_sections():
+    story_data = (
+        ("story:power-a", "Электроснабжение", "На одном адресе света нет."),
+        ("story:power-b", "Электроснабжение", "На другом адресе напряжение низкое."),
+        ("story:power-c", "Электроснабжение", "В доме поставили солнечную панель."),
+        ("story:sport", "Детский спорт", "Школа открыла запись в секцию."),
+    )
+    cards = [
+        StoryCard(id=story_id, topic=topic, importance="medium", summary=topic)
+        for story_id, topic, _text in story_data
+    ]
+    supports = [
+        _make_simple_support(
+            text,
+            story_id=story_id,
+            support_id=f"{story_id}:evidence:0:frag:{index}",
+        )
+        for index, (story_id, _topic, text) in enumerate(story_data, start=1)
+    ]
+    context = ArticleEditorialContext(
+        headline_candidates=tuple(card.topic for card in cards),
+        support_index=tuple(supports),
+        support_by_id={support.support_id: support for support in supports},
+        recurring_topics=(),
+    )
+    plan = build_article_coverage_plan(cards, context)
+
+    assert set(plan.story_ids) == {card.id for card in cards}
+    for story in plan.stories:
+        assert set(story.support_ids) == {
+            support.support_id for support in supports if support.story_id == story.story_id
+        }
+    assert len(plan.sections) <= 2
+    sport = next(story for story in plan.stories if story.story_id == "story:sport")
+    assert sport.prominence == "BRIEF"
+    assert sport.rank == 4
+
+
 def test_prominence_from_selection_signals():
     """Tests 6A, 6B, 6C, 6D: Selection intent mapping into article prominence."""
     from src.publication.article_context import ArticleSelectionSignal
@@ -256,14 +294,21 @@ def test_article_coverage_plan_hierarchical_thematic_sections() -> None:
     plan = build_article_coverage_plan(cards, ctx)
 
     assert hasattr(plan, "sections")
-    assert 3 <= len(plan.sections) <= 6
+    assert len(plan.sections) == 0
     assert all(isinstance(sec, ArticleThematicSection) for sec in plan.sections)
     all_assigned_stories = [
         assign.story_id for sec in plan.sections for assign in sec.story_assignments
     ]
-    assert set(all_assigned_stories) == set(plan.story_ids)
-    assert len(all_assigned_stories) == len(plan.story_ids)
-    # Check that lead story in section has DEVELOP or WEAVE depth
+    assert set(all_assigned_stories).issubset(set(plan.story_ids))
+    assert len(all_assigned_stories) == len(set(all_assigned_stories))
+    # Unclassified material stays in coverage without a fabricated section.
+    assert set(plan.story_ids) == {
+        "story:power",
+        "story:safety",
+        "story:telecom",
+        "story:sport",
+        "story:route",
+    }
     for sec in plan.sections:
         assert sec.lead_story_id in [a.story_id for a in sec.story_assignments]
         assert sec.title
@@ -289,6 +334,7 @@ def test_pet_topic_signature_and_section_routing() -> None:
     assert sig == "pets"
     assert sig != "sports"
 
-    sec_id = _thematic_section_id(story)
-    assert sec_id == "city_life"
-    assert sec_id != "culture_education"
+    sec_id = _thematic_section_id(
+        StoryCard(id="story:cat", topic=story.topic, summary=story.topic, importance="low")
+    )
+    assert sec_id is None
