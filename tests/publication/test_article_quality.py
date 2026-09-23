@@ -755,6 +755,154 @@ def test_quality_report_flags_one_supported_overloaded_roster_paragraph():
     assert findings[0].severity == "blocking"
 
 
+def test_quality_report_allows_one_shared_condition_for_all_supported_places():
+    draft, plan, context = _packed_roster_case()
+    paragraph = draft.sections[0].paragraphs[0]
+    shared_condition = replace(
+        paragraph,
+        text=(
+            "Вечером на улице Садовой, на улице Морской, на проспекте Труда "
+            "и на улице Центральной света нет."
+        ),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(shared_condition,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert not any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
+def test_quality_report_keeps_repeated_per_place_common_state_as_roster():
+    draft, plan, context = _packed_roster_case()
+    paragraph = draft.sections[0].paragraphs[0]
+    repeated = replace(
+        paragraph,
+        text=(
+            "На улице Садовой вечером нет света, на улице Морской вечером нет света, "
+            "на проспекте Труда вечером нет света, на улице Центральной вечером нет света."
+        ),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(repeated,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
+def test_quality_report_rejects_unsupported_extra_place_in_shared_condition():
+    draft, plan, context = _packed_roster_case()
+    paragraph = draft.sections[0].paragraphs[0]
+    shared_condition = replace(
+        paragraph,
+        text=(
+            "Вечером на улице Садовой, на улице Морской, на проспекте Труда, "
+            "на улице Центральной и на улице Лесной света нет."
+        ),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(shared_condition,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
+def test_quality_report_rejects_negative_wording_that_denies_an_outage():
+    draft, plan, context = _packed_roster_case()
+    paragraph = draft.sections[0].paragraphs[0]
+    denied_outage = replace(
+        paragraph,
+        text=(
+            "Вечером на улице Садовой, на улице Морской, на проспекте Труда "
+            "и на улице Центральной свет не отключен."
+        ),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(denied_outage,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
+def test_quality_report_rejects_nonoverlapping_common_condition_intervals():
+    draft, plan, context = _packed_roster_case()
+    supports = tuple(
+        replace(
+            support,
+            effective_from=dt.datetime(2026, 9, 22, hour, 0, tzinfo=dt.timezone.utc),
+            effective_until=dt.datetime(2026, 9, 22, hour + 1, 0, tzinfo=dt.timezone.utc),
+        )
+        for hour, support in zip((7, 10, 13, 16), context.supports, strict=True)
+    )
+    context = replace(
+        context,
+        support_index=supports,
+        support_by_id={support.support_id: support for support in supports},
+    )
+    paragraph = draft.sections[0].paragraphs[0]
+    shared_condition = replace(
+        paragraph,
+        text=(
+            "Вечером на улице Садовой, на улице Морской, на проспекте Труда "
+            "и на улице Центральной света нет."
+        ),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(shared_condition,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
+def test_quality_report_does_not_hide_mixed_source_states_in_shared_condition():
+    draft, plan, context = _packed_roster_case()
+    mixed_supports = tuple(
+        replace(
+            support,
+            text="На улице Морской вечером восстановили свет.",
+            source_text="На улице Морской вечером восстановили свет.",
+        )
+        if support.story_id == "story:power-2"
+        else support
+        for support in context.support_index
+    )
+    context = replace(
+        context,
+        support_index=mixed_supports,
+        support_by_id={support.support_id: support for support in mixed_supports},
+    )
+    paragraph = draft.sections[0].paragraphs[0]
+    shared_condition = replace(
+        paragraph,
+        text=(
+            "Вечером на улице Садовой, на улице Морской, на проспекте Труда "
+            "и на улице Центральной света нет."
+        ),
+    )
+    draft = replace(
+        draft,
+        sections=(replace(draft.sections[0], paragraphs=(shared_condition,)),),
+    )
+
+    report = diagnose_article_quality(draft, plan, context)
+
+    assert any(f.code == "OVERLOADED_ROSTER_PARAGRAPH" for f in report.findings)
+
+
 def test_quality_report_allows_a_supported_localized_contrast_roster():
     draft, plan, context = _packed_roster_case()
     contrast_supports = tuple(

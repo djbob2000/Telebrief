@@ -246,6 +246,84 @@ def _effective_intervals_are_disjoint(first: ArticleSupport, second: ArticleSupp
     return first_end < second_start or second_end < first_start
 
 
+def _has_shared_common_condition(
+    text: str,
+    observations: Sequence[tuple[str, str, str, ArticleSupport]],
+    place_resolver: Any | None = None,
+) -> bool:
+    """Allow compact prose for one supported service state across many places.
+
+    This is deliberately stricter than a narrative relation: every cited
+    observation must agree on service and polarity, every observed place must
+    appear in one sentence, and that sentence must state the condition once.
+    """
+    if not observations or ";" in text or len(_split_sentences_safe(text)) != 1:
+        return False
+
+    service_states = {(service, state) for service, _place, state, _support in observations}
+    if len(service_states) != 1:
+        return False
+    service, state = next(iter(service_states))
+    places = {place for _service, place, _state, _support in observations if place}
+    mentioned_places = _extract_place_keys(text, place_resolver)
+    if len(places) < 4 or places != mentioned_places:
+        return False
+
+    # If the source analysis has explicit effective intervals, require one
+    # common overlap before describing the reports as a shared condition.
+    # Missing intervals remain usable; disjoint known intervals do not.
+    timed_intervals = [
+        (support.effective_from, support.effective_until)
+        for _service, _place, _state, support in observations
+        if support.effective_from is not None and support.effective_until is not None
+    ]
+    if timed_intervals:
+        latest_start = max(start for start, _end in timed_intervals)
+        earliest_end = min(end for _start, end in timed_intervals)
+        if latest_start >= earliest_end:
+            return False
+
+    lowered = text.casefold()
+    # These negative words describe absence of a problem/report, or explicitly
+    # deny an outage; they cannot establish a negative service state.
+    if re.search(
+        r"\b(?:нет\s+(?:проблем\w*|перебо\w*|подтвержден\w*|сведен\w*)|"
+        r"не\s+(?:отключен\w*|пропал\w*|отсутств\w*|ограничен\w*))\b",
+        lowered,
+    ):
+        return False
+    # A common-state sentence must name the service and must not introduce an
+    # unsupported contrast between places or time periods.
+    service_markers = {
+        "water": ("вод", "водоканал", "водовод", "насос"),
+        "power": ("свет", "электр", "энерг", "напряж"),
+        "connectivity": ("интернет", "связ", "провайдер", "роутер"),
+        "heating_or_gas": ("газ", "отоплен"),
+    }.get(service, ())
+    if not service_markers or not any(marker in lowered for marker in service_markers):
+        return False
+    if re.search(
+        r"\b(?:но|однако|тогда\s+как|в\s+то\s+время\s+как|при\s+этом|между\s+тем|"
+        r"одни\b.{0,100}\bдругие)\b",
+        lowered,
+    ):
+        return False
+    if _state_polarity(text) != state:
+        return False
+
+    state_markers = (
+        r"\bнет\b|\bотсутств\w*|\bограничен\w*|\bотключ\w*|\bпропал\w*|"
+        r"\bне\s+(?:работ\w*|восстанов\w*|пода\w*|появил\w*|включил\w*)|"
+        r"\bбез\s+(?:свет\w*|вод\w*|газ\w*|отоплен\w*|интернет\w*|связ\w*)"
+        if state == "negative"
+        else r"\bвосстанов\w*|\bпоявил\w*|\bподача\s+есть\b|\bработа\w*|"
+        r"\bдоступн\w*|\bвключил\w*"
+    )
+    # Repeating «нет/работает/восстановили» after each address is still a
+    # roster, even if commas replace semicolons.
+    return len(re.findall(state_markers, lowered)) == 1
+
+
 def _has_narrative_relation(
     text: str,
     observations: Sequence[tuple[str, str, str, ArticleSupport]],
@@ -258,6 +336,9 @@ def _has_narrative_relation(
     need the same service/place, different supported states, a progression
     phrase, and non-overlapping explicit effective intervals.
     """
+    if _has_shared_common_condition(text, observations, place_resolver):
+        return True
+
     lowered = text.casefold()
     contrast_marker = bool(
         re.search(
