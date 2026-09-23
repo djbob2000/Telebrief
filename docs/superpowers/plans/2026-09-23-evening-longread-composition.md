@@ -321,6 +321,7 @@ git commit -m "feat: detect article roster and repetition defects"
 - Modify: `src/publication/article_finalization.py`
 - Test: `tests/publication/test_article_editor.py`
 - Test: `tests/publication/test_article_finalization.py`
+- Test: `tests/publication/test_article_recovery.py`
 - Test: `tests/publication/test_facade.py`
 
 **Interfaces:**
@@ -357,7 +358,7 @@ Ensure the successful or rejected `publication_generation_attempts.metadata` pat
 
 - [ ] **Step 7: Verify the bounded-edit call path and final gate**
 
-Run: `pytest tests/publication/test_article_editor.py tests/publication/test_article_finalization.py tests/publication/test_facade.py -q`
+Run: `pytest tests/publication/test_article_editor.py tests/publication/test_article_finalization.py tests/publication/test_article_recovery.py tests/publication/test_facade.py -q`
 
 Expected: PASS; one original writer response is followed only by up to the configured editor attempts, each patch is fact-checked, serious unresolved composition defects fail closed, and optional-detail warnings do not block.
 
