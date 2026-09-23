@@ -11,6 +11,10 @@ from src.publication.article_claim_support import assess_claim_against_supports
 from src.publication.article_claims import ConcreteClaim, _stem, find_unsupported_claims
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 from src.publication.article_length import ArticleLengthProfile
+from src.publication.article_material import (
+    ArticleMaterialProjection,
+    materialize_article_validation_context,
+)
 from src.publication.article_models import (
     ArticleClaimAtom,
     StructuredArticleDraft,
@@ -226,6 +230,7 @@ def validate_article_draft(
     config: PublicationEditorialConfig | None = None,
     *,
     length_profile: ArticleLengthProfile | None = None,
+    material_projection: ArticleMaterialProjection | None = None,
 ) -> ArticleValidationResult:
     """Validate structured article draft against support bounds, factual claims, and length constraints."""
     if config is None:
@@ -233,7 +238,26 @@ def validate_article_draft(
 
     from src.publication.article_quote_allowlist import build_article_quote_allowlist
 
-    quote_allowlist = build_article_quote_allowlist(context)
+    quote_allowlist = build_article_quote_allowlist(
+        context,
+        excluded_support_ids=(
+            {
+                support_id
+                for support_id, action in material_projection.actions_by_support_id.items()
+                if action == "SUPPRESS_PROMOTION_ONLY"
+            }
+            if material_projection is not None
+            else set()
+        ),
+        excluded_story_ids=(
+            material_projection.suppressed_story_ids if material_projection is not None else ()
+        ),
+        candidate_text_by_support_id=(
+            material_projection.text_by_support_id if material_projection is not None else None
+        ),
+    )
+    if material_projection is not None:
+        context = materialize_article_validation_context(context, material_projection)
 
     issues: list[ArticleValidationIssue] = []
     unknown_evidence_ids: list[str] = []

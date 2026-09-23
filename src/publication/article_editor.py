@@ -9,6 +9,11 @@ from typing import Any, Mapping
 
 from src.ai_providers import AIProvider
 from src.publication.article_context import ArticleEditorialContext
+from src.publication.article_coverage import ArticleCoveragePlan
+from src.publication.article_material import (
+    ArticleMaterialProjection,
+    materialize_article_validation_context,
+)
 from src.publication.article_models import (
     ArticleClaimAtom,
     ArticleParagraph,
@@ -18,11 +23,12 @@ from src.publication.article_models import (
     _split_sentences_safe,
     _strip_internal_handles,
 )
-from src.publication.article_validator import (
-    ArticleValidationIssue,
-    ArticleValidationResult,
-    validate_article_draft,
+from src.publication.article_quality import (
+    ArticleReaderQualityFinding,
+    ArticleReaderQualityReport,
+    diagnose_article_quality,
 )
+from src.publication.article_validator import ArticleValidationResult, validate_article_draft
 from src.publication.article_writer_context import sanitize_writer_source_text
 
 logger = logging.getLogger(__name__)
@@ -88,6 +94,8 @@ class ArticleEditor:
         self.model = model
         self.temperature = temperature
         self.max_output_tokens = min(max_output_tokens, 32768)
+        self.last_attempt_count = 0
+        self.last_patched_unit_ids: tuple[str, ...] = ()
 
     async def edit_draft(
         self,
@@ -99,24 +107,40 @@ class ArticleEditor:
         length_profile: Any | None = None,
         attempt_observer: Any | None = None,
         max_attempts: int = 2,
+        quality_report: ArticleReaderQualityReport | None = None,
+        coverage_plan: ArticleCoveragePlan | None = None,
+        material_projection: ArticleMaterialProjection | None = None,
+        place_resolver: Any | None = None,
     ) -> tuple[StructuredArticleDraft, ArticleValidationResult]:
         """Apply targeted editorial corrections to units with blocking validation issues."""
         current_draft = draft
         current_val = validation_result
+        current_quality = quality_report or ArticleReaderQualityReport()
+        patched_unit_ids: list[str] = []
+        validation_context = (
+            materialize_article_validation_context(context, material_projection)
+            if material_projection is not None
+            else context
+        )
 
         for attempt in range(1, max_attempts + 1):
+            self.last_attempt_count = attempt
             blocking_issues = [
                 iss
                 for iss in current_val.issues
                 if iss.blocking and iss.unit_id not in ("DRAFT", "")
             ]
-            if not blocking_issues:
+            quality_issues = list(current_quality.repair_findings)
+            if not blocking_issues and not quality_issues:
                 break
 
             # Group blocking issues by unit_id
-            issues_by_unit: dict[str, list[ArticleValidationIssue]] = {}
+            issues_by_unit: dict[str, list[Any]] = {}
             for iss in blocking_issues:
                 issues_by_unit.setdefault(iss.unit_id, []).append(iss)
+            for finding in quality_issues:
+                if finding.unit_id not in ("DRAFT", ""):
+                    issues_by_unit.setdefault(finding.unit_id, []).append(finding)
 
             logger.info(
                 "ArticleEditor pass %d/%d targeting %d problematic unit(s): %s",
@@ -126,7 +150,12 @@ class ArticleEditor:
                 list(issues_by_unit.keys()),
             )
 
-            prompt_data = self._build_unit_contexts(current_draft, issues_by_unit, context)
+            prompt_data = self._build_unit_contexts(
+                current_draft,
+                issues_by_unit,
+                validation_context,
+                material_projection=material_projection,
+            )
             if not prompt_data:
                 logger.warning("ArticleEditor could not build unit context for issues; stopping")
                 break
@@ -146,7 +175,10 @@ class ArticleEditor:
                         "strategy": "article_editor",
                         "attempt": attempt,
                         "units": list(issues_by_unit.keys()),
-                        "violations": [f"{iss.code}:{iss.unit_id}" for iss in blocking_issues],
+                        "violations": [
+                            f"{getattr(iss, 'code', 'QUALITY')}:{getattr(iss, 'unit_id', '')}"
+                            for iss in (*blocking_issues, *quality_issues)
+                        ],
                     },
                 )
 
@@ -171,26 +203,50 @@ class ArticleEditor:
                         )
                     break
 
-                current_draft = self.apply_patches(current_draft, patches, context=context)
-                current_val = validate_article_draft(
-                    current_draft, context, config=config, length_profile=length_profile
+                current_draft = self.apply_patches(
+                    current_draft,
+                    patches,
+                    context=validation_context,
+                    preserve_unmatched_supports=material_projection is None,
                 )
+                patched_unit_ids.extend(patches)
+                self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
+                current_val = validate_article_draft(
+                    current_draft,
+                    context,
+                    config=config,
+                    length_profile=length_profile,
+                    material_projection=material_projection,
+                )
+                if coverage_plan is not None:
+                    current_quality = diagnose_article_quality(
+                        current_draft,
+                        coverage_plan,
+                        context,
+                        material_projection=material_projection,
+                        place_resolver=place_resolver,
+                    )
 
                 if attempt_observer is not None:
-                    status = "succeeded" if current_val.is_valid else "failed"
-                    error_kind = None if current_val.is_valid else "remaining_violations"
+                    is_clean = current_val.is_valid and not current_quality.needs_edit
+                    status = "succeeded" if is_clean else "failed"
+                    error_kind = None if is_clean else "remaining_violations"
                     await attempt_observer.attempt_finished(
                         obs_att_id,
                         status,
                         error_kind=error_kind,
                         metadata={
-                            "editor_status": "succeeded" if current_val.is_valid else "partial",
+                            "editor_status": "succeeded" if is_clean else "partial",
                             "patched_units": list(patches.keys()),
                             "remaining_violations": list(current_val.violations),
+                            "remaining_quality_findings": [
+                                f"{finding.code}:{finding.unit_id}"
+                                for finding in current_quality.repair_findings
+                            ],
                         },
                     )
 
-                if current_val.is_valid:
+                if current_val.is_valid and not current_quality.needs_edit:
                     logger.info("ArticleEditor successfully resolved all validation issues!")
                     break
                 else:
@@ -216,8 +272,10 @@ class ArticleEditor:
     def _build_unit_contexts(
         self,
         draft: StructuredArticleDraft,
-        issues_by_unit: Mapping[str, list[ArticleValidationIssue]],
+        issues_by_unit: Mapping[str, list[Any]],
         context: ArticleEditorialContext,
+        *,
+        material_projection: ArticleMaterialProjection | None = None,
     ) -> list[dict[str, Any]]:
         """Collect current text, cited supports, and issues for each target unit."""
         unit_data: list[dict[str, Any]] = []
@@ -227,6 +285,16 @@ class ArticleEditor:
             if support is None:
                 return ""
             fact = (support.text or "").strip()
+            if material_projection is not None:
+                if (
+                    material_projection.actions_by_support_id.get(support_id)
+                    == "SUPPRESS_PROMOTION_ONLY"
+                ):
+                    return ""
+                projected = material_projection.text_by_support_id.get(support_id, "").strip()
+                if not projected:
+                    return ""
+                return projected
             source = sanitize_writer_source_text((support.source_text or "").strip())
             if source and source != fact:
                 return f"{fact}\nПервичный источник: {source}" if fact else source
@@ -234,8 +302,18 @@ class ArticleEditor:
 
         # Index units across draft
         # 1. Title
+        def unit_supports(unit_ids: list[str], unit_issues: list[Any]) -> list[str]:
+            # Required support IDs from a quality finding must appear first so
+            # the prompt's bounded five-support display cannot hide the exact
+            # evidence that the editor is asked to restore.
+            ids: list[str] = []
+            for issue in unit_issues:
+                ids.extend(getattr(issue, "support_ids", ()) or ())
+            ids.extend(unit_ids)
+            return list(dict.fromkeys(ids))
+
         if "TITLE" in issues_by_unit:
-            t_sups = list(draft.title_support_ids)
+            t_sups = unit_supports(list(draft.title_support_ids), issues_by_unit["TITLE"])
             if not t_sups:
                 t_sups = list(draft.lead_support_ids) or (
                     list(draft.sections[0].heading_support_ids) if draft.sections else []
@@ -247,7 +325,11 @@ class ArticleEditor:
                     "text": draft.title,
                     "support_ids": t_sups,
                     "supports": [
-                        support_text(sid) for sid in t_sups if sid in context.support_by_id
+                        rendered
+                        for sid in t_sups
+                        if sid in context.support_by_id
+                        for rendered in (support_text(sid),)
+                        if rendered
                     ],
                     "issues": issues_by_unit["TITLE"],
                 }
@@ -255,16 +337,19 @@ class ArticleEditor:
 
         # 2. Lead
         if "LEAD" in issues_by_unit:
+            lead_sups = unit_supports(list(draft.lead_support_ids), issues_by_unit["LEAD"])
             unit_data.append(
                 {
                     "unit_id": "LEAD",
                     "unit_type": "lead",
                     "text": draft.lead,
-                    "support_ids": list(draft.lead_support_ids),
+                    "support_ids": lead_sups,
                     "supports": [
-                        support_text(sid)
-                        for sid in draft.lead_support_ids
+                        rendered
+                        for sid in lead_sups
                         if sid in context.support_by_id
+                        for rendered in (support_text(sid),)
+                        if rendered
                     ],
                     "issues": issues_by_unit["LEAD"],
                 }
@@ -275,16 +360,19 @@ class ArticleEditor:
         for s_idx, sec in enumerate(draft.sections, start=1):
             h_id = f"H{s_idx:03d}"
             if h_id in issues_by_unit:
+                h_sups = unit_supports(list(sec.heading_support_ids), issues_by_unit[h_id])
                 unit_data.append(
                     {
                         "unit_id": h_id,
                         "unit_type": "heading",
                         "text": sec.heading,
-                        "support_ids": list(sec.heading_support_ids),
+                        "support_ids": h_sups,
                         "supports": [
-                            support_text(sid)
-                            for sid in sec.heading_support_ids
+                            rendered
+                            for sid in h_sups
                             if sid in context.support_by_id
+                            for rendered in (support_text(sid),)
+                            if rendered
                         ],
                         "issues": issues_by_unit[h_id],
                     }
@@ -293,7 +381,7 @@ class ArticleEditor:
             for p in sec.paragraphs:
                 p_id = f"P{p_idx:03d}"
                 if p_id in issues_by_unit:
-                    p_sups = list(p.cited_support_ids)
+                    p_sups = unit_supports(list(p.cited_support_ids), issues_by_unit[p_id])
                     if not p_sups:
                         p_sups = list(sec.heading_support_ids)
                     unit_data.append(
@@ -303,7 +391,11 @@ class ArticleEditor:
                             "text": p.text,
                             "support_ids": p_sups,
                             "supports": [
-                                support_text(sid) for sid in p_sups if sid in context.support_by_id
+                                rendered
+                                for sid in p_sups
+                                if sid in context.support_by_id
+                                for rendered in (support_text(sid),)
+                                if rendered
                             ],
                             "issues": issues_by_unit[p_id],
                         }
@@ -398,7 +490,17 @@ class ArticleEditor:
                     "Напишите емкий вводный абзац (2-3 предложения), обобщающий общую картину дня строго по предоставленным источникам ниже."
                 )
             for iss in issues:
-                msg = f"  • [{iss.code}] {iss.message}"
+                is_quality = isinstance(iss, ArticleReaderQualityFinding)
+                msg = f"  • [{'READER_QUALITY' if is_quality else 'FACTUAL'}:{iss.code}] {iss.message}"
+                if is_quality:
+                    msg += f" (severity={iss.severity})"
+                    if iss.support_ids:
+                        msg += (
+                            " -> Сохраните подтверждённые детали и опирайтесь именно на support IDs: "
+                            + ", ".join(iss.support_ids)
+                        )
+                    blocks.append(msg)
+                    continue
                 if iss.code == "UNSUPPORTED_CLAIM_ATOM":
                     if utype in ("title", "lead"):
                         msg += " -> ВАЖНО: перепишите предложение строго по фактам из источников ниже, сохраняя связность!"
@@ -518,8 +620,15 @@ class ArticleEditor:
         draft: StructuredArticleDraft,
         patches: Mapping[str, str],
         context: ArticleEditorialContext | None = None,
+        *,
+        preserve_unmatched_supports: bool = True,
     ) -> StructuredArticleDraft:
-        """Apply targeted text patches to StructuredArticleDraft while preserving structure."""
+        """Apply targeted text patches while preserving structure and provenance.
+
+        Projected validation contexts intentionally omit suppressed material.  In
+        that mode an editor patch that cannot be re-grounded must not inherit the
+        old citation IDs, because doing so would reattach filtered evidence.
+        """
         if not patches:
             return draft
 
@@ -540,15 +649,17 @@ class ArticleEditor:
                     if regrounded:
                         title_sups = regrounded
                     else:
+                        filtered_title_sups = tuple(
+                            sid
+                            for sid in title_sups
+                            if sid in context.support_by_id
+                            and context.support_by_id[sid].publication_use == "PUBLISH"
+                            and context.support_by_id[sid].temporal_role == "CURRENT_WINDOW"
+                        )
                         title_sups = (
-                            tuple(
-                                sid
-                                for sid in title_sups
-                                if sid in context.support_by_id
-                                and context.support_by_id[sid].publication_use == "PUBLISH"
-                                and context.support_by_id[sid].temporal_role == "CURRENT_WINDOW"
-                            )
-                            or title_sups
+                            filtered_title_sups
+                            if not preserve_unmatched_supports
+                            else filtered_title_sups or title_sups
                         )
                 title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_sups),)
 
@@ -560,14 +671,16 @@ class ArticleEditor:
             lead = _normalize_homoglyphs(_strip_internal_handles(raw_l))
             lead_sups = _reground_support_ids(lead, context) if context else draft.lead_support_ids
             if not lead_sups and context:
+                filtered_lead_sups = tuple(
+                    sid
+                    for sid in draft.lead_support_ids
+                    if sid in context.support_by_id
+                    and context.support_by_id[sid].publication_use == "PUBLISH"
+                )
                 lead_sups = (
-                    tuple(
-                        sid
-                        for sid in draft.lead_support_ids
-                        if sid in context.support_by_id
-                        and context.support_by_id[sid].publication_use == "PUBLISH"
-                    )
-                    or draft.lead_support_ids
+                    filtered_lead_sups
+                    if not preserve_unmatched_supports
+                    else filtered_lead_sups or draft.lead_support_ids
                 )
             lead_sentences = _split_sentences_safe(lead)
             lead_claims = tuple(
@@ -588,7 +701,7 @@ class ArticleEditor:
                     _reground_support_ids(heading, context) if context else sec.heading_support_ids
                 )
                 if not h_sups:
-                    h_sups = sec.heading_support_ids
+                    h_sups = sec.heading_support_ids if preserve_unmatched_supports else ()
                 heading_claims = (ArticleClaimAtom(text=heading, cited_support_ids=h_sups),)
 
             new_paragraphs: list[ArticleParagraph] = []
@@ -658,6 +771,8 @@ class ArticleEditor:
                     # A patch replaces the prose; recompute its provenance
                     # instead of retaining citations from the old paragraph.
                     p_sups = _reground_support_ids(text, context) if context else p_sups
+                    if not p_sups and context and not preserve_unmatched_supports:
+                        p_sups = ()
                     sentences = _split_sentences_safe(text)
                     from src.publication.article_models import _normalize_for_dedup
 

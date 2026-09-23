@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Literal
 
@@ -205,4 +205,41 @@ def project_article_material(context: ArticleEditorialContext) -> ArticleMateria
         reasons_by_support_id=reasons,
         suppressed_story_ids=suppressed_stories,
         trimmed_support_ids=tuple(trimmed_ids),
+    )
+
+
+def materialize_article_validation_context(
+    context: ArticleEditorialContext,
+    projection: ArticleMaterialProjection,
+) -> ArticleEditorialContext:
+    """Build the projected support view used for strict claim validation.
+
+    The original context remains the provenance source for traces and quote
+    allowlists.  Validation itself must see only citable projected text, so a
+    suppressed support or a support whose projection became empty cannot be
+    reattached by an editor patch or a deterministic repair.
+    """
+    projected_supports: list[ArticleSupport] = []
+    suppressed_story_ids = set(projection.suppressed_story_ids)
+    for support in context.support_index:
+        if support.publication_use == "EXCLUDE":
+            continue
+        support_story_id = support.story_id
+        if not support_story_id:
+            match = re.match(r"(story:[^:]+)", support.support_id)
+            support_story_id = match.group(1) if match else ""
+        if support_story_id in suppressed_story_ids:
+            continue
+        if projection.actions_by_support_id.get(support.support_id) == "SUPPRESS_PROMOTION_ONLY":
+            continue
+        projected_text = projection.text_by_support_id.get(support.support_id, "").strip()
+        if not projected_text:
+            continue
+        projected_supports.append(replace(support, text=projected_text, source_text=projected_text))
+
+    support_index = tuple(projected_supports)
+    return replace(
+        context,
+        support_index=support_index,
+        support_by_id={support.support_id: support for support in support_index},
     )

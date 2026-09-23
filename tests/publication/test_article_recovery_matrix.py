@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,6 +20,7 @@ from src.config_loader import Config, PublicationEditorialConfig, Settings
 from src.publication.article_context import (
     ArticleEditorialContext,
     ArticleSupport,
+    PublicationWindow,
 )
 from src.publication.article_coverage import (
     ArticleCoveragePlan,
@@ -403,13 +405,83 @@ async def test_case_2_local_issue_triggers_targeted_article_editor_repair() -> N
 
     assert title
     assert "Как сообщалось ранее" in lead
-    assert generator.provider.chat_completion.call_count == 2
+    # One writer call plus the bounded two-pass editor loop. The second editor
+    # pass may be unable to improve the synthetic inventory-shaped fixture.
+    assert generator.provider.chat_completion.call_count == 3
 
     # ArticleEditor was called for targeted repair after the single writer call
     repair_attempts = [att for att in observer.started_attempts if att.get("kind") == "repair"]
-    assert len(repair_attempts) == 1
+    assert len(repair_attempts) == 2
     assert repair_attempts[0]["kwargs"]["metadata"]["strategy"] == "article_editor"
     assert "LEAD" in repair_attempts[0]["kwargs"]["metadata"]["units"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_quality_only_generator_repair_uses_one_writer_and_bounded_editor_calls() -> None:
+    """Reader-quality repair must reuse the writer draft and revalidate facts."""
+    context, plan = _make_17_story_setup()
+    generator = _make_article_generator(
+        article_editor_enabled=True,
+        article_allow_deterministic_fallback=False,
+    )
+    supports = list(context.support_index)
+    writer_response = _build_complete_longread_response(supports)
+    editor_units = {
+        f"P{index:03d}": f"{support.text} Ситуация описана в Бердянске."
+        for index, support in enumerate(supports, start=1)
+    }
+    editor_response = json.dumps({"units": editor_units})
+    generator.provider.chat_completion.side_effect = [writer_response, editor_response]
+    observer = RecordingAttemptObserver()
+
+    title, lead, body = await generator.generate_from_event_article_context(
+        context,
+        coverage_plan=plan,
+        attempt_observer=observer,
+    )
+
+    assert title and lead and body
+    assert generator.provider.chat_completion.call_count == 2
+    repairs = [item for item in observer.started_attempts if item["kind"] == "repair"]
+    assert repairs
+    assert all(
+        "ARTICLE_INVENTORY_RHYTHM" in violation
+        for violation in repairs[0]["kwargs"]["metadata"]["violations"]
+    )
+    writer_finish = observer.finished_attempts[1]
+    assert writer_finish["status"] == "succeeded"
+    assert writer_finish["kwargs"]["metadata"]["writer_attempt"]["editor_retry_count"] == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_writer_metadata_uses_edition_local_as_of_and_retains_utc() -> None:
+    context, plan = _make_17_story_setup()
+    context = replace(
+        context,
+        publication_window=PublicationWindow(
+            snapshot_at=dt.datetime(2026, 9, 5, 12, 0, tzinfo=dt.timezone.utc),
+            lookback_start=dt.datetime(2026, 9, 4, 12, 0, tzinfo=dt.timezone.utc),
+        ),
+        edition_timezone="Europe/Kyiv",
+    )
+    generator = _make_article_generator(article_allow_deterministic_fallback=False)
+    generator.provider.chat_completion.return_value = _build_complete_longread_response(
+        list(context.support_index)
+    )
+    observer = RecordingAttemptObserver()
+
+    await generator.generate_from_event_article_context(
+        context,
+        coverage_plan=plan,
+        attempt_observer=observer,
+    )
+
+    metadata = observer.started_attempts[0]["kwargs"]["metadata"]
+    assert metadata["as_of"] == "2026-09-05T15:00:00+03:00"
+    assert metadata["as_of_utc"] == "2026-09-05T12:00:00+00:00"
+    assert metadata["edition_timezone"] == "Europe/Kyiv"
 
 
 @pytest.mark.unit
@@ -464,8 +536,8 @@ async def test_case_5_valid_partial_draft_is_accepted_without_supplement() -> No
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_6_valid_draft_with_partial_coverage_is_not_rejected_for_coverage() -> None:
-    """Coverage remains diagnostic when the writer draft passes Evidence Boundary."""
+async def test_case_6_missing_develop_story_rejects_after_factual_validation() -> None:
+    """An omitted DEVELOP storyline is a blocking reader-quality failure."""
     context, plan = _make_17_story_setup()
     supports = list(context.support_index)
     sup1 = supports[0]
@@ -528,32 +600,28 @@ async def test_case_6_valid_draft_with_partial_coverage_is_not_rejected_for_cove
     observer = RecordingAttemptObserver()
     writer_id = await observer.attempt_started("writer")
 
-    result = await finalizer.finalize(
-        writer_draft=one_story_draft,
-        writer_error=None,
-        writer_attempt_id=writer_id,
-        context=context,
-        coverage_plan=plan,
-        editorial_config=editorial_config,
-        attempt_observer=observer,
-    )
+    with pytest.raises(ArticlePublicationRejected) as exc_info:
+        await finalizer.finalize(
+            writer_draft=one_story_draft,
+            writer_error=None,
+            writer_attempt_id=writer_id,
+            context=context,
+            coverage_plan=plan,
+            editorial_config=editorial_config,
+            attempt_observer=observer,
+        )
 
-    assert result.recovery_mode == "none"
-    assert result.metadata["coverage_only_diagnostic"] is True
-    assert result.metadata["final_story_coverage"] == pytest.approx(1 / 17, abs=1e-3)
-    assert "deterministic_supplement" not in observer.started_kinds
-
-    # Writer attempt must be closed as succeeded; coverage is recorded, not blocking.
+    assert exc_info.value.reason == "quality_failed"
+    assert exc_info.value.error_kind == "article_quality_rejected"
+    assert exc_info.value.metadata["stage"] == "post_finalization_quality"
     assert writer_id in observer.finished_attempts
-    att = observer.finished_attempts[writer_id]
-    assert att["status"] == "succeeded"
-    assert att["kwargs"]["metadata"]["ai_story_coverage"] == pytest.approx(1 / 17, abs=1e-3)
+    assert observer.finished_attempts[writer_id]["status"] == "failed"
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_7_missing_develop_story_is_reported_without_coverage_rejection() -> None:
-    """Missing DEVELOP coverage is a quality diagnostic, not an Evidence Boundary failure."""
+async def test_case_7_missing_develop_story_fails_closed() -> None:
+    """Missing DEVELOP coverage remains blocking after finalization."""
     context, plan = _make_17_story_setup()
     supports = list(context.support_index)
 
@@ -588,19 +656,20 @@ async def test_case_7_missing_develop_story_is_reported_without_coverage_rejecti
     observer = RecordingAttemptObserver()
     writer_id = await observer.attempt_started("writer")
 
-    result = await finalizer.finalize(
-        writer_draft=missing_develop_draft,
-        writer_error=None,
-        writer_attempt_id=writer_id,
-        context=context,
-        coverage_plan=plan,
-        editorial_config=editorial_config,
-        attempt_observer=observer,
-    )
+    with pytest.raises(ArticlePublicationRejected) as exc_info:
+        await finalizer.finalize(
+            writer_draft=missing_develop_draft,
+            writer_error=None,
+            writer_attempt_id=writer_id,
+            context=context,
+            coverage_plan=plan,
+            editorial_config=editorial_config,
+            attempt_observer=observer,
+        )
 
-    assert result.recovery_mode == "none"
-    assert result.metadata["coverage"]["develop_story_coverage"] == pytest.approx(2 / 3)
-    assert "deterministic_supplement" not in observer.started_kinds
+    assert exc_info.value.reason == "quality_failed"
+    assert exc_info.value.metadata["quality"]["counts_by_code"]["MISSING_DEVELOP_STORY"] == 1
+    assert exc_info.value.metadata["stage"] == "post_finalization_quality"
 
 
 @pytest.mark.unit
@@ -769,8 +838,8 @@ async def test_case_9_grounding_path_preserves_writer_coverage_without_regenerat
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_case_10_valid_but_globally_incomplete_draft_is_accepted_without_retry() -> None:
-    """A long one-story draft is accepted without a second writer call."""
+async def test_case_10_missing_develop_story_gets_bounded_editor_attempts_then_rejects() -> None:
+    """The editor gets bounded targeted attempts before quality rejection."""
     context, plan = _make_17_story_setup()
     generator = _make_article_generator(
         article_editor_enabled=True,
@@ -820,25 +889,21 @@ async def test_case_10_valid_but_globally_incomplete_draft_is_accepted_without_r
     generator.provider.chat_completion.return_value = resp_attempt_1
 
     observer = RecordingAttemptObserver()
-    title, lead, body = await generator.generate_from_event_article_context(
-        context,
-        coverage_plan=plan,
-        attempt_observer=observer,
+    with pytest.raises(ArticlePublicationRejected) as exc_info:
+        await generator.generate_from_event_article_context(
+            context,
+            coverage_plan=plan,
+            attempt_observer=observer,
+        )
+
+    assert exc_info.value.reason == "quality_failed"
+    assert generator.provider.chat_completion.call_count == 3
+    repair_attempts = [att for att in observer.started_attempts if att.get("kind") == "repair"]
+    assert len(repair_attempts) == 2
+    assert all(
+        any(
+            "MISSING_DEVELOP_STORY" in violation
+            for violation in repair["kwargs"]["metadata"]["violations"]
+        )
+        for repair in repair_attempts
     )
-
-    assert title
-    assert lead
-    assert body
-    assert generator.provider.chat_completion.call_count == 1
-
-    # Only the original writer attempt was started.
-    started_ids = [att["id"] for att in observer.started_attempts]
-    assert len(started_ids) == 1
-    att1_id = started_ids[0]
-
-    # The started attempt must be closed as succeeded (none left running).
-    assert att1_id in observer.finished_attempts
-
-    finished_1 = observer.finished_attempts[att1_id]
-    assert finished_1["status"] == "succeeded"
-    assert finished_1["kwargs"]["metadata"]["ai_story_coverage"] == pytest.approx(1 / 17, abs=1e-3)

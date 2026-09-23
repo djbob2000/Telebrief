@@ -7,12 +7,14 @@ ArticleRejectionReason = Literal[
     "validation_failed",
     "writer_failed",
     "global_incompleteness",
+    "quality_failed",
 ]
 
 _ERROR_KIND_BY_REASON: dict[ArticleRejectionReason, str] = {
     "validation_failed": "article_validation_rejected",
     "writer_failed": "article_writer_rejected",
     "global_incompleteness": "article_global_incompleteness_rejected",
+    "quality_failed": "article_quality_rejected",
 }
 
 

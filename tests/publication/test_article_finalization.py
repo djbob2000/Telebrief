@@ -9,13 +9,22 @@ import pytest
 from src.config_loader import PublicationEditorialConfig
 from src.editorial_models import StoryCard
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
-from src.publication.article_coverage import ArticleCoveragePlan, ArticleStoryCoverage
-from src.publication.article_finalization import ArticleFinalizer
+from src.publication.article_coverage import (
+    ArticleCoveragePlan,
+    ArticleStoryAssignment,
+    ArticleStoryCoverage,
+    ArticleThematicSection,
+)
+from src.publication.article_finalization import ArticleFinalizer, _materialize_fallback_projection
+from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import (
+    ArticleClaimAtom,
     ArticleParagraph,
     ArticleSection,
     StructuredArticleDraft,
 )
+from src.publication.article_quality import ArticleReaderQualityFinding, ArticleReaderQualityReport
+from src.publication.errors import ArticlePublicationRejected
 from tests.publication.test_article_recovery import RecordingAttemptObserver
 
 _NOW = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
@@ -135,6 +144,467 @@ async def test_finalizer_revalidates_writer_draft_after_structural_finalization(
 
     assert result.writer_status == "passed"
     assert len(validation_calls) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_warning_only_quality_finding_passes_without_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    support = ArticleSupport(
+        support_id="story:warning:evidence:0:frag:1",
+        text="На улице Садовой восстановили свет.",
+        source_text="На улице Садовой восстановили свет.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:warning",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        evidence_kind="established_fact",
+        story_id="story:warning",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Свет",),
+        support_index=(support,),
+        support_by_id={support.support_id: support},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id=support.story_id,
+                topic="Свет",
+                rank=1,
+                prominence="BRIEF",
+                support_ids=(support.support_id,),
+            ),
+        )
+    )
+    draft = StructuredArticleDraft(
+        title="Свет на Садовой",
+        title_support_ids=(support.support_id,),
+        title_claims=(
+            ArticleClaimAtom(text="Свет на Садовой", cited_support_ids=(support.support_id,)),
+        ),
+        lead=support.text,
+        lead_support_ids=(support.support_id,),
+        lead_claims=(ArticleClaimAtom(text=support.text, cited_support_ids=(support.support_id,)),),
+        sections=(
+            ArticleSection(
+                heading="Городские службы",
+                heading_support_ids=(support.support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text=support.text,
+                        cited_support_ids=(support.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text=support.text, cited_support_ids=(support.support_id,)
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    warning = ArticleReaderQualityReport(
+        findings=(
+            ArticleReaderQualityFinding(
+                code="STYLE_NOTE",
+                unit_id="P001",
+                message="Можно добавить плавную связку.",
+                severity="warning",
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        "src.publication.article_finalization.diagnose_article_quality",
+        lambda *args, **kwargs: warning,
+    )
+    config = PublicationEditorialConfig(
+        article_min_sections=1,
+        article_min_words=1,
+        article_allow_deterministic_fallback=False,
+    )
+    observer = RecordingAttemptObserver()
+    writer_id = await observer.attempt_started("writer")
+
+    result = await ArticleFinalizer().finalize(
+        writer_draft=draft,
+        writer_error=None,
+        writer_attempt_id=writer_id,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=config,
+        attempt_observer=observer,
+    )
+
+    assert result.writer_status == "passed"
+    assert result.metadata["reader_quality"]["counts_by_severity"]["warning"] == 1
+    assert observer.finished_attempts[writer_id]["status"] == "succeeded"
+    assert all(item["status"] != "failed" for item in observer.finished_attempts.values())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fallback_uses_only_surviving_material_projection() -> None:
+    retained = ArticleSupport(
+        support_id="story:retained:evidence:0:frag:1",
+        text="На улице Садовой восстановили свет.",
+        source_text="На улице Садовой восстановили свет.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:retained",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        evidence_kind="established_fact",
+        story_id="story:retained",
+    )
+    suppressed = ArticleSupport(
+        support_id="story:ad:evidence:0:frag:2",
+        text="Продам товар, звоните по телефону.",
+        source_text="Продам товар, звоните по телефону.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:ad",),
+        fragment_ids=(2,),
+        source_item_ids=(2,),
+        observed_at=_NOW,
+        evidence_kind="commercial_offer",
+        story_id="story:ad",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=("Свет", "Объявление"),
+        support_index=(retained, suppressed),
+        support_by_id={s.support_id: s for s in (retained, suppressed)},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:retained",
+                topic="Свет",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(retained.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:ad",
+                topic="Объявление",
+                rank=2,
+                prominence="BRIEF",
+                support_ids=(suppressed.support_id,),
+            ),
+        )
+    )
+    projection = ArticleMaterialProjection(
+        text_by_support_id={
+            retained.support_id: retained.text,
+            suppressed.support_id: suppressed.text,
+        },
+        actions_by_support_id={
+            retained.support_id: "KEEP",
+            # The explicit suppressed-story projection is authoritative even
+            # if a stale action map still says KEEP.
+            suppressed.support_id: "KEEP",
+        },
+        reasons_by_support_id={
+            retained.support_id: "supported_material_retained",
+            suppressed.support_id: "high_confidence_promotion_only",
+        },
+        suppressed_story_ids=("story:ad",),
+    )
+    config = PublicationEditorialConfig(
+        article_min_sections=1,
+        article_min_words=1,
+        article_allow_deterministic_fallback=True,
+    )
+    writer_metadata = {
+        "composition": {"bundle_count": 2},
+        "as_of": "2026-08-30T15:00:00+03:00",
+        "as_of_utc": "2026-08-30T12:00:00+00:00",
+        "context_hash": "context-digest",
+        "prompt_hash": "prompt-digest",
+        "editor_retry_count": 1,
+        "editor_patched_unit_ids": ["P001"],
+    }
+
+    result = await ArticleFinalizer().finalize(
+        writer_draft=None,
+        writer_error=RuntimeError("writer unavailable"),
+        writer_attempt_id=0,
+        context=context,
+        coverage_plan=plan,
+        editorial_config=config,
+        writer_metadata=writer_metadata,
+        material_projection=projection,
+    )
+
+    rendered = result.draft.render_markdown()
+    assert result.recovery_mode == "full_fallback"
+    assert "Продам товар" not in rendered
+    assert "восстановили свет" in rendered
+    assert set(result.final_covered_story_ids) == {"story:retained"}
+    assert result.metadata["writer_attempt"] == writer_metadata
+    assert result.metadata["composition"] == {"bundle_count": 2}
+    assert result.metadata["as_of"] == "2026-08-30T15:00:00+03:00"
+    assert result.metadata["as_of_utc"] == "2026-08-30T12:00:00+00:00"
+    assert result.metadata["context_hash"] == "context-digest"
+    assert result.metadata["prompt_hash"] == "prompt-digest"
+    assert result.metadata["editor_retry_count"] == 1
+    assert result.metadata["editor_patched_unit_ids"] == ["P001"]
+
+
+@pytest.mark.unit
+def test_fallback_filters_pooled_evidence_to_story_owner_and_retargets_lead() -> None:
+    support_a = ArticleSupport(
+        support_id="story:a:evidence:0:frag:11",
+        text="Деталь истории А.",
+        source_text="Деталь истории А.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:a",),
+        fragment_ids=(11,),
+        source_item_ids=(11,),
+        observed_at=_NOW,
+        story_id="story:a",
+    )
+    support_b = ArticleSupport(
+        support_id="story:b:evidence:0:frag:12",
+        text="Деталь истории Б.",
+        source_text="Деталь истории Б.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:b",),
+        fragment_ids=(12,),
+        source_item_ids=(12,),
+        observed_at=_NOW,
+        story_id="story:b",
+    )
+    support_gone = ArticleSupport(
+        support_id="story:gone:evidence:0:frag:13",
+        text="Промо деталь.",
+        source_text="Промо деталь.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:gone",),
+        fragment_ids=(13,),
+        source_item_ids=(13,),
+        observed_at=_NOW,
+        story_id="story:gone",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=(),
+        support_index=(support_a, support_b, support_gone),
+        support_by_id={s.support_id: s for s in (support_a, support_b, support_gone)},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:a",
+                topic="История А",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(support_a.support_id, support_b.support_id),
+                detail_support_ids=(support_b.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:b",
+                topic="История Б",
+                rank=2,
+                prominence="WEAVE",
+                support_ids=(support_b.support_id, support_a.support_id),
+                detail_support_ids=(support_a.support_id,),
+            ),
+            ArticleStoryCoverage(
+                story_id="story:gone",
+                topic="Удалённая история",
+                rank=3,
+                prominence="BRIEF",
+                support_ids=(support_gone.support_id,),
+            ),
+        ),
+        sections=(
+            ArticleThematicSection(
+                section_id="section:stories",
+                title="Истории",
+                lead_story_id="story:gone",
+                story_assignments=(
+                    ArticleStoryAssignment(
+                        story_id="story:a",
+                        section_id="section:stories",
+                        depth="DEVELOP",
+                        rank=1,
+                        primary_evidence_ids=(support_a.support_id, support_b.support_id),
+                        concrete_details=(support_b.support_id,),
+                    ),
+                    ArticleStoryAssignment(
+                        story_id="story:b",
+                        section_id="section:stories",
+                        depth="WEAVE",
+                        rank=2,
+                        primary_evidence_ids=(support_b.support_id, support_a.support_id),
+                        concrete_details=(support_a.support_id,),
+                    ),
+                    ArticleStoryAssignment(
+                        story_id="story:gone",
+                        section_id="section:stories",
+                        depth="BRIEF",
+                        rank=3,
+                        primary_evidence_ids=(support_gone.support_id,),
+                    ),
+                ),
+                narrative_intent="Сопоставьте истории.",
+            ),
+        ),
+    )
+    projection = ArticleMaterialProjection(
+        text_by_support_id={
+            support_a.support_id: support_a.text,
+            support_b.support_id: support_b.text,
+        },
+        actions_by_support_id={
+            support_a.support_id: "KEEP",
+            support_b.support_id: "KEEP",
+            support_gone.support_id: "TRIM_DIRECTORY",
+        },
+        reasons_by_support_id={},
+    )
+
+    projected_context, projected_plan = _materialize_fallback_projection(context, plan, projection)
+
+    assert set(projected_context.support_by_id) == {support_a.support_id, support_b.support_id}
+    assert projected_plan.story_ids == ("story:a", "story:b")
+    assignment_a, assignment_b = projected_plan.sections[0].story_assignments
+    assert assignment_a.primary_evidence_ids == (support_a.support_id,)
+    assert assignment_a.concrete_details == ()
+    assert assignment_b.primary_evidence_ids == (support_b.support_id,)
+    assert assignment_b.concrete_details == ()
+    assert projected_plan.sections[0].lead_story_id == "story:a"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_finalizer_rejects_contradiction_after_orphan_merge_with_quality_metadata() -> None:
+    start = _NOW - dt.timedelta(hours=1)
+    end = _NOW + dt.timedelta(hours=1)
+    sup_available = ArticleSupport(
+        support_id="story:water-a:evidence:0:frag:701",
+        text="На улице Садовой подачу воды восстановили.",
+        source_text="На улице Садовой подачу воды восстановили.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:701",),
+        fragment_ids=(701,),
+        source_item_ids=(701,),
+        observed_at=_NOW,
+        effective_from=start,
+        effective_until=end,
+        evidence_kind="established_fact",
+        story_id="story:water-a",
+    )
+    sup_restricted = ArticleSupport(
+        support_id="story:water-b:evidence:0:frag:702",
+        text="На улице Садовой подача воды остаётся ограниченной.",
+        source_text="На улице Садовой подача воды остаётся ограниченной.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:702",),
+        fragment_ids=(702,),
+        source_item_ids=(702,),
+        observed_at=_NOW,
+        effective_from=start,
+        effective_until=end,
+        evidence_kind="established_fact",
+        story_id="story:water-b",
+    )
+    supports = (sup_available, sup_restricted)
+    context = ArticleEditorialContext(
+        headline_candidates=("Вода на Садовой",),
+        support_index=supports,
+        support_by_id={support.support_id: support for support in supports},
+        recurring_topics=(),
+    )
+    plan = ArticleCoveragePlan(
+        stories=tuple(
+            ArticleStoryCoverage(
+                story_id=support.story_id,
+                topic="Подача воды",
+                rank=index,
+                prominence="BRIEF",
+                support_ids=(support.support_id,),
+                detail_support_ids=(),
+            )
+            for index, support in enumerate(supports, start=1)
+        )
+    )
+    draft = StructuredArticleDraft(
+        title="Вода на Садовой",
+        title_support_ids=(sup_available.support_id,),
+        title_claims=(
+            ArticleClaimAtom(text="Вода на Садовой", cited_support_ids=(sup_available.support_id,)),
+        ),
+        lead=sup_available.text,
+        lead_support_ids=(sup_available.support_id,),
+        lead_claims=(
+            ArticleClaimAtom(
+                text=sup_available.text, cited_support_ids=(sup_available.support_id,)
+            ),
+        ),
+        sections=(
+            ArticleSection(
+                heading="Коммунальная обстановка",
+                heading_support_ids=(sup_available.support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text=sup_available.text,
+                        cited_support_ids=(sup_available.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text=sup_available.text,
+                                cited_support_ids=(sup_available.support_id,),
+                            ),
+                        ),
+                    ),
+                    ArticleParagraph(
+                        text=sup_restricted.text,
+                        cited_support_ids=(sup_restricted.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text=sup_restricted.text,
+                                cited_support_ids=(sup_restricted.support_id,),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    config = PublicationEditorialConfig(
+        article_min_sections=1,
+        article_min_words=1,
+        article_allow_deterministic_fallback=False,
+    )
+
+    with pytest.raises(ArticlePublicationRejected) as exc_info:
+        await ArticleFinalizer().finalize(
+            writer_draft=draft,
+            writer_error=None,
+            writer_attempt_id=1,
+            context=context,
+            coverage_plan=plan,
+            editorial_config=config,
+            writer_validation=None,
+        )
+
+    error = exc_info.value
+    assert error.reason == "quality_failed"
+    assert error.error_kind == "article_quality_rejected"
+    assert error.metadata["stage"] == "post_finalization_quality"
+    assert error.metadata["quality"]["counts_by_code"]["CONTRADICTORY_SERVICE_STATE"] == 1
 
 
 @pytest.mark.unit

@@ -6,17 +6,24 @@ import logging
 import re
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol
 
 from src.config_loader import PublicationEditorialConfig
-from src.publication.article_context import ArticleEditorialContext
-from src.publication.article_coverage import ArticleCoveragePlan
+from src.publication.article_context import ArticleEditorialContext, ArticleSupport
+from src.publication.article_coverage import (
+    ArticleCoveragePlan,
+    ArticleStoryCoverage,
+)
 from src.publication.article_coverage_diagnostics import (
     ArticleCoverageDiagnostics,
     diagnose_article_coverage,
 )
 from src.publication.article_length import ArticleLengthProfile
+from src.publication.article_material import (
+    ArticleMaterialProjection,
+    materialize_article_validation_context,
+)
 from src.publication.article_models import (
     ArticleClaimAtom,
     ArticleParagraph,
@@ -24,6 +31,10 @@ from src.publication.article_models import (
     StructuredArticleDraft,
     _normalize_for_dedup,
     _split_sentences_safe,
+)
+from src.publication.article_quality import (
+    ArticleReaderQualityReport,
+    diagnose_article_quality,
 )
 from src.publication.article_recovery import ArticleDeterministicComposer
 from src.publication.article_trace import (
@@ -41,6 +52,114 @@ from src.publication.errors import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _fallback_support_owner(support_id: str, context: ArticleEditorialContext) -> str:
+    support = context.support_by_id.get(support_id)
+    owner = getattr(support, "story_id", "") if support is not None else ""
+    if owner:
+        return owner
+    match = re.search(r"story:(?:[^:]+|\d+)", support_id)
+    return match.group(0) if match else ""
+
+
+def _materialize_fallback_projection(
+    context: ArticleEditorialContext,
+    coverage_plan: ArticleCoveragePlan,
+    projection: ArticleMaterialProjection,
+) -> tuple[ArticleEditorialContext, ArticleCoveragePlan]:
+    """Give deterministic fallback the same surviving material as the writer.
+
+    The normal writer path receives projected support text.  Fallback must not
+    silently switch back to raw source text, which could restore directory or
+    promotion payload that selection removed.  Supports marked for suppression
+    are removed; trimmed supports use their projected text; and the plan is
+    narrowed to stories that still have citable supports.
+    """
+    retained_supports: list[ArticleSupport] = []
+    suppressed_story_ids = set(projection.suppressed_story_ids)
+    for support in context.support_index:
+        action = projection.actions_by_support_id.get(support.support_id, "KEEP")
+        if (
+            support.publication_use == "EXCLUDE"
+            or _fallback_support_owner(support.support_id, context) in suppressed_story_ids
+            or action == "SUPPRESS_PROMOTION_ONLY"
+        ):
+            continue
+        projected_text = projection.text_by_support_id.get(support.support_id, "").strip()
+        if not projected_text:
+            continue
+        retained_supports.append(replace(support, text=projected_text, source_text=projected_text))
+
+    retained_by_id = {support.support_id: support for support in retained_supports}
+    fallback_context = replace(
+        context,
+        support_index=tuple(retained_supports),
+        support_by_id=retained_by_id,
+    )
+
+    retained_stories: list[ArticleStoryCoverage] = []
+    retained_story_ids: set[str] = set()
+    for story in coverage_plan.stories:
+        support_ids = tuple(
+            sid
+            for sid in story.support_ids
+            if sid in retained_by_id and _fallback_support_owner(sid, context) == story.story_id
+        )
+        detail_ids = tuple(
+            sid
+            for sid in story.detail_support_ids
+            if sid in retained_by_id and _fallback_support_owner(sid, context) == story.story_id
+        )
+        if not support_ids and not detail_ids:
+            continue
+        retained_stories.append(
+            replace(story, support_ids=support_ids, detail_support_ids=detail_ids)
+        )
+        retained_story_ids.add(story.story_id)
+
+    retained_sections = []
+    for section in coverage_plan.sections:
+        assignments = tuple(
+            replace(
+                assignment,
+                primary_evidence_ids=tuple(
+                    sid
+                    for sid in assignment.primary_evidence_ids
+                    if sid in retained_by_id
+                    and _fallback_support_owner(sid, context) == assignment.story_id
+                ),
+                concrete_details=tuple(
+                    sid
+                    for sid in assignment.concrete_details
+                    if sid in retained_by_id
+                    and _fallback_support_owner(sid, context) == assignment.story_id
+                ),
+            )
+            for assignment in section.story_assignments
+            if assignment.story_id in retained_story_ids
+        )
+        if not assignments:
+            continue
+        lead_story_id = (
+            section.lead_story_id
+            if section.lead_story_id in retained_story_ids
+            else assignments[0].story_id
+        )
+        retained_sections.append(
+            replace(
+                section,
+                lead_story_id=lead_story_id,
+                story_assignments=assignments,
+            )
+        )
+
+    fallback_plan = replace(
+        coverage_plan,
+        stories=tuple(retained_stories),
+        sections=tuple(retained_sections),
+    )
+    return fallback_context, fallback_plan
 
 
 class GenerationAttemptObserver(Protocol):
@@ -72,6 +191,8 @@ def _build_final_metadata(
     ai_diag: ArticleCoverageDiagnostics | None,
     final_diag: ArticleCoverageDiagnostics,
     trace: Sequence[ArticleClaimTraceUnit],
+    quality_report: ArticleReaderQualityReport | None = None,
+    material_projection: ArticleMaterialProjection | None = None,
 ) -> dict[str, Any]:
     planned_story_count = len(coverage_plan.story_ids)
     ai_story_coverage = (
@@ -98,7 +219,7 @@ def _build_final_metadata(
         }
         for unit in trace
     ]
-    return {
+    meta: dict[str, Any] = {
         "status": "writer_success" if writer_status == "passed" else "fallback_success",
         "winning_kind": winning_kind,
         "writer_status": writer_status,
@@ -141,6 +262,11 @@ def _build_final_metadata(
         "leaked_directory_payload_count": len(final_diag.leaked_contact_payloads),
         "claim_trace": trace_meta,
     }
+    if quality_report is not None:
+        meta["reader_quality"] = quality_report.to_metadata()
+    if material_projection is not None:
+        meta["material_projection"] = material_projection.to_metadata()
+    return meta
 
 
 def _sanitize_unsupported_quotes(
@@ -760,6 +886,8 @@ class ArticleFinalizer:
         attempt_observer: GenerationAttemptObserver | None = None,
         writer_metadata: dict[str, Any] | None = None,
         writer_validation: ArticleValidationResult | None = None,
+        material_projection: ArticleMaterialProjection | None = None,
+        place_resolver: Any | None = None,
     ) -> ArticleFinalizationResult:
         """Validate writer output, trigger recovery if needed, and assert final invariants.
 
@@ -767,6 +895,11 @@ class ArticleFinalizer:
         response. Reusing it avoids repeating the expensive Evidence Boundary
         pass when no writer-side repair changed the draft.
         """
+        validation_context = (
+            materialize_article_validation_context(context, material_projection)
+            if material_projection is not None
+            else context
+        )
         # 1. Handle writer failure / error
         if writer_error is not None or writer_draft is None:
             if attempt_observer:
@@ -775,7 +908,7 @@ class ArticleFinalizer:
                     "error": str(writer_error) if writer_error else "empty writer response",
                 }
                 if writer_metadata:
-                    err_meta.update(writer_metadata)
+                    err_meta["writer_attempt"] = writer_metadata
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
                     status="failed",
@@ -799,6 +932,9 @@ class ArticleFinalizer:
                 editorial_config=editorial_config,
                 length_profile=length_profile,
                 attempt_observer=attempt_observer,
+                writer_metadata=writer_metadata,
+                material_projection=material_projection,
+                place_resolver=place_resolver,
             )
 
         # 2. Validate writer draft
@@ -808,6 +944,7 @@ class ArticleFinalizer:
                 context,
                 config=editorial_config,
                 length_profile=length_profile,
+                material_projection=material_projection,
             )
 
         if not writer_validation.is_valid:
@@ -819,13 +956,14 @@ class ArticleFinalizer:
             ]
             if quote_violations:
                 repaired_draft = _sanitize_unsupported_quotes(
-                    writer_draft, quote_violations, context
+                    writer_draft, quote_violations, validation_context
                 )
                 repaired_val = validate_article_draft(
                     repaired_draft,
                     context,
                     config=editorial_config,
                     length_profile=length_profile,
+                    material_projection=material_projection,
                 )
                 if repaired_val.is_valid:
                     logger.info(
@@ -847,7 +985,7 @@ class ArticleFinalizer:
                 repaired_draft = _prune_unsupported_paragraph_claims(
                     writer_draft,
                     claim_violations,
-                    context,
+                    validation_context,
                     coverage_plan=coverage_plan,
                 )
                 repaired_val = validate_article_draft(
@@ -855,6 +993,7 @@ class ArticleFinalizer:
                     context,
                     config=editorial_config,
                     length_profile=length_profile,
+                    material_projection=material_projection,
                 )
                 if repaired_val.is_valid or len(repaired_val.violations) < len(
                     writer_validation.violations
@@ -882,13 +1021,14 @@ class ArticleFinalizer:
             ]
             if heading_violations:
                 repaired_draft = _sanitize_phantom_heading_topics(
-                    writer_draft, heading_violations, context=context
+                    writer_draft, heading_violations, context=validation_context
                 )
                 repaired_val = validate_article_draft(
                     repaired_draft,
                     context,
                     config=editorial_config,
                     length_profile=length_profile,
+                    material_projection=material_projection,
                 )
                 if repaired_val.is_valid or len(repaired_val.violations) < len(
                     writer_validation.violations
@@ -921,14 +1061,15 @@ class ArticleFinalizer:
                         clean_sups = tuple(
                             sid
                             for sid in candidate_sups
-                            if sid in context.support_by_id
-                            and context.support_by_id[sid].publication_use == "PUBLISH"
-                            and context.support_by_id[sid].temporal_role == "CURRENT_WINDOW"
+                            if sid in validation_context.support_by_id
+                            and validation_context.support_by_id[sid].publication_use == "PUBLISH"
+                            and validation_context.support_by_id[sid].temporal_role
+                            == "CURRENT_WINDOW"
                         )
                         if not clean_sups:
                             clean_sups = tuple(
                                 s.support_id
-                                for s in context.supports
+                                for s in validation_context.supports
                                 if s.publication_use == "PUBLISH"
                                 and s.temporal_role == "CURRENT_WINDOW"
                             )[:2]
@@ -952,6 +1093,7 @@ class ArticleFinalizer:
                         context,
                         config=editorial_config,
                         length_profile=length_profile,
+                        material_projection=material_projection,
                     )
                     if repaired_val.is_valid:
                         logger.info(
@@ -972,7 +1114,7 @@ class ArticleFinalizer:
                     "draft": writer_draft.to_dict(),
                 }
                 if writer_metadata:
-                    val_meta.update(writer_metadata)
+                    val_meta["writer_attempt"] = writer_metadata
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
                     status="failed",
@@ -997,6 +1139,9 @@ class ArticleFinalizer:
                 editorial_config=editorial_config,
                 length_profile=length_profile,
                 attempt_observer=attempt_observer,
+                writer_metadata=writer_metadata,
+                material_projection=material_projection,
+                place_resolver=place_resolver,
             )
 
         # 3. Writer draft is valid; apply deterministic structural improvements
@@ -1014,6 +1159,7 @@ class ArticleFinalizer:
             context,
             config=editorial_config,
             length_profile=length_profile,
+            material_projection=material_projection,
         )
         if not final_validation.is_valid:
             logger.warning(
@@ -1028,7 +1174,7 @@ class ArticleFinalizer:
                     "stage": "post_finalization_validation",
                 }
                 if writer_metadata:
-                    final_val_meta.update(writer_metadata)
+                    final_val_meta["writer_attempt"] = writer_metadata
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
                     status="failed",
@@ -1057,11 +1203,71 @@ class ArticleFinalizer:
                 editorial_config=editorial_config,
                 length_profile=length_profile,
                 attempt_observer=attempt_observer,
+                writer_metadata=writer_metadata,
+                material_projection=material_projection,
+                place_resolver=place_resolver,
             )
         writer_validation = final_validation
 
+        # Reader-quality checks run on the exact post-deduplication and
+        # post-orphan-merge object that will be rendered.  Factual validation
+        # remains separate; quality findings never masquerade as claims.
+        final_quality = diagnose_article_quality(
+            writer_draft,
+            coverage_plan,
+            context,
+            material_projection=material_projection,
+            place_resolver=place_resolver,
+        )
+        if final_quality.blocking_findings:
+            quality_metadata = final_quality.to_metadata()
+            logger.info(
+                "Finalized article draft failed reader-quality gate: %s",
+                [
+                    f"{finding.code}:{finding.unit_id}"
+                    for finding in final_quality.blocking_findings
+                ],
+            )
+            if attempt_observer:
+                quality_meta: dict[str, Any] = {
+                    "writer_status": "rejected",
+                    "quality": quality_metadata,
+                    "draft": writer_draft.to_dict(),
+                    "stage": "post_finalization_quality",
+                }
+                if writer_metadata:
+                    quality_meta["writer_attempt"] = writer_metadata
+                await attempt_observer.attempt_finished(
+                    writer_attempt_id,
+                    status="failed",
+                    error_kind="article_quality_rejected",
+                    metadata=quality_meta,
+                )
+            if not getattr(editorial_config, "article_allow_deterministic_fallback", False):
+                raise ArticlePublicationRejected(
+                    reason="quality_failed",
+                    message=(
+                        "Finalized article draft failed reader-quality validation: "
+                        f"{[finding.code for finding in final_quality.blocking_findings]}"
+                    ),
+                    metadata={"quality": quality_metadata, "stage": "post_finalization_quality"},
+                )
+            return await self._run_full_fallback(
+                writer_status="rejected",
+                ai_diag=None,
+                ai_covered_story_ids=(),
+                context=context,
+                coverage_plan=coverage_plan,
+                editorial_config=editorial_config,
+                length_profile=length_profile,
+                attempt_observer=attempt_observer,
+                writer_metadata=writer_metadata,
+                material_projection=material_projection,
+                place_resolver=place_resolver,
+            )
+
         # 3b. Detect chat-roll patterns for editorial logging (AGENTS.md §0.6)
-        _detect_chat_roll_paragraphs(writer_draft, max_quotes_per_paragraph=3)
+        _detect_chat_roll_paragraphs(writer_draft, max_quotes_per_paragraph=2)
 
         # 3c. Diagnose coverage
         ai_diag = diagnose_article_coverage(writer_draft, coverage_plan, context=context)
@@ -1082,9 +1288,14 @@ class ArticleFinalizer:
                 ai_diag=ai_diag,
                 final_diag=final_diag,
                 trace=trace,
+                quality_report=final_quality,
+                material_projection=material_projection,
             )
             if writer_metadata:
-                meta.update(writer_metadata)
+                meta["writer_attempt"] = writer_metadata
+                for key, value in writer_metadata.items():
+                    if key not in meta:
+                        meta[key] = value
             if attempt_observer:
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
@@ -1125,10 +1336,15 @@ class ArticleFinalizer:
                 ai_diag=ai_diag,
                 final_diag=ai_diag,
                 trace=trace,
+                quality_report=final_quality,
+                material_projection=material_projection,
             )
             meta["coverage_only_diagnostic"] = True
             if writer_metadata:
-                meta.update(writer_metadata)
+                meta["writer_attempt"] = writer_metadata
+                for key, value in writer_metadata.items():
+                    if key not in meta:
+                        meta[key] = value
             if attempt_observer:
                 await attempt_observer.attempt_finished(
                     writer_attempt_id,
@@ -1157,50 +1373,103 @@ class ArticleFinalizer:
         editorial_config: PublicationEditorialConfig,
         length_profile: ArticleLengthProfile | None,
         attempt_observer: GenerationAttemptObserver | None,
+        writer_metadata: dict[str, Any] | None = None,
+        material_projection: ArticleMaterialProjection | None = None,
+        place_resolver: Any | None = None,
     ) -> ArticleFinalizationResult:
         fb_attempt_id = 0
         if attempt_observer:
             fb_attempt_id = await attempt_observer.attempt_started("deterministic_fallback")
 
         try:
+            fallback_context = context
+            fallback_plan = coverage_plan
+            if material_projection is not None:
+                fallback_context, fallback_plan = _materialize_fallback_projection(
+                    context, coverage_plan, material_projection
+                )
+                if not fallback_plan.stories:
+                    raise ArticlePublicationRejected(
+                        reason="quality_failed",
+                        message="Deterministic fallback has no surviving projected article material",
+                        metadata={
+                            "stage": "fallback_material_projection",
+                            "material_projection": material_projection.to_metadata(),
+                        },
+                    )
             fallback = self.composer.render_full_fallback(
-                context, coverage_plan, max_sections=editorial_config.article_max_sections
+                fallback_context,
+                fallback_plan,
+                max_sections=editorial_config.article_max_sections,
             )
             fb_validation = validate_article_draft(
                 fallback,
                 context,
                 config=editorial_config,
                 length_profile=length_profile,
+                material_projection=material_projection,
             )
             if not fb_validation.is_valid:
                 raise ArticleFinalizationInvariantError(
                     f"Deterministic fallback failed validation: {list(fb_validation.violations)}"
                 )
 
+            fallback_quality = diagnose_article_quality(
+                fallback,
+                fallback_plan,
+                fallback_context,
+                material_projection=material_projection,
+                place_resolver=place_resolver,
+            )
+            if fallback_quality.blocking_findings:
+                raise ArticlePublicationRejected(
+                    reason="quality_failed",
+                    message=(
+                        "Deterministic fallback failed reader-quality validation: "
+                        f"{[finding.code for finding in fallback_quality.blocking_findings]}"
+                    ),
+                    metadata={
+                        "quality": fallback_quality.to_metadata(),
+                        "stage": "fallback_quality",
+                    },
+                )
+
+            # The rendered fallback uses projected text, while the published
+            # trace must still resolve provenance against the immutable source
+            # context.  Validation above has already gated suppressed material.
             trace = build_article_claim_trace(fallback, context)
-            final_diag = diagnose_article_coverage(fallback, coverage_plan, context=context)
+            final_diag = diagnose_article_coverage(
+                fallback, fallback_plan, context=fallback_context
+            )
             final_covered = tuple(final_diag.covered_story_ids)
 
             if (
-                set(final_covered) != set(coverage_plan.story_ids)
+                set(final_covered) != set(fallback_plan.story_ids)
                 or final_diag.story_coverage != 1.0
             ):
                 raise ArticleFinalizationInvariantError(
-                    f"Deterministic fallback coverage incomplete: {final_covered} vs {coverage_plan.story_ids}"
+                    f"Deterministic fallback coverage incomplete: {final_covered} vs {fallback_plan.story_ids}"
                 )
 
             meta = _build_final_metadata(
                 winning_kind="event_article_deterministic_fallback",
                 writer_status=writer_status,
                 recovery_mode="full_fallback",
-                coverage_plan=coverage_plan,
+                coverage_plan=fallback_plan,
                 ai_covered_story_ids=ai_covered_story_ids,
                 supplemented_story_ids=(),
                 final_covered_story_ids=final_covered,
                 ai_diag=ai_diag,
                 final_diag=final_diag,
                 trace=trace,
+                quality_report=fallback_quality,
+                material_projection=material_projection,
             )
+            if writer_metadata:
+                meta["writer_attempt"] = writer_metadata
+                for key, value in writer_metadata.items():
+                    if key not in meta:
+                        meta[key] = value
             if attempt_observer:
                 await attempt_observer.attempt_finished(
                     fb_attempt_id,
@@ -1224,6 +1493,8 @@ class ArticleFinalizer:
                     status="failed",
                     metadata={"error": str(exc)},
                 )
+            if isinstance(exc, ArticlePublicationRejected):
+                raise
             if isinstance(exc, ArticleFinalizationInvariantError):
                 raise
             raise ArticleFinalizationInvariantError(

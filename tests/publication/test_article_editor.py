@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -12,14 +13,22 @@ from src.publication.article_context import (
     ArticleEditorialContext,
     ArticleSupport,
 )
+from src.publication.article_coverage import ArticleCoveragePlan, ArticleStoryCoverage
 from src.publication.article_editor import ArticleEditor
+from src.publication.article_material import ArticleMaterialProjection, project_article_material
 from src.publication.article_models import (
     ArticleClaimAtom,
     ArticleParagraph,
     ArticleSection,
     StructuredArticleDraft,
 )
+from src.publication.article_quality import (
+    ArticleReaderQualityFinding,
+    ArticleReaderQualityReport,
+)
 from src.publication.article_validator import (
+    ArticleValidationIssue,
+    ArticleValidationResult,
     validate_article_draft,
 )
 
@@ -252,6 +261,219 @@ async def test_article_editor_resolves_validation_issues(
     assert "«" not in edited_draft.lead
     assert "Минобразования" not in edited_draft.sections[0].paragraphs[0].text
     assert edited_val.is_valid
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_article_editor_repairs_quality_only_and_revalidates_facts(
+    sample_context: ArticleEditorialContext,
+) -> None:
+    support = sample_context.supports[0]
+    draft = StructuredArticleDraft(
+        title=support.text,
+        title_support_ids=(support.support_id,),
+        title_claims=(
+            ArticleClaimAtom(text=support.text, cited_support_ids=(support.support_id,)),
+        ),
+        lead=support.text,
+        lead_support_ids=(support.support_id,),
+        lead_claims=(ArticleClaimAtom(text=support.text, cited_support_ids=(support.support_id,)),),
+        sections=(
+            ArticleSection(
+                heading="Городские работы",
+                heading_support_ids=(support.support_id,),
+                paragraphs=(
+                    ArticleParagraph(
+                        text=support.text,
+                        cited_support_ids=(support.support_id,),
+                        claims=(
+                            ArticleClaimAtom(
+                                text=support.text, cited_support_ids=(support.support_id,)
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    )
+    from src.config_loader import PublicationEditorialConfig
+
+    config = PublicationEditorialConfig(article_min_sections=1, article_min_words=1)
+    validation = validate_article_draft(draft, sample_context, config)
+    assert validation.is_valid
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id=support.story_id,
+                topic="Работы на водоводе",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=(support.support_id,),
+            ),
+        )
+    )
+    quality = ArticleReaderQualityReport(
+        findings=(
+            ArticleReaderQualityFinding(
+                code="QUOTE_ROLL_PARAGRAPH",
+                unit_id="P001",
+                message="Свяжите соседние сообщения.",
+                support_ids=(support.support_id,),
+                severity="repair",
+            ),
+        )
+    )
+    provider = AsyncMock()
+    provider.chat_completion.return_value = json.dumps(
+        {
+            "units": {
+                "P001": "По информации жителей, на Восточном проспекте продолжаются работы по замене водовода."
+            }
+        }
+    )
+
+    edited_draft, edited_val = await ArticleEditor(provider, "test-model").edit_draft(
+        draft,
+        validation,
+        sample_context,
+        config=config,
+        max_attempts=1,
+        quality_report=quality,
+        coverage_plan=plan,
+        material_projection=project_article_material(sample_context),
+    )
+
+    assert provider.chat_completion.call_count == 1
+    assert edited_val.is_valid
+    assert "замене водовода" in edited_draft.sections[0].paragraphs[0].text
+    assert edited_draft.lead == draft.lead
+
+
+@pytest.mark.unit
+def test_quality_support_ids_are_prioritized_and_suppressed_projection_is_hidden(
+    sample_context: ArticleEditorialContext,
+    sample_draft: StructuredArticleDraft,
+) -> None:
+    existing = tuple(
+        replace(
+            sample_context.supports[0],
+            support_id=f"story:existing:evidence:0:frag:{index}",
+            text=f"Подтверждённая деталь {index}.",
+            source_text=f"Подтверждённая деталь {index}.",
+            story_id="story:existing",
+        )
+        for index in range(1, 7)
+    )
+    required = replace(
+        sample_context.supports[0],
+        support_id="story:required:evidence:0:frag:99",
+        text="Нужная деталь о насосе.",
+        source_text="Нужная деталь о насосе.",
+        story_id="story:required",
+    )
+    context = replace(
+        sample_context,
+        support_index=existing + (required,),
+        support_by_id={support.support_id: support for support in existing + (required,)},
+    )
+    draft = replace(
+        sample_draft,
+        sections=(
+            replace(
+                sample_draft.sections[0],
+                paragraphs=(
+                    replace(
+                        sample_draft.sections[0].paragraphs[0],
+                        cited_support_ids=tuple(s.support_id for s in existing),
+                    ),
+                ),
+            ),
+            *sample_draft.sections[1:],
+        ),
+    )
+    finding = ArticleReaderQualityFinding(
+        code="MISSING_DEVELOP_STORY",
+        unit_id="P001",
+        message="Восстановите ключевую деталь.",
+        support_ids=(required.support_id,),
+        severity="blocking",
+    )
+    editor = ArticleEditor(provider=AsyncMock(), model="test-model")
+    units = editor._build_unit_contexts(
+        draft,
+        {"P001": [finding]},
+        context,
+        material_projection=ArticleMaterialProjection(
+            text_by_support_id={required.support_id: required.text},
+            actions_by_support_id={
+                required.support_id: "KEEP",
+                existing[0].support_id: "SUPPRESS_PROMOTION_ONLY",
+            },
+            reasons_by_support_id={
+                required.support_id: "supported_material_retained",
+                existing[0].support_id: "high_confidence_promotion_only",
+            },
+        ),
+    )
+
+    assert units[0]["support_ids"][0] == required.support_id
+    assert units[0]["supports"][0] == "Нужная деталь о насосе."
+    prompt = editor._build_user_prompt(units)
+    # Required evidence comes before six existing citations, so it is visible
+    # inside the bounded five-support prompt slice, while suppressed material
+    # is never projected to the editor.
+    assert "Нужная деталь о насосе." in prompt
+    assert "Подтверждённая деталь 1." not in prompt
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_editor_patch_cannot_reattach_suppressed_support(
+    sample_context: ArticleEditorialContext,
+    sample_draft: StructuredArticleDraft,
+) -> None:
+    suppressed_id = sample_draft.sections[0].paragraphs[0].cited_support_ids[0]
+    projection = ArticleMaterialProjection(
+        text_by_support_id={suppressed_id: "Исходная деталь, удалённая из промо-проекции."},
+        actions_by_support_id={suppressed_id: "SUPPRESS_PROMOTION_ONLY"},
+        reasons_by_support_id={suppressed_id: "promotion_only"},
+        suppressed_story_ids=("story:1",),
+    )
+    provider = AsyncMock()
+    provider.chat_completion.return_value = json.dumps(
+        {"units": {"P001": "Восстановили подачу по прежнему объявлению."}}
+    )
+    initial_validation = ArticleValidationResult(
+        is_valid=False,
+        word_count=20,
+        section_count=2,
+        issues=(
+            ArticleValidationIssue(
+                code="UNSUPPORTED_CONCRETE_CLAIM",
+                unit_id="P001",
+                message="Исправьте абзац.",
+                support_ids=(suppressed_id,),
+                blocking=True,
+            ),
+        ),
+    )
+
+    edited, _ = await ArticleEditor(provider, "test-model").edit_draft(
+        sample_draft,
+        initial_validation,
+        sample_context,
+        max_attempts=1,
+        material_projection=projection,
+    )
+
+    # The patched unit has no citable material in the projected context, so it
+    # is dropped instead of inheriting the old suppressed citation.
+    assert all(
+        suppressed_id not in paragraph.cited_support_ids
+        for section in edited.sections
+        for paragraph in section.paragraphs
+        if paragraph.text == "Восстановили подачу по прежнему объявлению."
+    )
 
 
 @pytest.mark.unit

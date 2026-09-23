@@ -8,6 +8,7 @@ import pytest
 
 from src.config_loader import PublicationEditorialConfig
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
+from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import (
     ArticleClaimAtom,
     ArticleParagraph,
@@ -17,6 +18,72 @@ from src.publication.article_models import (
 from src.publication.article_validator import validate_article_draft
 
 _NOW = dt.datetime(2026, 8, 29, 20, 0, tzinfo=dt.timezone.utc)
+
+
+@pytest.mark.unit
+def test_validator_rejects_citation_to_suppressed_projected_support() -> None:
+    support_id = "story:promotion:evidence:0:frag:901"
+    support = ArticleSupport(
+        support_id=support_id,
+        text="Продам товар. Звоните по телефону +79900000000.",
+        source_text="Продам товар. Звоните по телефону +79900000000.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:promotion",),
+        fragment_ids=(901,),
+        source_item_ids=(901,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="commercial_offer",
+        story_id="story:promotion",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=(),
+        support_index=(support,),
+        support_by_id={support_id: support},
+        recurring_topics=(),
+    )
+    draft = StructuredArticleDraft.from_dict(
+        {
+            "title": "Городская история",
+            "title_support_ids": [support_id],
+            "lead": "«Продам товар» — сообщение дня.",
+            "lead_support_ids": [support_id],
+            "sections": [
+                {
+                    "heading": "Объявление",
+                    "heading_support_ids": [support_id],
+                    "paragraphs": [
+                        {
+                            "text": "«Продам товар» — сообщение дня.",
+                            "cited_support_ids": [support_id],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+    projection = ArticleMaterialProjection(
+        text_by_support_id={support_id: "Продам товар."},
+        actions_by_support_id={support_id: "SUPPRESS_PROMOTION_ONLY"},
+        reasons_by_support_id={support_id: "promotion_only"},
+        suppressed_story_ids=("story:promotion",),
+    )
+
+    result = validate_article_draft(
+        draft,
+        context,
+        PublicationEditorialConfig(
+            article_min_words=1,
+            article_min_sections=1,
+            article_max_sections=2,
+        ),
+        material_projection=projection,
+    )
+
+    assert result.is_valid is False
+    assert support_id in result.unknown_evidence_ids
+    assert any(issue.code == "UNKNOWN_SUPPORT_ID" for issue in result.issues)
 
 
 def _make_sample_context() -> ArticleEditorialContext:

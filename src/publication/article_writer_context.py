@@ -518,6 +518,9 @@ def render_article_writer_context_with_stats(
     allowlist = build_article_quote_allowlist(
         context,
         excluded_support_ids=suppressed_support_ids,
+        excluded_story_ids=(
+            material_projection.suppressed_story_ids if material_projection is not None else ()
+        ),
         candidate_text_by_support_id=(
             material_projection.text_by_support_id if material_projection is not None else None
         ),

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+from zoneinfo import ZoneInfo
 
 from src.ai_providers import (
     AIProvider,
@@ -50,6 +52,10 @@ from src.publication.article_length import (
     derive_article_length_profile,
 )
 from src.publication.article_models import StructuredArticleDraft
+from src.publication.article_quality import (
+    ArticleReaderQualityReport,
+    diagnose_article_quality,
+)
 from src.publication.article_quote_allowlist import build_article_quote_allowlist
 from src.publication.article_validator import (
     ArticleValidationResult,
@@ -1347,7 +1353,22 @@ class ArticleGenerator:
         writer_input_metadata: dict[str, Any] = {
             "context_chars": len(context_str),
             "prompt_chars": len(system_prompt) + len(user_prompt),
+            "context_hash": hashlib.sha256(context_str.encode("utf-8")).hexdigest(),
+            "prompt_hash": hashlib.sha256(
+                f"{system_prompt}\0{user_prompt}".encode("utf-8")
+            ).hexdigest(),
         }
+        if article_ctx.publication_window is not None:
+            snapshot_at = article_ctx.publication_window.snapshot_at
+            try:
+                edition_zone = ZoneInfo(article_ctx.edition_timezone or "UTC")
+            except Exception:
+                edition_zone = ZoneInfo("UTC")
+            if snapshot_at.tzinfo is None:
+                snapshot_at = snapshot_at.replace(tzinfo=ZoneInfo("UTC"))
+            writer_input_metadata["as_of"] = snapshot_at.astimezone(edition_zone).isoformat()
+            writer_input_metadata["as_of_utc"] = snapshot_at.astimezone(ZoneInfo("UTC")).isoformat()
+            writer_input_metadata["edition_timezone"] = article_ctx.edition_timezone
         if materialization_metadata is not None:
             writer_input_metadata["materialization"] = materialization_metadata
         writer_input_metadata["material_projection"] = material_projection.to_metadata()
@@ -1361,7 +1382,17 @@ class ArticleGenerator:
         writer_validation: ArticleValidationResult | None = None
         writer_retry_history: list[dict[str, Any]] = []
 
-        quote_allowlist = build_article_quote_allowlist(article_ctx)
+        suppressed_support_ids = {
+            support_id
+            for support_id, action in material_projection.actions_by_support_id.items()
+            if action == "SUPPRESS_PROMOTION_ONLY"
+        }
+        quote_allowlist = build_article_quote_allowlist(
+            article_ctx,
+            excluded_support_ids=suppressed_support_ids,
+            excluded_story_ids=material_projection.suppressed_story_ids,
+            candidate_text_by_support_id=material_projection.text_by_support_id,
+        )
 
         if attempt_observer is not None:
             writer_attempt_id = await attempt_observer.attempt_started(
@@ -1406,7 +1437,12 @@ class ArticleGenerator:
 
             def evaluate_writer_response(
                 raw_response: str,
-            ) -> tuple[StructuredArticleDraft, ArticleValidationResult, ArticleCoverageDiagnostics]:
+            ) -> tuple[
+                StructuredArticleDraft,
+                ArticleValidationResult,
+                ArticleCoverageDiagnostics,
+                ArticleReaderQualityReport,
+            ]:
                 raw_parsed = self._parse_event_article_response(raw_response)
                 parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
                 draft = StructuredArticleDraft.from_dict(parsed, quote_allowlist=quote_allowlist)
@@ -1415,9 +1451,17 @@ class ArticleGenerator:
                     article_ctx,
                     config=editorial_config,
                     length_profile=length_profile,
+                    material_projection=material_projection,
                 )
                 diagnostics = diagnose_article_coverage(draft, coverage_plan, context=article_ctx)
-                return draft, validation, diagnostics
+                quality = diagnose_article_quality(
+                    draft,
+                    coverage_plan,
+                    article_ctx,
+                    material_projection=material_projection,
+                    place_resolver=self.city_context_resolver,
+                )
+                return draft, validation, diagnostics, quality
 
             def current_provider_slot() -> str | None:
                 metadata = getattr(self.provider, "last_metadata", None)
@@ -1431,6 +1475,7 @@ class ArticleGenerator:
                 raw_response: str,
                 validation: ArticleValidationResult,
                 diagnostics: ArticleCoverageDiagnostics,
+                quality: ArticleReaderQualityReport,
                 catastrophic: bool,
                 error: Exception | None = None,
             ) -> None:
@@ -1444,6 +1489,7 @@ class ArticleGenerator:
                     "covered_story_count": diagnostics.covered_story_count,
                     "story_coverage": diagnostics.story_coverage,
                     "catastrophic": catastrophic,
+                    "quality": quality.to_metadata(),
                 }
                 if isinstance(metadata, dict):
                     for key in (
@@ -1459,11 +1505,15 @@ class ArticleGenerator:
                 writer_retry_history.append(item)
 
             response = await call_writer()
-            candidate_draft, candidate_val, candidate_diag = evaluate_writer_response(response)
+            candidate_draft, candidate_val, candidate_diag, candidate_quality = (
+                evaluate_writer_response(response)
+            )
             catastrophic = _is_catastrophic_writer_response(
                 candidate_draft, candidate_val, candidate_diag
             )
-            record_writer_attempt(1, response, candidate_val, candidate_diag, catastrophic)
+            record_writer_attempt(
+                1, response, candidate_val, candidate_diag, candidate_quality, catastrophic
+            )
 
             if catastrophic:
                 initial_slot = current_provider_slot()
@@ -1489,15 +1539,19 @@ class ArticleGenerator:
                         )
                     try:
                         response = await call_writer(retry_slot)
-                        candidate_draft, candidate_val, candidate_diag = evaluate_writer_response(
-                            response
-                        )
+                        (
+                            candidate_draft,
+                            candidate_val,
+                            candidate_diag,
+                            candidate_quality,
+                        ) = evaluate_writer_response(response)
                     except Exception as retry_exc:
                         record_writer_attempt(
                             retry_index + 2,
                             "",
                             candidate_val,
                             candidate_diag,
+                            candidate_quality,
                             True,
                             error=retry_exc,
                         )
@@ -1512,6 +1566,7 @@ class ArticleGenerator:
                         response,
                         candidate_val,
                         candidate_diag,
+                        candidate_quality,
                         catastrophic,
                     )
                     if not catastrophic:
@@ -1535,6 +1590,18 @@ class ArticleGenerator:
                 prompt_chars=len(system_prompt) + len(user_prompt),
                 retry_history=writer_retry_history,
             )
+            attempt_1_meta["quality"] = candidate_quality.to_metadata()
+            attempt_1_meta["composition"] = composition_plan.to_metadata()
+            attempt_1_meta["material_projection"] = material_projection.to_metadata()
+            for metadata_key in (
+                "context_hash",
+                "prompt_hash",
+                "as_of",
+                "as_of_utc",
+                "edition_timezone",
+            ):
+                if metadata_key in writer_input_metadata:
+                    attempt_1_meta[metadata_key] = writer_input_metadata[metadata_key]
 
             # Coverage diagnostics must not trigger a second full writer call.
             # The article is a hierarchical long read, not a checklist whose
@@ -1549,14 +1616,17 @@ class ArticleGenerator:
                 )
                 attempt_1_meta["coverage_retry_suppressed"] = True
             writer_meta = attempt_1_meta
+            writer_meta["editor_retry_count"] = 0
+            writer_meta["editor_patched_unit_ids"] = []
 
-            if candidate_val.is_valid:
+            if candidate_val.is_valid and not candidate_quality.needs_edit:
                 writer_draft = candidate_draft
                 writer_error = None
             else:
                 self.logger.warning(
-                    "Writer produced invalid/incomplete draft: %s",
+                    "Writer produced invalid/incomplete or low-quality draft: factual=%s quality=%s",
                     list(candidate_val.violations)[:5],
+                    [f.code for f in candidate_quality.repair_findings][:5],
                 )
                 writer_draft = candidate_draft
 
@@ -1569,9 +1639,9 @@ class ArticleGenerator:
                 is_substantial = (
                     candidate_val.word_count >= hard_min and candidate_val.section_count >= 2
                 )
-                if (not is_incomplete or is_substantial) and getattr(
-                    editorial_config, "article_editor_enabled", False
-                ):
+                if (
+                    not is_incomplete or is_substantial or candidate_quality.needs_edit
+                ) and getattr(editorial_config, "article_editor_enabled", False):
                     from src.publication.article_editor import ArticleEditor
 
                     editor_max_tokens = getattr(
@@ -1593,17 +1663,32 @@ class ArticleGenerator:
                         length_profile=length_profile,
                         attempt_observer=attempt_observer,
                         max_attempts=editor_attempts,
+                        quality_report=candidate_quality,
+                        coverage_plan=coverage_plan,
+                        material_projection=material_projection,
+                        place_resolver=self.city_context_resolver,
                     )
-                    if edited_val.is_valid:
+                    edited_quality = diagnose_article_quality(
+                        edited_draft,
+                        coverage_plan,
+                        article_ctx,
+                        material_projection=material_projection,
+                        place_resolver=self.city_context_resolver,
+                    )
+                    if edited_val.is_valid and not edited_quality.needs_edit:
                         self.logger.info(
                             "ArticleEditor successfully resolved validation issues; draft accepted"
                         )
                         writer_draft = edited_draft
                         writer_error = None
                         writer_validation = edited_val
+                        candidate_quality = edited_quality
                     else:
                         writer_draft = edited_draft
                         writer_validation = edited_val
+                        candidate_quality = edited_quality
+                    writer_meta["editor_retry_count"] = editor.last_attempt_count
+                    writer_meta["editor_patched_unit_ids"] = list(editor.last_patched_unit_ids)
         except Exception as exc:
             self.logger.warning(
                 "Event article writer execution failed (%s: %s)",
@@ -1633,6 +1718,8 @@ class ArticleGenerator:
             attempt_observer=attempt_observer,
             writer_metadata=writer_meta,
             writer_validation=writer_validation,
+            material_projection=material_projection,
+            place_resolver=self.city_context_resolver,
         )
 
         body = finalization_result.draft.render_markdown()

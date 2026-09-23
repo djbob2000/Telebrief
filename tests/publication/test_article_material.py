@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import replace
 
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
-from src.publication.article_material import project_article_material
+from src.publication.article_material import (
+    ArticleMaterialProjection,
+    materialize_article_validation_context,
+    project_article_material,
+)
 
 
 def make_support(story_id, evidence_kind, text, source_text):
@@ -197,3 +201,64 @@ def test_projection_metadata_contains_only_stable_ids_actions_and_reasons():
     assert "story:property-listing" in metadata["suppressed_story_ids"]
     assert "+79900000000" not in serialized
     assert "100 рублей" not in serialized
+
+
+def test_materialize_validation_context_uses_only_surviving_projected_supports():
+    kept = make_support(
+        story_id="story:kept",
+        evidence_kind="community_report",
+        text="Исходная деталь о подаче воды.",
+        source_text="Исходный источник о подаче воды.",
+    )
+    trimmed = make_support(
+        story_id="story:trimmed",
+        evidence_kind="community_report",
+        text="Исходная деталь с телефоном.",
+        source_text="Исходный источник с телефоном.",
+    )
+    suppressed = make_support(
+        story_id="story:suppressed",
+        evidence_kind="commercial_offer",
+        text="Объявление с исходным payload.",
+        source_text="Объявление с исходным payload.",
+    )
+    excluded = replace(
+        make_support(
+            story_id="story:excluded",
+            evidence_kind="community_report",
+            text="Контекстная деталь.",
+            source_text="Контекстная деталь.",
+        ),
+        publication_use="EXCLUDE",
+    )
+    context = make_context((kept, trimmed, suppressed, excluded))
+    projection = ArticleMaterialProjection(
+        text_by_support_id={
+            kept.support_id: "Проецированная деталь о подаче воды.",
+            trimmed.support_id: "Проецированная деталь без телефона.",
+            suppressed.support_id: "Текст suppression не должен попасть в validator.",
+            excluded.support_id: "Исключённый текст.",
+        },
+        actions_by_support_id={
+            kept.support_id: "KEEP",
+            trimmed.support_id: "TRIM_DIRECTORY",
+            suppressed.support_id: "KEEP",
+            excluded.support_id: "KEEP",
+        },
+        reasons_by_support_id={},
+        suppressed_story_ids=("story:suppressed",),
+    )
+
+    projected = materialize_article_validation_context(context, projection)
+
+    assert tuple(s.support_id for s in projected.support_index) == (
+        kept.support_id,
+        trimmed.support_id,
+    )
+    assert projected.support_by_id[kept.support_id].text == "Проецированная деталь о подаче воды."
+    assert projected.support_by_id[trimmed.support_id].source_text == (
+        "Проецированная деталь без телефона."
+    )
+    assert projected.support_by_id[kept.support_id].source_refs == kept.source_refs
+    assert suppressed.support_id not in projected.support_by_id
+    assert excluded.support_id not in projected.support_by_id
