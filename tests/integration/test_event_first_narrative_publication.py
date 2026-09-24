@@ -617,7 +617,7 @@ async def test_event_first_article_city_life_broad_coverage():
     assert mock_provider.chat_completion.call_count == 1
     call_kwargs = mock_provider.chat_completion.call_args.kwargs
     user_prompt = next(m["content"] for m in call_kwargs["messages"] if m["role"] == "user")
-    assert "ARTICLE COMPOSITION ROADMAP" in user_prompt
+    assert "ARTICLE COMPOSITION ROADMAP" not in user_prompt
     assert "ARTICLE COVERAGE PLAN" not in user_prompt
     assert "DETAIL SUPPORTS:" not in user_prompt
 
