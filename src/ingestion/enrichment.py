@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any
 
 import psycopg
 
@@ -141,7 +141,7 @@ class EnrichmentDispatcher:
                 post_item_id=post_item_id,
                 mode=request.mode,
             )
-            return cast(int, job_id)
+            return job_id
 
         logger.warning("Unknown enrichment request kind: %s", request.kind)
         return None

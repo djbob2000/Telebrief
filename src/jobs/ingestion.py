@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any, cast
+from typing import Any
 
 import procrastinate
 from procrastinate.exceptions import AlreadyEnqueued
@@ -141,15 +141,14 @@ async def enqueue_source_scan(
             logger.info("enqueue_source_scan: facebook disabled; skipping source %s", source_id)
             return None
     try:
-        return cast(
-            int,
+        return (
             await app.tasks[SCAN_SOURCE_TASK_NAME]
             .configure(
                 queueing_lock=f"scan-source:{source_id}",
                 lock=execution_lock,
                 priority=priority,
             )
-            .defer_async(source_id=source_id, trigger=trigger.value),
+            .defer_async(source_id=source_id, trigger=trigger.value)
         )
     except AlreadyEnqueued:
         logger.debug("scan-source:%s already queued; skipping duplicate enqueue", source_id)
