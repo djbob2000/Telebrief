@@ -193,7 +193,7 @@ class ArticleClaimAtom:
                 if cid and isinstance(cid, (str, int)) and str(cid).strip()
             )
         )
-        if not text or not support_ids:
+        if not text:
             return None
         return cls(text=text, cited_support_ids=support_ids)
 
@@ -411,8 +411,15 @@ class StructuredArticleDraft:
                                     if cid and isinstance(cid, (str, int)) and str(cid).strip()
                                 )
                             )
-                            p_claims = _parse_claim_atoms(p.get("claims"))
-                            if not p_claims and p_text and p_support_ids and allow_claim_autogen:
+                            raw_claims = p.get("claims")
+                            p_claims = _parse_claim_atoms(raw_claims)
+                            if (
+                                not p_claims
+                                and p_text
+                                and p_support_ids
+                                and allow_claim_autogen
+                                and not isinstance(raw_claims, list)
+                            ):
                                 p_claims = tuple(
                                     ArticleClaimAtom(text=sentence, cited_support_ids=p_support_ids)
                                     for sentence in (_split_sentences_safe(p_text) or [p_text])

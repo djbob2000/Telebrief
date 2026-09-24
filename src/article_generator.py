@@ -191,6 +191,36 @@ def _ground_draft_in_coverage_plan(
             full_t = f"{s.text or ''} {s.source_text or ''}"
             support_stems[sid] = _extract_distinctive_stems(full_t)
 
+    def _matched_support_ids(
+        text: str,
+        candidates: list[str] | None = None,
+        *,
+        claim_specific: bool = False,
+    ) -> list[str]:
+        """Find supports anchored to this claim, not merely to its paragraph."""
+        if not support_stems or not text:
+            return []
+        text_stems = _extract_distinctive_stems(text)
+        text_nums = set(re.findall(r"\b\d+\b", text))
+        minimum_shared_stems = max(2, (len(text_stems) + 3) // 4) if claim_specific else 2
+        candidate_set = set(candidates) if candidates is not None else None
+        matched: list[str] = []
+        for sid, s_stems in support_stems.items():
+            if candidate_set is not None and sid not in candidate_set:
+                continue
+            shared_stems = text_stems & s_stems
+            s_text = getattr(support_by_id.get(sid), "text", "")
+            s_nums = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
+            shared_nums = text_nums & s_nums
+            if (
+                len(shared_stems) >= minimum_shared_stems
+                or (shared_stems and shared_nums)
+                or len(shared_nums) >= 2
+                or (len(shared_stems) >= 1 and len(text_stems) <= 4)
+            ):
+                matched.append(sid)
+        return matched
+
     # 1. Title & lead support IDs (rely only on writer-provided or lexical match)
     if parsed.get("title_support_ids"):
         parsed["title_support_ids"] = [
@@ -330,23 +360,7 @@ def _ground_draft_in_coverage_plan(
             p_text = p if isinstance(p, str) else p.get("text", "")
             existing_cited = [] if isinstance(p, str) else list(p.get("cited_support_ids") or [])
 
-            matched_sups = []
-            if support_stems:
-                p_stems = _extract_distinctive_stems(p_text)
-                p_nums = set(re.findall(r"\b\d+\b", p_text))
-                # Match supports that share at least 2 content stems, or share numbers + stem
-                for sid, s_stems in support_stems.items():
-                    shared_stems = p_stems & s_stems
-                    s_text = getattr(support_by_id.get(sid), "text", "")
-                    s_nums = set(re.findall(r"\b\d+\b", s_text)) if s_text else set()
-                    shared_nums = p_nums & s_nums
-                    if (
-                        len(shared_stems) >= 2
-                        or (shared_stems and shared_nums)
-                        or len(shared_nums) >= 2
-                        or (len(shared_stems) >= 1 and len(p_stems) <= 4)
-                    ):
-                        matched_sups.append(sid)
+            matched_sups = _matched_support_ids(p_text)
 
             # Writer-supplied citations are hints, not proof.  Keep them only
             # when the paragraph itself has a deterministic anchor in the
@@ -372,29 +386,53 @@ def _ground_draft_in_coverage_plan(
             if support_by_id:
                 combined_sups = [sid for sid in combined_sups if sid in support_by_id]
 
+            from src.publication.article_models import _split_sentences_safe
+
+            raw_claims = p.get("claims") if isinstance(p, dict) else None
+            claims_list: list[dict[str, Any]] = []
+            if isinstance(raw_claims, list) and raw_claims:
+                claim_items = [cl for cl in raw_claims if isinstance(cl, dict)]
+            else:
+                # Legacy writer output has no claim-level citations.  Create
+                # sentence-level atoms so a well-supported sentence cannot
+                # lend its citations to a neighboring unsupported sentence.
+                claim_items = [
+                    {"text": sentence, "cited_support_ids": []}
+                    for sentence in _split_sentences_safe(str(p_text))
+                ]
+
+            for cl in claim_items:
+                cl_text = str(cl.get("text", "")).strip()
+                raw_claim_supports = cl.get("cited_support_ids") or ()
+                if isinstance(raw_claim_supports, (str, int)):
+                    raw_claim_supports = [raw_claim_supports]
+                explicitly_cited = [
+                    str(sid).strip() for sid in raw_claim_supports if sid and str(sid).strip()
+                ]
+                for sentence in _split_sentences_safe(cl_text) or ([cl_text] if cl_text else []):
+                    sentence_matches = _matched_support_ids(
+                        sentence, combined_sups, claim_specific=True
+                    )
+                    grounded_claim_supports = [
+                        sid for sid in explicitly_cited if sid in sentence_matches
+                    ]
+                    if not explicitly_cited:
+                        grounded_claim_supports = sentence_matches
+                    claims_list.append(
+                        {
+                            "text": sentence,
+                            "cited_support_ids": list(dict.fromkeys(grounded_claim_supports)),
+                        }
+                    )
+
+            claim_support_ids = list(
+                dict.fromkeys(sid for claim in claims_list for sid in claim["cited_support_ids"])
+            )
             para_dict = {
                 "text": p_text,
-                "cited_support_ids": combined_sups,
+                "cited_support_ids": claim_support_ids,
+                "claims": claims_list,
             }
-            if isinstance(p, dict) and "claims" in p and p["claims"]:
-                claims_list = []
-                for cl in p["claims"]:
-                    if isinstance(cl, dict):
-                        cl_text = cl.get("text", "")
-                        existing_c_sups = [
-                            sid for sid in cl.get("cited_support_ids", ()) if sid in combined_sups
-                        ]
-                        if not existing_c_sups and combined_sups:
-                            existing_c_sups = combined_sups
-                        claims_list.append(
-                            {
-                                "text": cl_text,
-                                "cited_support_ids": existing_c_sups,
-                            }
-                        )
-                    else:
-                        claims_list.append(cl)
-                para_dict["claims"] = claims_list
             grounded_paras.append(para_dict)
 
         sec["paragraphs"] = grounded_paras
@@ -1177,11 +1215,14 @@ class ArticleGenerator:
    - Организуйте статью в связные движения и используйте содержательные подзаголовки там, где они помогают чтению. Число заголовков, адресов и абзацев определяет материал; не задавайте квот и не отводите по абзацу каждой Story.
    - Самостоятельно выберите композицию по смыслу всего корпуса. Синтезируйте общие линии, но сохраняйте существенные местные исключения, практические последствия и временные различия. Если сообщения расходятся, покажите различие между конкретными местами или наблюдениями, не склеивая их в один общий факт.
    - Дайте каждому полезному сообщению естественное место один раз. Не перечисляйте адреса ради демонстрации охвата и не объединяйте независимые сюжеты без фактического основания.
+   - Не соединяйте два наблюдения только из-за близкого времени или места. Слышанный звук, замеченная техника или световой след сами по себе не устанавливают объект, его назначение или причину. Не относите сообщения о стрельбе, трассерах или беспилотниках к ремонтам и коммунальным работам, если источник прямо не связывает их.
+   - Не приписывайте отдельные сообщения разным людям только потому, что это разные support-записи. Используйте множественное число («жители», «другие») лишь когда материал явно подтверждает несколько независимых собеседников.
    - Не повторяйте тезис лида в каждом разделе и не заканчивайте общим пересказом этого тезиса.
-   - effective_from/effective_until задают время события или состояния услуги. observed_at — только время сообщения и атрибуции; оно не устанавливает начало события.
+   - effective_from/effective_until задают время события или состояния услуги. observed_at — только время сообщения и атрибуции; оно не устанавливает начало события. Сверяйте указание «утром/днём/вечером» с локальным PUBLICATION AS OF; не называйте дневное состояние вечерним.
 3. КОНКРЕТНЫЕ ДЕТАЛИ И УВАЖИТЕЛЬНЫЙ ЯЗЫК:
    - Сохраняйте значимые подтверждённые микро-детали: место, интервал, сумму, действие жителей, практическое последствие или конкретное состояние услуги.
    - Пересказывайте личные просьбы и эмоциональные сообщения уважительно и косвенной речью. Не создавайте сцены, намерения, близость мест или причины, которых нет в источнике.
+   - Для полезных справочных услуг оставляйте один краткий практический факт; не переносите в лонгрид полный график приёма, цепочку адресов или пошаговую инструкцию заказа, если это не главный сюжет выпуска.
    - Не превращайте самостоятельный короткий BRIEF-сюжет в искусственную главу, если материал не даёт для неё связной темы; оставьте его компактным упоминанием без выдуманного моста.
 4. ТОНАЛЬНОСТЬ, ЯЗЫК И АТРИБУЦИЯ:
    - Спокойный, уважительный, фактологический язык регионального журналиста.
@@ -1337,10 +1378,10 @@ class ArticleGenerator:
             "ЗАДАНИЕ ВЫПУСКАЮЩЕМУ РЕДАКТОРУ:\n"
             "Перед вами редакционная карта вечера и подтверждающие её материалы. Следуйте центральной линии и порядку тематических линий брифа; пишите цельный лонгрид с естественными переходами, не пересказывая свидетельства по одному. Глубина DEVELOP, WEAVE и BRIEF определяет объём разработки, а не достоверность материала.\n"
             "1. НАЧНИТЕ с конкретной картины того, как жители проживают день; развивайте её через несколько содержательно связанных линий и их последствия для повседневной жизни. Завершите на значимой детали или открытом вопросе из материалов, без повторения лида и без прогноза.\n"
-            "2. СИНТЕЗИРУЙТЕ сообщения об одной теме. Различия по улицам, домам и времени передавайте как локальную неоднородность. Не превращайте текст в последовательный список адресов и не переносите состояние одной услуги на другую. Несвязанные объявления и мелкие справки не обязаны попадать в статью; не создавайте из них каталог.\n"
-            "3. СОХРАНЯЙТЕ важные конкретные детали — место, срок, сумму, действие жителя или практическое последствие — когда они помогают понять главную линию. Отбирайте уместные короткие сообщения, не стремясь упомянуть каждую карточку. Коммерческие объявления, перечни точек, расписания магазинов, адреса выдачи заказов и приёма металлолома опускайте; оставляйте полезную городскую информацию о доступе к необходимой услуге.\n"
-            "4. ВРЕМЯ: effective_from/effective_until описывают время события или состояния услуги. observed_at показывает время сообщения, но не устанавливает начало события. Не выводите из него длительность, причинность, завершение или прогноз.\n"
-            "5. ПИШИТЕ спокойным литературным языком. Атрибутируйте неподтверждённые наблюдения жителям. Не выдумывайте причин, деталей, связей, сцен или завершения событий; не раскрывайте внутреннюю механику сбора сообщений.\n"
+            "2. СИНТЕЗИРУЙТЕ только сообщения об одном сюжете. Различия по улицам, домам и времени передавайте как локальную неоднородность. Не превращайте текст в адресный реестр и не переносите состояние одной услуги на другую. Не связывайте два наблюдения только потому, что они произошли рядом по времени или месту.\n"
+            "3. СОХРАНЯЙТЕ важные конкретные детали — место, срок, действие жителя или практическое последствие — когда они помогают понять главную линию. Не стремитесь упомянуть каждую карточку. Коммерческие объявления и каталоги опускайте. Практическую информацию об услуге сжимайте до одного полезного факта; не переписывайте полное расписание, список адресов или инструкцию заказа, если это не главный сюжет.\n"
+            "4. ВРЕМЯ: effective_from/effective_until описывают время события или состояния услуги. observed_at показывает время сообщения, но не устанавливает начало события. Не выводите из него длительность, причинность, завершение или прогноз. Учитывайте локальное PUBLICATION AS OF: не пишите «к вечеру», если выпуск подготовлен днём; используйте формулировку «на момент подготовки» или уберите указание времени суток.\n"
+            "5. ПИШИТЕ спокойным литературным языком. Атрибутируйте неподтверждённые наблюдения жителям. Сохраняйте, кто именно сообщил факт: несколько сообщений или support-записей не означают нескольких разных людей. Не выводите назначение или источник услышанной техники, звуков и световых следов; не переносите сообщения о стрельбе, трассерах или беспилотниках в рассказ о ремонтах без прямой связи в источнике. Не выдумывайте причин, деталей, связей, сцен или завершения событий; не раскрывайте внутреннюю механику сбора сообщений.\n"
             f"Объём — примерно {length_profile.target_min_words}–{length_profile.target_max_words} слов "
             f"(проверочный диапазон: {length_profile.hard_min_words}–{length_profile.hard_max_words}), если фактический материал поддерживает такой объём.\n"
             "Верните только Markdown статьи, без JSON-обёртки и пояснений."

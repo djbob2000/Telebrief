@@ -565,6 +565,22 @@ def validate_article_draft(
         else:
             unit_sids = set(cited_ids)
             claim_sids = {sid for c in claim_atoms for sid in c.cited_support_ids}
+            for claim in claim_atoms:
+                if not claim.cited_support_ids:
+                    issues.append(
+                        ArticleValidationIssue(
+                            code="MISSING_CLAIM_SUPPORT",
+                            unit_id=unit_id,
+                            message=(
+                                f"Unit {unit_id} claim '{claim.text}' has no claim-specific "
+                                "support citation"
+                            ),
+                            support_ids=cited_ids,
+                            severity="error",
+                            blocking=True,
+                            claim_text=claim.text,
+                        )
+                    )
             if unit_sids != claim_sids:
                 all_known = unit_sids.issubset(support_map.keys()) and claim_sids.issubset(
                     support_map.keys()
