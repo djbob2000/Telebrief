@@ -750,7 +750,7 @@ def test_heading_editor_context_includes_comparison_headings_without_new_targets
         ("DUPLICATE_ARTICLE_HEADING", "только этот заголовок"),
         ("UNDEVELOPED_LEAD_PROMISE", "исправьте лид"),
         ("ARTICLE_INVENTORY_RHYTHM", "естественным переходом"),
-        ("QUOTE_ROLL_PARAGRAPH", "косвенной речи"),
+        ("QUOTE_ROLL_PARAGRAPH", "кавычки совсем"),
         ("CONTRADICTORY_SERVICE_STATE", "явный контраст"),
     ),
 )

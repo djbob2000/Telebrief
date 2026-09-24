@@ -266,10 +266,18 @@ class ArticleEditor:
                     logger.info("ArticleEditor successfully resolved all validation issues!")
                     break
                 else:
+                    remaining_issues = [
+                        f"{issue.code}:{issue.unit_id}"
+                        for issue in current_val.issues
+                        if issue.blocking
+                    ] + [
+                        f"{finding.code}:{finding.unit_id}"
+                        for finding in current_quality.repair_findings
+                    ]
                     logger.warning(
                         "ArticleEditor pass %d left remaining issues: %s",
                         attempt,
-                        list(current_val.violations)[:5],
+                        remaining_issues[:10],
                     )
 
             except Exception as exc:
@@ -678,8 +686,9 @@ class ArticleEditor:
                 "конкретные детали; не превращайте абзац в перечень и не добавляйте факты."
             ),
             "QUOTE_ROLL_PARAGRAPH": (
-                " -> Сведите сообщения к плавной косвенной речи; оставьте не более двух точных "
-                "дословных цитат, если они нужны. Не исправляйте и не меняйте слова внутри прямой цитаты."
+                " -> Перескажите все сообщения плавной косвенной речью и полностью уберите прямую речь. "
+                "В исправленном абзаце не используйте кавычки совсем. Сохраните подтверждённые детали "
+                "и не меняйте их смысл."
             ),
             "CONTRADICTORY_SERVICE_STATE": (
                 " -> Передайте подтверждённое локальное различие для одной услуги, места и времени "
