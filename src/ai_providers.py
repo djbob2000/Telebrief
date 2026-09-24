@@ -690,7 +690,7 @@ class OpenAIProvider(AIProvider):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url or None,
-            timeout=httpx.Timeout(timeout, connect=min(15.0, float(timeout))),
+            timeout=float(timeout),
             max_retries=0,
         )
         self.logger = logger
@@ -783,7 +783,7 @@ class OpenAIProvider(AIProvider):
         _t0 = time.monotonic()
         try:
             async with self._semaphore:
-                # httpx's read timeout is reset by any bytes received from the
+                # The transport's read timeout is reset by any bytes received from the
                 # server.  Some gateways keep a stalled generation alive with
                 # periodic TLS/HTTP keep-alives, so inactivity alone is not a
                 # sufficient bound for a publication job.  Bound the complete
@@ -999,7 +999,7 @@ class GoogleProvider(AIProvider):
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=GOOGLE_BASE_URL,
-            timeout=httpx.Timeout(timeout, connect=min(15.0, float(timeout))),
+            timeout=float(timeout),
             max_retries=0,
         )
         self.logger = logger

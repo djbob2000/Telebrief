@@ -27,7 +27,6 @@ import logging
 from collections.abc import Sequence
 from typing import Any, Literal, Protocol
 
-import httpx
 from openai import AsyncOpenAI
 
 from src.ai_providers import GOOGLE_BASE_URL, OPENROUTER_BASE_URL
@@ -119,7 +118,7 @@ class GoogleGeminiEmbeddingProvider:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=GOOGLE_BASE_URL,
-            timeout=httpx.Timeout(timeout, connect=min(15.0, float(timeout))),
+            timeout=float(timeout),
             max_retries=0,
         )
 
@@ -204,7 +203,7 @@ class OpenRouterEmbeddingProvider:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=httpx.Timeout(timeout, connect=min(15.0, float(timeout))),
+            timeout=float(timeout),
             max_retries=0,
         )
 
@@ -289,7 +288,7 @@ class OpenAIEmbeddingProvider:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=httpx.Timeout(timeout, connect=min(15.0, float(timeout))),
+            timeout=float(timeout),
             max_retries=0,
         )
 
