@@ -87,7 +87,7 @@ async def test_publication_policy_service_stores_explicit_semantic_versions(
     assert policy_set.selection.config.get("selection_prompt_version") == "v2"
 
     # Writer versions
-    assert policy_set.writer.config.get("article_writer_version") == "v2"
+    assert policy_set.writer.config.get("article_writer_version") == "v3"
     assert policy_set.writer.config.get("article_coverage_plan_version") == "v2"
     assert policy_set.writer.config.get("article_recovery_version") == "v2"
 

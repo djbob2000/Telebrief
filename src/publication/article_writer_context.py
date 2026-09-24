@@ -5,7 +5,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from src.publication.article_context import (
     ArticleEditorialContext,
@@ -35,6 +35,7 @@ _SUPPORT_FACT_MAX_CHARS = 900
 _SUPPORT_SOURCE_MAX_CHARS = 1_800
 _SUPPORT_COMPACT_FACT_MAX_CHARS = 360
 _QUOTE_ALLOWLIST_MAX_CHARS = 12_000
+ArticleWriterMaterializationMode = Literal["packetized", "holistic"]
 
 
 @dataclass(frozen=True)
@@ -50,8 +51,25 @@ class ArticleWriterMaterializationStats:
     composition_group_count: int = 0
     group_size_distribution: tuple[tuple[int, int], ...] = ()
     rendered_packet_representation: str = "full"
+    materialization_mode: ArticleWriterMaterializationMode = "packetized"
 
     def to_prompt_block(self) -> str:
+        if self.materialization_mode == "holistic":
+            return "\n".join(
+                (
+                    "ARTICLE MATERIAL INVENTORY",
+                    "materialization mode: holistic evidence dossier",
+                    f"coverage stories: {self.coverage_story_count}",
+                    f"composition groups: {self.composition_group_count}",
+                    f"narrative lines: {self.narrative_line_count}",
+                    "group sizes: "
+                    + (
+                        ", ".join(f"{size}={count}" for size, count in self.group_size_distribution)
+                        or "none"
+                    ),
+                    f"citable support entries: {self.citable_support_count}",
+                )
+            )
         return "\n".join(
             (
                 "ARTICLE MATERIAL INVENTORY",
@@ -485,8 +503,11 @@ def render_article_writer_context_with_stats(
     include_coverage_plan: bool = True,
     material_projection: ArticleMaterialProjection | None = None,
     composition_plan: ArticleCompositionPlan | None = None,
+    materialization_mode: ArticleWriterMaterializationMode = "packetized",
 ) -> tuple[str, ArticleWriterMaterializationStats | None]:
     """Render writer context and return the materialization stats used to build it."""
+    if materialization_mode not in {"packetized", "holistic"}:
+        raise ValueError(f"Invalid article writer materialization mode: {materialization_mode!r}")
     # Validate even when this particular context has no timestamps. Article metadata
     # and all future packet times must use the configured edition timezone.
     try:
@@ -540,6 +561,18 @@ def render_article_writer_context_with_stats(
             )
         )
 
+    allowed_support_ids: set[str] | None = None
+    if coverage_plan is not None:
+        allowed_support_ids = set()
+        suppressed_story_ids = (
+            set(material_projection.suppressed_story_ids) if material_projection else set()
+        )
+        for item in coverage_plan.stories:
+            if item.story_id in suppressed_story_ids:
+                continue
+            allowed_support_ids.update(item.support_ids)
+            allowed_support_ids.update(item.detail_support_ids)
+
     from src.publication.article_quote_allowlist import build_article_quote_allowlist
 
     suppressed_support_ids = (
@@ -551,6 +584,12 @@ def render_article_writer_context_with_stats(
         if material_projection is not None
         else set()
     )
+    if materialization_mode == "holistic" and allowed_support_ids is not None:
+        suppressed_support_ids.update(
+            support.support_id
+            for support in context.support_index
+            if support.support_id not in allowed_support_ids
+        )
     allowlist = build_article_quote_allowlist(
         context,
         excluded_support_ids=suppressed_support_ids,
@@ -579,13 +618,7 @@ def render_article_writer_context_with_stats(
             "QUOTE ALLOWLIST: (NONE — quotation marks are strictly forbidden; use indirect speech only)"
         )
 
-    allowed_support_ids: set[str] | None = None
-    if coverage_plan is not None:
-        allowed_support_ids = set()
-        for item in coverage_plan.stories:
-            allowed_support_ids.update(item.support_ids)
-            allowed_support_ids.update(item.detail_support_ids)
-
+    if coverage_plan is not None and materialization_mode == "packetized":
         prefix = "\n\n".join(blocks).strip()
         packet_blocks, compact_packet_blocks, stats = _render_article_story_packets(
             context, coverage_plan, material_projection, composition_plan
@@ -623,6 +656,8 @@ def render_article_writer_context_with_stats(
     groups_by_key: dict[tuple[str, str, str, str, str], list[ArticleSupport]] = {}
     for sup in context.support_index:
         if sup.publication_use == "EXCLUDE":
+            continue
+        if materialization_mode == "holistic" and sup.publication_use != "PUBLISH":
             continue
         if allowed_support_ids is not None and sup.support_id not in allowed_support_ids:
             # Exclude supports that do not belong to selected stories in the coverage plan
@@ -701,6 +736,40 @@ def render_article_writer_context_with_stats(
             )
         )
 
+    holistic_stats: ArticleWriterMaterializationStats | None = None
+    if coverage_plan is not None and materialization_mode == "holistic":
+        suppressed_story_ids = (
+            set(material_projection.suppressed_story_ids) if material_projection else set()
+        )
+        group_size_counts = Counter(
+            member_count
+            for group in (composition_plan.groups if composition_plan is not None else ())
+            if (
+                member_count := sum(
+                    1 for member in group.members if member.story_id not in suppressed_story_ids
+                )
+            )
+        )
+        holistic_stats = ArticleWriterMaterializationStats(
+            coverage_story_count=len(coverage_plan.stories),
+            story_packet_count=0,
+            packets_with_citable_support=0,
+            citable_support_count=len(
+                {support.support_id for group in grouped_supports for support in group}
+            ),
+            bundle_count=(len(composition_plan.groups) if composition_plan is not None else 0),
+            narrative_line_count=(
+                len(composition_plan.narrative_lines) if composition_plan is not None else 0
+            ),
+            composition_group_count=(
+                len(composition_plan.groups) if composition_plan is not None else 0
+            ),
+            group_size_distribution=tuple(sorted(group_size_counts.items())),
+            rendered_packet_representation="holistic",
+            materialization_mode="holistic",
+        )
+        blocks.append(holistic_stats.to_prompt_block())
+
     prefix = "\n\n".join(blocks).strip()
     remaining = max(0, ARTICLE_WRITER_CONTEXT_MAX_CHARS - len(prefix))
     rendered_supports = list(compact_support_blocks)
@@ -742,7 +811,7 @@ def render_article_writer_context_with_stats(
         rendered = rendered[: ARTICLE_WRITER_CONTEXT_MAX_CHARS - 40].rstrip()
         rendered += "\n[SUPPORT CONTEXT TRUNCATED]"
 
-    return rendered, None
+    return rendered, holistic_stats
 
 
 def render_article_writer_context(
@@ -752,6 +821,7 @@ def render_article_writer_context(
     include_coverage_plan: bool = True,
     material_projection: ArticleMaterialProjection | None = None,
     composition_plan: ArticleCompositionPlan | None = None,
+    materialization_mode: ArticleWriterMaterializationMode = "packetized",
 ) -> str:
     """Render coverage-aware and sanitized support context for single-call writer."""
     rendered, _stats = render_article_writer_context_with_stats(
@@ -760,5 +830,6 @@ def render_article_writer_context(
         include_coverage_plan=include_coverage_plan,
         material_projection=material_projection,
         composition_plan=composition_plan,
+        materialization_mode=materialization_mode,
     )
     return rendered

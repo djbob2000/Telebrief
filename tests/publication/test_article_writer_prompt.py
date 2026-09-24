@@ -9,6 +9,7 @@ from src.publication.article_context import (
 )
 from src.publication.article_quote_allowlist import build_article_quote_allowlist
 from src.publication.article_writer_context import render_article_writer_context
+from src.publication.narrative_contract import build_article_narrative_contract
 
 _NOW = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
 
@@ -130,8 +131,7 @@ def test_article_writer_prompt_forbids_brief_topic_dumping():
     prompt = generator._build_event_article_system_prompt()
 
     assert "не перечисляйте адреса ради демонстрации охвата" in prompt.lower()
-    assert "one natural home" in prompt.lower()
-    assert "catch-all closing paragraph" in prompt.lower()
+    assert "never predict what will happen next" in prompt.lower()
 
 
 def test_article_writer_prompt_uses_event_time_and_report_time_without_shape_quotas():
@@ -154,13 +154,15 @@ def test_article_writer_prompt_uses_event_time_and_report_time_without_shape_quo
     assert "независимой украины" not in lowered
 
 
-def test_article_writer_prompt_uses_adaptive_bundle_depth_without_fixed_quotas():
+def test_article_writer_prompt_leaves_composition_to_the_writer():
     generator = ArticleGenerator.__new__(ArticleGenerator)
     generator.output_language = "Russian"
     prompt = generator._build_event_article_system_prompt()
+    contract = build_article_narrative_contract(output_language="Russian")
 
-    assert "ARTICLE COMPOSITION ROADMAP" in prompt
-    assert "prominence controls depth, not inclusion" in prompt.lower()
+    assert "ARTICLE COMPOSITION ROADMAP" not in prompt
+    assert "the order and labels of support records are not an outline" in contract.lower()
+    assert "catalogue of every source item" in contract.lower()
     assert "не задавайте квот" in prompt.lower()
     assert "2–3 развёрнутых абзаца" not in prompt
     assert "2–4 связных предложения" not in prompt

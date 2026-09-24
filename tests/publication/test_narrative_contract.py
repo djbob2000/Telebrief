@@ -30,14 +30,14 @@ def test_article_narrative_contract_invariants():
     assert "never translate or grammar-correct text inside quotation marks" in contract_lower
     assert "remove quotation marks and write indirect speech" in contract_lower
     assert "broad city-life coverage" in contract_lower
-    assert "prominence controls depth, not inclusion" in contract_lower
+    assert "do not force a separate mention for every support record" in contract_lower
     assert "do not collapse concrete evidence into generic summaries" in contract_lower
     assert "microdetail" in contract_lower
-    assert "brief stories" in contract_lower
+    assert "weave in smaller reports" in contract_lower
     assert "phone numbers" in contract_lower
     assert "quotation dumps" in contract_lower
     assert "chat rolls" in contract_lower
-    assert ARTICLE_NARRATIVE_PROMPT_VERSION == "event-article-narrative-v7"
+    assert ARTICLE_NARRATIVE_PROMPT_VERSION == "event-article-narrative-v8"
 
 
 def test_digest_narrative_contract_invariants():

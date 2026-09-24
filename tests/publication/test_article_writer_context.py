@@ -379,6 +379,119 @@ def test_render_article_writer_context_uses_material_projection_for_packets_and_
         assert "На улице Садовой нет света" in rendered
 
 
+def test_holistic_writer_context_renders_selected_publish_supports_as_one_dossier():
+    useful = ArticleSupport(
+        support_id="story:enrollment:evidence:0:frag:1",
+        text="Спортивная школа открыла бесплатный набор детей.",
+        source_text=(
+            "Спортивная школа открыла бесплатный набор детей. "
+            "Обращайтесь для записи по телефону +79900000000."
+        ),
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-1",),
+        fragment_ids=(1,),
+        source_item_ids=(1,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:enrollment",
+    )
+    duplicate = ArticleSupport(
+        **{
+            **useful.__dict__,
+            "support_id": "story:enrollment:evidence:1:frag:2",
+            "source_refs": ("ref-2",),
+            "fragment_ids": (2,),
+            "source_item_ids": (2,),
+        }
+    )
+    context_only = ArticleSupport(
+        support_id="story:enrollment:evidence:2:frag:3",
+        text="Жители спрашивают, когда начнутся занятия.",
+        source_text="Жители спрашивают, когда начнутся занятия.",
+        support_kind="evidence",
+        publication_use="CONTEXT",
+        source_refs=("ref-3",),
+        fragment_ids=(3,),
+        source_item_ids=(3,),
+        observed_at=None,
+        evidence_kind="resident_question",
+        story_id="story:enrollment",
+    )
+    excluded = ArticleSupport(
+        support_id="story:enrollment:evidence:3:frag:4",
+        text="Исключённая деталь.",
+        source_text="Исключённая деталь.",
+        support_kind="evidence",
+        publication_use="EXCLUDE",
+        source_refs=("ref-4",),
+        fragment_ids=(4,),
+        source_item_ids=(4,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:enrollment",
+    )
+    unselected = ArticleSupport(
+        support_id="story:unselected:evidence:0:frag:5",
+        text="Незапланированное событие.",
+        source_text="Незапланированное событие.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref-5",),
+        fragment_ids=(5,),
+        source_item_ids=(5,),
+        observed_at=None,
+        evidence_kind="community_report",
+        story_id="story:unselected",
+    )
+    supports = (useful, duplicate, context_only, excluded, unselected)
+    context = ArticleEditorialContext(
+        headline_candidates=("Образование",),
+        support_index=supports,
+        support_by_id={support.support_id: support for support in supports},
+        recurring_topics=(),
+        edition_name="Бердянск",
+    )
+    plan = ArticleCoveragePlan(
+        stories=(
+            ArticleStoryCoverage(
+                story_id="story:enrollment",
+                topic="Бесплатный набор в спортивную школу",
+                rank=1,
+                prominence="DEVELOP",
+                support_ids=tuple(support.support_id for support in supports[:4]),
+            ),
+        )
+    )
+    projection = project_article_material(context)
+
+    rendered, stats = render_article_writer_context_with_stats(
+        context,
+        plan,
+        include_coverage_plan=False,
+        material_projection=projection,
+        materialization_mode="holistic",
+    )
+
+    assert stats is not None
+    assert stats.materialization_mode == "holistic"
+    assert stats.story_packet_count == 0
+    assert stats.citable_support_count == 2
+    assert "ARTICLE COVERAGE PLAN" not in rendered
+    assert "ARTICLE COMPOSITION ROADMAP" not in rendered
+    assert "[ARTICLE STORY PACKET" not in rendered
+    assert (
+        "[SUPPORT story:enrollment:evidence:0:frag:1, story:enrollment:evidence:1:frag:2]"
+        in rendered
+    )
+    assert "Спортивная школа открыла бесплатный набор детей." in rendered
+    assert "+79900000000" not in rendered
+    assert "Обращайтесь для записи" not in rendered
+    assert "story:enrollment:evidence:2:frag:3" not in rendered
+    assert "story:enrollment:evidence:3:frag:4" not in rendered
+    assert "story:unselected:evidence:0:frag:5" not in rendered
+
+
 def test_projected_writer_quote_allowlist_excludes_suppressed_promotion_support():
     support = ArticleSupport(
         support_id="story:ad:evidence:0:frag:1",

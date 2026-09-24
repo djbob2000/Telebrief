@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v7"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v8"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v5"
 
 
@@ -45,20 +45,16 @@ def build_article_narrative_contract(
 - Do not mechanically generate one sentence per support. Synthesize related observations into natural, flowing prose.
 
 
-3. Broad City-Life Coverage & Editorial Hierarchy:
-- The product is a broad city-life coverage long read, not a minimal three-story analysis.
-- Prominence controls depth, not inclusion.
-- DEVELOP stories deserve substantial narrative depth when evidence exists.
-- WEAVE stories should be integrated into related sections with compact but concrete treatment.
-- BRIEF stories should receive compact factual treatment and may be grouped into a natural city-life section.
-- Do not omit a legitimate PUBLISH Story merely because it is smaller than the main themes.
-- Do not give all Stories equal space.
-- Use the composition roadmap as one editorial guide, not as a chapter quota or checklist. Follow only the relationships it names; keep independent Stories independent unless their packets support a clear connection.
+3. Broad City-Life Coverage & Editorial Shape:
+- The product is a broad city-life long read, not a minimal headline recap or a catalogue of every source item.
+- Read the reporting material as a whole and choose the strongest connected city-life lines yourself; the order and labels of support records are not an outline.
+- Give more space to developments that change residents' day or reveal the larger situation. Weave in smaller reports when they add a useful local contrast, consequence, or human detail.
+- Do not give all Stories equal space and do not force a separate mention for every support record.
 - Let the article's shape follow the evidence; do not impose fixed heading, address, paragraph, or one-paragraph-per-Story quotas.
 - Preserve meaningful place, service-state, and event-time contrasts. Use effective_from/effective_until for event chronology; observed_at describes report chronology and attribution only.
-- Give each useful local notice one natural home. Synthesize related reports without listing every address merely to demonstrate coverage.
+- Synthesize related reports without listing every address merely to demonstrate coverage. Keep unrelated subjects separate and omit directory-style commercial payload.
 - Develop the lead's central line in the body without repeating its premise in every section or restating it as a generic conclusion.
-- Keep unrelated subjects in their own narrative context; do not pour leftover items into a catch-all closing paragraph.
+- Close on a supported scene, consequence, or unresolved issue when the material provides one; never predict what will happen next without an explicit source.
 
 
 4. Microdetail Preservation:
