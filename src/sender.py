@@ -5,7 +5,7 @@ Telegram bot sender for delivering digests.
 import asyncio
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Optional, cast
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -370,7 +370,7 @@ class DigestSender:
                 parse_mode=ParseMode.MARKDOWN,
                 disable_web_page_preview=True,
             )
-            return message.message_id
+            return cast(int, message.message_id)
         except TelegramError as e:
             if "Can't parse entities" in str(e):
                 self.logger.warning("Markdown parse error, falling back to plain text")
@@ -380,7 +380,7 @@ class DigestSender:
                     parse_mode=None,
                     disable_web_page_preview=True,
                 )
-                return message.message_id
+                return cast(int, message.message_id)
             raise
 
     async def _send_summary_message(
@@ -405,7 +405,7 @@ class DigestSender:
                 parse_mode=ParseMode.MARKDOWN,
             )
             self.logger.info("✅ Summary message sent")
-            return message.message_id
+            return cast(int, message.message_id)
         except TelegramError as e:
             if "Can't parse entities" in str(e):
                 self.logger.warning("Markdown parse error in summary, falling back to plain text")
@@ -415,7 +415,7 @@ class DigestSender:
                     parse_mode=None,
                 )
                 self.logger.info("✅ Summary message sent (plain text fallback)")
-                return message.message_id
+                return cast(int, message.message_id)
             self.logger.warning(f"⚠️ Failed to send summary message: {e}")
             return None
 

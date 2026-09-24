@@ -15,6 +15,7 @@ dumpers unchanged.
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import psycopg
 from pgvector import Vector
@@ -41,7 +42,7 @@ class _FloatListLoader(Loader):
     def load(self, data: Buffer) -> list[float]:
         if isinstance(data, memoryview):
             data = data.tobytes()
-        return Vector.from_text(data.decode("utf8")).to_list()
+        return cast(list[float], Vector.from_text(data.decode("utf8")).to_list())
 
 
 class _FloatListBinaryLoader(Loader):
@@ -50,7 +51,7 @@ class _FloatListBinaryLoader(Loader):
     format = Format.BINARY
 
     def load(self, data: Buffer) -> list[float]:
-        return Vector.from_binary(data).to_list()
+        return cast(list[float], Vector.from_binary(data).to_list())
 
 
 async def open_pool(config: DatabaseConfig) -> AsyncConnectionPool:

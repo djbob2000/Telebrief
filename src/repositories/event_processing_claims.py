@@ -230,7 +230,7 @@ class EventProcessingClaimRepository:
             """,
             (claim.edition_id, claim.scope_key, claim.claim_token),
         )
-        return cursor.rowcount == 1
+        return int(cursor.rowcount) == 1
 
     async def try_claim_stage(
         self,
@@ -340,4 +340,4 @@ class EventProcessingClaimRepository:
             """,
             (claim.story_id, claim.latest_assignment_id, claim.stage, claim.claim_token),
         )
-        return cursor.rowcount == 1
+        return int(cursor.rowcount) == 1

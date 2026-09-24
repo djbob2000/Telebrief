@@ -89,7 +89,6 @@ module = [
     "telethon.*",
     "telegram.*",
     "asyncpg",
-    "asyncpg.*",
 ]
 ignore_missing_imports = true
 
