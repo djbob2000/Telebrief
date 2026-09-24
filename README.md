@@ -585,24 +585,24 @@ psql $DATABASE_URL -f migrations/0011_drop_legacy_messages.sql
 
 ---
 
-## 🛠️ Development & Testing
+## 🛠️ Development & Verification
 
 This project uses [uv](https://docs.astral.sh/uv/) for package management.
 
-### Running Tests
+### Static checks
 
 ```bash
-# Install development dependencies
+# Install lint and type-check dependencies
 uv sync --extra dev
-
-# Run all tests
-uv run pytest tests/ -v
 
 # Type checking
 uv run mypy src/
 
 # Linting
-uv tool run ruff check src/ tests/
+uv run ruff check src/
+
+# Format verification
+uv run ruff format --check src/
 
 # Auto-format code
 make format

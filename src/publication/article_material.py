@@ -21,8 +21,10 @@ ArticleMaterialAction = Literal["KEEP", "TRIM_DIRECTORY", "SUPPRESS_PROMOTION_ON
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+|\n+")
 _CONTACT_OR_CTA_RE = re.compile(
     r"(?:https?://\S+|\bwww\.\S+|\bt\.me/\S+|\+?\d[\d\s()\-–—]{8,}\d|"
-    r"\b(?:звон(?:ите|ить)?|телефон|подробност|брониров|запис(?:ь|аться)|"
-    r"пишите|обращайт(?:есь|еся)|ссылка|личк|самовывоз|доставк)\w*)",
+    r"\b(?:звон(?:ите|ить)?|телефон|подробност|брониров|"
+    r"запис(?:аться|ывайтесь|ываться)|запись\s+(?:по\s+(?:телефону|ссылке)|через)|"
+    r"пишите|обращайт(?:есь|еся)|ссылка|личк|самовывоз|доставк|"
+    r"qr-код|qr\s*код|сканируйт|приходите|жд[её]м\s+вас|скидк|акци)\w*)",
     re.IGNORECASE,
 )
 _USEFUL_FACT_RE = re.compile(
@@ -42,8 +44,85 @@ _OPERATIONAL_FACT_RE = re.compile(
     re.IGNORECASE,
 )
 _OPERATIONAL_CLAUSE_SPLIT_RE = re.compile(
-    r"\s*[,;—–]\s*|\s+(?=(?:звон(?:ите|ить)?|подробност\w*|"
-    r"брониров\w*|запис(?:ь|аться)|пишите|обращайт\w*|ссылка|личк\w*))",
+    r"\s*[,;]\s*|\s+(?=(?:звон(?:ите|ить)?|подробност\w*|"
+    r"брониров\w*|запис(?:аться|ывайтесь|ываться)|"
+    r"запись\s+(?:по\s+(?:телефону|ссылке)|через)|пишите|обращайт\w*|ссылка|личк\w*|"
+    r"https?://\S+|www\.\S+|t\.me/\S+|\+?\d[\d\s()\-–—]{8,}\d|"
+    r"qr[-\s]*код|сканируйт\w*|скидк\w*|акци\w*|приходите|жд[её]м\s+вас|"
+    r"(?:и|а|но|однако)\s+(?:пункт\s+выдачи|постамат|магазин\w*|кафе|ресторан|"
+    r"салон\w*|бутик\w*|отдел\w*|склад\w*)))",
+    re.IGNORECASE,
+)
+
+_COMMERCIAL_PICKUP_DELIVERY_DIRECTORY_RE = re.compile(
+    r"\b(?:пункт\w*\s+(?:выдачи|получения)\b|пвз\b|постамат\w*|"
+    r"выдач\w*\s+(?:заказ\w*|посыл\w*|товар\w*)|"
+    r"(?:получить|забрать)\s+(?:свой\s+)?заказ\w*)",
+    re.IGNORECASE,
+)
+_COMMERCIAL_ESTABLISHMENT_RE = re.compile(
+    r"\b(?:магазин\w*|кафе|ресторан\w*|салон\w*|бутик\w*|"
+    r"торгов\w*\s+центр\w*|мастерск\w*|склад\w*|пункт\s+выдачи|"
+    r"постамат\w*|офис\w*)\b",
+    re.IGNORECASE,
+)
+_ROUTINE_HOURS_RE = re.compile(
+    r"(?:\b(?:режим|график)\w*\s+работ\w*|"
+    r"\b(?:работа\w*|открыт\w*)\b.{0,55}(?:с\s*)?\d{1,2}(?::\d{2})?"
+    r"\s*(?:до|[-–—])\s*\d{1,2}(?::\d{2})?|"
+    r"\b(?:ежедневно|каждый\s+день|без\s+выходных|"
+    r"пн\.?\s*[-–—]\s*пт\.?|пн\.?\s*[-–—]\s*сб\.?)"
+    r")",
+    re.IGNORECASE,
+)
+_MEANINGFUL_SCHEDULE_CHANGE_RE = re.compile(
+    r"(?:измен\w*.{0,45}(?:график|расписан|режим|часы)|"
+    r"(?:график|расписан|режим|часы).{0,45}измен\w*|"
+    r"(?:работа\w*|открыт\w*).{0,50}\d{1,2}(?::\d{2})?.{0,30}"
+    r"вместо.{0,30}\d{1,2}(?::\d{2})?|"
+    r"сократ\w*.{0,35}(?:график|расписан|часы|рейс|маршрут)|"
+    r"временно\s+(?:закрыт\w*|не\s+работ\w*|приостанов\w*)|"
+    r"(?:сегодня|завтра).{0,40}(?:закрыт\w*|не\s+работ\w*|перенес\w*|отмен\w*)|"
+    r"(?:отмен\w*|перенес\w*|приостанов\w*|возобнов\w*).{0,50}"
+    r"(?:рейс\w*|маршрут\w*|работ\w*|движен\w*|при[её]м\w*)|"
+    r"не\s+буд\w*\s+работ\w*|нов\w*\s+расписан\w*|по\s+измен[её]нн\w*\s+график\w*)",
+    re.IGNORECASE,
+)
+_PUBLIC_AID_ACCESS_RE = re.compile(
+    r"(?:\b(?:организован\w*|открыт\w*|создан\w*|работа\w*|действу\w*|появил\w*)"
+    r".{0,45}\bпункт\w*\s+выдач\w*.{0,45}\bгуманитарн\w*\s+помощ\w*|"
+    r"\bпункт\w*\s+выдач\w*.{0,45}\bгуманитарн\w*\s+помощ\w*.{0,45}"
+    r"\b(?:организован\w*|открыт\w*|работа\w*|действу\w*|доступ\w*)|"
+    r"\b(?:можно|могут|сможет|сможут)\s+(?:бесплатно\s+)?получ\w*.{0,25}"
+    r"\bгуманитарн\w*\s+помощ\w*|"
+    r"\bгуманитарн\w*\s+помощ\w*.{0,25}"
+    r"\b(?:можно|могут|сможет|сможут)\s+получ\w*)",
+    re.IGNORECASE,
+)
+_PUBLIC_AID_QUESTION_RE = re.compile(
+    r"\b(?:где|когда|как|кому|кто|можно\s+ли|подскажите|скажите)\b"
+    r".{0,65}\b(?:получ\w*|гуманитарн\w*\s+помощ\w*)",
+    re.IGNORECASE,
+)
+_ESSENTIAL_OR_PUBLIC_ACCESS_RE = re.compile(
+    r"(?:нет\s+(?:света|электричеств\w*|воды|водоснабжен\w*|отоплен\w*|"
+    r"газа|связи|интернет\w*)|(?:отключ\w*|аварийн\w*|восстанов\w*).{0,55}"
+    r"(?:свет\w*|электричеств\w*|вод\w*|отоплен\w*|газ\w*|связ\w*)|"
+    r"(?:подвоз|раздач|выдач|точк\w*\s+водоразбор\w*).{0,55}"
+    r"(?:питьев\w*\s+вод\w*|вод\w*.{0,15}населен\w*)|"
+    r"(?:питьев\w*\s+вод\w*|водоснабжен\w*).{0,55}(?:подвоз|раздач|выдач)|"
+    r"вод\w*\s+на\s+розлив|"
+    r"(?:муниципальн\w*|городск\w*|коммунальн\w*).{0,55}"
+    r"(?:пункт\w*|служб\w*|доступ\w*|подвоз\w*|ограничен\w*)|"
+    r"(?:(?:огранич\w*|перекры\w*|закры\w*|запрещ\w*).{0,55}"
+    r"(?:проезд\w*|движен\w*|доступ\w*|вход\w*|проход\w*)|"
+    r"(?:проезд\w*|движен\w*|доступ\w*|вход\w*|проход\w*|улиц\w*|дорог\w*).{0,55}"
+    r"(?:огранич\w*|перекры\w*|закры\w*|запрещ\w*))|"
+    r"(?:автобус\w*|маршрут\w*|общественн\w*\s+транспорт\w*|рейс\w*)"
+    r".{0,65}(?:не\s+ход\w*|не\s+буд\w*|отмен\w*|задерж\w*|измен\w*|"
+    r"расписан\w*|интервал\w*)|"
+    r"(?:не\s+ход\w*|отмен\w*|задерж\w*|измен\w*|расписан\w*|интервал\w*)"
+    r".{0,65}(?:автобус\w*|маршрут\w*|общественн\w*\s+транспорт\w*|рейс\w*))",
     re.IGNORECASE,
 )
 
@@ -94,40 +173,131 @@ def _combined_text(support: ArticleSupport) -> str:
 
 
 def _has_useful_fact(text: str) -> bool:
-    return bool(_USEFUL_FACT_RE.search(text))
+    """Find an editorial fact without letting routine store hours mask it."""
+    parts = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text or "") if part.strip()]
+    for part in parts:
+        for clause in _OPERATIONAL_CLAUSE_SPLIT_RE.split(part):
+            clause = re.sub(r"^\s*(?:а|и|но|однако)\s+", "", clause, flags=re.IGNORECASE)
+            if not clause or _is_commercial_directory_clause(clause):
+                continue
+            if _USEFUL_FACT_RE.search(clause):
+                return True
+    return False
+
+
+def _is_commercial_pickup_delivery_directory(text: str) -> bool:
+    return bool(_COMMERCIAL_PICKUP_DELIVERY_DIRECTORY_RE.search(text))
+
+
+def _has_declarative_public_aid_access(text: str) -> bool:
+    """Recognize stated aid distribution/access, excluding questions and ads."""
+    # A public-aid phrase inside a classified sale is not evidence of a public
+    # distribution point. Check commercial cues across the support so an ad
+    # cue in a neighboring sentence cannot borrow the access wording as an
+    # exemption. The phone-number cue alone is directory payload, not evidence
+    # that the aid itself is being sold; projection strips the contact below.
+    commercial_cues = [cue for cue in detect_classified_cues(text) if cue != "cue_4"]
+    if commercial_cues:
+        return False
+
+    for sentence in _SENTENCE_SPLIT_RE.split(text or ""):
+        sentence = sentence.strip()
+        if not sentence or "?" in sentence or _PUBLIC_AID_QUESTION_RE.search(sentence):
+            continue
+        if _PUBLIC_AID_ACCESS_RE.search(sentence):
+            return True
+    return False
+
+
+def _has_essential_or_public_resident_access(text: str) -> bool:
+    return bool(
+        _ESSENTIAL_OR_PUBLIC_ACCESS_RE.search(text)
+        or _MEANINGFUL_SCHEDULE_CHANGE_RE.search(text)
+        or _has_declarative_public_aid_access(text)
+    )
+
+
+def _has_useful_fact_embedded_alongside_directory_copy(text: str) -> bool:
+    """Recognize editorial facts in a support that also contains directory copy."""
+    if not _has_commercial_directory_payload(text):
+        return _has_essential_or_public_resident_access(text) or _has_useful_fact(text)
+    parts = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text) if part.strip()]
+    for part in parts:
+        if _has_essential_or_public_resident_access(part):
+            return True
+        for clause in _OPERATIONAL_CLAUSE_SPLIT_RE.split(part):
+            clause = re.sub(r"^\s*(?:а|и|но|однако)\s+", "", clause, flags=re.IGNORECASE)
+            if not clause or _is_commercial_directory_clause(clause):
+                continue
+            if _has_essential_or_public_resident_access(clause) or _has_useful_fact(clause):
+                return True
+    return False
+
+
+def _is_commercial_directory_clause(text: str) -> bool:
+    if _is_commercial_pickup_delivery_directory(text):
+        return True
+    return bool(
+        _COMMERCIAL_ESTABLISHMENT_RE.search(text)
+        and _ROUTINE_HOURS_RE.search(text)
+        and not _MEANINGFUL_SCHEDULE_CHANGE_RE.search(text)
+    )
+
+
+def _has_commercial_directory_payload(text: str) -> bool:
+    return _is_commercial_pickup_delivery_directory(text) or _is_commercial_directory_clause(text)
 
 
 def _is_high_confidence_promotion(support: ArticleSupport) -> bool:
-    """Require multiple independent classified-ad cues and no useful fact."""
-    if support.evidence_kind == "service_access" or support.support_kind == "operational":
-        return False
+    """Suppress commercial directory/promotional text without civic consequence."""
     text = _combined_text(support)
-    if _has_useful_fact(text):
+    if _has_useful_fact_embedded_alongside_directory_copy(text):
         return False
+    if _has_commercial_directory_payload(text):
+        return True
     cues = detect_classified_cues(text)
-    return len(cues) >= 2
+    return len(cues) >= 2 and not _has_essential_or_public_resident_access(text)
 
 
-def _strip_directory_sentences(text: str, *, preserve_operational: bool = False) -> str:
-    """Remove sentences that contain only contact, booking, or CTA payload."""
+def _strip_directory_sentences(text: str, *, preserve_public_access: bool = False) -> str:
+    """Remove commercial/contact clauses while retaining civic facts nearby."""
     parts = [part.strip() for part in _SENTENCE_SPLIT_RE.split(text or "") if part.strip()]
     retained: list[str] = []
     for part in parts:
-        if not _CONTACT_OR_CTA_RE.search(part):
+        if not (
+            _CONTACT_OR_CTA_RE.search(part)
+            or _is_commercial_directory_clause(part)
+            or _is_commercial_pickup_delivery_directory(part)
+        ):
             retained.append(part)
             continue
-        if _has_useful_fact(part) and not preserve_operational:
-            retained.append(part)
-            continue
-        if preserve_operational:
-            useful_clauses = [
-                clause
-                for clause in _OPERATIONAL_CLAUSE_SPLIT_RE.split(part)
-                if clause.strip()
-                and (_OPERATIONAL_FACT_RE.search(clause) or not _CONTACT_OR_CTA_RE.search(clause))
-            ]
-            if useful_clauses:
-                retained.append(", ".join(clause.strip() for clause in useful_clauses))
+        useful_clauses: list[str] = []
+        for raw_clause in _OPERATIONAL_CLAUSE_SPLIT_RE.split(part):
+            clause = re.sub(r"^\s*(?:а|и|но|однако)\s+", "", raw_clause, flags=re.IGNORECASE)
+            clause = re.sub(
+                r"^(?:адрес|телефон|режим\s+работы|график\s+работы)\s*:\s*",
+                "",
+                clause,
+                flags=re.IGNORECASE,
+            )
+            clause = clause.strip(" ,;:")
+            if not clause:
+                continue
+
+            public_access = _has_essential_or_public_resident_access(clause)
+            if _is_commercial_directory_clause(clause) and not public_access:
+                continue
+            if _CONTACT_OR_CTA_RE.search(clause) and not (
+                public_access
+                or (_has_useful_fact(clause) and not _is_commercial_directory_clause(clause))
+            ):
+                continue
+            if preserve_public_access and _OPERATIONAL_FACT_RE.search(clause):
+                useful_clauses.append(clause)
+            elif not _CONTACT_OR_CTA_RE.search(clause):
+                useful_clauses.append(clause)
+        if useful_clauses:
+            retained.append(", ".join(useful_clauses))
     return " ".join(retained).strip()
 
 
@@ -141,11 +311,10 @@ def _project_support_text(support: ArticleSupport) -> tuple[str, bool]:
 
     cleaned_candidates: list[str] = []
     payload_changed = False
-    preserve_operational = (
-        support.evidence_kind == "service_access" or support.support_kind == "operational"
-    )
+    combined = _combined_text(support)
+    preserve_public_access = _has_essential_or_public_resident_access(combined)
     for raw in candidates:
-        trimmed = _strip_directory_sentences(raw, preserve_operational=preserve_operational)
+        trimmed = _strip_directory_sentences(raw, preserve_public_access=preserve_public_access)
         sanitized = sanitize_writer_source_text(trimmed)
         payload_changed = payload_changed or sanitized != raw
         cleaned = " ".join(sanitized.split()).strip()
@@ -213,11 +382,19 @@ def project_article_material(context: ArticleEditorialContext) -> ArticleMateria
         text_by_id[support.support_id] = projected_text
         if support.story_id in suppressed_set and support.publication_use == "PUBLISH":
             actions[support.support_id] = "SUPPRESS_PROMOTION_ONLY"
-            reasons[support.support_id] = "high_confidence_promotion_only"
+            reasons[support.support_id] = (
+                "commercial_directory_only_removed"
+                if _has_commercial_directory_payload(_combined_text(support))
+                else "high_confidence_promotion_only"
+            )
             continue
         if changed:
             actions[support.support_id] = "TRIM_DIRECTORY"
-            reasons[support.support_id] = "contact_or_directory_payload_removed"
+            reasons[support.support_id] = (
+                "commercial_directory_payload_removed"
+                if _has_commercial_directory_payload(_combined_text(support))
+                else "contact_or_directory_payload_removed"
+            )
             trimmed_ids.append(support.support_id)
         else:
             actions[support.support_id] = "KEEP"

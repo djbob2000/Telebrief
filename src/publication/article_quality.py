@@ -21,6 +21,18 @@ from src.publication.article_models import StructuredArticleDraft, _split_senten
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
 
+# These findings describe article topology that cannot be repaired safely by
+# replacing one paragraph.  The generator may ask for one full recomposition;
+# ArticleEditor deliberately leaves them for ArticleFinalizer to reject if they
+# remain afterwards.
+ARTICLE_WHOLE_DRAFT_FINDING_CODES = frozenset(
+    {
+        "REPEATED_CENTRAL_THESIS",
+        "DIRECTORY_TIMETABLE_SECTION",
+        "MULTI_SENTENCE_ADDRESS_STATUS_ROSTER",
+    }
+)
+
 _QUOTE_RE = re.compile(r"[«“\"]([^»”\"]{1,240})[»”\"]")
 _STREET_RE = re.compile(
     r"(?:улиц[аеы]|ул\.?|проспект[ае]?|просп\.?|переулк[ае]?|пер\.?|район[ае]?)\s+([а-яёa-z0-9-]+)",
@@ -53,6 +65,26 @@ _TEMPORAL_VARIATION_PAIRS = {
     frozenset(("earlier", "now")),
     frozenset(("earlier", "later")),
 }
+_ARTICLE_DIRECTORY_TERMS_RE = re.compile(
+    r"\b(?:магазин\w*|кафе|ресторан\w*|салон\w*|бутик\w*|мастерск\w*|"
+    r"офис\w*|пункт\s+при[её]ма|при[её]м\w*\s+металлолом\w*|"
+    r"пункт\w*\s+выдач\w*|постамат\w*|торгов\w*\s+центр\w*)\b",
+    re.IGNORECASE,
+)
+_ARTICLE_TIME_RANGE_RE = re.compile(
+    r"\b\d{1,2}(?::\d{2})?\s*(?:до|[-–—])\s*\d{1,2}(?::\d{2})?\b",
+    re.IGNORECASE,
+)
+_ARTICLE_ROUTINE_SCHEDULE_RE = re.compile(
+    r"\b(?:режим|график)\w*\s+работ\w*|\b(?:ежедневно|каждый\s+день|"
+    r"без\s+выходных|пн\.?\s*[-–—]\s*(?:пт|сб)\.?)\b",
+    re.IGNORECASE,
+)
+_ARTICLE_SCHEDULE_CHANGE_RE = re.compile(
+    r"\b(?:измен\w*|сократ\w*|перенес\w*|отмен\w*|приостанов\w*|"
+    r"восстанов\w*|закрыт\w*|не\s+буд\w*\s+работ\w*|временно)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -98,7 +130,7 @@ class ArticleReaderQualityReport:
         for finding in self.findings:
             by_code[finding.code] = by_code.get(finding.code, 0) + 1
         return {
-            "version": "article-reader-quality-v3",
+            "version": "article-reader-quality-v4",
             "finding_count": len(self.findings),
             "needs_edit": self.needs_edit,
             "counts_by_severity": by_severity,
@@ -143,6 +175,76 @@ def _projected_support_is_citable(
 def _support_ids_for_unit(unit: object) -> tuple[str, ...]:
     ids = getattr(unit, "cited_support_ids", ())
     return tuple(dict.fromkeys(str(sid) for sid in ids if sid))
+
+
+def _paragraph_is_directory_timetable_material(
+    paragraph: object,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection | None,
+) -> bool:
+    text = str(getattr(paragraph, "text", "") or "")
+    support_ids = _citable_support_ids(
+        _support_ids_for_unit(paragraph), context, material_projection
+    )
+    if not text or not support_ids:
+        return False
+
+    projected_support_texts = [
+        (
+            material_projection.text_by_support_id.get(support_id, "")
+            if material_projection is not None
+            else context.support_by_id[support_id].text
+        )
+        for support_id in support_ids
+    ]
+    projected_material = " ".join(value for value in projected_support_texts if value)
+    if not projected_material:
+        return False
+
+    # Routine business hours and service directories have little city-life
+    # value after the access details are stripped. A changed schedule or a
+    # concrete public-service disruption is news and must remain admissible.
+    if _ARTICLE_SCHEDULE_CHANGE_RE.search(text) or _ARTICLE_SCHEDULE_CHANGE_RE.search(
+        projected_material
+    ):
+        return False
+    directory_text = f"{text} {projected_material}"
+    if not _ARTICLE_DIRECTORY_TERMS_RE.search(directory_text):
+        return False
+    if not (
+        _ARTICLE_TIME_RANGE_RE.search(text)
+        or _ARTICLE_ROUTINE_SCHEDULE_RE.search(text)
+        or _ARTICLE_TIME_RANGE_RE.search(projected_material)
+        or _ARTICLE_ROUTINE_SCHEDULE_RE.search(projected_material)
+    ):
+        return False
+    return True
+
+
+def _paragraph_service_observations(
+    paragraph: object,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection | None,
+    place_resolver: Any | None = None,
+) -> list[tuple[str, str, str, ArticleSupport]]:
+    observations: list[tuple[str, str, str, ArticleSupport]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for support_id in _citable_support_ids(
+        _support_ids_for_unit(paragraph), context, material_projection
+    ):
+        support = context.support_by_id[support_id]
+        source_text = " ".join((support.text, support.source_text)).strip()
+        service, place = _service_and_place(source_text, place_resolver)
+        state = _state_polarity(source_text)
+        if not service or not state:
+            continue
+        source_places = {place} if place else _extract_place_keys(source_text, place_resolver)
+        for source_place in source_places:
+            key = (service, source_place, state, support.support_id)
+            if key not in seen:
+                seen.add(key)
+                observations.append((service, source_place, state, support))
+    return observations
 
 
 def _citable_support_ids(
@@ -1075,6 +1177,7 @@ def diagnose_article_quality(
     # length or address quota.  A paragraph may weave several small place-based
     # reports together without making any one sentence a roster.
     p_idx = 1
+    address_roster_support_ids: list[str] = []
     for section in draft.sections:
         for paragraph in section.paragraphs:
             if paragraph.claims:
@@ -1151,7 +1254,114 @@ def diagnose_article_quality(
                         severity="blocking",
                     )
                 )
+
+            paragraph_observations = _paragraph_service_observations(
+                paragraph, context, material_projection, place_resolver
+            )
+            claim_sentences = (
+                [
+                    (sentence, claim.cited_support_ids or _support_ids_for_unit(paragraph))
+                    for claim in paragraph.claims
+                    for sentence in _split_sentences_safe(claim.text)
+                ]
+                if paragraph.claims
+                else [
+                    (sentence, _support_ids_for_unit(paragraph))
+                    for sentence in _split_sentences_safe(paragraph.text)
+                ]
+            )
+            address_status_records: list[tuple[str, str, str, tuple[str, ...]]] = []
+            for sentence, sentence_support_ids in claim_sentences:
+                service, place = _service_and_place(sentence, place_resolver)
+                state = _state_polarity(sentence)
+                if not service or not place or not state:
+                    continue
+                grounded = any(
+                    observed_service == service
+                    and observed_place == place
+                    and observed_state == state
+                    and support.support_id in sentence_support_ids
+                    for observed_service, observed_place, observed_state, support in paragraph_observations
+                )
+                if grounded:
+                    address_status_records.append(
+                        (service, place, state, tuple(sentence_support_ids))
+                    )
+
+            roster_services = {service for service, _place, _state, _ids in address_status_records}
+            roster_places = {place for _service, place, _state, _ids in address_status_records}
+            if (
+                len(claim_sentences) >= 3
+                and len(address_status_records) >= 3
+                and len(roster_places) >= 3
+                and len(roster_services) == 1
+                and not _has_narrative_relation(
+                    paragraph.text, paragraph_observations, place_resolver
+                )
+            ):
+                address_roster_support_ids.extend(
+                    support_id
+                    for _service, _place, _state, ids in address_status_records
+                    for support_id in ids
+                )
             p_idx += 1
+
+    if address_roster_support_ids:
+        findings.append(
+            ArticleReaderQualityFinding(
+                code="MULTI_SENTENCE_ADDRESS_STATUS_ROSTER",
+                unit_id="ARTICLE",
+                message=(
+                    "Адреса и состояния услуги разнесены по однотипным предложениям без "
+                    "подтверждённого сравнения или развития; соберите сообщения в связный локальный контраст."
+                ),
+                support_ids=tuple(dict.fromkeys(address_roster_support_ids)),
+                severity="blocking",
+            )
+        )
+
+    directory_findings: list[str] = []
+    for section in draft.sections:
+        paragraph_results = [
+            (
+                paragraph,
+                _paragraph_is_directory_timetable_material(paragraph, context, material_projection),
+            )
+            for paragraph in section.paragraphs
+        ]
+        directory_paragraphs = [
+            paragraph for paragraph, is_directory in paragraph_results if is_directory
+        ]
+        if not directory_paragraphs:
+            continue
+        directory_count = len(directory_paragraphs)
+        total_count = len(section.paragraphs)
+        dense_single_paragraph = any(
+            len(_ARTICLE_TIME_RANGE_RE.findall(paragraph.text)) >= 3
+            or len(_STREET_RE.findall(paragraph.text)) >= 3
+            for paragraph in directory_paragraphs
+        )
+        if dense_single_paragraph or (
+            directory_count >= 2 and directory_count / max(total_count, 1) >= 0.6
+        ):
+            directory_findings.extend(
+                support_id
+                for paragraph in directory_paragraphs
+                for support_id in _support_ids_for_unit(paragraph)
+            )
+    if directory_findings:
+        findings.append(
+            ArticleReaderQualityFinding(
+                code="DIRECTORY_TIMETABLE_SECTION",
+                unit_id="ARTICLE",
+                message=(
+                    "Раздел в основном перечисляет адреса и обычные часы работы; оставьте только "
+                    "изменение, полезное жителям, и уберите каталог."
+                ),
+                support_ids=tuple(dict.fromkeys(directory_findings)),
+                severity="blocking",
+            )
+        )
 
     # Compare supported claims across the lead and distinct chapters.  Shared
     # Story/support linkage is required, and a different state, effective
@@ -1240,6 +1450,81 @@ def diagnose_article_quality(
                 severity="blocking" if major_story_repeated else "repair",
             )
         )
+
+    lead_unit = next((unit for unit in quality_units if unit["unit_id"] == "LEAD"), None)
+    body_units = [unit for unit in quality_units if unit["unit_id"].startswith("P")]
+    if lead_unit is not None and len(body_units) >= 2:
+        middle_units, closing_unit = body_units[:-1], body_units[-1]
+        repeated_thesis_supports: list[str] = []
+        for lead_text, lead_ids in lead_unit["claims"]:
+            lead_citable_ids = _citable_support_ids(lead_ids, context, material_projection)
+            lead_story_ids = set(_claim_story_ids(lead_citable_ids, context))
+            for story_id in lead_story_ids:
+                lead_story = coverage_plan.by_story_id.get(story_id)
+                if (
+                    lead_story is None
+                    or lead_story.prominence != "DEVELOP"
+                    or story_id in suppressed_story_ids
+                ):
+                    continue
+
+                def matching_claims(
+                    unit: dict[str, Any],
+                    target_story_id: str = story_id,
+                ) -> list[tuple[str, tuple[str, ...]]]:
+                    return [
+                        (text, _citable_support_ids(ids, context, material_projection))
+                        for text, ids in unit["claims"]
+                        if target_story_id
+                        in _claim_story_ids(
+                            _citable_support_ids(ids, context, material_projection), context
+                        )
+                    ]
+
+                closing_matches = matching_claims(closing_unit)
+                middle_matches = [
+                    (unit, claim) for unit in middle_units for claim in matching_claims(unit)
+                ]
+                for closing_text, closing_ids in closing_matches:
+                    if _claim_is_materially_new(
+                        lead_text, closing_text
+                    ) or _supports_show_distinct_effective_times(
+                        lead_citable_ids, closing_ids, context, material_projection
+                    ):
+                        continue
+                    for _middle_unit, (middle_text, middle_ids) in middle_matches:
+                        if (
+                            not _claim_is_materially_new(lead_text, middle_text)
+                            and not _claim_is_materially_new(middle_text, closing_text)
+                            and not _supports_show_distinct_effective_times(
+                                lead_citable_ids, middle_ids, context, material_projection
+                            )
+                            and not _supports_show_distinct_effective_times(
+                                middle_ids, closing_ids, context, material_projection
+                            )
+                        ):
+                            repeated_thesis_supports.extend(
+                                (*lead_citable_ids, *middle_ids, *closing_ids)
+                            )
+                            break
+                    if repeated_thesis_supports:
+                        break
+                if repeated_thesis_supports:
+                    break
+
+        if repeated_thesis_supports:
+            findings.append(
+                ArticleReaderQualityFinding(
+                    code="REPEATED_CENTRAL_THESIS",
+                    unit_id="ARTICLE",
+                    message=(
+                        "Центральная мысль о ключевом сюжете повторена во вступлении, основной части "
+                        "и концовке без нового состояния, периода или последствия."
+                    ),
+                    support_ids=tuple(dict.fromkeys(repeated_thesis_supports)),
+                    severity="blocking",
+                )
+            )
 
     coverage = diagnose_article_coverage(draft, coverage_plan, context=context)
     suppressed_ids = set(

@@ -42,7 +42,6 @@ from src.editorial_fallback import (
 from src.editorial_input import EditorialInputBuilder
 from src.editorial_models import EditorialAnalysis, PreparedBundle
 from src.editorial_writer import ArticleDraft, EditorialWriter
-from src.publication.article_composition import build_article_composition_plan
 from src.publication.article_context import ArticleEditorialContext
 from src.publication.article_coverage_diagnostics import (
     ArticleCoverageDiagnostics,
@@ -54,6 +53,7 @@ from src.publication.article_length import (
 )
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_quality import (
+    ARTICLE_WHOLE_DRAFT_FINDING_CODES,
     ArticleReaderQualityReport,
     diagnose_article_quality,
 )
@@ -63,6 +63,7 @@ from src.publication.article_validator import (
     validate_article_draft,
 )
 from src.publication.narrative_contract import build_article_narrative_contract
+from src.publication.policies import ARTICLE_EDITORIAL_PLAN_VERSION, ARTICLE_WRITER_VERSION
 from src.timezones import get_timezone, normalize_timezone_name
 
 
@@ -1284,9 +1285,8 @@ class ArticleGenerator:
 
         from src.publication.article_coverage import build_article_coverage_plan
         from src.publication.article_material import project_article_material
-        from src.publication.article_writer_context import (
-            render_article_writer_context_with_stats,
-        )
+        from src.publication.article_planner import ArticleEditorialPlanner
+        from src.publication.article_writer_context import render_article_editorial_brief_context
 
         if coverage_plan is None and getattr(article_ctx, "coverage_plan", None) is not None:
             coverage_plan = article_ctx.coverage_plan
@@ -1316,22 +1316,18 @@ class ArticleGenerator:
                 )
 
         material_projection = project_article_material(article_ctx)
-        composition_plan = build_article_composition_plan(
-            coverage_plan,
+        editorial_brief = await ArticleEditorialPlanner(self.provider, self.model).plan(
+            context=article_ctx,
+            coverage_plan=coverage_plan,
+            material_projection=material_projection,
+            attempt_observer=attempt_observer,
+        )
+        context_str, materialization_stats = render_article_editorial_brief_context(
             article_ctx,
+            editorial_brief,
             material_projection,
         )
-        context_str, materialization_stats = render_article_writer_context_with_stats(
-            article_ctx,
-            coverage_plan,
-            include_coverage_plan=False,
-            material_projection=material_projection,
-            composition_plan=composition_plan,
-            materialization_mode="holistic",
-        )
-        materialization_metadata = (
-            materialization_stats.to_metadata() if materialization_stats is not None else None
-        )
+        materialization_metadata = materialization_stats.to_metadata()
         system_prompt = self._build_event_article_system_prompt(
             length_profile=length_profile,
             is_longitudinal=is_longitudinal,
@@ -1339,7 +1335,7 @@ class ArticleGenerator:
         user_prompt = (
             f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\nBEGIN ARTICLE MATERIAL\n{context_str}\nEND ARTICLE MATERIAL\n\n"
             "ЗАДАНИЕ ВЫПУСКАЮЩЕМУ РЕДАКТОРУ:\n"
-            "Перед вами единый корпус городских свидетельств, а не готовый план статьи. Прочитайте его целиком и напишите самостоятельный вечерний лонгрид: найдите главную линию дня, естественные тематические главы и переходы между ними. Не следуйте порядку свидетельств и не пересказывайте их по одному.\n"
+            "Перед вами редакционная карта вечера и подтверждающие её материалы. Следуйте центральной линии и порядку тематических линий брифа; пишите цельный лонгрид с естественными переходами, не пересказывая свидетельства по одному. Глубина DEVELOP, WEAVE и BRIEF определяет объём разработки, а не достоверность материала.\n"
             "1. НАЧНИТЕ с конкретной картины того, как жители проживают день; развивайте её через несколько содержательно связанных линий и их последствия для повседневной жизни. Завершите на значимой детали или открытом вопросе из материалов, без повторения лида и без прогноза.\n"
             "2. СИНТЕЗИРУЙТЕ сообщения об одной теме. Различия по улицам, домам и времени передавайте как локальную неоднородность. Не превращайте текст в последовательный список адресов и не переносите состояние одной услуги на другую. Несвязанные объявления и мелкие справки не обязаны попадать в статью; не создавайте из них каталог.\n"
             "3. СОХРАНЯЙТЕ важные конкретные детали — место, срок, сумму, действие жителя или практическое последствие — когда они помогают понять главную линию. Отбирайте уместные короткие сообщения, не стремясь упомянуть каждую карточку. Коммерческие объявления, перечни точек, расписания магазинов, адреса выдачи заказов и приёма металлолома опускайте; оставляйте полезную городскую информацию о доступе к необходимой услуге.\n"
@@ -1357,6 +1353,43 @@ class ArticleGenerator:
             len(system_prompt) + len(user_prompt),
         )
 
+        selected_brief_support_ids = set(editorial_brief.central_support_ids)
+        selected_brief_support_ids.update(
+            support_id for line in editorial_brief.lines for support_id in line.support_ids
+        )
+        brief_line_metadata = [
+            {
+                "line_id": line.line_id,
+                "depth": line.depth,
+                "relation": line.relation,
+                "story_ids": list(line.story_ids),
+                "support_ids": list(line.support_ids),
+                "salient_support_ids": list(line.salient_support_ids),
+                "caveat_support_ids": list(line.caveat_support_ids),
+            }
+            for line in editorial_brief.lines
+        ]
+        brief_metadata = {
+            "version": "v1",
+            "central_line_hash": hashlib.sha256(
+                editorial_brief.central_line.encode("utf-8")
+            ).hexdigest(),
+            "line_count": len(editorial_brief.lines),
+            "disposition_count": len(editorial_brief.dispositions),
+            "depth_counts": {
+                depth: sum(item.depth == depth for item in editorial_brief.dispositions)
+                for depth in ("DEVELOP", "WEAVE", "BRIEF", "OMIT")
+            },
+            "line_supports": brief_line_metadata,
+        }
+        from src.publication.article_planner import render_article_planner_dossier
+
+        planner_dossier = render_article_planner_dossier(
+            context=article_ctx,
+            coverage_plan=coverage_plan,
+            material_projection=material_projection,
+        )
+        planner_context_chars = len(planner_dossier)
         writer_input_metadata: dict[str, Any] = {
             "context_chars": len(context_str),
             "prompt_chars": len(system_prompt) + len(user_prompt),
@@ -1364,6 +1397,16 @@ class ArticleGenerator:
             "prompt_hash": hashlib.sha256(
                 f"{system_prompt}\0{user_prompt}".encode("utf-8")
             ).hexdigest(),
+            "article_writer_prompt_version": ARTICLE_WRITER_VERSION,
+            "article_editorial_plan_version": ARTICLE_EDITORIAL_PLAN_VERSION,
+            "planner_model": self.model,
+            "planner_prompt_version": ARTICLE_EDITORIAL_PLAN_VERSION,
+            "planner_context_chars": planner_context_chars,
+            "planner_story_count": len(coverage_plan.stories),
+            "planner_support_count": len(selected_brief_support_ids),
+            "planner_context_hash": hashlib.sha256(planner_dossier.encode("utf-8")).hexdigest(),
+            "brief": brief_metadata,
+            "brief_support_count": len(selected_brief_support_ids),
         }
         if article_ctx.publication_window is not None:
             writer_input_metadata.update(
@@ -1375,7 +1418,7 @@ class ArticleGenerator:
         if materialization_metadata is not None:
             writer_input_metadata["materialization"] = materialization_metadata
         writer_input_metadata["material_projection"] = material_projection.to_metadata()
-        writer_input_metadata["composition"] = composition_plan.to_metadata()
+        writer_input_metadata["article_editorial_brief"] = brief_metadata
 
         from src.publication.article_finalization import ArticleFinalizer
 
@@ -1386,6 +1429,12 @@ class ArticleGenerator:
         writer_quality_before_edit: ArticleReaderQualityReport | None = None
         writer_quality_after_edit: ArticleReaderQualityReport | None = None
         writer_retry_history: list[dict[str, Any]] = []
+        structural_recomposition_metadata: dict[str, Any] = {
+            "attempted": False,
+            "attempt_count": 0,
+            "before_findings": [],
+            "after_findings": [],
+        }
 
         suppressed_support_ids = {
             support_id
@@ -1394,7 +1443,12 @@ class ArticleGenerator:
         }
         quote_allowlist = build_article_quote_allowlist(
             article_ctx,
-            excluded_support_ids=suppressed_support_ids,
+            excluded_support_ids=suppressed_support_ids
+            | {
+                support.support_id
+                for support in article_ctx.support_index
+                if support.support_id not in selected_brief_support_ids
+            },
             excluded_story_ids=material_projection.suppressed_story_ids,
             candidate_text_by_support_id=material_projection.text_by_support_id,
         )
@@ -1422,18 +1476,22 @@ class ArticleGenerator:
                 {"role": "user", "content": user_prompt},
             ]
 
-            async def call_writer(slot_name: str | None = None) -> str:
+            async def call_writer(
+                slot_name: str | None = None,
+                messages_override: list[dict[str, str]] | None = None,
+            ) -> str:
+                call_messages = messages_override if messages_override is not None else messages
                 if slot_name and isinstance(self.provider, ProviderCascade):
                     return await self.provider.chat_completion_for_slot(
                         slot_name,
-                        messages,
+                        call_messages,
                         self.model,
                         temperature=article_temp,
                         max_tokens=writer_max_tokens,
                         reasoning_effort=writer_reasoning_effort,
                     )
                 return await self.provider.chat_completion(
-                    messages=messages,
+                    messages=call_messages,
                     model=self.model,
                     temperature=article_temp,
                     max_tokens=writer_max_tokens,
@@ -1578,6 +1636,142 @@ class ArticleGenerator:
                         break
                     initial_slot = current_provider_slot() or initial_slot
 
+            structural_findings_before = [
+                finding.code
+                for finding in candidate_quality.blocking_findings
+                if finding.code in ARTICLE_WHOLE_DRAFT_FINDING_CODES
+            ]
+            if structural_findings_before:
+                structural_recomposition_metadata.update(
+                    {
+                        "attempted": True,
+                        "attempt_count": 1,
+                        "before_findings": structural_findings_before,
+                    }
+                )
+                recomposition_id = 0
+                if attempt_observer is not None:
+                    recomposition_id = await attempt_observer.attempt_started(
+                        "writer",
+                        provider=self.config.settings.ai_provider,
+                        model=self.model,
+                        metadata={
+                            "attempt": len(writer_retry_history) + 1,
+                            "strategy": "whole_draft_structural_recomposition",
+                            "finding_codes": structural_findings_before,
+                            "context_hash": writer_input_metadata["context_hash"],
+                            "brief_hash": brief_metadata["central_line_hash"],
+                        },
+                    )
+
+                recomposition_messages = [
+                    messages[0],
+                    {
+                        "role": "user",
+                        "content": (
+                            f"{user_prompt}\n\n"
+                            "ЦЕЛЬНАЯ РЕДАКТОРСКАЯ ПЕРЕСБОРКА — один раз. Предыдущий текст провалил "
+                            "проверку структуры: "
+                            f"{', '.join(structural_findings_before)}. Перепишите статью целиком, "
+                            "используя ту же редакционную карту и только материалы выше. Уберите "
+                            "повтор центральной мысли, каталог обычных расписаний и перечисление "
+                            "адресов отдельными фразами. При реальных различиях по месту или времени "
+                            "сохраните подтверждённый контраст и его конкретные последствия. Не "
+                            "добавляйте новые факты, цитаты, источники или неподтверждённые связи. "
+                            "Верните только полную Markdown-статью."
+                        ),
+                    },
+                ]
+                try:
+                    recomposed_response = await call_writer(
+                        messages_override=recomposition_messages
+                    )
+                    (
+                        recomposed_draft,
+                        recomposed_val,
+                        recomposed_diag,
+                        recomposed_quality,
+                    ) = evaluate_writer_response(recomposed_response)
+                    response = recomposed_response
+                    candidate_draft = recomposed_draft
+                    candidate_val = recomposed_val
+                    candidate_diag = recomposed_diag
+                    candidate_quality = recomposed_quality
+                    record_writer_attempt(
+                        len(writer_retry_history) + 1,
+                        recomposed_response,
+                        candidate_val,
+                        candidate_diag,
+                        candidate_quality,
+                        _is_catastrophic_writer_response(
+                            candidate_draft, candidate_val, candidate_diag
+                        ),
+                    )
+                    structural_findings_after = [
+                        finding.code
+                        for finding in candidate_quality.blocking_findings
+                        if finding.code in ARTICLE_WHOLE_DRAFT_FINDING_CODES
+                    ]
+                    structural_recomposition_metadata["after_findings"] = structural_findings_after
+                    structural_recomposition_metadata["resolved"] = not bool(
+                        structural_findings_after
+                    )
+                    if attempt_observer is not None and recomposition_id:
+                        await attempt_observer.attempt_finished(
+                            recomposition_id,
+                            "succeeded" if not structural_findings_after else "failed",
+                            error_kind=(
+                                None
+                                if not structural_findings_after
+                                else "structural_findings_remain"
+                            ),
+                            metadata={
+                                "before_findings": structural_findings_before,
+                                "after_findings": structural_findings_after,
+                                "evidence_boundary_passed": recomposed_val.is_valid,
+                                "story_coverage": recomposed_diag.story_coverage,
+                                "quality": recomposed_quality.to_metadata(),
+                            },
+                        )
+                except Exception as recomposition_error:
+                    structural_recomposition_metadata.update(
+                        {
+                            "error_type": type(recomposition_error).__name__,
+                            "after_findings": structural_findings_before,
+                            "resolved": False,
+                        }
+                    )
+                    writer_retry_history.append(
+                        {
+                            "attempt_number": len(writer_retry_history) + 1,
+                            "response_chars": 0,
+                            "parsed_word_count": candidate_val.word_count,
+                            "parsed_section_count": candidate_val.section_count,
+                            "planned_story_count": candidate_diag.planned_story_count,
+                            "covered_story_count": candidate_diag.covered_story_count,
+                            "story_coverage": candidate_diag.story_coverage,
+                            "catastrophic": False,
+                            "error_type": type(recomposition_error).__name__,
+                            "quality": candidate_quality.to_metadata(),
+                        }
+                    )
+                    if attempt_observer is not None and recomposition_id:
+                        await attempt_observer.attempt_finished(
+                            recomposition_id,
+                            "failed",
+                            error_kind=type(recomposition_error).__name__,
+                            metadata={
+                                "before_findings": structural_findings_before,
+                                "after_findings": structural_findings_before,
+                                "evidence_boundary_passed": False,
+                            },
+                        )
+                    self.logger.warning(
+                        "Whole-draft structural recomposition failed; finalization will reject "
+                        "the original draft if its blocking finding remains: %s",
+                        type(recomposition_error).__name__,
+                    )
+
             writer_validation = candidate_val
             writer_quality_before_edit = candidate_quality
             writer_quality_after_edit = candidate_quality
@@ -1600,8 +1794,9 @@ class ArticleGenerator:
             attempt_1_meta["quality"] = candidate_quality.to_metadata()
             attempt_1_meta["quality_before_edit"] = candidate_quality.to_metadata()
             attempt_1_meta["quality_after_edit"] = candidate_quality.to_metadata()
-            attempt_1_meta["composition"] = composition_plan.to_metadata()
+            attempt_1_meta["article_editorial_brief"] = brief_metadata
             attempt_1_meta["material_projection"] = material_projection.to_metadata()
+            attempt_1_meta["structural_recomposition"] = structural_recomposition_metadata
             for metadata_key in (
                 "context_hash",
                 "prompt_hash",

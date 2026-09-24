@@ -33,6 +33,7 @@ from src.publication.article_models import (
     _split_sentences_safe,
 )
 from src.publication.article_quality import (
+    ARTICLE_WHOLE_DRAFT_FINDING_CODES,
     ArticleReaderQualityReport,
     diagnose_article_quality,
 )
@@ -52,6 +53,33 @@ from src.publication.errors import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _unresolved_whole_draft_findings(
+    *reports: ArticleReaderQualityReport | None,
+) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            finding.code
+            for report in reports
+            if report is not None
+            for finding in report.blocking_findings
+            if finding.code in ARTICLE_WHOLE_DRAFT_FINDING_CODES
+        )
+    )
+
+
+def _reject_structural_quality_fallback(findings: Sequence[str], *, stage: str) -> None:
+    if not findings:
+        return
+    raise ArticlePublicationRejected(
+        reason="quality_failed",
+        message=(
+            "Article has unresolved whole-draft quality findings; deterministic fallback is blocked: "
+            f"{list(findings)}"
+        ),
+        metadata={"stage": stage, "unresolved_whole_draft_findings": list(findings)},
+    )
 
 
 def _fallback_support_owner(support_id: str, context: ArticleEditorialContext) -> str:
@@ -330,7 +358,7 @@ def _compact_quality_value(value: Any) -> dict[str, Any] | None:
     compact: dict[str, Any] = {
         "version": value.get("version")
         if isinstance(value.get("version"), str)
-        else "article-reader-quality-v3",
+        else "article-reader-quality-v4",
         "finding_count": value.get("finding_count", len(compact_findings)),
         "needs_edit": bool(value.get("needs_edit", False)),
         "counts_by_severity": value.get("counts_by_severity", {}),
@@ -416,6 +444,7 @@ def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, A
         "editor_retry_count",
         "editor_patched_unit_ids",
         "coverage_retry_suppressed",
+        "structural_recomposition",
     }
     result: dict[str, Any] = {
         key: writer_metadata[key] for key in scalar_keys if key in writer_metadata
@@ -424,6 +453,20 @@ def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, A
         compact_quality = _compact_quality_value(writer_metadata.get(key))
         if compact_quality is not None:
             result[key] = compact_quality
+    recomposition = writer_metadata.get("structural_recomposition")
+    if isinstance(recomposition, dict):
+        result["structural_recomposition"] = {
+            key: recomposition[key]
+            for key in (
+                "attempted",
+                "attempt_count",
+                "before_findings",
+                "after_findings",
+                "resolved",
+                "error_type",
+            )
+            if key in recomposition
+        }
     composition = _compact_composition_value(writer_metadata.get("composition"))
     if composition is not None:
         result["composition"] = composition
@@ -509,7 +552,7 @@ def _quality_rejection_metadata(
     ]
     metadata: dict[str, Any] = {
         "stage": "post_finalization_quality",
-        "quality_version": "article-reader-quality-v3",
+        "quality_version": "article-reader-quality-v4",
         "quality_before_edit": (
             _compact_quality_metadata(quality_report_before_edit)
             if quality_report_before_edit is not None
@@ -536,6 +579,7 @@ def _quality_rejection_metadata(
             "as_of",
             "as_of_utc",
             "edition_timezone",
+            "structural_recomposition",
         ):
             if key in safe_writer_metadata:
                 metadata[key] = safe_writer_metadata[key]
@@ -1232,6 +1276,10 @@ class ArticleFinalizer:
                         "writer_attempt": _safe_writer_metadata(writer_metadata),
                     },
                 )
+            _reject_structural_quality_fallback(
+                _unresolved_whole_draft_findings(quality_report, quality_report_after_edit),
+                stage="writer_error_fallback",
+            )
             return await self._run_full_fallback(
                 writer_status="failed",
                 ai_diag=None,
@@ -1465,6 +1513,10 @@ class ArticleFinalizer:
                         "quality_gate_passed": None,
                     },
                 )
+            _reject_structural_quality_fallback(
+                _unresolved_whole_draft_findings(quality_report, quality_report_after_edit),
+                stage="writer_validation_fallback",
+            )
             return await self._run_full_fallback(
                 writer_status="rejected",
                 ai_diag=None,
@@ -1545,6 +1597,10 @@ class ArticleFinalizer:
                         "quality_gate_passed": None,
                     },
                 )
+            _reject_structural_quality_fallback(
+                _unresolved_whole_draft_findings(quality_report, quality_report_after_edit),
+                stage="post_finalization_validation_fallback",
+            )
             return await self._run_full_fallback(
                 writer_status="rejected",
                 ai_diag=None,

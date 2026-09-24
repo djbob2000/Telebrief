@@ -16,6 +16,7 @@ from src.publication.article_coverage import ArticleCoveragePlan
 from src.timezones import get_timezone, normalize_timezone_name
 
 if TYPE_CHECKING:
+    from src.publication.article_brief import ArticleEditorialBrief
     from src.publication.article_composition import ArticleCompositionPlan
     from src.publication.article_material import ArticleMaterialProjection
 
@@ -35,7 +36,7 @@ _SUPPORT_FACT_MAX_CHARS = 900
 _SUPPORT_SOURCE_MAX_CHARS = 1_800
 _SUPPORT_COMPACT_FACT_MAX_CHARS = 360
 _QUOTE_ALLOWLIST_MAX_CHARS = 12_000
-ArticleWriterMaterializationMode = Literal["packetized", "holistic"]
+ArticleWriterMaterializationMode = Literal["packetized", "holistic", "brief"]
 
 
 @dataclass(frozen=True)
@@ -54,7 +55,16 @@ class ArticleWriterMaterializationStats:
     materialization_mode: ArticleWriterMaterializationMode = "packetized"
 
     def to_prompt_block(self) -> str:
-        if self.materialization_mode == "holistic":
+        if self.materialization_mode in {"holistic", "brief"}:
+            if self.materialization_mode == "brief":
+                return "\n".join(
+                    (
+                        "ARTICLE MATERIAL INVENTORY",
+                        "materialization mode: validated editorial brief",
+                        f"narrative lines: {self.narrative_line_count}",
+                        f"citable support entries: {self.citable_support_count}",
+                    )
+                )
             return "\n".join(
                 (
                     "ARTICLE MATERIAL INVENTORY",
@@ -833,3 +843,193 @@ def render_article_writer_context(
         materialization_mode=materialization_mode,
     )
     return rendered
+
+
+def render_article_editorial_brief_context(
+    context: ArticleEditorialContext,
+    brief: ArticleEditorialBrief,
+    material_projection: ArticleMaterialProjection,
+) -> tuple[str, ArticleWriterMaterializationStats]:
+    """Render only the validated brief and its cited projected evidence for the writer."""
+    try:
+        get_timezone(context.edition_timezone)
+    except ValueError as exc:
+        raise ValueError(f"Invalid article context timezone: {context.edition_timezone!r}") from exc
+
+    dispositions_by_story = {item.story_id: item for item in brief.dispositions}
+    omitted_story_ids = {
+        story_id
+        for story_id, disposition in dispositions_by_story.items()
+        if disposition.depth == "OMIT"
+    }
+    visible_story_ids = {story_id for line in brief.lines for story_id in line.story_ids}
+    if visible_story_ids & omitted_story_ids:
+        raise ValueError("article editorial brief places an OMIT Story in a narrative line")
+
+    blocks: list[str] = []
+    if context.edition_name:
+        blocks.append(f"EDITION CONTEXT: {context.edition_name}")
+        from src.domain.edition_geography import resolve_edition_geography
+
+        geography = resolve_edition_geography(context.edition_name.lower(), context.edition_name)
+        geography_section = geography.to_prompt_section().strip()
+        if geography_section:
+            blocks.append(geography_section)
+    blocks.append(f"EDITION TIMEZONE: {context.edition_timezone}")
+    if context.publication_window is not None:
+        window = context.publication_window
+        blocks.append(
+            f"REPORT WINDOW: {window.lookback_start.isoformat()} .. {window.snapshot_at.isoformat()}"
+        )
+        as_of = format_article_context_time(window.snapshot_at, context.edition_timezone)
+        if as_of:
+            blocks.append(f"PUBLICATION AS OF: {as_of}")
+
+    central_support_ids = tuple(dict.fromkeys(brief.central_support_ids))
+    lines = [
+        "ARTICLE EDITORIAL BRIEF",
+        "Follow this central line and narrative order. Depth sets space, not eligibility.",
+        f"CENTRAL LINE: {brief.central_line.strip()}",
+        "CENTRAL SUPPORTS: " + ", ".join(central_support_ids),
+        "NARRATIVE LINES (in order):",
+    ]
+
+    # Keep each reference on its line, while rendering the underlying evidence
+    # once below even when the central line or several movements cite it.
+    cited_by: dict[str, list[str]] = defaultdict(list)
+    for support_id in central_support_ids:
+        cited_by.setdefault(support_id, []).append("central line")
+        support = getattr(context, "support_by_id", {}).get(support_id)
+        if support is not None and support.story_id in omitted_story_ids:
+            raise ValueError(
+                f"article editorial brief central line cites omitted Story {support.story_id!r}"
+            )
+    visible_lines = []
+    for line in brief.lines:
+        if any(story_id in omitted_story_ids for story_id in line.story_ids):
+            raise ValueError(
+                f"article editorial brief line {line.line_id!r} contains an OMIT Story"
+            )
+        visible_lines.append(line)
+        support_ids = tuple(dict.fromkeys(line.support_ids))
+        salient_ids = tuple(dict.fromkeys(line.salient_support_ids))
+        caveat_ids = tuple(dict.fromkeys(line.caveat_support_ids))
+        lines.extend(
+            (
+                f"\nLINE {line.line_id} depth={line.depth} relation={line.relation}",
+                f"INTENT: {line.editorial_intent.strip()}",
+                f"STORIES: {', '.join(line.story_ids)}",
+                "SUPPORTS: " + ", ".join(support_ids),
+                "SALIENT SUPPORTS: " + (", ".join(salient_ids) or "none"),
+                "CAVEAT SUPPORTS: " + (", ".join(caveat_ids) or "none"),
+            )
+        )
+        for support_id in support_ids:
+            support = getattr(context, "support_by_id", {}).get(support_id)
+            support_owner = (
+                support.story_id or _support_story_id(support_id) if support is not None else ""
+            )
+            if support_owner and support_owner not in line.story_ids:
+                raise ValueError(
+                    f"article editorial brief line {line.line_id!r} cites support owned by "
+                    f"{support_owner!r}"
+                )
+            cited_by.setdefault(support_id, []).append(line.line_id)
+
+    support_by_id = getattr(context, "support_by_id", {})
+    rendered_support_ids: set[str] = set()
+    evidence_blocks: list[str] = []
+    for support_id, references in cited_by.items():
+        support = support_by_id.get(support_id)
+        if support is None or support.support_id != support_id:
+            raise ValueError(f"article editorial brief references missing support {support_id!r}")
+        if support.publication_use != "PUBLISH" or support.evidence_kind == "resident_question":
+            raise ValueError(
+                f"article editorial brief references non-citable support {support_id!r}"
+            )
+        action = material_projection.actions_by_support_id.get(support_id)
+        if action not in {"KEEP", "TRIM_DIRECTORY"}:
+            raise ValueError(
+                f"article editorial brief support {support_id!r} did not survive projection"
+            )
+        fact = sanitize_writer_source_text(
+            material_projection.text_by_support_id.get(support_id, "").strip()
+        )
+        if not fact:
+            raise ValueError(
+                f"article editorial brief support {support_id!r} has no projected text"
+            )
+        temporal_fields = [f"role={support.temporal_role}"]
+        for field_name, value in (
+            ("observed_at", support.observed_at),
+            ("effective_from", support.effective_from),
+            ("effective_until", support.effective_until),
+        ):
+            formatted = format_article_context_time(value, context.edition_timezone)
+            if formatted is not None:
+                temporal_fields.append(f"{field_name}={formatted}")
+        story_id = support.story_id
+        if not story_id:
+            story_id = _support_story_id(support_id)
+        if story_id in omitted_story_ids:
+            raise ValueError(
+                f"article editorial brief cites support for omitted Story {story_id!r}"
+            )
+        evidence_blocks.append(
+            "\n".join(
+                (
+                    f"[SUPPORT {support_id}] story={story_id} kind={support.evidence_kind} "
+                    f"framing={_support_framing(support)}",
+                    f"cited_by={', '.join(dict.fromkeys(references))}",
+                    " ".join(temporal_fields),
+                    f"fact={fact}",
+                )
+            )
+        )
+        rendered_support_ids.add(support_id)
+
+    lines.append(
+        "\nCITED PROJECTED EVIDENCE (each support appears once; preserve its attribution and time):"
+    )
+    lines.extend(evidence_blocks)
+
+    from src.publication.article_quote_allowlist import build_article_quote_allowlist
+
+    excluded_quote_support_ids = set(support_by_id) - rendered_support_ids
+    quote_allowlist = build_article_quote_allowlist(
+        context,
+        excluded_support_ids=excluded_quote_support_ids,
+        excluded_story_ids=omitted_story_ids,
+        candidate_text_by_support_id=material_projection.text_by_support_id,
+    )
+    if quote_allowlist:
+        lines.append(
+            "\nQUOTE ALLOWLIST (only these exact primary-source phrases may appear in quotation marks):"
+        )
+        lines.extend(f"- «{quote}" for quote in quote_allowlist)
+    else:
+        lines.append("\nQUOTE ALLOWLIST: none; use indirect speech only.")
+
+    rendered = "\n".join(part for part in (*blocks, "\n".join(lines)) if part).strip()
+    if len(rendered) > ARTICLE_WRITER_CONTEXT_MAX_CHARS:
+        raise ValueError(
+            "article editorial brief writer context exceeds writer context budget "
+            f"({len(rendered)}/{ARTICLE_WRITER_CONTEXT_MAX_CHARS} characters)"
+        )
+
+    brief_story_ids = {story_id for line in visible_lines for story_id in line.story_ids}
+    stats = ArticleWriterMaterializationStats(
+        coverage_story_count=len(brief_story_ids),
+        story_packet_count=0,
+        packets_with_citable_support=0,
+        citable_support_count=len(rendered_support_ids),
+        bundle_count=len(visible_lines),
+        narrative_line_count=len(visible_lines),
+        composition_group_count=0,
+        group_size_distribution=tuple(
+            sorted(Counter(len(line.story_ids) for line in visible_lines).items())
+        ),
+        rendered_packet_representation="validated brief",
+        materialization_mode="brief",
+    )
+    return rendered, stats

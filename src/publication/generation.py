@@ -26,6 +26,7 @@ from src.publication.models import Publication
 from src.publication.policies import (
     ARTICLE_PUBLICATION_TYPES,
     SUPPORTED_ARTICLE_COVERAGE_PLAN_VERSIONS,
+    SUPPORTED_ARTICLE_EDITORIAL_PLAN_VERSIONS,
     SUPPORTED_ARTICLE_RECOVERY_VERSIONS,
     SUPPORTED_ARTICLE_WRITER_VERSIONS,
     UnsupportedFrozenSemanticVersion,
@@ -172,6 +173,16 @@ class PublicationGenerationService:
                     ):
                         raise UnsupportedFrozenSemanticVersion(
                             f"Unsupported frozen article_coverage_plan_version: {plan_ver} (supported: {SUPPORTED_ARTICLE_COVERAGE_PLAN_VERSIONS})"
+                        )
+                    editorial_plan_ver = writer_policy.config.get("article_editorial_plan_version")
+                    if (
+                        editorial_plan_ver is not None
+                        and editorial_plan_ver not in SUPPORTED_ARTICLE_EDITORIAL_PLAN_VERSIONS
+                    ):
+                        raise UnsupportedFrozenSemanticVersion(
+                            "Unsupported frozen article_editorial_plan_version: "
+                            f"{editorial_plan_ver} "
+                            f"(supported: {SUPPORTED_ARTICLE_EDITORIAL_PLAN_VERSIONS})"
                         )
                     rec_ver = writer_policy.config.get("article_recovery_version")
                     if rec_ver is not None and rec_ver not in SUPPORTED_ARTICLE_RECOVERY_VERSIONS:

@@ -24,6 +24,7 @@ from src.publication.article_models import (
     _strip_internal_handles,
 )
 from src.publication.article_quality import (
+    ARTICLE_WHOLE_DRAFT_FINDING_CODES,
     ArticleReaderQualityFinding,
     ArticleReaderQualityReport,
     diagnose_article_quality,
@@ -137,7 +138,11 @@ class ArticleEditor:
                 for iss in current_val.issues
                 if iss.blocking and iss.unit_id not in ("DRAFT", "")
             ]
-            quality_issues = list(current_quality.repair_findings)
+            quality_issues = [
+                finding
+                for finding in current_quality.repair_findings
+                if finding.code not in ARTICLE_WHOLE_DRAFT_FINDING_CODES
+            ]
             if not blocking_issues and not quality_issues:
                 break
 
