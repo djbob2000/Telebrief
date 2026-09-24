@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from src.domain.operational_state import ResolvedObservation
@@ -233,6 +235,65 @@ class ArticleEditorialContext:
         return "\n\n".join(blocks).strip()
 
 
+def _support_semantic_key(support: ArticleSupport) -> tuple[str, ...]:
+    """Return the reader-facing identity used to consolidate repeated provenance."""
+    return (
+        support.text,
+        support.source_text,
+        support.support_kind,
+        support.publication_use,
+        support.evidence_kind,
+        support.story_id,
+        support.observed_at.isoformat() if support.observed_at else "",
+        support.effective_from.isoformat() if support.effective_from else "",
+        support.effective_until.isoformat() if support.effective_until else "",
+        support.temporal_role,
+        "\x1f".join(support.source_roles),
+    )
+
+
+def _append_unique_support(
+    support_list: list[ArticleSupport],
+    support_positions: dict[str, int],
+    support: ArticleSupport,
+) -> None:
+    """Merge repeated supports and deterministically distinguish real variants."""
+    base_id = support.support_id
+    semantic_key = _support_semantic_key(support)
+
+    def merge_duplicate(candidate_id: str) -> bool:
+        index = support_positions[candidate_id]
+        existing = support_list[index]
+        if _support_semantic_key(existing) != semantic_key:
+            return False
+        support_list[index] = replace(
+            existing,
+            source_refs=tuple(dict.fromkeys((*existing.source_refs, *support.source_refs))),
+            fragment_ids=tuple(dict.fromkeys((*existing.fragment_ids, *support.fragment_ids))),
+            source_item_ids=tuple(
+                dict.fromkeys((*existing.source_item_ids, *support.source_item_ids))
+            ),
+        )
+        return True
+
+    candidate_id = base_id
+    if candidate_id in support_positions:
+        if merge_duplicate(candidate_id):
+            return
+        variant_key = json.dumps(semantic_key, ensure_ascii=False, separators=(",", ":"))
+        variant_digest = hashlib.sha256(variant_key.encode("utf-8")).hexdigest()[:16]
+        candidate_id = f"{base_id}:variant:{variant_digest}"
+        collision_index = 2
+        while candidate_id in support_positions:
+            if merge_duplicate(candidate_id):
+                return
+            candidate_id = f"{base_id}:variant:{variant_digest}:{collision_index}"
+            collision_index += 1
+
+    support_positions[candidate_id] = len(support_list)
+    support_list.append(replace(support, support_id=candidate_id))
+
+
 def _edition_anchor_terms(edition_name: str, edition_slug: str = "") -> tuple[str, ...]:
     clean = edition_name.strip()
     if not clean:
@@ -331,6 +392,7 @@ def build_article_editorial_context(
                 headlines.append(cand)
 
     support_list: list[ArticleSupport] = []
+    support_positions: dict[str, int] = {}
     general_facts: list[PublicationEvidence] = []
     resident_obs: list[PublicationEvidence] = []
     recurring_topics: set[str] = set()
@@ -357,7 +419,9 @@ def build_article_editorial_context(
                 window=pub_win,
             )
 
-        support_list.append(
+        _append_unique_support(
+            support_list,
+            support_positions,
             ArticleSupport(
                 support_id=evi.evidence_id,
                 text=evi.text,
@@ -372,7 +436,7 @@ def build_article_editorial_context(
                 evidence_kind=evi.kind,
                 source_roles=(evi.source_role,) if evi.source_role else (),
                 story_id=f"story:{evi.story_id}" if evi.story_id is not None else "",
-            )
+            ),
         )
 
     story_id_by_source_ref: dict[str, str] = {}
@@ -445,7 +509,9 @@ def build_article_editorial_context(
             ]
             op_story_id = op_story_ids[0] if op_story_ids else ""
 
-            support_list.append(
+            _append_unique_support(
+                support_list,
+                support_positions,
                 ArticleSupport(
                     support_id=sup_id,
                     text=fact_text,
@@ -462,7 +528,7 @@ def build_article_editorial_context(
                     evidence_kind="operational_observation",
                     source_roles=source_roles,
                     story_id=op_story_id,
-                )
+                ),
             )
 
     for card in cards:
