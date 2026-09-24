@@ -680,7 +680,13 @@ def _sanitize_phantom_heading_topics(
         iss.unit_id
         for iss in heading_violations
         if iss.code
-        in ("PHANTOM_HEADING_TOPIC", "INVALID_SUPPORT_POLICY", "QUESTION_CONTEXT_OVERCLAIM")
+        in (
+            "PHANTOM_HEADING_TOPIC",
+            "INVALID_SUPPORT_POLICY",
+            "QUESTION_CONTEXT_OVERCLAIM",
+            "UNKNOWN_SUPPORT_ID",
+            "UNKNOWN_CLAIM_SUPPORT_ID",
+        )
     }
     if not bad_h_ids:
         return draft
@@ -692,6 +698,7 @@ def _sanitize_phantom_heading_topics(
         if h_id in bad_h_ids:
             cur_heading = sec.heading
             cur_sups: tuple[str, ...] = tuple(sec.heading_support_ids)
+            section_changed = False
 
             # 1. If heading has phantom topic after colon, sanitize prefix
             has_phantom = any(
@@ -703,18 +710,31 @@ def _sanitize_phantom_heading_topics(
                 if prefix and len(prefix) >= 5:
                     cur_heading = prefix
                     changed = True
+                    section_changed = True
 
-            # 2. If heading has INVALID_SUPPORT_POLICY or QUESTION_CONTEXT_OVERCLAIM,
-            # borrow valid PUBLISH / CURRENT_WINDOW supports from paragraphs in this section
+            # 2. For unsupported or unanchored headings, borrow known PUBLISH
+            # supports from paragraphs in the same section. The final Evidence
+            # Boundary check still validates the heading text against them.
             needs_sup_repair = any(
                 iss.unit_id == h_id
-                and iss.code in ("INVALID_SUPPORT_POLICY", "QUESTION_CONTEXT_OVERCLAIM")
+                and iss.code
+                in (
+                    "INVALID_SUPPORT_POLICY",
+                    "QUESTION_CONTEXT_OVERCLAIM",
+                    "UNKNOWN_SUPPORT_ID",
+                    "UNKNOWN_CLAIM_SUPPORT_ID",
+                )
                 for iss in heading_violations
             )
+            supports_repaired = False
             if needs_sup_repair and context is not None:
                 valid_para_sups = []
                 for p in sec.paragraphs:
-                    for sid in p.cited_support_ids:
+                    paragraph_support_ids = (
+                        *p.cited_support_ids,
+                        *(sid for claim in p.claims for sid in claim.cited_support_ids),
+                    )
+                    for sid in paragraph_support_ids:
                         if sid in context.support_by_id:
                             sup = context.support_by_id[sid]
                             if sup.publication_use == "PUBLISH":
@@ -722,15 +742,19 @@ def _sanitize_phantom_heading_topics(
                 if valid_para_sups:
                     cur_sups = tuple(dict.fromkeys(valid_para_sups[:3]))
                     changed = True
+                    section_changed = True
+                    supports_repaired = True
                     logger.info(
                         "Re-anchored heading %s supports from section paragraphs: %s",
                         h_id,
                         cur_sups,
                     )
 
-            if changed:
-                new_claims = tuple(
-                    c for c in sec.heading_claims if c.text and c.text in cur_heading
+            if section_changed:
+                new_claims = (
+                    (ArticleClaimAtom(text=cur_heading, cited_support_ids=cur_sups),)
+                    if supports_repaired
+                    else tuple(c for c in sec.heading_claims if c.text and c.text in cur_heading)
                 )
                 new_sections.append(
                     ArticleSection(
@@ -1304,7 +1328,13 @@ class ArticleFinalizer:
                 if iss.blocking
                 and iss.unit_id.startswith("H")
                 and iss.code
-                in ("PHANTOM_HEADING_TOPIC", "INVALID_SUPPORT_POLICY", "QUESTION_CONTEXT_OVERCLAIM")
+                in (
+                    "PHANTOM_HEADING_TOPIC",
+                    "INVALID_SUPPORT_POLICY",
+                    "QUESTION_CONTEXT_OVERCLAIM",
+                    "UNKNOWN_SUPPORT_ID",
+                    "UNKNOWN_CLAIM_SUPPORT_ID",
+                )
             ]
             if heading_violations:
                 repaired_draft = _sanitize_phantom_heading_topics(

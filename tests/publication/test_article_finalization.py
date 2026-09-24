@@ -15,7 +15,11 @@ from src.publication.article_coverage import (
     ArticleStoryCoverage,
     ArticleThematicSection,
 )
-from src.publication.article_finalization import ArticleFinalizer, _materialize_fallback_projection
+from src.publication.article_finalization import (
+    ArticleFinalizer,
+    _materialize_fallback_projection,
+    _sanitize_phantom_heading_topics,
+)
 from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import (
     ArticleClaimAtom,
@@ -24,10 +28,73 @@ from src.publication.article_models import (
     StructuredArticleDraft,
 )
 from src.publication.article_quality import ArticleReaderQualityFinding, ArticleReaderQualityReport
+from src.publication.article_validator import ArticleValidationIssue
 from src.publication.errors import ArticlePublicationRejected
 from tests.publication.test_article_recovery import RecordingAttemptObserver
 
 _NOW = dt.datetime(2026, 8, 30, 12, 0, tzinfo=dt.timezone.utc)
+
+
+@pytest.mark.unit
+def test_finalizer_reanchors_unknown_heading_supports_to_same_section_evidence() -> None:
+    support_id = "story:section:evidence:0:frag:101"
+    support = ArticleSupport(
+        support_id=support_id,
+        text="Жители сообщают об отсутствии света на улице Садовой.",
+        source_text="Жители сообщают об отсутствии света на улице Садовой.",
+        support_kind="evidence",
+        publication_use="PUBLISH",
+        source_refs=("ref:1",),
+        fragment_ids=(101,),
+        source_item_ids=(1,),
+        observed_at=_NOW,
+        temporal_role="CURRENT_WINDOW",
+        evidence_kind="community_report",
+        story_id="story:section",
+    )
+    context = ArticleEditorialContext(
+        headline_candidates=(),
+        support_index=(support,),
+        support_by_id={support_id: support},
+        recurring_topics=(),
+        edition_name="Бердянск",
+    )
+    paragraph = ArticleParagraph(
+        text="По сообщениям жителей, на улице Садовой нет света.",
+        cited_support_ids=(support_id,),
+        claims=(
+            ArticleClaimAtom("По сообщениям жителей, на улице Садовой нет света.", (support_id,)),
+        ),
+    )
+    unknown_id = "invented:support:id"
+    draft = StructuredArticleDraft(
+        title="Отключения электричества",
+        title_support_ids=(support_id,),
+        lead="",
+        lead_support_ids=(),
+        sections=(
+            ArticleSection(heading="Свет", paragraphs=(paragraph,)),
+            ArticleSection(
+                heading="Ситуация на улицах",
+                heading_support_ids=(unknown_id,),
+                paragraphs=(paragraph,),
+                heading_claims=(ArticleClaimAtom("Ситуация на улицах", (unknown_id,)),),
+            ),
+        ),
+        title_claims=(ArticleClaimAtom("Отключения электричества", (support_id,)),),
+    )
+    issue = ArticleValidationIssue(
+        code="UNKNOWN_SUPPORT_ID",
+        unit_id="H002",
+        message=f"Unit H002 cites unknown support ID '{unknown_id}'",
+        support_ids=(unknown_id,),
+    )
+
+    repaired = _sanitize_phantom_heading_topics(draft, (issue,), context)
+
+    heading = repaired.sections[1]
+    assert heading.heading_support_ids == (support_id,)
+    assert heading.heading_claims == (ArticleClaimAtom("Ситуация на улицах", (support_id,)),)
 
 
 @pytest.fixture
