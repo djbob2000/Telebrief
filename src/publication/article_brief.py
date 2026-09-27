@@ -42,6 +42,9 @@ class ArticleBriefLine:
     relation: ArticleBriefRelation
     salient_support_ids: tuple[str, ...]
     caveat_support_ids: tuple[str, ...]
+    geographic_area_id: str | None = None
+    geographic_area_name: str | None = None
+    geographic_place_names: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

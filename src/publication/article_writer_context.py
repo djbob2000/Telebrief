@@ -919,6 +919,16 @@ def render_article_editorial_brief_context(
                 f"\nLINE {line.line_id} depth={line.depth} relation={line.relation}",
                 f"INTENT: {line.editorial_intent.strip()}",
                 f"STORIES: {', '.join(line.story_ids)}",
+                *(
+                    (f"GEOGRAPHIC FOCUS: {line.geographic_area_name}",)
+                    if line.geographic_area_name
+                    else ()
+                ),
+                *(
+                    (f"NAMED PLACES IN THIS AREA: {', '.join(line.geographic_place_names)}",)
+                    if line.geographic_place_names
+                    else ()
+                ),
                 "SUPPORTS: " + ", ".join(support_ids),
                 "SALIENT SUPPORTS: " + (", ".join(salient_ids) or "none"),
                 "CAVEAT SUPPORTS: " + (", ".join(caveat_ids) or "none"),
