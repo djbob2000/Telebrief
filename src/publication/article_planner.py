@@ -168,7 +168,8 @@ class ArticleEditorialPlanner:
             '"line_id":"line-1 or null","reason_code":"allowed omission code or null"}]}\n'
             "For OMIT, set line_id null and reason_code to directory_only or no_citable_material; "
             "only use these when that Story has no citable projected support. For other depths, reason_code is null "
-            "and line_id names the line containing that Story. Each line has one depth."
+            "and line_id names the line containing that Story. Each line has one authoritative depth; "
+            "every non-OMIT disposition in that line must repeat exactly that same depth."
         )
         user_prompt = "FROZEN ARTICLE DOSSIER (JSON):\n" + dossier
         attempt_id = 0

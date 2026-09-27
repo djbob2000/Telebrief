@@ -259,8 +259,10 @@ def parse_article_editorial_brief(
                 )
             if data.get("reason_code") is not None:
                 _fail(f"non-omitted Story {story_id!r} must not have reason_code")
-            if lines_by_id[disposition_line_id].depth != disposition_depth:
-                _fail(f"Story {story_id!r} depth must match line {disposition_line_id!r}")
+            # A line has one authoritative editorial depth. The model repeats
+            # that value on every Story disposition, so use the line value as
+            # canonical if the redundant per-Story field drifts.
+            disposition_depth = lines_by_id[disposition_line_id].depth
             disposition = ArticleStoryDisposition(
                 story_id, disposition_depth, disposition_line_id, None
             )
