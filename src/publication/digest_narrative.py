@@ -3394,7 +3394,7 @@ class DigestNarrativeWriter:
             )
 
             system_prompt = (
-                "You are a professional regional newsroom editor and journalist.\n"
+                "You are a professional regional newsroom editor and journalist.\n"  # noqa: S608
                 "Your task is to write a cohesive, scan-first, and strictly factual daily news digest in Russian.\n\n"
                 "EDITORIAL AND LANGUAGE RULES:\n"
                 "- Write in professional Russian regional news style matching top Telegram channels.\n"
