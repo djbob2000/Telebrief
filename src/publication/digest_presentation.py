@@ -6,6 +6,8 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
+from pathlib import Path
 from typing import Any, Literal
 
 from src.publication.city_situation import (
@@ -15,6 +17,12 @@ from src.publication.city_situation import (
 from src.publication.errors import DigestCoverageInvariantError
 
 DigestPresentationUnitKind = Literal["SYNTHESIS", "NORMAL", "BRIEF_ROLLUP"]
+
+_DIGEST_CITYWIDE_SCOPE_RE = re.compile(
+    r"(?:весь город|всего города|по всему городу|во вс[её]м городе|"
+    r"город целиком|городские районы|по городу в целом)",
+    re.IGNORECASE,
+)
 
 
 class DigestPresentationMode(str, Enum):
@@ -41,6 +49,40 @@ class DigestPresentationUnit:
 
 
 @dataclass(frozen=True)
+class TopicGeographicFact:
+    """A source-backed fact tied to one canonical area inside a topic bundle."""
+
+    story_id: str
+    text: str
+    support_ids: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "story_id": self.story_id,
+            "text": self.text,
+            "support_ids": list(self.support_ids),
+        }
+
+
+@dataclass(frozen=True)
+class TopicGeographicGroup:
+    """Stories resolved to the same edition-profile area for digest composition."""
+
+    area_id: str
+    area_name: str
+    story_ids: tuple[str, ...]
+    facts: tuple[TopicGeographicFact, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "area_id": self.area_id,
+            "area_name": self.area_name,
+            "story_ids": list(self.story_ids),
+            "facts": [fact.to_dict() for fact in self.facts],
+        }
+
+
+@dataclass(frozen=True)
 class TopicBundle:
     """Thematic aggregate of related stories within a rubric."""
 
@@ -53,6 +95,9 @@ class TopicBundle:
     support_ids: tuple[str, ...]
     fact_ledger: tuple[str, ...]
     locations: tuple[str, ...] = ()
+    geographic_groups: tuple[TopicGeographicGroup, ...] = ()
+    unresolved_geography_story_ids: tuple[str, ...] = ()
+    unresolved_geography_facts: tuple[TopicGeographicFact, ...] = ()
     required_facts: tuple[RequiredDigestFact, ...] = ()
     status_summary: str = ""
     states: tuple[str, ...] = ()
@@ -69,6 +114,11 @@ class TopicBundle:
             "support_ids": list(self.support_ids),
             "fact_ledger": list(self.fact_ledger),
             "locations": list(self.locations),
+            "geographic_groups": [group.to_dict() for group in self.geographic_groups],
+            "unresolved_geography_story_ids": list(self.unresolved_geography_story_ids),
+            "unresolved_geography_facts": [
+                fact.to_dict() for fact in self.unresolved_geography_facts
+            ],
             "required_facts": [rf.to_dict() for rf in self.required_facts],
             "status_summary": self.status_summary,
             "states": list(self.states),
@@ -1039,6 +1089,230 @@ def _card_areas(card: Any) -> set[str]:
     return areas
 
 
+@lru_cache(maxsize=16)
+def _load_digest_geography_resolver(edition_slug: str) -> Any | None:
+    """Load only the checked-in geography profile for the current edition."""
+    slug = (edition_slug or "").strip()
+    if not slug or not re.fullmatch(r"[A-Za-z0-9_-]+", slug):
+        return None
+
+    path = Path("data/city_profiles") / f"{slug}.yaml"
+    if not path.is_file():
+        return None
+
+    from src.city_context import CityContextResolver, CityProfileError
+
+    try:
+        resolver = CityContextResolver.from_yaml(path)
+    except (CityProfileError, FileNotFoundError, OSError):
+        return None
+
+    if resolver.profile_id.casefold() != slug.casefold():
+        return None
+    return resolver
+
+
+def _resolved_geographic_scopes(text: str, resolver: Any) -> dict[str, str]:
+    """Resolve source wording to stable profile area IDs, preferring local labels."""
+    if not text.strip():
+        return {}
+
+    annotation = resolver.resolve(text)
+    area_scopes: dict[str, str] = {}
+    place_entities = []
+    for entity in annotation.entities:
+        if entity.confidence != "high":
+            continue
+        if entity.kind == "area":
+            colloquial_ids = tuple(getattr(entity, "colloquial_area_ids", ()) or ())
+            if colloquial_ids:
+                for area_id in colloquial_ids:
+                    area_scopes[f"colloquial:{area_id}"] = (
+                        entity.matched_text or entity.canonical_name or area_id
+                    )
+                continue
+            for area in getattr(entity, "municipal_areas", ()) or ():
+                if area.confidence == "high":
+                    area_scopes[f"municipal:{area.area_id}"] = entity.matched_text or area.area_name
+            if not getattr(entity, "municipal_areas", ()):
+                area_scopes[f"area:{entity.entity_id}"] = (
+                    entity.matched_text or entity.canonical_name or entity.entity_id
+                )
+        elif entity.kind == "place":
+            place_entities.append(entity)
+
+    if area_scopes:
+        return area_scopes
+
+    place_scopes: dict[str, str] = {}
+    for entity in place_entities:
+        colloquial_ids = tuple(getattr(entity, "colloquial_area_ids", ()) or ())
+        if colloquial_ids:
+            for area_id in colloquial_ids:
+                place_scopes[f"colloquial:{area_id}"] = (
+                    entity.matched_text or entity.canonical_name or area_id
+                )
+            continue
+        municipal_areas = tuple(
+            area
+            for area in (getattr(entity, "municipal_areas", ()) or ())
+            if area.confidence == "high"
+        )
+        if municipal_areas:
+            for area in municipal_areas:
+                place_scopes[f"municipal:{area.area_id}"] = entity.matched_text or area.area_name
+        elif entity.confidence == "high":
+            place_scopes[f"place:{entity.entity_id}"] = (
+                entity.matched_text or entity.canonical_name or entity.entity_id
+            )
+    return place_scopes
+
+
+def _card_geographic_scopes(card: Any, resolver: Any | None) -> dict[str, str]:
+    """Resolve the card's own evidence locations without inferring nearby districts."""
+    texts: list[str] = []
+    raw_locations: list[str] = []
+    resolved: dict[str, str] = {}
+
+    for elem_list in (
+        getattr(card, "hard_facts", []) or [],
+        getattr(card, "community_observations", []) or [],
+        getattr(card, "useful_details", []) or [],
+    ):
+        for elem in elem_list:
+            if not (getattr(elem, "source_refs", ()) or ()):
+                continue
+            elem_text = str(getattr(elem, "text", "") or "").strip()
+            elem_areas = [
+                str(area).strip()
+                for area in (getattr(elem, "areas", ()) or ())
+                if str(area).strip()
+            ]
+            if elem_text:
+                texts.append(elem_text)
+            raw_locations.extend(elem_areas)
+            if resolver is not None:
+                for location_text in (*elem_areas, elem_text):
+                    resolved.update(_resolved_geographic_scopes(location_text, resolver))
+
+    has_citywide_scope = any(_DIGEST_CITYWIDE_SCOPE_RE.search(text) for text in texts)
+    if has_citywide_scope:
+        resolved["citywide:explicit"] = "весь город"
+    if resolved:
+        return resolved
+
+    # Keep the fallback conservative: exact profile-known places or raw source
+    # locators remain their own scopes instead of being promoted to a district.
+    raw_candidates = raw_locations + list(_extract_bundle_locations(texts))
+    fallback: dict[str, str] = {}
+    for location in raw_candidates:
+        normalized = " ".join(location.casefold().split())
+        if normalized:
+            fallback[f"raw:{normalized}"] = location
+    return fallback
+
+
+def _build_topic_geographic_groups(
+    cards: Sequence[Any], resolver: Any | None
+) -> tuple[
+    tuple[TopicGeographicGroup, ...],
+    tuple[str, ...],
+    tuple[TopicGeographicFact, ...],
+]:
+    groups: dict[str, tuple[str, list[str], list[TopicGeographicFact]]] = {}
+    unresolved_story_ids: list[str] = []
+    unresolved_facts: list[TopicGeographicFact] = []
+
+    def add_resolved_fact(
+        area_id: str,
+        area_name: str,
+        card_id: str,
+        text: str,
+        support_ids: Sequence[str],
+    ) -> None:
+        if area_id not in groups:
+            groups[area_id] = (area_name, [], [])
+        story_ids = groups[area_id][1]
+        if card_id not in story_ids:
+            story_ids.append(card_id)
+        fact = TopicGeographicFact(
+            story_id=card_id,
+            text=text,
+            support_ids=tuple(dict.fromkeys(str(ref) for ref in support_ids if str(ref).strip())),
+        )
+        if fact not in groups[area_id][2]:
+            groups[area_id][2].append(fact)
+
+    for card in cards:
+        card_id = str(card.id)
+        found_elements = False
+        for elem_list in (
+            getattr(card, "hard_facts", []) or [],
+            getattr(card, "community_observations", []) or [],
+            getattr(card, "useful_details", []) or [],
+        ):
+            for elem in elem_list:
+                refs = tuple(
+                    dict.fromkeys(
+                        str(ref).strip()
+                        for ref in (getattr(elem, "source_refs", ()) or ())
+                        if str(ref).strip()
+                    )
+                )
+                if not refs:
+                    continue
+                found_elements = True
+                text = str(getattr(elem, "text", "") or "").strip()
+                areas = tuple(
+                    str(area).strip()
+                    for area in (getattr(elem, "areas", ()) or ())
+                    if str(area).strip()
+                )
+                scopes: dict[str, str] = {}
+                if resolver is not None:
+                    for locator in (*areas, text):
+                        scopes.update(_resolved_geographic_scopes(locator, resolver))
+                if _DIGEST_CITYWIDE_SCOPE_RE.search(text):
+                    scopes["citywide:explicit"] = "весь город"
+                if not scopes:
+                    for locator in (*areas, *_extract_bundle_locations((text,))):
+                        normalized = " ".join(locator.casefold().split())
+                        if normalized:
+                            scopes[f"raw:{normalized}"] = locator
+
+                fact = TopicGeographicFact(
+                    story_id=card_id,
+                    text=text,
+                    support_ids=refs,
+                )
+                if len(scopes) == 1:
+                    area_id, area_name = next(iter(scopes.items()))
+                    add_resolved_fact(area_id, area_name, card_id, text, refs)
+                else:
+                    unresolved_facts.append(fact)
+                    if card_id not in unresolved_story_ids:
+                        unresolved_story_ids.append(card_id)
+
+        if not found_elements:
+            scopes = _card_geographic_scopes(card, resolver)
+            if len(scopes) == 1:
+                area_id, area_name = next(iter(scopes.items()))
+                add_resolved_fact(area_id, area_name, card_id, "", ())
+            elif card_id not in unresolved_story_ids:
+                unresolved_story_ids.append(card_id)
+
+    geographic_groups = tuple(
+        TopicGeographicGroup(
+            area_id=area_id,
+            area_name=area_name,
+            story_ids=tuple(story_ids),
+            facts=tuple(facts),
+        )
+        for area_id, (area_name, story_ids, facts) in groups.items()
+    )
+    return geographic_groups, tuple(unresolved_story_ids), tuple(unresolved_facts)
+
+
 def _card_source_lineage(card: Any) -> set[str]:
     refs: set[str] = set()
     all_refs_fn = getattr(card, "all_source_refs", None)
@@ -1131,6 +1405,7 @@ def _are_cards_merge_compatible(
     card_a: Any,
     card_b: Any,
     batch_stop_tags: set[str] | None = None,
+    geographic_scopes_by_card: Mapping[str, set[str]] | None = None,
 ) -> bool:
     fams_a = _card_service_families(card_a)
     fams_b = _card_service_families(card_b)
@@ -1147,6 +1422,12 @@ def _are_cards_merge_compatible(
     tags_a = _card_specific_tags(card_a, batch_stop_tags)
     tags_b = _card_specific_tags(card_b, batch_stop_tags)
     shared_tags = bool(tags_a & tags_b)
+
+    geographic_scopes_by_card = geographic_scopes_by_card or {}
+    geo_a = geographic_scopes_by_card.get(card_a.id, set())
+    geo_b = geographic_scopes_by_card.get(card_b.id, set())
+    if (geo_a or geo_b) and (len(geo_a) != 1 or geo_a != geo_b):
+        return False
 
     if (kind_a == "workaround" or kind_b == "workaround") and kind_a != kind_b:
         return False
@@ -1179,11 +1460,15 @@ def _are_cards_merge_compatible(
     )
 
 
-def _compute_merge_groups(cards: Sequence[Any]) -> dict[str, str]:
+def _compute_merge_groups(cards: Sequence[Any], *, edition_slug: str = "") -> dict[str, str]:
     if not cards:
         return {}
 
     batch_stop_tags = _compute_batch_frequent_tags(cards)
+    resolver = _load_digest_geography_resolver(edition_slug)
+    geographic_scopes_by_card = {
+        card.id: set(_card_geographic_scopes(card, resolver)) for card in cards
+    }
 
     by_rubric: dict[str, list[Any]] = {}
     for c in cards:
@@ -1197,7 +1482,10 @@ def _compute_merge_groups(cards: Sequence[Any]) -> dict[str, str]:
             placed = False
             for g in groups:
                 if len(g) < 6 and all(
-                    _are_cards_merge_compatible(card, member, batch_stop_tags) for member in g
+                    _are_cards_merge_compatible(
+                        card, member, batch_stop_tags, geographic_scopes_by_card
+                    )
+                    for member in g
                 ):
                     g.append(card)
                     placed = True
@@ -2203,10 +2491,13 @@ def build_thematic_topic_bundles(
     evidence: Mapping[str, Any] | None = None,
     required_facts: Sequence[RequiredDigestFact] = (),
     rubric_id: str | None = None,
+    edition_slug: str = "",
 ) -> tuple[TopicBundle, ...]:
     """Group story cards within rubrics into cohesive, scan-first Thematic Topic Bundles."""
     if not cards:
         return ()
+
+    geography_resolver = _load_digest_geography_resolver(edition_slug)
 
     if rubric_id is not None:
         by_rubric: dict[str, list[Any]] = {rubric_id: list(cards)}
@@ -2255,6 +2546,9 @@ def build_thematic_topic_bundles(
             }
         )
         entities_by_group: dict[str, set[str]] = {}
+        geographic_scopes_by_card = {
+            card.id: _card_geographic_scopes(card, geography_resolver) for card in r_cards
+        }
         for c in r_cards:
             t_key, _, _ = _canonical_topic_family(c, rid)
             # Rubric affinity: align cross-rubric card contamination with the rubric's purpose
@@ -2299,6 +2593,20 @@ def build_thematic_topic_bundles(
                 ).casefold()
                 fingerprint = re.sub(r"\W+", "_", raw_fingerprint).strip("_")[:96]
                 group_key = f"{t_key}:fact:{fingerprint}" if fingerprint else f"{t_key}:{c.id}"
+
+            # Geography is a hard composition boundary. A writer bundle must
+            # never combine otherwise-related service reports from distinct
+            # canonical areas under one district label. Unknown and ambiguous
+            # locations also stay apart from confidently resolved areas.
+            geographic_scopes = geographic_scopes_by_card.get(c.id, {})
+            if len(geographic_scopes) == 1:
+                geography_key = next(iter(geographic_scopes))
+            elif geographic_scopes:
+                geography_key = f"ambiguous:{c.id}"
+            else:
+                geography_key = "unlocated"
+            group_key = f"{group_key}:geo:{geography_key}"
+
             groups_by_key.setdefault(group_key, []).append(c)
 
         rubric_bundles: list[TopicBundle] = []
@@ -2449,6 +2757,12 @@ def build_thematic_topic_bundles(
             if not dedup_facts and not bundle_req_facts:
                 continue
 
+            (
+                geographic_groups,
+                unresolved_geography_story_ids,
+                unresolved_geography_facts,
+            ) = _build_topic_geographic_groups(g_cards, geography_resolver)
+
             rubric_bundles.append(
                 TopicBundle(
                     bundle_id=f"bundle:{rid}:{group_key}",
@@ -2460,6 +2774,9 @@ def build_thematic_topic_bundles(
                     support_ids=tuple(all_sups),
                     fact_ledger=tuple(dedup_facts[:16]),
                     locations=locations,
+                    geographic_groups=geographic_groups,
+                    unresolved_geography_story_ids=unresolved_geography_story_ids,
+                    unresolved_geography_facts=unresolved_geography_facts,
                     required_facts=bundle_req_facts,
                     status_summary="",
                     states=tuple(bundle_states),
@@ -2479,12 +2796,15 @@ def build_digest_presentation_units(
     max_synthesis_size: int = 100,
     max_normal_size: int = 8,
     max_brief_size: int = 6,
+    edition_slug: str = "",
 ) -> tuple[DigestPresentationUnit, ...]:
     """Partition all detail story cards into deterministic presentation compression units."""
     if not cards:
         return ()
 
-    fallback_merge_groups = _compute_merge_groups(cards)
+    resolver = _load_digest_geography_resolver(edition_slug)
+    geographic_scopes_by_card = {c.id: set(_card_geographic_scopes(c, resolver)) for c in cards}
+    fallback_merge_groups = _compute_merge_groups(cards, edition_slug=edition_slug)
 
     by_rubric: dict[str, list[Any]] = {}
     for c in cards:
@@ -2497,13 +2817,20 @@ def build_digest_presentation_units(
     for rid, r_cards in by_rubric.items():
         groups_by_key: dict[str, list[Any]] = {}
         for c in r_cards:
+            geo_scopes = geographic_scopes_by_card.get(c.id, set())
+            if len(geo_scopes) == 1:
+                geo_key = f"area:{next(iter(geo_scopes))}"
+            elif geo_scopes:
+                geo_key = f"ambiguous:{c.id}"
+            else:
+                geo_key = "unlocated"
             fam = _canonical_service_family(c)
             if fam:
-                gid = f"service:{fam}"
+                gid = f"service:{fam}:{geo_key}"
             else:
                 t_key, _, _ = _canonical_topic_family(c, rid)
                 if t_key and not t_key.endswith("_general"):
-                    gid = f"topic:{t_key}"
+                    gid = f"topic:{t_key}:{geo_key}"
                 else:
                     gid = fallback_merge_groups.get(c.id, c.id)
             groups_by_key.setdefault(gid, []).append(c)

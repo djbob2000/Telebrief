@@ -705,6 +705,7 @@ def plan_digest_narrative_blocks(
     max_cards_per_block: int = 6,
     presentation_plan: Any = None,
     use_topic_bundles: bool | None = None,
+    edition_slug: str = "",
 ) -> DigestNarrativePlan:
     """Build immutable narrative blocks from classified story cards strictly preserving order."""
     if not cards:
@@ -839,6 +840,7 @@ def plan_digest_narrative_blocks(
                 evidence=evidence,
                 required_facts=tuple(tentative_req_facts),
                 rubric_id=rid,
+                edition_slug=edition_slug,
             )
             if thematic_bundles:
                 for rf in tentative_req_facts:
@@ -951,6 +953,7 @@ def plan_digest_narrative_blocks(
             max_synthesis_size=24,
             max_normal_size=8,
             max_brief_size=6,
+            edition_slug=edition_slug,
         )
         card_by_id = {c.id: c for c in rubric_cards}
 
@@ -2393,6 +2396,7 @@ DIGEST_PROMPT_TEMPLATE = """Вы — старший редактор регио�
    - Связанные сообщения объединяйте в один плотный пункт; одна карточка не обязана становиться отдельным пунктом.
    - Не превращайте дайджест в каталог организаций, магазинов, ветеринаров, маршрутов или контактов. Несколько точек одной услуги или темы объединяйте, оставляя полезную для жителя конкретику.
    - Сохраняйте важные улицы, районы, даты, время и статусы, когда они объясняют событие или практическое последствие, но не переносите справочный и рекламный payload целиком.
+   - География фактов: каждое состояние привязывайте к своему указанному району или улице. Сравнивайте доступность услуг под общим названием района только если источники относятся к одной и той же территории. Если в сообщениях названы разные районы, передавайте их отдельными короткими предложениями без общего географического ярлыка; высота местности сама по себе не означает принадлежность к одному району.
 3. КАТЕГОРИЧЕСКИЙ ЗАПРЕТ НА СПЛОШНОЙ ТЕКСТ / «РАССКАЗ»:
    - ЗАПРЕЩЕНО сливать разные события (например, свет, воду, запах газа, безопасность, больницы) в один общий абзац или связный рассказ.
    - Каждая отдельная тема/событие — это ОТДЕЛЬНЫЙ ПУНКТ списка со своим эмодзи.
@@ -2442,6 +2446,7 @@ DIGEST_CONDENSE_PROMPT_TEMPLATE = """Вы — выпускающий редак�
 3. Уплотняйте синтаксис внутри пунктов: убирайте многословие, вводные конструкции («следует отметить, что», «как стало известно из сообщений»), пространные рассуждения и повторы.
 4. Сохраняйте ВСЕ микродетали: названия улиц, номера домов, время, цены, имена, учреждения, номера статей КоАП, марки генераторов.
 5. Объединяйте сложноподчиненные предложения в краткие, энергичные фразы.
+   - Сообщения из разных районов оставляйте в отдельных коротких фразах. Не называйте их одним районом и не превращайте физическую высоту местности в общий географический ярлык.
 6. Сохраните формат Telegram: чистые названия рубрик (без эмодзи в заголовке, без ** и ##), разделение ТОЛЬКО пустой строкой. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНЫ разделители (---, ***) и лишняя разметка (**, ##).
 7. Верните ТОЛЬКО готовый отредактированный текст без вступительных или заключительных реплик.
 8. СТРОГО НЕЙТРАЛЬНАЯ ТЕРМИНОЛОГИЯ: используйте только нейтральные формулировки органов власти («городская администрация», «местные власти»), категорически исключая конфликтные или враждебные ярлыки («оккупанты» и т.п.).
@@ -3167,6 +3172,7 @@ class DigestNarrativeWriter:
                         {
                             "fact_id": rf.fact_id,
                             "text": rf.text,
+                            "story_ids": list(rf.story_ids),
                         }
                         for rf in tb.required_facts
                     ]
@@ -3176,6 +3182,15 @@ class DigestNarrativeWriter:
                             "topic": tb.topic_label,
                             "emoji": tb.emoji,
                             "locations": list(tb.locations),
+                            "geographic_groups": [
+                                group.to_dict() for group in tb.geographic_groups
+                            ],
+                            "unresolved_geography_story_ids": list(
+                                tb.unresolved_geography_story_ids
+                            ),
+                            "unresolved_geography_facts": [
+                                fact.to_dict() for fact in tb.unresolved_geography_facts
+                            ],
                             "states": list(getattr(tb, "states", ())),
                             "epistemic_status": getattr(
                                 tb, "epistemic_status", "сообщения жителей"
@@ -3295,6 +3310,8 @@ class DigestNarrativeWriter:
                 "- Single Telegram post budget: The total rendered digest must fit into a single Telegram message (target 2500–3700 characters, technical maximum 4000 characters). Keep paragraphs dense, informative, and free of filler words. Each item must strictly consist of 2-3 concise sentences (target 180–280 characters, maximum 400 characters). Summarize locations compactly in parentheses, e.g. (на ул. Ленина, Шевченко, в Колонии).\n"
                 "- Never output bullet points ('•') or dashes ('—') at the beginning of items.\n"
                 "- For each topic bundle in 'topic_bundles', write ONE cohesive editorial item in 'items' (or up to TWO if the bundle covers distinct locations or situations that are clearer as separate items).\n"
+                "- Geographic grouping is evidence-bound: each 'geographic_groups' entry contains source-backed 'facts' for its 'area_id'. A story_id may appear in more than one group; that means distinct facts from the same Story belong to different places. Use each group's 'area_name' only for that group's listed facts, not for every fact or every story in the bundle. Never use one area's name as an umbrella for facts in another group or in 'unresolved_geography_facts'. Topographic elevation does not make separately named areas the same neighborhood.\n"
+                "- Use a localized contrast only for facts in the same 'area_id'. State facts from different geographic groups in separate short sentences; keep a separate sentence for each named area's group, even when the reports belong to one Story. Split into separate reader items when that reads more clearly. Never compress distant or differently named areas into one sentence with a shared district label. Preserve explicit street or place wording when its broader area is unresolved.\n"
                 "- Set 'bundle_id' to the bundle's input 'bundle_id'.\n"
                 "- Set 'emoji' using the bundle's emoji.\n"
                 "- Headline and storytelling: headline must be a concise, informative theme header answering what occurred (e.g. 'Запах газа на улицах города', 'Ремонт магистральных интернет-сетей', 'Обновление квитанций за коммунальные услуги'). Never write generic headlines like 'текущая обстановка' or 'обзор сообщений'. Never place attribution phrases in the headline ('сообщается', 'по информации', 'по словам').\n"
@@ -3302,7 +3319,7 @@ class DigestNarrativeWriter:
                 "  1. What occurred + concrete micro-locations/districts/streets (in parentheses if listing multiple).\n"
                 "  2. Current state, contrast, or cause (from 'states' or 'fact_ledger').\n"
                 "  3. Practical consequences for residents only when explicitly present in the source facts; never give advice or recommendations.\n"
-                "- Localized contrast synthesis: When source reports or states from different streets/blocks within an area show varying service availability (e.g. water restored on Shevchenko, but absent on Dimitrova), articulate the situation as a localized contrast ('в нагорной части ситуация неоднородная: на одних улицах... тогда как на других...'). NEVER make mutually contradictory assertions in consecutive sentences (e.g. never claim that water is absent and available 24/7 in the same area simultaneously).\n"
+                "- Localized contrast synthesis is valid only when the reports name the same place or canonical area. Keep each report attached to its own street or area. Separate different named neighborhoods into short factual sentences; never use one area's name as an umbrella for other locations, and never infer common area from elevation or terrain. Do not make mutually contradictory assertions about the same place and time.\n"
                 "- If source facts or notes are in Ukrainian, accurately translate and paraphrase them into Russian.\n"
                 "- Cover every entry in 'required_facts' in the item's body and list every covered fact_id in 'covered_fact_ids'. Do not omit a required fact; synthesize related facts and localized contrasts compactly instead of repeating them.\n"
                 "- In thematic items, never repeat the headline in the first sentence of the body text.\n"
@@ -3387,6 +3404,7 @@ class DigestNarrativeWriter:
                 "  1. What occurred + concrete micro-locations/districts/streets (in parentheses if listing multiple).\n"
                 "  2. Cause or official/specialist explanation (if supported in evidence, e.g. technical works, scheduled maintenance, odorant markers).\n"
                 "  3. Practical consequences for residents only when explicitly present in the evidence; never give advice or recommendations.\n"
+                "- Geographic accuracy: keep every claim attached to the location in its cited support. A localized contrast is allowed only for claims naming the same place or canonical area. When support names different areas, express their conditions in separate short sentences; do not assign one area's name to the others or infer shared geography from elevation or terrain. Leave unresolved locations at the source's level of detail.\n"
                 "- If source facts or notes are in Ukrainian, accurately translate and paraphrase them into Russian.\n"
                 "- If 'situation_groups' are provided, synthesize each operational group in 'situation_items'. Every required fact in 'required_facts' must be covered in 'claims' and reflected in the narrative body. Use natural chronology and geographical clarity (e.g. outages, low voltage, and restored sections). Never invent ungrounded numbers or causes. Cite the exact support IDs.\n"
                 "- In thematic 'blocks', never repeat the headline in the first sentence of the body text.\n"

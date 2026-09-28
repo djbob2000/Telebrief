@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v8"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v5"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v6"
 
 
 def build_article_narrative_contract(

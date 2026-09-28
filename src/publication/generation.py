@@ -342,6 +342,7 @@ class PublicationGenerationService:
                         rubrics=renderer.rubrics,
                         max_cards_per_block=max_cards,
                         presentation_plan=presentation_plan,
+                        edition_slug=getattr(frozen, "edition_slug", ""),
                     )
 
                     writer_provider = getattr(self.generator, "provider", None)

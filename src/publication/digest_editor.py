@@ -83,7 +83,7 @@ class DigestEditor:
             "1. REFINED JOURNALISTIC STYLE:\n"
             "   - Transform choppy, fragmented, or dry bureaucratic phrases into smooth, engaging, and professional Russian prose.\n"
             "   - Remove repetitive attributions ('По сообщениям жителей', 'жители сообщают') - at most ONE natural attribution per item, or state facts directly.\n"
-            "   - Smoothly synthesize localized contrasts across streets (e.g. 'в нагорной части ситуация неоднородная: на одних улицах..., тогда как на других...').\n"
+            "   - Synthesize a localized contrast only when the reports refer to the same named area. Keep each fact attached to its own cited location; state conditions from different neighborhoods in separate short sentences. Never use one area's name as an umbrella for other locations or infer a shared neighborhood from terrain or elevation.\n"
             "   - Eliminate all chat debris, Telegram mechanics, or forum meta-language ('в чатах', 'участники переклички', 'паблики', emoji spam).\n\n"
             "2. SCAN-FIRST INFORMATIVE HEADLINES:\n"
             "   - Every item MUST have a specific, informative, scan-friendly headline with an emoji.\n"
