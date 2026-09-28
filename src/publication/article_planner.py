@@ -13,6 +13,7 @@ from src.ai_providers import AIProvider
 from src.publication.article_brief import (
     ArticleEditorialBrief,
     ArticlePlannerReferenceMap,
+    DuplicateArticleStoryAssignmentError,
     parse_article_editorial_brief,
 )
 from src.publication.article_context import ArticleEditorialContext, _support_framing
@@ -30,6 +31,42 @@ from src.publication.article_writer_context import (
 from src.publication.errors import PublicationGenerationError
 
 logger = logging.getLogger(__name__)
+
+
+def _cited_known_support_keys(
+    raw: str,
+    reference_map: ArticlePlannerReferenceMap,
+) -> set[str]:
+    """Collect dossier support aliases cited by line or central support fields."""
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return set()
+    if not isinstance(payload, dict):
+        return set()
+
+    cited: set[str] = set()
+    central = payload.get("central_support_keys")
+    if isinstance(central, list):
+        cited.update(
+            key
+            for key in central
+            if isinstance(key, str) and key in reference_map.support_id_by_key
+        )
+    lines = payload.get("lines")
+    if isinstance(lines, list):
+        for line in lines:
+            if not isinstance(line, dict):
+                continue
+            supports = line.get("support_keys")
+            if isinstance(supports, list):
+                cited.update(
+                    key
+                    for key in supports
+                    if isinstance(key, str) and key in reference_map.support_id_by_key
+                )
+    return cited
+
 
 _SAFETY_TERMS = (
     r"трассер|беспилот|бпла|дрон\w*|стрельб\w*|обстрел\w*|сбил\w*|сбит\w*|"
@@ -371,6 +408,8 @@ class ArticleEditorialPlanner:
         )
         user_prompt = "FROZEN ARTICLE DOSSIER (JSON):\n" + dossier
         attempt_id = 0
+        planner_model_call_count = 0
+        duplicate_assignment_repair_used = False
         if attempt_observer is not None:
             attempt_id = await attempt_observer.attempt_started(
                 "article_planner",
@@ -381,25 +420,86 @@ class ArticleEditorialPlanner:
                     "coverage_story_count": len(coverage_plan.stories),
                 },
             )
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
         try:
+            planner_model_call_count += 1
             raw = await self.provider.chat_completion(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                messages=messages,
                 model=self.model,
                 temperature=0.1,
                 max_tokens=self.max_output_tokens,
                 reasoning_effort="none",
                 response_format={"type": "json_object"},
             )
-            brief = parse_article_editorial_brief(
-                raw or "",
-                coverage_plan=coverage_plan,
-                context=context,
-                material_projection=material_projection,
-                reference_map=reference_map,
-            )
+            raw_text = raw or ""
+            try:
+                brief = parse_article_editorial_brief(
+                    raw_text,
+                    coverage_plan=coverage_plan,
+                    context=context,
+                    material_projection=material_projection,
+                    reference_map=reference_map,
+                )
+            except DuplicateArticleStoryAssignmentError as exc:
+                duplicate_assignment_repair_used = True
+                logger.warning(
+                    "Article planner assigned a Story to multiple lines; requesting one repair"
+                )
+                repair_messages = [
+                    *messages,
+                    {"role": "assistant", "content": raw_text},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Repair the JSON roadmap that you just returned. Validation found "
+                            "that story_key "
+                            f"{exc.story_key} appears in multiple lines. A coverage Story may "
+                            "appear in exactly one line, and each "
+                            "coverage Story must retain exactly one disposition. Preserve every "
+                            "known support_key that you already cited in a line or in "
+                            "central_support_keys; keep each support_key attached only to a "
+                            "line containing its owning story_key. Keep the same central line, "
+                            "line intents, relations, and dispositions where possible; update "
+                            "line membership and disposition line_id only as needed to remove "
+                            "duplicate Story assignments. Use only the opaque keys from the "
+                            "dossier. Return the corrected JSON object only."
+                        ),
+                    },
+                ]
+                planner_model_call_count += 1
+                repaired_raw = await self.provider.chat_completion(
+                    messages=repair_messages,
+                    model=self.model,
+                    temperature=0.1,
+                    max_tokens=self.max_output_tokens,
+                    reasoning_effort="none",
+                    response_format={"type": "json_object"},
+                )
+                repaired_text = repaired_raw or ""
+                previously_cited_support_keys = _cited_known_support_keys(
+                    raw_text,
+                    reference_map,
+                )
+                repaired_support_keys = _cited_known_support_keys(
+                    repaired_text,
+                    reference_map,
+                )
+                dropped_support_keys = previously_cited_support_keys - repaired_support_keys
+                if dropped_support_keys:
+                    raise PublicationGenerationError(
+                        "Article planner duplicate-assignment repair dropped cited support keys: "
+                        f"{sorted(dropped_support_keys)}"
+                    ) from exc
+                brief = parse_article_editorial_brief(
+                    repaired_text,
+                    coverage_plan=coverage_plan,
+                    context=context,
+                    material_projection=material_projection,
+                    reference_map=reference_map,
+                )
             brief = _split_independent_safety_and_infrastructure_lines(
                 brief,
                 context=context,
@@ -411,16 +511,31 @@ class ArticleEditorialPlanner:
                 context,
             )
             if attempt_observer is not None and attempt_id:
-                await attempt_observer.attempt_finished(attempt_id, "succeeded")
+                await attempt_observer.attempt_finished(
+                    attempt_id,
+                    "succeeded",
+                    metadata={
+                        "planner_model_call_count": planner_model_call_count,
+                        "duplicate_story_assignment_repair_used": duplicate_assignment_repair_used,
+                    },
+                )
             return brief
         except Exception as exc:
             if attempt_observer is not None and attempt_id:
                 await attempt_observer.attempt_finished(
                     attempt_id,
                     "failed",
-                    error_kind="invalid_brief"
-                    if isinstance(exc, PublicationGenerationError)
-                    else "provider_error",
+                    error_kind=(
+                        "duplicate_story_assignment_repair_failed"
+                        if isinstance(exc, DuplicateArticleStoryAssignmentError)
+                        else "invalid_brief"
+                        if isinstance(exc, PublicationGenerationError)
+                        else "provider_error"
+                    ),
+                    metadata={
+                        "planner_model_call_count": planner_model_call_count,
+                        "duplicate_story_assignment_repair_used": duplicate_assignment_repair_used,
+                    },
                 )
             if isinstance(exc, PublicationGenerationError):
                 raise

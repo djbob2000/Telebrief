@@ -32,6 +32,17 @@ _RELATIONS = {
 }
 
 
+class DuplicateArticleStoryAssignmentError(PublicationGenerationError):
+    """The planner assigned one coverage Story to more than one line."""
+
+    def __init__(self, story_key: str) -> None:
+        self.story_key = story_key
+        super().__init__(
+            "Invalid article editorial brief: "
+            f"Story key {story_key!r} is assigned to multiple lines"
+        )
+
+
 @dataclass(frozen=True)
 class ArticleBriefLine:
     line_id: str
@@ -190,6 +201,9 @@ def parse_article_editorial_brief(
     if len(story_ids) != len(set(story_ids)):
         _fail("coverage plan contains duplicate Story IDs")
     known_stories = set(story_ids)
+    story_key_by_id = {
+        story_id: story_key for story_key, story_id in reference_map.story_id_by_key.items()
+    }
     owners = _citable_support_owners(
         coverage_story_ids=known_stories,
         context=context,
@@ -233,7 +247,9 @@ def parse_article_editorial_brief(
             _fail(f"line {line_id!r} references unknown Stories: {sorted(unknown_stories)}")
         for story_id in line_stories:
             if story_id in story_to_line:
-                _fail(f"Story {story_id!r} is assigned to multiple lines")
+                raise DuplicateArticleStoryAssignmentError(
+                    story_key_by_id.get(story_id, "<unknown>")
+                )
             story_to_line[story_id] = line_id
         for support_id in support_ids:
             owner = owners.get(support_id)

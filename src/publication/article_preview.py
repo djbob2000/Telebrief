@@ -155,6 +155,8 @@ def _safe_final_metadata(value: Any) -> dict[str, Any]:
             "evidence_boundary_passed",
             "quality_gate_passed",
             "coverage_only_diagnostic",
+            "planner_model_call_count",
+            "duplicate_story_assignment_repair_used",
         )
         if key in value and isinstance(value[key], (str, int, float, bool, type(None)))
     }
