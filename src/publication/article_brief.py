@@ -115,7 +115,10 @@ def _omission_reason(value: object, field: str) -> ArticleOmissionReason:
 
 
 def _citable_support_owners(
-    *, context: ArticleEditorialContext, material_projection: ArticleMaterialProjection
+    *,
+    coverage_story_ids: set[str],
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection,
 ) -> dict[str, str]:
     owners: dict[str, str] = {}
     for support in context.support_index:
@@ -133,6 +136,8 @@ def _citable_support_owners(
         story_id = support.story_id
         if not story_id:
             _fail(f"support {support_id!r} has no Story owner")
+        if story_id not in coverage_story_ids:
+            continue
         if support_id in owners:
             _fail(f"duplicate support ID {support_id!r}")
         owners[support_id] = story_id
@@ -160,7 +165,11 @@ def parse_article_editorial_brief(
     if len(story_ids) != len(set(story_ids)):
         _fail("coverage plan contains duplicate Story IDs")
     known_stories = set(story_ids)
-    owners = _citable_support_owners(context=context, material_projection=material_projection)
+    owners = _citable_support_owners(
+        coverage_story_ids=known_stories,
+        context=context,
+        material_projection=material_projection,
+    )
 
     lines_raw = root.get("lines")
     if not isinstance(lines_raw, list):
