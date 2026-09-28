@@ -1433,7 +1433,7 @@ class ArticleGenerator:
         }
         from src.publication.article_planner import render_article_planner_dossier
 
-        planner_dossier = render_article_planner_dossier(
+        planner_dossier, _planner_reference_map = render_article_planner_dossier(
             context=article_ctx,
             coverage_plan=coverage_plan,
             material_projection=material_projection,

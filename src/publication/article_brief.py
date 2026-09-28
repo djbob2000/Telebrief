@@ -63,6 +63,12 @@ class ArticleEditorialBrief:
     dispositions: tuple[ArticleStoryDisposition, ...]
 
 
+@dataclass(frozen=True)
+class ArticlePlannerReferenceMap:
+    story_id_by_key: dict[str, str]
+    support_id_by_key: dict[str, str]
+
+
 def _fail(message: str) -> NoReturn:
     raise PublicationGenerationError(f"Invalid article editorial brief: {message}")
 
@@ -88,6 +94,24 @@ def _string_tuple(
     if not allow_empty and not result:
         _fail(f"{field} must not be empty")
     return result
+
+
+def _mapped_reference_tuple(
+    value: object,
+    field: str,
+    key_to_id: dict[str, str],
+    *,
+    allow_empty: bool = True,
+    ignore_unknown: bool = False,
+) -> tuple[str, ...]:
+    keys = _string_tuple(value, field)
+    unknown = tuple(key for key in keys if key not in key_to_id)
+    if unknown and not ignore_unknown:
+        _fail(f"{field} contains unknown references: {list(unknown)}")
+    mapped = tuple(dict.fromkeys(key_to_id[key] for key in keys if key in key_to_id))
+    if not allow_empty and not mapped:
+        _fail(f"{field} must contain at least one known reference")
+    return mapped
 
 
 def _mapping(value: object, field: str) -> dict[str, object]:
@@ -150,6 +174,7 @@ def parse_article_editorial_brief(
     coverage_plan: ArticleCoveragePlan,
     context: ArticleEditorialContext,
     material_projection: ArticleMaterialProjection,
+    reference_map: ArticlePlannerReferenceMap,
 ) -> ArticleEditorialBrief:
     """Parse and validate every Story/support reference before the writer can use it."""
     try:
@@ -180,17 +205,29 @@ def parse_article_editorial_brief(
     story_to_line: dict[str, str] = {}
     for index, raw_line in enumerate(lines_raw):
         data = _mapping(raw_line, f"lines[{index}]")
+        line_stories = _mapped_reference_tuple(
+            data.get("story_keys"),
+            f"lines[{index}].story_keys",
+            reference_map.story_id_by_key,
+            ignore_unknown=True,
+        )
+        support_ids = _mapped_reference_tuple(
+            data.get("support_keys"),
+            f"lines[{index}].support_keys",
+            reference_map.support_id_by_key,
+            allow_empty=False,
+        )
+        if not line_stories:
+            for support_id in support_ids:
+                if owners.get(support_id) is None:
+                    _fail(f"line {index} references unknown or non-citable support {support_id!r}")
+            _fail(f"line {index} cites support without a known coverage Story")
         line_id = _string(data.get("line_id"), f"lines[{index}].line_id")
         if line_id in lines_by_id:
             _fail(f"duplicate line ID {line_id!r}")
         editorial_intent = _string(data.get("editorial_intent"), f"lines[{index}].editorial_intent")
         depth = _line_depth(data.get("depth"), f"lines[{index}].depth")
         relation = _relation(data.get("relation"), f"lines[{index}].relation")
-        line_stories = _string_tuple(
-            data.get("story_ids"),
-            f"lines[{index}].story_ids",
-            allow_empty=False,
-        )
         unknown_stories = set(line_stories) - known_stories
         if unknown_stories:
             _fail(f"line {line_id!r} references unknown Stories: {sorted(unknown_stories)}")
@@ -198,9 +235,6 @@ def parse_article_editorial_brief(
             if story_id in story_to_line:
                 _fail(f"Story {story_id!r} is assigned to multiple lines")
             story_to_line[story_id] = line_id
-        support_ids = _string_tuple(
-            data.get("support_ids"), f"lines[{index}].support_ids", allow_empty=False
-        )
         for support_id in support_ids:
             owner = owners.get(support_id)
             if owner is None:
@@ -214,11 +248,17 @@ def parse_article_editorial_brief(
                 f"line {line_id!r} has Stories without their own cited support: "
                 f"{sorted(unsupported_members)}"
             )
-        salient = _string_tuple(
-            data.get("salient_support_ids", []), f"lines[{index}].salient_support_ids"
+        salient = _mapped_reference_tuple(
+            data.get("salient_support_keys", []),
+            f"lines[{index}].salient_support_keys",
+            reference_map.support_id_by_key,
+            ignore_unknown=True,
         )
-        caveats = _string_tuple(
-            data.get("caveat_support_ids", []), f"lines[{index}].caveat_support_ids"
+        caveats = _mapped_reference_tuple(
+            data.get("caveat_support_keys", []),
+            f"lines[{index}].caveat_support_keys",
+            reference_map.support_id_by_key,
+            ignore_unknown=True,
         )
         if not set(salient).issubset(support_ids):
             _fail(f"line {line_id!r} has salient support outside support_ids")
@@ -245,9 +285,11 @@ def parse_article_editorial_brief(
     dispositions_by_story: dict[str, ArticleStoryDisposition] = {}
     for index, raw_disposition in enumerate(dispositions_raw):
         data = _mapping(raw_disposition, f"dispositions[{index}]")
-        story_id = _string(data.get("story_id"), f"dispositions[{index}].story_id")
-        if story_id not in known_stories:
-            _fail(f"disposition references unknown Story {story_id!r}")
+        story_key = _string(data.get("story_key"), f"dispositions[{index}].story_key")
+        mapped_story_id = reference_map.story_id_by_key.get(story_key)
+        if mapped_story_id is None:
+            continue
+        story_id = mapped_story_id
         if story_id in dispositions_by_story:
             _fail(f"duplicate disposition for Story {story_id!r}")
         raw_depth = data.get("depth")
@@ -302,8 +344,11 @@ def parse_article_editorial_brief(
             _fail(f"line Story {story_id!r} has no non-omitted disposition")
 
     central_line = _string(root.get("central_line"), "central_line")
-    central_support_ids = _string_tuple(
-        root.get("central_support_ids"), "central_support_ids", allow_empty=False
+    central_support_ids = _mapped_reference_tuple(
+        root.get("central_support_keys"),
+        "central_support_keys",
+        reference_map.support_id_by_key,
+        allow_empty=False,
     )
     for support_id in central_support_ids:
         owner = owners.get(support_id)
