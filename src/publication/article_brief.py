@@ -73,14 +73,20 @@ def _string(value: object, field: str) -> str:
     return value.strip()
 
 
-def _string_tuple(value: object, field: str, *, allow_empty: bool = True) -> tuple[str, ...]:
+def _string_tuple(
+    value: object,
+    field: str,
+    *,
+    allow_empty: bool = True,
+) -> tuple[str, ...]:
     if not isinstance(value, list):
         _fail(f"{field} must be an array")
     result = tuple(_string(item, field) for item in cast(list[object], value))
+    # These arrays contain references, so a repeated ID adds no semantic
+    # information. Normalize harmless model repetition while keeping order.
+    result = tuple(dict.fromkeys(result))
     if not allow_empty and not result:
         _fail(f"{field} must not be empty")
-    if len(result) != len(set(result)):
-        _fail(f"{field} contains duplicates")
     return result
 
 
@@ -172,7 +178,9 @@ def parse_article_editorial_brief(
         depth = _line_depth(data.get("depth"), f"lines[{index}].depth")
         relation = _relation(data.get("relation"), f"lines[{index}].relation")
         line_stories = _string_tuple(
-            data.get("story_ids"), f"lines[{index}].story_ids", allow_empty=False
+            data.get("story_ids"),
+            f"lines[{index}].story_ids",
+            allow_empty=False,
         )
         unknown_stories = set(line_stories) - known_stories
         if unknown_stories:
