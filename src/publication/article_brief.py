@@ -43,6 +43,18 @@ class DuplicateArticleStoryAssignmentError(PublicationGenerationError):
         )
 
 
+class ArticleBriefValidationError(PublicationGenerationError):
+    """Planner output failed validation and carries a safe repair hint."""
+
+    def __init__(self, message: str, repair_finding: str) -> None:
+        self.repair_finding = repair_finding
+        super().__init__(message)
+
+
+class ArticleBriefInputInvariantError(PublicationGenerationError):
+    """The frozen inputs to planning are internally inconsistent."""
+
+
 @dataclass(frozen=True)
 class ArticleBriefLine:
     line_id: str
@@ -80,13 +92,23 @@ class ArticlePlannerReferenceMap:
     support_id_by_key: dict[str, str]
 
 
-def _fail(message: str) -> NoReturn:
-    raise PublicationGenerationError(f"Invalid article editorial brief: {message}")
+def _fail(message: str, *, repair_finding: str | None = None) -> NoReturn:
+    raise ArticleBriefValidationError(
+        f"Invalid article editorial brief: {message}",
+        repair_finding or "The roadmap failed strict schema, evidence, or coverage validation.",
+    )
+
+
+def _input_fail(message: str) -> NoReturn:
+    raise ArticleBriefInputInvariantError(f"Invalid article brief input: {message}")
 
 
 def _string(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        _fail(f"{field} must be a non-empty string")
+        _fail(
+            f"{field} must be a non-empty string",
+            repair_finding=f"Provide a non-empty string for {field}.",
+        )
     return value.strip()
 
 
@@ -97,13 +119,13 @@ def _string_tuple(
     allow_empty: bool = True,
 ) -> tuple[str, ...]:
     if not isinstance(value, list):
-        _fail(f"{field} must be an array")
+        _fail(f"{field} must be an array", repair_finding=f"Provide an array for {field}.")
     result = tuple(_string(item, field) for item in cast(list[object], value))
     # These arrays contain references, so a repeated ID adds no semantic
     # information. Normalize harmless model repetition while keeping order.
     result = tuple(dict.fromkeys(result))
     if not allow_empty and not result:
-        _fail(f"{field} must not be empty")
+        _fail(f"{field} must not be empty", repair_finding=f"Include a value in {field}.")
     return result
 
 
@@ -118,34 +140,49 @@ def _mapped_reference_tuple(
     keys = _string_tuple(value, field)
     unknown = tuple(key for key in keys if key not in key_to_id)
     if unknown and not ignore_unknown:
-        _fail(f"{field} contains unknown references: {list(unknown)}")
+        _fail(
+            f"{field} contains unknown references: {list(unknown)}",
+            repair_finding=(
+                f"{field} contains unrecognized aliases. Use only the opaque keys listed in "
+                "the dossier."
+            ),
+        )
     mapped = tuple(dict.fromkeys(key_to_id[key] for key in keys if key in key_to_id))
     if not allow_empty and not mapped:
-        _fail(f"{field} must contain at least one known reference")
+        _fail(
+            f"{field} must contain at least one known reference",
+            repair_finding=f"Include at least one known dossier alias in {field}.",
+        )
     return mapped
 
 
 def _mapping(value: object, field: str) -> dict[str, object]:
     if not isinstance(value, dict):
-        _fail(f"{field} must be an object")
+        _fail(f"{field} must be an object", repair_finding=f"Provide an object for {field}.")
     return cast(dict[str, object], value)
 
 
 def _line_depth(value: object, field: str) -> Literal["DEVELOP", "WEAVE", "BRIEF"]:
     if not isinstance(value, str) or value not in _DEPTHS:
-        _fail(f"{field} is invalid")
+        _fail(
+            f"{field} is invalid",
+            repair_finding=f"Use DEVELOP, WEAVE, BRIEF, or OMIT for {field}.",
+        )
     return cast(Literal["DEVELOP", "WEAVE", "BRIEF"], value)
 
 
 def _relation(value: object, field: str) -> ArticleBriefRelation:
     if not isinstance(value, str) or value not in _RELATIONS:
-        _fail(f"{field} is invalid")
+        _fail(f"{field} is invalid", repair_finding=f"Use a supported relation for {field}.")
     return cast(ArticleBriefRelation, value)
 
 
 def _omission_reason(value: object, field: str) -> ArticleOmissionReason:
     if not isinstance(value, str) or value not in _OMISSION_REASONS:
-        _fail(f"{field} is invalid")
+        _fail(
+            f"{field} is invalid",
+            repair_finding=f"Use a supported omission reason for {field}.",
+        )
     return cast(ArticleOmissionReason, value)
 
 
@@ -165,16 +202,16 @@ def _citable_support_owners(
         if action == "SUPPRESS_PROMOTION_ONLY" or not projected:
             continue
         if not action:
-            _fail(f"PUBLISH support {support_id!r} is absent from material projection")
+            _input_fail(f"PUBLISH support {support_id!r} is absent from material projection")
         if action not in {"KEEP", "TRIM_DIRECTORY"}:
-            _fail(f"PUBLISH support {support_id!r} has unknown projection action {action!r}")
+            _input_fail(f"PUBLISH support {support_id!r} has unknown projection action {action!r}")
         story_id = support.story_id
         if not story_id:
-            _fail(f"support {support_id!r} has no Story owner")
+            _input_fail(f"support {support_id!r} has no Story owner")
         if story_id not in coverage_story_ids:
             continue
         if support_id in owners:
-            _fail(f"duplicate support ID {support_id!r}")
+            _input_fail(f"duplicate support ID {support_id!r}")
         owners[support_id] = story_id
     return owners
 
@@ -193,16 +230,21 @@ def parse_article_editorial_brief(
     except PublicationGenerationError:
         raise
     except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise PublicationGenerationError(
-            "Invalid article editorial brief: response is not JSON"
+        raise ArticleBriefValidationError(
+            "Invalid article editorial brief: response is not JSON",
+            "Return one valid JSON object matching the required roadmap schema.",
         ) from exc
 
     story_ids = tuple(story.story_id for story in coverage_plan.stories)
     if len(story_ids) != len(set(story_ids)):
-        _fail("coverage plan contains duplicate Story IDs")
+        _input_fail("coverage plan contains duplicate Story IDs")
     known_stories = set(story_ids)
     story_key_by_id = {
         story_id: story_key for story_key, story_id in reference_map.story_id_by_key.items()
+    }
+    support_key_by_id = {
+        support_id: support_key
+        for support_key, support_id in reference_map.support_id_by_key.items()
     }
     owners = _citable_support_owners(
         coverage_story_ids=known_stories,
@@ -212,7 +254,7 @@ def parse_article_editorial_brief(
 
     lines_raw = root.get("lines")
     if not isinstance(lines_raw, list):
-        _fail("lines must be an array")
+        _fail("lines must be an array", repair_finding="Provide an array for lines.")
     lines_raw = cast(list[object], lines_raw)
     lines: list[ArticleBriefLine] = []
     lines_by_id: dict[str, ArticleBriefLine] = {}
@@ -234,17 +276,38 @@ def parse_article_editorial_brief(
         if not line_stories:
             for support_id in support_ids:
                 if owners.get(support_id) is None:
-                    _fail(f"line {index} references unknown or non-citable support {support_id!r}")
-            _fail(f"line {index} cites support without a known coverage Story")
+                    _fail(
+                        f"line {index} references unknown or non-citable support {support_id!r}",
+                        repair_finding=(
+                            f"lines[{index}].support_keys contains an unknown or non-citable "
+                            "alias. Use only citable support keys from the dossier."
+                        ),
+                    )
+            _fail(
+                f"line {index} cites support without a known coverage Story",
+                repair_finding=(
+                    f"Line {index} cites support but has no recognized story_key. Add the "
+                    "owning coverage Story from the dossier."
+                ),
+            )
         line_id = _string(data.get("line_id"), f"lines[{index}].line_id")
         if line_id in lines_by_id:
-            _fail(f"duplicate line ID {line_id!r}")
+            _fail(
+                f"duplicate line ID {line_id!r}",
+                repair_finding=f"Use a unique line_id for lines[{index}].",
+            )
         editorial_intent = _string(data.get("editorial_intent"), f"lines[{index}].editorial_intent")
         depth = _line_depth(data.get("depth"), f"lines[{index}].depth")
         relation = _relation(data.get("relation"), f"lines[{index}].relation")
         unknown_stories = set(line_stories) - known_stories
         if unknown_stories:
-            _fail(f"line {line_id!r} references unknown Stories: {sorted(unknown_stories)}")
+            _fail(
+                f"line {line_id!r} references unknown Stories: {sorted(unknown_stories)}",
+                repair_finding=(
+                    f"lines[{index}].story_keys contains unrecognized aliases. Use only the "
+                    "opaque story keys listed in the dossier."
+                ),
+            )
         for story_id in line_stories:
             if story_id in story_to_line:
                 raise DuplicateArticleStoryAssignmentError(
@@ -254,15 +317,35 @@ def parse_article_editorial_brief(
         for support_id in support_ids:
             owner = owners.get(support_id)
             if owner is None:
-                _fail(f"line {line_id!r} references unknown or non-citable support {support_id!r}")
+                _fail(
+                    f"line {line_id!r} references unknown or non-citable support {support_id!r}",
+                    repair_finding=(
+                        f"lines[{index}].support_keys contains an unknown or non-citable alias. "
+                        "Use only citable support keys from the dossier."
+                    ),
+                )
             if owner not in line_stories:
-                _fail(f"support {support_id!r} belongs to {owner!r}, not line {line_id!r}")
+                _fail(
+                    f"support {support_id!r} belongs to {owner!r}, not line {line_id!r}",
+                    repair_finding=(
+                        f"support_key {support_key_by_id.get(support_id, '<unknown>')} belongs "
+                        f"to story_key {story_key_by_id.get(owner, '<unknown>')}; cite it only "
+                        "in a line containing that Story."
+                    ),
+                )
         supported_stories = {owners[support_id] for support_id in support_ids}
         unsupported_members = set(line_stories) - supported_stories
         if unsupported_members:
+            unsupported_keys = sorted(
+                story_key_by_id.get(story_id, "<unknown>") for story_id in unsupported_members
+            )
             _fail(
                 f"line {line_id!r} has Stories without their own cited support: "
-                f"{sorted(unsupported_members)}"
+                f"{sorted(unsupported_members)}",
+                repair_finding=(
+                    "Each Story in a line must cite at least one of its own support keys. "
+                    f"Affected story_keys: {unsupported_keys}."
+                ),
             )
         salient = _mapped_reference_tuple(
             data.get("salient_support_keys", []),
@@ -277,9 +360,21 @@ def parse_article_editorial_brief(
             ignore_unknown=True,
         )
         if not set(salient).issubset(support_ids):
-            _fail(f"line {line_id!r} has salient support outside support_ids")
+            _fail(
+                f"line {line_id!r} has salient support outside support_ids",
+                repair_finding=(
+                    f"lines[{index}].salient_support_keys must be a subset of "
+                    f"lines[{index}].support_keys."
+                ),
+            )
         if not set(caveats).issubset(support_ids):
-            _fail(f"line {line_id!r} has caveat support outside support_ids")
+            _fail(
+                f"line {line_id!r} has caveat support outside support_ids",
+                repair_finding=(
+                    f"lines[{index}].caveat_support_keys must be a subset of "
+                    f"lines[{index}].support_keys."
+                ),
+            )
         line = ArticleBriefLine(
             line_id=line_id,
             editorial_intent=editorial_intent,
@@ -295,7 +390,10 @@ def parse_article_editorial_brief(
 
     dispositions_raw = root.get("dispositions")
     if not isinstance(dispositions_raw, list):
-        _fail("dispositions must be an array")
+        _fail(
+            "dispositions must be an array",
+            repair_finding="Provide an array for dispositions.",
+        )
     dispositions_raw = cast(list[object], dispositions_raw)
     dispositions: list[ArticleStoryDisposition] = []
     dispositions_by_story: dict[str, ArticleStoryDisposition] = {}
@@ -307,36 +405,81 @@ def parse_article_editorial_brief(
             continue
         story_id = mapped_story_id
         if story_id in dispositions_by_story:
-            _fail(f"duplicate disposition for Story {story_id!r}")
+            _fail(
+                f"duplicate disposition for Story {story_id!r}",
+                repair_finding=(
+                    f"story_key {story_key_by_id.get(story_id, '<unknown>')} must have exactly "
+                    "one disposition."
+                ),
+            )
         raw_depth = data.get("depth")
         if raw_depth == "OMIT":
             disposition_line_raw = data.get("line_id")
             reason_raw = data.get("reason_code")
             if disposition_line_raw is not None:
-                _fail(f"omitted Story {story_id!r} must not have a line")
+                _fail(
+                    f"omitted Story {story_id!r} must not have a line",
+                    repair_finding=(
+                        f"OMIT disposition for story_key {story_key_by_id.get(story_id, '<unknown>')} "
+                        "must not include line_id."
+                    ),
+                )
             if not isinstance(reason_raw, str) or reason_raw not in _OMISSION_REASONS:
-                _fail(f"omitted Story {story_id!r} has invalid reason_code")
-            reason = _omission_reason(reason_raw, f"omitted Story {story_id!r} reason_code")
+                _fail(
+                    f"omitted Story {story_id!r} has invalid reason_code",
+                    repair_finding=(
+                        f"Use directory_only or no_citable_material as the reason_code for "
+                        f"OMIT story_key {story_key_by_id.get(story_id, '<unknown>')}."
+                    ),
+                )
+            reason = _omission_reason(reason_raw, f"dispositions[{index}].reason_code")
             if story_id in owners.values():
                 _fail(
                     f"Story {story_id!r} has citable projected material and cannot be omitted; "
-                    "assign it BRIEF, WEAVE, or DEVELOP"
+                    "assign it BRIEF, WEAVE, or DEVELOP",
+                    repair_finding=(
+                        f"story_key {story_key_by_id.get(story_id, '<unknown>')} has citable "
+                        "projected material and cannot be OMIT. Assign it BRIEF, WEAVE, or "
+                        "DEVELOP, add it to exactly one line, and cite its support_key."
+                    ),
                 )
             if story_id in story_to_line:
-                _fail(f"omitted Story {story_id!r} appears in a narrative line")
+                _fail(
+                    f"omitted Story {story_id!r} appears in a narrative line",
+                    repair_finding=(
+                        f"story_key {story_key_by_id.get(story_id, '<unknown>')} is in a "
+                        "narrative line and cannot be OMIT. Give it the line's depth."
+                    ),
+                )
             disposition = ArticleStoryDisposition(story_id, "OMIT", None, reason)
         elif raw_depth in _DEPTHS:
             disposition_depth = cast(Literal["DEVELOP", "WEAVE", "BRIEF"], raw_depth)
             disposition_line_raw = data.get("line_id")
             if not isinstance(disposition_line_raw, str) or disposition_line_raw not in lines_by_id:
-                _fail(f"non-omitted Story {story_id!r} must reference a valid line")
+                _fail(
+                    f"non-omitted Story {story_id!r} must reference a valid line",
+                    repair_finding=(
+                        f"Assign non-OMIT story_key {story_key_by_id.get(story_id, '<unknown>')} "
+                        "to a valid line_id from lines."
+                    ),
+                )
             disposition_line_id = disposition_line_raw
             if story_to_line.get(story_id) != disposition_line_id:
                 _fail(
-                    f"Story {story_id!r} must appear in its assigned line {disposition_line_id!r}"
+                    f"Story {story_id!r} must appear in its assigned line {disposition_line_id!r}",
+                    repair_finding=(
+                        f"story_key {story_key_by_id.get(story_id, '<unknown>')} must appear "
+                        "in its assigned narrative line and have the same depth as that line."
+                    ),
                 )
             if data.get("reason_code") is not None:
-                _fail(f"non-omitted Story {story_id!r} must not have reason_code")
+                _fail(
+                    f"non-omitted Story {story_id!r} must not have reason_code",
+                    repair_finding=(
+                        f"Remove reason_code from non-OMIT story_key "
+                        f"{story_key_by_id.get(story_id, '<unknown>')}."
+                    ),
+                )
             # A line has one authoritative editorial depth. The model repeats
             # that value on every Story disposition, so use the line value as
             # canonical if the redundant per-Story field drifts.
@@ -345,19 +488,41 @@ def parse_article_editorial_brief(
                 story_id, disposition_depth, disposition_line_id, None
             )
         else:
-            _fail(f"disposition for Story {story_id!r} has invalid depth")
+            _fail(
+                f"disposition for Story {story_id!r} has invalid depth",
+                repair_finding=(
+                    f"Use DEVELOP, WEAVE, BRIEF, or OMIT for story_key "
+                    f"{story_key_by_id.get(story_id, '<unknown>')}."
+                ),
+            )
         dispositions.append(disposition)
         dispositions_by_story[story_id] = disposition
 
     missing_stories = known_stories - set(dispositions_by_story)
     if missing_stories:
-        _fail(f"missing dispositions for Stories: {sorted(missing_stories)}")
+        missing_keys = sorted(
+            story_key_by_id.get(story_id, "<unknown>") for story_id in missing_stories
+        )
+        _fail(
+            f"missing dispositions for Stories: {sorted(missing_stories)}",
+            repair_finding=(
+                "Every coverage Story needs exactly one disposition. Missing story_keys: "
+                f"{missing_keys}. Assign citable Stories BRIEF, WEAVE, or DEVELOP; OMIT only "
+                "Stories without citable projected material."
+            ),
+        )
     if len(dispositions) != len(story_ids):
         _fail("there must be exactly one disposition per coverage Story")
     for story_id in story_to_line:
         assigned_disposition = dispositions_by_story.get(story_id)
         if assigned_disposition is None or assigned_disposition.depth == "OMIT":
-            _fail(f"line Story {story_id!r} has no non-omitted disposition")
+            _fail(
+                f"line Story {story_id!r} has no non-omitted disposition",
+                repair_finding=(
+                    f"story_key {story_key_by_id.get(story_id, '<unknown>')} appears in a line "
+                    "and needs one non-OMIT disposition."
+                ),
+            )
 
     central_line = _string(root.get("central_line"), "central_line")
     central_support_ids = _mapped_reference_tuple(
@@ -369,11 +534,30 @@ def parse_article_editorial_brief(
     for support_id in central_support_ids:
         owner = owners.get(support_id)
         if owner is None:
-            _fail(f"central line references unknown or non-citable support {support_id!r}")
+            _fail(
+                f"central line references unknown or non-citable support {support_id!r}",
+                repair_finding=(
+                    "central_support_keys contains an unknown or non-citable alias. Use only "
+                    "citable support keys from the dossier."
+                ),
+            )
         if owner not in known_stories:
-            _fail(f"central support {support_id!r} belongs to a Story outside the coverage plan")
+            _fail(
+                f"central support {support_id!r} belongs to a Story outside the coverage plan",
+                repair_finding=(
+                    f"central_support_keys alias {support_key_by_id.get(support_id, '<unknown>')} "
+                    "belongs to a Story outside the coverage plan; choose a citable support key "
+                    "from a coverage Story."
+                ),
+            )
         if dispositions_by_story[owner].depth == "OMIT":
-            _fail(f"central support {support_id!r} belongs to omitted Story {owner!r}")
+            _fail(
+                f"central support {support_id!r} belongs to omitted Story {owner!r}",
+                repair_finding=(
+                    f"central_support_keys alias {support_key_by_id.get(support_id, '<unknown>')} "
+                    "belongs to an omitted Story; choose support from a non-OMIT coverage Story."
+                ),
+            )
 
     return ArticleEditorialBrief(
         central_line=central_line,

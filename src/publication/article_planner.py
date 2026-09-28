@@ -11,6 +11,8 @@ from typing import Any
 
 from src.ai_providers import AIProvider
 from src.publication.article_brief import (
+    ArticleBriefInputInvariantError,
+    ArticleBriefValidationError,
     ArticleEditorialBrief,
     ArticlePlannerReferenceMap,
     DuplicateArticleStoryAssignmentError,
@@ -409,7 +411,7 @@ class ArticleEditorialPlanner:
         user_prompt = "FROZEN ARTICLE DOSSIER (JSON):\n" + dossier
         attempt_id = 0
         planner_model_call_count = 0
-        duplicate_assignment_repair_used = False
+        planner_validation_repair_used = False
         if attempt_observer is not None:
             attempt_id = await attempt_observer.attempt_started(
                 "article_planner",
@@ -443,29 +445,40 @@ class ArticleEditorialPlanner:
                     material_projection=material_projection,
                     reference_map=reference_map,
                 )
-            except DuplicateArticleStoryAssignmentError as exc:
-                duplicate_assignment_repair_used = True
+            except ArticleBriefInputInvariantError:
+                raise
+            except PublicationGenerationError as exc:
+                planner_validation_repair_used = True
                 logger.warning(
-                    "Article planner assigned a Story to multiple lines; requesting one repair"
+                    "Article planner response failed validation (%s); requesting one repair",
+                    type(exc).__name__,
                 )
+                if isinstance(exc, DuplicateArticleStoryAssignmentError):
+                    validation_finding = f"story_key {exc.story_key} appears in multiple lines"
+                elif isinstance(exc, ArticleBriefValidationError):
+                    validation_finding = exc.repair_finding
+                else:
+                    validation_finding = (
+                        "the roadmap failed strict schema, evidence, or coverage validation"
+                    )
                 repair_messages = [
                     *messages,
                     {"role": "assistant", "content": raw_text},
                     {
                         "role": "user",
                         "content": (
-                            "Repair the JSON roadmap that you just returned. Validation found "
-                            "that story_key "
-                            f"{exc.story_key} appears in multiple lines. A coverage Story may "
-                            "appear in exactly one line, and each "
-                            "coverage Story must retain exactly one disposition. Preserve every "
-                            "known support_key that you already cited in a line or in "
-                            "central_support_keys; keep each support_key attached only to a "
-                            "line containing its owning story_key. Keep the same central line, "
-                            "line intents, relations, and dispositions where possible; update "
-                            "line membership and disposition line_id only as needed to remove "
-                            "duplicate Story assignments. Use only the opaque keys from the "
-                            "dossier. Return the corrected JSON object only."
+                            "Repair the JSON roadmap that you just returned. Validation found: "
+                            f"{validation_finding}. Every coverage Story must have exactly one "
+                            "disposition. A Story with citable_support_keys must be assigned "
+                            "BRIEF, WEAVE, or DEVELOP, never OMIT. Each non-OMIT Story must "
+                            "appear in exactly one narrative line, and no story_key may appear "
+                            "in multiple lines. Preserve every known support_key already cited "
+                            "in a line or in central_support_keys; each support_key must be "
+                            "attached only to a line containing its owning story_key. Keep the "
+                            "same central line, intents, relations, and dispositions where "
+                            "possible; change only what is needed to satisfy these rules. Use "
+                            "only the opaque keys from the dossier. Return the corrected JSON "
+                            "object only."
                         ),
                     },
                 ]
@@ -490,7 +503,7 @@ class ArticleEditorialPlanner:
                 dropped_support_keys = previously_cited_support_keys - repaired_support_keys
                 if dropped_support_keys:
                     raise PublicationGenerationError(
-                        "Article planner duplicate-assignment repair dropped cited support keys: "
+                        "Article planner validation repair dropped cited support keys: "
                         f"{sorted(dropped_support_keys)}"
                     ) from exc
                 brief = parse_article_editorial_brief(
@@ -516,7 +529,7 @@ class ArticleEditorialPlanner:
                     "succeeded",
                     metadata={
                         "planner_model_call_count": planner_model_call_count,
-                        "duplicate_story_assignment_repair_used": duplicate_assignment_repair_used,
+                        "planner_validation_repair_used": planner_validation_repair_used,
                     },
                 )
             return brief
@@ -526,15 +539,18 @@ class ArticleEditorialPlanner:
                     attempt_id,
                     "failed",
                     error_kind=(
-                        "duplicate_story_assignment_repair_failed"
-                        if isinstance(exc, DuplicateArticleStoryAssignmentError)
+                        "planner_input_invariant"
+                        if isinstance(exc, ArticleBriefInputInvariantError)
+                        else "planner_validation_repair_failed"
+                        if planner_validation_repair_used
+                        and isinstance(exc, PublicationGenerationError)
                         else "invalid_brief"
                         if isinstance(exc, PublicationGenerationError)
                         else "provider_error"
                     ),
                     metadata={
                         "planner_model_call_count": planner_model_call_count,
-                        "duplicate_story_assignment_repair_used": duplicate_assignment_repair_used,
+                        "planner_validation_repair_used": planner_validation_repair_used,
                     },
                 )
             if isinstance(exc, PublicationGenerationError):
