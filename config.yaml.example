@@ -189,6 +189,9 @@ settings:
     # debug_artifact_dir: "data/debug/editorial"
     # generation_retries: 2  # (Deprecated) Adaptive recovery state machine is used instead.
     # generation_retry_delay: 1.0  # (Deprecated) Retained for schema backwards-compatibility.
+    # The article planner emits one disposition for every eligible Story.
+    # Its output budget is separate from the prose writer's budget.
+    # editorial_planner_max_output_tokens: 65536
     # telegraph_access_token: ""  # Optional: generated automatically if omitted
 
   # Weekly Long-Read Articles (Итоги недели, Telegra.ph + Telegram teaser)

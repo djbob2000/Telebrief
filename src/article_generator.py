@@ -1357,7 +1357,11 @@ class ArticleGenerator:
                 )
 
         material_projection = project_article_material(article_ctx)
-        editorial_brief = await ArticleEditorialPlanner(self.provider, self.model).plan(
+        editorial_brief = await ArticleEditorialPlanner(
+            self.provider,
+            self.model,
+            max_output_tokens=(self.config.settings.article.editorial_planner_max_output_tokens),
+        ).plan(
             context=article_ctx,
             coverage_plan=coverage_plan,
             material_projection=material_projection,

@@ -288,7 +288,7 @@ class ArticleEditorialPlanner:
         self,
         provider: AIProvider,
         model: str,
-        max_output_tokens: int = 16_384,
+        max_output_tokens: int = 65_536,
     ) -> None:
         self.provider = provider
         self.model = model

@@ -361,6 +361,9 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
             raise ValueError(f"settings.article.{name} must be a positive integer")
         return int(value)
 
+    editorial_planner_max_output_tokens = _positive_budget(
+        "editorial_planner_max_output_tokens", 65_536
+    )
     editorial_analysis_max_output_tokens = _positive_budget(
         "editorial_analysis_max_output_tokens", editorial_max_output_tokens
     )
@@ -419,6 +422,7 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
         generation_retries=generation_retries,
         generation_retry_delay=float(generation_retry_delay),
         editorial_max_output_tokens=editorial_max_output_tokens,
+        editorial_planner_max_output_tokens=editorial_planner_max_output_tokens,
         editorial_analysis_max_output_tokens=editorial_analysis_max_output_tokens,
         editorial_analysis_compact_max_output_tokens=editorial_analysis_compact_max_output_tokens,
         editorial_writer_max_output_tokens=editorial_writer_max_output_tokens,

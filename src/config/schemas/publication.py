@@ -76,6 +76,7 @@ class ArticleConfig:
     generation_retries: int = 2  # Deprecated: retained for schema backwards compatibility
     generation_retry_delay: float = 1.0  # Deprecated: retained for schema backwards compatibility
     editorial_max_output_tokens: int = 65_536
+    editorial_planner_max_output_tokens: int = 65_536
     editorial_analysis_max_output_tokens: int = 65_536
     editorial_analysis_compact_max_output_tokens: int = 16_384
     editorial_writer_max_output_tokens: int = 65_536

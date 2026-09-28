@@ -283,6 +283,7 @@ settings:
     # Long-form stages have separate completion budgets because their response
     # shapes and failure modes are different.
     editorial_max_output_tokens: 131072
+    editorial_planner_max_output_tokens: 65536
     editorial_analysis_max_output_tokens: 131072
     editorial_analysis_compact_max_output_tokens: 131072
     editorial_writer_max_output_tokens: 131072
