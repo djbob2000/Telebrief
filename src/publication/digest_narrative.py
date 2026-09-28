@@ -3,18 +3,25 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, replace
 from typing import Any, Mapping, Sequence
 
 from src.editorial_models import StoryCard
-from src.publication.article_claims import ConcreteClaim, find_unsupported_claims
+from src.publication.article_claims import (
+    ConcreteClaim,
+    extract_concrete_claims,
+    find_unsupported_claims,
+)
 from src.publication.digest_presentation import RequiredDigestFact
 from src.publication.errors import DigestCoverageInvariantError
 from src.publication.evidence import PublicationEvidence
 
 logger = logging.getLogger(__name__)
+
+DIGEST_COMPOSITION_MEMBERSHIP_VERSION = "digest_membership_v2"
 
 _INTERNAL_LEAKAGE_RE = re.compile(r"\[(?:story:\d+|SUPPORT\s+\d+|ref-\d+|tg:\S+)\]", re.IGNORECASE)
 _INTERNAL_REPLY_ANNOTATION_RE = re.compile(
@@ -223,6 +230,49 @@ def _fix_chat_leaks(text: str) -> str:
     """Normalize internal chat/channel references to natural journalistic attribution."""
     if not text:
         return text
+    # Keep community attribution, but remove the technical channel as the
+    # apparent source of the report.
+    local_channel = r"(?:(?:городском|местном|районном|локальном)\s+)?канале"
+    t = re.sub(
+        rf"\bпо\s+сообщению\s+в\s+{local_channel}\b",
+        "по сообщению жителя",
+        text,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        rf"\bпо\s+сообщениям\s+в\s+{local_channel}\b",
+        "по сообщениям жителей",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        rf"\bпубликаци[яи]\s+в\s+{local_channel}\s+указывают,?\s*что",
+        "Жители сообщают, что",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        rf"\b(?:(позже|ранее)\s+)?в\s+{local_channel}\s+появил(?:ось|ись)\s+сообщени[ея],?\s*что",
+        lambda match: (
+            f"{match.group(1).capitalize()} жители сообщили, что"
+            if match.group(1)
+            else "Жители сообщили, что"
+        ),
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\bв\s+(?:вечернем|утреннем|дневном)\s+сообщении\s+(?:местного|городского|районного)\s+канала\s+говорится,?\s*что",
+        "По сообщениям жителей,",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\bсообщение\s+(?:местного|городского|районного)\s+канала\s+говорит,?\s*что",
+        "Жители сообщают, что",
+        t,
+        flags=re.IGNORECASE,
+    )
     # 1. "В городских чатах Бердянска обсуждают" -> "Жители Бердянска обсуждают"
     t = re.sub(
         r"\bв\s+(?:городских\s+|местных\s+|районных\s+)?чатах\s+([А-Яа-яA-Za-z-]+)\s+(обсужда\w*|сообща\w*|пиш\w*)\b",
@@ -252,7 +302,15 @@ def _fix_chat_leaks(text: str) -> str:
     )
     t = re.sub(r"\bв\s+(?:местных\s+)?пабликах\b", "в городе", t, flags=re.IGNORECASE)
     t = re.sub(
-        r"\bв\s+(?:телеграм[- ]каналах|telegram[- ]каналах|каналах)\b",
+        r"\bв\s+(?:социальных\s+сетях|соцсетях|"
+        r"(?:городском|местном|районном|локальном)\s+паблике)\b",
+        "в городе",
+        t,
+        flags=re.IGNORECASE,
+    )
+    t = re.sub(
+        r"\bв\s+(?:телеграм[- ]каналах|telegram[- ]каналах|каналах|"
+        r"(?:городском|местном|районном|локальном)\s+канале)\b",
         "в городе",
         t,
         flags=re.IGNORECASE,
@@ -320,6 +378,7 @@ class DigestNarrativeValidationResult:
     is_valid: bool
     violations: tuple[str, ...]
     unsupported_claims: tuple[ConcreteClaim, ...]
+    not_evaluated: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -341,6 +400,11 @@ class DigestNarrativeBlock:
     required_story_groups: tuple[tuple[str, ...], ...] = ()
     support_ids_by_story: tuple[tuple[str, tuple[str, ...]], ...] = ()
     topic_bundles: tuple[Any, ...] = ()
+    # Frozen canonical composition units and their exact fact records. When
+    # present, these replace topic-bundle and legacy membership inference.
+    composition_units: tuple[Any, ...] = ()
+    composition_fact_records: tuple[Any, ...] = ()
+    composition_relations: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -348,6 +412,199 @@ class DigestNarrativePlan:
     """Deterministic plan of immutable narrative digest blocks."""
 
     blocks: tuple[DigestNarrativeBlock, ...]
+    edition_slug: str = ""
+
+
+def _composition_narrative_plan(
+    *,
+    cards: Sequence[StoryCard],
+    rubrics: Sequence[Any],
+    presentation_plan: Any,
+    edition_slug: str = "",
+) -> DigestNarrativePlan:
+    """Project the frozen composition without re-clustering or guessing membership."""
+    composition = getattr(presentation_plan, "composition", None)
+    units = tuple(getattr(composition, "units", ()) or ())
+    if not units:
+        if getattr(composition, "admitted_story_ids", ()) or getattr(
+            composition, "admitted_fact_ids", ()
+        ):
+            raise DigestCoverageInvariantError(
+                "DIGEST_COMPOSITION_MISSING_UNITS: admitted membership has no units"
+            )
+        return DigestNarrativePlan(blocks=(), edition_slug=edition_slug)
+
+    rubric_info: list[tuple[str, str, bool]] = []
+    for rubric in rubrics:
+        if isinstance(rubric, Mapping):
+            rubric_info.append(
+                (
+                    str(rubric.get("id", "")),
+                    str(rubric.get("title") or rubric.get("name") or ""),
+                    bool(rubric.get("fallback", False)),
+                )
+            )
+        else:
+            rubric_info.append(
+                (
+                    str(getattr(rubric, "id", "")),
+                    str(getattr(rubric, "name", "")),
+                    bool(getattr(rubric, "fallback", False)),
+                )
+            )
+
+    labels = {rid: title for rid, title, _ in rubric_info if rid}
+    units_by_rubric: dict[str, list[Any]] = {}
+    seen_unit_ids: set[str] = set()
+    seen_fact_ids: set[str] = set()
+    fact_records = {
+        str(getattr(record, "fact_id", "")): record
+        for record in (getattr(composition, "fact_records", ()) or ())
+        if getattr(record, "fact_id", "")
+    }
+    composition_relations = tuple(getattr(composition, "relations", ()) or ())
+    required_facts = {
+        str(getattr(fact, "fact_id", "")): fact
+        for fact in (getattr(presentation_plan, "required_facts", ()) or ())
+        if getattr(fact, "fact_id", "")
+    }
+    card_ids = {str(getattr(card, "id", "")) for card in cards}
+
+    for unit in units:
+        unit_id = str(getattr(unit, "unit_id", ""))
+        rubric_id = str(getattr(unit, "rubric_id", ""))
+        unit_facts = tuple(str(fid) for fid in (getattr(unit, "fact_ids", ()) or ()))
+        unit_stories = tuple(str(sid) for sid in (getattr(unit, "story_ids", ()) or ()))
+        unit_supports = tuple(str(sid) for sid in (getattr(unit, "support_ids", ()) or ()))
+        if not unit_id or unit_id in seen_unit_ids:
+            raise DigestCoverageInvariantError(f"DIGEST_COMPOSITION_INVALID_UNIT_ID:{unit_id!r}")
+        if rubric_id not in labels:
+            raise DigestCoverageInvariantError(
+                f"DIGEST_COMPOSITION_UNKNOWN_RUBRIC:{unit_id}:{rubric_id}"
+            )
+        if not unit_facts and not unit_stories:
+            raise DigestCoverageInvariantError(f"DIGEST_COMPOSITION_EMPTY_UNIT:{unit_id}")
+        if len(unit_facts) != len(set(unit_facts)) or len(unit_stories) != len(set(unit_stories)):
+            raise DigestCoverageInvariantError(f"DIGEST_COMPOSITION_DUPLICATE_MEMBERSHIP:{unit_id}")
+        if unit_facts and not unit_supports:
+            raise DigestCoverageInvariantError(
+                f"DIGEST_COMPOSITION_FACTS_WITHOUT_SUPPORTS:{unit_id}"
+            )
+        if not unit_facts and not set(unit_stories).issubset(card_ids):
+            raise DigestCoverageInvariantError(f"DIGEST_COMPOSITION_SUMMARY_CARD_MISSING:{unit_id}")
+        record_story_ids: set[str] = set()
+        record_support_ids: set[str] = set()
+        for fact_id in unit_facts:
+            if fact_id in seen_fact_ids:
+                raise DigestCoverageInvariantError(f"DIGEST_COMPOSITION_DUPLICATE_FACT:{fact_id}")
+            record = fact_records.get(fact_id)
+            fact = required_facts.get(fact_id)
+            if record is None or fact is None:
+                raise DigestCoverageInvariantError(
+                    f"DIGEST_COMPOSITION_FACT_RECORD_MISSING:{unit_id}:{fact_id}"
+                )
+            if str(getattr(record, "rubric_id", "")) != rubric_id:
+                raise DigestCoverageInvariantError(
+                    f"DIGEST_COMPOSITION_FACT_RUBRIC_MISMATCH:{unit_id}:{fact_id}"
+                )
+            rec_stories = {str(sid) for sid in getattr(record, "story_ids", ()) or ()}
+            rec_supports = {str(sid) for sid in getattr(record, "support_ids", ()) or ()}
+            fact_stories = {str(sid) for sid in getattr(fact, "story_ids", ()) or ()}
+            if (
+                rec_stories != fact_stories
+                or not rec_supports
+                or not rec_supports.issubset(set(unit_supports))
+            ):
+                raise DigestCoverageInvariantError(
+                    f"DIGEST_COMPOSITION_FACT_PROVENANCE_MISMATCH:{unit_id}:{fact_id}"
+                )
+            record_story_ids.update(rec_stories)
+            record_support_ids.update(rec_supports)
+            seen_fact_ids.add(fact_id)
+        if unit_facts and (
+            record_story_ids != set(unit_stories)
+            or not record_support_ids.issubset(set(unit_supports))
+        ):
+            raise DigestCoverageInvariantError(
+                f"DIGEST_COMPOSITION_UNIT_PROVENANCE_MISMATCH:{unit_id}"
+            )
+        if not unit_facts and not unit_supports:
+            raise DigestCoverageInvariantError(
+                f"DIGEST_COMPOSITION_SUMMARY_WITHOUT_SUPPORTS:{unit_id}"
+            )
+        seen_unit_ids.add(unit_id)
+        units_by_rubric.setdefault(rubric_id, []).append(unit)
+
+    expected_facts = {str(fid) for fid in getattr(composition, "admitted_fact_ids", ()) or ()}
+    if seen_fact_ids != expected_facts:
+        raise DigestCoverageInvariantError(
+            "DIGEST_COMPOSITION_FACT_PARTITION_MISMATCH: "
+            f"missing={sorted(expected_facts - seen_fact_ids)} extra={sorted(seen_fact_ids - expected_facts)}"
+        )
+    expected_story_ids = {str(sid) for sid in getattr(composition, "admitted_story_ids", ()) or ()}
+    unit_story_ids = {str(sid) for unit in units for sid in (getattr(unit, "story_ids", ()) or ())}
+    if unit_story_ids != expected_story_ids:
+        raise DigestCoverageInvariantError(
+            "DIGEST_COMPOSITION_STORY_PARTITION_MISMATCH: "
+            f"missing={sorted(expected_story_ids - unit_story_ids)} extra={sorted(unit_story_ids - expected_story_ids)}"
+        )
+
+    ordered_rubrics = [rid for rid, _title, _fallback in rubric_info if rid in units_by_rubric]
+    blocks: list[DigestNarrativeBlock] = []
+    for rubric_id in ordered_rubrics:
+        rubric_units = tuple(units_by_rubric[rubric_id])
+        block_facts = tuple(
+            required_facts[fact_id] for unit in rubric_units for fact_id in unit.fact_ids
+        )
+        story_ids = tuple(
+            dict.fromkeys(str(sid) for unit in rubric_units for sid in unit.story_ids)
+        )
+        support_ids = tuple(
+            dict.fromkeys(str(sid) for unit in rubric_units for sid in unit.support_ids)
+        )
+        support_by_story: dict[str, list[str]] = {}
+        for unit in rubric_units:
+            unit_fact_ids = set(unit.fact_ids)
+            if unit_fact_ids:
+                for fact_id in unit_fact_ids:
+                    record = fact_records[fact_id]
+                    for story_id in record.story_ids:
+                        owned = support_by_story.setdefault(str(story_id), [])
+                        for support_id in record.support_ids:
+                            if support_id not in owned:
+                                owned.append(support_id)
+            else:
+                for story_id in unit.story_ids:
+                    support_by_story[str(story_id)] = list(unit.support_ids)
+        unit_records = tuple(
+            fact_records[fact_id] for unit in rubric_units for fact_id in unit.fact_ids
+        )
+        blocks.append(
+            DigestNarrativeBlock(
+                block_id=f"block:{rubric_id}:composition",
+                rubric_id=rubric_id,
+                rubric_title=labels[rubric_id],
+                story_ids=story_ids,
+                support_ids=support_ids,
+                canonical_notes=tuple(getattr(fact, "text", "") for fact in block_facts),
+                required_facts=block_facts,
+                required_story_groups=tuple(tuple(unit.story_ids) for unit in rubric_units),
+                support_ids_by_story=tuple(
+                    (sid, tuple(ids)) for sid, ids in support_by_story.items()
+                ),
+                composition_units=rubric_units,
+                composition_fact_records=unit_records,
+                composition_relations=tuple(
+                    relation
+                    for relation in composition_relations
+                    if relation.left_fact_id in {record.fact_id for record in unit_records}
+                    and relation.right_fact_id in {record.fact_id for record in unit_records}
+                ),
+            )
+        )
+    if set(units_by_rubric) != set(ordered_rubrics):
+        raise DigestCoverageInvariantError("DIGEST_COMPOSITION_RUBRIC_ORDER_INVALID")
+    return DigestNarrativePlan(blocks=tuple(blocks), edition_slug=edition_slug)
 
 
 @dataclass(frozen=True)
@@ -417,6 +674,7 @@ class DigestClaimAtom:
     covered_story_ids: tuple[str, ...] = ()
     cited_support_ids: tuple[str, ...] = ()
     covered_fact_ids: tuple[str, ...] = ()
+    summary_unit_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> DigestClaimAtom:
@@ -464,6 +722,13 @@ class DigestClaimAtom:
             covered_story_ids=story_ids,
             cited_support_ids=support_ids,
             covered_fact_ids=fact_ids,
+            summary_unit_ids=tuple(
+                dict.fromkeys(
+                    str(value).strip()
+                    for value in _clean_str_list(raw.get("summary_unit_ids", []))
+                    if str(value).strip()
+                )
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -474,6 +739,8 @@ class DigestClaimAtom:
         }
         if self.covered_fact_ids:
             d["covered_fact_ids"] = list(self.covered_fact_ids)
+        if self.summary_unit_ids:
+            d["summary_unit_ids"] = list(self.summary_unit_ids)
         return d
 
 
@@ -487,6 +754,15 @@ class DigestEditorialItemDraft:
     cited_support_ids: tuple[str, ...] = ()
     claims: tuple[DigestClaimAtom, ...] = ()
     emoji: str = ""
+    # Canonical composition-path identity and membership. Legacy drafts leave
+    # these empty; composition drafts receive them from the frozen plan.
+    item_id: str = ""
+    composition_unit_id: str = ""
+    covered_fact_ids: tuple[str, ...] = ()
+    composition_unit_ids: tuple[str, ...] = ()
+    source_item_ids: tuple[str, ...] = ()
+    source_item_fact_ids: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    composition_merge_id: str = ""
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> DigestEditorialItemDraft:
@@ -614,6 +890,58 @@ class DigestEditorialItemDraft:
             c_text = re.sub(r"\s+вместо\s+220(?:\s*[вВвольт]+)?", "", c_text)
             clean_claims.append(replace(c, text=c_text))
 
+        raw_item_facts = raw.get("covered_fact_ids", [])
+        if isinstance(raw_item_facts, (str, int)):
+            raw_item_facts = [raw_item_facts]
+        if not isinstance(raw_item_facts, list):
+            raise ValueError("covered_fact_ids must be a list")
+        item_fact_ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in raw_item_facts
+                if value and isinstance(value, (str, int)) and str(value).strip()
+            )
+        )
+        raw_composition_units = raw.get("composition_unit_ids", [])
+        if isinstance(raw_composition_units, (str, int)):
+            raw_composition_units = [raw_composition_units]
+        if not isinstance(raw_composition_units, list):
+            raise ValueError("composition_unit_ids must be a list")
+        composition_unit_ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in raw_composition_units
+                if value and isinstance(value, (str, int)) and str(value).strip()
+            )
+        )
+        singular_unit_id = str(raw.get("composition_unit_id", "")).strip()
+        if singular_unit_id and not composition_unit_ids:
+            composition_unit_ids = (singular_unit_id,)
+        elif singular_unit_id and composition_unit_ids != (singular_unit_id,):
+            raise ValueError("composition_unit_id conflicts with composition_unit_ids")
+        raw_source_ids = raw.get("source_item_ids", [])
+        if isinstance(raw_source_ids, (str, int)):
+            raw_source_ids = [raw_source_ids]
+        if not isinstance(raw_source_ids, list):
+            raise ValueError("source_item_ids must be a list")
+        source_item_ids = tuple(
+            dict.fromkeys(
+                str(value).strip()
+                for value in raw_source_ids
+                if value and isinstance(value, (str, int)) and str(value).strip()
+            )
+        )
+        source_item_fact_ids: list[tuple[str, tuple[str, ...]]] = []
+        raw_source_facts = raw.get("source_item_fact_ids", [])
+        if not isinstance(raw_source_facts, list):
+            raise ValueError("source_item_fact_ids must be a list")
+        for source_fact in raw_source_facts:
+            if not isinstance(source_fact, Mapping):
+                raise ValueError("source_item_fact_ids entries must be objects")
+            source_id = str(source_fact.get("item_id", "")).strip()
+            source_facts = tuple(_clean_str_list(source_fact.get("covered_fact_ids", [])))
+            if source_id:
+                source_item_fact_ids.append((source_id, source_facts))
         if not clean_body or not story_ids or not support_ids:
             raise ValueError("digest editorial item requires body, stories and supports")
         return cls(
@@ -623,10 +951,22 @@ class DigestEditorialItemDraft:
             cited_support_ids=support_ids,
             claims=tuple(clean_claims),
             emoji=emoji,
+            item_id=str(raw.get("item_id", "")).strip(),
+            composition_unit_id=(composition_unit_ids[0] if len(composition_unit_ids) == 1 else ""),
+            covered_fact_ids=item_fact_ids,
+            composition_unit_ids=composition_unit_ids,
+            source_item_ids=source_item_ids,
+            source_item_fact_ids=tuple(source_item_fact_ids),
+            composition_merge_id=str(raw.get("composition_merge_id", "")).strip(),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
+            "item_id": self.item_id,
+            "composition_unit_ids": list(
+                self.composition_unit_ids
+                or ((self.composition_unit_id,) if self.composition_unit_id else ())
+            ),
             "headline": self.headline,
             "body": self.body,
             "covered_story_ids": list(self.covered_story_ids),
@@ -634,6 +974,16 @@ class DigestEditorialItemDraft:
             "claims": [c.to_dict() for c in self.claims],
             "emoji": self.emoji,
         }
+        if self.covered_fact_ids:
+            result["covered_fact_ids"] = list(self.covered_fact_ids)
+        if self.source_item_ids:
+            result["source_item_ids"] = list(self.source_item_ids)
+            result["source_item_fact_ids"] = [
+                {"item_id": item_id, "covered_fact_ids": list(fact_ids)}
+                for item_id, fact_ids in self.source_item_fact_ids
+            ]
+            result["composition_merge_id"] = self.composition_merge_id
+        return result
 
 
 @dataclass(frozen=True)
@@ -708,6 +1058,16 @@ def plan_digest_narrative_blocks(
     edition_slug: str = "",
 ) -> DigestNarrativePlan:
     """Build immutable narrative blocks from classified story cards strictly preserving order."""
+    if (
+        presentation_plan is not None
+        and getattr(presentation_plan, "composition", None) is not None
+    ):
+        return _composition_narrative_plan(
+            cards=cards,
+            rubrics=rubrics,
+            presentation_plan=presentation_plan,
+            edition_slug=edition_slug,
+        )
     if not cards:
         return DigestNarrativePlan(blocks=())
 
@@ -1330,6 +1690,426 @@ def strip_unsupported_recommendations(text: str, source_content: str) -> str:
     return re.sub(r"[ \t]+", " ", cleaned).strip()
 
 
+def _validate_composition_membership(
+    draft_block: DigestNarrativeBlockDraft,
+    plan_block: DigestNarrativeBlock,
+) -> list[str]:
+    """Validate exact frozen unit/fact/story/support membership for one block."""
+    errors: list[str] = []
+    units = {str(unit.unit_id): unit for unit in plan_block.composition_units}
+    records = {str(record.fact_id): record for record in plan_block.composition_fact_records}
+    fact_to_unit = {
+        str(fact_id): str(unit.unit_id)
+        for unit in plan_block.composition_units
+        for fact_id in unit.fact_ids
+    }
+    observed_facts: list[str] = []
+    summary_counts: dict[str, int] = dict.fromkeys(units, 0)
+    observed_story_ids: set[str] = set()
+    item_ids: set[str] = set()
+    merge_relations = {
+        _same_fact_merge_id(relation.left_fact_id, relation.right_fact_id): relation
+        for relation in plan_block.composition_relations
+        if str(getattr(relation.kind, "value", relation.kind)) == "SAME_FACT"
+    }
+
+    for item in draft_block.items:
+        prefix = f"COMPOSITION_ITEM:{plan_block.block_id}:{item.item_id or '<missing>'}"
+        if not item.item_id or item.item_id in item_ids:
+            errors.append(f"{prefix}:ITEM_ID_MISSING_OR_DUPLICATE")
+        item_ids.add(item.item_id)
+        unit_ids = tuple(
+            item.composition_unit_ids
+            or ((item.composition_unit_id,) if item.composition_unit_id else ())
+        )
+        if not unit_ids or len(unit_ids) != len(set(unit_ids)):
+            errors.append(f"{prefix}:UNIT_IDS_MISSING_OR_DUPLICATE")
+            continue
+        if any(unit_id not in units for unit_id in unit_ids):
+            errors.append(f"{prefix}:UNKNOWN_UNIT_ID")
+            continue
+        if any(units[unit_id].rubric_id != plan_block.rubric_id for unit_id in unit_ids):
+            errors.append(f"{prefix}:CROSS_RUBRIC_ITEM")
+        fact_ids = tuple(item.covered_fact_ids)
+        if len(fact_ids) != len(set(fact_ids)) or any(fid not in fact_to_unit for fid in fact_ids):
+            errors.append(f"{prefix}:UNKNOWN_OR_DUPLICATE_FACT_ID")
+            continue
+        fact_unit_ids = {fact_to_unit[fid] for fid in fact_ids}
+        summary_unit_ids = {uid for uid in unit_ids if not units[uid].fact_ids}
+        if set(unit_ids) != fact_unit_ids | summary_unit_ids:
+            errors.append(f"{prefix}:UNIT_MEMBERSHIP_DOES_NOT_MATCH_FACTS")
+        if not fact_ids and not summary_unit_ids:
+            errors.append(f"{prefix}:NO_FACT_OR_SUMMARY_MEMBERSHIP")
+        observed_facts.extend(fact_ids)
+        for uid in summary_unit_ids:
+            summary_counts[uid] += 1
+
+        expected_stories: list[str] = []
+        expected_supports: list[str] = []
+        for fact_id in fact_ids:
+            record = records.get(fact_id)
+            if record is None:
+                errors.append(f"{prefix}:FACT_RECORD_MISSING:{fact_id}")
+                continue
+            expected_stories.extend(str(sid) for sid in record.story_ids)
+            expected_supports.extend(str(sid) for sid in record.support_ids)
+        for uid in summary_unit_ids:
+            expected_stories.extend(str(sid) for sid in units[uid].story_ids)
+            expected_supports.extend(str(sid) for sid in units[uid].support_ids)
+        expected_item_stories = tuple(dict.fromkeys(expected_stories))
+        expected_item_supports = tuple(dict.fromkeys(expected_supports))
+        actual_item_stories = tuple(str(sid) for sid in item.covered_story_ids)
+        if len(actual_item_stories) != len(set(actual_item_stories)) or set(
+            actual_item_stories
+        ) != set(expected_item_stories):
+            errors.append(f"{prefix}:DERIVED_STORY_MEMBERSHIP_MISMATCH")
+        actual_item_supports = tuple(str(sid) for sid in item.cited_support_ids)
+        if len(actual_item_supports) != len(set(actual_item_supports)) or set(
+            actual_item_supports
+        ) != set(expected_item_supports):
+            errors.append(f"{prefix}:DERIVED_SUPPORT_MEMBERSHIP_MISMATCH")
+        observed_story_ids.update(item.covered_story_ids)
+
+        claims_facts: list[str] = []
+        claims_summaries: list[str] = []
+        for claim in item.claims:
+            claim_fact_ids = tuple(claim.covered_fact_ids)
+            claim_summary_ids = tuple(claim.summary_unit_ids)
+            if bool(claim_fact_ids) == bool(claim_summary_ids):
+                errors.append(f"{prefix}:CLAIM_MUST_MAP_FACTS_OR_SUMMARY")
+                continue
+            claim_stories: list[str] = []
+            claim_supports: list[str] = []
+            if claim_fact_ids:
+                if not set(claim_fact_ids).issubset(set(fact_ids)):
+                    errors.append(f"{prefix}:CLAIM_FACTS_OUTSIDE_ITEM")
+                    continue
+                for fact_id in claim_fact_ids:
+                    record = records.get(fact_id)
+                    if record:
+                        claim_stories.extend(str(sid) for sid in record.story_ids)
+                        claim_supports.extend(str(sid) for sid in record.support_ids)
+                claims_facts.extend(claim_fact_ids)
+            else:
+                if not set(claim_summary_ids).issubset(summary_unit_ids):
+                    errors.append(f"{prefix}:CLAIM_SUMMARY_OUTSIDE_ITEM")
+                    continue
+                for uid in claim_summary_ids:
+                    claim_stories.extend(str(sid) for sid in units[uid].story_ids)
+                    claim_supports.extend(str(sid) for sid in units[uid].support_ids)
+                claims_summaries.extend(claim_summary_ids)
+            if tuple(claim.covered_story_ids) != tuple(dict.fromkeys(claim_stories)):
+                errors.append(f"{prefix}:CLAIM_STORY_MEMBERSHIP_MISMATCH")
+            if tuple(claim.cited_support_ids) != tuple(dict.fromkeys(claim_supports)):
+                errors.append(f"{prefix}:CLAIM_SUPPORT_MEMBERSHIP_MISMATCH")
+        if len(claims_facts) != len(set(claims_facts)) or set(claims_facts) != set(fact_ids):
+            errors.append(f"{prefix}:CLAIM_FACT_PARTITION_MISMATCH")
+        if (
+            len(claims_summaries) != len(set(claims_summaries))
+            or set(claims_summaries) != summary_unit_ids
+        ):
+            errors.append(f"{prefix}:CLAIM_SUMMARY_PARTITION_MISMATCH")
+
+        if item.source_item_ids:
+            source_map = dict(item.source_item_fact_ids)
+            if (
+                not item.composition_merge_id
+                or len(item.source_item_ids) < 2
+                or len(item.source_item_ids) != len(set(item.source_item_ids))
+                or set(source_map) != set(item.source_item_ids)
+            ):
+                errors.append(f"{prefix}:MERGE_SOURCE_MAP_INVALID")
+                continue
+            if any(not ids for ids in source_map.values()):
+                errors.append(f"{prefix}:MERGE_SOURCE_WITHOUT_FACTS")
+            flattened = [fid for ids in source_map.values() for fid in ids]
+            if len(flattened) != len(set(flattened)) or set(flattened) != set(fact_ids):
+                errors.append(f"{prefix}:MERGE_FACT_UNION_MISMATCH")
+            # Every authorized merge must have at least one exact SAME_FACT edge
+            # between source items, and those edges must connect all input items.
+            owner = {fid: source_id for source_id, fids in source_map.items() for fid in fids}
+            graph: dict[str, set[str]] = {source_id: set() for source_id in item.source_item_ids}
+            for relation in merge_relations.values():
+                left_owner = owner.get(str(relation.left_fact_id))
+                right_owner = owner.get(str(relation.right_fact_id))
+                if left_owner and right_owner and left_owner != right_owner:
+                    graph[left_owner].add(right_owner)
+                    graph[right_owner].add(left_owner)
+            reached: set[str] = set()
+            frontier = [item.source_item_ids[0]]
+            while frontier:
+                node = frontier.pop()
+                if node in reached:
+                    continue
+                reached.add(node)
+                frontier.extend(graph.get(node, ()))
+            if reached != set(item.source_item_ids):
+                errors.append(f"{prefix}:MERGE_SOURCE_GRAPH_NOT_CONNECTED")
+            if item.item_id != f"item:{item.composition_merge_id}":
+                errors.append(f"{prefix}:MERGED_ITEM_ID_MISMATCH")
+
+    expected_facts = {str(fid) for unit in units.values() for fid in unit.fact_ids}
+    if len(observed_facts) != len(set(observed_facts)) or set(observed_facts) != expected_facts:
+        errors.append(f"COMPOSITION_FACT_PARTITION_MISMATCH:{plan_block.block_id}")
+    for unit_id, unit in units.items():
+        if not unit.fact_ids and summary_counts[unit_id] != 1:
+            errors.append(f"COMPOSITION_SUMMARY_UNIT_COVERAGE_MISMATCH:{unit_id}")
+    expected_story_ids = {str(sid) for unit in units.values() for sid in unit.story_ids}
+    if observed_story_ids != expected_story_ids:
+        errors.append(f"COMPOSITION_STORY_COVERAGE_MISMATCH:{plan_block.block_id}")
+    return errors
+
+
+def _composition_visible_risk_validation(
+    *,
+    item: DigestEditorialItemDraft,
+    plan: DigestNarrativePlan,
+    plan_block: DigestNarrativeBlock,
+    support_map: Mapping[str, str],
+) -> tuple[list[str], list[ConcreteClaim], list[str]]:
+    """Check visible risk fields only when they can be bound to exact fact support.
+
+    A failed binding is not evidence that the copy is false. It is recorded as
+    NOT_EVALUATED and left for editorial review; this avoids turning incomplete
+    metadata or a legitimate single-source report into a publication blocker.
+    """
+    from src.publication.digest_presentation import (
+        _load_digest_geography_resolver,
+        _resolved_geographic_scopes,
+    )
+    from src.publication.digest_relation_support import find_unsupported_digest_relations
+
+    violations: list[str] = []
+    unsupported: list[ConcreteClaim] = []
+    not_evaluated: list[str] = []
+    records = {
+        str(record.fact_id): record
+        for record in plan_block.composition_fact_records
+        if getattr(record, "fact_id", None)
+    }
+    # A location can resolve to multiple frozen facts (for example, more than
+    # one report for the same place). They may share proof only when the
+    # composition has explicitly sealed them as one SAME_FACT component.
+    same_fact_parent = {fact_id: fact_id for fact_id in records}
+
+    def same_fact_root(fact_id: str) -> str:
+        parent = same_fact_parent.get(fact_id, fact_id)
+        while parent != same_fact_parent.get(parent, parent):
+            parent = same_fact_parent[parent]
+        node = fact_id
+        while node in same_fact_parent and same_fact_parent[node] != parent:
+            next_node = same_fact_parent[node]
+            same_fact_parent[node] = parent
+            node = next_node
+        return parent
+
+    for relation in plan_block.composition_relations:
+        if str(getattr(relation.kind, "value", relation.kind)) != "SAME_FACT":
+            continue
+        left = str(getattr(relation, "left_fact_id", ""))
+        right = str(getattr(relation, "right_fact_id", ""))
+        if left not in same_fact_parent or right not in same_fact_parent:
+            continue
+        left_root = same_fact_root(left)
+        right_root = same_fact_root(right)
+        if left_root != right_root:
+            # Stable root selection makes the component deterministic.
+            root, child = sorted((left_root, right_root))
+            same_fact_parent[child] = root
+
+    fact_ids = {
+        str(fact_id)
+        for claim in item.claims
+        for fact_id in claim.covered_fact_ids
+        if str(fact_id) in records
+    }
+    signatures = {
+        (
+            str(records[fact_id].canonical_subject),
+            str(records[fact_id].canonical_service),
+            str(records[fact_id].canonical_area),
+            tuple(records[fact_id].canonical_place),
+            str(records[fact_id].service_state),
+            records[fact_id].effective_time,
+        )
+        for fact_id in fact_ids
+    }
+    resolver = _load_digest_geography_resolver(plan.edition_slug)
+    visible_item_text = f"{item.headline} {item.body}"
+    if re.search(
+        r"(?i)\b(?:свет\w*|электр\w*|вод\w*|газ\w*|отоплен\w*|интернет\w*|связ\w*|автобус\w*|транспорт\w*)\b",
+        visible_item_text,
+    ):
+        not_evaluated.append(
+            f"VISIBLE_SERVICE_STATE_BINDING:{plan_block.block_id}:{item.item_id or 'item'}"
+        )
+    if re.search(
+        r"(?i)(?:\b(?:сегодня|сейчас|завтра|вчера|к\s+вечеру|ожида\w*|планир\w*|обеща\w*|восстанов\w*|по\s+графику|по\s+плану|в\s+течение|до\s+конца)\b|\b(?:до|после|с|к)\s+\d{1,2}(?:[:.]\d{2})?\b)",
+        visible_item_text,
+    ):
+        not_evaluated.append(
+            f"VISIBLE_TEMPORAL_SCOPE_BINDING:{plan_block.block_id}:{item.item_id or 'item'}"
+        )
+
+    def record_geography(record: Any) -> tuple[set[str], set[str], bool]:
+        places = {str(value) for value in (getattr(record, "canonical_place", ()) or ()) if value}
+        areas = {str(getattr(record, "canonical_area", ""))} - {""}
+        has_location = bool(places or areas)
+        if resolver is not None and not places:
+            record_location_text = " ".join(
+                str(value)
+                for value in (
+                    getattr(record, "original_location", ""),
+                    getattr(record, "text", ""),
+                )
+                if value
+            )
+            if record_location_text:
+                record_annotation = resolver.resolve(record_location_text)
+                places.update(
+                    str(entity.entity_id)
+                    for entity in getattr(record_annotation, "entities", ())
+                    if getattr(entity, "kind", "") == "place"
+                    and getattr(entity, "confidence", "") == "high"
+                    and getattr(entity, "entity_id", "")
+                )
+                areas.update(_resolved_geographic_scopes(record_location_text, resolver))
+                has_location = bool(places or areas)
+        return places, areas, has_location
+
+    record_geography_by_fact = {
+        fact_id: record_geography(record) for fact_id, record in records.items()
+    }
+
+    def scoped_fact_ids(clause: str) -> tuple[set[str] | None, bool]:
+        """Return exact location-matched facts, or None when no safe binding exists."""
+        if resolver is None:
+            return None, False
+        annotation = resolver.resolve(clause)
+        place_ids = {
+            str(entity.entity_id)
+            for entity in getattr(annotation, "entities", ())
+            if getattr(entity, "kind", "") == "place"
+            and getattr(entity, "confidence", "") == "high"
+        }
+        area_ids = set(_resolved_geographic_scopes(clause, resolver))
+        if not place_ids and not area_ids:
+            return None, False
+        # Prefer a physical place to its parent area. Multiple places or areas
+        # cannot be bound to one risk field without a reliable clause parser.
+        if len(place_ids) > 1 or (not place_ids and len(area_ids) > 1):
+            return None, True
+        matching_fact_ids: set[str] = set()
+        for fact_id in fact_ids:
+            record_places, record_areas, _has_location = record_geography_by_fact[fact_id]
+            if place_ids.intersection(record_places) or (
+                not place_ids and area_ids.intersection(record_areas)
+            ):
+                matching_fact_ids.add(fact_id)
+        return matching_fact_ids, True
+
+    def add_not_evaluated(code: str) -> None:
+        not_evaluated.append(f"{code}:{plan_block.block_id}:{item.item_id or 'item'}")
+
+    for visible_text in (item.headline, item.body):
+        for sentence in re.split(r"(?<=[.!?;])\s+", visible_text or ""):
+            for clause in re.split(
+                r"(?i)(?:,\s*|\s+)(?:тогда как|в то время как|при этом|зато|но|а)\s+",
+                sentence,
+            ):
+                clause = clause.strip(" ,—-\t\n")
+                if not clause:
+                    continue
+                visible_risks = extract_concrete_claims(clause)
+                fact_scope, has_location = scoped_fact_ids(clause)
+                if has_location and fact_scope == set():
+                    # The prose names a resolved location, but the fact records
+                    # do not give us a reliable matching fact. Do not infer that
+                    # a writer invented it from missing/incomplete metadata.
+                    add_not_evaluated("VISIBLE_PLACE_FACT_BINDING")
+                    fact_scope = None
+                if fact_scope is None:
+                    if not has_location and len(signatures) == 1:
+                        fact_scope = set(fact_ids)
+                    else:
+                        if visible_risks:
+                            for risk in visible_risks:
+                                add_not_evaluated(f"RISK_FIELD_FACT_BINDING:{risk.kind}")
+                        if has_location or len(signatures) > 1:
+                            add_not_evaluated("VISIBLE_PROSE_FACT_BINDING")
+                        continue
+
+                fact_components = {same_fact_root(fid) for fid in fact_scope}
+                if len(fact_scope) > 1 and len(fact_components) > 1:
+                    for risk in visible_risks:
+                        add_not_evaluated(f"RISK_FIELD_FACT_BINDING:{risk.kind}")
+                    add_not_evaluated("VISIBLE_PROSE_FACT_BINDING")
+                    continue
+
+                scoped_records = [records[fid] for fid in fact_scope if fid in records]
+                # A single frozen fact can itself name several places. A
+                # visible field cannot safely borrow that fact's supports for
+                # just one place, so leave it for review rather than treating
+                # the mixed location record as a precise binding.
+                if visible_risks and any(
+                    len(set(getattr(record, "canonical_place", ()) or ())) > 1
+                    for record in scoped_records
+                ):
+                    for risk in visible_risks:
+                        add_not_evaluated(f"RISK_FIELD_FACT_BINDING:{risk.kind}")
+                    add_not_evaluated("VISIBLE_PLACE_FACT_BINDING")
+                    continue
+                scoped_signatures = {
+                    (
+                        str(record.canonical_subject),
+                        str(record.canonical_service),
+                        str(record.canonical_area),
+                        tuple(record.canonical_place),
+                        str(record.service_state),
+                        record.effective_time,
+                    )
+                    for record in scoped_records
+                }
+                if len(scoped_signatures) > 1:
+                    for risk in visible_risks:
+                        add_not_evaluated(f"RISK_FIELD_FACT_BINDING:{risk.kind}")
+                    add_not_evaluated("VISIBLE_PROSE_FACT_BINDING")
+                    continue
+
+                for risk in visible_risks:
+                    supported = False
+                    had_exact_support = False
+                    for fact_id in fact_scope:
+                        record = records.get(fact_id)
+                        if record is None:
+                            continue
+                        exact_supports = [
+                            support_map[support_id]
+                            for support_id in (getattr(record, "support_ids", ()) or ())
+                            if support_id in support_map
+                        ]
+                        if not exact_supports:
+                            continue
+                        had_exact_support = True
+                        if not find_unsupported_claims(
+                            risk.raw, exact_supports
+                        ) and not find_unsupported_digest_relations(clause, exact_supports):
+                            supported = True
+                            break
+                    if supported:
+                        continue
+                    if not had_exact_support:
+                        add_not_evaluated(f"RISK_FIELD_SUPPORT_UNAVAILABLE:{risk.kind}")
+                        continue
+                    unsupported.append(risk)
+                    violations.append(
+                        f"UNSUPPORTED_CONCRETE_CLAIM: [{risk.kind}] '{risk.raw}' "
+                        f"is not supported by its exact fact support in block {plan_block.block_id}"
+                    )
+
+    return violations, unsupported, list(dict.fromkeys(not_evaluated))
+
+
 def validate_digest_narrative(
     draft: DigestNarrativeDraft,
     plan: DigestNarrativePlan,
@@ -1349,6 +2129,7 @@ def validate_digest_narrative(
     )
     violations: list[str] = []
     unsupported_claims: list[Any] = []
+    not_evaluated: list[str] = []
     support_map = support_index if support_index is not None else (support_text_by_id or {})
 
     plan_blocks_by_id = {b.block_id: b for b in plan.blocks}
@@ -1369,12 +2150,22 @@ def validate_digest_narrative(
             violations.append(f"UNKNOWN_BLOCK_ID: {out_block.block_id}")
             continue
 
+        composition_path = bool(plan_block.composition_units)
+        if composition_path:
+            violations.extend(_validate_composition_membership(out_block, plan_block))
+        # The legacy path uses cross-draft terms to tolerate old schemas and
+        # synthesized notes. Composition claims already have exact PUBLISH
+        # supports derived from their fact IDs, so unrelated or CONTEXT text
+        # must not act as a factual waiver here.
+        factual_context_terms: Sequence[str] = () if composition_path else ctx_terms
+        factual_known_supports: Sequence[str] = () if composition_path else known_supports
+
         allowed_supports = set(plan_block.support_ids)
         expected_story_ids = set(plan_block.story_ids)
         merge_group_map = dict(plan_block.merge_group_by_story)
 
         flat_story_ids = [sid for item in out_block.items for sid in item.covered_story_ids]
-        if len(flat_story_ids) != len(set(flat_story_ids)):
+        if not composition_path and len(flat_story_ids) != len(set(flat_story_ids)):
             violations.append(f"DUPLICATE_STORY_COVERAGE: {out_block.block_id}")
 
         for sid in flat_story_ids:
@@ -1441,8 +2232,8 @@ def validate_digest_narrative(
                     for unc in find_unsupported_claims(
                         claim.text,
                         c_claim_supports,
-                        allowed_context_terms=ctx_terms,
-                        all_known_draft_supports=known_supports,
+                        allowed_context_terms=factual_context_terms,
+                        all_known_draft_supports=factual_known_supports,
                     ):
                         unsupported_claims.append(unc)
                         violations.append(
@@ -1480,7 +2271,7 @@ def validate_digest_narrative(
                                     f"DIGEST_FACT_SUPPORT_MISSING:{fid} in block {out_block.block_id}"
                                 )
 
-            if len(item.covered_story_ids) > 1 and merge_group_map:
+            if not composition_path and len(item.covered_story_ids) > 1 and merge_group_map:
                 m_groups = {merge_group_map.get(sid, sid) for sid in item.covered_story_ids}
                 if len(m_groups) > 1:
                     violations.append(f"UNRELATED_STORY_GROUPING: {out_block.block_id}")
@@ -1531,45 +2322,70 @@ def validate_digest_narrative(
                         f"UNKNOWN_SUPPORT_ID: {sup_id} not found in support text index"
                     )
 
-            # Validate concrete claims against cited support texts
-            c_supports = [support_map[s] for s in item.cited_support_ids if s in support_map]
-            if item.headline:
+            # Validate visible copy. Composition claims have exact fact-derived
+            # supports above; do not let the entire item support union prove a
+            # detail about a different place/state. The narrow visible bridge
+            # checks extractable fields against scoped evidence and labels
+            # unresolved semantic binding as NOT_EVALUATED.
+            if composition_path:
+                risk_violations, risk_claims, risk_not_evaluated = (
+                    _composition_visible_risk_validation(
+                        item=item,
+                        plan=plan,
+                        plan_block=plan_block,
+                        support_map=support_map,
+                    )
+                )
+                violations.extend(risk_violations)
+                unsupported_claims.extend(risk_claims)
+                not_evaluated.extend(risk_not_evaluated)
+                for claim in item.claims:
+                    claim_supports = [
+                        support_map[sid] for sid in claim.cited_support_ids if sid in support_map
+                    ]
+                    for rec in find_unsupported_digest_recommendations(claim.text, claim_supports):
+                        violations.append(
+                            f"UNSUPPORTED_DIGEST_RECOMMENDATION: '{rec}' in claim of block {out_block.block_id}"
+                        )
+            else:
+                c_supports = [support_map[s] for s in item.cited_support_ids if s in support_map]
+                if item.headline:
+                    for unc in find_unsupported_claims(
+                        item.headline,
+                        c_supports,
+                        allowed_context_terms=factual_context_terms,
+                        all_known_draft_supports=factual_known_supports,
+                    ):
+                        unsupported_claims.append(unc)
+                        violations.append(
+                            f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in headline of block {out_block.block_id}"
+                        )
+                    for rel in find_unsupported_digest_relations(item.headline, c_supports):
+                        violations.append(
+                            f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in headline of block {out_block.block_id}"
+                        )
+                    for rec in find_unsupported_digest_recommendations(item.headline, c_supports):
+                        violations.append(
+                            f"UNSUPPORTED_DIGEST_RECOMMENDATION: '{rec}' in headline of block {out_block.block_id}"
+                        )
                 for unc in find_unsupported_claims(
-                    item.headline,
+                    item.body,
                     c_supports,
-                    allowed_context_terms=ctx_terms,
-                    all_known_draft_supports=known_supports,
+                    allowed_context_terms=factual_context_terms,
+                    all_known_draft_supports=factual_known_supports,
                 ):
                     unsupported_claims.append(unc)
                     violations.append(
-                        f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in headline of block {out_block.block_id}"
+                        f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in body of block {out_block.block_id}"
                     )
-                for rel in find_unsupported_digest_relations(item.headline, c_supports):
+                for rel in find_unsupported_digest_relations(item.body, c_supports):
                     violations.append(
-                        f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in headline of block {out_block.block_id}"
+                        f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in body of block {out_block.block_id}"
                     )
-                for rec in find_unsupported_digest_recommendations(item.headline, c_supports):
+                for rec in find_unsupported_digest_recommendations(item.body, c_supports):
                     violations.append(
-                        f"UNSUPPORTED_DIGEST_RECOMMENDATION: '{rec}' in headline of block {out_block.block_id}"
+                        f"UNSUPPORTED_DIGEST_RECOMMENDATION: '{rec}' in body of block {out_block.block_id}"
                     )
-            for unc in find_unsupported_claims(
-                item.body,
-                c_supports,
-                allowed_context_terms=ctx_terms,
-                all_known_draft_supports=known_supports,
-            ):
-                unsupported_claims.append(unc)
-                violations.append(
-                    f"UNSUPPORTED_CONCRETE_CLAIM: [{unc.kind}] '{unc.raw}' in body of block {out_block.block_id}"
-                )
-            for rel in find_unsupported_digest_relations(item.body, c_supports):
-                violations.append(
-                    f"UNSUPPORTED_DIGEST_RELATION: '{rel.raw}' in body of block {out_block.block_id}"
-                )
-            for rec in find_unsupported_digest_recommendations(item.body, c_supports):
-                violations.append(
-                    f"UNSUPPORTED_DIGEST_RECOMMENDATION: '{rec}' in body of block {out_block.block_id}"
-                )
 
         # Block-level strict required material facts coverage check
         for rf in plan_block.required_facts:
@@ -1603,6 +2419,7 @@ def validate_digest_narrative(
         is_valid=is_valid,
         violations=tuple(violations),
         unsupported_claims=tuple(unsupported_claims),
+        not_evaluated=tuple(dict.fromkeys(not_evaluated)),
     )
 
 
@@ -2857,11 +3674,460 @@ def parse_journalistic_markdown_to_draft(
     return DigestNarrativeDraft(blocks=tuple(blocks), situation_items=())
 
 
+def _publish_support_texts(
+    evidence: Mapping[str, PublicationEvidence],
+) -> dict[str, tuple[str, ...]]:
+    """Index only exact PUBLISH evidence references for canonical writer input."""
+    output: dict[str, list[str]] = {}
+    for evidence_id, item in evidence.items():
+        if str(getattr(item, "publication_use", "")) != "PUBLISH":
+            continue
+        text = str(getattr(item, "text", "") or getattr(item, "source_text", "") or "").strip()
+        if not text:
+            continue
+        refs = {str(evidence_id)}
+        for name in ("evidence_id", "source_ref"):
+            value = str(getattr(item, name, "") or "").strip()
+            if value:
+                refs.add(value)
+        fragment_id = str(getattr(item, "fragment_id", "") or "").strip()
+        if fragment_id:
+            refs.add(f"fragment:{fragment_id}")
+        for ref in refs:
+            values = output.setdefault(ref, [])
+            if text not in values:
+                values.append(text)
+    return {ref: tuple(values) for ref, values in output.items()}
+
+
+def _composition_writer_payload(
+    *,
+    plan: DigestNarrativePlan,
+    evidence: Mapping[str, PublicationEvidence],
+    cards: Sequence[StoryCard],
+) -> list[dict[str, Any]]:
+    """Build canonical input without introducing evidence outside frozen units."""
+    publish_texts = _publish_support_texts(evidence)
+    cards_by_id = {str(getattr(card, "id", "")): card for card in cards}
+    payload: list[dict[str, Any]] = []
+    for block in plan.blocks:
+        unit_rows: list[dict[str, Any]] = []
+        record_by_fact = {
+            str(getattr(record, "fact_id", "")): record for record in block.composition_fact_records
+        }
+        fact_by_id = {str(getattr(fact, "fact_id", "")): fact for fact in block.required_facts}
+        for unit in block.composition_units:
+            unit_id = str(unit.unit_id)
+            fact_ids = tuple(str(fid) for fid in unit.fact_ids)
+            support_rows: list[dict[str, Any]] = []
+            for support_id in unit.support_ids:
+                support_id = str(support_id)
+                texts = publish_texts.get(support_id, ())
+                if not texts and not fact_ids:
+                    # Summary-only units may cite the exact card summary when
+                    # its stable summary ref is explicitly in the frozen unit.
+                    for story_id in unit.story_ids:
+                        card = cards_by_id.get(str(story_id))
+                        if card and support_id == f"{story_id}:summary" and card.summary:
+                            texts = (str(card.summary),)
+                            break
+                        if card and support_id == f"{story_id}:topic" and card.topic:
+                            texts = (str(card.topic),)
+                            break
+                if not texts:
+                    raise DigestCoverageInvariantError(
+                        f"DIGEST_COMPOSITION_SUPPORT_TEXT_MISSING:{unit_id}:{support_id}"
+                    )
+                evidence_item = evidence.get(support_id)
+                support_rows.append(
+                    {
+                        "support_id": support_id,
+                        "texts": list(texts),
+                        "evidence_kind": str(getattr(evidence_item, "kind", "")),
+                        "source_role": str(getattr(evidence_item, "source_role", "")),
+                    }
+                )
+
+            facts_payload: list[dict[str, Any]] = []
+            for fact_id in fact_ids:
+                record = record_by_fact.get(fact_id)
+                fact = fact_by_id.get(fact_id)
+                if record is None or fact is None:
+                    raise DigestCoverageInvariantError(
+                        f"DIGEST_COMPOSITION_FACT_CONTEXT_MISSING:{unit_id}:{fact_id}"
+                    )
+                fact_support_ids = tuple(str(sid) for sid in record.support_ids)
+                if not fact_support_ids or not set(fact_support_ids).issubset(
+                    set(unit.support_ids)
+                ):
+                    raise DigestCoverageInvariantError(
+                        f"DIGEST_COMPOSITION_FACT_SUPPORT_MISMATCH:{unit_id}:{fact_id}"
+                    )
+                facts_payload.append(
+                    {
+                        "fact_id": fact_id,
+                        "text": str(fact.text),
+                        "story_ids": list(record.story_ids),
+                        "support_ids": list(fact_support_ids),
+                        "original_location": str(getattr(record, "original_location", "")),
+                        "canonical_area": str(getattr(record, "canonical_area", "")),
+                        "canonical_place": list(getattr(record, "canonical_place", ()) or ()),
+                        "effective_time": record.effective_time.isoformat()
+                        if record.effective_time
+                        else None,
+                        "observed_time": record.observed_time.isoformat()
+                        if record.observed_time
+                        else None,
+                        "service_state": str(record.service_state),
+                        "epistemic_kind": str(record.epistemic_kind),
+                        "source_publication_time": (
+                            record.source_publication_time.isoformat()
+                            if record.source_publication_time
+                            else None
+                        ),
+                    }
+                )
+            unit_rows.append(
+                {
+                    "composition_unit_id": unit_id,
+                    "allowed_fact_ids": list(fact_ids),
+                    "summary_only_story_ids": list(unit.story_ids) if not fact_ids else [],
+                    "facts": facts_payload,
+                    "supports": support_rows,
+                    "allowed_same_fact_relations": [
+                        {
+                            "merge_id": _same_fact_merge_id(
+                                relation.left_fact_id, relation.right_fact_id
+                            ),
+                            "left_fact_id": relation.left_fact_id,
+                            "right_fact_id": relation.right_fact_id,
+                        }
+                        for relation in unit.allowed_relations
+                        if str(getattr(relation.kind, "value", relation.kind)) == "SAME_FACT"
+                    ],
+                }
+            )
+        payload.append(
+            {
+                "block_id": block.block_id,
+                "rubric_id": block.rubric_id,
+                "rubric_title": block.rubric_title,
+                "composition_units": unit_rows,
+            }
+        )
+    return payload
+
+
+def _same_fact_merge_id(left_fact_id: str, right_fact_id: str) -> str:
+    """Return a stable opaque ID for one unordered SAME_FACT relation."""
+    endpoints = sorted((str(left_fact_id), str(right_fact_id)))
+    digest = hashlib.sha256((endpoints[0] + "\0" + endpoints[1]).encode()).hexdigest()[:20]
+    return f"same_fact:{digest}"
+
+
+def _same_fact_group_merge_id(source_item_ids: Sequence[str], relation_ids: Sequence[str]) -> str:
+    """Return an auditable stable authorization ID for a connected SAME_FACT graph."""
+    items = "|".join(sorted(str(item_id) for item_id in source_item_ids))
+    relations = "|".join(sorted(str(relation_id) for relation_id in relation_ids))
+    digest = hashlib.sha256((items + "\0" + relations).encode()).hexdigest()[:20]
+    return f"same_fact_group:{digest}"
+
+
+def _parse_composition_writer_output(
+    parsed: Any,
+    *,
+    plan: DigestNarrativePlan,
+) -> DigestNarrativeDraft:
+    """Fail closed on absent, unknown, duplicated, or widened composition membership."""
+    if not isinstance(parsed, Mapping) or not isinstance(parsed.get("blocks"), list):
+        raise ValueError("composition draft must contain a blocks list")
+    raw_blocks = parsed["blocks"]
+    expected_block_ids = [block.block_id for block in plan.blocks]
+    received_block_ids = [
+        str(block.get("block_id", "")).strip() if isinstance(block, Mapping) else ""
+        for block in raw_blocks
+    ]
+    if received_block_ids != expected_block_ids:
+        raise ValueError(
+            f"composition block set/order mismatch: expected {expected_block_ids}, got {received_block_ids}"
+        )
+
+    blocks: list[DigestNarrativeBlockDraft] = []
+    global_item_ids: set[str] = set()
+    for block, raw_block in zip(plan.blocks, raw_blocks, strict=True):
+        if not isinstance(raw_block, Mapping) or not isinstance(raw_block.get("items"), list):
+            raise ValueError(f"composition block {block.block_id} must contain items")
+        units = {str(unit.unit_id): unit for unit in block.composition_units}
+        fact_records = {str(record.fact_id): record for record in block.composition_fact_records}
+        fact_to_unit = {
+            str(fact_id): str(unit.unit_id)
+            for unit in block.composition_units
+            for fact_id in unit.fact_ids
+        }
+        used_facts_by_unit: dict[str, list[str]] = {unit_id: [] for unit_id in units}
+        used_summary_by_unit: dict[str, int] = dict.fromkeys(units, 0)
+        items: list[DigestEditorialItemDraft] = []
+        for item_index, raw_item in enumerate(raw_block["items"]):
+            if not isinstance(raw_item, Mapping):
+                raise ValueError(f"{block.block_id}.items[{item_index}] must be an object")
+            raw_unit_ids = raw_item.get("composition_unit_ids")
+            if not isinstance(raw_unit_ids, list) or not raw_unit_ids:
+                raise ValueError("composition item must name one or more composition_unit_ids")
+            unit_ids = tuple(str(unit_id).strip() for unit_id in raw_unit_ids)
+            if len(unit_ids) != len(set(unit_ids)):
+                raise ValueError("composition item contains duplicate unit IDs")
+            item_units = [units.get(unit_id) for unit_id in unit_ids]
+            if any(unit is None for unit in item_units):
+                raise ValueError(f"unknown composition_unit_id in {block.block_id}: {unit_ids!r}")
+            if any(
+                str(unit.rubric_id) != block.rubric_id for unit in item_units if unit is not None
+            ):
+                raise ValueError("composition items may combine only units from the same rubric")
+            if "covered_story_ids" in raw_item or "cited_support_ids" in raw_item:
+                raise ValueError(
+                    "writer may not author Story or support membership on composition path"
+                )
+            raw_fact_ids = raw_item.get("covered_fact_ids")
+            if not isinstance(raw_fact_ids, list):
+                raise ValueError("composition item covered_fact_ids must be a list")
+            fact_ids = tuple(str(fid).strip() for fid in raw_fact_ids)
+            if len(fact_ids) != len(set(fact_ids)):
+                raise ValueError(f"duplicate item fact membership in {unit_ids}")
+            if any(fid not in fact_to_unit for fid in fact_ids):
+                raise ValueError(f"unknown fact ID in composition item {unit_ids}")
+            item_fact_owner_ids = {fact_to_unit[fid] for fid in fact_ids}
+            item_summary_unit_ids = {unit_id for unit_id in unit_ids if not units[unit_id].fact_ids}
+            exact_item_unit_ids = item_fact_owner_ids | item_summary_unit_ids
+            if set(unit_ids) != exact_item_unit_ids:
+                raise ValueError(
+                    f"composition unit IDs do not match item facts/summary membership: {unit_ids}"
+                )
+            for fact_id in fact_ids:
+                used_facts_by_unit[fact_to_unit[fact_id]].append(fact_id)
+            for unit_id in item_summary_unit_ids:
+                used_summary_by_unit[unit_id] += 1
+                if used_summary_by_unit[unit_id] > 1:
+                    raise ValueError(f"summary-only unit {unit_id} is represented more than once")
+
+            stories_for_item: list[str] = []
+            supports_for_item: list[str] = []
+            claims_raw = raw_item.get("claims")
+            if not isinstance(claims_raw, list) or not claims_raw:
+                raise ValueError(f"composition item {unit_ids} must contain claims")
+            claims: list[DigestClaimAtom] = []
+            claim_fact_ids: list[str] = []
+            claim_summary_unit_ids: list[str] = []
+            for raw_claim in claims_raw:
+                if (
+                    not isinstance(raw_claim, Mapping)
+                    or "cited_support_ids" in raw_claim
+                    or "covered_story_ids" in raw_claim
+                ):
+                    raise ValueError(
+                        "writer may not author claim Story/support membership on composition path"
+                    )
+                text = str(raw_claim.get("text", "")).strip()
+                if not text:
+                    raise ValueError(f"empty composition claim in units {unit_ids}")
+                raw_claim_facts = raw_claim.get("covered_fact_ids")
+                if not isinstance(raw_claim_facts, list):
+                    raise ValueError("composition claim covered_fact_ids must be a list")
+                claim_facts = tuple(str(fid).strip() for fid in raw_claim_facts)
+                raw_claim_summary_units = raw_claim.get("summary_unit_ids", [])
+                if not isinstance(raw_claim_summary_units, list):
+                    raise ValueError("composition claim summary_unit_ids must be a list")
+                claim_summary_units = tuple(str(uid).strip() for uid in raw_claim_summary_units)
+                if len(claim_facts) != len(set(claim_facts)) or not set(claim_facts).issubset(
+                    set(fact_ids)
+                ):
+                    raise ValueError(f"claim fact membership outside item {unit_ids}")
+                if len(claim_summary_units) != len(set(claim_summary_units)) or not set(
+                    claim_summary_units
+                ).issubset(item_summary_unit_ids):
+                    raise ValueError(f"claim summary membership outside item {unit_ids}")
+                if bool(claim_facts) == bool(claim_summary_units):
+                    raise ValueError(
+                        "each composition claim must cover facts OR summary units, not neither/both"
+                    )
+                claim_stories: list[str] = []
+                claim_supports: list[str] = []
+                if claim_facts:
+                    for fact_id in claim_facts:
+                        record = fact_records.get(fact_id)
+                        if record is None:
+                            raise ValueError(f"missing provenance record for {fact_id}")
+                        claim_stories.extend(str(sid) for sid in record.story_ids)
+                        claim_supports.extend(str(sid) for sid in record.support_ids)
+                else:
+                    for summary_unit_id in claim_summary_units:
+                        unit = units[summary_unit_id]
+                        claim_stories.extend(str(sid) for sid in unit.story_ids)
+                        claim_supports.extend(str(sid) for sid in unit.support_ids)
+                claim_story_ids = tuple(dict.fromkeys(claim_stories))
+                claim_support_ids = tuple(dict.fromkeys(claim_supports))
+                if not claim_story_ids or not claim_support_ids:
+                    raise ValueError(f"claim in {unit_ids} has no derived provenance")
+                claims.append(
+                    DigestClaimAtom(
+                        text=text,
+                        covered_story_ids=claim_story_ids,
+                        cited_support_ids=claim_support_ids,
+                        covered_fact_ids=claim_facts,
+                        summary_unit_ids=claim_summary_units,
+                    )
+                )
+                claim_fact_ids.extend(claim_facts)
+                claim_summary_unit_ids.extend(claim_summary_units)
+                stories_for_item.extend(claim_story_ids)
+                supports_for_item.extend(claim_support_ids)
+            if len(claim_fact_ids) != len(set(claim_fact_ids)) or set(claim_fact_ids) != set(
+                fact_ids
+            ):
+                raise ValueError(f"claims do not exactly partition item facts in {unit_ids}")
+            if (
+                len(claim_summary_unit_ids) != len(set(claim_summary_unit_ids))
+                or set(claim_summary_unit_ids) != item_summary_unit_ids
+            ):
+                raise ValueError(f"claims do not exactly partition summary units in {unit_ids}")
+            story_ids = tuple(dict.fromkeys(stories_for_item))
+            support_ids = tuple(dict.fromkeys(supports_for_item))
+            allowed_story_ids = {
+                str(sid) for unit_id in unit_ids for sid in units[unit_id].story_ids
+            }
+            allowed_support_ids = {
+                str(sid) for unit_id in unit_ids for sid in units[unit_id].support_ids
+            }
+            if not set(story_ids).issubset(allowed_story_ids):
+                raise ValueError(f"derived Stories outside composition units {unit_ids}")
+            if not set(support_ids).issubset(allowed_support_ids):
+                raise ValueError(f"derived supports outside composition units {unit_ids}")
+            stable_members = "|".join(
+                (*sorted(unit_ids), *sorted(fact_ids), *sorted(item_summary_unit_ids))
+            )
+            item_hash = hashlib.sha256(stable_members.encode()).hexdigest()[:16]
+            item_id = f"item:{item_hash}"
+            if item_id in global_item_ids:
+                raise ValueError(f"duplicate stable item ID: {item_id}")
+            global_item_ids.add(item_id)
+            item_data = {
+                "item_id": item_id,
+                "composition_unit_ids": list(unit_ids),
+                "covered_fact_ids": list(fact_ids),
+                "headline": raw_item.get("headline", ""),
+                "body": raw_item.get("body", ""),
+                "emoji": raw_item.get("emoji", ""),
+                "covered_story_ids": list(story_ids),
+                "cited_support_ids": list(support_ids),
+                "claims": [
+                    {
+                        "text": claim.text,
+                        "covered_story_ids": list(claim.covered_story_ids),
+                        "cited_support_ids": list(claim.cited_support_ids),
+                        "covered_fact_ids": list(claim.covered_fact_ids),
+                        "summary_unit_ids": list(claim.summary_unit_ids),
+                    }
+                    for claim in claims
+                ],
+            }
+            items.append(DigestEditorialItemDraft.from_dict(item_data))
+
+        for unit_id, unit in units.items():
+            if unit.fact_ids:
+                expected = {str(fid) for fid in unit.fact_ids}
+                actual_list = used_facts_by_unit[unit_id]
+                if len(actual_list) != len(set(actual_list)) or set(actual_list) != expected:
+                    raise ValueError(
+                        f"composition unit fact partition mismatch for {unit_id}: "
+                        f"missing={sorted(expected - set(actual_list))}"
+                    )
+            elif used_summary_by_unit[unit_id] != 1:
+                raise ValueError(f"summary-only composition unit missing item: {unit_id}")
+        blocks.append(DigestNarrativeBlockDraft(block_id=block.block_id, items=tuple(items)))
+    return DigestNarrativeDraft(blocks=tuple(blocks), situation_items=())
+
+
 class DigestNarrativeWriter:
     """Single-call narrative digest writer synthesizing flowing prose across rubric blocks."""
 
     def __init__(self, provider: Any) -> None:
         self._provider = provider
+
+    async def _generate_composition_draft(
+        self,
+        *,
+        plan: DigestNarrativePlan,
+        cards: Sequence[StoryCard],
+        evidence: Mapping[str, PublicationEvidence],
+        language: str,
+        max_output_tokens: int,
+        model: str | None,
+    ) -> DigestNarrativeDraft:
+        """Write only against frozen composition-unit membership."""
+        import json
+
+        from src.publication.narrative_contract import build_digest_narrative_contract
+
+        blocks_payload = _composition_writer_payload(
+            plan=plan,
+            evidence=evidence,
+            cards=cards,
+        )
+        schema_desc = (
+            '{"blocks":[{"block_id":"exact input block_id","items":[{'
+            '"composition_unit_ids":["one or more exact unit IDs from this same-rubric block"],'
+            '"covered_fact_ids":["exact facts this item covers; empty only when all named units are summary-only"],'
+            '"emoji":"optional short semantic emoji",'
+            '"headline":"short specific reader headline",'
+            '"body":"cohesive concise prose",'
+            '"claims":[{"text":"one grounded proposition",'
+            '"covered_fact_ids":["exact fact IDs supporting this claim"],'
+            '"summary_unit_ids":["for a summary-only claim, exact summary-only unit IDs it represents"]}]'
+            "}]}]}"
+        )
+        system_prompt = (
+            f"You are a careful local-news editor writing a scan-first digest in {language}.\n"
+            "Write fluent, natural prose from the supplied frozen composition plan.\n"
+            "COMPOSITION CONTRACT:\n"
+            "- Every item names one or more exact composition_unit_ids from this block; units in an item must belong to this same rubric. Do not invent, shorten, or infer IDs. The units define which material an item may represent; they do not require one visible item each.\n"
+            "- Across the whole block, every allowed fact ID must occur in exactly one item's covered_fact_ids. Items may weave compatible same-rubric units together or split a unit when that makes its places or situations clearer. No fact may be omitted, duplicated, or moved outside its unit.\n"
+            "- Every summary-only unit must appear in exactly one item's composition_unit_ids and exactly one claim's summary_unit_ids. Summary-only units may be woven together when that reads naturally; keep each distinct report recognizable.\n"
+            "- Every factual claim must list the exact fact ID or IDs it expresses. Claims must partition each item's facts exactly once. A summary-only claim lists no covered_fact_ids and names its exact summary_unit_ids. Do not write factual claims outside listed facts.\n"
+            "- Do not output covered_story_ids or cited_support_ids. Python derives both from the frozen fact-to-evidence map.\n"
+            "- Use only facts and PUBLISH supports provided for that unit. A single PUBLISH community report is publishable: preserve its reported/uncertain status with natural attribution; do not demand corroboration or official confirmation. Never upgrade it to an established or official fact.\n"
+            "- Keep a concrete local location attached to its own fact. Do not infer proximity, a shared district, a cause, or a city-wide condition. When one item weaves units from different locations, mention each named place in its own clause or sentence; a shared rubric is not a shared neighborhood. Use only explicitly supported localized contrasts.\n"
+            "- Avoid chat/forum language, filler, generic status phrases, advice, and invented context. Use a specific headline and readable body; do not repeat the headline verbatim.\n\n"
+            f"{build_digest_narrative_contract(output_language=language)}\n\n"
+            "Return only valid JSON matching this schema; include every input block in the same order:\n"
+            f"{schema_desc}"
+        )
+        user_prompt = json.dumps({"blocks": blocks_payload}, ensure_ascii=False, indent=2)
+        chat_kwargs: dict[str, Any] = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.2,
+            "reasoning_effort": "none",
+            "thinking": False,
+            "max_tokens": max_output_tokens or 4096,
+        }
+        if model:
+            chat_kwargs["model"] = model
+        raw_response = await self._provider.chat_completion(**chat_kwargs)
+        cleaned = (raw_response or "").strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.splitlines()
+            if lines and lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].startswith("```"):
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+        first_brace, last_brace = cleaned.find("{"), cleaned.rfind("}")
+        if first_brace < 0 or last_brace <= first_brace:
+            raise ValueError("composition writer response did not contain a JSON object")
+        parsed = json.loads(cleaned[first_brace : last_brace + 1])
+        return _parse_composition_writer_output(parsed, plan=plan)
 
     async def generate_journalistic_digest(
         self,
@@ -3161,6 +4427,16 @@ class DigestNarrativeWriter:
 
         from src.publication.narrative_contract import build_digest_narrative_contract
 
+        if plan.blocks and any(getattr(block, "composition_units", ()) for block in plan.blocks):
+            return await self._generate_composition_draft(
+                plan=plan,
+                cards=cards,
+                evidence=evidence,
+                language=language,
+                max_output_tokens=max_output_tokens,
+                model=model,
+            )
+
         has_topic_bundles = any(getattr(b, "topic_bundles", None) for b in plan.blocks)
 
         blocks_payload = []
@@ -3333,7 +4609,7 @@ class DigestNarrativeWriter:
                 "- NEVER mention chat sources or social channels: forbidden phrases include 'в чатах', 'в городских чатах', 'в каналах', 'участники чата', 'в пабликах', 'перекличка'. Always translate into natural journalistic language: 'жители сообщают', 'в городе отмечают', 'по сообщениям горожан' or state facts directly.\n"
                 "- Brand and facility recognition: commercial names such as «Семья», «Экватор», «Улей», «Мера», «Грация», «Зеркальный» are retail stores, commercial brands, or shopping centers, NOT human families or natural phenomena. Never refer to a store «Семья» as human families ('семьи пострадали' -> 'магазин «Семья» получил повреждения').\n"
                 "- Single incident consolidation: all reports relating to the same incident, strike, or facility (e.g. night strike on ТРЦ «Экватор», fire localization, warehouse damage, and affected tenant stores) belong in ONE cohesive editorial item. Never split stages or tenant stores of the same incident into separate bullet points.\n"
-                "- Questions are not news: conversational resident questions ('где купить', 'как проехать', 'кто знает') are context, not news. Never output meta-news items about residents asking questions; report only substantive, confirmed civic facts and service states.\n"
+                "- Questions are context, not answers or standalone factual reports; never turn them into meta-news or operational status. Report source-supported civic facts and service states faithfully. An eligible single-source community PUBLISH report remains publishable with honest attribution; do not require corroboration or official confirmation.\n"
                 "- Do NOT invent compound Frankenstein headlines merging unrelated topics, separate facilities, or distinct businesses (e.g. NEVER write 'X пострадал, где купить Y'). Keep separate businesses, different facilities, and unrelated incidents distinct.\n"
                 "- Rich local detail: preserve concrete micro-locations (districts, streets, landmarks), contrasts between neighborhoods, specific durations, equipment, and practical resident consequences from 'fact_ledger'. Do not flatten concrete lived reality into vague generic summaries.\n\n"
                 f"{narrative_contract}\n\n"
@@ -4200,12 +5476,27 @@ def build_digest_support_text_index(
     """Build unified mapping from support IDs and synthesized card IDs to exact support texts."""
     index: dict[str, str] = {}
 
-    # 1. Primary publication evidence items
+    # 1. Primary PUBLISH evidence and its canonical source/fragment aliases.
     for eid, evi in evidence.items():
+        if getattr(evi, "publication_use", "") != "PUBLISH":
+            continue
         if getattr(evi, "text", None):
             index[eid] = evi.text
         elif getattr(evi, "source_text", None):
             index[eid] = evi.source_text
+        text = str(getattr(evi, "text", "") or getattr(evi, "source_text", "") or "").strip()
+        if text:
+            for ref in (
+                str(getattr(evi, "evidence_id", "") or "").strip(),
+                str(getattr(evi, "source_ref", "") or "").strip(),
+                (
+                    f"fragment:{evi.fragment_id}"
+                    if getattr(evi, "fragment_id", None) is not None
+                    else ""
+                ),
+            ):
+                if ref and ref not in index:
+                    index[ref] = text
 
     # 2. Frozen input writer records if present
     if frozen_input is not None and getattr(frozen_input, "writer_bundle", None):

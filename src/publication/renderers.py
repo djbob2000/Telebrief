@@ -3,16 +3,161 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import logging
 import re
+from dataclasses import dataclass
 from typing import Any, Sequence
 
 from src.config_loader import DigestGroupConfig, DigestRubricsConfig
 from src.editorial_models import StoryCard
 from src.publication.digest_contracts import GENERIC_FALLBACK_TOPICS
 from src.publication.editorial_adapter import FrozenEditorialInput
+from src.timezones import get_timezone
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class TelegramTextEntity:
+    """A Telegram formatting entity measured in UTF-16 code units."""
+
+    type: str
+    offset: int
+    length: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": self.type, "offset": self.offset, "length": self.length}
+
+
+@dataclass(frozen=True)
+class RenderedDigestArtifact:
+    """The immutable reader-visible digest payload shared by preview and delivery."""
+
+    visible_text: str
+    parse_mode: str | None
+    entities: tuple[TelegramTextEntity, ...]
+    visible_character_count: int
+    utf16_character_count: int
+    content_hash: str
+    version: str = "digest-artifact-v1"
+
+    def as_metadata(self) -> dict[str, Any]:
+        """Return compact non-content metadata; the visible text is publication.body."""
+        return {
+            "version": self.version,
+            "parse_mode": self.parse_mode,
+            "entities": [entity.to_dict() for entity in self.entities],
+            "visible_character_count": self.visible_character_count,
+            "utf16_character_count": self.utf16_character_count,
+            "content_hash": self.content_hash,
+        }
+
+    @classmethod
+    def from_metadata(cls, visible_text: str, metadata: dict[str, Any]) -> RenderedDigestArtifact:
+        """Rehydrate the delivery/preview artifact without duplicating publication text."""
+        entities = tuple(
+            TelegramTextEntity(
+                type=str(raw["type"]),
+                offset=int(raw["offset"]),
+                length=int(raw["length"]),
+            )
+            for raw in metadata.get("entities", ())
+            if isinstance(raw, dict)
+        )
+        artifact = cls(
+            visible_text=visible_text,
+            parse_mode=metadata.get("parse_mode"),
+            entities=entities,
+            visible_character_count=int(metadata.get("visible_character_count", len(visible_text))),
+            utf16_character_count=int(
+                metadata.get("utf16_character_count", _utf16_length(visible_text))
+            ),
+            content_hash=str(metadata.get("content_hash", "")),
+            version=str(metadata.get("version", "digest-artifact-v1")),
+        )
+        if artifact.content_hash != hashlib.sha256(visible_text.encode("utf-8")).hexdigest():
+            raise ValueError("published body does not match canonical digest artifact hash")
+        if artifact.visible_character_count != len(visible_text):
+            raise ValueError(
+                "published body length does not match canonical digest artifact metadata"
+            )
+        if artifact.utf16_character_count != _utf16_length(visible_text):
+            raise ValueError("published body UTF-16 length does not match artifact metadata")
+        return artifact
+
+
+def _utf16_length(text: str) -> int:
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _markdown_digest_to_artifact(markdown_text: str) -> RenderedDigestArtifact:
+    """Strip this renderer's small Markdown subset and create Telegram entities.
+
+    Digest prose is stored and delivered as plain visible text plus explicit entities,
+    so preview, auditing, and Telegram cannot disagree because of parser fallbacks.
+    """
+    patterns = (
+        ("bold", re.compile(r"\*\*(.+?)\*\*", re.DOTALL)),
+        ("bold", re.compile(r"(?m)^\*([^*\n]+)\*$")),
+        ("italic", re.compile(r"(?m)^_([^_\n]+)_$")),
+    )
+    matches: list[tuple[int, int, int, str, str]] = []
+    for priority, (entity_type, pattern) in enumerate(patterns):
+        for match in pattern.finditer(markdown_text):
+            matches.append(
+                (
+                    match.start(),
+                    match.end(),
+                    priority,
+                    entity_type,
+                    match.group(1),
+                )
+            )
+    matches.sort(key=lambda item: (item[0], item[2], -(item[1] - item[0])))
+
+    output: list[str] = []
+    entities: list[TelegramTextEntity] = []
+    source_pos = 0
+    consumed_until = -1
+    for start, end, _priority, entity_type, contents in matches:
+        if start < consumed_until or start < source_pos:
+            continue
+        plain_prefix = markdown_text[source_pos:start]
+        output.append(plain_prefix)
+        entity_offset = _utf16_length("".join(output))
+        output.append(contents)
+        entities.append(
+            TelegramTextEntity(
+                type=entity_type,
+                offset=entity_offset,
+                length=_utf16_length(contents),
+            )
+        )
+        source_pos = end
+        consumed_until = end
+    output.append(markdown_text[source_pos:])
+    visible_text = "".join(output).strip()
+
+    # Renderer markup may start or end with whitespace around the whole post. The
+    # published artifact is trimmed too, so shift any affected entity offsets.
+    leading = len("".join(output)) - len("".join(output).lstrip())
+    if leading:
+        leading_utf16 = _utf16_length("".join(output)[:leading])
+        entities = [
+            TelegramTextEntity(e.type, max(0, e.offset - leading_utf16), e.length)
+            for e in entities
+            if e.offset + e.length > leading_utf16
+        ]
+    entities = [e for e in entities if e.offset + e.length <= _utf16_length(visible_text)]
+    return RenderedDigestArtifact(
+        visible_text=visible_text,
+        parse_mode=None,
+        entities=tuple(entities),
+        visible_character_count=len(visible_text),
+        utf16_character_count=_utf16_length(visible_text),
+        content_hash=hashlib.sha256(visible_text.encode("utf-8")).hexdigest(),
+    )
 
 
 # Standard category definitions with emojis and keywords
@@ -338,10 +483,14 @@ class PublicationDigestRenderer:
         *,
         edition_name: str = "Бердянск",
         snapshot_at: dt.datetime | None = None,
+        timezone_name: str = "UTC",
         narrative_draft: Any | None = None,
         presentation_plan: Any | None = None,
     ) -> tuple[str, str, str]:
-        date_str = (snapshot_at or dt.datetime.now(dt.timezone.utc)).strftime("%d.%m.%Y")
+        local_snapshot = (snapshot_at or dt.datetime.now(dt.timezone.utc)).astimezone(
+            get_timezone(timezone_name)
+        )
+        date_str = local_snapshot.strftime("%d.%m.%Y")
         title = (
             f"Дайджест: {edition_name} · {date_str}" if edition_name else f"Дайджест · {date_str}"
         )
@@ -575,17 +724,48 @@ class PublicationDigestRenderer:
         lead = ""
         return title, lead, body
 
+    def render_grouped_digest_artifact(
+        self,
+        frozen_input: FrozenEditorialInput,
+        *,
+        edition_name: str = "Бердянск",
+        snapshot_at: dt.datetime | None = None,
+        timezone_name: str = "UTC",
+        narrative_draft: Any | None = None,
+        presentation_plan: Any | None = None,
+    ) -> RenderedDigestArtifact:
+        """Render the exact complete post payload for audit, preview, and delivery."""
+        _title, lead, body = self.render_grouped_digest(
+            frozen_input,
+            edition_name=edition_name,
+            snapshot_at=snapshot_at,
+            timezone_name=timezone_name,
+            narrative_draft=narrative_draft,
+            presentation_plan=presentation_plan,
+        )
+        # The grouped digest renderer already includes its title and intentionally
+        # has no synthetic lead; retain the compatibility lead only if a future
+        # caller supplies one that is not already rendered.
+        raw_text = body.strip()
+        if lead.strip() and not raw_text.startswith(lead.strip()):
+            raw_text = f"{lead.strip()}\n\n{raw_text}" if raw_text else lead.strip()
+        return _markdown_digest_to_artifact(raw_text)
+
     def render_grouped_digest_chunks(
         self,
         frozen_input: FrozenEditorialInput,
         *,
         edition_name: str = "Бердянск",
         snapshot_at: dt.datetime | None = None,
+        timezone_name: str = "UTC",
         max_chars: int = 3900,
     ) -> list[str]:
         """Render digest and split into Telegram message chunks if it exceeds max length."""
         _, _, body = self.render_grouped_digest(
-            frozen_input, edition_name=edition_name, snapshot_at=snapshot_at
+            frozen_input,
+            edition_name=edition_name,
+            snapshot_at=snapshot_at,
+            timezone_name=timezone_name,
         )
         return split_into_telegram_chunks(body, max_chars=max_chars)
 
@@ -595,10 +775,14 @@ class PublicationDigestRenderer:
         *,
         edition_name: str = "Бердянск",
         snapshot_at: dt.datetime | None = None,
+        timezone_name: str = "UTC",
     ) -> tuple[str, str, str]:
         """Backward-compatible channel-bullet renderer."""
         return self.render_grouped_digest(
-            frozen_input, edition_name=edition_name, snapshot_at=snapshot_at
+            frozen_input,
+            edition_name=edition_name,
+            snapshot_at=snapshot_at,
+            timezone_name=timezone_name,
         )
 
 

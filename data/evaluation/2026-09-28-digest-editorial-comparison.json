@@ -1,0 +1,76 @@
+{
+  "manifest_version": "digest-editorial-comparison-v1",
+  "purpose": "Human editorial comparison for the Event-First scan-first digest; this is not a test fixture.",
+  "edition": {
+    "slug": "berdyansk",
+    "profile_path": "data/city_profiles/berdyansk.yaml",
+    "profile_version": "record the deployed profile hash with each preview"
+  },
+  "implementation_versions": {
+    "eligibility": "v1",
+    "selection_semantics": "v3",
+    "composition": "digest_composition_v1",
+    "narrative_prompt": "event-digest-narrative-v7-composition",
+    "editor_prompt": "digest-editorializer-v3-composition",
+    "diagnostics": "digest-diagnostics-v2"
+  },
+  "historical_comparison": {
+    "status": "NOT_AVAILABLE",
+    "preview_86_12h": {
+      "status": "NOT_AVAILABLE",
+      "description": "The specification mentions Berdyansk preview 86 but the source snapshot, exact cutoff, output text, model/configuration, and run metadata are not present in the available workspace."
+    },
+    "rich_24h": {
+      "status": "NOT_AVAILABLE",
+      "description": "The specification records a budget failure before a preview body was produced; no matching frozen input or model/configuration is available."
+    },
+    "parity_claim": false
+  },
+  "current_deployed_comparison": {
+    "status": "PENDING_SERVER_PREVIEW",
+    "source_snapshot": "Capture the exact PublicationRun source_cutoff_at, snapshot_at, and run_id from the deployed no-delivery preview metadata.",
+    "configuration_reference": "Record the deployed config/model identifiers only; do not copy credentials or source text.",
+    "cases": [
+      {
+        "case_id": "berdyansk_rich_24h",
+        "status": "PENDING",
+        "window_hours": 24,
+        "required_review_tags": [
+          "broad-useful-coverage",
+          "geography-and-area-order",
+          "time-and-service-state",
+          "single-source-community-reports",
+          "microdetail-retention",
+          "repetition",
+          "directory-payload",
+          "natural-russian"
+        ]
+      },
+      {
+        "case_id": "berdyansk_focused_12h",
+        "status": "RUN_ONLY_IF_NEEDED",
+        "window_hours": 12,
+        "required_review_tags": [
+          "known-preview-86-defects-if-inputs-overlap",
+          "coverage-versus-budget-deferrals",
+          "geography-and-area-order",
+          "single-source-community-reports"
+        ]
+      }
+    ],
+    "parity_claim": false
+  },
+  "human_review": {
+    "dimensions": [
+      "factual-fidelity",
+      "scanning-ease",
+      "useful-breadth",
+      "repetition",
+      "geography-and-time-clarity",
+      "natural-russian",
+      "concrete-local-detail",
+      "deferred-material-and-reasons"
+    ],
+    "notes": "Record concrete supported details retained or lost, any invented geography/time/cause, budget deferrals, NOT_EVALUATED checks, generation failure, repair use, and latency. One preview does not establish statistical quality."
+  }
+}

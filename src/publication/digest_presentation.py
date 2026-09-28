@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -137,6 +138,13 @@ class RequiredDigestFact:
     story_ids: tuple[str, ...]
     support_ids: tuple[str, ...]
     text: str
+    original_location: str = ""
+    canonical_area_key: str = ""
+    observed_at: Any = None
+    effective_at: Any = None
+    service_state: str = ""
+    epistemic_kind: str = ""
+    source_published_at: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -147,10 +155,33 @@ class RequiredDigestFact:
             "story_ids": list(self.story_ids),
             "support_ids": list(self.support_ids),
             "text": self.text,
+            "original_location": self.original_location,
+            "canonical_area_key": self.canonical_area_key,
+            "observed_at": self.observed_at.isoformat()
+            if hasattr(self.observed_at, "isoformat")
+            else None,
+            "effective_at": self.effective_at.isoformat()
+            if hasattr(self.effective_at, "isoformat")
+            else None,
+            "service_state": self.service_state,
+            "epistemic_kind": self.epistemic_kind,
+            "source_published_at": self.source_published_at.isoformat()
+            if hasattr(self.source_published_at, "isoformat")
+            else None,
         }
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> RequiredDigestFact:
+        def _optional_datetime(value: Any) -> dt.datetime | None:
+            if isinstance(value, dt.datetime):
+                return value
+            if isinstance(value, str) and value.strip():
+                try:
+                    return dt.datetime.fromisoformat(value.strip())
+                except ValueError:
+                    return None
+            return None
+
         return cls(
             fact_id=str(data.get("fact_id", "")),
             rubric_id=str(data.get("rubric_id", "")),
@@ -159,6 +190,13 @@ class RequiredDigestFact:
             story_ids=tuple(str(s) for s in data.get("story_ids", [])),
             support_ids=tuple(str(s) for s in data.get("support_ids", [])),
             text=str(data.get("text", "")),
+            original_location=str(data.get("original_location", "")),
+            canonical_area_key=str(data.get("canonical_area_key", "")),
+            observed_at=_optional_datetime(data.get("observed_at")),
+            effective_at=_optional_datetime(data.get("effective_at")),
+            service_state=str(data.get("service_state", "")),
+            epistemic_kind=str(data.get("epistemic_kind", "")),
+            source_published_at=_optional_datetime(data.get("source_published_at")),
         )
 
 
@@ -178,6 +216,7 @@ class DigestPresentationPlan:
     required_facts: tuple[RequiredDigestFact, ...]
     _city_situation: Any
     _story_presentations: tuple[Any, ...]
+    composition: Any
 
     def __init__(
         self,
@@ -185,6 +224,7 @@ class DigestPresentationPlan:
         required_facts: Sequence[RequiredDigestFact] = (),
         city_situation: Any = None,
         story_presentations: Sequence[Any] = (),
+        composition: Any = None,
         **kwargs: Any,
     ) -> None:
         # Accept story_hints as alias for story_presentations (backward compat)
@@ -211,6 +251,7 @@ class DigestPresentationPlan:
                 DigestStoryPresentation(story_id=sid, mode="DETAIL_ONLY") for sid in s_ids
             )
         object.__setattr__(self, "_story_presentations", tuple(story_presentations))
+        object.__setattr__(self, "composition", composition)
 
     @property
     def detail_story_ids(self) -> tuple[str, ...]:
@@ -239,7 +280,181 @@ class DigestPresentationPlan:
         return {
             "story_ids": list(self.story_ids),
             "required_facts": [fact.to_dict() for fact in self.required_facts],
+            "composition": self.composition.to_dict()
+            if self.composition and hasattr(self.composition, "to_dict")
+            else None,
         }
+
+    def to_metadata_dict(self) -> dict[str, Any]:
+        """Persist only frozen provenance IDs and semantic versions, not evidence text."""
+        return {
+            "story_ids": list(self.story_ids),
+            "required_facts": [
+                {
+                    "fact_id": fact.fact_id,
+                    "story_ids": list(fact.story_ids),
+                    "support_ids": list(fact.support_ids),
+                    "rubric_id": fact.rubric_id,
+                }
+                for fact in self.required_facts
+            ],
+            "composition": (
+                self.composition.to_metadata_dict()
+                if self.composition and hasattr(self.composition, "to_metadata_dict")
+                else None
+            ),
+        }
+
+    def with_composition(self, composition: Any) -> DigestPresentationPlan:
+        """Freeze the admitted Story/fact membership on this existing presentation plan."""
+        admitted_story_ids = set(getattr(composition, "admitted_story_ids", ()))
+        admitted_fact_ids = set(getattr(composition, "admitted_fact_ids", ()))
+        records = {
+            getattr(record, "fact_id", ""): record
+            for record in getattr(composition, "fact_records", ())
+        }
+        admitted_support_ids = {
+            support_id
+            for fact_id, record in records.items()
+            if fact_id in admitted_fact_ids
+            for support_id in getattr(record, "support_ids", ())
+        }
+        deferred_support_ids = {
+            support_id
+            for fact_id, record in records.items()
+            if fact_id not in admitted_fact_ids
+            for support_id in getattr(record, "support_ids", ())
+        }
+        enriched_facts = []
+        for fact in self.required_facts:
+            if fact.fact_id not in admitted_fact_ids:
+                continue
+            record = records.get(fact.fact_id)
+            if record is None:
+                enriched_facts.append(fact)
+                continue
+            enriched_facts.append(
+                replace(
+                    fact,
+                    support_ids=tuple(record.support_ids),
+                    original_location=record.original_location,
+                    canonical_area_key=record.canonical_area,
+                    observed_at=record.observed_time,
+                    effective_at=record.effective_time,
+                    service_state=record.service_state,
+                    epistemic_kind=record.epistemic_kind,
+                    source_published_at=record.source_publication_time,
+                )
+            )
+        known_ids = {fact.fact_id for fact in self.required_facts}
+        for record in getattr(composition, "fact_records", ()):
+            if record.fact_id in known_ids or record.fact_id not in admitted_fact_ids:
+                continue
+            enriched_facts.append(
+                RequiredDigestFact(
+                    fact_id=record.fact_id,
+                    rubric_id=record.rubric_id,
+                    subject_key=record.canonical_subject or "local_report",
+                    subject_label=record.canonical_subject or "Местное сообщение",
+                    story_ids=tuple(record.story_ids),
+                    support_ids=tuple(record.support_ids),
+                    text=record.text,
+                    original_location=record.original_location,
+                    canonical_area_key=record.canonical_area,
+                    observed_at=record.observed_time,
+                    effective_at=record.effective_time,
+                    service_state=record.service_state,
+                    epistemic_kind=record.epistemic_kind,
+                    source_published_at=record.source_publication_time,
+                )
+            )
+        city_situation = self._city_situation
+        if city_situation is not None:
+            situation_groups = getattr(city_situation, "groups", None)
+            if situation_groups is not None:
+                filtered_groups = []
+                for group in situation_groups:
+                    group_facts = tuple(getattr(group, "required_facts", ()) or ())
+                    kept_facts = tuple(
+                        fact
+                        for fact in group_facts
+                        if (
+                            getattr(fact, "fact_id", "") in admitted_fact_ids
+                            if getattr(fact, "fact_id", "")
+                            else bool(set(getattr(fact, "story_ids", ())) & admitted_story_ids)
+                        )
+                    )
+                    group_story_ids = set(getattr(group, "covered_story_ids", ()) or ())
+                    if not group_story_ids and group_facts:
+                        group_story_ids = {
+                            story_id
+                            for fact in group_facts
+                            for story_id in getattr(fact, "story_ids", ())
+                        }
+                    # A pre-composed group can contain both admitted and
+                    # deferred Stories. Its combined detail text cannot be
+                    # safely sliced, so drop the whole group in that case.
+                    if group_story_ids and not group_story_ids.issubset(admitted_story_ids):
+                        continue
+                    if group_facts and len(kept_facts) != len(group_facts):
+                        continue
+                    group_supports = set(getattr(group, "cited_support_ids", ()) or ())
+                    group_supports.update(getattr(group, "source_refs", ()) or ())
+                    if group_supports & deferred_support_ids:
+                        continue
+                    if group_supports and not (group_supports & admitted_support_ids):
+                        continue
+                    if (
+                        not group_story_ids
+                        and not kept_facts
+                        and not (group_supports & admitted_support_ids)
+                    ):
+                        continue
+                    changes: dict[str, Any] = {}
+                    if hasattr(group, "covered_story_ids"):
+                        changes["covered_story_ids"] = tuple(
+                            sorted(group_story_ids & admitted_story_ids)
+                        )
+                    if hasattr(group, "required_facts"):
+                        changes["required_facts"] = kept_facts
+                    for field_name in ("source_refs", "cited_support_ids"):
+                        if hasattr(group, field_name):
+                            original = tuple(getattr(group, field_name, ()) or ())
+                            changes[field_name] = tuple(
+                                value for value in original if value in admitted_support_ids
+                            )
+                    filtered_groups.append(replace(group, **changes) if changes else group)
+                if hasattr(city_situation, "groups"):
+                    city_situation = replace(city_situation, groups=tuple(filtered_groups))
+            elif getattr(city_situation, "items", None) is not None:
+                # Rollup items have exact fact IDs when available; older rows
+                # can be matched only through their exact source refs.
+                kept_items = []
+                for item in getattr(city_situation, "items", ()) or ():
+                    item_fact_id = str(getattr(item, "fact_id", "") or "")
+                    item_supports = set(getattr(item, "source_refs", ()) or ())
+                    item_supports.update(getattr(item, "current_source_refs", ()) or ())
+                    if item_fact_id:
+                        keep = item_fact_id in admitted_fact_ids
+                    else:
+                        keep = bool(item_supports & admitted_support_ids) and not bool(
+                            item_supports & deferred_support_ids
+                        )
+                    if keep:
+                        kept_items.append(item)
+                city_situation = replace(city_situation, items=tuple(kept_items))
+
+        return DigestPresentationPlan(
+            story_ids=tuple(s for s in self.story_ids if s in admitted_story_ids),
+            required_facts=tuple(enriched_facts),
+            city_situation=city_situation,
+            story_presentations=tuple(
+                p
+                for p in self._story_presentations
+                if getattr(p, "story_id", None) in admitted_story_ids
+            ),
+            composition=composition,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -529,6 +744,7 @@ def _resolve_fact_supports(
     direct_refs: Sequence[str],
     card: Any,
     evidence_map: Mapping[str, Any],
+    fact_text: str = "",
 ) -> tuple[str, ...]:
     supports: list[str] = [r for r in direct_refs if r]
     ref_set = set(supports)
@@ -537,7 +753,18 @@ def _resolve_fact_supports(
             continue
         e_ref = getattr(evi, "source_ref", None)
         eid = getattr(evi, "evidence_id", "")
-        if (e_ref and e_ref in ref_set) or (eid and eid in ref_set):
+        # A fragment can support several distinct claims. Promote an evidence
+        # item ID into this fact's support only when its exact text matches the
+        # fact and the source reference also matches.
+        if (
+            eid
+            and eid in ref_set
+            or (
+                e_ref
+                and e_ref in ref_set
+                and str(getattr(evi, "text", "")).strip() == fact_text.strip()
+            )
+        ):
             if eid and eid not in supports:
                 supports.append(eid)
     if not supports:
@@ -545,6 +772,32 @@ def _resolve_fact_supports(
             if r and r not in supports:
                 supports.append(r)
     return tuple(dict.fromkeys(supports))
+
+
+def _exact_evidence_metadata(
+    refs: Sequence[str], evidence_map: Mapping[str, Any], fact_text: str = ""
+) -> tuple[str, Any, Any]:
+    """Return epistemic/time metadata only when exact support refs identify it unambiguously."""
+    ref_set = {str(ref) for ref in refs if str(ref)}
+    matches = []
+    for item in evidence_map.values():
+        if getattr(item, "publication_use", "PUBLISH") != "PUBLISH":
+            continue
+        evidence_id = str(getattr(item, "evidence_id", ""))
+        source_ref = str(getattr(item, "source_ref", ""))
+        if evidence_id in ref_set or (
+            source_ref in ref_set and str(getattr(item, "text", "")).strip() == fact_text.strip()
+        ):
+            matches.append(item)
+    kinds = {str(getattr(item, "kind", "")) for item in matches if getattr(item, "kind", "")}
+    times = {
+        getattr(item, "observed_at", None) for item in matches if getattr(item, "observed_at", None)
+    }
+    return (
+        next(iter(kinds)) if len(kinds) == 1 else "",
+        next(iter(times)) if len(times) == 1 else None,
+        None,
+    )
 
 
 def build_required_digest_facts(
@@ -620,7 +873,18 @@ def build_required_digest_facts(
                 e_ref = getattr(evi, "source_ref", None)
                 eid = getattr(evi, "evidence_id", "")
                 if (e_ref and e_ref in item_ref_set) or (eid and eid in item_ref_set):
-                    if eid and eid not in fact_supports:
+                    if (
+                        (
+                            (eid and eid in item_ref_set)
+                            or (
+                                e_ref
+                                and e_ref in item_ref_set
+                                and str(getattr(evi, "text", "")).strip() == fact_text.strip()
+                            )
+                        )
+                        and eid
+                        and eid not in fact_supports
+                    ):
                         fact_supports.append(eid)
                     # match card via evidence
                     for card in cards:
@@ -645,6 +909,9 @@ def build_required_digest_facts(
             # Derive rubric_id from the first owning StoryCard
             first_owning_card = card_by_id.get(fact_stories[0])
             rubric_id = getattr(first_owning_card, "rubric_id", "") or "infrastructure"
+            item_kind, item_observed, item_published = _exact_evidence_metadata(
+                item_refs, evidence_map, fact_text
+            )
 
             required_facts.append(
                 RequiredDigestFact(
@@ -655,6 +922,11 @@ def build_required_digest_facts(
                     story_ids=tuple(fact_stories),
                     support_ids=tuple(dict.fromkeys(fact_supports)),
                     text=fact_text,
+                    original_location=str(getattr(item, "location", "") or ""),
+                    observed_at=item_observed or getattr(item, "last_observed_at", None),
+                    service_state=str(getattr(item, "state", "") or ""),
+                    epistemic_kind=item_kind,
+                    source_published_at=item_published,
                 )
             )
 
@@ -733,11 +1005,14 @@ def build_required_digest_facts(
                     if ref_fid not in obs_refs:
                         obs_refs.append(ref_fid)
 
-                obs_supports = _resolve_fact_supports(obs_refs, card, evidence_map)
+                obs_supports = _resolve_fact_supports(obs_refs, card, evidence_map, o_text)
                 obs_sups_list = list(obs_supports)
                 if card.id not in obs_sups_list:
                     obs_sups_list.append(card.id)
                 obs_supports = tuple(obs_sups_list)
+                obs_kind, obs_time, obs_published = _exact_evidence_metadata(
+                    obs_refs, evidence_map, o_text
+                )
 
                 required_facts.append(
                     RequiredDigestFact(
@@ -748,6 +1023,12 @@ def build_required_digest_facts(
                         story_ids=(card.id,),
                         support_ids=obs_supports,
                         text=o_text,
+                        original_location=o_loc,
+                        effective_at=getattr(obs, "effective_from", None),
+                        observed_at=obs_time,
+                        service_state=str(getattr(obs, "state", "") or ""),
+                        epistemic_kind=obs_kind,
+                        source_published_at=obs_published,
                     )
                 )
         else:
@@ -766,11 +1047,14 @@ def build_required_digest_facts(
                 seen_fact_ids.add(fact_id)
 
                 hf_refs = list(getattr(hf, "source_refs", []) or [])
-                hf_supports = _resolve_fact_supports(hf_refs, card, evidence_map)
+                hf_supports = _resolve_fact_supports(hf_refs, card, evidence_map, hf_text)
                 hf_sups_list = list(hf_supports)
                 if card.id not in hf_sups_list:
                     hf_sups_list.append(card.id)
                 hf_supports = tuple(hf_sups_list)
+                hf_kind, hf_time, hf_published = _exact_evidence_metadata(
+                    hf_refs, evidence_map, hf_text
+                )
 
                 required_facts.append(
                     RequiredDigestFact(
@@ -781,6 +1065,16 @@ def build_required_digest_facts(
                         story_ids=(card.id,),
                         support_ids=hf_supports,
                         text=hf_text,
+                        original_location="; ".join(
+                            dict.fromkeys(
+                                str(a).strip()
+                                for a in (getattr(hf, "areas", ()) or ())
+                                if str(a).strip()
+                            )
+                        ),
+                        observed_at=hf_time,
+                        epistemic_kind=hf_kind,
+                        source_published_at=hf_published,
                     )
                 )
 
@@ -841,9 +1135,10 @@ def build_digest_presentation_plan(
     cards: Sequence[Any],
     city_situation: CitySituationRollup | None = None,
     evidence: Mapping[str, Any] | None = None,
+    include_all_candidates: bool = False,
     **kwargs: Any,
 ) -> DigestPresentationPlan:
-    """Build the reader-independent presentation plan containing selected story IDs and required facts."""
+    """Build the presentation plan, optionally retaining every input candidate for composition."""
     evidence_map = evidence if isinstance(evidence, Mapping) else {}
 
     # Pre-identify cards associated with usable operational city situation items
@@ -909,11 +1204,15 @@ def build_digest_presentation_plan(
         r_cards.sort(key=_card_key, reverse=True)
         # Always retain cards backing operational city situation, plus top cards up to cap
         owns_sit_count = sum(1 for c in r_cards if c.id in cards_with_city_situation)
-        effective_cap = max(cap, owns_sit_count)
+        effective_cap = len(r_cards) if include_all_candidates else max(cap, owns_sit_count)
         balanced_cards.extend(r_cards[:effective_cap])
 
     # If caller explicitly requested a strict card limit (e.g. in test fixtures):
-    if user_max_cards is not None and len(balanced_cards) > user_max_cards:
+    if (
+        not include_all_candidates
+        and user_max_cards is not None
+        and len(balanced_cards) > user_max_cards
+    ):
         effective_max = max(user_max_cards, len(cards_with_city_situation))
 
         def _global_priority(c: Any) -> tuple[int, int, int, float]:

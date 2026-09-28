@@ -44,6 +44,12 @@ class DigestFactCoverageTrace:
 class DigestCoverageTrace:
     stories: tuple[DigestStoryCoverageTrace, ...]
     facts: tuple[DigestFactCoverageTrace, ...] = ()
+    eligible_candidate_ids: tuple[str, ...] = ()
+    admitted_candidate_ids: tuple[str, ...] = ()
+    deferred_candidate_ids: tuple[str, ...] = ()
+    eligible_fact_ids: tuple[str, ...] = ()
+    admitted_fact_ids: tuple[str, ...] = ()
+    deferred_fact_ids: tuple[str, ...] = ()
 
     @property
     def story_ids(self) -> tuple[str, ...]:
@@ -71,6 +77,35 @@ class DigestCoverageTrace:
             return 1.0
         covered = sum(1 for f in self.facts if f.covered)
         return covered / len(self.facts)
+
+    @property
+    def admission_story_coverage(self) -> float:
+        return (
+            len(self.admitted_candidate_ids) / len(self.eligible_candidate_ids)
+            if self.eligible_candidate_ids
+            else 1.0
+        )
+
+    @property
+    def admission_fact_coverage(self) -> float:
+        return (
+            len(self.admitted_fact_ids) / len(self.eligible_fact_ids)
+            if self.eligible_fact_ids
+            else 1.0
+        )
+
+    def admission_to_dict(self) -> dict[str, Any]:
+        """Expose pre-write admission separately from admitted-to-rendered coverage."""
+        return {
+            "eligible_candidate_ids": list(self.eligible_candidate_ids),
+            "admitted_candidate_ids": list(self.admitted_candidate_ids),
+            "deferred_candidate_ids": list(self.deferred_candidate_ids),
+            "candidate_admission_coverage": self.admission_story_coverage,
+            "eligible_fact_ids": list(self.eligible_fact_ids),
+            "admitted_fact_ids": list(self.admitted_fact_ids),
+            "deferred_fact_ids": list(self.deferred_fact_ids),
+            "fact_admission_coverage": self.admission_fact_coverage,
+        }
 
     def to_dict(self) -> list[dict[str, Any]]:
         return [
@@ -100,6 +135,36 @@ class DigestCoverageTrace:
             }
             for f in self.facts
         ]
+
+    def to_metadata_dict(self) -> dict[str, Any]:
+        """Persist coverage IDs and outcomes without duplicating reader/source prose."""
+        return {
+            "stories": [
+                {
+                    "story_id": story.story_id,
+                    "mode": story.mode,
+                    "city_situation_group_ids": list(story.city_situation_group_ids),
+                    "detail_item_ids": list(story.detail_item_ids),
+                    "dashboard_support_ids": list(story.dashboard_support_ids),
+                    "detail_support_ids": list(story.detail_support_ids),
+                }
+                for story in self.stories
+            ],
+            "facts": [
+                {
+                    "fact_id": fact.fact_id,
+                    "group_id": fact.group_id,
+                    "story_ids": list(fact.story_ids),
+                    "required_support_ids": list(fact.required_support_ids),
+                    "covered": fact.covered,
+                    "cited_support_ids": list(fact.cited_support_ids),
+                }
+                for fact in self.facts
+            ],
+            "final_story_coverage": self.story_coverage,
+            "final_material_fact_coverage": self.material_fact_coverage,
+            "admission": self.admission_to_dict(),
+        }
 
 
 def build_digest_coverage_trace(
@@ -376,7 +441,37 @@ def build_digest_coverage_trace(
             )
         )
 
-    trace = DigestCoverageTrace(stories=tuple(story_traces), facts=tuple(fact_traces))
+    composition = getattr(plan, "composition", None)
+    dispositions = tuple(getattr(composition, "dispositions", ()))
+    eligible_candidate_ids = tuple(d.candidate_id for d in dispositions)
+    admitted_candidate_ids = tuple(
+        d.candidate_id for d in dispositions if d.disposition == "selected"
+    )
+    deferred_candidate_ids = tuple(
+        d.candidate_id for d in dispositions if d.disposition == "budget_deferred"
+    )
+    composition_facts = tuple(getattr(composition, "fact_records", ()))
+    eligible_fact_ids = tuple(f.fact_id for f in composition_facts)
+    admitted_fact_ids = tuple(sorted(getattr(composition, "admitted_fact_ids", ())))
+    admitted_fact_set = set(admitted_fact_ids)
+    deferred_fact_ids = tuple(fid for fid in eligible_fact_ids if fid not in admitted_fact_set)
+    traced_fact_ids = {fact.fact_id for fact in fact_traces}
+    missing_admitted_facts = admitted_fact_set - traced_fact_ids
+    if missing_admitted_facts:
+        raise DigestCoverageInvariantError(
+            "admitted composition facts missing render-coverage trace: "
+            + ", ".join(sorted(missing_admitted_facts))
+        )
+    trace = DigestCoverageTrace(
+        stories=tuple(story_traces),
+        facts=tuple(fact_traces),
+        eligible_candidate_ids=eligible_candidate_ids,
+        admitted_candidate_ids=admitted_candidate_ids,
+        deferred_candidate_ids=deferred_candidate_ids,
+        eligible_fact_ids=eligible_fact_ids,
+        admitted_fact_ids=admitted_fact_ids,
+        deferred_fact_ids=deferred_fact_ids,
+    )
     if set(trace.story_ids) != set(plan.story_ids):
         raise DigestCoverageInvariantError(
             f"trace story set mismatch: {trace.story_ids} vs {plan.story_ids}"

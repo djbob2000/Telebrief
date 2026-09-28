@@ -105,17 +105,11 @@ def build_server(config: Config, logger: logging.Logger) -> MCPServer:
                 lookback_hours=hours,
                 config=config,
             )
-            parts = []
-            if preview.title:
-                parts.append(f"📰 {preview.title}")
-            if preview.lead and not (preview.body and preview.body.startswith(preview.lead)):
-                parts.append(preview.lead)
-            parts.append(preview.body)
-            return (
-                "\n\n".join(parts)
-                if preview.body
-                else f"No messages found in the last {hours} hours."
-            )
+            if preview.rendered_artifact is None:
+                raise RuntimeError(
+                    "digest preview returned no canonical rendered artifact; refusing to rebuild a different response"
+                )
+            return preview.rendered_artifact.visible_text
         except Exception as exc:
             logger.warning("Unified publication preview failed in MCP: %s", exc)
             raise

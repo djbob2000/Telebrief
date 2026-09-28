@@ -1,13 +1,14 @@
 """Generate a canonical digest preview without delivery side effects.
 
 Usage:
-    python scripts/preview_digest.py [--edition berdyansk] [--hours 24] [--output PATH]
+    python scripts/preview_digest.py [--edition berdyansk] [--hours 24] [--as-of ISO8601] [--output PATH]
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import datetime as dt
 import sys
 from pathlib import Path
 
@@ -34,13 +35,27 @@ def parse_args() -> argparse.Namespace:
         "--output",
         type=Path,
         default=None,
-        help="Optional local path for the Markdown preview",
+        help="Optional local path for the exact plain-text Telegram post",
+    )
+    parser.add_argument(
+        "--as-of",
+        type=str,
+        default=None,
+        help="Reproducible snapshot cutoff as ISO-8601 with timezone, e.g. 2026-09-28T18:00:00+03:00",
     )
     return parser.parse_args()
 
 
 async def main() -> None:
     args = parse_args()
+    snapshot_at = None
+    if args.as_of:
+        try:
+            snapshot_at = dt.datetime.fromisoformat(args.as_of.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise SystemExit(f"Invalid --as-of ISO-8601 timestamp: {exc}") from exc
+        if snapshot_at.tzinfo is None or snapshot_at.utcoffset() is None:
+            raise SystemExit("--as-of must include a timezone offset (for example +00:00)")
     config = load_config()
     infra = await build_infrastructure(config.database)
     install_runtime(infra)
@@ -50,21 +65,20 @@ async def main() -> None:
             publication_type="digest_grouped",
             edition_slug=args.edition,
             lookback_hours=args.hours,
+            snapshot_at=snapshot_at,
             config=config,
         )
-        parts = [f"# {preview.title}" if preview.title else "# Дайджест"]
-        if preview.lead and not (preview.body and preview.body.startswith(preview.lead)):
-            parts.extend(["", preview.lead])
-        if preview.body:
-            parts.extend(["", preview.body])
-        digest_text = "\n".join(parts).rstrip() + "\n"
+        artifact = preview.rendered_artifact
+        if artifact is None:
+            raise RuntimeError("preview returned no canonical rendered Telegram artifact")
+        digest_text = artifact.visible_text
 
         if args.output is not None:
             args.output.parent.mkdir(parents=True, exist_ok=True)
             args.output.write_text(digest_text, encoding="utf-8")
             print(f"Digest preview saved to {args.output}")
         else:
-            print(digest_text, end="")
+            sys.stdout.write(digest_text)
     finally:
         await infra.close()
 

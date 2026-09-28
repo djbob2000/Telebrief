@@ -13,6 +13,10 @@ HARD_EXCLUSION_REASONS: frozenset[str] = frozenset(
     }
 )
 
+DIGEST_DISPOSITION_ELIGIBLE_PENDING_BUDGET = "eligible_pending_budget"
+DIGEST_DISPOSITION_UNKNOWN_PRESERVED = "unknown_preserved"
+DIGEST_ELIGIBILITY_VERSION = "v1"
+
 GENERIC_FALLBACK_TOPICS: frozenset[str] = frozenset(
     {"Городские события", "Новости города", "Новости дня", "События дня", "Главные события"}
 )

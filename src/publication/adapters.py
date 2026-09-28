@@ -54,7 +54,7 @@ class TelegramChannelDestinationClient(DestinationClient):
     ) -> dict[str, Any]:
         from pathlib import Path
 
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
         from telegram.constants import ParseMode
         from telegram.error import TelegramError, TimedOut
 
@@ -77,8 +77,43 @@ class TelegramChannelDestinationClient(DestinationClient):
                     [[InlineKeyboardButton(text=btn_text, url=btn_url)]]
                 )
 
-        parse_mode_str = str(payload.rendered_content.get("parse_mode", "HTML")).upper()
-        parse_mode = ParseMode.MARKDOWN if parse_mode_str == "MARKDOWN" else ParseMode.HTML
+        canonical_entity_payload = "entities" in payload.rendered_content
+        telegram_entities: list[Any] | None = None
+        if canonical_entity_payload:
+            raw_entities = payload.rendered_content.get("entities") or ()
+            telegram_entities = []
+            for raw in raw_entities:
+                if not isinstance(raw, dict):
+                    raise ValueError(f"telegram payload {payload.id} has an invalid entity record")
+                telegram_entities.append(
+                    MessageEntity(
+                        type=str(raw.get("type", "")),
+                        offset=int(raw.get("offset", -1)),
+                        length=int(raw.get("length", 0)),
+                    )
+                )
+            utf16_count = len(text.encode("utf-16-le")) // 2
+            if len(text) > 4096 or utf16_count > 4096:
+                raise ValueError(
+                    f"canonical digest payload {payload.id} exceeds Telegram's single-message limit"
+                )
+            if any(
+                entity.offset < 0
+                or entity.length <= 0
+                or entity.offset + entity.length > utf16_count
+                for entity in telegram_entities
+            ):
+                raise ValueError(f"telegram payload {payload.id} has invalid UTF-16 entity offsets")
+            parse_mode = None
+        else:
+            parse_mode_str = str(payload.rendered_content.get("parse_mode", "HTML")).upper()
+            parse_mode = ParseMode.MARKDOWN if parse_mode_str == "MARKDOWN" else ParseMode.HTML
+
+        def _format_kwargs(*, caption: bool = False) -> dict[str, Any]:
+            if canonical_entity_payload:
+                entity_key = "caption_entities" if caption else "entities"
+                return {"parse_mode": None, entity_key: telegram_entities or []}
+            return {"parse_mode": parse_mode}
 
         # 1. Check if photo post is requested and photo file exists on disk
         photo_path_raw = payload.rendered_content.get("photo_path")
@@ -91,7 +126,7 @@ class TelegramChannelDestinationClient(DestinationClient):
                             chat_id=destination.destination_key,
                             photo=photo_file,
                             caption=text,
-                            parse_mode=parse_mode,
+                            **_format_kwargs(caption=True),
                             reply_markup=reply_markup,
                         )
                     return {
@@ -102,6 +137,8 @@ class TelegramChannelDestinationClient(DestinationClient):
                     raise TimeoutError(f"telegram photo send timed out: {exc}") from exc
                 except TelegramError as exc:
                     if "Can't parse entities" in str(exc):
+                        if canonical_entity_payload:
+                            raise
                         logger.warning(
                             "Entity parse error delivering photo payload %s to %s; retrying with plain text caption",
                             payload.id,
@@ -114,6 +151,9 @@ class TelegramChannelDestinationClient(DestinationClient):
                                     photo=photo_file,
                                     caption=text,
                                     parse_mode=None,
+                                    caption_entities=telegram_entities
+                                    if canonical_entity_payload
+                                    else None,
                                     reply_markup=reply_markup,
                                 )
                             return {
@@ -130,7 +170,12 @@ class TelegramChannelDestinationClient(DestinationClient):
                         )
 
         # 2. Text message delivery (single part or multi-part split)
-        parts = split_message(text, max_length=4000)
+        if canonical_entity_payload:
+            # Canonical digest artifacts are audited as a single post. Splitting
+            # would invalidate entity offsets and contradict the preview.
+            parts = [text]
+        else:
+            parts = split_message(text, max_length=4000)
         sent_ids: list[str] = []
 
         for i, part in enumerate(parts):
@@ -140,7 +185,7 @@ class TelegramChannelDestinationClient(DestinationClient):
                 message = await bot.send_message(
                     chat_id=destination.destination_key,
                     text=part,
-                    parse_mode=parse_mode,
+                    **_format_kwargs(),
                     disable_web_page_preview=False if reply_markup else True,
                     reply_markup=markup,
                 )
@@ -148,6 +193,8 @@ class TelegramChannelDestinationClient(DestinationClient):
                 raise TimeoutError(f"telegram send timed out: {exc}") from exc
             except TelegramError as exc:
                 if "Can't parse entities" in str(exc):
+                    if canonical_entity_payload:
+                        raise
                     logger.warning(
                         "HTML entity parse error delivering payload %s to %s; retrying with plain text",
                         payload.id,

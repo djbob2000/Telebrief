@@ -115,6 +115,7 @@ class PublicationOrchestrator:
         request_key: str | None = None,
         lookback_hours: int | None = None,
         now: dt.datetime | None = None,
+        knowledge_snapshot_at: dt.datetime | None = None,
         defer_preparation: bool = True,
     ) -> PublicationIntentResult:
         """Create/get and immediately reconcile one publication intent."""
@@ -197,7 +198,12 @@ class PublicationOrchestrator:
                 source_ids_to_enqueue: list[int] = []
                 edition_slug_result = edition.slug
             else:
-                decision = await self.readiness.reconcile(conn, intent.id, now=now)
+                decision = await self.readiness.reconcile(
+                    conn,
+                    intent.id,
+                    now=now,
+                    knowledge_snapshot_at=knowledge_snapshot_at,
+                )
                 decision, source_ids_to_enqueue = await self._prepare_decision(
                     conn,
                     intent,
@@ -234,6 +240,7 @@ class PublicationOrchestrator:
         intent_id: int,
         *,
         now: dt.datetime | None = None,
+        knowledge_snapshot_at: dt.datetime | None = None,
         defer_preparation: bool = True,
     ) -> PublicationReadinessDecision:
         """Reconcile one open intent and defer only work still needed.
@@ -246,7 +253,12 @@ class PublicationOrchestrator:
             intent = await self.readiness_repo.get_refresh_run(conn, intent_id, for_update=True)
             if intent is None:
                 raise ValueError(f"publication intent {intent_id} not found")
-            decision = await self.readiness.reconcile(conn, intent.id, now=now)
+            decision = await self.readiness.reconcile(
+                conn,
+                intent.id,
+                now=now,
+                knowledge_snapshot_at=knowledge_snapshot_at,
+            )
             decision, source_ids_to_enqueue = await self._prepare_decision(
                 conn, intent, decision, now=now, defer_preparation=defer_preparation
             )

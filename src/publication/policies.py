@@ -9,16 +9,17 @@ from typing import Any
 
 import psycopg
 
-from src.publication.digest_contracts import DIGEST_PUBLICATION_TYPES
+from src.publication.digest_contracts import DIGEST_ELIGIBILITY_VERSION, DIGEST_PUBLICATION_TYPES
 from src.publication.errors import UnsupportedFrozenSemanticVersion
 from src.publication.models import (
     PublicationPolicySet,
 )
+from src.publication.narrative_contract import DIGEST_NARRATIVE_PROMPT_VERSION
 from src.publication.repository import PublicationPolicyRepository
 
 logger = logging.getLogger(__name__)
 
-DIGEST_EDITORIALIZER_PROMPT_VERSION = "digest-editorializer-v2"
+DIGEST_EDITORIALIZER_PROMPT_VERSION = "digest-editorializer-v3-composition"
 
 ARTICLE_PUBLICATION_TYPES: frozenset[str] = frozenset(
     {"daily_article", "article", "weekly_article", "monthly_article"}
@@ -34,7 +35,7 @@ DEFAULT_SELECTION_PROMPT_VERSION = "selection-prompt-v1"
 DEFAULT_WRITER_CONFIG_HASH = "writer-cfg-default"
 DEFAULT_WRITER_PROMPT_VERSION = "writer-prompt-v1"
 
-SELECTION_SEMANTICS_VERSION = "v2"
+SELECTION_SEMANTICS_VERSION = "v3"
 SELECTION_PROMPT_VERSION = "v2"
 
 ARTICLE_WRITER_VERSION = "v6"
@@ -45,7 +46,7 @@ ARTICLE_EDITORIAL_PLAN_VERSION = "v3"
 ARTICLE_COVERAGE_PLAN_VERSION = "v2"
 ARTICLE_RECOVERY_VERSION = "v2"
 
-SUPPORTED_SELECTION_SEMANTICS_VERSIONS = {SELECTION_SEMANTICS_VERSION}
+SUPPORTED_SELECTION_SEMANTICS_VERSIONS = {"v2", SELECTION_SEMANTICS_VERSION}
 SUPPORTED_ARTICLE_WRITER_VERSIONS = {
     LEGACY_ARTICLE_WRITER_VERSION,
     "v3",
@@ -217,6 +218,7 @@ class PublicationPolicyService:
         if scope_config_hash is None:
             scope_config_hash = DEFAULT_SCOPE_CONFIG_HASH
 
+        is_digest = publication_type in DIGEST_PUBLICATION_TYPES
         eligibility_config = {
             "lookback_hours": lookback_hours,
             "excluded_platforms": sorted(set(excluded_platforms)),
@@ -224,6 +226,8 @@ class PublicationPolicyService:
             "scope_version": scope_version,
             "scope_config_hash": scope_config_hash,
         }
+        if is_digest:
+            eligibility_config["digest_eligibility_version"] = DIGEST_ELIGIBILITY_VERSION
         if eligibility_config_hash == DEFAULT_ELIGIBILITY_CONFIG_HASH:
             eligibility_config_hash = compute_config_hash(eligibility_config)
 
@@ -239,7 +243,6 @@ class PublicationPolicyService:
         if selection_config_hash == DEFAULT_SELECTION_CONFIG_HASH:
             selection_config_hash = compute_config_hash(selection_config)
 
-        is_digest = publication_type in DIGEST_PUBLICATION_TYPES
         writer_config: dict[str, Any] = {}
         if is_digest:
             ai_prov = ""
@@ -254,6 +257,7 @@ class PublicationPolicyService:
                     )
             writer_config = {
                 "editorializer_prompt_version": DIGEST_EDITORIALIZER_PROMPT_VERSION,
+                "narrative_contract_prompt_version": DIGEST_NARRATIVE_PROMPT_VERSION,
                 "ai_provider": ai_prov,
                 "ai_model": ai_mod,
             }

@@ -855,7 +855,39 @@ class PublicationRepository:
             newest_source_temporal_fidelity,
             knowledge_source,
             event_payload,
-            new_fragment_count
+            new_fragment_count,
+            (
+                SELECT jsonb_build_object(
+                    'assignment_id', ea.cutoff_assignment_id,
+                    'triage_decision_id', setd.id,
+                    'triage_version', setd.triage_version,
+                    'scope_config_hash', setd.scope_config_hash,
+                    'scope_decision_id', sesd.id,
+                    'scope_version', sesd.scope_version,
+                    'retention', setd.retention,
+                    'confidence', setd.confidence,
+                    'reason', setd.reason
+                )
+                FROM event_assignments_at_cutoff ea
+                JOIN story_edition_scope_decisions sesd
+                  ON sesd.story_id = ea.story_id
+                 AND sesd.latest_assignment_id = ea.cutoff_assignment_id
+                 AND sesd.created_at <= %(snapshot_at)s
+                JOIN story_event_triage_decisions setd
+                  ON setd.story_id = ea.story_id
+                 AND setd.latest_assignment_id = ea.cutoff_assignment_id
+                 AND setd.created_at <= %(snapshot_at)s
+                WHERE ea.story_id = cu.story_id
+                  AND sesd.edition_id = %(edition_id)s
+                  AND sesd.scope_version = %(scope_version)s
+                  AND sesd.scope_config_hash = %(scope_config_hash)s
+                  AND sesd.scope_class IN ('LOCAL', 'DIRECT_IMPACT')
+                  AND setd.triage_version = %(triage_version)s
+                  AND setd.scope_config_hash = %(scope_config_hash)s
+                  AND setd.retention = 'KEEP'
+                ORDER BY setd.created_at DESC, setd.id DESC
+                LIMIT 1
+            ) AS frozen_gate_eligibility
         FROM candidate_universe cu
         WHERE (
             knowledge_source <> 'event_first'
@@ -879,6 +911,17 @@ class PublicationRepository:
                   AND (%(scope_config_hash)s::text IS NULL OR setd.scope_config_hash = %(scope_config_hash)s)
                   AND setd.scope_config_hash = sesd.scope_config_hash
                   AND setd.retention = 'KEEP'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM jsonb_array_elements(
+                          CASE
+                              WHEN jsonb_typeof(cu.event_payload->'evidence_items') = 'array'
+                              THEN cu.event_payload->'evidence_items'
+                              ELSE '[]'::jsonb
+                          END
+                      ) AS evidence_item(item)
+                      WHERE evidence_item.item->>'publication_use' = 'PUBLISH'
+                  )
             )
         )
         AND cu.story_revision_id IS NOT NULL
@@ -975,6 +1018,98 @@ class PublicationRepository:
             knowledge_source = r[17]
             event_payload = r[18]
             new_fragment_count = r[19]
+            frozen_gate_eligibility = r[20]
+
+            digest_eligibility: dict[str, Any] = {
+                "version": "v1",
+                "status": "unknown",
+                "source": (
+                    "frozen_event_first_revision"
+                    if knowledge_source == "event_first"
+                    else "legacy_or_unavailable"
+                ),
+                "reason": None,
+                "confidence": None,
+                "publishable_evidence_count": None,
+                "excluded_evidence_count": None,
+                "decision_refs": None,
+                "support_ids": [],
+            }
+            if isinstance(frozen_gate_eligibility, dict):
+                # Evidence-use counts and support refs come from the EventPayload
+                # on the frozen candidate revision; Gate/scope IDs and versions
+                # reference the exact decisions used by the candidate filter.
+                evidence_items = (
+                    event_payload.get("evidence_items") if isinstance(event_payload, dict) else None
+                )
+                publishable_evidence_count = (
+                    sum(
+                        1
+                        for item in evidence_items
+                        if isinstance(item, dict) and item.get("publication_use") == "PUBLISH"
+                    )
+                    if isinstance(evidence_items, list)
+                    else None
+                )
+                excluded_evidence_count = (
+                    sum(
+                        1
+                        for item in evidence_items
+                        if isinstance(item, dict) and item.get("publication_use") == "EXCLUDE"
+                    )
+                    if isinstance(evidence_items, list)
+                    else None
+                )
+                decision_refs = {
+                    "assignment_id": frozen_gate_eligibility.get("assignment_id"),
+                    "triage_decision_id": frozen_gate_eligibility.get("triage_decision_id"),
+                    "triage_version": frozen_gate_eligibility.get("triage_version"),
+                    "scope_decision_id": frozen_gate_eligibility.get("scope_decision_id"),
+                    "scope_version": frozen_gate_eligibility.get("scope_version"),
+                    "scope_config_hash": frozen_gate_eligibility.get("scope_config_hash"),
+                }
+                digest_eligibility.update(
+                    {
+                        "reason": frozen_gate_eligibility.get("reason"),
+                        "confidence": frozen_gate_eligibility.get("confidence"),
+                        "publishable_evidence_count": publishable_evidence_count,
+                        "excluded_evidence_count": excluded_evidence_count,
+                        "decision_refs": decision_refs,
+                    }
+                )
+                publish_support_ids_set: set[int] = set()
+                for evidence_item in evidence_items if isinstance(evidence_items, list) else []:
+                    if (
+                        not isinstance(evidence_item, dict)
+                        or evidence_item.get("publication_use") != "PUBLISH"
+                    ):
+                        continue
+                    source_fragment_ids = evidence_item.get("source_fragment_ids")
+                    if not isinstance(source_fragment_ids, list):
+                        continue
+                    publish_support_ids_set.update(
+                        int(fragment_id)
+                        for fragment_id in source_fragment_ids
+                        if isinstance(fragment_id, (int, str)) and str(fragment_id).isdigit()
+                    )
+                publish_support_ids = sorted(publish_support_ids_set)
+                if (
+                    knowledge_source == "event_first"
+                    and frozen_gate_eligibility.get("retention") == "KEEP"
+                    and publishable_evidence_count is not None
+                    and publishable_evidence_count > 0
+                ):
+                    digest_eligibility = {
+                        "version": "v1",
+                        "status": "gate_keep",
+                        "source": "frozen_event_first_revision",
+                        "reason": frozen_gate_eligibility.get("reason") or "gate_keep",
+                        "confidence": frozen_gate_eligibility.get("confidence"),
+                        "publishable_evidence_count": publishable_evidence_count,
+                        "excluded_evidence_count": excluded_evidence_count,
+                        "decision_refs": decision_refs,
+                        "support_ids": publish_support_ids,
+                    }
 
             source_age_hours = (
                 round((snapshot_at - newest_source_published_at).total_seconds() / 3600.0, 1)
@@ -1012,6 +1147,10 @@ class PublicationRepository:
                     "knowledge_source": knowledge_source,
                     "event_payload": event_payload,
                     "snapshot_features": {
+                        # This comes from the frozen candidate EventPayload and
+                        # cutoff-matched Gate/scope decisions. Legacy candidates
+                        # or incomplete provenance stay unknown and are preserved.
+                        "digest_eligibility": digest_eligibility,
                         "claim_count": claim_count,
                         "source_count": source_count,
                         "new_claims_count": new_claims_count,

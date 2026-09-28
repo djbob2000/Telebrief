@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Any, Mapping, Sequence
 
 from src.publication.digest_narrative import DigestNarrativeDraft
 from src.publication.evidence import PublicationEvidence
 
-DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v1"
+DIGEST_DIAGNOSTICS_VERSION = "digest-diagnostics-v3"
 
 _ATTRIBUTION_PATTERNS = [
     re.compile(
@@ -52,7 +53,10 @@ _CHAT_SLANG_OR_METADATA_RE = re.compile(
     r"(?:\b(?:чо\s+за\s+фигня|идите\s+нах|кинули\s+не\s+только\s+вас)\b|"
     r"\bсмайлик(?:ами|и)?\b|(?:публикуют\s+)?сообщения\s+с\s+эмодзи|"
     r"\bв\s+(?:городских\s+|местных\s+)?чатах\b|\bв\s+(?:городском\s+|местном\s+)?чате\b|"
-    r"\bв\s+пабликах\b|\bв\s+телеграм[- ]каналах\b|\bучастники?\s+чата\b|\bперекличк[а-я]*\b)",
+    r"\bв\s+(?:(?:городском|местном|районном|локальном|телеграм[- ]?)\s+)?канале\b|"
+    r"\bв\s+(?:телеграм[- ]каналах|telegram[- ]каналах|каналах|паблике|пабликах|соцсетях|социальных\s+сетях)\b|"
+    r"\b(?:публикаци\w*|сообщени\w*|пост\w*)\s+(?:местного|городского|районного)\s+канала\b|"
+    r"\bв\s+пабликах\b|\bучастники?\s+чата\b|\bперекличк[а-я]*\b)",
     re.IGNORECASE,
 )
 _CLASSIFIED_AD_RE = re.compile(
@@ -94,6 +98,14 @@ _MALFORMED_CHAT_SYNTAX_RE = re.compile(
 _GENERIC_HEADLINE_RE = re.compile(
     r"^(?:городские\s+события|события\s+в\s+городе|новости\s+города|городские\s+новости)$",
     re.IGNORECASE,
+)
+_BLOCKING_PROSE_CODES = frozenset(
+    {
+        "RAW_TECHNICAL_TOKEN",
+        "CHAT_SLANG_OR_METADATA",
+        "PROFANITY_OR_ABUSIVE_LANGUAGE",
+        "MALFORMED_CHAT_SYNTAX",
+    }
 )
 
 
@@ -140,8 +152,8 @@ class DigestProseQualityAudit:
 
     @property
     def is_publishable(self) -> bool:
-        """Whether the draft is safe to publish as reader-facing prose."""
-        return self.is_clean
+        """Style warnings are advisory; only completed hard checks can block."""
+        return not any(w.code in _BLOCKING_PROSE_CODES for w in self.warnings)
 
     def as_metadata(self) -> dict[str, Any]:
         return {
@@ -155,6 +167,69 @@ class DigestProseQualityAudit:
             "single_story_item_count": self.single_story_item_count,
             "dashboard_group_count": self.dashboard_group_count,
             "detail_item_count": self.detail_item_count,
+        }
+
+
+class DigestCheckStatus(StrEnum):
+    PASS = "PASS"  # noqa: S105 - audit state, not a credential
+    FAIL = "FAIL"  # noqa: S105 - audit state, not a credential
+    NOT_EVALUATED = "NOT_EVALUATED"
+
+
+@dataclass(frozen=True)
+class DigestQualityCheck:
+    """One explicit rendered-post audit result."""
+
+    code: str
+    status: DigestCheckStatus
+    blocking: bool
+    message: str
+    text: str = ""
+    evidence_ids: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code,
+            "status": self.status.value,
+            "blocking": self.blocking,
+            "message": self.message,
+            "text": self.text,
+            "evidence_ids": list(self.evidence_ids),
+        }
+
+
+@dataclass(frozen=True)
+class DigestQualityAudit:
+    """Whole-post audit with explicit blocking and unevaluated results."""
+
+    checks: tuple[DigestQualityCheck, ...]
+    prose_audit: DigestProseQualityAudit
+    version: str = DIGEST_DIAGNOSTICS_VERSION
+
+    @property
+    def blocking_failures(self) -> tuple[DigestQualityCheck, ...]:
+        return tuple(
+            check
+            for check in self.checks
+            if check.status == DigestCheckStatus.FAIL and check.blocking
+        )
+
+    @property
+    def is_publishable(self) -> bool:
+        return not self.blocking_failures
+
+    @property
+    def not_evaluated(self) -> tuple[DigestQualityCheck, ...]:
+        return tuple(c for c in self.checks if c.status == DigestCheckStatus.NOT_EVALUATED)
+
+    def as_metadata(self) -> dict[str, Any]:
+        return {
+            "version": self.version,
+            "is_publishable": self.is_publishable,
+            "blocking_failure_count": len(self.blocking_failures),
+            "not_evaluated_count": len(self.not_evaluated),
+            "checks": [check.as_dict() for check in self.checks],
+            "prose_observations": self.prose_audit.as_metadata(),
         }
 
 
@@ -404,3 +479,243 @@ def audit_digest_prose_quality(
         dashboard_group_count=dashboard_group_count,
         detail_item_count=detail_item_count,
     )
+
+
+def audit_rendered_digest(
+    artifact: Any,
+    draft: DigestNarrativeDraft,
+    evidence: Mapping[str, PublicationEvidence],
+    presentation_plan: Any,
+    coverage_trace: Any,
+    *,
+    narrative_validation: Any | None = None,
+) -> DigestQualityAudit:
+    """Audit the whole canonical post; only completed mandatory checks can block.
+
+    Semantic entailment and directory dominance are deliberately explicit
+    NOT_EVALUATED outcomes until a reliable checker exists. They are not
+    converted to PASS, and they do not suppress legitimate single-source PUBLISH
+    community reports.
+    """
+    from src.publication.renderers import RenderedDigestArtifact
+
+    if not isinstance(artifact, RenderedDigestArtifact):
+        raise TypeError("audit_rendered_digest requires RenderedDigestArtifact")
+
+    checks: list[DigestQualityCheck] = []
+
+    def add(
+        code: str,
+        status: DigestCheckStatus,
+        message: str,
+        *,
+        blocking: bool = False,
+        text: str = "",
+        evidence_ids: Sequence[str] = (),
+    ) -> None:
+        checks.append(
+            DigestQualityCheck(
+                code=code,
+                status=status,
+                blocking=blocking,
+                message=message,
+                text=text[:240],
+                evidence_ids=tuple(dict.fromkeys(str(value) for value in evidence_ids)),
+            )
+        )
+
+    prose = audit_digest_prose_quality(draft, evidence, presentation_plan)
+    full_text = artifact.visible_text
+    length_ok = artifact.visible_character_count <= 4096 and artifact.utf16_character_count <= 4096
+    add(
+        "TELEGRAM_SINGLE_POST_LIMIT",
+        DigestCheckStatus.PASS if length_ok else DigestCheckStatus.FAIL,
+        "Canonical visible post must fit the 4096-character Telegram ceiling.",
+        blocking=True,
+        text=(
+            f"{artifact.visible_character_count} visible characters / "
+            f"{artifact.utf16_character_count} UTF-16 units (limit 4096)"
+        ),
+    )
+
+    entity_ranges = [(entity.offset, entity.offset + entity.length) for entity in artifact.entities]
+    entity_valid = all(
+        entity.offset >= 0
+        and entity.length > 0
+        and entity.offset + entity.length <= artifact.utf16_character_count
+        for entity in artifact.entities
+    ) and all(left[1] <= right[0] for left, right in zip(entity_ranges, entity_ranges[1:]))
+    add(
+        "TELEGRAM_ENTITY_OFFSETS",
+        DigestCheckStatus.PASS if entity_valid else DigestCheckStatus.FAIL,
+        "Formatting entity offsets are valid UTF-16 ranges in the canonical visible text.",
+        blocking=True,
+    )
+
+    story_coverage = float(getattr(coverage_trace, "story_coverage", 0.0))
+    add(
+        "SELECTED_STORY_COVERAGE",
+        DigestCheckStatus.PASS if story_coverage >= 1.0 else DigestCheckStatus.FAIL,
+        "Every Story admitted to the frozen presentation plan must be represented.",
+        blocking=True,
+        text=f"{story_coverage:.3f}",
+    )
+    fact_coverage = float(getattr(coverage_trace, "material_fact_coverage", 0.0))
+    add(
+        "MATERIAL_FACT_COVERAGE",
+        DigestCheckStatus.PASS if fact_coverage >= 1.0 else DigestCheckStatus.FAIL,
+        "Every admitted required material fact must be represented.",
+        blocking=True,
+        text=f"{fact_coverage:.3f}",
+        evidence_ids=tuple(
+            support_id
+            for fact in getattr(coverage_trace, "facts", ())
+            if not getattr(fact, "covered", False)
+            for support_id in getattr(fact, "required_support_ids", ())
+        ),
+    )
+
+    community_publish_ids = {
+        str(key)
+        for key, value in evidence.items()
+        if str(getattr(value, "kind", "")).lower() == "community_report"
+        and str(getattr(value, "publication_use", "")).upper() == "PUBLISH"
+    }
+    fact_trace_by_id = {
+        str(getattr(fact, "fact_id", "")): fact for fact in getattr(coverage_trace, "facts", ())
+    }
+    single_source_uncovered: list[str] = []
+    for required_fact in getattr(presentation_plan, "required_facts", ()):
+        fact_id = str(getattr(required_fact, "fact_id", ""))
+        matched = [
+            evidence[support_id]
+            for support_id in getattr(required_fact, "support_ids", ())
+            if support_id in community_publish_ids and support_id in evidence
+        ]
+        source_ids = {int(getattr(item, "source_id", 0)) for item in matched}
+        if matched and len(source_ids) == 1:
+            fact_trace = fact_trace_by_id.get(fact_id)
+            if fact_trace is None or not bool(getattr(fact_trace, "covered", False)):
+                single_source_uncovered.extend(
+                    str(getattr(item, "evidence_id", "")) for item in matched
+                )
+    add(
+        "SINGLE_SOURCE_PUBLISH_COMMUNITY_REPORTS",
+        DigestCheckStatus.FAIL if single_source_uncovered else DigestCheckStatus.PASS,
+        "Useful single-source PUBLISH community reports remain eligible; lack of corroboration or official confirmation is not an exclusion condition.",
+        blocking=True,
+        evidence_ids=single_source_uncovered,
+    )
+
+    if narrative_validation is not None:
+        validation_ok = bool(getattr(narrative_validation, "is_valid", False))
+        violations = tuple(getattr(narrative_validation, "violations", ()) or ())
+        add(
+            "EVIDENCE_AND_COMPOSITION_VALIDATION",
+            DigestCheckStatus.PASS if validation_ok else DigestCheckStatus.FAIL,
+            "Implemented evidence, composition, relation, and geography hard checks.",
+            blocking=True,
+            text="; ".join(str(value) for value in violations[:5]),
+            evidence_ids=tuple(
+                str(value).split(":", 1)[-1]
+                for value in violations
+                if "support" in str(value).lower() or "fact" in str(value).lower()
+            ),
+        )
+        for diagnostic in getattr(narrative_validation, "not_evaluated", ()) or ():
+            add(
+                "SEMANTIC_BINDING_NOT_EVALUATED",
+                DigestCheckStatus.NOT_EVALUATED,
+                "The implementation cannot reliably resolve this semantic binding; it remains visible for review.",
+                text=str(diagnostic),
+            )
+    else:
+        add(
+            "EVIDENCE_AND_COMPOSITION_VALIDATION",
+            DigestCheckStatus.NOT_EVALUATED,
+            "Narrative validation result was not provided to the rendered-post audit.",
+        )
+
+    item_by_location: dict[tuple[str | None, int | None], Any] = {}
+    for block in draft.blocks:
+        for index, item in enumerate(block.items):
+            item_by_location[(block.block_id, index)] = item
+    for warning in prose.warnings:
+        warning_item = item_by_location.get((warning.block_id, warning.item_index))
+        snippet = ""
+        evidence_ids: Sequence[str] = ()
+        if warning_item is not None:
+            snippet = " ".join(part for part in (warning_item.headline, warning_item.body) if part)
+            evidence_ids = tuple(getattr(warning_item, "cited_support_ids", ()))
+        is_blocking = warning.code in _BLOCKING_PROSE_CODES
+        add(
+            warning.code,
+            DigestCheckStatus.FAIL,
+            warning.message,
+            blocking=is_blocking,
+            text=snippet or warning.headline or "",
+            evidence_ids=evidence_ids,
+        )
+
+    duplicate_opening = re.search(
+        r"(?m)^(⚡️|⚡|💧|📶|🚌|💥|📌)\s+\1(?:\s|$)", artifact.visible_text
+    )
+    add(
+        "DUPLICATE_LEADING_EMOJI",
+        DigestCheckStatus.FAIL if duplicate_opening else DigestCheckStatus.PASS,
+        "An item should not repeat the same emoji label at its start.",
+        text=duplicate_opening.group(0) if duplicate_opening else "",
+    )
+
+    caveat_patterns = (
+        re.compile(r"\bна момент подготовки\b", re.IGNORECASE),
+        re.compile(r"\bданные?\s+расходятся\b", re.IGNORECASE),
+        re.compile(r"\bситуация\s+оста[её]тся\s+сложной\b", re.IGNORECASE),
+    )
+    repeated_caveat = next(
+        (pattern.pattern for pattern in caveat_patterns if len(pattern.findall(full_text)) > 1),
+        None,
+    )
+    add(
+        "REPEATED_GENERIC_CAVEAT",
+        DigestCheckStatus.FAIL if repeated_caveat else DigestCheckStatus.PASS,
+        "Generic uncertainty caveats should not be repeated across the complete post.",
+        text=repeated_caveat or "",
+    )
+
+    repeated_supports: dict[str, int] = {}
+    for block in draft.blocks:
+        for item in block.items:
+            for support_id in set(getattr(item, "cited_support_ids", ())):
+                repeated_supports[support_id] = repeated_supports.get(support_id, 0) + 1
+    repeated = tuple(sorted(sid for sid, count in repeated_supports.items() if count > 1))
+    add(
+        "REPEATED_FACTS_SEMANTIC_REVIEW",
+        DigestCheckStatus.NOT_EVALUATED,
+        "Shared source references do not establish repeated reader-facing claims; semantic deduplication is not implemented.",
+        evidence_ids=repeated,
+    )
+
+    directory_signals = sum(
+        bool(pattern.search(full_text))
+        for pattern in (
+            re.compile(r"https?://|www\.", re.IGNORECASE),
+            re.compile(r"\+?\d[\d\s()/-]{7,}\d"),
+            re.compile(r"\b(?:цена|стоимость|руб(?:лей|\.)?|грн|₽|₴)\b", re.IGNORECASE),
+            re.compile(r"\b(?:звоните|запись|заказ|куплю|продам|телефон)\b", re.IGNORECASE),
+        )
+    )
+    add(
+        "DIRECTORY_PAYLOAD_DOMINANCE",
+        DigestCheckStatus.NOT_EVALUATED if directory_signals >= 2 else DigestCheckStatus.PASS,
+        "Automatic checks cannot reliably distinguish a useful local service detail from directory payload.",
+        text="directory-like signals detected" if directory_signals >= 2 else "",
+    )
+
+    add(
+        "SEMANTIC_ENTAILMENT",
+        DigestCheckStatus.NOT_EVALUATED,
+        "No general semantic entailment checker is available; implemented exact/high-risk hard checks remain authoritative.",
+    )
+
+    return DigestQualityAudit(checks=tuple(checks), prose_audit=prose)

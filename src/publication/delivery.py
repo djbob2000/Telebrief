@@ -54,9 +54,31 @@ def _render_payload(platform: str, pub: Any) -> tuple[str, dict[str, Any]]:
     if platform == "telegram_channel":
         telegraph_url = ""
         photo_path = ""
-        if hasattr(pub, "metadata") and isinstance(pub.metadata, dict):
+        metadata = (
+            pub.metadata if hasattr(pub, "metadata") and isinstance(pub.metadata, dict) else {}
+        )
+        if metadata:
             telegraph_url = str(pub.metadata.get("telegraph_url", "") or "")
             photo_path = str(pub.metadata.get("photo_path", "") or "")
+
+        canonical_digest = metadata.get("rendered_digest_artifact")
+        if (
+            isinstance(canonical_digest, dict)
+            and canonical_digest.get("version") == "digest-artifact-v1"
+        ):
+            canonical_text = pub.body or ""
+            actual_hash = hashlib.sha256(canonical_text.encode("utf-8")).hexdigest()
+            expected_hash = str(canonical_digest.get("content_hash", ""))
+            if not canonical_text or not expected_hash or actual_hash != expected_hash:
+                raise ValueError(
+                    f"publication {getattr(pub, 'id', '?')} canonical digest body does not match its rendered artifact hash"
+                )
+            entities = canonical_digest.get("entities", ())
+            return "telegram_entities", {
+                "text": canonical_text,
+                "parse_mode": None,
+                "entities": list(entities) if isinstance(entities, (list, tuple)) else [],
+            }
 
         if pub_type in ("weekly_article", "monthly_article") and not photo_path:
             from src.publication.renderers import render_longitudinal_telegram_teaser

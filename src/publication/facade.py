@@ -8,8 +8,12 @@ import logging
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from src.config_loader import Config
+
+if TYPE_CHECKING:
+    from src.publication.renderers import RenderedDigestArtifact
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,8 @@ class PublicationPreviewResult:
     body: str
     publication_type: str
     snapshot_at: dt.datetime
+    rendered_artifact: RenderedDigestArtifact | None = None
+    quality_audit: dict[str, Any] | None = None
 
 
 async def _wait_for_preview_readiness(
@@ -56,6 +62,7 @@ async def _wait_for_preview_readiness(
     intent_id: int,
     initial_status: str,
     deadline_at: dt.datetime,
+    knowledge_snapshot_at: dt.datetime | None = None,
     poll_interval_seconds: float = 5.0,
 ) -> None:
     """Wait for normal worker readiness without deferring preview preparation."""
@@ -65,6 +72,7 @@ async def _wait_for_preview_readiness(
         decision = await orchestrator.reconcile(
             intent_id,
             now=now,
+            knowledge_snapshot_at=knowledge_snapshot_at,
             defer_preparation=False,
         )
         status = decision.status
@@ -207,6 +215,7 @@ async def build_publication_preview(
 
     runtime = get_runtime()
     snap = snapshot_at or dt.datetime.now(dt.timezone.utc)
+    request_now = snap if snapshot_at is not None else dt.datetime.now(dt.timezone.utc)
     key = f"preview:{edition_slug}:{publication_type}:{uuid.uuid4().hex}"
 
     async with runtime.uow.transaction() as conn:
@@ -222,13 +231,13 @@ async def build_publication_preview(
         )
 
     orchestrator = PublicationOrchestrator(uow=runtime.uow, config=config)
-    request_now = snap if snapshot_at is not None else dt.datetime.now(dt.timezone.utc)
     intent = await orchestrator.request(
         edition_slug=edition_slug,
         publication_type=publication_type,
         trigger="manual",
         target_at=snap,
         now=request_now,
+        knowledge_snapshot_at=snapshot_at,
         request_key=key,
         lookback_hours=lookback_hours,
         defer_preparation=False,
@@ -239,6 +248,7 @@ async def build_publication_preview(
             intent_id=intent.intent_id,
             initial_status=intent.readiness_status,
             deadline_at=intent.deadline_at,
+            knowledge_snapshot_at=snapshot_at,
         )
 
     run_id = await _prepare_publication_from_intent_once(
@@ -262,6 +272,13 @@ async def build_publication_preview(
         publication_metadata={"preview": True, "preview_mode": "no_delivery"},
     )
 
+    from src.publication.repository import PublicationRepository
+
+    async with runtime.uow.transaction() as conn:
+        run = await PublicationRepository().get_run_by_id(conn, run_id)
+    if run is None:
+        raise RuntimeError(f"preview PublicationRun {run_id} disappeared after generation")
+
     logger.info(
         "generated preview %s publication %s (run=%s, edition=%s)",
         publication_type,
@@ -269,6 +286,19 @@ async def build_publication_preview(
         run_id,
         edition_slug,
     )
+    rendered_artifact = None
+    quality_audit = None
+    if publication_type in ("digest_grouped", "digest_channel"):
+        from src.publication.renderers import RenderedDigestArtifact
+
+        metadata = pub.metadata if isinstance(pub.metadata, dict) else {}
+        artifact_metadata = metadata.get("rendered_digest_artifact")
+        if not isinstance(artifact_metadata, dict):
+            raise RuntimeError(
+                "digest preview has no canonical rendered artifact metadata; refusing to show text that may differ from delivery"
+            )
+        rendered_artifact = RenderedDigestArtifact.from_metadata(pub.body, artifact_metadata)
+        quality_audit = metadata.get("digest_quality_audit")
     return PublicationPreviewResult(
         run_id=run_id,
         publication_id=pub.id,
@@ -276,5 +306,7 @@ async def build_publication_preview(
         lead=pub.lead or "",
         body=pub.body,
         publication_type=pub.publication_type,
-        snapshot_at=intent.target_at,
+        snapshot_at=run.snapshot_at,
+        rendered_artifact=rendered_artifact,
+        quality_audit=quality_audit if isinstance(quality_audit, dict) else None,
     )

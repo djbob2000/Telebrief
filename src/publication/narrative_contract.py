@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
 ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v8"
-DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v6"
+DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v7-composition"
 
 
 def build_article_narrative_contract(
@@ -158,14 +158,14 @@ def build_digest_narrative_contract(*, output_language: str = "Russian") -> str:
 - Synthesize multiple messages into a single cohesive development rather than enumerating individual messages.
 - No artificial length padding: On quiet days with few events, state supported facts concisely without filler. On rich days, synthesize thoroughly.
 
-4. Story Partition & Grouping Rules:
+4. Composition Membership & Grouping Rules:
 - Block membership and rubric assignment are immutable and predetermined.
-- The deterministic plan contains required_story_groups.
-- Emit exactly one editorial item for every required_story_group.
-- Do not split a required group into separate items.
-- Do not merge two different required groups.
-- Every Story in the group must be represented by at least one cited support belonging to that Story.
-- Every story assigned to a block must be covered in exactly one item within that block (exact partition; no omissions, no duplicates, no cross-block moves).
+- When `composition_units` are provided, they are the only authority for item membership. Each item names one or more exact unit IDs from its block; it may weave compatible units from the same rubric or split one unit into readable subitems.
+- Across the block, every material fact from every fact-bearing unit must appear in exactly one item. Each summary-only unit must also be represented exactly once, either alone or woven with other same-rubric units.
+- Do not invent, infer, or move Story/fact/support membership. Python derives Story and support IDs from the exact fact records and summary-only unit membership.
+- A shared rubric does not imply shared geography, proximity, cause, or service state. Keep different named areas attached to their own facts, and state them separately when their locations differ.
+- When `composition_units` are absent on a compatibility path, follow that path's explicit immutable membership contract; never guess by topic, text, prefix, or first-unassigned Story.
+- Trace IDs are provenance metadata, not a corroboration threshold. One eligible PUBLISH community report is enough when represented as a report; never require two sources or official confirmation.
 
 5. Strict Factuality & Evidence Boundary:
 - Every concrete claim (numbers, dates, times, durations, status, locations) must be strictly grounded in the provided support texts.

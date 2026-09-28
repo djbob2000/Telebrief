@@ -21,7 +21,7 @@ from src.publication.editorial_adapter import (
     DatabaseGenerationAttemptObserver,
     KnowledgeEditorialAdapter,
 )
-from src.publication.errors import ArticlePublicationRejected, PublicationGenerationError
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.models import Publication
 from src.publication.policies import (
     ARTICLE_PUBLICATION_TYPES,
@@ -142,6 +142,7 @@ class PublicationGenerationService:
         defer_delivery: bool = True,
         publication_metadata: dict[str, Any] | None = None,
     ) -> Publication:
+        digest_implementation_versions: dict[str, Any] = {}
         async with self.uow.transaction() as conn:
             run = await self.repo.lock_run(conn, run_id)
             if run is None:
@@ -156,6 +157,66 @@ class PublicationGenerationService:
                 raise RuntimeError(
                     f"cannot generate for publication run {run_id} in status '{run.status}'"
                 )
+
+            if run.publication_type in DIGEST_PUBLICATION_TYPES:
+                from src.publication.digest_composition import COMPOSITION_POLICY_VERSION
+                from src.publication.digest_contracts import DIGEST_ELIGIBILITY_VERSION
+                from src.publication.digest_narrative import DIGEST_COMPOSITION_MEMBERSHIP_VERSION
+                from src.publication.digest_quality_diagnostics import DIGEST_DIAGNOSTICS_VERSION
+                from src.publication.narrative_contract import DIGEST_NARRATIVE_PROMPT_VERSION
+                from src.publication.policies import (
+                    DIGEST_EDITORIALIZER_PROMPT_VERSION,
+                    SELECTION_SEMANTICS_VERSION,
+                )
+
+                eligibility_policy = (
+                    await self.repo.get_eligibility_policy_by_id(conn, run.eligibility_policy_id)
+                    if run.eligibility_policy_id is not None
+                    else None
+                )
+                selection_policy = (
+                    await self.repo.get_selection_policy_by_id(conn, run.selection_policy_id)
+                    if run.selection_policy_id is not None
+                    else None
+                )
+                writer_policy = (
+                    await self.repo.get_writer_policy_by_id(conn, run.writer_policy_id)
+                    if run.writer_policy_id is not None
+                    else None
+                )
+                eligibility_config = eligibility_policy.config if eligibility_policy else {}
+                selection_config = selection_policy.config if selection_policy else {}
+                writer_config = writer_policy.config if writer_policy else {}
+                digest_implementation_versions = {
+                    "policy_ids": {
+                        "eligibility": run.eligibility_policy_id,
+                        "selection": run.selection_policy_id,
+                        "writer": run.writer_policy_id,
+                    },
+                    "digest_eligibility_version": eligibility_config.get(
+                        "digest_eligibility_version", "legacy_unversioned"
+                    ),
+                    "eligibility_implementation_version": DIGEST_ELIGIBILITY_VERSION,
+                    "selection_semantics_version": selection_config.get(
+                        "selection_semantics_version", "unknown"
+                    ),
+                    "selection_semantics_implementation": SELECTION_SEMANTICS_VERSION,
+                    "selection_prompt_version": (
+                        selection_policy.prompt_version if selection_policy else "unknown"
+                    ),
+                    "writer_prompt_version": (
+                        writer_policy.prompt_version if writer_policy else "unknown"
+                    ),
+                    "editorializer_prompt_version": writer_config.get(
+                        "editorializer_prompt_version", DIGEST_EDITORIALIZER_PROMPT_VERSION
+                    ),
+                    "narrative_contract_prompt_version": writer_config.get(
+                        "narrative_contract_prompt_version", DIGEST_NARRATIVE_PROMPT_VERSION
+                    ),
+                    "composition_policy_version": COMPOSITION_POLICY_VERSION,
+                    "composition_membership_version": DIGEST_COMPOSITION_MEMBERSHIP_VERSION,
+                    "diagnostics_version": DIGEST_DIAGNOSTICS_VERSION,
+                }
 
             # Validate frozen writer policy semantics for article publications
             if run.publication_type in ARTICLE_PUBLICATION_TYPES:
@@ -309,13 +370,90 @@ class PublicationGenerationService:
                     max_city_situation_items=max_sit_items,
                     max_city_situation_details=max_sit_details,
                     max_city_situation_positive_items=max_positive_items,
+                    include_all_candidates=True,
                 )
 
-                if (
-                    narrative_mode == "single_call"
-                    and run.publication_type != "digest_channel"
-                    and frozen.analysis.cards
-                ):
+                # Freeze fact-level composition and budget admission before any writer call.
+                if frozen.analysis.cards:
+                    from src.publication.digest_composition import build_digest_composition
+                    from src.publication.errors import PublicationGenerationError
+
+                    input_by_decision = {
+                        int(inp.selection_decision_id): (f"story:{inp.story_id}", str(inp.story_id))
+                        for inp in inputs
+                    }
+                    selection_suggestions: dict[str, Any] = {}
+                    edition_slug = ""
+                    async with self.uow.transaction() as conn:
+                        edition_cur = await conn.execute(
+                            """
+                            SELECT e.slug
+                            FROM publication_runs pr
+                            JOIN editions e ON e.id = pr.edition_id
+                            WHERE pr.id = %s
+                            """,
+                            (run.id,),
+                        )
+                        edition_row = await edition_cur.fetchone()
+                        if edition_row and edition_row[0]:
+                            edition_slug = str(edition_row[0])
+                        if not edition_slug:
+                            raise PublicationGenerationError(
+                                "DIGEST_EDITION_GEOGRAPHY_UNAVAILABLE:missing frozen run edition slug"
+                            )
+
+                        if input_by_decision:
+                            decision_cur = await conn.execute(
+                                """
+                                SELECT id, metadata
+                                FROM publication_selection_decisions
+                                WHERE id = ANY(%s)
+                                """,
+                                (list(input_by_decision),),
+                            )
+                            for decision_id, decision_metadata in await decision_cur.fetchall():
+                                story_keys = input_by_decision.get(int(decision_id), ())
+                                metadata = (
+                                    decision_metadata if isinstance(decision_metadata, dict) else {}
+                                )
+                                suggestion = metadata.get("selector_exclusion_suggestion")
+                                resolved = (
+                                    suggestion
+                                    if suggestion is not None
+                                    else {"status": "unavailable"}
+                                )
+                                for story_key in story_keys:
+                                    selection_suggestions[story_key] = resolved
+
+                    rubric_config = getattr(self.config.settings, "digest_rubrics", None)
+                    composition = build_digest_composition(
+                        presentation_plan,
+                        frozen.analysis.cards,
+                        evidence_dict,
+                        edition_slug=edition_slug,
+                        snapshot_at=getattr(run, "snapshot_at", None),
+                        max_chars=3900,
+                        # Fixed title/date allowance. Rubric labels and spacing
+                        # are charged once per admitted rubric by the composer.
+                        reserved_chars=128,
+                        include_statistics=bool(
+                            getattr(self.config.settings, "include_statistics", True)
+                        ),
+                        selector_suggestions=selection_suggestions,
+                        rubric_labels={
+                            rubric.id: rubric.name for rubric in getattr(rubric_config, "items", ())
+                        },
+                        rubric_fallback_id=getattr(
+                            getattr(rubric_config, "fallback", None), "id", "other"
+                        ),
+                    )
+                    if not composition.feasible:
+                        raise PublicationGenerationError(
+                            f"DIGEST_BUDGET_FAILURE:{composition.failure_reason}"
+                        )
+                    presentation_plan = presentation_plan.with_composition(composition)
+
+                if narrative_mode == "single_call" and frozen.analysis.cards:
                     from src.publication.digest_narrative import (
                         DigestNarrativeWriter,
                         build_digest_support_text_index,
@@ -342,7 +480,7 @@ class PublicationGenerationService:
                         rubrics=renderer.rubrics,
                         max_cards_per_block=max_cards,
                         presentation_plan=presentation_plan,
-                        edition_slug=getattr(frozen, "edition_slug", ""),
+                        edition_slug=getattr(frozen, "edition_slug", "") or edition_slug,
                     )
 
                     writer_provider = getattr(self.generator, "provider", None)
@@ -350,6 +488,7 @@ class PublicationGenerationService:
                     att_id = await observer.attempt_started(
                         "writer",
                         metadata={
+                            "digest_implementation_versions": digest_implementation_versions,
                             "subkind": f"digest_narrative_{narrative_mode}",
                             "block_count": len(plan.blocks),
                             "card_count": len(detail_cards),
@@ -385,295 +524,234 @@ class PublicationGenerationService:
                             all_draft_support_texts, getattr(run, "snapshot_at", None)
                         )
 
-                        val_res = validate_digest_narrative(
-                            draft_cand,
-                            plan,
-                            support_text_by_id=support_text_index,
-                            situation_plan=presentation_plan.city_situation,
-                            allowed_context_terms=allowed_digest_terms,
-                            all_known_draft_supports=all_draft_support_texts,
+                        from src.publication.digest_coverage import build_digest_coverage_trace
+                        from src.publication.digest_narrative import sanitize_digest_narrative_draft
+                        from src.publication.digest_quality_diagnostics import (
+                            DigestCheckStatus,
+                            audit_rendered_digest,
                         )
-                        if not val_res.is_valid:
-                            from src.publication.digest_editor import DigestEditor
+                        from src.publication.errors import DigestCoverageInvariantError
 
-                            logger.info(
-                                "digest narrative validation found violations (%s); attempting DigestEditor repair",
-                                val_res.violations[:5],
+                        support_text_index = build_digest_support_text_index(
+                            evidence=evidence_dict,
+                            cards=frozen.analysis.cards,
+                            frozen_input=frozen,
+                        )
+                        all_draft_support_texts = list(support_text_index.values())
+                        allowed_digest_terms = compute_digest_allowed_terms(
+                            all_draft_support_texts, getattr(run, "snapshot_at", None)
+                        )
+
+                        def _evaluate_candidate(candidate: Any) -> tuple[Any, Any, Any, Any]:
+                            candidate = sanitize_digest_narrative_draft(candidate)
+                            validation = validate_digest_narrative(
+                                candidate,
+                                plan,
+                                support_text_by_id=support_text_index,
+                                situation_plan=presentation_plan.city_situation,
+                                allowed_context_terms=allowed_digest_terms,
+                                all_known_draft_supports=all_draft_support_texts,
                             )
-                            editor = DigestEditor(provider=writer_provider)
+                            coverage = build_digest_coverage_trace(
+                                presentation_plan,
+                                candidate,
+                                plan,
+                            )
+                            artifact = renderer.render_grouped_digest_artifact(
+                                frozen,
+                                snapshot_at=run.snapshot_at,
+                                timezone_name=getattr(self.config.settings, "timezone", "UTC"),
+                                narrative_draft=candidate,
+                                presentation_plan=presentation_plan,
+                            )
+                            audit = audit_rendered_digest(
+                                artifact,
+                                candidate,
+                                evidence_dict,
+                                presentation_plan,
+                                coverage,
+                                narrative_validation=validation,
+                            )
+                            return validation, coverage, artifact, audit
+
+                        draft_cand = sanitize_digest_narrative_draft(draft_cand)
+                        val_res, coverage_trace, rendered_artifact, rendered_audit = (
+                            _evaluate_candidate(draft_cand)
+                        )
+                        if val_res.not_evaluated:
+                            logger.info(
+                                "digest narrative has semantic bindings explicitly marked NOT_EVALUATED: %s",
+                                list(val_res.not_evaluated)[:10],
+                            )
+
+                        repair_findings = list(val_res.violations)
+                        for check in rendered_audit.checks:
+                            if check.status == DigestCheckStatus.FAIL:
+                                repair_findings.append(
+                                    f"DIGEST_QUALITY:{check.code}: {check.message} {check.text}".strip()
+                                )
+                        for warning in rendered_audit.prose_audit.warnings:
+                            repair_findings.append(
+                                f"STYLE_OBSERVATION:{warning.code}: {warning.message}"
+                            )
+                        repair_findings = list(dict.fromkeys(repair_findings))
+                        repair_used = False
+                        if repair_findings:
+                            repair_findings.append(
+                                "EDITORIAL_CONSTRAINT: Preserve every useful PUBLISH community_report as a faithfully attributed local report. Do not remove it or weaken its wording merely because it has one source or lacks official confirmation."
+                            )
+                            affected_item_ids = tuple(
+                                dict.fromkeys(
+                                    item.item_id
+                                    for warning in rendered_audit.prose_audit.warnings
+                                    for block in draft_cand.blocks
+                                    if block.block_id == warning.block_id
+                                    for index, item in enumerate(block.items)
+                                    if index == warning.item_index and item.item_id
+                                )
+                            )
+                            if not affected_item_ids:
+                                affected_item_ids = tuple(
+                                    item.item_id
+                                    for block in draft_cand.blocks
+                                    for item in block.items
+                                    if item.item_id
+                                )
                             edit_att_id = await observer.attempt_started(
                                 "repair",
                                 metadata={
-                                    "subkind": "digest_editor_validation_repair",
-                                    "violations": list(val_res.violations[:5]),
+                                    "digest_implementation_versions": digest_implementation_versions,
+                                    "subkind": "digest_editor_combined_repair",
+                                    "finding_count": len(repair_findings),
+                                    "finding_codes": [
+                                        str(value).split(":", 2)[1]
+                                        for value in repair_findings
+                                        if ":" in str(value)
+                                    ][:20],
                                 },
                             )
                             try:
-                                repaired_cand = await editor.polish_and_compress(
-                                    draft_cand,
-                                    plan=plan,
-                                    evidence=evidence_dict,
-                                    max_chars=3600,
-                                    model=getattr(self.config.settings, "openai_model", None)
-                                    or getattr(self.config.settings, "ai_model", None),
-                                    violations=val_res.violations,
-                                )
-                                repaired_val = validate_digest_narrative(
-                                    repaired_cand,
-                                    plan,
-                                    support_text_by_id=support_text_index,
-                                    situation_plan=presentation_plan.city_situation,
-                                    allowed_context_terms=allowed_digest_terms,
-                                    all_known_draft_supports=all_draft_support_texts,
-                                )
-                                if repaired_val.is_valid:
-                                    logger.info(
-                                        "DigestEditor repair succeeded; using repaired draft"
-                                    )
-                                    draft_cand = repaired_cand
-                                    val_res = repaired_val
-                                    await observer.attempt_finished(
-                                        edit_att_id,
-                                        "succeeded",
-                                        metadata={"validation": {"is_valid": True}},
-                                    )
-                                else:
-                                    logger.warning(
-                                        "DigestEditor repair did not resolve violations: %s",
-                                        repaired_val.violations[:5],
-                                    )
-                                    await observer.attempt_finished(
-                                        edit_att_id,
-                                        "failed",
-                                        error_kind="digest_editor_repair_failed",
-                                        metadata={"violations": list(repaired_val.violations[:5])},
-                                    )
-                            except Exception as edit_exc:
-                                logger.warning("DigestEditor repair failed: %s", edit_exc)
-                                await observer.attempt_finished(
-                                    edit_att_id,
-                                    "failed",
-                                    error_kind="digest_editor_repair_exception",
-                                    metadata={"error_message": str(edit_exc)},
-                                )
-
-                        if val_res.is_valid:
-                            from src.publication.digest_coverage import build_digest_coverage_trace
-                            from src.publication.digest_narrative import (
-                                sanitize_digest_narrative_draft,
-                            )
-                            from src.publication.digest_quality_diagnostics import (
-                                audit_digest_prose_quality,
-                            )
-                            from src.publication.errors import DigestCoverageInvariantError
-
-                            draft_cand = sanitize_digest_narrative_draft(draft_cand)
-
-                            quality_audit = audit_digest_prose_quality(
-                                draft_cand,
-                                evidence=evidence_dict,
-                                presentation_plan=presentation_plan,
-                            )
-                            coverage_trace = build_digest_coverage_trace(
-                                presentation_plan,
-                                draft_cand,
-                                plan,
-                            )
-                            if coverage_trace.material_fact_coverage < 1.0:
-                                raise DigestCoverageInvariantError(
-                                    f"material fact coverage incomplete: {coverage_trace.material_fact_coverage:.2f} < 1.0"
-                                )
-                            fatal_violations = [
-                                f"DIGEST_PROSE_QUALITY:{warning.code}"
-                                for warning in quality_audit.warnings
-                                if warning.code
-                                in {
-                                    "RAW_TECHNICAL_TOKEN",
-                                    "CHAT_SLANG_OR_METADATA",
-                                    "CLASSIFIED_AD_LEAK",
-                                    "PROFANITY_OR_ABUSIVE_LANGUAGE",
-                                    "MALFORMED_CHAT_SYNTAX",
-                                    "REPETITIVE_GENERIC_HEADLINES",
-                                    "GENERIC_PLACEHOLDER_HEADLINE",
-                                    "DIGEST_OVER_BUDGET",
-                                }
-                            ]
-                            if fatal_violations or not quality_audit.is_clean:
                                 from src.publication.digest_editor import DigestEditor
 
                                 editor = DigestEditor(provider=writer_provider)
-                                edit_att_id = await observer.attempt_started(
-                                    "repair",
-                                    metadata={
-                                        "subkind": "digest_editor_polish_and_compress",
-                                        "prior_warnings": [w.code for w in quality_audit.warnings],
-                                    },
-                                )
-                                try:
-                                    polished_draft = await editor.polish_and_compress(
+                                async with asyncio.timeout(narrative_timeout):
+                                    repaired_draft = await editor.polish_and_compress(
                                         draft_cand,
                                         plan=plan,
                                         evidence=evidence_dict,
                                         max_chars=3600,
                                         model=getattr(self.config.settings, "openai_model", None)
                                         or getattr(self.config.settings, "ai_model", None),
+                                        violations=repair_findings,
+                                        target_item_ids=affected_item_ids,
                                     )
-                                    polished_val = validate_digest_narrative(
-                                        polished_draft,
-                                        plan,
-                                        support_text_by_id=support_text_index,
-                                        situation_plan=presentation_plan.city_situation,
-                                        allowed_context_terms=allowed_digest_terms,
-                                        all_known_draft_supports=all_draft_support_texts,
-                                    )
-                                    if polished_val.is_valid:
-                                        polished_audit = audit_digest_prose_quality(
-                                            polished_draft,
-                                            evidence=evidence_dict,
-                                            presentation_plan=presentation_plan,
-                                        )
-                                        polished_fatal = [
-                                            f"DIGEST_PROSE_QUALITY:{warning.code}"
-                                            for warning in polished_audit.warnings
-                                            if warning.code
-                                            in {
-                                                "RAW_TECHNICAL_TOKEN",
-                                                "CHAT_SLANG_OR_METADATA",
-                                                "CLASSIFIED_AD_LEAK",
-                                                "PROFANITY_OR_ABUSIVE_LANGUAGE",
-                                                "MALFORMED_CHAT_SYNTAX",
-                                                "REPETITIVE_GENERIC_HEADLINES",
-                                                "GENERIC_PLACEHOLDER_HEADLINE",
-                                                "DIGEST_OVER_BUDGET",
-                                            }
-                                        ]
-                                        if not polished_fatal:
-                                            logger.info(
-                                                "DigestEditor polish and compression succeeded"
-                                            )
-                                            draft_cand = polished_draft
-                                            quality_audit = polished_audit
-                                            fatal_violations = []
-                                            await observer.attempt_finished(
-                                                edit_att_id,
-                                                "succeeded",
-                                                metadata={
-                                                    "validation": {"is_valid": True},
-                                                    "prose_quality_audit": polished_audit.as_metadata(),
-                                                },
-                                            )
-                                        else:
-                                            await observer.attempt_finished(
-                                                edit_att_id,
-                                                "failed",
-                                                error_kind="digest_editor_fatal_violations",
-                                                metadata={"violations": polished_fatal},
-                                            )
-                                    else:
-                                        await observer.attempt_finished(
-                                            edit_att_id,
-                                            "failed",
-                                            error_kind="digest_editor_validation_failed",
-                                            metadata={
-                                                "violations": list(polished_val.violations[:5])
-                                            },
-                                        )
-                                except Exception as edit_exc:
-                                    logger.warning("DigestEditor failed: %s", edit_exc)
-                                    await observer.attempt_finished(
-                                        edit_att_id,
-                                        "failed",
-                                        error_kind="digest_editor_exception",
-                                        metadata={"error_message": str(edit_exc)},
-                                    )
-
-                            if fatal_violations:
-                                logger.error(
-                                    "digest narrative contains fatal quality violations: %s",
-                                    fatal_violations,
+                                repair_used = True
+                                draft_cand = sanitize_digest_narrative_draft(repaired_draft)
+                                val_res, coverage_trace, rendered_artifact, rendered_audit = (
+                                    _evaluate_candidate(draft_cand)
                                 )
-                                allow_fallback = getattr(
-                                    pub_edit,
-                                    "digest_allow_deterministic_fallback",
-                                    False,
-                                )
-                                if not allow_fallback:
-                                    raise PublicationGenerationError(
-                                        f"Digest narrative contained fatal quality violations: {fatal_violations}"
-                                    )
                                 await observer.attempt_finished(
-                                    att_id,
+                                    edit_att_id,
+                                    "succeeded"
+                                    if val_res.is_valid and rendered_audit.is_publishable
+                                    else "failed",
+                                    error_kind=(
+                                        None
+                                        if val_res.is_valid and rendered_audit.is_publishable
+                                        else "digest_editor_combined_repair_unresolved"
+                                    ),
+                                    metadata={
+                                        "repair_used": True,
+                                        "validation": {
+                                            "is_valid": val_res.is_valid,
+                                            "scope": "implemented_hard_checks_only",
+                                            "not_evaluated": list(val_res.not_evaluated),
+                                        },
+                                        "quality_audit": rendered_audit.as_metadata(),
+                                    },
+                                )
+                            except Exception as edit_exc:
+                                await observer.attempt_finished(
+                                    edit_att_id,
                                     "failed",
-                                    error_kind="digest_prose_quality_failed",
-                                    metadata={
-                                        "error_message": "; ".join(fatal_violations),
-                                        "violations": fatal_violations,
-                                        "validation": {"is_valid": False},
-                                        "prose_quality_audit": quality_audit.as_metadata(),
-                                    },
+                                    error_kind="digest_editor_combined_repair_exception",
+                                    metadata={"error_message": str(edit_exc)},
                                 )
-                            else:
-                                if not quality_audit.is_clean:
-                                    logger.warning(
-                                        "digest narrative has non-fatal prose warnings (publishing anyway): %s",
-                                        [w.code for w in quality_audit.warnings],
-                                    )
-                                narrative_draft = draft_cand
-                                final_digest_draft = draft_cand
-                                title, lead, body = renderer.render_grouped_digest(
-                                    frozen,
-                                    snapshot_at=run.snapshot_at,
-                                    narrative_draft=narrative_draft,
-                                    presentation_plan=presentation_plan,
-                                )
-                                presentations = presentation_plan.story_presentations
-                                coverage_meta = {
-                                    "planned_story_count": len(presentation_plan.story_ids),
-                                    "dashboard_only_count": sum(
-                                        p.mode == "DASHBOARD_ONLY" for p in presentations
-                                    ),
-                                    "detail_only_count": sum(
-                                        p.mode == "DETAIL_ONLY" for p in presentations
-                                    ),
-                                    "dashboard_and_drilldown_count": sum(
-                                        p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
-                                    ),
-                                    "final_covered_story_count": len(coverage_trace.story_ids),
-                                    "final_digest_story_coverage": coverage_trace.story_coverage,
-                                    "final_digest_material_fact_coverage": coverage_trace.material_fact_coverage,
-                                    "deterministic_digest_fallback_used": False,
-                                    "digest_presentation_plan": presentation_plan.to_audit_dict(),
-                                    "digest_coverage_trace": coverage_trace.to_dict(),
-                                }
-                                await observer.attempt_finished(
-                                    att_id,
-                                    "succeeded",
-                                    metadata={
-                                        "validation": {"is_valid": True},
-                                        "block_count": len(draft_cand.blocks),
-                                        "situation_item_count": len(draft_cand.situation_items),
-                                        "prose_quality_audit": quality_audit.as_metadata(),
-                                        **coverage_meta,
-                                    },
-                                )
+                                logger.warning("DigestEditor combined repair failed: %s", edit_exc)
 
-                        else:
-                            logger.warning(
-                                "digest narrative validation failed: %s", val_res.violations
+                        blocking_findings = [
+                            check.code for check in rendered_audit.blocking_failures
+                        ]
+                        if not val_res.is_valid:
+                            blocking_findings.extend(val_res.violations)
+                        if blocking_findings:
+                            raise PublicationGenerationError(
+                                "DIGEST_RENDERED_AUDIT_FAILED: "
+                                + "; ".join(dict.fromkeys(blocking_findings))
                             )
-                            await observer.attempt_finished(
-                                att_id,
-                                "failed",
-                                error_kind="digest_narrative_validation_failed",
-                                metadata={
-                                    "error_message": "; ".join(val_res.violations[:5]),
-                                    "violations": list(val_res.violations),
+                        if (
+                            coverage_trace.story_coverage < 1.0
+                            or coverage_trace.material_fact_coverage < 1.0
+                        ):
+                            raise DigestCoverageInvariantError(
+                                "final canonical digest artifact has incomplete story or material-fact coverage"
+                            )
+
+                        quality_audit = rendered_audit.prose_audit
+                        narrative_draft = draft_cand
+                        title, lead, _legacy_body = renderer.render_grouped_digest(
+                            frozen,
+                            snapshot_at=run.snapshot_at,
+                            timezone_name=getattr(self.config.settings, "timezone", "UTC"),
+                            narrative_draft=narrative_draft,
+                            presentation_plan=presentation_plan,
+                        )
+                        body = rendered_artifact.visible_text
+                        presentations = presentation_plan.story_presentations
+                        coverage_meta = {
+                            "planned_story_count": len(presentation_plan.story_ids),
+                            "dashboard_only_count": sum(
+                                p.mode == "DASHBOARD_ONLY" for p in presentations
+                            ),
+                            "detail_only_count": sum(
+                                p.mode == "DETAIL_ONLY" for p in presentations
+                            ),
+                            "dashboard_and_drilldown_count": sum(
+                                p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
+                            ),
+                            "final_covered_story_count": len(coverage_trace.story_ids),
+                            "final_digest_story_coverage": coverage_trace.story_coverage,
+                            "final_digest_material_fact_coverage": coverage_trace.material_fact_coverage,
+                            "deterministic_digest_fallback_used": False,
+                            "digest_presentation_plan": presentation_plan.to_metadata_dict(),
+                            "digest_coverage_trace": coverage_trace.to_metadata_dict(),
+                            "digest_admission_trace": coverage_trace.admission_to_dict(),
+                            "rendered_digest_artifact": rendered_artifact.as_metadata(),
+                            "digest_quality_audit": rendered_audit.as_metadata(),
+                            "digest_repair": {"used": repair_used, "max_calls": 1},
+                            "digest_implementation_versions": digest_implementation_versions,
+                            "upstream_hard_exclusion_count": None,
+                            "upstream_hard_exclusion_count_status": "unavailable_in_frozen_publication_snapshot",
+                        }
+                        await observer.attempt_finished(
+                            att_id,
+                            "succeeded",
+                            metadata={
+                                "validation": {
+                                    "is_valid": True,
+                                    "scope": "implemented_hard_checks_only",
+                                    "not_evaluated": list(val_res.not_evaluated),
                                 },
-                            )
+                                "block_count": len(draft_cand.blocks),
+                                "situation_item_count": len(draft_cand.situation_items),
+                                "prose_quality_audit": quality_audit.as_metadata(),
+                                **coverage_meta,
+                            },
+                        )
 
                     except Exception as exc:
                         logger.warning(
-                            "digest narrative synthesis failed (%s: %s); falling back to deterministic",
+                            "digest narrative synthesis failed (%s: %s); publication will fail closed",
                             type(exc).__name__,
                             exc,
                             exc_info=True,
@@ -707,166 +785,10 @@ class PublicationGenerationService:
                                 f"Digest narrative generation failed: {exc}"
                             ) from exc
 
-                allow_fallback = getattr(
-                    pub_edit,
-                    "digest_allow_deterministic_fallback",
-                    False,
-                )
                 if narrative_draft is None:
-                    if not allow_fallback and narrative_mode == "single_call":
-                        raise PublicationGenerationError(
-                            "Digest narrative generation failed: AI writer was unable to produce a valid draft and fallback is disabled"
-                        )
-                    fallback_attempt_id = await observer.attempt_started(
-                        "story_renderer_fallback", metadata={"renderer": run.publication_type}
+                    raise PublicationGenerationError(
+                        "DIGEST_AI_NARRATIVE_REQUIRED: no verified AI-authored digest draft was produced; deterministic prose fallback is disabled"
                     )
-                    if run.publication_type == "digest_channel":
-                        title, lead, body = renderer.render_channel_digest(
-                            frozen, snapshot_at=run.snapshot_at
-                        )
-                        await observer.attempt_finished(fallback_attempt_id, "succeeded")
-                        fallback_attempt_id = None
-                    else:
-                        from src.publication.digest_coverage import (
-                            build_digest_coverage_trace,
-                        )
-                        from src.publication.digest_narrative import (
-                            build_deterministic_digest_draft,
-                            build_digest_support_text_index,
-                            plan_digest_narrative_blocks,
-                            validate_digest_narrative,
-                        )
-                        from src.publication.errors import DigestCoverageInvariantError
-
-                        support_text_index = build_digest_support_text_index(
-                            evidence=evidence_dict,
-                            cards=frozen.analysis.cards,
-                            frozen_input=frozen,
-                        )
-                        all_draft_support_texts = list(support_text_index.values())
-                        allowed_digest_terms = compute_digest_allowed_terms(
-                            all_draft_support_texts, getattr(run, "snapshot_at", None)
-                        )
-
-                        final_digest_draft = build_deterministic_digest_draft(
-                            cards=frozen.analysis.cards,
-                            evidence=evidence_dict,
-                            rubrics=renderer.rubrics,
-                            presentation_plan=presentation_plan,
-                            allowed_context_terms=allowed_digest_terms,
-                            all_known_draft_supports=all_draft_support_texts,
-                            support_text_by_id=support_text_index,
-                        )
-
-                        detail_cards = [
-                            c
-                            for c in frozen.analysis.cards
-                            if c.id in presentation_plan.detail_story_ids
-                        ]
-                        max_cards = getattr(pub_edit, "digest_narrative_max_cards_per_block", 6)
-                        det_plan = plan_digest_narrative_blocks(
-                            cards=detail_cards,
-                            evidence=evidence_dict,
-                            rubrics=renderer.rubrics,
-                            max_cards_per_block=max_cards,
-                            presentation_plan=presentation_plan,
-                        )
-                        det_val = validate_digest_narrative(
-                            final_digest_draft,
-                            det_plan,
-                            support_text_by_id=support_text_index,
-                            situation_plan=None,
-                            allowed_context_terms=allowed_digest_terms,
-                            all_known_draft_supports=all_draft_support_texts,
-                        )
-                        if not det_val.is_valid:
-                            raise DigestCoverageInvariantError(
-                                f"deterministic digest draft failed validation: {det_val.violations}"
-                            )
-
-                        if (
-                            build_digest_coverage_trace(
-                                presentation_plan,
-                                final_digest_draft,
-                                det_plan,
-                            ).material_fact_coverage
-                            < 1.0
-                        ):
-                            raise DigestCoverageInvariantError(
-                                "deterministic digest draft has incomplete material fact coverage"
-                            )
-
-                        from src.publication.digest_quality_diagnostics import (
-                            audit_digest_prose_quality,
-                        )
-
-                        fallback_quality_audit = audit_digest_prose_quality(
-                            final_digest_draft,
-                            evidence=evidence_dict,
-                            presentation_plan=presentation_plan,
-                        )
-                        if not fallback_quality_audit.is_publishable:
-                            blocking_warnings = [
-                                w
-                                for w in fallback_quality_audit.warnings
-                                if w.code
-                                in (
-                                    "RAW_TECHNICAL_TOKEN",
-                                    "CLASSIFIED_AD_LEAK",
-                                    "CHAT_SLANG_OR_METADATA",
-                                    "PROFANITY_OR_ABUSIVE_LANGUAGE",
-                                    "MALFORMED_CHAT_SYNTAX",
-                                    "REPETITIVE_GENERIC_HEADLINES",
-                                    "GENERIC_PLACEHOLDER_HEADLINE",
-                                    "DIGEST_OVER_BUDGET",
-                                )
-                            ]
-                            if blocking_warnings:
-                                raise DigestCoverageInvariantError(
-                                    "deterministic digest draft failed prose quality audit: "
-                                    + ", ".join(warning.code for warning in blocking_warnings)
-                                )
-                            logger.warning(
-                                "deterministic digest draft has prose quality warnings: %s",
-                                [w.code for w in fallback_quality_audit.warnings],
-                            )
-
-                        coverage_trace = build_digest_coverage_trace(
-                            presentation_plan,
-                            final_digest_draft,
-                            det_plan,
-                        )
-                        presentations = presentation_plan.story_presentations
-                        coverage_meta = {
-                            "planned_story_count": len(presentation_plan.story_ids),
-                            "dashboard_only_count": sum(
-                                p.mode == "DASHBOARD_ONLY" for p in presentations
-                            ),
-                            "detail_only_count": sum(
-                                p.mode == "DETAIL_ONLY" for p in presentations
-                            ),
-                            "dashboard_and_drilldown_count": sum(
-                                p.mode == "DASHBOARD_AND_DRILLDOWN" for p in presentations
-                            ),
-                            "final_covered_story_count": len(coverage_trace.story_ids),
-                            "final_digest_story_coverage": coverage_trace.story_coverage,
-                            "final_digest_material_fact_coverage": coverage_trace.material_fact_coverage,
-                            "deterministic_digest_fallback_used": True,
-                            "prose_quality_audit": fallback_quality_audit.as_metadata(),
-                            "digest_presentation_plan": presentation_plan.to_audit_dict(),
-                            "digest_coverage_trace": coverage_trace.to_dict(),
-                        }
-
-                        title, lead, body = renderer.render_grouped_digest(
-                            frozen,
-                            snapshot_at=run.snapshot_at,
-                            narrative_draft=final_digest_draft,
-                            presentation_plan=presentation_plan,
-                        )
-                        await observer.attempt_finished(
-                            fallback_attempt_id, "succeeded", metadata=coverage_meta
-                        )
-                        fallback_attempt_id = None
 
             else:
                 title, lead, body = await self.generator.generate_from_frozen_input(

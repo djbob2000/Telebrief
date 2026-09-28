@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import replace
 from typing import Any, Mapping, Sequence
 
 from src.ai_providers import AIProvider
@@ -13,6 +14,9 @@ from src.publication.digest_narrative import (
     DigestEditorialItemDraft,
     DigestNarrativeBlockDraft,
     DigestNarrativeDraft,
+    _publish_support_texts,
+    _same_fact_group_merge_id,
+    _same_fact_merge_id,
     sanitize_digest_narrative_draft,
 )
 from src.publication.evidence import PublicationEvidence
@@ -22,11 +26,498 @@ logger = logging.getLogger(__name__)
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 
+def _resolve_approved_merges(
+    *,
+    draft: DigestNarrativeDraft,
+    plan: Any,
+    item_locations: Mapping[str, tuple[DigestNarrativeBlockDraft, DigestEditorialItemDraft]],
+    allowed_merges: Mapping[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    """Resolve exact pair or connected-graph SAME_FACT authorizations."""
+    plan_blocks = {block.block_id: block for block in plan.blocks}
+    approved: dict[str, list[dict[str, Any]]] = {}
+    reserved_items: set[str] = set()
+    for merge_id, authorization in allowed_merges.items():
+        if isinstance(authorization, Mapping):
+            raw_item_ids = authorization.get(
+                "source_item_ids", authorization.get("input_item_ids", ())
+            )
+            raw_relation_ids = authorization.get("relation_ids", ())
+            if not raw_relation_ids and isinstance(authorization.get("relations"), list):
+                raw_relation_ids = [
+                    str(
+                        edge.get("relation_id")
+                        or _same_fact_merge_id(
+                            str(edge.get("left_fact_id", "")),
+                            str(edge.get("right_fact_id", "")),
+                        )
+                    )
+                    for edge in authorization["relations"]
+                    if isinstance(edge, Mapping)
+                    and str(edge.get("kind", "SAME_FACT")).upper() == "SAME_FACT"
+                ]
+            source_unit_ids = tuple(
+                str(value) for value in authorization.get("source_unit_ids", ())
+            )
+            declared_rubric = str(authorization.get("rubric_id", ""))
+        else:
+            # Compatibility form: merge ID names one SAME_FACT edge and value
+            # gives its exact pair of source item IDs.
+            raw_item_ids = authorization
+            raw_relation_ids = (str(merge_id),)
+            source_unit_ids = ()
+            declared_rubric = ""
+        if isinstance(raw_item_ids, (str, int)):
+            raise ValueError(f"{merge_id}: source item IDs must be a sequence")
+        item_ids = tuple(str(value) for value in raw_item_ids)
+        relation_ids = tuple(str(value) for value in raw_relation_ids)
+        if len(item_ids) < 2 or len(item_ids) != len(set(item_ids)):
+            raise ValueError(f"{merge_id}: merge must name at least two distinct source items")
+        if any(item_id not in item_locations for item_id in item_ids):
+            raise ValueError(f"{merge_id}: unknown source item ID")
+        if any(item_id in reserved_items for item_id in item_ids):
+            raise ValueError("a source item cannot participate in multiple approved merges")
+        source_blocks = [item_locations[item_id][0] for item_id in item_ids]
+        if len({block.block_id for block in source_blocks}) != 1:
+            raise ValueError(f"{merge_id}: source items must be in the same block")
+        block_id = source_blocks[0].block_id
+        plan_block = plan_blocks.get(block_id)
+        if plan_block is None or not getattr(plan_block, "composition_units", ()):
+            raise ValueError(f"{merge_id}: missing frozen composition block")
+        all_relations = list(getattr(plan_block, "composition_relations", ()) or ())
+        for unit in plan_block.composition_units:
+            all_relations.extend(getattr(unit, "allowed_relations", ()) or ())
+        same_fact_by_id = {
+            _same_fact_merge_id(relation.left_fact_id, relation.right_fact_id): relation
+            for relation in all_relations
+            if str(getattr(relation.kind, "value", relation.kind)) == "SAME_FACT"
+        }
+        if not relation_ids or len(relation_ids) != len(set(relation_ids)):
+            raise ValueError(f"{merge_id}: relation IDs must be nonempty and unique")
+        edge_list = [same_fact_by_id.get(relation_id) for relation_id in relation_ids]
+        if any(edge is None for edge in edge_list):
+            raise ValueError(f"{merge_id}: every edge must resolve to a SAME_FACT relation")
+        expected_merge_id = (
+            relation_ids[0]
+            if len(item_ids) == 2 and len(relation_ids) == 1
+            else _same_fact_group_merge_id(item_ids, relation_ids)
+        )
+        if str(merge_id) != expected_merge_id:
+            raise ValueError(f"{merge_id}: ID does not match its exact item and relation sets")
+
+        source_items = [item_locations[item_id][1] for item_id in item_ids]
+        actual_unit_ids = tuple(
+            dict.fromkeys(
+                unit_id
+                for item in source_items
+                for unit_id in (
+                    item.composition_unit_ids
+                    or ((item.composition_unit_id,) if item.composition_unit_id else ())
+                )
+            )
+        )
+        unit_map = {str(unit.unit_id): unit for unit in plan_block.composition_units}
+        if source_unit_ids and set(source_unit_ids) != set(actual_unit_ids):
+            raise ValueError(f"{merge_id}: source unit IDs do not match the exact inputs")
+        if len(item_ids) > 2 and (not source_unit_ids or not declared_rubric):
+            raise ValueError(f"{merge_id}: graph merge must declare source units and common rubric")
+        if declared_rubric and declared_rubric != plan_block.rubric_id:
+            raise ValueError(f"{merge_id}: declared common rubric does not match its block")
+        fact_owner: dict[str, str] = {}
+        for item_id, item in zip(item_ids, source_items, strict=True):
+            if not item.covered_fact_ids or any(
+                unit_id not in unit_map or not unit_map[unit_id].fact_ids
+                for unit_id in actual_unit_ids
+            ):
+                raise ValueError(f"{merge_id}: SAME_FACT merges require fact-bearing inputs")
+            for fact_id in item.covered_fact_ids:
+                if fact_id in fact_owner:
+                    raise ValueError(f"{merge_id}: source fact sets overlap")
+                fact_owner[fact_id] = item_id
+        graph: dict[str, set[str]] = {item_id: set() for item_id in item_ids}
+        endpoint_facts: list[str] = []
+        for edge in edge_list:
+            if edge is None:
+                raise ValueError(f"{merge_id}: every edge must resolve to a SAME_FACT relation")
+            left_fact, right_fact = str(edge.left_fact_id), str(edge.right_fact_id)
+            left_owner, right_owner = fact_owner.get(left_fact), fact_owner.get(right_fact)
+            if not left_owner or not right_owner or left_owner == right_owner:
+                raise ValueError(f"{merge_id}: each SAME_FACT edge must join distinct source items")
+            graph[left_owner].add(right_owner)
+            graph[right_owner].add(left_owner)
+            endpoint_facts.extend((left_fact, right_fact))
+        reached: set[str] = set()
+        pending = [item_ids[0]]
+        while pending:
+            node = pending.pop()
+            if node in reached:
+                continue
+            reached.add(node)
+            pending.extend(graph[node])
+        if reached != set(item_ids):
+            raise ValueError(f"{merge_id}: SAME_FACT graph is not connected")
+        reserved_items.update(item_ids)
+        approved.setdefault(block_id, []).append(
+            {
+                "merge_id": str(merge_id),
+                "source_item_ids": list(item_ids),
+                "relation_ids": list(relation_ids),
+                "source_unit_ids": list(actual_unit_ids),
+                "rubric_id": plan_block.rubric_id,
+                "endpoint_fact_ids": list(dict.fromkeys(endpoint_facts)),
+            }
+        )
+    return approved
+
+
 class DigestEditor:
     """Refines, polishes, and compresses narrative digest drafts for Telegram single-post publication."""
 
     def __init__(self, provider: AIProvider | None = None) -> None:
         self._provider = provider
+
+    async def _polish_composition(
+        self,
+        draft: DigestNarrativeDraft,
+        *,
+        plan: Any,
+        evidence: Mapping[str, PublicationEvidence],
+        max_chars: int,
+        model: str | None,
+        violations: Sequence[str] | None,
+        target_item_ids: Sequence[str] | None,
+        allowed_merges: Mapping[str, Any],
+    ) -> DigestNarrativeDraft:
+        """Target text-only repair while keeping frozen provenance immutable."""
+        provider = self._provider
+        if provider is None:
+            logger.warning("No AI provider available for DigestEditor; returning original draft")
+            return draft
+        publish_texts = _publish_support_texts(evidence)
+        plan_blocks = {block.block_id: block for block in plan.blocks}
+        item_locations: dict[str, tuple[DigestNarrativeBlockDraft, DigestEditorialItemDraft]] = {}
+        for block in draft.blocks:
+            for item in block.items:
+                if not item.item_id or item.item_id in item_locations:
+                    logger.warning(
+                        "Composition editor requires unique stable item IDs; returning original draft"
+                    )
+                    return draft
+                item_locations[item.item_id] = (block, item)
+
+        target_ids = set(item_locations if target_item_ids is None else target_item_ids)
+        if not target_ids.issubset(item_locations):
+            logger.warning(
+                "Composition editor received unknown target item IDs; returning original draft"
+            )
+            return draft
+        if not target_ids:
+            return draft
+
+        try:
+            approved_by_block = _resolve_approved_merges(
+                draft=draft,
+                plan=plan,
+                item_locations=item_locations,
+                allowed_merges=allowed_merges,
+            )
+        except (AttributeError, TypeError, ValueError, StopIteration) as exc:
+            logger.warning("Invalid approved digest merge map (%s); returning original draft", exc)
+            return draft
+
+        editor_blocks: list[dict[str, Any]] = []
+        for block in draft.blocks:
+            plan_block = plan_blocks.get(block.block_id)
+            if plan_block is None:
+                return draft
+            unit_by_id = {str(unit.unit_id): unit for unit in plan_block.composition_units}
+            record_by_fact = {
+                str(record.fact_id): record for record in plan_block.composition_fact_records
+            }
+            fact_by_id = {str(fact.fact_id): fact for fact in plan_block.required_facts}
+            raw_items: list[dict[str, Any]] = []
+            for item in block.items:
+                source_rows = []
+                for support_id in item.cited_support_ids:
+                    texts = publish_texts.get(support_id, ())
+                    if not texts:
+                        logger.warning(
+                            "Composition editor lacks PUBLISH evidence for %s; returning original draft",
+                            support_id,
+                        )
+                        return draft
+                    direct = evidence.get(support_id)
+                    source_rows.append(
+                        {
+                            "support_id": support_id,
+                            "texts": list(texts),
+                            "evidence_kind": str(getattr(direct, "kind", "")),
+                            "source_role": str(getattr(direct, "source_role", "")),
+                            "publication_use": "PUBLISH",
+                        }
+                    )
+                facts = []
+                for fact_id in item.covered_fact_ids:
+                    record = record_by_fact.get(fact_id)
+                    fact = fact_by_id.get(fact_id)
+                    if record is None or fact is None:
+                        return draft
+                    facts.append(
+                        {
+                            "fact_id": fact_id,
+                            "text": fact.text,
+                            "story_ids": list(record.story_ids),
+                            "epistemic_kind": record.epistemic_kind,
+                            "original_location": record.original_location,
+                            "canonical_area": record.canonical_area,
+                            "effective_time": record.effective_time.isoformat()
+                            if record.effective_time
+                            else None,
+                            "observed_time": record.observed_time.isoformat()
+                            if record.observed_time
+                            else None,
+                        }
+                    )
+                summary_units = [
+                    {
+                        "composition_unit_id": unit_id,
+                        "summary_only_story_ids": list(unit_by_id[unit_id].story_ids),
+                    }
+                    for unit_id in (
+                        item.composition_unit_ids
+                        or ((item.composition_unit_id,) if item.composition_unit_id else ())
+                    )
+                    if unit_id in unit_by_id and not unit_by_id[unit_id].fact_ids
+                ]
+                raw_items.append(
+                    {
+                        "item_id": item.item_id,
+                        "composition_unit_ids": list(
+                            item.composition_unit_ids
+                            or ((item.composition_unit_id,) if item.composition_unit_id else ())
+                        ),
+                        "covered_fact_ids": list(item.covered_fact_ids),
+                        "covered_story_ids": list(item.covered_story_ids),
+                        "cited_support_ids": list(item.cited_support_ids),
+                        "claims": [claim.to_dict() for claim in item.claims],
+                        "facts": facts,
+                        "summary_units": summary_units,
+                        "supports": source_rows,
+                        "emoji": item.emoji,
+                        "headline": item.headline,
+                        "body": item.body,
+                    }
+                )
+            editor_blocks.append(
+                {
+                    "block_id": block.block_id,
+                    "rubric_id": plan_block.rubric_id,
+                    "items": raw_items,
+                    "allowed_merges": approved_by_block.get(block.block_id, []),
+                }
+            )
+
+        repair_lines = [f"- {violation}" for violation in (violations or ())[:10]]
+        system_prompt = (
+            "You are a careful local-news copy editor. Polish only the requested digest item text.\n"
+            "Use the exact PUBLISH evidence and fact mapping supplied beside each item. One legitimate single-source community report may be included as a report; preserve natural attribution and uncertainty. Do not require a second source or official confirmation. Correct invented details, unsupported specifics, causal upgrades, and epistemic upgrades, but do not remove an eligible report merely because it is unconfirmed.\n"
+            "An item's unit/fact/story/support/claim mapping is immutable. Your response may change only headline/body/emoji for existing item IDs. Do not add, remove, or move facts, change claim atoms, rewrite provenance, or introduce paraphrase-distance/lexical-overlap rejection rules. A fluent faithful paraphrase is allowed; factual novelty or a high-risk unsupported detail should be fixed.\n"
+            "You may combine items only through an exact entry in that block's allowed_merges list. Return the exact merge_id and exact source_item_ids in the supplied order. A grant may contain two items/one edge or 3+ items connected by the listed SAME_FACT relation graph. Do not invent, remove, or change edges or items. The merged text must preserve the union of the source items' already-supported material and add no facts.\n"
+            "A rubric does not imply geographic proximity. Keep each named place attached to its own observation; never infer a shared district, relative distance, cause, city-wide condition, or routine state.\n"
+            f"The final digest text should fit within {max_chars} characters where possible without dropping material facts.\n"
+            'Return only JSON: {"blocks":[{"block_id":"...","items":[{"item_id":"...","headline":"...","body":"...","emoji":"..."}],"merges":[{"merge_id":"...","source_item_ids":["exact IDs from grant"],"headline":"...","body":"...","emoji":"..."}]}]}.\n'
+            "Omit unchanged items. Keep every block present and in its original order.\n"
+            + ("Requested validation issues:\n" + "\n".join(repair_lines) if repair_lines else "")
+        )
+        user_prompt = json.dumps(
+            {
+                "target_item_ids": sorted(target_ids),
+                "blocks": editor_blocks,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        chat_kwargs: dict[str, Any] = {
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1,
+            "reasoning_effort": "none",
+            "thinking": False,
+            "max_tokens": 4096,
+        }
+        if model:
+            chat_kwargs["model"] = model
+        try:
+            raw_response = (await provider.chat_completion(**chat_kwargs) or "").strip()
+            json_match = _JSON_BLOCK_RE.search(raw_response)
+            if json_match:
+                parsed = json.loads(json_match.group(1))
+            else:
+                first_brace, last_brace = raw_response.find("{"), raw_response.rfind("}")
+                if first_brace < 0 or last_brace <= first_brace:
+                    raise ValueError("editor response did not contain a JSON object")
+                parsed = json.loads(raw_response[first_brace : last_brace + 1])
+            raw_blocks = parsed.get("blocks") if isinstance(parsed, Mapping) else None
+            if not isinstance(raw_blocks, list):
+                raise ValueError("editor response blocks must be a list")
+            expected_block_ids = [block.block_id for block in draft.blocks]
+            received_ids = [
+                str(block.get("block_id", "")) if isinstance(block, Mapping) else ""
+                for block in raw_blocks
+            ]
+            if received_ids != expected_block_ids:
+                raise ValueError("editor changed, omitted, or reordered blocks")
+
+            updates: dict[str, Mapping[str, Any]] = {}
+            merges: dict[str, tuple[tuple[str, ...], Mapping[str, Any]]] = {}
+            for raw_block in raw_blocks:
+                if not isinstance(raw_block, Mapping):
+                    raise ValueError("editor block must be an object")
+                block_id = str(raw_block["block_id"])
+                if not isinstance(raw_block.get("items", []), list) or not isinstance(
+                    raw_block.get("merges", []), list
+                ):
+                    raise ValueError("editor items and merges must be lists")
+                for update in raw_block.get("items", []):
+                    if not isinstance(update, Mapping):
+                        raise ValueError("editor item patch must be an object")
+                    item_id = str(update.get("item_id", ""))
+                    if (
+                        item_id not in item_locations
+                        or item_locations[item_id][0].block_id != block_id
+                    ):
+                        raise ValueError(f"editor changed or invented item ID: {item_id}")
+                    if item_id in updates:
+                        raise ValueError(f"duplicate editor patch for {item_id}")
+                    if item_id not in target_ids:
+                        raise ValueError(
+                            f"editor changed an item outside the target set: {item_id}"
+                        )
+                    updates[item_id] = update
+                for merge in raw_block.get("merges", []):
+                    if not isinstance(merge, Mapping):
+                        raise ValueError("editor merge must be an object")
+                    merge_id = str(merge.get("merge_id", ""))
+                    input_ids = tuple(str(value) for value in merge.get("source_item_ids", []))
+                    approved = next(
+                        (
+                            value
+                            for value in approved_by_block.get(block_id, [])
+                            if value["merge_id"] == merge_id
+                        ),
+                        None,
+                    )
+                    if approved is None or input_ids != tuple(approved["source_item_ids"]):
+                        raise ValueError(f"editor proposed unapproved/widened merge {merge_id}")
+                    if merge_id in merges:
+                        raise ValueError(f"duplicate merge {merge_id}")
+                    if any(item_id in updates for item_id in input_ids):
+                        raise ValueError(
+                            "merged input items cannot also have independent text patches"
+                        )
+                    if any(item_id not in target_ids for item_id in input_ids):
+                        raise ValueError("merge input is outside the targeted repair set")
+                    merges[merge_id] = (input_ids, merge)
+
+            used_merge_inputs = {
+                item_id for input_ids, _merge in merges.values() for item_id in input_ids
+            }
+            if len(used_merge_inputs) != sum(
+                len(input_ids) for input_ids, _merge in merges.values()
+            ):
+                raise ValueError("an input item was consumed by more than one merge")
+
+            revised_blocks: list[DigestNarrativeBlockDraft] = []
+            for block in draft.blocks:
+                revised_items: list[DigestEditorialItemDraft] = []
+                for item in block.items:
+                    if item.item_id in used_merge_inputs:
+                        continue
+                    patch = updates.get(item.item_id)
+                    if patch is None:
+                        revised_items.append(item)
+                        continue
+                    headline = patch.get("headline", item.headline)
+                    body = patch.get("body", item.body)
+                    emoji = patch.get("emoji", item.emoji)
+                    if not all(isinstance(value, str) for value in (headline, body, emoji)):
+                        raise ValueError(
+                            f"editor text patch fields must be strings for {item.item_id}"
+                        )
+                    revised_items.append(
+                        replace(
+                            item,
+                            headline=headline.strip(),
+                            body=body.strip(),
+                            emoji=emoji.strip(),
+                        )
+                    )
+                for merge_id, (input_ids, merge) in merges.items():
+                    if item_locations[input_ids[0]][0].block_id != block.block_id:
+                        continue
+                    input_items = [item_locations[item_id][1] for item_id in input_ids]
+                    if not all(isinstance(merge.get(key), str) for key in ("headline", "body")):
+                        raise ValueError(f"merged text missing headline/body: {merge_id}")
+                    unit_ids = tuple(
+                        dict.fromkeys(
+                            unit_id
+                            for item in input_items
+                            for unit_id in (
+                                item.composition_unit_ids
+                                or ((item.composition_unit_id,) if item.composition_unit_id else ())
+                            )
+                        )
+                    )
+                    merged_fact_ids = tuple(
+                        dict.fromkeys(fid for item in input_items for fid in item.covered_fact_ids)
+                    )
+                    stories = tuple(
+                        dict.fromkeys(sid for item in input_items for sid in item.covered_story_ids)
+                    )
+                    supports = tuple(
+                        dict.fromkeys(sid for item in input_items for sid in item.cited_support_ids)
+                    )
+                    claims = tuple(
+                        dict.fromkeys(claim for item in input_items for claim in item.claims)
+                    )
+                    revised_items.append(
+                        DigestEditorialItemDraft(
+                            headline=str(merge["headline"]).strip(),
+                            body=str(merge["body"]).strip(),
+                            covered_story_ids=stories,
+                            cited_support_ids=supports,
+                            claims=claims,
+                            emoji=str(merge.get("emoji") or input_items[0].emoji).strip(),
+                            item_id=f"item:{merge_id}",
+                            composition_unit_id=unit_ids[0] if len(unit_ids) == 1 else "",
+                            covered_fact_ids=merged_fact_ids,
+                            composition_unit_ids=unit_ids,
+                            source_item_ids=input_ids,
+                            source_item_fact_ids=tuple(
+                                (source_item.item_id, tuple(source_item.covered_fact_ids))
+                                for source_item in input_items
+                            ),
+                            composition_merge_id=merge_id,
+                        )
+                    )
+                revised_blocks.append(
+                    DigestNarrativeBlockDraft(block_id=block.block_id, items=tuple(revised_items))
+                )
+            return sanitize_digest_narrative_draft(
+                DigestNarrativeDraft(
+                    blocks=tuple(revised_blocks), situation_items=draft.situation_items
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "DigestEditor composition repair rejected (%s: %s); returning original draft",
+                type(exc).__name__,
+                exc,
+            )
+            return draft
 
     async def polish_and_compress(
         self,
@@ -37,11 +528,27 @@ class DigestEditor:
         max_chars: int = 3600,
         model: str | None = None,
         violations: Sequence[str] | None = None,
+        target_item_ids: Sequence[str] | None = None,
+        allowed_merges: Mapping[str, Any] | None = None,
     ) -> DigestNarrativeDraft:
         """Apply targeted journalistic polish, contrast synthesis, and length compression."""
         if self._provider is None:
             logger.warning("No AI provider available for DigestEditor; returning original draft")
             return draft
+
+        if plan is not None and any(
+            getattr(block, "composition_units", ()) for block in getattr(plan, "blocks", ())
+        ):
+            return await self._polish_composition(
+                draft,
+                plan=plan,
+                evidence=evidence or {},
+                max_chars=max_chars,
+                model=model,
+                violations=violations,
+                target_item_ids=target_item_ids,
+                allowed_merges=allowed_merges or {},
+            )
 
         # Build structured items payload for the editor model
         blocks_payload: list[dict[str, Any]] = []
@@ -71,7 +578,7 @@ class DigestEditor:
                 "The draft failed automated editorial validation with the following violations:\n"
                 f"{v_list}\n"
                 "- If a fact, story claim, or required mention is missing, smoothly integrate the missing information into the relevant block's item body.\n"
-                "- If a statement was unverified, over-specified, or unsupported, tone it down or state it faithfully.\n"
+                "- Correct unsupported details, over-specification, or an upgrade in certainty. Preserve an eligible single-source/unconfirmed PUBLISH community report as a faithfully attributed report; lack of corroboration is not a defect.\n"
                 "- Do NOT drop facts or invent unsupported new details.\n\n"
             )
 

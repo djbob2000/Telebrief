@@ -12,6 +12,9 @@ import psycopg
 from src.config_loader import Config
 from src.db.uow import DatabaseUnitOfWork
 from src.publication.digest_contracts import (
+    DIGEST_DISPOSITION_ELIGIBLE_PENDING_BUDGET,
+    DIGEST_DISPOSITION_UNKNOWN_PRESERVED,
+    DIGEST_ELIGIBILITY_VERSION,
     DIGEST_PUBLICATION_TYPES,
     HARD_EXCLUSION_REASONS,
 )
@@ -273,10 +276,96 @@ class EditorialSelectionService:
             cand_and_prop = props_by_cand_key.get(cand_key)
             candidate_prop = cand_and_prop[1] if cand_and_prop is not None else None
 
-            if coverage_preserving:
-                default_intent = (
-                    "brief" if run.publication_type in ARTICLE_PUBLICATION_TYPES else "normal"
+            if is_digest:
+                default_intent = "normal"
+                features = cand.snapshot_features or {}
+                raw_eligibility = features.get("digest_eligibility")
+                eligibility = raw_eligibility if isinstance(raw_eligibility, dict) else {}
+                support_ids = eligibility.get("support_ids")
+                eligibility_status = (
+                    "gate_keep" if eligibility.get("status") == "gate_keep" else "unknown"
                 )
+                eligibility_metadata = dict(eligibility)
+                eligibility_metadata.update(
+                    {
+                        "version": eligibility.get("version", DIGEST_ELIGIBILITY_VERSION),
+                        "status": eligibility_status,
+                        "source": eligibility.get("source", "legacy_or_unavailable"),
+                        "reason": eligibility.get("reason"),
+                        "confidence": eligibility.get("confidence"),
+                        "publishable_evidence_count": eligibility.get("publishable_evidence_count"),
+                        "excluded_evidence_count": eligibility.get("excluded_evidence_count"),
+                        "decision_refs": eligibility.get("decision_refs"),
+                        "support_ids": support_ids if isinstance(support_ids, list) else [],
+                    }
+                )
+                digest_disposition = (
+                    DIGEST_DISPOSITION_ELIGIBLE_PENDING_BUDGET
+                    if eligibility_status == "gate_keep"
+                    else DIGEST_DISPOSITION_UNKNOWN_PRESERVED
+                )
+
+                if candidate_prop is None:
+                    effective_prop = SelectionProposal(
+                        story_id=cand.story_id,
+                        story_revision_id=cand.story_revision_id,
+                        decision="INCLUDE",
+                        presentation_intent=default_intent,
+                        confidence=1.0,
+                        reason="Zero-omission overlay: unproposed candidate preserved",
+                        rank=cand.deterministic_rank,
+                        exclusion_reason=None,
+                        metadata={
+                            "coverage_override": True,
+                            "disagreement_with_gate": "selector_unproposed_candidate",
+                            "digest_disposition": digest_disposition,
+                            "digest_eligibility": eligibility_metadata,
+                        },
+                    )
+                elif candidate_prop.decision == "OMIT":
+                    meta = dict(candidate_prop.metadata or {})
+                    meta.update(
+                        {
+                            "model_decision": "OMIT",
+                            "selector_exclusion_suggestion": {
+                                "exclusion_reason": candidate_prop.exclusion_reason,
+                                "reason": candidate_prop.reason,
+                                "confidence": candidate_prop.confidence,
+                                "hard_label": candidate_prop.exclusion_reason
+                                in HARD_EXCLUSION_REASONS,
+                                "binding": False,
+                            },
+                            "coverage_override": True,
+                            "disagreement_with_gate": "selector_omission_override",
+                            "digest_disposition": digest_disposition,
+                            "digest_eligibility": eligibility_metadata,
+                        }
+                    )
+                    effective_prop = SelectionProposal(
+                        story_id=candidate_prop.story_id,
+                        story_revision_id=candidate_prop.story_revision_id,
+                        decision="INCLUDE",
+                        presentation_intent=candidate_prop.presentation_intent or default_intent,
+                        confidence=candidate_prop.confidence,
+                        reason=candidate_prop.reason or "Zero-omission overlay for publication",
+                        rank=candidate_prop.rank
+                        if candidate_prop.rank is not None
+                        else cand.deterministic_rank,
+                        exclusion_reason=None,
+                        metadata=meta,
+                    )
+                else:
+                    meta = dict(candidate_prop.metadata or {})
+                    meta.update(
+                        {
+                            "digest_disposition": digest_disposition,
+                            "digest_eligibility": eligibility_metadata,
+                        }
+                    )
+                    effective_prop = replace(candidate_prop, metadata=meta)
+            elif coverage_preserving:
+                # Article zero-omission behavior remains unchanged.
+                default_intent = "brief"
                 if candidate_prop is None:
                     effective_prop = SelectionProposal(
                         story_id=cand.story_id,
@@ -295,17 +384,16 @@ class EditorialSelectionService:
                 elif candidate_prop.decision == "OMIT":
                     meta = dict(candidate_prop.metadata or {})
                     is_hard = candidate_prop.exclusion_reason in HARD_EXCLUSION_REASONS
-                    disagreement = (
-                        "selector_hard_exclusion_override"
-                        if is_hard
-                        else "selector_omission_override"
-                    )
                     meta.update(
                         {
                             "model_decision": "OMIT",
                             "exclusion_reason": candidate_prop.exclusion_reason,
                             "coverage_override": True,
-                            "disagreement_with_gate": disagreement,
+                            "disagreement_with_gate": (
+                                "selector_hard_exclusion_override"
+                                if is_hard
+                                else "selector_omission_override"
+                            ),
                         }
                     )
                     effective_prop = SelectionProposal(

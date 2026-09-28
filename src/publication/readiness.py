@@ -28,6 +28,12 @@ ReadinessStatus = Literal[
 ]
 
 
+def _utc(value: dt.datetime) -> dt.datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=dt.timezone.utc)
+    return value.astimezone(dt.timezone.utc)
+
+
 @dataclass(frozen=True)
 class PublicationReadinessDecision:
     status: ReadinessStatus
@@ -97,6 +103,7 @@ class PublicationReadinessService:
         refresh_run_id: int,
         *,
         now: dt.datetime,
+        knowledge_snapshot_at: dt.datetime | None = None,
     ) -> PublicationReadinessDecision:
         refresh = await self.repo.get_refresh_run(conn, refresh_run_id)
         if refresh is None:
@@ -238,7 +245,9 @@ class PublicationReadinessService:
                     self.repo, "freeze_knowledge_snapshot"
                 ):
                     await self.repo.freeze_knowledge_snapshot(
-                        conn, refresh_run_id=refresh.id, snapshot_at=evaluation_at
+                        conn,
+                        refresh_run_id=refresh.id,
+                        snapshot_at=_utc(knowledge_snapshot_at or evaluation_at),
                     )
                 if refresh.trigger == "scheduled" and now < refresh.slot_at:
                     await self._transition(
