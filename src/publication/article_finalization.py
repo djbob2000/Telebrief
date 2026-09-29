@@ -33,6 +33,9 @@ from src.publication.article_models import (
     _split_sentences_safe,
 )
 from src.publication.article_quality import (
+    _QUOTE_RE as _QUALITY_QUOTE_RE,
+)
+from src.publication.article_quality import (
     ARTICLE_WHOLE_DRAFT_FINDING_CODES,
     ArticleReaderQualityReport,
     diagnose_article_quality,
@@ -678,6 +681,17 @@ def _merge_orphan_paragraphs(
                     changed = True
                     continue
                 merged_text = prev.text.rstrip() + " " + " ".join(kept_p)
+                if len(_QUALITY_QUOTE_RE.findall(merged_text)) > 2:
+                    # The editor may already have removed a quote roll from
+                    # `prev`; merging this orphan back in must not recreate it.
+                    # Keep the paragraph separate and let the quality gate
+                    # evaluate the exact prose rather than silently degrading it.
+                    merged_paras.append(p)
+                    logger.info(
+                        "Kept orphan paragraph separate to avoid creating a quote roll: %.60s...",
+                        p.text[:60],
+                    )
+                    continue
                 merged_supports = list(prev.cited_support_ids) + [
                     sid for sid in p.cited_support_ids if sid not in prev.cited_support_ids
                 ]
@@ -719,6 +733,35 @@ def _merge_orphan_paragraphs(
         title_generation_origin=draft.title_generation_origin,
         lead_generation_origin=draft.lead_generation_origin,
     )
+
+
+def _remove_duplicate_headings(draft: StructuredArticleDraft) -> StructuredArticleDraft:
+    """Hide repeated headings while preserving every paragraph and its evidence."""
+    normalized_title = _normalize_for_dedup(draft.title)
+    seen = {normalized_title} if normalized_title else set()
+    sections = []
+    changed = False
+    for section in draft.sections:
+        normalized_heading = _normalize_for_dedup(section.heading)
+        if normalized_heading and normalized_heading in seen:
+            sections.append(
+                replace(
+                    section,
+                    heading="",
+                    heading_support_ids=(),
+                    heading_claims=(),
+                )
+            )
+            changed = True
+            logger.info(
+                "Removed duplicate heading '%s' while preserving its section content",
+                section.heading,
+            )
+            continue
+        if normalized_heading:
+            seen.add(normalized_heading)
+        sections.append(section)
+    return replace(draft, sections=tuple(sections)) if changed else draft
 
 
 def _sanitize_phantom_heading_topics(
@@ -1544,6 +1587,7 @@ class ArticleFinalizer:
 
         # 3b. Merge single-sentence orphan paragraphs (AGENTS.md §0.9)
         writer_draft = _merge_orphan_paragraphs(writer_draft)
+        writer_draft = _remove_duplicate_headings(writer_draft)
 
         # Structural finalization changes the reader-facing draft. Never reuse
         # the validation result from the pre-merge object: the exact object
