@@ -1575,6 +1575,22 @@ class ArticleGenerator:
                 )
                 return draft, validation, diagnostics, quality
 
+            def whole_draft_structural_findings(
+                validation: ArticleValidationResult,
+                quality: ArticleReaderQualityReport,
+            ) -> list[str]:
+                findings = [
+                    finding.code
+                    for finding in quality.blocking_findings
+                    if finding.code in ARTICLE_WHOLE_DRAFT_FINDING_CODES
+                ]
+                if any(
+                    issue.blocking and issue.code == "SECTION_COUNT_OUT_OF_BOUNDS"
+                    for issue in validation.issues
+                ):
+                    findings.append("SECTION_COUNT_OUT_OF_BOUNDS")
+                return list(dict.fromkeys(findings))
+
             def current_provider_slot() -> str | None:
                 metadata = getattr(self.provider, "last_metadata", None)
                 if isinstance(metadata, dict):
@@ -1685,11 +1701,9 @@ class ArticleGenerator:
                         break
                     initial_slot = current_provider_slot() or initial_slot
 
-            structural_findings_before = [
-                finding.code
-                for finding in candidate_quality.blocking_findings
-                if finding.code in ARTICLE_WHOLE_DRAFT_FINDING_CODES
-            ]
+            structural_findings_before = whole_draft_structural_findings(
+                candidate_val, candidate_quality
+            )
             if structural_findings_before:
                 structural_recomposition_metadata.update(
                     {
@@ -1713,6 +1727,18 @@ class ArticleGenerator:
                         },
                     )
 
+                section_count_guidance = ""
+                if "SECTION_COUNT_OUT_OF_BOUNDS" in structural_findings_before:
+                    min_sections = (
+                        1 if length_profile is not None else editorial_config.article_min_sections
+                    )
+                    section_count_guidance = (
+                        f"Уложите статью в диапазон от {min_sections} до "
+                        f"{editorial_config.article_max_sections} тематических разделов: "
+                        "объедините близкие линии в общие главы, не теряя их самостоятельные "
+                        "факты и детали; не создавайте отдельный раздел для каждой истории "
+                        "или улицы. "
+                    )
                 recomposition_messages = [
                     messages[0],
                     {
@@ -1725,8 +1751,9 @@ class ArticleGenerator:
                             "используя ту же редакционную карту и только материалы выше. Уберите "
                             "повтор центральной мысли, каталог обычных расписаний и перечисление "
                             "адресов отдельными фразами. При реальных различиях по месту или времени "
-                            "сохраните подтверждённый контраст и его конкретные последствия. Не "
-                            "добавляйте новые факты, цитаты, источники или неподтверждённые связи. "
+                            "сохраните подтверждённый контраст и его конкретные последствия. "
+                            f"{section_count_guidance}"
+                            "Не добавляйте новые факты, цитаты, источники или неподтверждённые связи. "
                             "Верните только полную Markdown-статью."
                         ),
                     },
@@ -1756,11 +1783,9 @@ class ArticleGenerator:
                             candidate_draft, candidate_val, candidate_diag
                         ),
                     )
-                    structural_findings_after = [
-                        finding.code
-                        for finding in candidate_quality.blocking_findings
-                        if finding.code in ARTICLE_WHOLE_DRAFT_FINDING_CODES
-                    ]
+                    structural_findings_after = whole_draft_structural_findings(
+                        candidate_val, candidate_quality
+                    )
                     structural_recomposition_metadata["after_findings"] = structural_findings_after
                     structural_recomposition_metadata["resolved"] = not bool(
                         structural_findings_after
