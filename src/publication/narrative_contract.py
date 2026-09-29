@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v10"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v11"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v7-composition"
 
 
@@ -38,7 +38,7 @@ def build_article_narrative_contract(
 
 2. Presentation vs. Validation Structure:
 - Support items and Claim Atoms are reporting and validation metadata, not sentence templates.
-- Title and Lead must cite active PUBLISH support IDs with CURRENT_WINDOW temporal role from the main lead/DEVELOP storylines.
+- Title and Lead must cite active PUBLISH support IDs with CURRENT_WINDOW temporal role from the main lead/DEVELOP storylines. Keep the title about the current reporting window: do not cite or restate HISTORICAL_CONTEXT material there. Historical context may appear in the lead only when it is paired with current-window evidence and explicitly framed as continuing or changed.
 - A single natural paragraph may combine several independently supported claims when they form one coherent narrative thought.
 - Keep each paragraph on one service domain: electricity supply / power-grid operations and fiber / home internet are distinct topics. Start a new paragraph and place it in the matching section when the domain changes; a transition such as “при этом” does not make unrelated services one subject.
 - Group related supports into a cohesive narrative section under an intuitive thematic heading.
