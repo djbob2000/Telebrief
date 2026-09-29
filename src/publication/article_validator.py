@@ -217,7 +217,7 @@ _PROXIMITY_CONTRADICTION_RE = re.compile(
 )
 _PROXIMITY_NEGATED_SPECIFIC_RE = re.compile(
     rf"\bне\s+(?:"
-    rf"через\s+(?:дорог\w*|вулиц\w*|улиц\w*|{_PROXIMITY_NUMERAL}\s+квартал\w*)|"
+    rf"через\s+(?:дорог\w*|вулиц\w*|улиц\w*|(?:{_PROXIMITY_NUMERAL}\s+)?квартал\w*)|"
     rf"(?:в|у|за)\s+{_PROXIMITY_NUMERAL}\s+квартал\w*|"
     rf"на\s+(?:расстоянии|відстані)\s+{_PROXIMITY_NUMERAL}\s+квартал\w*|"
     r"за\s+(?:углом|рогом)|в\s+шаге\s+от"
