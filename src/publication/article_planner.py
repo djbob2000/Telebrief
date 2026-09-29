@@ -33,6 +33,7 @@ from src.publication.article_writer_context import (
 from src.publication.errors import PublicationGenerationError
 
 logger = logging.getLogger(__name__)
+_MAX_ARTICLE_PLANNER_VALIDATION_REPAIRS = 2
 
 
 def _cited_known_support_keys(
@@ -437,82 +438,80 @@ class ArticleEditorialPlanner:
                 response_format={"type": "json_object"},
             )
             raw_text = raw or ""
-            try:
-                brief = parse_article_editorial_brief(
-                    raw_text,
-                    coverage_plan=coverage_plan,
-                    context=context,
-                    material_projection=material_projection,
-                    reference_map=reference_map,
-                )
-            except ArticleBriefInputInvariantError:
-                raise
-            except PublicationGenerationError as exc:
-                planner_validation_repair_used = True
-                logger.warning(
-                    "Article planner response failed validation (%s); requesting one repair",
-                    type(exc).__name__,
-                )
-                if isinstance(exc, DuplicateArticleStoryAssignmentError):
-                    validation_finding = f"story_key {exc.story_key} appears in multiple lines"
-                elif isinstance(exc, ArticleBriefValidationError):
-                    validation_finding = exc.repair_finding
-                else:
-                    validation_finding = (
-                        "the roadmap failed strict schema, evidence, or coverage validation"
+            required_support_keys = _cited_known_support_keys(raw_text, reference_map)
+            for repair_number in range(_MAX_ARTICLE_PLANNER_VALIDATION_REPAIRS + 1):
+                try:
+                    brief = parse_article_editorial_brief(
+                        raw_text,
+                        coverage_plan=coverage_plan,
+                        context=context,
+                        material_projection=material_projection,
+                        reference_map=reference_map,
                     )
-                repair_messages = [
-                    *messages,
-                    {"role": "assistant", "content": raw_text},
-                    {
-                        "role": "user",
-                        "content": (
-                            "Repair the JSON roadmap that you just returned. Validation found: "
-                            f"{validation_finding}. Every coverage Story must have exactly one "
-                            "disposition. A Story with citable_support_keys must be assigned "
-                            "BRIEF, WEAVE, or DEVELOP, never OMIT. Each non-OMIT Story must "
-                            "appear in exactly one narrative line, and no story_key may appear "
-                            "in multiple lines. Preserve every known support_key already cited "
-                            "in a line or in central_support_keys; each support_key must be "
-                            "attached only to a line containing its owning story_key. Keep the "
-                            "same central line, intents, relations, and dispositions where "
-                            "possible; change only what is needed to satisfy these rules. Use "
-                            "only the opaque keys from the dossier. Return the corrected JSON "
-                            "object only."
-                        ),
-                    },
-                ]
-                planner_model_call_count += 1
-                repaired_raw = await self.provider.chat_completion(
-                    messages=repair_messages,
-                    model=self.model,
-                    temperature=0.1,
-                    max_tokens=self.max_output_tokens,
-                    reasoning_effort="none",
-                    response_format={"type": "json_object"},
-                )
-                repaired_text = repaired_raw or ""
-                previously_cited_support_keys = _cited_known_support_keys(
-                    raw_text,
-                    reference_map,
-                )
-                repaired_support_keys = _cited_known_support_keys(
-                    repaired_text,
-                    reference_map,
-                )
-                dropped_support_keys = previously_cited_support_keys - repaired_support_keys
-                if dropped_support_keys:
-                    raise PublicationGenerationError(
-                        "Article planner validation repair dropped cited support keys: "
-                        f"{sorted(dropped_support_keys)}"
-                    ) from exc
-                brief = parse_article_editorial_brief(
-                    repaired_text,
-                    coverage_plan=coverage_plan,
-                    context=context,
-                    material_projection=material_projection,
-                    reference_map=reference_map,
-                )
+                    break
+                except ArticleBriefInputInvariantError:
+                    raise
+                except PublicationGenerationError as exc:
+                    if repair_number >= _MAX_ARTICLE_PLANNER_VALIDATION_REPAIRS:
+                        raise
+                    planner_validation_repair_used = True
+                    logger.warning(
+                        "Article planner response failed validation (%s); requesting repair %s/%s",
+                        type(exc).__name__,
+                        repair_number + 1,
+                        _MAX_ARTICLE_PLANNER_VALIDATION_REPAIRS,
+                    )
+                    if isinstance(exc, DuplicateArticleStoryAssignmentError):
+                        validation_finding = f"story_key {exc.story_key} appears in multiple lines"
+                    elif isinstance(exc, ArticleBriefValidationError):
+                        validation_finding = exc.repair_finding
+                    else:
+                        validation_finding = (
+                            "the roadmap failed strict schema, evidence, or coverage validation"
+                        )
+                    repair_messages = [
+                        *messages,
+                        {"role": "assistant", "content": raw_text},
+                        {
+                            "role": "user",
+                            "content": (
+                                "Repair the JSON roadmap that you just returned. Validation found: "
+                                f"{validation_finding}. Every coverage Story must have exactly one "
+                                "disposition. A Story with citable_support_keys must be assigned "
+                                "BRIEF, WEAVE, or DEVELOP, never OMIT. Each non-OMIT Story must "
+                                "appear in exactly one narrative line, and no story_key may appear "
+                                "in multiple lines. Preserve every known support_key already cited "
+                                "in a line or in central_support_keys; each support_key must be "
+                                "attached only to a line containing its owning story_key. Keep the "
+                                "same central line, intents, relations, and dispositions where "
+                                "possible; change only what is needed to satisfy these rules. Use "
+                                "only the opaque keys from the dossier. Return the corrected JSON "
+                                "object only."
+                            ),
+                        },
+                    ]
+                    planner_model_call_count += 1
+                    repaired_raw = await self.provider.chat_completion(
+                        messages=repair_messages,
+                        model=self.model,
+                        temperature=0.1,
+                        max_tokens=self.max_output_tokens,
+                        reasoning_effort="none",
+                        response_format={"type": "json_object"},
+                    )
+                    repaired_text = repaired_raw or ""
+                    repaired_support_keys = _cited_known_support_keys(
+                        repaired_text,
+                        reference_map,
+                    )
+                    dropped_support_keys = required_support_keys - repaired_support_keys
+                    if dropped_support_keys:
+                        raise PublicationGenerationError(
+                            "Article planner validation repair dropped cited support keys: "
+                            f"{sorted(dropped_support_keys)}"
+                        ) from exc
+                    required_support_keys.update(repaired_support_keys)
+                    raw_text = repaired_text
             brief = _split_independent_safety_and_infrastructure_lines(
                 brief,
                 context=context,
