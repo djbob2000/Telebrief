@@ -359,22 +359,11 @@ def parse_article_editorial_brief(
             reference_map.support_id_by_key,
             ignore_unknown=True,
         )
-        if not set(salient).issubset(support_ids):
-            _fail(
-                f"line {line_id!r} has salient support outside support_ids",
-                repair_finding=(
-                    f"lines[{index}].salient_support_keys must be a subset of "
-                    f"lines[{index}].support_keys."
-                ),
-            )
-        if not set(caveats).issubset(support_ids):
-            _fail(
-                f"line {line_id!r} has caveat support outside support_ids",
-                repair_finding=(
-                    f"lines[{index}].caveat_support_keys must be a subset of "
-                    f"lines[{index}].support_keys."
-                ),
-            )
+        # These are optional ranking hints, not citations. Keep only hints that
+        # are already backed by the line's authoritative support list.
+        cited_supports = set(support_ids)
+        salient = tuple(support_id for support_id in salient if support_id in cited_supports)
+        caveats = tuple(support_id for support_id in caveats if support_id in cited_supports)
         line = ArticleBriefLine(
             line_id=line_id,
             editorial_intent=editorial_intent,
