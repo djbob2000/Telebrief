@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v8"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v10"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v7-composition"
 
 
@@ -40,6 +40,7 @@ def build_article_narrative_contract(
 - Support items and Claim Atoms are reporting and validation metadata, not sentence templates.
 - Title and Lead must cite active PUBLISH support IDs with CURRENT_WINDOW temporal role from the main lead/DEVELOP storylines.
 - A single natural paragraph may combine several independently supported claims when they form one coherent narrative thought.
+- Keep each paragraph on one service domain: electricity supply / power-grid operations and fiber / home internet are distinct topics. Start a new paragraph and place it in the matching section when the domain changes; a transition such as “при этом” does not make unrelated services one subject.
 - Group related supports into a cohesive narrative section under an intuitive thematic heading.
 - Section headings are thematic titles and do not require claim atoms unless they contain concrete numbers, dates, or prices.
 - Do not mechanically generate one sentence per support. Synthesize related observations into natural, flowing prose.
@@ -48,7 +49,7 @@ def build_article_narrative_contract(
 3. Broad City-Life Coverage & Editorial Shape:
 - The product is a broad city-life long read, not a minimal headline recap or a catalogue of every source item.
 - Read the reporting material as a whole and choose the strongest connected city-life lines yourself; the order and labels of support records are not an outline.
-- Give more space to developments that change residents' day or reveal the larger situation. Weave in smaller reports when they add a useful local contrast, consequence, or human detail.
+- Give more space to developments that change residents' day or reveal the larger situation. Weave in smaller reports when they add a useful local contrast, consequence, or human detail. A static locator or answer to an individual question may be left out when it has no natural role in the reporting-window narrative; that does not make the source information false or unusable elsewhere.
 - Do not give all Stories equal space and do not force a separate mention for every support record.
 - Let the article's shape follow the evidence; do not impose fixed heading, address, paragraph, or one-paragraph-per-Story quotas.
 - Preserve meaningful place, service-state, and event-time contrasts. Use effective_from/effective_until for event chronology; observed_at describes report chronology and attribution only.

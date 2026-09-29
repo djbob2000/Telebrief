@@ -283,10 +283,11 @@ def _render_composition_plan(
     lines = [
         "ARTICLE COMPOSITION ROADMAP",
         "Depth controls space, not eligibility. Exact facts, attribution, and time fields are in each Story packet.",
-        "Thematic section names are broad ordering hints, not proof that all Stories in a section are related.",
+        "A named line is an evidence-compatible thematic home for its listed groups; do not move a group into a differently themed chapter based only on broad card tags.",
+        "A line without a heading has no reliable shared theme. Keep those Stories factually separate and use a neutral city-life passage if they do not fit a named chapter.",
         "A GROUP relation=independent means the Stories have no supported cross-story relation; keep their facts distinct even if they share a broad section.",
         "Only relation labels other than independent describe a deterministic support-backed relation between Stories.",
-        "Geographic labels are conservative organization aids. Shared area membership never establishes proximity, adjacency, or distance.",
+        "Do not infer a shared neighborhood, proximity, adjacency, or distance from ordering or shared area labels.",
     ]
     for narrative_line in composition_plan.narrative_lines:
         visible_groups = [

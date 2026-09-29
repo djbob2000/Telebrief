@@ -29,10 +29,11 @@ ArticleCompositionRelation = Literal[
 CompositionRelation = ArticleCompositionRelation
 
 _STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
+_POWER_GRID_OFFICE_RE = re.compile(r"\bрэс(?:а|у|ом|е|ах)?\b", re.IGNORECASE)
 _SERVICE_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("power", ("электр", "свет", "напряжен", "вольт", "энерг")),
+    ("power", ("электр", "электросет", "свет", "напряжен", "вольт", "энерг")),
     ("water", ("вод", "водоканал", "водовод", "насос")),
-    ("internet", ("интернет", "связ", "провайдер", "роутер")),
+    ("internet", ("интернет", "связ", "провайдер", "роутер", "оптоволокн")),
     ("transport", ("автобус", "маршрут", "транспорт", "рейс")),
 )
 _SERVICE_HEADINGS = {
@@ -41,6 +42,17 @@ _SERVICE_HEADINGS = {
     "internet": "Связь и интернет",
     "transport": "Транспорт",
 }
+_SERVICE_SECTION_IDS = {
+    "power": frozenset({"infrastructure"}),
+    "water": frozenset({"infrastructure"}),
+    "internet": frozenset({"communications"}),
+    "transport": frozenset({"mobility"}),
+}
+_UNCLASSIFIED_LINE_INTENT = (
+    "These supported Stories have no reliable shared theme in the available evidence. "
+    "Keep their facts distinct; do not place them under a specific service heading or "
+    "imply a connection between them."
+)
 _PRACTICAL_BRIDGE_PATTERN = re.compile(
     r"\b(?:поэтому|так\s+что|из-за\s+чего|в\s+результате\s+чего|"
     r"привело\s+к\s+тому,\s+что|для\s+того,\s+чтобы|чтобы)\b"
@@ -247,10 +259,12 @@ def _service_key(
     material_projection: ArticleMaterialProjection,
 ) -> str | None:
     text = _all_service_text(story, context, material_projection)
-    matches = [
+    matches = {
         key for key, markers in _SERVICE_MARKERS if any(marker in text for marker in markers)
-    ]
-    return matches[0] if len(matches) == 1 else None
+    }
+    if _POWER_GRID_OFFICE_RE.search(text):
+        matches.add("power")
+    return next(iter(matches)) if len(matches) == 1 else None
 
 
 def _state_key(
@@ -593,6 +607,7 @@ def build_article_composition_plan(
             )
             for story in ordered
         )
+        member_services = {relation_features[story.story_id].service for story in ordered}
         service = relation_features[ordered[0].story_id].service or "independent"
         lead = ordered[0]
         group_id = f"group:{group_index}:{group_relation}:{service}"
@@ -619,15 +634,45 @@ def build_article_composition_plan(
         line_id: str
         heading_hint: str | None
         narrative_intent: str
-        if section is not None:
+        compatible_service_section = (
+            section is not None
+            and service != "independent"
+            and member_services == {service}
+            and section.section_id in _SERVICE_SECTION_IDS.get(service, frozenset())
+        )
+        if compatible_service_section and section is not None:
             line_id = f"line:section:{section.section_id}"
             heading_hint = section.title
             narrative_intent = section.narrative_intent
+        elif service != "independent" and member_services == {service}:
+            # The card's rubric is a useful broad fallback, but it can disagree
+            # with the service actually named by the citable source material.
+            # Keep such Stories in a compatible service lane instead of
+            # inheriting an unrelated chapter heading.
+            line_id = f"line:service:{service}"
+            heading_hint = _SERVICE_HEADINGS.get(service)
+            narrative_intent = relation_intents[group_relation]
+        elif service == "independent":
+            # Unknown/ambiguous theme is still publishable material. Preserve it
+            # under a neutral roadmap line so coarse card tags cannot imply a
+            # specific service topic that the evidence does not establish.
+            neutral_section_id = section.section_id if section is not None else "city_life"
+            line_id = f"line:unclassified:{neutral_section_id}"
+            heading_hint = None
+            narrative_intent = _UNCLASSIFIED_LINE_INTENT
+        elif section is not None:
+            # A supported cross-service relation may include multiple service
+            # types. Retain the broad source section only when the relation
+            # group itself has a compatible service lane; otherwise keep its
+            # relation intent without a misleading single-service heading.
+            line_id = f"line:{group_index}:{group_relation}:{service}"
+            heading_hint = None
+            narrative_intent = relation_intents[group_relation]
         else:
             line_id = f"line:{group_index}:{group_relation}:{service}"
             heading_hint = (
                 _SERVICE_HEADINGS.get(service, service.replace("_", " ").title())
-                if group_relation != "independent"
+                if group_relation != "independent" and member_services == {service}
                 else None
             )
             narrative_intent = relation_intents[group_relation]

@@ -8,9 +8,11 @@ validation in ``article_validator`` as the authority for factual safety.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
 import unicodedata
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Any, Literal, Sequence
 
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
@@ -21,6 +23,7 @@ from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import StructuredArticleDraft, _split_sentences_safe
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
+logger = logging.getLogger(__name__)
 
 # These findings describe article topology that cannot be repaired safely by
 # replacing one paragraph. The generator routes the repair-only grouping codes
@@ -1218,6 +1221,16 @@ def diagnose_article_quality(
     material_projection: ArticleMaterialProjection | None = None,
     place_resolver: Any | None = None,
 ) -> ArticleReaderQualityReport:
+    diagnostics_started = perf_counter()
+    phase_started = diagnostics_started
+    phase_times: dict[str, float] = {}
+
+    def finish_phase(name: str) -> None:
+        nonlocal phase_started
+        now = perf_counter()
+        phase_times[name] = now - phase_started
+        phase_started = now
+
     findings: list[ArticleReaderQualityFinding] = []
 
     heading_units: list[tuple[str, str, tuple[str, ...]]] = [
@@ -1276,6 +1289,7 @@ def diagnose_article_quality(
                 severity="blocking",
             )
         )
+    finish_phase("headings")
 
     # A lead may introduce a DEVELOP storyline, but it should not be the only
     # place where that supported storyline appears.  The coverage diagnostics
@@ -1372,6 +1386,7 @@ def diagnose_article_quality(
                 severity="repair",
             )
         )
+    finish_phase("lead_body_coverage")
 
     # A run is actionable only when it looks like one paragraph per unrelated
     # Story.  A single short paragraph is a valid compact mention.
@@ -1428,6 +1443,7 @@ def diagnose_article_quality(
                     )
                 )
             p_idx += 1
+    finish_phase("paragraph_rhythm_and_quotes")
 
     # A packed roster is a sentence/claim-level shape, not a paragraph-wide
     # length or address quota.  A paragraph may weave several small place-based
@@ -1626,6 +1642,7 @@ def diagnose_article_quality(
         material_projection,
     )
     findings.extend(theme_section_findings)
+    finish_phase("address_directory_and_theme")
 
     # Compare supported claims across the lead and distinct chapters.  Shared
     # Story/support linkage is required, and a different state, effective
@@ -1714,6 +1731,7 @@ def diagnose_article_quality(
                 severity="blocking" if major_story_repeated else "repair",
             )
         )
+    finish_phase("cross_section_repetition")
 
     lead_unit = next((unit for unit in quality_units if unit["unit_id"] == "LEAD"), None)
     body_units = [unit for unit in quality_units if unit["unit_id"].startswith("P")]
@@ -1789,6 +1807,7 @@ def diagnose_article_quality(
                     severity="blocking",
                 )
             )
+    finish_phase("central_thesis")
 
     coverage = diagnose_article_coverage(
         draft,
@@ -1868,6 +1887,25 @@ def diagnose_article_quality(
                 )
             )
 
+    finish_phase("coverage_and_details")
     findings.extend(_diagnose_contradictions(draft, context, material_projection, place_resolver))
+    finish_phase("contradictions")
+    logger.info(
+        "Article quality diagnostic timings: headings=%.2fs lead_body=%.2fs "
+        "paragraph_shape=%.2fs address_directory_theme=%.2fs repetition=%.2fs "
+        "central_thesis=%.2fs coverage_details=%.2fs contradictions=%.2fs "
+        "paragraphs=%d planned_stories=%d total=%.2fs",
+        phase_times.get("headings", 0.0),
+        phase_times.get("lead_body_coverage", 0.0),
+        phase_times.get("paragraph_rhythm_and_quotes", 0.0),
+        phase_times.get("address_directory_and_theme", 0.0),
+        phase_times.get("cross_section_repetition", 0.0),
+        phase_times.get("central_thesis", 0.0),
+        phase_times.get("coverage_and_details", 0.0),
+        phase_times.get("contradictions", 0.0),
+        sum(len(section.paragraphs) for section in draft.sections),
+        len(coverage_plan.stories),
+        perf_counter() - diagnostics_started,
+    )
     # Stable order makes metadata and editor retries reproducible.
     return ArticleReaderQualityReport(findings=tuple(findings))
