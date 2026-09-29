@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -164,18 +165,20 @@ def diagnose_article_coverage(
             story_all_stems[item.story_id] = stems
             story_all_nums[item.story_id] = nums
 
+        # A term discriminates one Story iff it appears in that Story and in
+        # no other Story. Counting per-Story sets is equivalent to repeatedly
+        # unioning every other Story's terms, but avoids quadratic set unions
+        # on the large article plans this diagnostic is called against.
+        stem_story_counts = Counter(stem for stems in story_all_stems.values() for stem in stems)
+        number_story_counts = Counter(
+            number for numbers in story_all_nums.values() for number in numbers
+        )
         for item in eligible_stories:
             sid = item.story_id
             cur_stems = story_all_stems.get(sid, set())
             cur_nums = story_all_nums.get(sid, set())
-            other_stems: set[str] = set()
-            other_nums: set[str] = set()
-            for other_id in eligible_stories:
-                if other_id.story_id != sid:
-                    other_stems.update(story_all_stems.get(other_id.story_id, set()))
-                    other_nums.update(story_all_nums.get(other_id.story_id, set()))
-            disc_s = cur_stems - other_stems
-            disc_n = cur_nums - other_nums
+            disc_s = {stem for stem in cur_stems if stem_story_counts[stem] == 1}
+            disc_n = {number for number in cur_nums if number_story_counts[number] == 1}
             if disc_s or disc_n:
                 story_disc_stems[sid] = disc_s
                 story_disc_nums[sid] = disc_n

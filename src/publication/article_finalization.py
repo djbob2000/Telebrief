@@ -758,7 +758,7 @@ def _sanitize_phantom_heading_topics(
             )
             if has_phantom and ":" in cur_heading:
                 prefix = cur_heading.split(":", 1)[0].strip()
-                if prefix and len(prefix) >= 5:
+                if any(len(token) >= 3 for token in re.findall(r"[\w-]+", prefix)):
                     cur_heading = prefix
                     changed = True
                     section_changed = True
@@ -777,7 +777,6 @@ def _sanitize_phantom_heading_topics(
                 )
                 for iss in heading_violations
             )
-            supports_repaired = False
             if needs_sup_repair and context is not None:
                 valid_para_sups = []
                 for p in sec.paragraphs:
@@ -794,7 +793,6 @@ def _sanitize_phantom_heading_topics(
                     cur_sups = tuple(dict.fromkeys(valid_para_sups[:3]))
                     changed = True
                     section_changed = True
-                    supports_repaired = True
                     logger.info(
                         "Re-anchored heading %s supports from section paragraphs: %s",
                         h_id,
@@ -804,8 +802,8 @@ def _sanitize_phantom_heading_topics(
             if section_changed:
                 new_claims = (
                     (ArticleClaimAtom(text=cur_heading, cited_support_ids=cur_sups),)
-                    if supports_repaired
-                    else tuple(c for c in sec.heading_claims if c.text and c.text in cur_heading)
+                    if cur_heading and cur_sups
+                    else ()
                 )
                 new_sections.append(
                     ArticleSection(

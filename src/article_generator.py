@@ -1715,13 +1715,10 @@ class ArticleGenerator:
                             material_projection=material_projection,
                             place_resolver=place_resolver,
                         )
-                        edited_quality = diagnose_article_quality(
-                            edited_draft,
-                            coverage_plan,
-                            article_ctx,
-                            material_projection=material_projection,
-                            place_resolver=place_resolver,
-                        )
+                        # ArticleEditor already recomputes quality after each
+                        # accepted patch. Reuse its final report instead of
+                        # running the article-wide composition analysis again.
+                        edited_quality = editor.last_quality_report
                     except Exception as editor_exc:
                         writer_meta["editor_retry_count"] = (
                             editor.last_attempt_count if editor is not None else 0

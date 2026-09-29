@@ -41,6 +41,8 @@ def _reground_support_ids(
     text: str,
     context: ArticleEditorialContext,
     allowed_support_ids: tuple[str, ...] | list[str] | None = None,
+    *,
+    minimum_shared_stems: int = 2,
 ) -> tuple[str, ...]:
     """Return only support packets with a concrete lexical anchor in ``text``.
 
@@ -79,7 +81,7 @@ def _reground_support_ids(
         shared_stems = text_stems & distinctive_stems(support_text)
         support_numbers = set(re.findall(r"\b\d+\b", support_text))
         if (
-            len(shared_stems) >= 2
+            len(shared_stems) >= minimum_shared_stems
             or (shared_stems and text_numbers & support_numbers)
             or len(text_numbers & support_numbers) >= 2
         ):
@@ -104,6 +106,7 @@ class ArticleEditor:
         self.max_output_tokens = min(max_output_tokens, 32768)
         self.last_attempt_count = 0
         self.last_patched_unit_ids: tuple[str, ...] = ()
+        self.last_quality_report = ArticleReaderQualityReport()
 
     async def edit_draft(
         self,
@@ -124,6 +127,7 @@ class ArticleEditor:
         current_draft = draft
         current_val = validation_result
         current_quality = quality_report or ArticleReaderQualityReport()
+        self.last_quality_report = current_quality
         patched_unit_ids: list[str] = []
         validation_context = (
             materialize_article_validation_context(context, material_projection)
@@ -194,6 +198,9 @@ class ArticleEditor:
                     },
                 )
 
+            previous_draft = current_draft
+            previous_val = current_val
+            previous_quality = current_quality
             try:
                 response = await self.provider.chat_completion(
                     messages=[
@@ -247,6 +254,7 @@ class ArticleEditor:
                         material_projection=material_projection,
                         place_resolver=place_resolver,
                     )
+                    self.last_quality_report = current_quality
 
                 if attempt_observer is not None:
                     is_clean = current_val.is_valid and not current_quality.needs_edit
@@ -286,6 +294,13 @@ class ArticleEditor:
                     )
 
             except Exception as exc:
+                # Keep text, Evidence Boundary result, and quality report as
+                # one transaction. A failed validation/diagnostic must not
+                # return a patched draft paired with stale assessment data.
+                current_draft = previous_draft
+                current_val = previous_val
+                current_quality = previous_quality
+                self.last_quality_report = current_quality
                 logger.warning("ArticleEditor pass %d encountered error: %s", attempt, exc)
                 if attempt_observer is not None:
                     await attempt_observer.attempt_finished(
@@ -841,6 +856,7 @@ class ArticleEditor:
                         candidate_heading,
                         context,
                         allowed_ids(h_id, tuple(sec.heading_support_ids)),
+                        minimum_shared_stems=1,
                     )
                     if context is not None
                     else ()
