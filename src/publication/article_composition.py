@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime as dt
 import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from src.city_context import CityContextResolver
@@ -109,6 +108,7 @@ class _StoryRelationFeatures:
     service: str | None
     state: str | None
     places: frozenset[str]
+    areas: frozenset[str]
     intervals: tuple[tuple[dt.datetime | None, dt.datetime | None], ...]
     practical_service_pairs: frozenset[frozenset[str]]
 
@@ -185,40 +185,82 @@ def _support_belongs_to_story(
 
 
 def _member_support_ids(
-    story: ArticleStoryCoverage, context: ArticleEditorialContext
+    story: ArticleStoryCoverage,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection,
 ) -> tuple[str, ...]:
     planned = tuple(dict.fromkeys((*story.detail_support_ids, *story.support_ids)))
-    return tuple(sid for sid in planned if _support_belongs_to_story(sid, story.story_id, context))
+    return tuple(
+        sid
+        for sid in planned
+        if _support_belongs_to_story(sid, story.story_id, context)
+        and (support := context.support_by_id.get(sid)) is not None
+        and support.publication_use == "PUBLISH"
+        and support.evidence_kind != "resident_question"
+        and material_projection.actions_by_support_id.get(sid) in {"KEEP", "TRIM_DIRECTORY"}
+        and material_projection.text_by_support_id.get(sid, "").strip()
+    )
 
 
-def _all_service_text(story: ArticleStoryCoverage, context: ArticleEditorialContext) -> str:
-    texts = [story.topic]
-    for support_id in story.support_ids:
+def _projected_supports(
+    story: ArticleStoryCoverage,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection,
+) -> tuple[tuple[str, ArticleSupport], ...]:
+    supports: list[tuple[str, ArticleSupport]] = []
+    for support_id in dict.fromkeys((*story.detail_support_ids, *story.support_ids)):
         support = context.support_by_id.get(support_id)
-        if support is not None:
-            texts.extend((support.text, support.source_text))
-    return " ".join(texts).casefold()
+        if (
+            support is None
+            or support.publication_use != "PUBLISH"
+            or support.evidence_kind == "resident_question"
+            or material_projection.actions_by_support_id.get(support_id)
+            not in {"KEEP", "TRIM_DIRECTORY"}
+            or not material_projection.text_by_support_id.get(support_id, "").strip()
+        ):
+            continue
+        supports.append((support_id, support))
+    return tuple(supports)
 
 
-def _service_key(story: ArticleStoryCoverage, context: ArticleEditorialContext) -> str | None:
-    text = story.topic.casefold()
-    matches = [
-        key for key, markers in _SERVICE_MARKERS if any(marker in text for marker in markers)
-    ]
-    if matches:
-        return matches[0] if len(matches) == 1 else None
-    text = _all_service_text(story, context)
+def _projected_support_text(
+    support_id: str,
+    material_projection: ArticleMaterialProjection,
+) -> str:
+    return material_projection.text_by_support_id.get(support_id, "").strip()
+
+
+def _all_service_text(
+    story: ArticleStoryCoverage,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection,
+) -> str:
+    return " ".join(
+        _projected_support_text(support_id, material_projection)
+        for support_id, _support in _projected_supports(story, context, material_projection)
+    ).casefold()
+
+
+def _service_key(
+    story: ArticleStoryCoverage,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection,
+) -> str | None:
+    text = _all_service_text(story, context, material_projection)
     matches = [
         key for key, markers in _SERVICE_MARKERS if any(marker in text for marker in markers)
     ]
     return matches[0] if len(matches) == 1 else None
 
 
-def _state_key(story: ArticleStoryCoverage, context: ArticleEditorialContext) -> str | None:
+def _state_key(
+    story: ArticleStoryCoverage,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection,
+) -> str | None:
     texts = [
-        _support_text(context.support_by_id[sid]).casefold()
-        for sid in story.support_ids
-        if sid in context.support_by_id
+        _projected_support_text(support_id, material_projection).casefold()
+        for support_id, _support in _projected_supports(story, context, material_projection)
     ]
     markers: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
@@ -264,19 +306,15 @@ def _state_key(story: ArticleStoryCoverage, context: ArticleEditorialContext) ->
     return next(iter(states)) if len(states) == 1 else None
 
 
-def _support_text(support: ArticleSupport) -> str:
-    return " ".join(part for part in (support.text, support.source_text) if part)
-
-
 def _place_keys(
     story: ArticleStoryCoverage,
     context: ArticleEditorialContext,
     resolver: CityContextResolver | None,
+    material_projection: ArticleMaterialProjection,
 ) -> tuple[str, ...]:
     texts = [
-        _support_text(context.support_by_id[sid])
-        for sid in story.support_ids
-        if sid in context.support_by_id
+        _projected_support_text(support_id, material_projection)
+        for support_id, _support in _projected_supports(story, context, material_projection)
     ]
     if resolver is not None:
         places = {
@@ -294,49 +332,71 @@ def _place_keys(
     return tuple(sorted(names))
 
 
+def _area_keys(
+    story: ArticleStoryCoverage,
+    context: ArticleEditorialContext,
+    resolver: CityContextResolver | None,
+    material_projection: ArticleMaterialProjection,
+) -> frozenset[str]:
+    if resolver is None:
+        return frozenset()
+
+    from src.publication.article_geography import resolve_article_place_area_map
+
+    areas = {
+        area_id
+        for support_id, _support in _projected_supports(story, context, material_projection)
+        for area_ids in resolve_article_place_area_map(
+            _projected_support_text(support_id, material_projection), resolver
+        ).values()
+        for area_id in area_ids
+    }
+    # A Story naming multiple verified areas is too broad for a same-district
+    # relation. Keep it ungrouped rather than choosing one area arbitrarily.
+    return frozenset(areas) if len(areas) == 1 else frozenset()
+
+
 def _effective_intervals(
-    story: ArticleStoryCoverage, context: ArticleEditorialContext
+    story: ArticleStoryCoverage,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection,
 ) -> tuple[tuple[dt.datetime | None, dt.datetime | None], ...]:
     intervals = []
-    for support_id in story.support_ids:
-        support = context.support_by_id.get(support_id)
-        if support is not None and (
-            support.effective_from is not None or support.effective_until is not None
-        ):
+    for _support_id, support in _projected_supports(story, context, material_projection):
+        if support.effective_from is not None or support.effective_until is not None:
             intervals.append((support.effective_from, support.effective_until))
     return tuple(intervals)
 
 
 def _practical_service_pairs(
-    story: ArticleStoryCoverage, context: ArticleEditorialContext
+    story: ArticleStoryCoverage,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection,
 ) -> frozenset[frozenset[str]]:
     """Index service pairs explicitly linked across a connective in one support."""
     pairs: set[frozenset[str]] = set()
-    for support_id in story.support_ids:
-        support = context.support_by_id.get(support_id)
-        if support is None:
-            continue
-        for source_text in (support.text, support.source_text):
-            for sentence in re.split(r"(?<=[.!?])\s+", source_text.casefold()):
-                for connective in _PRACTICAL_BRIDGE_PATTERN.finditer(sentence):
-                    before = sentence[: connective.start()]
-                    after = sentence[connective.end() :]
-                    before_services = {
-                        service
-                        for service, markers in _SERVICE_MARKERS
-                        if any(marker in before for marker in markers)
-                    }
-                    after_services = {
-                        service
-                        for service, markers in _SERVICE_MARKERS
-                        if any(marker in after for marker in markers)
-                    }
-                    pairs.update(
-                        frozenset((left, right))
-                        for left in before_services
-                        for right in after_services
-                        if left != right
-                    )
+    for support_id, _support in _projected_supports(story, context, material_projection):
+        projected = _projected_support_text(support_id, material_projection).casefold()
+        for sentence in re.split(r"(?<=[.!?])\s+", projected):
+            for connective in _PRACTICAL_BRIDGE_PATTERN.finditer(sentence):
+                before = sentence[: connective.start()]
+                after = sentence[connective.end() :]
+                before_services = {
+                    service
+                    for service, markers in _SERVICE_MARKERS
+                    if any(marker in before for marker in markers)
+                }
+                after_services = {
+                    service
+                    for service, markers in _SERVICE_MARKERS
+                    if any(marker in after for marker in markers)
+                }
+                pairs.update(
+                    frozenset((left, right))
+                    for left in before_services
+                    for right in after_services
+                    if left != right
+                )
     return frozenset(pairs)
 
 
@@ -344,22 +404,25 @@ def _relation_features(
     story: ArticleStoryCoverage,
     context: ArticleEditorialContext,
     resolver: CityContextResolver | None,
+    material_projection: ArticleMaterialProjection,
 ) -> _StoryRelationFeatures:
-    service = _service_key(story, context)
+    service = _service_key(story, context, material_projection)
     if not service:
         return _StoryRelationFeatures(
             service=None,
             state=None,
             places=frozenset(),
+            areas=frozenset(),
             intervals=(),
             practical_service_pairs=frozenset(),
         )
     return _StoryRelationFeatures(
         service=service,
-        state=_state_key(story, context),
-        places=frozenset(_place_keys(story, context, resolver)),
-        intervals=_effective_intervals(story, context),
-        practical_service_pairs=_practical_service_pairs(story, context),
+        state=_state_key(story, context, material_projection),
+        places=frozenset(_place_keys(story, context, resolver, material_projection)),
+        areas=_area_keys(story, context, resolver, material_projection),
+        intervals=_effective_intervals(story, context, material_projection),
+        practical_service_pairs=_practical_service_pairs(story, context, material_projection),
     )
 
 
@@ -388,60 +451,6 @@ def _strictly_ordered_non_overlapping(
     return left_before_right or right_before_left
 
 
-def _explicit_practical_consequence(
-    left: ArticleStoryCoverage,
-    right: ArticleStoryCoverage,
-    context: ArticleEditorialContext,
-    resolver: CityContextResolver | None,
-) -> bool:
-    """Require one support to explicitly connect both service domains and a place."""
-    left_service = _service_key(left, context)
-    right_service = _service_key(right, context)
-    if not left_service or not right_service or left_service == right_service:
-        return False
-    left_places = set(_place_keys(left, context, resolver))
-    right_places = set(_place_keys(right, context, resolver))
-    if not left_places or not right_places or left_places != right_places:
-        return False
-
-    service_markers = dict(_SERVICE_MARKERS)
-    bridge_pattern = re.compile(
-        r"\b(?:поэтому|так\s+что|из-за\s+чего|в\s+результате\s+чего|"
-        r"привело\s+к\s+тому,\s+что|для\s+того,\s+чтобы|чтобы)\b"
-    )
-    support_ids = (*left.support_ids, *right.support_ids)
-    for support_id in support_ids:
-        support = context.support_by_id.get(support_id)
-        if support is None:
-            continue
-        for source_text in (support.text, support.source_text):
-            for sentence in re.split(r"(?<=[.!?])\s+", source_text.casefold()):
-                for connective in bridge_pattern.finditer(sentence):
-                    before = sentence[: connective.start()]
-                    after = sentence[connective.end() :]
-                    left_before = any(marker in before for marker in service_markers[left_service])
-                    left_after = any(marker in after for marker in service_markers[left_service])
-                    right_before = any(
-                        marker in before for marker in service_markers[right_service]
-                    )
-                    right_after = any(marker in after for marker in service_markers[right_service])
-                    if (left_before and right_after) or (right_before and left_after):
-                        return True
-    return False
-
-
-def _relation(
-    left: ArticleStoryCoverage,
-    right: ArticleStoryCoverage,
-    context: ArticleEditorialContext,
-    resolver: CityContextResolver | None,
-) -> CompositionRelation:
-    return _relation_from_features(
-        _relation_features(left, context, resolver),
-        _relation_features(right, context, resolver),
-    )
-
-
 def _relation_from_features(
     left: _StoryRelationFeatures,
     right: _StoryRelationFeatures,
@@ -464,6 +473,9 @@ def _relation_from_features(
         and left_places
         and right_places
         and left_places.isdisjoint(right_places)
+        and left.areas
+        and right.areas
+        and left.areas == right.areas
         and left_state != right_state
     ):
         return "localized_contrast"
@@ -491,11 +503,9 @@ def _relation_from_features(
 
 
 def _place_resolver(context: ArticleEditorialContext) -> CityContextResolver | None:
-    slug = (context.edition_slug or "").strip()
-    profile_path = Path("data/city_profiles") / f"{slug}.yaml" if slug else None
-    if profile_path is None or not profile_path.is_file():
-        return None
-    return CityContextResolver.from_yaml(profile_path)
+    from src.publication.article_geography import resolve_article_place_resolver
+
+    return resolve_article_place_resolver(context)
 
 
 def build_article_composition_plan(
@@ -511,7 +521,8 @@ def build_article_composition_plan(
     visible = [story for story in coverage_plan.stories if story.story_id not in suppressed_set]
     resolver = _place_resolver(context)
     relation_features = {
-        story.story_id: _relation_features(story, context, resolver) for story in visible
+        story.story_id: _relation_features(story, context, resolver, material_projection)
+        for story in visible
     }
     relation_cache: dict[tuple[str, str], CompositionRelation] = {}
 
@@ -578,7 +589,7 @@ def build_article_composition_plan(
             ArticleCompositionMember(
                 story_id=story.story_id,
                 prominence=story.prominence,
-                support_ids=_member_support_ids(story, context),
+                support_ids=_member_support_ids(story, context, material_projection),
             )
             for story in ordered
         )

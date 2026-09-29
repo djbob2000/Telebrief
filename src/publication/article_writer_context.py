@@ -283,6 +283,10 @@ def _render_composition_plan(
     lines = [
         "ARTICLE COMPOSITION ROADMAP",
         "Depth controls space, not eligibility. Exact facts, attribution, and time fields are in each Story packet.",
+        "Thematic section names are broad ordering hints, not proof that all Stories in a section are related.",
+        "A GROUP relation=independent means the Stories have no supported cross-story relation; keep their facts distinct even if they share a broad section.",
+        "Only relation labels other than independent describe a deterministic support-backed relation between Stories.",
+        "Geographic labels are conservative organization aids. Shared area membership never establishes proximity, adjacency, or distance.",
     ]
     for narrative_line in composition_plan.narrative_lines:
         visible_groups = [
@@ -570,6 +574,29 @@ def render_article_writer_context_with_stats(
                 coverage_plan, context=context, material_projection=material_projection
             )
         )
+        if material_projection is not None:
+            from src.publication.article_geography import (
+                build_article_story_geography_map,
+                resolve_article_place_resolver,
+            )
+
+            geography_by_story = build_article_story_geography_map(
+                context=context,
+                coverage_plan=coverage_plan,
+                material_projection=material_projection,
+                resolver=resolve_article_place_resolver(context),
+            )
+            geography_lines = [
+                "STORY GEOGRAPHY INDEX",
+                "Only list areas and places supported by projected, citable material; an unresolved location is intentionally absent.",
+            ]
+            for story in coverage_plan.stories:
+                geography = geography_by_story.get(story.story_id)
+                focus = geography.focus if geography is not None else None
+                if focus:
+                    geography_lines.append(f"- {story.story_id}: {focus}")
+            if len(geography_lines) > 2:
+                blocks.append("\n".join(geography_lines))
 
     allowed_support_ids: set[str] | None = None
     if coverage_plan is not None:
