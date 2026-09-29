@@ -232,6 +232,36 @@ _PURE_GEOGRAPHIC_FRAGMENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+_PLACE_ENTITY_RE = re.compile(
+    r"\b(?:улиц\w*|переул\w*|проспект\w*|площад\w*|набережн\w*|"
+    r"район\w*|микрорайон\w*|часть\s+города|центр(?:альн\w*)?(?:\s+част\w*)?|"
+    r"город\w*|село\w*|пос[её]лок\w*|кос\w*|остановк\w*|маршрут\w*|"
+    r"санатор\w*|аквапарк\w*|школ\w*|училищ\w*|рын\w*|парк\w*|"
+    r"здани\w*|дом\w*|музе\w*|больниц\w*|поликлиник\w*|мфц\b|"
+    r"магазин\w*|аптек\w*|офис\w*|филиал\w*|пункт\w*|отделени\w*|"
+    r"вокзал\w*|станци\w*|подстанци\w*|электростанци\w*|стадион\w*|"
+    r"мост\w*|перекр[её]сток\w*|территори\w*|участок\w*|объект\w*)\b",
+    re.IGNORECASE,
+)
+
+_LOCATION_RELATION_PREDICATE_RE = re.compile(
+    r"\b(?:наход\w*|располож\w*|располага\w*|леж\w*|относ\w*\s+к|"
+    r"явля\w*\s+(?:частью|частью\s+города|районом)|"
+    r"вход\w*\s+в\s+состав|проход\w*\s+по)\b",
+    re.IGNORECASE,
+)
+
+_LOCATION_RELATION_WORD_RE = re.compile(
+    r"\b(?:в|во|на|у|около|возле|рядом\s+с|вблизи|за|перед|напротив|"
+    r"между|по\s+соседству\s+с|вдоль|от|до)\b",
+    re.IGNORECASE,
+)
+
+_LOCATION_STATIC_ROUTE_REFERENCE_RE = re.compile(
+    r"\b(?:маршрут\w*|остановк\w*)\s*(?:№\s*)?\d*\b|\b№\s*\d+\b|\b\d+\b",
+    re.IGNORECASE,
+)
+
 _INTERNAL_REPLY_ANNOTATION_RE = re.compile(
     r"\s*\(in_reply_to:\s*\".*\"\)\s*$",
     re.IGNORECASE | re.DOTALL,
@@ -286,6 +316,37 @@ def has_meaningful_predicate(text: str) -> bool:
     if not _CIVIC_EVENT_TOKENS_RE.search(without_chatter):
         return False
 
+    return True
+
+
+def _is_location_context_without_event(text: str) -> bool:
+    """Return whether a claim only explains where a place or facility is.
+
+    A static location answer can contain a grammatical predicate ("улица
+    находится в центре") without reporting a civic event, service state, or
+    practical change. Do not mistake that grammar for digest-worthy news.
+    """
+    if not text or not text.strip():
+        return False
+
+    cleaned = _INTERNAL_REPLY_ANNOTATION_RE.sub("", text.strip()).strip()
+    cleaned = _ATTRIBUTION_PREFIX_RE.sub("", cleaned).strip()
+    if not (
+        _PLACE_ENTITY_RE.search(cleaned)
+        and _LOCATION_RELATION_PREDICATE_RE.search(cleaned)
+        and _LOCATION_RELATION_WORD_RE.search(cleaned)
+    ):
+        return False
+
+    # Keep actual updates and service reports even when they also explain an
+    # address. Remove the static place names and locative wording first so a
+    # route number or the verb "находится" cannot masquerade as an event.
+    residual = _PLACE_ENTITY_RE.sub(" ", cleaned)
+    residual = _LOCATION_RELATION_PREDICATE_RE.sub(" ", residual)
+    residual = _LOCATION_RELATION_WORD_RE.sub(" ", residual)
+    residual = _LOCATION_STATIC_ROUTE_REFERENCE_RE.sub(" ", residual)
+    if _CIVIC_EVENT_TOKENS_RE.search(residual):
+        return False
     return True
 
 
@@ -364,6 +425,20 @@ def validate_story_publication_eligibility(
         _is_question_without_event(getattr(item, "text", "")) for item in non_question_items
     ):
         return False, "resident_question_only"
+
+    # A bare answer about where a street, district, landmark, or facility is
+    # located is conversational context, not a city update. Retain it when it
+    # accompanies a concrete event/state, and never apply this rule to explicit
+    # service-access evidence.
+    if (
+        non_question_items
+        and not any(getattr(item, "kind", "") == "service_access" for item in non_question_items)
+        and all(
+            _is_location_context_without_event(getattr(item, "text", ""))
+            for item in non_question_items
+        )
+    ):
+        return False, "location_context_without_event"
 
     # Rule 2: Generic anonymous service check
     all_story_text = " ".join(

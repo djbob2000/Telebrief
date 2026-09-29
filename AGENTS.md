@@ -128,6 +128,7 @@ Rules:
 - `resident_question` is context, not a fact and not an operational status.
 - A question such as "Работает ли пенсионный фонд?" must not become "пенсионный фонд не работает" or create an operational state by itself, and must not become meta-news ("жители интересуются...") in thematic headlines.
 - A useful short community report must not be discarded merely because it is conversational, single-source, or unofficial.
+- A location-only clarification (for example, which district contains a street or where a landmark stands) is context, not a publishable Story or reader-facing item. Keep the location when it anchors a concrete event, service state, or practical access detail.
 - Narrow deterministic causal relation validation rejects unsupported mechanism/cause claims with `UNSUPPORTED_DIGEST_RELATION`.
 - Related stories may be grouped for presentation inside their deterministic rubric/block, but legitimate coverage must not silently disappear.
 - Commercial classifieds, private disputes, personal accusations, phone-number spam, repetitive ad copy, and directory-style payload must not dominate the digest.
