@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from time import perf_counter
 from typing import Any, Mapping
 
 from src.ai_providers import AIProvider
@@ -136,6 +137,7 @@ class ArticleEditor:
         )
 
         for attempt in range(1, max_attempts + 1):
+            attempt_started = perf_counter()
             self.last_attempt_count = attempt
             blocking_issues = [
                 iss
@@ -239,6 +241,7 @@ class ArticleEditor:
                 )
                 patched_unit_ids.extend(patches)
                 self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
+                validation_started = perf_counter()
                 current_val = validate_article_draft(
                     current_draft,
                     context,
@@ -246,7 +249,10 @@ class ArticleEditor:
                     length_profile=length_profile,
                     material_projection=material_projection,
                 )
+                validation_elapsed = perf_counter() - validation_started
+                quality_elapsed = 0.0
                 if coverage_plan is not None:
+                    quality_started = perf_counter()
                     current_quality = diagnose_article_quality(
                         current_draft,
                         coverage_plan,
@@ -254,7 +260,16 @@ class ArticleEditor:
                         material_projection=material_projection,
                         place_resolver=place_resolver,
                     )
-                    self.last_quality_report = current_quality
+                    quality_elapsed = perf_counter() - quality_started
+                self.last_quality_report = current_quality
+                logger.info(
+                    "ArticleEditor pass %d timings: evidence_validation=%.2fs "
+                    "quality=%.2fs pass_elapsed=%.2fs",
+                    attempt,
+                    validation_elapsed,
+                    quality_elapsed,
+                    perf_counter() - attempt_started,
+                )
 
                 if attempt_observer is not None:
                     is_clean = current_val.is_valid and not current_quality.needs_edit

@@ -676,6 +676,82 @@ def _stems_match(stem_a: str, stem_b: str) -> bool:
     return False
 
 
+@dataclass(frozen=True)
+class PreparedSemanticContext:
+    """Reusable indexes for the edition-wide vocabulary used during validation."""
+
+    tokens_lower: frozenset[str]
+    stems: frozenset[str]
+    prefix_stems: frozenset[str]
+    equivalent_match_prefixes: frozenset[str]
+    active_family_ids: frozenset[int]
+
+    def matches_stem(self, stem: str) -> bool:
+        """Match with the same exact, bilingual, family, and prefix rules as _stems_match."""
+        if stem in self.stems:
+            return True
+
+        # _stems_match's final prefix rule only applies when both stems are at least 4 chars.
+        if len(stem) >= 4:
+            if stem in self.prefix_stems:
+                return True
+            if any(stem[:length] in self.stems for length in range(4, len(stem) + 1)):
+                return True
+
+        if any(stem.startswith(prefix) for prefix in self.equivalent_match_prefixes):
+            return True
+
+        for family_id in self.active_family_ids:
+            family = _EQUIVALENCE_FAMILIES[family_id]
+            if any(stem.startswith(member) or member.startswith(stem) for member in family):
+                return True
+        return False
+
+
+def prepare_semantic_context(terms: Sequence[str]) -> PreparedSemanticContext:
+    """Build one per-validation index without changing semantic matching rules."""
+    tokens_lower: set[str] = set()
+    stems: set[str] = set()
+    for term in terms:
+        if not term:
+            continue
+        cleaned = term.lower().replace("ё", "е")
+        for token in _TOKEN_RE.findall(cleaned):
+            if len(token) >= 2 and token not in _STOPWORDS:
+                tokens_lower.add(token)
+                stems.add(stem_word(token))
+
+    prefix_stems = {
+        stem[:length] for stem in stems if len(stem) >= 4 for length in range(4, len(stem) + 1)
+    }
+
+    equivalent_match_prefixes: set[str] = set()
+    for stem in stems:
+        for source_prefix, target_prefix in _UA_RU_EQUIVALENTS.items():
+            if stem.startswith(target_prefix):
+                equivalent_match_prefixes.add(source_prefix)
+            if stem.startswith(source_prefix):
+                equivalent_match_prefixes.add(target_prefix)
+
+    active_family_ids = frozenset(
+        family_id
+        for family_id, family in enumerate(_EQUIVALENCE_FAMILIES)
+        if any(
+            stem.startswith(member) or member.startswith(stem)
+            for stem in stems
+            for member in family
+        )
+    )
+
+    return PreparedSemanticContext(
+        tokens_lower=frozenset(tokens_lower),
+        stems=frozenset(stems),
+        prefix_stems=frozenset(prefix_stems),
+        equivalent_match_prefixes=frozenset(equivalent_match_prefixes),
+        active_family_ids=active_family_ids,
+    )
+
+
 def _extract_proper_name_candidates(text: str) -> set[str]:
     """Extract candidate proper names (destinations, places, quoted names)."""
     candidates: set[str] = set()
@@ -746,6 +822,7 @@ def assess_semantic_support(
     support_texts: Sequence[str],
     *,
     allowed_context_terms: Sequence[str] = (),
+    prepared_context: PreparedSemanticContext | None = None,
 ) -> SemanticSupportSignals:
     """Assess semantic overlap and risk-based factual novelty between claim and supports."""
     if not claim_text.strip():
@@ -757,6 +834,8 @@ def assess_semantic_support(
             unmatched_proper_names=(),
             blocking_proper_names=(),
         )
+
+    context = prepared_context or prepare_semantic_context(allowed_context_terms)
 
     # 1. Prepare support tokens and stems
     support_stems: set[str] = set()
@@ -771,17 +850,6 @@ def assess_semantic_support(
             if len(tok) >= 2 and tok not in _STOPWORDS:
                 support_tokens_lower.add(tok)
                 support_stems.add(stem_word(tok))
-
-    context_tokens_lower: set[str] = set()
-    context_stems: set[str] = set()
-    for act in allowed_context_terms:
-        if not act:
-            continue
-        cleaned_act = act.lower().replace("ё", "е")
-        for tok in _TOKEN_RE.findall(cleaned_act):
-            if len(tok) >= 2 and tok not in _STOPWORDS:
-                context_tokens_lower.add(tok)
-                context_stems.add(stem_word(tok))
 
     claim_concepts = canonical_semantic_concepts(claim_text)
     diff_concepts = claim_concepts - support_concepts
@@ -800,8 +868,8 @@ def assess_semantic_support(
             or any(_stems_match(pn_stem, s_stem) for s_stem in support_stems)
             or any(pn in st.lower().replace("ё", "е") for st in support_texts)
             or (pn_concept.startswith("concept:") and pn_concept in support_concepts)
-            or pn in context_tokens_lower
-            or any(_stems_match(pn_stem, c_stem) for c_stem in context_stems)
+            or pn in context.tokens_lower
+            or context.matches_stem(pn_stem)
             or pn in _EDITORIAL_GLUE
             or pn_stem in _EDITORIAL_GLUE
         )
@@ -865,8 +933,8 @@ def assess_semantic_support(
             or any(_stems_match(stem, s_stem) for s_stem in support_stems)
             or (tok_concept.startswith("concept:") and tok_concept in support_concepts)
             or (has_quantity_100 and tok in quantity_100_tokens)
-            or tok in context_tokens_lower
-            or any(_stems_match(stem, c_stem) for c_stem in context_stems)
+            or tok in context.tokens_lower
+            or context.matches_stem(stem)
         )
         if matched:
             matched_count += 1

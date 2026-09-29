@@ -15,6 +15,7 @@ from src.publication.article_claims import (
 from src.publication.article_context import ArticleSupport
 from src.publication.article_semantic_support import (
     _STOPWORDS,
+    PreparedSemanticContext,
     assess_semantic_support,
 )
 
@@ -62,6 +63,7 @@ def assess_claim_against_supports(
     *,
     min_content_coverage: float = 0.50,
     allowed_context_terms: Sequence[str] = (),
+    prepared_context: PreparedSemanticContext | None = None,
     all_known_draft_supports: Sequence[str] = (),
     direct_quote_allowlist: Sequence[str] | None = None,
 ) -> ClaimSupportAssessment:
@@ -92,6 +94,7 @@ def assess_claim_against_supports(
         claim_text,
         support_texts,
         allowed_context_terms=allowed_context_terms,
+        prepared_context=prepared_context,
     )
 
     unsupported_scope_phrases = (

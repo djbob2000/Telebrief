@@ -26,7 +26,10 @@ from src.publication.article_models import (
     _split_sentences_safe,
 )
 from src.publication.article_semantic_lexicon import canonical_semantic_concepts
-from src.publication.article_semantic_support import assess_semantic_support
+from src.publication.article_semantic_support import (
+    assess_semantic_support,
+    prepare_semantic_context,
+)
 
 _INTERNAL_HANDLE_PATTERN = re.compile(
     r"\[(?:story:\d+:evidence:\d+:frag:\d+|story:\d+|evidence:\d+:frag:\d+|op:[^\]]+|SUPPORT\s+[^\]]+)\]",
@@ -996,6 +999,7 @@ def validate_article_draft(
     allowed_edition_terms = tuple(
         set(context.edition_anchor_terms) | all_edition_tokens | window_terms
     )
+    prepared_edition_context = prepare_semantic_context(allowed_edition_terms)
 
     for s_idx, sec in enumerate(draft.sections, start=1):
         h_id = f"H{s_idx:03d}"
@@ -1368,6 +1372,7 @@ def validate_article_draft(
                     c_supports,
                     min_content_coverage=config.article_claim_min_content_coverage,
                     allowed_context_terms=allowed_context_terms,
+                    prepared_context=prepared_edition_context,
                     all_known_draft_supports=all_edition_support_texts,
                     direct_quote_allowlist=quote_allowlist,
                 )
@@ -1552,6 +1557,7 @@ def validate_article_draft(
                 unit_text,
                 semantic_supports,
                 allowed_context_terms=unit_context_terms,
+                prepared_context=prepared_edition_context,
             )
             if unit_semantic.blocking_proper_names:
                 issues.append(

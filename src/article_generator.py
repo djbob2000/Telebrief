@@ -8,6 +8,7 @@ import json
 import logging
 import re
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
@@ -1571,9 +1572,11 @@ class ArticleGenerator:
                 ArticleCoverageDiagnostics,
                 ArticleReaderQualityReport,
             ]:
+                evaluation_started = perf_counter()
                 raw_parsed = self._parse_event_article_response(raw_response)
                 parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
                 draft = StructuredArticleDraft.from_dict(parsed, quote_allowlist=quote_allowlist)
+                validation_started = perf_counter()
                 validation = validate_article_draft(
                     draft,
                     article_ctx,
@@ -1581,18 +1584,31 @@ class ArticleGenerator:
                     length_profile=length_profile,
                     material_projection=material_projection,
                 )
+                validation_elapsed = perf_counter() - validation_started
+                coverage_started = perf_counter()
                 diagnostics = diagnose_article_coverage(
                     draft,
                     coverage_plan,
                     context=article_ctx,
                     excluded_story_ids=material_projection.suppressed_story_ids,
                 )
+                coverage_elapsed = perf_counter() - coverage_started
+                quality_started = perf_counter()
                 quality = diagnose_article_quality(
                     draft,
                     coverage_plan,
                     article_ctx,
                     material_projection=material_projection,
                     place_resolver=place_resolver,
+                )
+                quality_elapsed = perf_counter() - quality_started
+                self.logger.info(
+                    "Article writer evaluation timings: evidence_validation=%.2fs "
+                    "coverage=%.2fs quality=%.2fs total=%.2fs",
+                    validation_elapsed,
+                    coverage_elapsed,
+                    quality_elapsed,
+                    perf_counter() - evaluation_started,
                 )
                 return draft, validation, diagnostics, quality
 
