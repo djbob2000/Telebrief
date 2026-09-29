@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Literal, NoReturn, cast
 
@@ -30,6 +31,7 @@ _RELATIONS = {
     "practical_consequence",
     "independent",
 }
+logger = logging.getLogger(__name__)
 
 
 class DuplicateArticleStoryAssignmentError(PublicationGenerationError):
@@ -251,6 +253,7 @@ def parse_article_editorial_brief(
         context=context,
         material_projection=material_projection,
     )
+    citable_story_ids = set(owners.values())
 
     lines_raw = root.get("lines")
     if not isinstance(lines_raw, list):
@@ -259,6 +262,53 @@ def parse_article_editorial_brief(
     lines: list[ArticleBriefLine] = []
     lines_by_id: dict[str, ArticleBriefLine] = {}
     story_to_line: dict[str, str] = {}
+    retained_citable_story_keys: set[str] = set()
+
+    def retain_as_brief(story_id: str) -> tuple[str, ArticleDepth]:
+        story_key = story_key_by_id.get(story_id)
+        if story_key is None:
+            _input_fail("citable coverage Story has no planner reference key")
+        existing_line_id = story_to_line.get(story_id)
+        if existing_line_id is not None:
+            return existing_line_id, lines_by_id[existing_line_id].depth
+
+        support_ids = tuple(
+            support_id
+            for support_id, owner_story_id in owners.items()
+            if owner_story_id == story_id
+        )
+        support_keys = tuple(
+            support_key_by_id[support_id]
+            for support_id in support_ids
+            if support_id in support_key_by_id
+        )
+        if not support_ids or len(support_keys) != len(support_ids):
+            _input_fail("citable coverage Story has incomplete planner support references")
+
+        base_line_id = f"brief-{story_key.casefold()}"
+        line_id = base_line_id
+        suffix = 2
+        while line_id in lines_by_id:
+            line_id = f"{base_line_id}-{suffix}"
+            suffix += 1
+        line = ArticleBriefLine(
+            line_id=line_id,
+            editorial_intent=(
+                "Retain this citable city-life detail briefly using only its listed support."
+            ),
+            depth="BRIEF",
+            story_ids=(story_id,),
+            support_ids=support_ids,
+            relation="independent",
+            salient_support_ids=(),
+            caveat_support_ids=(),
+        )
+        lines.append(line)
+        lines_by_id[line_id] = line
+        story_to_line[story_id] = line_id
+        retained_citable_story_keys.add(story_key)
+        return line_id, "BRIEF"
+
     for index, raw_line in enumerate(lines_raw):
         data = _mapping(raw_line, f"lines[{index}]")
         line_stories = _mapped_reference_tuple(
@@ -405,42 +455,23 @@ def parse_article_editorial_brief(
         if raw_depth == "OMIT":
             disposition_line_raw = data.get("line_id")
             reason_raw = data.get("reason_code")
-            if disposition_line_raw is not None:
-                _fail(
-                    f"omitted Story {story_id!r} must not have a line",
-                    repair_finding=(
-                        f"OMIT disposition for story_key {story_key_by_id.get(story_id, '<unknown>')} "
-                        "must not include line_id."
-                    ),
+            if story_id in citable_story_ids:
+                retained_line_id, retained_depth = retain_as_brief(story_id)
+                disposition = ArticleStoryDisposition(
+                    story_id,
+                    retained_depth,
+                    retained_line_id,
+                    None,
                 )
-            if not isinstance(reason_raw, str) or reason_raw not in _OMISSION_REASONS:
-                _fail(
-                    f"omitted Story {story_id!r} has invalid reason_code",
-                    repair_finding=(
-                        f"Use directory_only or no_citable_material as the reason_code for "
-                        f"OMIT story_key {story_key_by_id.get(story_id, '<unknown>')}."
-                    ),
-                )
-            reason = _omission_reason(reason_raw, f"dispositions[{index}].reason_code")
-            if story_id in owners.values():
-                _fail(
-                    f"Story {story_id!r} has citable projected material and cannot be omitted; "
-                    "assign it BRIEF, WEAVE, or DEVELOP",
-                    repair_finding=(
-                        f"story_key {story_key_by_id.get(story_id, '<unknown>')} has citable "
-                        "projected material and cannot be OMIT. Assign it BRIEF, WEAVE, or "
-                        "DEVELOP, add it to exactly one line, and cite its support_key."
-                    ),
-                )
-            if story_id in story_to_line:
-                _fail(
-                    f"omitted Story {story_id!r} appears in a narrative line",
-                    repair_finding=(
-                        f"story_key {story_key_by_id.get(story_id, '<unknown>')} is in a "
-                        "narrative line and cannot be OMIT. Give it the line's depth."
-                    ),
-                )
-            disposition = ArticleStoryDisposition(story_id, "OMIT", None, reason)
+            else:
+                if disposition_line_raw is not None:
+                    _fail(f"omitted Story {story_id!r} must not have a line")
+                if not isinstance(reason_raw, str) or reason_raw not in _OMISSION_REASONS:
+                    _fail(f"omitted Story {story_id!r} has invalid reason_code")
+                reason = _omission_reason(reason_raw, f"dispositions[{index}].reason_code")
+                if story_id in story_to_line:
+                    _fail(f"omitted Story {story_id!r} appears in a narrative line")
+                disposition = ArticleStoryDisposition(story_id, "OMIT", None, reason)
         elif raw_depth in _DEPTHS:
             disposition_depth = cast(Literal["DEVELOP", "WEAVE", "BRIEF"], raw_depth)
             disposition_line_raw = data.get("line_id")
@@ -487,6 +518,17 @@ def parse_article_editorial_brief(
         dispositions.append(disposition)
         dispositions_by_story[story_id] = disposition
 
+    missing_stories = known_stories - set(dispositions_by_story)
+    for story_id in sorted(missing_stories & citable_story_ids):
+        retained_line_id, retained_depth = retain_as_brief(story_id)
+        disposition = ArticleStoryDisposition(
+            story_id,
+            retained_depth,
+            retained_line_id,
+            None,
+        )
+        dispositions.append(disposition)
+        dispositions_by_story[story_id] = disposition
     missing_stories = known_stories - set(dispositions_by_story)
     if missing_stories:
         missing_keys = sorted(
@@ -547,6 +589,12 @@ def parse_article_editorial_brief(
                     "belongs to an omitted Story; choose support from a non-OMIT coverage Story."
                 ),
             )
+
+    if retained_citable_story_keys:
+        logger.warning(
+            "Article planner omitted citable Stories; retained as BRIEF (%s)",
+            len(retained_citable_story_keys),
+        )
 
     return ArticleEditorialBrief(
         central_line=central_line,
