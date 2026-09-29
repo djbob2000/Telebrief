@@ -311,6 +311,20 @@ def parse_article_editorial_brief(
 
     for index, raw_line in enumerate(lines_raw):
         data = _mapping(raw_line, f"lines[{index}]")
+        raw_story_keys = data.get("story_keys")
+        if isinstance(raw_story_keys, list) and all(
+            isinstance(key, str) and key.strip() for key in raw_story_keys
+        ):
+            seen_citable_story_ids: set[str] = set()
+            for raw_story_key in raw_story_keys:
+                story_id = reference_map.story_id_by_key.get(raw_story_key.strip())
+                if story_id is None or story_id not in citable_story_ids:
+                    continue
+                if story_id in seen_citable_story_ids:
+                    raise DuplicateArticleStoryAssignmentError(
+                        story_key_by_id.get(story_id, "<unknown>")
+                    )
+                seen_citable_story_ids.add(story_id)
         line_stories = _mapped_reference_tuple(
             data.get("story_keys"),
             f"lines[{index}].story_keys",
@@ -602,3 +616,335 @@ def parse_article_editorial_brief(
         lines=tuple(lines),
         dispositions=tuple(dispositions),
     )
+
+
+def normalize_duplicate_citable_story_assignment(
+    raw: str,
+    *,
+    story_key: str,
+    coverage_plan: ArticleCoveragePlan,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection,
+    reference_map: ArticlePlannerReferenceMap,
+) -> tuple[str, bool]:
+    """Repair one duplicate citable Story assignment without bypassing validation.
+
+    Only recognized, known aliases for the reported Story are changed. The
+    caller must pass the returned JSON through ``parse_article_editorial_brief``
+    again before using it.
+    """
+    story_id = reference_map.story_id_by_key.get(story_key)
+    if story_id is None:
+        return raw, False
+    known_story_ids = {story.story_id for story in coverage_plan.stories}
+    if story_id not in known_story_ids:
+        return raw, False
+    owners = _citable_support_owners(
+        coverage_story_ids=known_story_ids,
+        context=context,
+        material_projection=material_projection,
+    )
+    if story_id not in set(owners.values()):
+        return raw, False
+
+    try:
+        root_value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return raw, False
+    if not isinstance(root_value, dict):
+        return raw, False
+    root = cast(dict[str, object], root_value)
+    lines_value = root.get("lines")
+    if not isinstance(lines_value, list):
+        return raw, False
+    lines = cast(list[object], lines_value)
+    dispositions_value = root.get("dispositions")
+    dispositions = (
+        cast(list[object], dispositions_value) if isinstance(dispositions_value, list) else None
+    )
+
+    story_keys_by_id: dict[str, set[str]] = {}
+    for alias, mapped_story_id in reference_map.story_id_by_key.items():
+        story_keys_by_id.setdefault(mapped_story_id, set()).add(alias)
+    story_aliases = story_keys_by_id.get(story_id, set())
+    if not story_aliases:
+        return raw, False
+
+    # Work only with line objects whose story membership is structurally valid.
+    # If a target line is malformed, leave it for the ordinary strict repair path.
+    occurrences: list[tuple[int, dict[str, object], list[str]]] = []
+    for index, raw_line in enumerate(lines):
+        if not isinstance(raw_line, dict):
+            continue
+        line = cast(dict[str, object], raw_line)
+        raw_story_keys = line.get("story_keys")
+        if not isinstance(raw_story_keys, list):
+            continue
+        if not any(isinstance(key, str) and key.strip() in story_aliases for key in raw_story_keys):
+            continue
+        if not all(isinstance(key, str) and key.strip() for key in raw_story_keys):
+            return raw, False
+        raw_support_keys = line.get("support_keys")
+        if (
+            not isinstance(raw_support_keys, list)
+            or not raw_support_keys
+            or not all(isinstance(key, str) and key.strip() for key in raw_support_keys)
+        ):
+            return raw, False
+        for optional_field in ("salient_support_keys", "caveat_support_keys"):
+            optional_value = line.get(optional_field)
+            if optional_field in line and (
+                not isinstance(optional_value, list)
+                or not all(isinstance(key, str) and key.strip() for key in optional_value)
+            ):
+                return raw, False
+        occurrences.append((index, line, [key.strip() for key in raw_story_keys]))
+
+    if not occurrences:
+        return raw, False
+    if (
+        not any(
+            len([key for key in story_keys if key in story_aliases]) > 1
+            for _, _, story_keys in occurrences
+        )
+        and len(occurrences) < 2
+    ):
+        return raw, False
+
+    original_line_content = {
+        index: {
+            "story_keys": list(cast(list[str], line["story_keys"])),
+            "support_keys": list(cast(list[str], line["support_keys"])),
+            "salient_support_keys": list(cast(list[str], line.get("salient_support_keys", []))),
+            "caveat_support_keys": list(cast(list[str], line.get("caveat_support_keys", []))),
+        }
+        for index, line, _ in occurrences
+    }
+    # A single valid non-OMIT disposition selects a canonical occurrence only
+    # when its line_id identifies exactly one of the Story's line occurrences.
+    matching_dispositions: list[tuple[int, dict[str, object]]] = []
+    if dispositions is not None:
+        for index, raw_disposition in enumerate(dispositions):
+            if not isinstance(raw_disposition, dict):
+                continue
+            disposition = cast(dict[str, object], raw_disposition)
+            disposition_key = disposition.get("story_key")
+            if isinstance(disposition_key, str) and disposition_key.strip() in story_aliases:
+                matching_dispositions.append((index, disposition))
+
+    canonical_index: int | None = None
+    canonical_line: dict[str, object] | None = None
+    canonical_line_id: str | None = None
+    canonical_depth: str | None = None
+    if len(matching_dispositions) == 1:
+        _, disposition = matching_dispositions[0]
+        disposition_line_id = disposition.get("line_id")
+        depth = disposition.get("depth")
+        if (
+            isinstance(depth, str)
+            and depth in _DEPTHS
+            and disposition.get("reason_code") is None
+            and isinstance(disposition_line_id, str)
+            and disposition_line_id.strip()
+            and disposition_line_id == disposition_line_id.strip()
+        ):
+            matching_occurrences = [
+                (index, line)
+                for index, line, _ in occurrences
+                if line.get("line_id") == disposition_line_id
+                and line.get("line_id") == disposition_line_id.strip()
+            ]
+            if len(matching_occurrences) == 1:
+                canonical_index, canonical_line = matching_occurrences[0]
+                canonical_line_id = disposition_line_id
+                canonical_depth = cast(str, canonical_line.get("depth"))
+                if canonical_depth not in _DEPTHS:
+                    canonical_index = None
+                    canonical_line = None
+                    canonical_line_id = None
+                    canonical_depth = None
+
+    support_alias_story_owner = {
+        alias: owners.get(support_id)
+        for alias, support_id in reference_map.support_id_by_key.items()
+    }
+    removed_support_aliases_by_index: dict[int, set[str]] = {}
+    moved_salient: list[str] = []
+    moved_caveats: list[str] = []
+
+    # Determine a target Story's citable support aliases that were already
+    # cited, and move only those aliases from non-canonical duplicate lines.
+    if canonical_line is not None and canonical_index is not None:
+        canonical_supports = cast(list[str], canonical_line["support_keys"])
+        for index, line, _ in occurrences:
+            if index == canonical_index:
+                continue
+            supports = cast(list[str], line["support_keys"])
+            moved_aliases = {
+                key.strip()
+                for key in supports
+                if support_alias_story_owner.get(key.strip()) == story_id
+            }
+            if not moved_aliases:
+                continue
+            removed_support_aliases_by_index[index] = moved_aliases
+            canonical_supports.extend(
+                key
+                for key in supports
+                if key.strip() in moved_aliases
+                and key.strip() not in {existing.strip() for existing in canonical_supports}
+            )
+            for field, target in (
+                ("salient_support_keys", moved_salient),
+                ("caveat_support_keys", moved_caveats),
+            ):
+                hints = cast(list[str], line.get(field, []))
+                target.extend(
+                    key
+                    for key in hints
+                    if key.strip() in moved_aliases
+                    and key.strip() not in {item.strip() for item in target}
+                )
+
+        for field, moved in (
+            ("salient_support_keys", moved_salient),
+            ("caveat_support_keys", moved_caveats),
+        ):
+            existing = cast(list[str], canonical_line.get(field, []))
+            cited = {key.strip() for key in canonical_supports}
+            existing.extend(
+                key
+                for key in moved
+                if key.strip() in cited and key.strip() not in {item.strip() for item in existing}
+            )
+            if field in canonical_line or moved:
+                canonical_line[field] = existing
+
+    for index, line, _raw_story_keys in occurrences:
+        original_story_keys = cast(list[str], line["story_keys"])
+        kept_story_keys = [key for key in original_story_keys if key.strip() not in story_aliases]
+        if index == canonical_index:
+            first_target_key = next(
+                key for key in original_story_keys if key.strip() in story_aliases
+            )
+            line["story_keys"] = [
+                first_target_key if key.strip() in story_aliases else key
+                for key in original_story_keys
+                if key.strip() not in story_aliases or key == first_target_key
+            ]
+        else:
+            line["story_keys"] = kept_story_keys
+            removed_supports = removed_support_aliases_by_index.get(index, set())
+            line["support_keys"] = [
+                key
+                for key in cast(list[str], line["support_keys"])
+                if key.strip() not in removed_supports
+            ]
+            for field in ("salient_support_keys", "caveat_support_keys"):
+                if field in line:
+                    hints = cast(list[str], line[field])
+                    line[field] = [key for key in hints if key.strip() not in removed_supports]
+
+    if canonical_index is None:
+        # Without a unique valid disposition, let the parser's established
+        # missing-citable-Story path recreate one BRIEF with every citable support.
+        for _index, line, _ in occurrences:
+            line["support_keys"] = [
+                key
+                for key in cast(list[str], line["support_keys"])
+                if support_alias_story_owner.get(key.strip()) != story_id
+            ]
+            for field in ("salient_support_keys", "caveat_support_keys"):
+                if field in line:
+                    line[field] = [
+                        key
+                        for key in cast(list[str], line[field])
+                        if support_alias_story_owner.get(key.strip()) != story_id
+                    ]
+        if dispositions is not None:
+            root["dispositions"] = [
+                raw_disposition
+                for raw_disposition in dispositions
+                if not (
+                    isinstance(raw_disposition, dict)
+                    and isinstance(raw_disposition.get("story_key"), str)
+                    and raw_disposition["story_key"].strip() in story_aliases
+                )
+            ]
+    elif dispositions is not None:
+        disposition_index, disposition = matching_dispositions[0]
+        disposition["line_id"] = canonical_line_id
+        disposition["depth"] = canonical_depth
+        disposition["reason_code"] = None
+        dispositions[disposition_index] = disposition
+
+    safe_to_drop_indices: set[int] = set()
+    allowed_fields = {
+        "line_id",
+        "editorial_intent",
+        "depth",
+        "relation",
+        "story_keys",
+        "support_keys",
+        "salient_support_keys",
+        "caveat_support_keys",
+    }
+    for index, line, _ in occurrences:
+        original = original_line_content[index]
+        original_supports = original["support_keys"]
+        line_id = line.get("line_id")
+        editorial_intent = line.get("editorial_intent")
+        line_depth = line.get("depth")
+        relation = line.get("relation")
+        line_id_is_unique = (
+            isinstance(line_id, str)
+            and bool(line_id.strip())
+            and sum(
+                1
+                for other_line in lines
+                if isinstance(other_line, dict)
+                and isinstance(other_line.get("line_id"), str)
+                and other_line["line_id"].strip() == line_id.strip()
+            )
+            == 1
+        )
+        metadata_is_valid = (
+            line_id_is_unique
+            and isinstance(editorial_intent, str)
+            and bool(editorial_intent.strip())
+            and isinstance(line_depth, str)
+            and line_depth in _DEPTHS
+            and isinstance(relation, str)
+            and relation in _RELATIONS
+        )
+        original_hints_valid = all(
+            key.strip() in {support_key.strip() for support_key in original_supports}
+            and support_alias_story_owner.get(key.strip()) == story_id
+            for field in ("salient_support_keys", "caveat_support_keys")
+            for key in original[field]
+        )
+        originally_only_target = (
+            all(key.strip() in story_aliases for key in original["story_keys"])
+            and bool(original_supports)
+            and all(
+                support_alias_story_owner.get(key.strip()) == story_id for key in original_supports
+            )
+            and original_hints_valid
+            and metadata_is_valid
+            and set(line).issubset(allowed_fields)
+        )
+        if (
+            index != canonical_index
+            and originally_only_target
+            and not cast(list[str], line["story_keys"])
+            and not cast(list[str], line["support_keys"])
+            and not cast(list[str], line.get("salient_support_keys", []))
+            and not cast(list[str], line.get("caveat_support_keys", []))
+        ):
+            safe_to_drop_indices.add(index)
+
+    if safe_to_drop_indices:
+        root["lines"] = [
+            line for index, line in enumerate(lines) if index not in safe_to_drop_indices
+        ]
+    return json.dumps(root, ensure_ascii=False, separators=(",", ":")), True

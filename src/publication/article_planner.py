@@ -18,6 +18,7 @@ from src.publication.article_brief import (
     ArticleEditorialBrief,
     ArticlePlannerReferenceMap,
     DuplicateArticleStoryAssignmentError,
+    normalize_duplicate_citable_story_assignment,
     parse_article_editorial_brief,
 )
 from src.publication.article_context import ArticleEditorialContext, _support_framing
@@ -637,6 +638,7 @@ class ArticleEditorialPlanner:
         attempt_id = 0
         planner_model_call_count = 0
         planner_validation_repair_used = False
+        planner_duplicate_assignment_normalization_count = 0
         if attempt_observer is not None:
             attempt_id = await attempt_observer.attempt_started(
                 "article_planner",
@@ -676,8 +678,57 @@ class ArticleEditorialPlanner:
                 except ArticleBriefInputInvariantError:
                     raise
                 except PublicationGenerationError as exc:
+                    validation_error = exc
+                    normalized_brief: ArticleEditorialBrief | None = None
+                    while isinstance(validation_error, DuplicateArticleStoryAssignmentError):
+                        normalized_text, normalized = normalize_duplicate_citable_story_assignment(
+                            raw_text,
+                            story_key=validation_error.story_key,
+                            coverage_plan=coverage_plan,
+                            context=context,
+                            material_projection=material_projection,
+                            reference_map=reference_map,
+                        )
+                        if not normalized:
+                            break
+                        planner_duplicate_assignment_normalization_count += 1
+                        logger.warning(
+                            "Article planner normalized duplicate citable Story assignment for %s",
+                            validation_error.story_key,
+                        )
+                        raw_text = normalized_text
+                        # A no-canonical fallback intentionally removes this
+                        # Story's raw line aliases so strict parsing can restore
+                        # all of its citable supports as BRIEF. Keep the repair
+                        # retention baseline aligned with the normalized JSON;
+                        # central and non-target citations remain present.
+                        required_support_keys = _cited_known_support_keys(
+                            raw_text,
+                            reference_map,
+                        )
+                        try:
+                            normalized_brief = parse_article_editorial_brief(
+                                raw_text,
+                                coverage_plan=coverage_plan,
+                                context=context,
+                                material_projection=material_projection,
+                                reference_map=reference_map,
+                            )
+                        except ArticleBriefInputInvariantError:
+                            raise
+                        except PublicationGenerationError as normalized_error:
+                            validation_error = normalized_error
+                            continue
+                        else:
+                            break
+                    if normalized_brief is not None:
+                        brief = normalized_brief
+                        break
                     if repair_number >= _MAX_ARTICLE_PLANNER_VALIDATION_REPAIRS:
-                        raise
+                        if validation_error is exc:
+                            raise
+                        raise validation_error from exc
+                    exc = validation_error
                     planner_validation_repair_used = True
                     logger.warning(
                         "Article planner response failed validation (%s); requesting repair %s/%s",
@@ -759,6 +810,9 @@ class ArticleEditorialPlanner:
                     metadata={
                         "planner_model_call_count": planner_model_call_count,
                         "planner_validation_repair_used": planner_validation_repair_used,
+                        "planner_duplicate_assignment_normalization_count": (
+                            planner_duplicate_assignment_normalization_count
+                        ),
                     },
                 )
             return brief
@@ -780,6 +834,9 @@ class ArticleEditorialPlanner:
                     metadata={
                         "planner_model_call_count": planner_model_call_count,
                         "planner_validation_repair_used": planner_validation_repair_used,
+                        "planner_duplicate_assignment_normalization_count": (
+                            planner_duplicate_assignment_normalization_count
+                        ),
                     },
                 )
             if isinstance(exc, PublicationGenerationError):
