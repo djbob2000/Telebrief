@@ -29,10 +29,13 @@ class ArticleStoryGeography:
     area_id: str | None = None
     area_name: str | None = None
     place_names: tuple[str, ...] = ()
+    distinct_area_focus: tuple[str, ...] = ()
     ambiguous: bool = False
 
     @property
     def focus(self) -> str | None:
+        if self.distinct_area_focus:
+            return "separate areas (not one district): " + "; ".join(self.distinct_area_focus)
         if self.ambiguous:
             return None
         if self.area_name and self.place_names:
@@ -92,16 +95,13 @@ def resolve_article_place_area_map(
 
     result: dict[str, set[str]] = {}
     for entity in entities:
-        if entity.kind != "place" or not entity.canonical_name or entity.confidence != "high":
+        if (
+            entity.kind not in {"place", "area"}
+            or not entity.canonical_name
+            or entity.confidence != "high"
+        ):
             continue
-        area_keys = {
-            f"municipal:{area.area_id}"
-            for area in entity.municipal_areas
-            if area.confidence == "high" and area.area_id
-        }
-        area_keys.update(
-            f"colloquial:{area_id}" for area_id in entity.colloquial_area_ids if area_id
-        )
+        area_keys = set(resolver.geographic_area_group_keys(entity))
         if area_keys:
             place_key = entity.canonical_name.casefold().replace("ё", "е")
             result.setdefault(place_key, set()).update(area_keys)
@@ -125,6 +125,7 @@ def resolve_article_place_names(
         "boulevard",
         "prospect",
         "highway",
+        "landmark",
         "district",
         "neighborhood",
         "settlement",
@@ -177,6 +178,7 @@ def build_article_story_geography_map(
         colloquial_ids: set[str] = set()
         colloquial_names: dict[str, str] = {}
         place_names: dict[str, str] = {}
+        area_focus_names: dict[str, set[str]] = {}
         has_ambiguous_place = False
         has_citywide_scope = False
         for text in texts:
@@ -193,21 +195,55 @@ def build_article_story_geography_map(
                     colloquial_ids.update(entity.colloquial_area_ids)
                     for area_id in entity.colloquial_area_ids:
                         colloquial_names[area_id] = entity.canonical_name
+                        parent = resolver.local_area_parent(area_id)
+                        if parent:
+                            parent_id, parent_name = parent
+                            area_candidates[parent_id] = parent_name
                 elif entity.kind == "place":
                     if entity.confidence == "high":
                         for area in entity.municipal_areas:
                             if area.confidence == "high":
                                 area_candidates[area.area_id] = area.area_name
+                                area_focus_names.setdefault(f"municipal:{area.area_id}", set()).add(
+                                    entity.canonical_name
+                                )
                     colloquial_ids.update(entity.colloquial_area_ids)
                     for area_id in entity.colloquial_area_ids:
                         colloquial_names[area_id] = entity.canonical_name
+                        area_focus_names.setdefault(f"colloquial:{area_id}", set()).add(
+                            entity.canonical_name
+                        )
+                        parent = resolver.local_area_parent(area_id)
+                        if parent:
+                            parent_id, parent_name = parent
+                            area_candidates[parent_id] = parent_name
+                            area_focus_names.setdefault(f"municipal:{parent_id}", set()).add(
+                                entity.canonical_name
+                            )
+
+        distinct_area_focus = tuple(
+            f"{area_name} ({', '.join(sorted(area_focus_names.get(f'municipal:{area_id}', ())))})"
+            if area_focus_names.get(f"municipal:{area_id}")
+            else area_name
+            for area_id, area_name in sorted(area_candidates.items())
+        )
+        distinct_area_focus += tuple(
+            f"{colloquial_names[area_id]} ({', '.join(sorted(area_focus_names.get(f'colloquial:{area_id}', ())))})"
+            for area_id in sorted(colloquial_ids)
+            if area_id in colloquial_names
+            and f"colloquial:{area_id}" in area_focus_names
+            and resolver.local_area_parent(area_id) is None
+        )
+        if len(distinct_area_focus) < 2:
+            distinct_area_focus = ()
 
         if has_citywide_scope and (area_candidates or place_names or colloquial_ids):
             result[story_id] = ArticleStoryGeography(
                 place_names=tuple(sorted(place_names.values())),
+                distinct_area_focus=distinct_area_focus,
                 ambiguous=True,
             )
-        elif len(area_candidates) == 1:
+        elif len(area_candidates) == 1 and not has_ambiguous_place:
             area_id, area_name = next(iter(area_candidates.items()))
             result[story_id] = ArticleStoryGeography(
                 group_key=f"municipal:{area_id}",
@@ -216,12 +252,14 @@ def build_article_story_geography_map(
                 place_names=tuple(sorted(place_names.values())),
             )
         elif len(area_candidates) > 1:
-            # A city-wide Story must not be pulled into an arbitrary local chapter.
+            # Preserve each verified place-to-area mapping for the writer; an
+            # ambiguous Story must never be described as belonging to one area.
             result[story_id] = ArticleStoryGeography(
                 place_names=tuple(sorted(place_names.values())),
+                distinct_area_focus=distinct_area_focus,
                 ambiguous=True,
             )
-        elif len(colloquial_ids) == 1:
+        elif len(colloquial_ids) == 1 and not area_candidates and not has_ambiguous_place:
             colloquial_id = next(iter(colloquial_ids))
             result[story_id] = ArticleStoryGeography(
                 group_key=f"colloquial:{colloquial_id}",
@@ -240,6 +278,7 @@ def build_article_story_geography_map(
         else:
             result[story_id] = ArticleStoryGeography(
                 place_names=tuple(sorted(place_names.values())),
+                distinct_area_focus=distinct_area_focus,
                 ambiguous=bool(place_names or colloquial_ids),
             )
     return result

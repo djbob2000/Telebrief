@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from src.publication.article_length import ArticleLengthProfile
 
-ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v11"
+ARTICLE_NARRATIVE_PROMPT_VERSION = "event-article-narrative-v12"
 DIGEST_NARRATIVE_PROMPT_VERSION = "event-digest-narrative-v7-composition"
 
 
@@ -41,6 +41,8 @@ def build_article_narrative_contract(
 - Title and Lead must cite active PUBLISH support IDs with CURRENT_WINDOW temporal role from the main lead/DEVELOP storylines. Keep the title about the current reporting window: do not cite or restate HISTORICAL_CONTEXT material there. Historical context may appear in the lead only when it is paired with current-window evidence and explicitly framed as continuing or changed.
 - A single natural paragraph may combine several independently supported claims when they form one coherent narrative thought.
 - Keep each paragraph on one service domain: electricity supply / power-grid operations and fiber / home internet are distinct topics. Start a new paragraph and place it in the matching section when the domain changes; a transition such as “при этом” does not make unrelated services one subject.
+- Keep geographic scope explicit: “private sector” is a housing type, not a district. If the cited report does not identify a neighborhood or street, say that its district was not specified; never borrow a location from a nearby report.
+- Keep profile-mapped places attached to their own areas. Do not place an observation about one landmark or street inside another district's description unless the profile maps them to the same area. When several streets belong to one named neighborhood, introduce that neighborhood first, then explain the street-level differences and chronology.
 - Group related supports into a cohesive narrative section under an intuitive thematic heading.
 - Section headings are thematic titles and do not require claim atoms unless they contain concrete numbers, dates, or prices.
 - Do not mechanically generate one sentence per support. Synthesize related observations into natural, flowing prose.
@@ -89,7 +91,7 @@ def build_article_narrative_contract(
 - Attribution discipline: Group repeated observations sharing the same epistemic status under a single natural attribution. Vary sentence openings and avoid mechanically repeating identical attribution phrases at the start of every sentence.
 - Transitions: Neutral connective phrases (e.g. "meanwhile", "at the same time", "against this background") are permitted only when they connect verified observations without asserting unsupported causal links.
 - Direct quotes & resident voice integration:
-  * Quotation marks («...») mean exact primary-source wording and MUST be used ONLY when quoting the EXACT primary-source words verbatim from `source=...`.
+  * Quotation marks around a spoken phrase mark an exact primary-source quote and MUST be used ONLY for the EXACT primary-source wording from `source=...`. Typographic quotation marks around a supported commercial or organization name are name styling, not direct speech, and are allowed when the source identifies that name.
   * NEVER translate or grammar-correct text inside quotation marks, normalize grammar, shorten, or merge words inside a direct quotation.
   * If you need Russian translation, correction, or compression, remove quotation marks and write indirect speech.
   * No quotation dumps or chat rolls: NEVER string together consecutive direct quotes separated by commas or dashes (e.g. «Quote 1», «Quote 2», «Quote 3» — such reports...). Consecutive quotation dumps destroy narrative flow and read like uncurated chat logs.
@@ -108,8 +110,9 @@ def build_article_narrative_contract(
 - Proportion & length: Do not pad a thin day to reach an arbitrary length. State supported facts concisely without fluff. On rich days, develop major storylines thoroughly across sections without repeating facts.{target_str}
 - Logical clarity and natural precision:
   * Distinguish technical infrastructure from human actions cleanly (e.g. do not produce awkward compression like «делятся интернетом через оптоволокно» — write naturally: «подключают оптоволокно (GPON) и делятся Wi-Fi с соседями» or «раздают интернет по Wi-Fi»). Keep technical mechanisms and social actions logically accurate.
-  * Brand and service naming: Always enclose commercial brands and courier services in quotation marks with an explanatory noun (e.g. write «служба доставки „+7“», «маркетплейс „Озон“», never bare digits like «+7» or «Доставка (+7)»).
+  * Brand and service naming: Enclose a source-supported commercial name in Russian typographic quotation marks and use an explanatory noun where needed (e.g. провайдер «+7Телеком», маркетплейс «Озон»). Do not leave a brand as an unexplained word or digit string. Do not expand a shorthand to a longer brand unless the cited source supports the full name.
   * Relocation services and external geography: When describing assistance centers, administrative services, or cultural events outside the edition city, state the host city before the street address; never cite an external street without its host city name.
+- Final language pass: Before returning the article, proofread Russian agreement, case government, sentence structure, punctuation, typographic quotation marks for supported names, and the connection between each place and its district. Correct awkward or ungrammatical wording without changing the facts, source attribution, uncertainty, dates, numbers, or geographic precision.
 - Strict boundaries: No metaphors, sensationalism, clickbait, emotional exaggerations, invented mechanisms, or speculative interpretations.
 
 

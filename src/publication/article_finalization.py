@@ -365,7 +365,7 @@ def _compact_quality_value(value: Any) -> dict[str, Any] | None:
     compact: dict[str, Any] = {
         "version": value.get("version")
         if isinstance(value.get("version"), str)
-        else "article-reader-quality-v5",
+        else "article-reader-quality-v6",
         "finding_count": value.get("finding_count", len(compact_findings)),
         "needs_edit": bool(value.get("needs_edit", False)),
         "counts_by_severity": value.get("counts_by_severity", {}),
@@ -562,7 +562,7 @@ def _quality_rejection_metadata(
     ]
     metadata: dict[str, Any] = {
         "stage": "post_finalization_quality",
-        "quality_version": "article-reader-quality-v5",
+        "quality_version": "article-reader-quality-v6",
         "quality_before_edit": (
             _compact_quality_metadata(quality_report_before_edit)
             if quality_report_before_edit is not None

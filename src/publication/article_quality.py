@@ -26,9 +26,9 @@ QualitySeverity = Literal["repair", "warning", "blocking"]
 logger = logging.getLogger(__name__)
 
 # These findings describe article topology that cannot be repaired safely by
-# replacing one paragraph. The generator routes the repair-only grouping codes
-# through a full recomposition; unresolved items are rejected only when their
-# severity is blocking.
+# replacing one paragraph. ArticleEditor does not target them; finalization
+# rejects unresolved blocking findings and records repair-level findings for
+# observability.
 ARTICLE_WHOLE_DRAFT_FINDING_CODES = frozenset(
     {
         "REPEATED_CENTRAL_THESIS",
@@ -38,11 +38,29 @@ ARTICLE_WHOLE_DRAFT_FINDING_CODES = frozenset(
         "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION",
     }
 )
-ARTICLE_WHOLE_DRAFT_RECOMPOSITION_REPAIR_CODES = frozenset(
-    {"THEME_MISMATCHED_SECTION", "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION"}
-)
-
 _QUOTE_RE = re.compile(r"[«“\"]([^»”\"]{1,240})[»”\"]")
+_PRIVATE_SECTOR_RE = re.compile(r"\b(?:частн\w*|приватн\w*)\s+сектор\w*\b", re.IGNORECASE)
+_PRIVATE_SECTOR_LOCATION_UNCLEAR_RE = re.compile(
+    r"(?:район|часть\s+города|место|участок).{0,35}\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*|известен)\b|"
+    r"\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*)\s+(?:район|часть\s+города|место|участок)\b|"
+    r"\bисточник\w*.{0,30}\bне\s+(?:указал\w*|уточнил\w*|назвал\w*)\s+(?:район|место|участок)\b",
+    re.IGNORECASE,
+)
+_CONNECTIVITY_CONTEXT_RE = re.compile(
+    r"(?:интернет\w*|оптоволокн\w*|связ\w*|провайдер\w*|wi[ -]?fi)", re.IGNORECASE
+)
+_EXPLICIT_SEPARATE_REPORT_RE = re.compile(
+    r"\b(?:отдельн\w*\s+(?:сообщени\w*|сигнал\w*|наблюдени\w*)|"
+    r"в\s+отдельн\w*\s+(?:сообщени\w*|сигнал\w*|наблюдени\w*))\b",
+    re.IGNORECASE,
+)
+_TRAILING_INCOMPLETE_QUANTITY_RE = re.compile(
+    r"\b(?:не\s+менее|не\s+более|более|менее|около|примерно|порядка)\s+"
+    r"(?:\d+(?:[.,]\d+)?|ноля|одного|одной|одно|двух|две|тр[её]х|четыр[её]х|"
+    r"пяти|шести|семи|восьми|девяти|десяти|одиннадцати|двенадцати|нескольких)"
+    r"\s*[.!?…]?\s*$",
+    re.IGNORECASE,
+)
 _STREET_RE = re.compile(
     r"(?:улиц[аеы]|ул\.?|проспект[ае]?|просп\.?|переулк[ае]?|пер\.?|район[ае]?)\s+([а-яёa-z0-9-]+)",
     re.IGNORECASE,
@@ -240,7 +258,7 @@ class ArticleReaderQualityReport:
         for finding in self.findings:
             by_code[finding.code] = by_code.get(finding.code, 0) + 1
         return {
-            "version": "article-reader-quality-v5",
+            "version": "article-reader-quality-v6",
             "finding_count": len(self.findings),
             "needs_edit": self.needs_edit,
             "counts_by_severity": by_severity,
@@ -433,6 +451,128 @@ def _extract_place_keys(text: str, place_resolver: Any | None = None) -> set[str
         if place:
             matched_places.add(place)
     return matched_places
+
+
+def _resolved_entities(text: str, place_resolver: Any | None) -> tuple[Any, ...]:
+    if place_resolver is None or not text.strip():
+        return ()
+    try:
+        return tuple(place_resolver.resolve(text).entities)
+    except Exception:
+        return ()
+
+
+def _entity_text_spans(text: str, entity: Any) -> tuple[tuple[int, int], ...]:
+    """Find profile-resolved mentions in reader prose, allowing inflectional endings."""
+    terms = tuple(
+        dict.fromkeys(
+            value.strip()
+            for value in (
+                getattr(entity, "matched_text", ""),
+                getattr(entity, "canonical_name", ""),
+            )
+            if isinstance(value, str) and value.strip()
+        )
+    )
+    spans: set[tuple[int, int]] = set()
+    for term in terms:
+        tokens = re.split(r"\s+", term)
+        body = r"\s*".join(re.escape(token) for token in tokens)
+        if body and term[-1:].isalnum():
+            body += r"\w*"
+        pattern = re.compile(r"(?<!\w)" + body + r"(?!\w)", re.IGNORECASE)
+        spans.update((match.start(), match.end()) for match in pattern.finditer(text))
+    return tuple(sorted(spans))
+
+
+def _span_is_quoted_name(text: str, span: tuple[int, int]) -> bool:
+    start, end = span
+    before = text[:start].rstrip()
+    after = text[end:].lstrip()
+    return any(
+        before.endswith(opening) and after.startswith(closing)
+        for opening, closing in (("«", "»"), ("“", "”"), ('"', '"'), ("„", "“"))
+    )
+
+
+def _entity_position(text: str, entity: Any) -> int | None:
+    spans = _entity_text_spans(text, entity)
+    return min((start for start, _end in spans), default=None)
+
+
+def _entity_has_specific_area(entity: Any, place_resolver: Any) -> bool:
+    if getattr(entity, "confidence", "") != "high":
+        return False
+    if getattr(entity, "kind", "") == "area":
+        return bool(place_resolver.geographic_area_group_keys(entity))
+    if getattr(entity, "kind", "") != "place" or getattr(entity, "object_type", "") == "city":
+        return False
+    return bool(place_resolver.geographic_area_group_keys(entity))
+
+
+def _bare_plus7_brand_spans(text: str, entity_id: str) -> tuple[tuple[int, int], ...]:
+    """Recognize the edition-profile's +7 provider shorthand only in internet copy."""
+    if entity_id != "plus7telecom" or not _CONNECTIVITY_CONTEXT_RE.search(text):
+        return ()
+    return tuple(
+        (match.start(), match.end())
+        for match in re.finditer(r"(?<![\w+])\+7(?![\w\d])", text, re.IGNORECASE)
+    )
+
+
+def _supported_provider_mentions(
+    text: str,
+    support_ids: Sequence[str],
+    context: ArticleEditorialContext,
+    place_resolver: Any | None,
+) -> tuple[tuple[str, tuple[int, int]], ...]:
+    """Find provider-name spans grounded in this paragraph's cited supports."""
+    if place_resolver is None:
+        return ()
+    providers_by_id: dict[str, Any] = {}
+    for support_id in support_ids:
+        support = context.support_by_id.get(support_id)
+        if support is None:
+            continue
+        source_text = " ".join((support.text, support.source_text)).strip()
+        for entity in _resolved_entities(source_text, place_resolver):
+            if entity.kind == "provider":
+                providers_by_id.setdefault(entity.entity_id, entity)
+
+    prose_providers = {
+        entity.entity_id: entity
+        for entity in _resolved_entities(text, place_resolver)
+        if entity.kind == "provider"
+    }
+    mentions: set[tuple[str, tuple[int, int]]] = set()
+    for entity_id, source_entity in providers_by_id.items():
+        entity = prose_providers.get(entity_id, source_entity)
+        spans = set(_entity_text_spans(text, entity))
+        spans.update(_bare_plus7_brand_spans(text, entity_id))
+        mentions.update((entity_id, span) for span in spans)
+    return tuple(sorted(mentions))
+
+
+def _direct_quote_count(text: str, provider_mentions: Sequence[tuple[str, tuple[int, int]]]) -> int:
+    """Count quoted speech, excluding a supported brand name in typographic quotes."""
+    brand_spans = {
+        span for _entity_id, span in provider_mentions if _span_is_quoted_name(text, span)
+    }
+    return sum(1 for match in _QUOTE_RE.finditer(text) if match.span(1) not in brand_spans)
+
+
+def _has_specific_source_area(texts: Sequence[str], place_resolver: Any | None) -> bool:
+    return any(
+        _entity_has_specific_area(entity, place_resolver)
+        for text in texts
+        for entity in _resolved_entities(text, place_resolver)
+    )
+
+
+def _has_unresolved_private_sector_location(text: str) -> bool:
+    return bool(_PRIVATE_SECTOR_RE.search(text)) and not bool(
+        _PRIVATE_SECTOR_LOCATION_UNCLEAR_RE.search(text)
+    )
 
 
 def _effective_intervals_are_disjoint(first: ArticleSupport, second: ArticleSupport) -> bool:
@@ -1429,7 +1569,21 @@ def diagnose_article_quality(
     p_idx = 1
     for section in draft.sections:
         for paragraph in section.paragraphs:
-            if len(_QUOTE_RE.findall(paragraph.text)) > 2:
+            paragraph_support_ids = _citable_support_ids(
+                (
+                    *_support_ids_for_unit(paragraph),
+                    *(sid for claim in paragraph.claims for sid in claim.cited_support_ids),
+                ),
+                context,
+                material_projection,
+            )
+            provider_mentions = _supported_provider_mentions(
+                paragraph.text,
+                paragraph_support_ids,
+                context,
+                place_resolver,
+            )
+            if _direct_quote_count(paragraph.text, provider_mentions) > 2:
                 findings.append(
                     ArticleReaderQualityFinding(
                         code="QUOTE_ROLL_PARAGRAPH",
@@ -1444,6 +1598,200 @@ def diagnose_article_quality(
                 )
             p_idx += 1
     finish_phase("paragraph_rhythm_and_quotes")
+
+    # Profile-grounded editorial checks. These are quality diagnostics only:
+    # they neither require corroboration nor invalidate legitimate community
+    # reports. They catch false place association, hidden missing geography,
+    # and inconsistent typography before the targeted editor runs.
+    p_idx = 1
+    for section in draft.sections:
+        for paragraph in section.paragraphs:
+            paragraph_support_ids = _citable_support_ids(
+                (
+                    *_support_ids_for_unit(paragraph),
+                    *(sid for claim in paragraph.claims for sid in claim.cited_support_ids),
+                ),
+                context,
+                material_projection,
+            )
+            if place_resolver is not None:
+                paragraph_entities = _resolved_entities(paragraph.text, place_resolver)
+
+                area_entities = [
+                    entity
+                    for entity in paragraph_entities
+                    if entity.kind == "area" and entity.confidence == "high"
+                ]
+                area_mentions = [
+                    (position, entity)
+                    for entity in area_entities
+                    for position, _end in _entity_text_spans(paragraph.text, entity)
+                    if place_resolver.geographic_area_group_keys(entity)
+                ]
+                mismatched_place_entities: list[Any] = []
+                if area_mentions:
+                    for entity in paragraph_entities:
+                        if (
+                            entity.kind != "place"
+                            or entity.confidence != "high"
+                            or not place_resolver.geographic_area_group_keys(entity)
+                        ):
+                            continue
+                        place_position = _entity_position(paragraph.text, entity)
+                        if place_position is None:
+                            continue
+                        nearest_area_position, nearest_area = min(
+                            area_mentions,
+                            key=lambda mention: abs(mention[0] - place_position),
+                        )
+                        separation_start, separation_end = sorted(
+                            (nearest_area_position, place_position)
+                        )
+                        if _EXPLICIT_SEPARATE_REPORT_RE.search(
+                            paragraph.text[separation_start:separation_end]
+                        ):
+                            continue
+                        if not (
+                            place_resolver.geographic_area_group_keys(entity)
+                            & place_resolver.geographic_area_group_keys(nearest_area)
+                        ):
+                            mismatched_place_entities.append(entity)
+                if mismatched_place_entities:
+                    findings.append(
+                        ArticleReaderQualityFinding(
+                            code="ARTICLE_PLACE_AREA_MISMATCH",
+                            unit_id=f"P{p_idx:03d}",
+                            message=(
+                                "В абзаце район напрямую связан с ориентиром или улицей, которые "
+                                "по профилю относятся к другой части города. Назовите районы у "
+                                "каждого наблюдения отдельно и не переносите географию между ними."
+                            ),
+                            support_ids=paragraph_support_ids,
+                            severity="blocking",
+                        )
+                    )
+
+                street_entities = [
+                    entity
+                    for entity in paragraph_entities
+                    if entity.kind == "place"
+                    and entity.confidence == "high"
+                    and entity.object_type == "street"
+                    and place_resolver.geographic_area_group_keys(entity)
+                ]
+                area_order_problem = False
+                for street in street_entities:
+                    street_position = _entity_position(paragraph.text, street)
+                    if street_position is None:
+                        continue
+                    street_area_keys = place_resolver.geographic_area_group_keys(street)
+                    later_same_area = any(
+                        area_position > street_position
+                        and street_area_keys & place_resolver.geographic_area_group_keys(area)
+                        for area_position, area in area_mentions
+                    )
+                    earlier_same_area = any(
+                        area_position < street_position
+                        and street_area_keys & place_resolver.geographic_area_group_keys(area)
+                        for area_position, area in area_mentions
+                    )
+                    if later_same_area and not earlier_same_area:
+                        area_order_problem = True
+                        break
+                if area_order_problem:
+                    findings.append(
+                        ArticleReaderQualityFinding(
+                            code="ARTICLE_AREA_BEFORE_STREET_ORDER",
+                            unit_id=f"P{p_idx:03d}",
+                            message=(
+                                "В одном абзаце улица одного района названа раньше самого района. "
+                                "Сначала обозначьте общую часть города, затем изложите различия "
+                                "между улицами и их временную последовательность."
+                            ),
+                            support_ids=paragraph_support_ids,
+                            severity="blocking",
+                        )
+                    )
+
+                private_sector_supports = [
+                    context.support_by_id[sid]
+                    for sid in paragraph_support_ids
+                    if sid in context.support_by_id
+                    and _PRIVATE_SECTOR_RE.search(
+                        " ".join(
+                            (
+                                context.support_by_id[sid].text,
+                                context.support_by_id[sid].source_text,
+                            )
+                        )
+                    )
+                ]
+                private_sector_source_texts = [
+                    " ".join((support.text, support.source_text))
+                    for support in private_sector_supports
+                ]
+                if (
+                    _has_unresolved_private_sector_location(paragraph.text)
+                    and private_sector_supports
+                    and not _has_specific_source_area(private_sector_source_texts, place_resolver)
+                ):
+                    findings.append(
+                        ArticleReaderQualityFinding(
+                            code="PRIVATE_SECTOR_AREA_UNSPECIFIED",
+                            unit_id=f"P{p_idx:03d}",
+                            message=(
+                                "Источник сообщает о частном секторе, но не называет район. "
+                                "Сохраните срок и сам факт как сообщение, прямо уточнив, что "
+                                "район не указан; не переносите адрес из соседнего сюжета."
+                            ),
+                            support_ids=tuple(
+                                support.support_id for support in private_sector_supports
+                            ),
+                            severity="blocking",
+                        )
+                    )
+
+            unquoted_provider_mentions = [
+                (entity_id, span)
+                for entity_id, span in _supported_provider_mentions(
+                    paragraph.text,
+                    paragraph_support_ids,
+                    context,
+                    place_resolver,
+                )
+                if not _span_is_quoted_name(paragraph.text, span)
+            ]
+            if unquoted_provider_mentions:
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="UNQUOTED_COMMERCIAL_PROVIDER_NAME",
+                        unit_id=f"P{p_idx:03d}",
+                        message=(
+                            "Название провайдера подтверждено источником, но оформлено как обычное "
+                            "слово. Выделите название русскими кавычками «…»; это название, "
+                            "а не прямая речь. Не расширяйте сокращение без опоры в источнике."
+                        ),
+                        support_ids=paragraph_support_ids,
+                        severity="blocking",
+                    )
+                )
+            if _TRAILING_INCOMPLETE_QUANTITY_RE.search(paragraph.text):
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="INCOMPLETE_QUANTITY_PHRASE",
+                        unit_id=f"P{p_idx:03d}",
+                        message=(
+                            "Абзац заканчивается количественным оборотом без единицы счёта или "
+                            "измерения. Восстановите существительное только по источнику; если "
+                            "непонятно, что именно считают, удалите неполный оборот, сохранив "
+                            "остальной подтверждённый факт."
+                        ),
+                        support_ids=paragraph_support_ids,
+                        severity="blocking",
+                    )
+                )
+            p_idx += 1
+    finish_phase("place_and_name_precision")
 
     # A packed roster is a sentence/claim-level shape, not a paragraph-wide
     # length or address quota.  A paragraph may weave several small place-based
@@ -1892,12 +2240,13 @@ def diagnose_article_quality(
     finish_phase("contradictions")
     logger.info(
         "Article quality diagnostic timings: headings=%.2fs lead_body=%.2fs "
-        "paragraph_shape=%.2fs address_directory_theme=%.2fs repetition=%.2fs "
-        "central_thesis=%.2fs coverage_details=%.2fs contradictions=%.2fs "
+        "paragraph_shape=%.2fs place_name_precision=%.2fs address_directory_theme=%.2fs "
+        "repetition=%.2fs central_thesis=%.2fs coverage_details=%.2fs contradictions=%.2fs "
         "paragraphs=%d planned_stories=%d total=%.2fs",
         phase_times.get("headings", 0.0),
         phase_times.get("lead_body_coverage", 0.0),
         phase_times.get("paragraph_rhythm_and_quotes", 0.0),
+        phase_times.get("place_and_name_precision", 0.0),
         phase_times.get("address_directory_and_theme", 0.0),
         phase_times.get("cross_section_repetition", 0.0),
         phase_times.get("central_thesis", 0.0),

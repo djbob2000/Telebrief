@@ -722,12 +722,20 @@ class CityContextResolver:
     def _build_area_indexes(self, geography: dict[str, Any]) -> None:
         self._area_aliases: list[dict[str, Any]] = []
         self._municipal_areas_by_id: dict[str, dict[str, Any]] = {}
+        self._local_area_parent_by_id: dict[str, str] = {}
 
         for area_set in geography.get("area_sets", []):
             set_id = area_set.get("id", "")
             for area in area_set.get("areas", []):
                 area_id = area.get("id", "")
                 area_name = area.get("name", "")
+                relation = area.get("relation", {})
+                if (
+                    isinstance(relation, dict)
+                    and relation.get("type") == "local_split_of"
+                    and isinstance(relation.get("target"), str)
+                ):
+                    self._local_area_parent_by_id[area_id] = relation["target"]
                 if set_id == "municipal_neighborhood_committees_2021":
                     self._municipal_areas_by_id[area_id] = {
                         "area_set": set_id,
@@ -754,6 +762,28 @@ class CityContextResolver:
                         )
 
         self._area_aliases.sort(key=lambda x: len(x["norm_alias"]), reverse=True)
+
+    def geographic_area_group_keys(self, entity: ResolvedEntity) -> frozenset[str]:
+        """Return profile-backed area keys, including a local area's verified parent zone."""
+        keys = {
+            f"municipal:{area.area_id}"
+            for area in entity.municipal_areas
+            if area.confidence == "high" and area.area_id
+        }
+        for area_id in entity.colloquial_area_ids:
+            keys.add(f"colloquial:{area_id}")
+            parent_id = self._local_area_parent_by_id.get(area_id)
+            if parent_id:
+                keys.add(f"municipal:{parent_id}")
+        return frozenset(keys)
+
+    def local_area_parent(self, area_id: str) -> tuple[str, str] | None:
+        """Return the municipal area for a verified local split label, when one exists."""
+        parent_id = self._local_area_parent_by_id.get(area_id)
+        parent = self._municipal_areas_by_id.get(parent_id or "")
+        if parent_id and parent:
+            return parent_id, str(parent["area_name"])
+        return None
 
     def _build_place_indexes(self, geography: dict[str, Any]) -> None:
         self._places: list[dict[str, Any]] = []

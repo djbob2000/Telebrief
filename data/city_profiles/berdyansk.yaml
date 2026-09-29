@@ -199,6 +199,7 @@ stable_context:
         name: Колония
         aliases:
         - Колония
+        - Колонии
         - Колонія
         status: verified
         relation:
@@ -3175,6 +3176,20 @@ stable_context:
           object_type: street
           confidence: verified
           source_ref: brd_neighborhood_committees_2021
+          coverage: *id001
+      - entity_id: landmark:Малибу
+        canonical_name: Малибу
+        object_type: landmark
+        aliases:
+        - магазин Малибу
+        - магазин «Малибу»
+        area_memberships:
+        - area_set: municipal_neighborhood_committees_2021
+          area_id: center
+          area_name: Центр міста
+          object_type: landmark
+          confidence: verified
+          source_ref: berd_malibu_shop_listing
           coverage: *id001
       - entity_id: passage:Маслинний
         canonical_name: Маслинний
@@ -6818,9 +6833,10 @@ sources:
   brd24_2016_renames: https://www.brd24.com/news/a-40069.html
   inform_zp_2024_renames: https://www.inform.zp.ua/uk/2024/06/08/283169_u-berdyansku-povernuly-radyanski-nazvy-vulycz/
   brd_2024_renames_overview: https://brd.gov.ua/news/151538-u-to-berdiansku-povernuli-radianski-nazvi-vulic
+  berd_malibu_shop_listing: https://t.me/s/brdVP?before=651
   berd_ua_map: https://berd.ua/map/
 quality_metadata:
-  street_gazetteer_entries: 446
+  street_gazetteer_entries: 447
   entries_with_multiple_municipal_area_candidates: 19
   municipal_areas_represented: 13
   rename_alias_pairs_2016: 70
