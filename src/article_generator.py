@@ -54,6 +54,7 @@ from src.publication.article_length import (
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_quality import (
     ARTICLE_WHOLE_DRAFT_FINDING_CODES,
+    ARTICLE_WHOLE_DRAFT_RECOMPOSITION_REPAIR_CODES,
     ArticleReaderQualityReport,
     diagnose_article_quality,
 )
@@ -1371,6 +1372,7 @@ class ArticleGenerator:
             article_ctx,
             editorial_brief,
             material_projection,
+            coverage_plan=coverage_plan,
         )
         materialization_metadata = materialization_stats.to_metadata()
         system_prompt = self._build_event_article_system_prompt(
@@ -1384,9 +1386,10 @@ class ArticleGenerator:
             "1. НАЧНИТЕ с конкретной картины того, как жители проживают день; развивайте её через несколько содержательно связанных линий и их последствия для повседневной жизни. Завершите на значимой детали или открытом вопросе из материалов, без повторения лида и без прогноза.\n"
             "2. СЛЕДУЙТЕ географическому порядку брифа: не объединяйте разные районы и не возвращайтесь к уже завершённому району после перехода дальше. Географическая метка — редакционная подсказка, а не разрешение переносить на район сведения, которых нет в его источниках. Не называйте районы близкими и не выводите расстояния без прямой опоры. В частности, «Центральная» в «улица Центральная» — имя улицы, а не указание на центральное положение; не пишите «на этой центральной улице». Общее впечатление жителя, что проблема охватила весь город, передавайте именно как его впечатление и не противопоставляйте локальному сообщению как установленное противоречие, если речь не об одной услуге, месте и времени.\n"
             "3. СИНТЕЗИРУЙТЕ только сообщения об одном сюжете. Различия по улицам, домам и времени передавайте как локальную неоднородность. Не превращайте текст в адресный реестр и не переносите состояние одной услуги на другую. Не связывайте два наблюдения только потому, что они произошли рядом по времени или месту. Каждый сюжет BRIEF используйте один раз и поместите рядом с его темой или подтверждённой географией; не присоединяйте его к последнему разделу по остаточному принципу и не повторяйте позднее.\n"
-            "4. СОХРАНЯЙТЕ важные конкретные детали — место, срок, действие жителя или практическое последствие — когда они помогают понять главную линию. Не стремитесь упомянуть каждую карточку. Коммерческие объявления и каталоги опускайте. Практическую информацию об услуге сжимайте до одного полезного факта; не переписывайте полное расписание, список адресов или инструкцию заказа, если это не главный сюжет. Заголовок каждого раздела должен точно обещать содержание следующих абзацев.\n"
-            "5. ВРЕМЯ: effective_from/effective_until описывают время события или состояния услуги. observed_at показывает время сообщения, но не устанавливает начало события. Не выводите из него длительность, причинность, завершение или прогноз. Учитывайте локальное PUBLICATION AS OF: не пишите «к вечеру», если выпуск подготовлен днём; используйте формулировку «на момент подготовки» или уберите указание времени суток.\n"
-            "6. ПИШИТЕ спокойным литературным языком. Атрибутируйте неподтверждённые наблюдения жителям. Сохраняйте, кто именно сообщил факт: несколько сообщений или support-записей не означают нескольких разных людей. Не выводите назначение или источник услышанной техники, звуков и световых следов. Не ставьте в один абзац ремонтную технику и сообщения о стрельбе, трассерах или беспилотниках и не связывайте их переходом, если источник прямо не подтверждает связь между этими событиями. Даже внутри одного Story разные опорные сообщения могут описывать разные события. Не выдумывайте причин, деталей, связей, сцен или завершения событий; не раскрывайте внутреннюю механику сбора сообщений.\n"
+            "4. КРАТКО ОТРАЗИТЕ полезные независимые сюжеты из проверенного брифа в подходящих тематических местах. Объединяйте только фактически связанные материалы; не присоединяйте коммерческие объявления, бытовые услуги или отдельные наблюдения к линии о связи лишь ради общей формулировки. Если самостоятельные сюжеты не связаны, сохраните их отдельно и компактно в подходящих местах статьи. Не стремитесь к проценту покрытия, не перечисляйте адреса для демонстрации охвата и не добавляйте текст ради цифры.\n"
+            "5. СОХРАНЯЙТЕ важные конкретные детали — место, срок, действие жителя или практическое последствие — когда они помогают понять главную линию. Коммерческие объявления и каталоги опускайте. Практическую информацию об услуге сжимайте до одного полезного факта; не переписывайте полное расписание, список адресов или инструкцию заказа, если это не главный сюжет. Заголовок каждого раздела должен точно обещать содержание следующих абзацев.\n"
+            "6. ВРЕМЯ: effective_from/effective_until описывают время события или состояния услуги. observed_at показывает время сообщения, но не устанавливает начало события. Не выводите из него длительность, причинность, завершение или прогноз. Учитывайте локальное PUBLICATION AS OF: не пишите «к вечеру», если выпуск подготовлен днём; используйте формулировку «на момент подготовки» или уберите указание времени суток.\n"
+            "7. ПИШИТЕ спокойным литературным языком. Атрибутируйте неподтверждённые наблюдения жителям. Сохраняйте, кто именно сообщил факт: несколько сообщений или support-записей не означают нескольких разных людей. Не выводите назначение или источник услышанной техники, звуков и световых следов. Не ставьте в один абзац ремонтную технику и сообщения о стрельбе, трассерах или беспилотниках и не связывайте их переходом, если источник прямо не подтверждает связь между этими событиями. Даже внутри одного Story разные опорные сообщения могут описывать разные события. Не выдумывайте причин, деталей, связей, сцен или завершения событий; не раскрывайте внутреннюю механику сбора сообщений.\n"
             f"Объём — примерно {length_profile.target_min_words}–{length_profile.target_max_words} слов "
             f"(проверочный диапазон: {length_profile.hard_min_words}–{length_profile.hard_max_words}), если фактический материал поддерживает такой объём.\n"
             "Верните только Markdown статьи, без JSON-обёртки и пояснений."
@@ -1565,7 +1568,12 @@ class ArticleGenerator:
                     length_profile=length_profile,
                     material_projection=material_projection,
                 )
-                diagnostics = diagnose_article_coverage(draft, coverage_plan, context=article_ctx)
+                diagnostics = diagnose_article_coverage(
+                    draft,
+                    coverage_plan,
+                    context=article_ctx,
+                    excluded_story_ids=material_projection.suppressed_story_ids,
+                )
                 quality = diagnose_article_quality(
                     draft,
                     coverage_plan,
@@ -1584,6 +1592,12 @@ class ArticleGenerator:
                     for finding in quality.blocking_findings
                     if finding.code in ARTICLE_WHOLE_DRAFT_FINDING_CODES
                 ]
+                findings.extend(
+                    finding.code
+                    for finding in quality.findings
+                    if finding.severity == "repair"
+                    and finding.code in ARTICLE_WHOLE_DRAFT_RECOMPOSITION_REPAIR_CODES
+                )
                 if any(
                     issue.blocking and issue.code == "SECTION_COUNT_OUT_OF_BOUNDS"
                     for issue in validation.issues
@@ -1739,6 +1753,13 @@ class ArticleGenerator:
                         "факты и детали; не создавайте отдельный раздел для каждой истории "
                         "или улицы. "
                     )
+                placement_guidance = ""
+                if set(structural_findings_before) & ARTICLE_WHOLE_DRAFT_RECOMPOSITION_REPAIR_CODES:
+                    placement_guidance = (
+                        "Поддержанный самостоятельный сюжет, который не соответствует теме главы, "
+                        "перенесите в действительно подходящее или нейтральное место; не удаляйте "
+                        "его и не придумывайте связь с соседней темой. "
+                    )
                 recomposition_messages = [
                     messages[0],
                     {
@@ -1752,6 +1773,7 @@ class ArticleGenerator:
                             "повтор центральной мысли, каталог обычных расписаний и перечисление "
                             "адресов отдельными фразами. При реальных различиях по месту или времени "
                             "сохраните подтверждённый контраст и его конкретные последствия. "
+                            f"{placement_guidance}"
                             f"{section_count_guidance}"
                             "Не добавляйте новые факты, цитаты, источники или неподтверждённые связи. "
                             "Верните только полную Markdown-статью."
@@ -1768,51 +1790,103 @@ class ArticleGenerator:
                         recomposed_diag,
                         recomposed_quality,
                     ) = evaluate_writer_response(recomposed_response)
-                    response = recomposed_response
-                    candidate_draft = recomposed_draft
-                    candidate_val = recomposed_val
-                    candidate_diag = recomposed_diag
-                    candidate_quality = recomposed_quality
                     record_writer_attempt(
                         len(writer_retry_history) + 1,
                         recomposed_response,
-                        candidate_val,
-                        candidate_diag,
-                        candidate_quality,
+                        recomposed_val,
+                        recomposed_diag,
+                        recomposed_quality,
                         _is_catastrophic_writer_response(
-                            candidate_draft, candidate_val, candidate_diag
+                            recomposed_draft, recomposed_val, recomposed_diag
                         ),
                     )
                     structural_findings_after = whole_draft_structural_findings(
-                        candidate_val, candidate_quality
+                        recomposed_val, recomposed_quality
                     )
                     structural_recomposition_metadata["after_findings"] = structural_findings_after
                     structural_recomposition_metadata["resolved"] = not bool(
                         structural_findings_after
                     )
+                    original_blocking_finding_keys = {
+                        (
+                            finding.code,
+                            finding.unit_id,
+                            frozenset(finding.support_ids),
+                        )
+                        for finding in candidate_quality.blocking_findings
+                    }
+                    new_blocking_findings = [
+                        finding
+                        for finding in recomposed_quality.blocking_findings
+                        if (
+                            finding.code,
+                            finding.unit_id,
+                            frozenset(finding.support_ids),
+                        )
+                        not in original_blocking_finding_keys
+                    ]
+                    structural_findings_improved = bool(
+                        set(structural_findings_before) - set(structural_findings_after)
+                    )
+                    recomposition_rejection_reason: str | None = None
+                    if not recomposed_val.is_valid:
+                        recomposition_rejection_reason = "evidence_boundary_failed"
+                    elif new_blocking_findings:
+                        recomposition_rejection_reason = "new_blocking_quality_finding"
+                    elif not structural_findings_improved:
+                        recomposition_rejection_reason = "targeted_structural_findings_not_improved"
+
+                    recomposition_accepted = recomposition_rejection_reason is None
+                    structural_recomposition_metadata.update(
+                        {
+                            "accepted": recomposition_accepted,
+                            "evidence_boundary_passed": recomposed_val.is_valid,
+                            "targeted_findings_improved": structural_findings_improved,
+                            "new_blocking_quality_findings": list(
+                                dict.fromkeys(finding.code for finding in new_blocking_findings)
+                            ),
+                        }
+                    )
+                    if recomposition_rejection_reason is not None:
+                        structural_recomposition_metadata["rejection_reason"] = (
+                            recomposition_rejection_reason
+                        )
+                        self.logger.warning(
+                            "Rejecting whole-draft recomposition (%s); preserving the original "
+                            "writer candidate",
+                            recomposition_rejection_reason,
+                        )
                     if attempt_observer is not None and recomposition_id:
                         await attempt_observer.attempt_finished(
                             recomposition_id,
-                            "succeeded" if not structural_findings_after else "failed",
+                            "succeeded" if recomposition_accepted else "failed",
                             error_kind=(
-                                None
-                                if not structural_findings_after
-                                else "structural_findings_remain"
+                                None if recomposition_accepted else recomposition_rejection_reason
                             ),
                             metadata={
                                 "before_findings": structural_findings_before,
                                 "after_findings": structural_findings_after,
                                 "evidence_boundary_passed": recomposed_val.is_valid,
+                                "accepted": recomposition_accepted,
+                                "targeted_findings_improved": structural_findings_improved,
                                 "story_coverage": recomposed_diag.story_coverage,
                                 "quality": recomposed_quality.to_metadata(),
                             },
                         )
+                    if recomposition_accepted:
+                        response = recomposed_response
+                        candidate_draft = recomposed_draft
+                        candidate_val = recomposed_val
+                        candidate_diag = recomposed_diag
+                        candidate_quality = recomposed_quality
                 except Exception as recomposition_error:
                     structural_recomposition_metadata.update(
                         {
                             "error_type": type(recomposition_error).__name__,
                             "after_findings": structural_findings_before,
                             "resolved": False,
+                            "accepted": False,
+                            "rejection_reason": "recomposition_failed",
                         }
                     )
                     writer_retry_history.append(
@@ -1920,55 +1994,158 @@ class ArticleGenerator:
                 if (
                     not is_incomplete or is_substantial or candidate_quality.needs_edit
                 ) and getattr(editorial_config, "article_editor_enabled", False):
-                    from src.publication.article_editor import ArticleEditor
+                    editor = None
+                    try:
+                        from src.publication.article_editor import ArticleEditor
 
-                    editor_max_tokens = getattr(
-                        getattr(self.config.settings, "article", None),
-                        "editorial_repair_max_output_tokens",
-                        32768,
-                    )
-                    editor = ArticleEditor(
-                        provider=self.provider,
-                        model=self.model,
-                        max_output_tokens=editor_max_tokens,
-                    )
-                    editor_attempts = getattr(editorial_config, "article_editor_max_attempts", 2)
-                    edited_draft, edited_val = await editor.edit_draft(
-                        candidate_draft,
-                        candidate_val,
-                        article_ctx,
-                        config=editorial_config,
-                        length_profile=length_profile,
-                        attempt_observer=attempt_observer,
-                        max_attempts=editor_attempts,
-                        quality_report=candidate_quality,
-                        coverage_plan=coverage_plan,
-                        material_projection=material_projection,
-                        place_resolver=place_resolver,
-                    )
-                    edited_quality = diagnose_article_quality(
-                        edited_draft,
-                        coverage_plan,
-                        article_ctx,
-                        material_projection=material_projection,
-                        place_resolver=place_resolver,
-                    )
-                    writer_quality_after_edit = edited_quality
-                    writer_meta["quality_after_edit"] = edited_quality.to_metadata()
-                    if edited_val.is_valid and not edited_quality.needs_edit:
-                        self.logger.info(
-                            "ArticleEditor successfully resolved validation issues; draft accepted"
+                        editor_max_tokens = getattr(
+                            getattr(self.config.settings, "article", None),
+                            "editorial_repair_max_output_tokens",
+                            32768,
                         )
-                        writer_draft = edited_draft
-                        writer_error = None
-                        writer_validation = edited_val
-                        candidate_quality = edited_quality
+                        editor = ArticleEditor(
+                            provider=self.provider,
+                            model=self.model,
+                            max_output_tokens=editor_max_tokens,
+                        )
+                        editor_attempts = getattr(
+                            editorial_config, "article_editor_max_attempts", 2
+                        )
+                        edited_draft, edited_val = await editor.edit_draft(
+                            candidate_draft,
+                            candidate_val,
+                            article_ctx,
+                            config=editorial_config,
+                            length_profile=length_profile,
+                            attempt_observer=attempt_observer,
+                            max_attempts=editor_attempts,
+                            quality_report=candidate_quality,
+                            coverage_plan=coverage_plan,
+                            material_projection=material_projection,
+                            place_resolver=place_resolver,
+                        )
+                        edited_quality = diagnose_article_quality(
+                            edited_draft,
+                            coverage_plan,
+                            article_ctx,
+                            material_projection=material_projection,
+                            place_resolver=place_resolver,
+                        )
+                    except Exception as editor_exc:
+                        writer_meta["editor_retry_count"] = (
+                            editor.last_attempt_count if editor is not None else 0
+                        )
+                        writer_meta["editor_patched_unit_ids"] = (
+                            list(editor.last_patched_unit_ids) if editor is not None else []
+                        )
+                        writer_meta["editor_failure_type"] = type(editor_exc).__name__
+                        writer_meta["editor_fallback_to_original"] = candidate_val.is_valid
+                        writer_meta["editor_outcome"] = (
+                            "original_candidate_preserved"
+                            if candidate_val.is_valid
+                            else "candidate_remains_invalid"
+                        )
+                        writer_draft = candidate_draft
+                        writer_validation = candidate_val
+                        writer_quality_after_edit = candidate_quality
+                        if candidate_val.is_valid:
+                            writer_error = None
+                            self.logger.warning(
+                                "ArticleEditor failed (%s); preserving the Evidence Boundary-safe "
+                                "writer draft for finalization",
+                                type(editor_exc).__name__,
+                            )
+                        else:
+                            writer_error = editor_exc
+                            self.logger.error(
+                                "ArticleEditor failed (%s) for a fact-invalid writer draft; "
+                                "retaining fail-closed behavior",
+                                type(editor_exc).__name__,
+                            )
                     else:
-                        writer_draft = edited_draft
-                        writer_validation = edited_val
-                        candidate_quality = edited_quality
-                    writer_meta["editor_retry_count"] = editor.last_attempt_count
-                    writer_meta["editor_patched_unit_ids"] = list(editor.last_patched_unit_ids)
+                        writer_meta["editor_retry_count"] = editor.last_attempt_count
+                        writer_meta["editor_patched_unit_ids"] = list(editor.last_patched_unit_ids)
+                        writer_meta["quality_after_edit"] = edited_quality.to_metadata()
+                        original_repair_finding_count = len(candidate_quality.repair_findings)
+                        original_finding_keys = {
+                            (finding.code, finding.unit_id, frozenset(finding.support_ids))
+                            for finding in candidate_quality.findings
+                        }
+                        edited_finding_keys = {
+                            (finding.code, finding.unit_id, frozenset(finding.support_ids))
+                            for finding in edited_quality.findings
+                        }
+                        introduced_quality_findings = bool(
+                            edited_finding_keys - original_finding_keys
+                        )
+                        repair_findings_reduced = len(edited_quality.repair_findings) < len(
+                            candidate_quality.repair_findings
+                        )
+                        unresolved_whole_draft_blocker = any(
+                            finding.severity == "blocking"
+                            and finding.code in ARTICLE_WHOLE_DRAFT_FINDING_CODES
+                            for finding in edited_quality.findings
+                        )
+                        editor_result_acceptable = (
+                            edited_val.is_valid
+                            and not introduced_quality_findings
+                            and not unresolved_whole_draft_blocker
+                            and (not edited_quality.needs_edit or repair_findings_reduced)
+                        )
+                        if editor_result_acceptable:
+                            writer_draft = edited_draft
+                            writer_error = None
+                            writer_validation = edited_val
+                            writer_quality_after_edit = edited_quality
+                            candidate_quality = edited_quality
+                            if edited_quality.needs_edit:
+                                writer_meta["editor_outcome"] = "accepted_partial_repair"
+                                self.logger.warning(
+                                    "ArticleEditor reduced repair findings from %d to %d; "
+                                    "accepting the fact-valid partial repair",
+                                    original_repair_finding_count,
+                                    len(edited_quality.repair_findings),
+                                )
+                            else:
+                                writer_meta["editor_outcome"] = "accepted"
+                                self.logger.info(
+                                    "ArticleEditor successfully resolved validation issues; draft accepted"
+                                )
+                        else:
+                            if not edited_val.is_valid and edited_quality.needs_edit:
+                                editor_failure_type = "evidence_boundary_and_quality_invalid"
+                            elif not edited_val.is_valid:
+                                editor_failure_type = "evidence_boundary_invalid_result"
+                            elif unresolved_whole_draft_blocker:
+                                editor_failure_type = "whole_draft_blocking_quality_remains"
+                            elif introduced_quality_findings:
+                                editor_failure_type = "new_quality_findings"
+                            else:
+                                editor_failure_type = "quality_findings_not_reduced"
+                            writer_meta["editor_failure_type"] = editor_failure_type
+                            writer_meta["editor_fallback_to_original"] = candidate_val.is_valid
+                            writer_meta["editor_outcome"] = (
+                                "original_candidate_preserved"
+                                if candidate_val.is_valid
+                                else "candidate_remains_invalid"
+                            )
+                            writer_draft = candidate_draft
+                            writer_validation = candidate_val
+                            writer_quality_after_edit = candidate_quality
+                            if candidate_val.is_valid:
+                                writer_error = None
+                                self.logger.warning(
+                                    "ArticleEditor result was rejected (%s); "
+                                    "discarding the patch and preserving the Evidence Boundary-safe "
+                                    "writer draft",
+                                    editor_failure_type,
+                                )
+                            else:
+                                self.logger.error(
+                                    "ArticleEditor result was rejected (%s) and the original writer "
+                                    "draft is fact-invalid; retaining fail-closed validation",
+                                    editor_failure_type,
+                                )
         except Exception as exc:
             self.logger.warning(
                 "Event article writer execution failed (%s: %s)",

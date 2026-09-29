@@ -127,6 +127,8 @@ def diagnose_article_coverage(
     draft: StructuredArticleDraft,
     plan: ArticleCoveragePlan,
     context: Any | None = None,
+    *,
+    excluded_story_ids: Sequence[str] = (),
 ) -> ArticleCoverageDiagnostics:
     """Compute non-blocking coverage, prominence ratios, microdetail retention, and contact leaks.
 
@@ -134,6 +136,8 @@ def diagnose_article_coverage(
     Story coverage credit is derived exclusively from validated claim -> support/story edges.
     Title, headings, and ungrounded wrapper citations do not grant story coverage.
     """
+    excluded_ids = set(excluded_story_ids)
+    eligible_stories = [story for story in plan.stories if story.story_id not in excluded_ids]
     tok_re = re.compile(r"[\w-]+", re.UNICODE)
 
     # Pre-extract discriminative anchors per story if context supports are available
@@ -143,7 +147,7 @@ def diagnose_article_coverage(
     if context is not None and getattr(context, "support_by_id", None):
         story_all_stems: dict[str, set[str]] = {}
         story_all_nums: dict[str, set[str]] = {}
-        for item in plan.stories:
+        for item in eligible_stories:
             s_sids = set(item.support_ids) | set(item.detail_support_ids)
             s_texts: list[str] = [item.topic] if item.topic else []
             for sid in s_sids:
@@ -160,13 +164,13 @@ def diagnose_article_coverage(
             story_all_stems[item.story_id] = stems
             story_all_nums[item.story_id] = nums
 
-        for item in plan.stories:
+        for item in eligible_stories:
             sid = item.story_id
             cur_stems = story_all_stems.get(sid, set())
             cur_nums = story_all_nums.get(sid, set())
             other_stems: set[str] = set()
             other_nums: set[str] = set()
-            for other_id in plan.stories:
+            for other_id in eligible_stories:
                 if other_id.story_id != sid:
                     other_stems.update(story_all_stems.get(other_id.story_id, set()))
                     other_nums.update(story_all_nums.get(other_id.story_id, set()))
@@ -183,11 +187,11 @@ def diagnose_article_coverage(
         for p in sec.paragraphs:
             candidate_claims.extend(p.claims)
 
-    planned_story_count = len(plan.stories)
+    planned_story_count = len(eligible_stories)
     covered_story_ids_set: set[str] = set()
     covered_claim_sids: set[str] = set()
 
-    for item in plan.stories:
+    for item in eligible_stories:
         story_sids = set(item.support_ids) | set(item.detail_support_ids)
         disc_s = story_disc_stems.get(item.story_id, set())
         disc_n = story_disc_nums.get(item.story_id, set())
@@ -216,16 +220,18 @@ def diagnose_article_coverage(
                 covered_story_ids_set.add(item.story_id)
                 covered_claim_sids.update(matching_sids)
 
-    covered_story_ids = [s.story_id for s in plan.stories if s.story_id in covered_story_ids_set]
+    covered_story_ids = [
+        s.story_id for s in eligible_stories if s.story_id in covered_story_ids_set
+    ]
     uncovered_story_ids = [
-        s.story_id for s in plan.stories if s.story_id not in covered_story_ids_set
+        s.story_id for s in eligible_stories if s.story_id not in covered_story_ids_set
     ]
     covered_story_count = len(covered_story_ids)
     story_coverage = covered_story_count / planned_story_count if planned_story_count > 0 else 1.0
 
     # Prominence ratios
     def _ratio_for_prominence(prominence: str) -> float:
-        subset = [s for s in plan.stories if s.prominence == prominence]
+        subset = [s for s in eligible_stories if s.prominence == prominence]
         if not subset:
             return 1.0
         cov = sum(1 for s in subset if s.story_id in covered_story_ids_set)
@@ -237,7 +243,7 @@ def diagnose_article_coverage(
 
     # Detail supports
     all_planned_details: list[str] = []
-    for item in plan.stories:
+    for item in eligible_stories:
         all_planned_details.extend(item.detail_support_ids)
 
     planned_detail_count = len(all_planned_details)

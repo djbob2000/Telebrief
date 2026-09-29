@@ -73,6 +73,75 @@ def resolve_article_place_resolver(
     return resolver
 
 
+def resolve_article_place_area_map(
+    text: str,
+    resolver: CityContextResolver | None,
+) -> dict[str, frozenset[str]]:
+    """Return verified area memberships for named places in one source text.
+
+    These labels support editorial grouping only. They do not encode physical
+    proximity; proximity between places still requires an explicit source
+    statement that relates those same places.
+    """
+    if resolver is None or not text.strip():
+        return {}
+    try:
+        entities = resolver.resolve(text).entities
+    except Exception:
+        return {}
+
+    result: dict[str, set[str]] = {}
+    for entity in entities:
+        if entity.kind != "place" or not entity.canonical_name or entity.confidence != "high":
+            continue
+        area_keys = {
+            f"municipal:{area.area_id}"
+            for area in entity.municipal_areas
+            if area.confidence == "high" and area.area_id
+        }
+        area_keys.update(
+            f"colloquial:{area_id}" for area_id in entity.colloquial_area_ids if area_id
+        )
+        if area_keys:
+            place_key = entity.canonical_name.casefold().replace("ё", "е")
+            result.setdefault(place_key, set()).update(area_keys)
+    return {place: frozenset(area_ids) for place, area_ids in result.items()}
+
+
+def resolve_article_place_names(
+    text: str,
+    resolver: CityContextResolver | None,
+) -> frozenset[str]:
+    """Return canonical, unambiguous edition place names in text."""
+    if resolver is None or not text.strip():
+        return frozenset()
+    try:
+        entities = resolver.resolve(text).entities
+    except Exception:
+        return frozenset()
+    accepted_types = {
+        "street",
+        "lane",
+        "boulevard",
+        "prospect",
+        "highway",
+        "district",
+        "neighborhood",
+        "settlement",
+        "village",
+        "city",
+        "",
+    }
+    return frozenset(
+        entity.canonical_name.casefold().replace("ё", "е")
+        for entity in entities
+        if entity.kind in {"place", "area"}
+        and entity.confidence == "high"
+        and entity.object_type in accepted_types
+        and entity.canonical_name
+    )
+
+
 def build_article_story_geography_map(
     *,
     context: ArticleEditorialContext,

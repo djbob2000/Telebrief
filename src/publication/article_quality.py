@@ -16,21 +16,27 @@ from typing import Any, Literal, Sequence
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
 from src.publication.article_coverage import ArticleCoveragePlan
 from src.publication.article_coverage_diagnostics import diagnose_article_coverage
+from src.publication.article_geography import resolve_article_place_area_map
 from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import StructuredArticleDraft, _split_sentences_safe
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
 
 # These findings describe article topology that cannot be repaired safely by
-# replacing one paragraph.  The generator may ask for one full recomposition;
-# ArticleEditor deliberately leaves them for ArticleFinalizer to reject if they
-# remain afterwards.
+# replacing one paragraph. The generator routes the repair-only grouping codes
+# through a full recomposition; unresolved items are rejected only when their
+# severity is blocking.
 ARTICLE_WHOLE_DRAFT_FINDING_CODES = frozenset(
     {
         "REPEATED_CENTRAL_THESIS",
         "DIRECTORY_TIMETABLE_SECTION",
         "MULTI_SENTENCE_ADDRESS_STATUS_ROSTER",
+        "THEME_MISMATCHED_SECTION",
+        "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION",
     }
+)
+ARTICLE_WHOLE_DRAFT_RECOMPOSITION_REPAIR_CODES = frozenset(
+    {"THEME_MISMATCHED_SECTION", "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION"}
 )
 
 _QUOTE_RE = re.compile(r"[«“\"]([^»”\"]{1,240})[»”\"]")
@@ -86,6 +92,107 @@ _ARTICLE_SCHEDULE_CHANGE_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ARTICLE_SECTION_THEME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "connectivity",
+        re.compile(r"(?:связ\w*|интернет\w*|мобильн\w*|wi[\s-]?fi|провайдер\w*)", re.IGNORECASE),
+    ),
+    (
+        "utilities",
+        re.compile(
+            r"(?:коммунальн\w*|электр\w*|энерг\w*|свет\w*|вод\w*|газ\w*|отоплен\w*)", re.IGNORECASE
+        ),
+    ),
+    (
+        "transport",
+        re.compile(r"(?:транспорт\w*|автобус\w*|маршрут\w*|рейс\w*|дорог\w*)", re.IGNORECASE),
+    ),
+    (
+        "education",
+        re.compile(r"(?:образован\w*|школ\w*|учеб\w*|спорт\w*|детск\w*\s+секц\w*)", re.IGNORECASE),
+    ),
+    (
+        "healthcare",
+        re.compile(r"(?:медицин\w*|здоров\w*|клиник\w*|врач\w*|поликлиник\w*)", re.IGNORECASE),
+    ),
+    (
+        "safety",
+        re.compile(r"(?:безопасност\w*|обстрел\w*|стрельб\w*|беспилот\w*|дрон\w*)", re.IGNORECASE),
+    ),
+)
+
+_ARTICLE_STORY_THEME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "connectivity",
+        re.compile(
+            r"(?:\b(?:мобильн\w*|сотов\w*)\s+связ(?:ь|и|ью|ей|ями|ям|ях)\b|"
+            r"\bсвяз(?:ь|и|ью|ей|ями|ям|ях)\s+(?:нет|есть|отсутств\w*|нестабиль\w*|"
+            r"плох\w*|хорош\w*|не\s+работ\w*|работа\w*|пропал\w*|появил\w*|"
+            r"восстанов\w*|ловит)\b|"
+            r"\b(?:нет|отсутств\w*|пропал\w*|появил\w*|восстанов\w*|улучш\w*|"
+            r"ухудш\w*)\s+(?:мобильн\w*\s+|сотов\w*\s+)?связ(?:ь|и|ью|ей|ями|ям|ях)\b|"
+            r"\b(?:интернет\w*|wi[\s-]?fi|вай-?фай|провайдер\w*|роутер\w*)\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "utilities",
+        re.compile(
+            r"(?:коммунальн\w*|электр\w*|энерг\w*|свет\w*|вод\w*|газ\w*|отоплен\w*|насос\w*)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "transport",
+        re.compile(r"(?:транспорт\w*|автобус\w*|маршрут\w*|рейс\w*|останов\w*)", re.IGNORECASE),
+    ),
+    (
+        "education",
+        re.compile(
+            r"(?:школ\w*|образован\w*|учеб\w*|спортшкол\w*|секци\w*|круж\w*|набор\w*\s+дет\w*)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "healthcare",
+        re.compile(r"(?:клиник\w*|врач\w*|медицин\w*|поликлиник\w*|медцентр\w*)", re.IGNORECASE),
+    ),
+    (
+        "commerce",
+        re.compile(
+            r"(?:пункт\w*\s+выдач\w*|постамат\w*|заказ\w*|посылк\w*|магазин\w*|продаж\w*)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "household_service",
+        re.compile(
+            r"(?:изготов\w*\s+ключ\w*|заточк\w*|мастерск\w*|ремонт\w*\s+обув\w*)", re.IGNORECASE
+        ),
+    ),
+    (
+        "community_observation",
+        re.compile(
+            r"(?:собак\w*|кош\w*|животн\w*|потерял\w*\s+питомц\w*|заметил\w*\s+во\s+дворе)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "safety",
+        re.compile(
+            r"(?:безопасност\w*|обстрел\w*|стрельб\w*|беспилот\w*|дрон\w*|трассер\w*)",
+            re.IGNORECASE,
+        ),
+    ),
+)
+
+
+def _article_themes(
+    text: str,
+    patterns: Sequence[tuple[str, re.Pattern[str]]],
+) -> set[str]:
+    return {theme for theme, pattern in patterns if pattern.search(text)}
+
 
 @dataclass(frozen=True)
 class ArticleReaderQualityFinding:
@@ -130,7 +237,7 @@ class ArticleReaderQualityReport:
         for finding in self.findings:
             by_code[finding.code] = by_code.get(finding.code, 0) + 1
         return {
-            "version": "article-reader-quality-v4",
+            "version": "article-reader-quality-v5",
             "finding_count": len(self.findings),
             "needs_edit": self.needs_edit,
             "counts_by_severity": by_severity,
@@ -478,7 +585,13 @@ def _has_narrative_relation(
             ):
                 continue
             places_are_contrasted = (
-                contrast_marker and first_place != second_place and second_place in mentioned_places
+                contrast_marker
+                and first_place != second_place
+                and second_place in mentioned_places
+                and _cross_place_intervals_overlap_when_known(first_support, second_support)
+                and _observations_share_verified_area(
+                    first_place, first_support, second_place, second_support, place_resolver
+                )
             )
             effective_progression = (
                 progression_cue
@@ -490,6 +603,25 @@ def _has_narrative_relation(
 
     relevant_support_ids = {observation[3].support_id for observation in observations}
     return bool(relevant_support_ids) and relevant_support_ids <= covered_support_ids
+
+
+def _observations_share_verified_area(
+    first_place: str,
+    first_support: ArticleSupport,
+    second_place: str,
+    second_support: ArticleSupport,
+    place_resolver: Any | None,
+) -> bool:
+    """Allow a local contrast only when both supported places share a profile area."""
+    if place_resolver is None:
+        return False
+    first_areas = resolve_article_place_area_map(
+        " ".join((first_support.text, first_support.source_text)), place_resolver
+    ).get(first_place, frozenset())
+    second_areas = resolve_article_place_area_map(
+        " ".join((second_support.text, second_support.source_text)), place_resolver
+    ).get(second_place, frozenset())
+    return bool(first_areas & second_areas)
 
 
 def _temporal_markers(text: str) -> set[str]:
@@ -635,6 +767,16 @@ def _time_overlap(first: ArticleSupport, second: ArticleSupport) -> bool:
     first_start, first_end = normalize(first.effective_from), normalize(first.effective_until)
     second_start, second_end = normalize(second.effective_from), normalize(second.effective_until)
     return max(first_start, second_start) <= min(first_end, second_end)
+
+
+def _cross_place_intervals_overlap_when_known(
+    first: ArticleSupport,
+    second: ArticleSupport,
+) -> bool:
+    """Reject a simultaneous local contrast when both explicit intervals are disjoint."""
+    first_has_interval = first.effective_from is not None and first.effective_until is not None
+    second_has_interval = second.effective_from is not None and second.effective_until is not None
+    return not (first_has_interval and second_has_interval) or _time_overlap(first, second)
 
 
 def _service_and_place(
@@ -965,6 +1107,110 @@ def _diagnose_contradictions(
     return findings
 
 
+def _diagnose_theme_mismatched_sections(
+    draft: StructuredArticleDraft,
+    coverage_plan: ArticleCoveragePlan,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection | None,
+) -> tuple[ArticleReaderQualityFinding, ...]:
+    story_texts: dict[str, list[str]] = {}
+    story_supports: dict[str, list[ArticleSupport]] = {}
+    for support in context.support_index:
+        story_id = _support_story_id(support)
+        if not story_id or not _projected_support_is_citable(
+            support.support_id, context, material_projection
+        ):
+            continue
+        text = (
+            material_projection.text_by_support_id.get(support.support_id, "")
+            if material_projection is not None
+            else support.text
+        ).strip()
+        if not text:
+            continue
+        story_texts.setdefault(story_id, []).append(text)
+        story_supports.setdefault(story_id, []).append(support)
+
+    story_themes: dict[str, set[str]] = {}
+    for story in coverage_plan.stories:
+        supports = story_supports.get(story.story_id, [])
+        if supports and all(item.evidence_kind == "commercial_offer" for item in supports):
+            story_themes[story.story_id] = {"commerce"}
+            continue
+        story_text = " ".join((story.topic, *story_texts.get(story.story_id, ())))
+        story_themes[story.story_id] = _article_themes(story_text, _ARTICLE_STORY_THEME_PATTERNS)
+
+    mismatched_support_ids: list[str] = []
+    unclassified_connectivity_support_ids: list[str] = []
+    for section in draft.sections:
+        heading_themes = _article_themes(section.heading, _ARTICLE_SECTION_THEME_PATTERNS)
+        if not heading_themes:
+            continue
+        for paragraph in section.paragraphs:
+            support_ids = _citable_support_ids(
+                (
+                    *_support_ids_for_unit(paragraph),
+                    *(
+                        support_id
+                        for claim in paragraph.claims
+                        for support_id in claim.cited_support_ids
+                    ),
+                ),
+                context,
+                material_projection,
+            )
+            paragraph_story_ids = _claim_story_ids(support_ids, context)
+            for story_id in paragraph_story_ids:
+                if story_id not in story_themes:
+                    continue
+                themes = story_themes.get(story_id, set())
+                if themes and not themes.intersection(heading_themes):
+                    mismatched_support_ids.extend(
+                        support_id
+                        for support_id in support_ids
+                        if _support_story_id(context.support_by_id[support_id]) == story_id
+                    )
+                elif not themes and heading_themes == {"connectivity"}:
+                    # Unknown classification is a placement uncertainty, not
+                    # grounds to drop a supported community Story. Keep every
+                    # cited Story in the coverage model and request repair only.
+                    unclassified_connectivity_support_ids.extend(
+                        support_id
+                        for support_id in support_ids
+                        if _support_story_id(context.support_by_id[support_id]) == story_id
+                    )
+
+    findings: list[ArticleReaderQualityFinding] = []
+    if mismatched_support_ids:
+        findings.append(
+            ArticleReaderQualityFinding(
+                code="THEME_MISMATCHED_SECTION",
+                unit_id="ARTICLE",
+                message=(
+                    "В тематической главе есть самостоятельный сюжет из другой сферы; перенесите его "
+                    "в подходящее место или измените композицию, сохранив исходные факты."
+                ),
+                support_ids=tuple(dict.fromkeys(mismatched_support_ids)),
+                severity="repair",
+            )
+        )
+    if unclassified_connectivity_support_ids:
+        findings.append(
+            ArticleReaderQualityFinding(
+                code="UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION",
+                unit_id="ARTICLE",
+                message=(
+                    "В главе о связи есть поддержанный сюжет без распознаваемой тематической связи. "
+                    "Перекомпонуйте его в подходящую или нейтральную часть, сохранив факты и опору "
+                    "на источник; не исключайте сюжет из-за неясной классификации."
+                ),
+                support_ids=tuple(dict.fromkeys(unclassified_connectivity_support_ids)),
+                severity="repair",
+            )
+        )
+    return tuple(findings)
+
+
 def diagnose_article_quality(
     draft: StructuredArticleDraft,
     coverage_plan: ArticleCoveragePlan,
@@ -1045,6 +1291,11 @@ def diagnose_article_quality(
         ),
         coverage_plan,
         context=context,
+        excluded_story_ids=(
+            tuple(getattr(material_projection, "suppressed_story_ids", ()))
+            if material_projection is not None
+            else ()
+        ),
     )
     body_only = diagnose_article_coverage(
         StructuredArticleDraft(
@@ -1056,6 +1307,11 @@ def diagnose_article_quality(
         ),
         coverage_plan,
         context=context,
+        excluded_story_ids=(
+            tuple(getattr(material_projection, "suppressed_story_ids", ()))
+            if material_projection is not None
+            else ()
+        ),
     )
     suppressed_story_ids = set(
         getattr(material_projection, "suppressed_story_ids", ()) if material_projection else ()
@@ -1113,7 +1369,7 @@ def diagnose_article_quality(
                     "но основной текст к нему не возвращается."
                 ),
                 support_ids=lead_support_ids,
-                severity="blocking",
+                severity="repair",
             )
         )
 
@@ -1363,6 +1619,14 @@ def diagnose_article_quality(
             )
         )
 
+    theme_section_findings = _diagnose_theme_mismatched_sections(
+        draft,
+        coverage_plan,
+        context,
+        material_projection,
+    )
+    findings.extend(theme_section_findings)
+
     # Compare supported claims across the lead and distinct chapters.  Shared
     # Story/support linkage is required, and a different state, effective
     # interval, explicit time progression, or consequence is reader value.
@@ -1526,7 +1790,16 @@ def diagnose_article_quality(
                 )
             )
 
-    coverage = diagnose_article_coverage(draft, coverage_plan, context=context)
+    coverage = diagnose_article_coverage(
+        draft,
+        coverage_plan,
+        context=context,
+        excluded_story_ids=(
+            tuple(getattr(material_projection, "suppressed_story_ids", ()))
+            if material_projection is not None
+            else ()
+        ),
+    )
     suppressed_ids = set(
         getattr(material_projection, "suppressed_story_ids", ()) if material_projection else ()
     )
@@ -1553,7 +1826,7 @@ def diagnose_article_quality(
                     "по указанным подтверждениям."
                 ),
                 support_ids=tuple(dict.fromkeys(missing_story_support_ids)),
-                severity="blocking",
+                severity="repair",
             )
         )
 

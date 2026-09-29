@@ -35,9 +35,10 @@ if TYPE_CHECKING:
 # frozen publication knowledge snapshots land version 33, revision claim
 # leases land version 34, event processing cycle scopes land version 35,
 # event authority query indexes land version 36, telegram_photo_post payload
-# format lands version 37, and article planner attempt tracking lands version 38.
+# format lands version 37, article planner attempt tracking lands version 38,
+# and telegram_entities delivery payloads land version 39.
 SCHEMA_VERSION_MINIMUM = 7
-SCHEMA_VERSION_MAXIMUM = 38
+SCHEMA_VERSION_MAXIMUM = 39
 
 
 __all__ = ["ApplicationInfrastructure", "build_infrastructure"]

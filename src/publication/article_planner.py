@@ -7,12 +7,14 @@ import logging
 import re
 from collections import OrderedDict
 from dataclasses import replace
-from typing import Any
+from typing import Any, Literal
 
 from src.ai_providers import AIProvider
 from src.publication.article_brief import (
     ArticleBriefInputInvariantError,
+    ArticleBriefLine,
     ArticleBriefValidationError,
+    ArticleDepth,
     ArticleEditorialBrief,
     ArticlePlannerReferenceMap,
     DuplicateArticleStoryAssignmentError,
@@ -221,6 +223,223 @@ def _split_independent_safety_and_infrastructure_lines(
     return replace(brief, lines=tuple(lines), dispositions=dispositions)
 
 
+_STORY_THEME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "connectivity",
+        re.compile(
+            r"(?:\b(?:мобильн\w*|сотов\w*)\s+связ(?:ь|и|ью|ей|ями|ям|ях)\b|"
+            r"\bсвяз(?:ь|и|ью|ей|ями|ям|ях)\s+(?:нет|есть|отсутств\w*|нестабиль\w*|"
+            r"плох\w*|хорош\w*|не\s+работ\w*|работа\w*|пропал\w*|появил\w*|"
+            r"восстанов\w*|ловит)\b|"
+            r"\b(?:нет|отсутств\w*|пропал\w*|появил\w*|восстанов\w*|улучш\w*|"
+            r"ухудш\w*)\s+(?:мобильн\w*\s+|сотов\w*\s+)?связ(?:ь|и|ью|ей|ями|ям|ях)\b|"
+            r"\b(?:интернет\w*|wi[\s-]?fi|вай-?фай|провайдер\w*|роутер\w*)\b)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "commerce",
+        re.compile(
+            r"(?:пункт\w*\s+выдач\w*|постамат\w*|выдач\w*\s+заказ\w*|"
+            r"получ\w*\s+заказ\w*|магазин\w*|торгов\w*\s+центр\w*|"
+            r"продаж\w*|заказ\w*\s+(?:товар\w*|посыл\w*))",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "household_service",
+        re.compile(
+            r"(?:изготов\w*\s+ключ\w*|заточк\w*|мастерск\w*|ремонт\w*\s+обув\w*)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "healthcare",
+        re.compile(
+            r"(?:клиник\w*|врач\w*|медицин\w*|поликлиник\w*|при[её]м\w*\s+врач\w*)", re.IGNORECASE
+        ),
+    ),
+    (
+        "education",
+        re.compile(
+            r"(?:школ\w*|учебн\w*|спортшкол\w*|секци\w*|круж\w*|набор\w*\s+дет\w*)", re.IGNORECASE
+        ),
+    ),
+    (
+        "community_observation",
+        re.compile(
+            r"(?:собак\w*|кош\w*|животн\w*|потерял\w*\s+питомц\w*|заметил\w*\s+во\s+дворе)",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "utilities",
+        re.compile(
+            r"(?:электр\w*|энерг\w*|свет\w*|вод\w*|газ\w*|отоплен\w*|коммунальн\w*)", re.IGNORECASE
+        ),
+    ),
+    (
+        "transport",
+        re.compile(r"(?:автобус\w*|транспорт\w*|маршрут\w*|рейс\w*|останов\w*)", re.IGNORECASE),
+    ),
+    (
+        "safety",
+        re.compile(
+            r"(?:обстрел\w*|стрельб\w*|беспилот\w*|дрон\w*|трассер\w*|взрыв\w*)", re.IGNORECASE
+        ),
+    ),
+)
+
+
+def _split_cross_theme_connectivity_lines(
+    brief: ArticleEditorialBrief,
+    *,
+    context: ArticleEditorialContext,
+    coverage_plan: ArticleCoveragePlan,
+    material_projection: ArticleMaterialProjection,
+) -> ArticleEditorialBrief:
+    """Keep unrelated commercial, service, or incidental Stories out of a connection line."""
+    stories = coverage_plan.by_story_id
+    projected_by_story: dict[str, list[str]] = {}
+    evidence_kinds_by_story: dict[str, set[str]] = {}
+    for support in context.support_index:
+        if support.publication_use != "PUBLISH" or support.evidence_kind == "resident_question":
+            continue
+        if material_projection.actions_by_support_id.get(support.support_id) not in {
+            "KEEP",
+            "TRIM_DIRECTORY",
+        }:
+            continue
+        text = material_projection.text_by_support_id.get(support.support_id, "").strip()
+        if text and support.story_id:
+            projected_by_story.setdefault(support.story_id, []).append(text)
+            evidence_kinds_by_story.setdefault(support.story_id, set()).add(support.evidence_kind)
+
+    domains_by_story: dict[str, set[str]] = {}
+    for story_id, story in stories.items():
+        evidence_kinds = evidence_kinds_by_story.get(story_id, set())
+        if evidence_kinds and evidence_kinds <= {"commercial_offer"}:
+            domains_by_story[story_id] = {"commercial_offer"}
+            continue
+        text = " ".join((story.topic, *projected_by_story.get(story_id, ())))
+        domains_by_story[story_id] = {
+            domain for domain, pattern in _STORY_THEME_PATTERNS if pattern.search(text)
+        }
+
+    transformed: list[ArticleBriefLine] = []
+    story_to_line: dict[str, str] = {}
+    story_to_depth: dict[str, ArticleDepth] = {}
+    used_line_ids = {line.line_id for line in brief.lines}
+    for line in brief.lines:
+        story_domains = {
+            story_id: domains_by_story.get(story_id, set()) for story_id in line.story_ids
+        }
+        has_connectivity = any("connectivity" in domains for domains in story_domains.values())
+        other_domains = {
+            domain
+            for domains in story_domains.values()
+            for domain in domains
+            if domain != "connectivity"
+        }
+        has_unrelated_directory_or_observation = any(
+            domains
+            & {
+                "commercial_offer",
+                "commerce",
+                "household_service",
+                "community_observation",
+            }
+            for domains in story_domains.values()
+        )
+        split_required = len(line.story_ids) > 1 and (
+            (
+                has_connectivity
+                and any("connectivity" not in domains for domains in story_domains.values())
+            )
+            or (has_connectivity and bool(other_domains))
+            or (has_unrelated_directory_or_observation and any(story_domains.values()))
+        )
+        if not split_required:
+            standalone_commercial_offer = len(line.story_ids) == 1 and story_domains[
+                line.story_ids[0]
+            ] == {"commercial_offer"}
+            retained_line = (
+                replace(line, depth="BRIEF", relation="independent")
+                if standalone_commercial_offer
+                else line
+            )
+            transformed.append(retained_line)
+            for story_id in line.story_ids:
+                story_to_line[story_id] = retained_line.line_id
+                story_to_depth[story_id] = retained_line.depth
+            continue
+
+        groups: OrderedDict[str, list[str]] = OrderedDict()
+        for story_id in line.story_ids:
+            domains = story_domains[story_id]
+            if len(domains) == 1:
+                domain = next(iter(domains))
+                group_key = f"theme:{domain}"
+            else:
+                # A mixed or unclassified Story has no safe basis for attaching
+                # it to another line member based on a broad heading alone.
+                group_key = f"story:{story_id}"
+            groups.setdefault(group_key, []).append(story_id)
+
+        for index, (_group_key, story_ids) in enumerate(groups.items(), start=1):
+            line_id = line.line_id
+            if index > 1:
+                suffix = index
+                line_id = f"{line.line_id}-theme-{suffix}"
+                while line_id in used_line_ids:
+                    suffix += 1
+                    line_id = f"{line.line_id}-theme-{suffix}"
+                used_line_ids.add(line_id)
+            owned_story_ids = set(story_ids)
+            support_ids = tuple(
+                support_id
+                for support_id in line.support_ids
+                if getattr(context.support_by_id.get(support_id), "story_id", "") in owned_story_ids
+            )
+            salient = tuple(sid for sid in line.salient_support_ids if sid in support_ids)
+            caveats = tuple(sid for sid in line.caveat_support_ids if sid in support_ids)
+            story_domain = story_domains[story_ids[0]]
+            domain = "mixed" if len(story_domain) > 1 else next(iter(story_domain), "independent")
+            line_depth: Literal["DEVELOP", "WEAVE", "BRIEF"] = (
+                "BRIEF" if domain == "commercial_offer" else line.depth
+            )
+            transformed_line = replace(
+                line,
+                line_id=line_id,
+                depth=line_depth,
+                editorial_intent=f"{line.editorial_intent} ({domain.replace('_', ' ')})",
+                story_ids=tuple(story_ids),
+                support_ids=support_ids,
+                relation=line.relation if len(story_ids) > 1 else "independent",
+                salient_support_ids=salient,
+                caveat_support_ids=caveats,
+            )
+            transformed.append(transformed_line)
+            for story_id in story_ids:
+                story_to_line[story_id] = line_id
+                story_to_depth[story_id] = line_depth
+
+    # Keep independent thematic homes separate; preserve the order of the
+    # planner's original lines and never reassign or omit a Story.
+    ordered_lines = tuple(transformed)
+    dispositions = tuple(
+        replace(
+            disposition,
+            line_id=story_to_line[disposition.story_id],
+            depth=story_to_depth.get(disposition.story_id, disposition.depth),
+        )
+        if disposition.line_id is not None and disposition.story_id in story_to_line
+        else disposition
+        for disposition in brief.dispositions
+    )
+    return replace(brief, lines=ordered_lines, dispositions=dispositions)
+
+
 def render_article_planner_dossier(
     *,
     context: ArticleEditorialContext,
@@ -384,9 +603,14 @@ class ArticleEditorialPlanner:
             "Story must receive exactly one disposition. List each story_key at most once in "
             "story_keys, both within a line and across all lines. Use the dossier's geography as a verified "
             "organization aid: do not put Stories from distinct named areas in the same line; use "
-            "localized_contrast only for different reports within one common area. Keep lines for "
-            "the same known area adjacent in the roadmap, and do not return to an area after moving "
-            "on to another. A missing or ambiguous area is not evidence of proximity. Keep safety "
+            "localized_contrast only for separately supported different states of the same service "
+            "or dimension, at comparable supported times, within one common area. Each place and "
+            "time must be supported by its own cited evidence. A common-area label only organizes "
+            "the roadmap; it never establishes that places are physically near, neighboring, or "
+            "within a stated distance. Never write 'рядом', 'соседние' or distance wording from "
+            "shared area membership. Keep lines for the same known area adjacent in the roadmap, "
+            "and do not return to an area after moving on to another. A missing or ambiguous area "
+            "is not evidence of proximity. Keep safety "
             "reports about shooting, drones, or tracers separate from utility repairs and service "
             "reports unless citable evidence explicitly connects the same event; shared time, place, "
             "or sounds do not establish that connection. An attributed impression that a problem "
@@ -515,6 +739,12 @@ class ArticleEditorialPlanner:
             brief = _split_independent_safety_and_infrastructure_lines(
                 brief,
                 context=context,
+                material_projection=material_projection,
+            )
+            brief = _split_cross_theme_connectivity_lines(
+                brief,
+                context=context,
+                coverage_plan=coverage_plan,
                 material_projection=material_projection,
             )
             brief = split_and_order_article_brief_by_geography(

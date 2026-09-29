@@ -224,9 +224,13 @@ def _build_final_metadata(
     quality_report_after_edit: ArticleReaderQualityReport | None = None,
     material_projection: ArticleMaterialProjection | None = None,
 ) -> dict[str, Any]:
-    planned_story_count = len(coverage_plan.story_ids)
+    planned_story_count = final_diag.planned_story_count
     ai_story_coverage = (
-        len(ai_covered_story_ids) / planned_story_count if planned_story_count else 1.0
+        ai_diag.story_coverage
+        if ai_diag is not None
+        else len(ai_covered_story_ids) / planned_story_count
+        if planned_story_count
+        else 1.0
     )
     origin_counts = Counter(unit.generation_origin for unit in trace)
     trace_meta = [
@@ -358,7 +362,7 @@ def _compact_quality_value(value: Any) -> dict[str, Any] | None:
     compact: dict[str, Any] = {
         "version": value.get("version")
         if isinstance(value.get("version"), str)
-        else "article-reader-quality-v4",
+        else "article-reader-quality-v5",
         "finding_count": value.get("finding_count", len(compact_findings)),
         "needs_edit": bool(value.get("needs_edit", False)),
         "counts_by_severity": value.get("counts_by_severity", {}),
@@ -443,6 +447,9 @@ def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, A
         "edition_timezone",
         "editor_retry_count",
         "editor_patched_unit_ids",
+        "editor_failure_type",
+        "editor_fallback_to_original",
+        "editor_outcome",
         "coverage_retry_suppressed",
         "structural_recomposition",
     }
@@ -552,7 +559,7 @@ def _quality_rejection_metadata(
     ]
     metadata: dict[str, Any] = {
         "stage": "post_finalization_quality",
-        "quality_version": "article-reader-quality-v4",
+        "quality_version": "article-reader-quality-v5",
         "quality_before_edit": (
             _compact_quality_metadata(quality_report_before_edit)
             if quality_report_before_edit is not None
@@ -1676,10 +1683,19 @@ class ArticleFinalizer:
         _detect_chat_roll_paragraphs(writer_draft, max_quotes_per_paragraph=2)
 
         # 3c. Diagnose coverage
-        ai_diag = diagnose_article_coverage(writer_draft, coverage_plan, context=context)
+        excluded_story_ids = (
+            material_projection.suppressed_story_ids if material_projection is not None else ()
+        )
+        ai_diag = diagnose_article_coverage(
+            writer_draft,
+            coverage_plan,
+            context=context,
+            excluded_story_ids=excluded_story_ids,
+        )
         ai_covered = tuple(ai_diag.covered_story_ids)
 
-        if set(ai_covered) == set(coverage_plan.story_ids):
+        eligible_story_ids = set(coverage_plan.story_ids) - set(excluded_story_ids)
+        if set(ai_covered) == eligible_story_ids:
             # Complete AI coverage!
             trace = build_article_claim_trace(writer_draft, context)
             final_diag = ai_diag

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from src.config_loader import PublicationEditorialConfig
 from src.publication.article_claim_support import assess_claim_against_supports
 from src.publication.article_claims import ConcreteClaim, _stem, find_unsupported_claims
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
+from src.publication.article_geography import (
+    resolve_article_place_resolver,
+)
 from src.publication.article_length import ArticleLengthProfile
 from src.publication.article_material import (
     ArticleMaterialProjection,
@@ -168,6 +172,552 @@ _CURRENT_STATE_OUTAGE_RE = re.compile(
 
 _TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
 
+_PROXIMITY_NUMERAL = (
+    r"(?:\d+(?:[-–]\d+)?|один|одна|одно|одного|одной|одну|одном|одним|одних|одному|"
+    r"два|две|дві|двух|двом|двум|двома|двумя|три|трех|трёх|трьох|трем|трём|"
+    r"трьом|тремя|трьома|четыре|четырех|четырёх|четырем|четырём|четырьмя|"
+    r"чотири|чотирьох|чотирьом|чотирма|пять|пяти|шість|шести|"
+    r"семь|семи|восемь|восьми|девять|девяти|десять|десяти|"
+    r"несколько|нескольких|кілька|кількох|декілька|декількох|пару|паре|пары|парой)"
+)
+_PROXIMITY_RELATION_RE = re.compile(
+    rf"\b(?:"
+    rf"через\s+(?:дорог\w*|вулиц\w*|улиц\w*|квартал\w*|{_PROXIMITY_NUMERAL}\s+квартал\w*)|"
+    rf"(?:в|у)\s+(?:{_PROXIMITY_NUMERAL}\s+квартал\w*)|"
+    rf"за\s+(?:{_PROXIMITY_NUMERAL}\s+квартал\w*)|"
+    rf"на\s+(?:расстоянии|відстані)\s+(?:{_PROXIMITY_NUMERAL}\s+квартал\w*)|"
+    r"соседств\w*|соседнич\w*|сусід\w*|гранич\w*|межу\w*|примык\w*|"
+    r"приляга\w*|соприкаса\w*|стыку\w*|смежн\w*|суміжн\w*|"
+    r"рядом|поруч|поряд|поблизости|поблизу|вблизи|навпроти|напротив|"
+    r"в\s+шаге\s+от|по\s+соседству|за\s+(?:углом|рогом)|неподалек\w*|"
+    r"близк\w*|близьк\w*|недалек\w*|біля"
+    r")\b",
+    re.IGNORECASE,
+)
+_PROXIMITY_CONTRADICTION_RE = re.compile(
+    r"(?:"
+    r"\bне\s+(?:(?:явля\w*|наход\w*|располож\w*|счит\w*)\s+)?"
+    r"(?:сосед\w*|сусід\w*|гранич\w*|межу\w*|примык\w*|приляга\w*|"
+    r"соприкаса\w*|стыку\w*|смежн\w*|суміжн\w*|рядом|поруч|поряд|"
+    r"поблизости|поблизу|вблизи|напротив|навпроти|близк\w*|близьк\w*|"
+    r"недалек\w*|неподалек\w*|біля|соседств\w*|соседнич\w*)\b|"
+    r"\bне\s+(?:наход\w*|знаход\w*|располож\w*|розташ\w*)\s+"
+    r"(?:рядом|поруч|поряд|поблизости|поблизу|вблизи|близк\w*|близьк\w*)\b|"
+    r"\b(?:сосед\w*|сусід\w*|гранич\w*|межу\w*|примык\w*|приляга\w*|"
+    r"соприкаса\w*|стыку\w*|смежн\w*|суміжн\w*|рядом|поруч|поряд|"
+    r"поблизости|поблизу|вблизи|близк\w*|близьк\w*|соседств\w*|соседнич\w*)\b"
+    r"[^.!?;]{0,40}\bне\s+(?:наход\w*|располож\w*|явля\w*|счит\w*)\b|"
+    r"\bдалек\w*\s+(?:друг\s+от\s+друг\w*|от)\b|"
+    r"\b(?:удален\w*|отдален\w*)\s+(?:друг\s+от\s+друг\w*|от)\b|"
+    r"\bразделен\w*\s+(?:(?:значительн\w*|больш\w*)\s+)?"
+    r"(?:расстояни\w*|\d+\s*(?:км\.?|километр\w*))\b|"
+    r"\b(?:значительн\w*|больш\w*)\s+расстояни\w*\b"
+    r")",
+    re.IGNORECASE,
+)
+_PROXIMITY_NEGATED_SPECIFIC_RE = re.compile(
+    rf"\bне\s+(?:"
+    rf"через\s+(?:дорог\w*|вулиц\w*|улиц\w*|{_PROXIMITY_NUMERAL}\s+квартал\w*)|"
+    rf"(?:в|у|за)\s+{_PROXIMITY_NUMERAL}\s+квартал\w*|"
+    rf"на\s+(?:расстоянии|відстані)\s+{_PROXIMITY_NUMERAL}\s+квартал\w*|"
+    r"за\s+(?:углом|рогом)|в\s+шаге\s+от"
+    r")\b",
+    re.IGNORECASE,
+)
+_PROXIMITY_UNCERTAINTY_RE = re.compile(
+    r"\b(?:вряд\s+ли|едва\s+ли|возможн\w*|похоже|кажет\w*|вероятн\w*|"
+    r"предположительн\w*|сомнительн\w*|не\s+уверен\w*|не\s+ясн\w*|"
+    r"скорее\s+всего|может\s+быть|вроде(?:\s+бы)?|как\s+будто|"
+    r"по[-\s]видимому|не\s+исключено|не\s+факт|сомневаюсь|"
+    r"можливо|ймовірн\w*|мабуть|здаєтьс\w*|не\s+впевнен\w*|"
+    r"неясн\w*|схоже|нібито|напевн\w*)\b",
+    re.IGNORECASE,
+)
+
+_PROXIMITY_ADJACENCY_CUE_RE = re.compile(
+    r"\b(?:сосед\w*|сусід\w*|соседств\w*|соседнич\w*|гранич\w*|межу\w*|"
+    r"примык\w*|приляга\w*|соприкаса\w*|стыку\w*|смежн\w*|суміжн\w*)\b",
+    re.IGNORECASE,
+)
+_PROXIMITY_DISTANCE_CUE_RE = re.compile(r"\b(?:квартал\w*|расстояни\w*)\b", re.IGNORECASE)
+_PROXIMITY_PLACE_DESCRIPTOR = (
+    r"(?:район\w*|мікрорайон\w*|микрорайон\w*|округ\w*|улиц\w*|вулиц\w*|ул\.?|"
+    r"переул\w*|провул\w*|пер\.?|бульвар\w*|проспект\w*|шоссе|шосе|"
+    r"посел\w*|селищ\w*|город\w*|міст\w*|село|деревн\w*|квартал\w*|"
+    r"площад\w*|площ\w*|част\w*)"
+)
+
+
+@dataclass(frozen=True)
+class _ResolvedPlaceMention:
+    canonical_name: str
+    object_type: str
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
+class _ExplicitPlaceRelation:
+    places: frozenset[str]
+    kind: Literal[
+        "adjacency",
+        "across_road",
+        "around_corner",
+        "distance",
+        "near_step",
+        "opposite",
+        "proximity",
+    ]
+    distance_blocks: tuple[int, int] | None = None
+    distance_qualifier: str | None = None
+
+
+def _normalize_place_match_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKC", text).casefold().replace("ё", "е")
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _resolved_place_mentions(
+    text: str,
+    place_resolver: Any | None,
+) -> tuple[_ResolvedPlaceMention, ...]:
+    """Resolve high-confidence edition places with their local text spans."""
+    if place_resolver is None or not text.strip():
+        return ()
+    try:
+        normalized_text = _normalize_place_match_text(text)
+        entities = place_resolver.resolve(text).entities
+    except Exception:
+        return ()
+
+    accepted_types = {
+        "street",
+        "lane",
+        "boulevard",
+        "prospect",
+        "highway",
+        "district",
+        "neighborhood",
+        "settlement",
+        "village",
+        "city",
+        "",
+    }
+    candidates: dict[tuple[int, int], set[tuple[str, str]]] = {}
+    for entity in entities:
+        if (
+            entity.kind not in {"place", "area"}
+            or entity.confidence != "high"
+            or entity.object_type not in accepted_types
+            or not entity.canonical_name
+        ):
+            continue
+        matched_text = _normalize_place_match_text(entity.matched_text)
+        if not matched_text:
+            continue
+        start = 0
+        while (index := normalized_text.find(matched_text, start)) >= 0:
+            end = index + len(matched_text)
+            if (index == 0 or not normalized_text[index - 1].isalnum()) and (
+                end == len(normalized_text) or not normalized_text[end].isalnum()
+            ):
+                candidates.setdefault((index, end), set()).add(
+                    (
+                        entity.canonical_name.casefold().replace("ё", "е"),
+                        entity.object_type,
+                    )
+                )
+            start = index + max(1, len(matched_text))
+
+    mentions: list[_ResolvedPlaceMention] = []
+    for (start, end), names_and_types in candidates.items():
+        names = {name for name, _object_type in names_and_types}
+        if len(names) != 1:
+            continue
+        canonical_name = next(iter(names))
+        object_types = {object_type for _name, object_type in names_and_types}
+        object_type = next((item for item in object_types if item != "city"), "city")
+        mentions.append(_ResolvedPlaceMention(canonical_name, object_type, start, end))
+
+    # Prefer the most specific recognized name when profile aliases overlap.
+    selected: list[_ResolvedPlaceMention] = []
+    for mention in sorted(mentions, key=lambda item: (item.start, -(item.end - item.start))):
+        if any(mention.start < item.end and item.start < mention.end for item in selected):
+            continue
+        selected.append(mention)
+
+    specific_places = {item.canonical_name for item in selected if item.object_type != "city"}
+    if len(specific_places) >= 2:
+        selected = [item for item in selected if item.object_type != "city"]
+    return tuple(sorted(selected, key=lambda item: (item.start, item.end)))
+
+
+def _proximity_relation_kind(
+    relation_text: str,
+) -> Literal[
+    "adjacency",
+    "across_road",
+    "around_corner",
+    "distance",
+    "near_step",
+    "opposite",
+    "proximity",
+]:
+    if _PROXIMITY_DISTANCE_CUE_RE.search(relation_text):
+        return "distance"
+    if re.search(r"\bчерез\s+(?:дорог\w*|вулиц\w*|улиц\w*)\b", relation_text):
+        return "across_road"
+    if re.search(r"\b(?:напротив|навпроти)\b", relation_text):
+        return "opposite"
+    if re.search(r"\bза\s+(?:углом|рогом)\b", relation_text):
+        return "around_corner"
+    if re.search(r"\bв\s+шаге\s+от\b", relation_text):
+        return "near_step"
+    if _PROXIMITY_ADJACENCY_CUE_RE.search(relation_text):
+        return "adjacency"
+    return "proximity"
+
+
+_DISTANCE_WORD_VALUES = {
+    **dict.fromkeys(
+        (
+            "один",
+            "одна",
+            "одно",
+            "одного",
+            "одной",
+            "одну",
+            "одном",
+            "одним",
+            "одних",
+            "одному",
+        ),
+        1,
+    ),
+    **dict.fromkeys(
+        (
+            "два",
+            "две",
+            "дві",
+            "двух",
+            "двум",
+            "двом",
+            "двумя",
+            "двома",
+            "пару",
+            "паре",
+            "пары",
+            "парой",
+        ),
+        2,
+    ),
+    **dict.fromkeys(
+        ("три", "трех", "трёх", "трьох", "трем", "трём", "трьом", "тремя", "трьома"),
+        3,
+    ),
+    **dict.fromkeys(
+        (
+            "четыре",
+            "четырех",
+            "четырёх",
+            "четырем",
+            "четырём",
+            "четырьмя",
+            "чотири",
+            "чотирьох",
+            "чотирьом",
+            "чотирма",
+        ),
+        4,
+    ),
+    "пять": 5,
+    "пяти": 5,
+    "шість": 6,
+    "шести": 6,
+    "семь": 7,
+    "семи": 7,
+    "восемь": 8,
+    "восьми": 8,
+    "девять": 9,
+    "девяти": 9,
+    "десять": 10,
+    "десяти": 10,
+}
+_DISTANCE_QUALIFIER_EQUIVALENTS = {
+    "нескольких": "несколько",
+    "кількох": "кілька",
+    "декількох": "декілька",
+}
+
+
+def _proximity_distance_blocks(relation_text: str) -> tuple[int, int] | None:
+    match = re.search(
+        rf"(?P<quantity>\d+(?:[-–]\d+)?|{_PROXIMITY_NUMERAL})\s+квартал\w*",
+        relation_text,
+        re.IGNORECASE,
+    )
+    if match is None:
+        if re.search(r"\b(?:через|за)\s+квартал\w*", relation_text):
+            return (1, 1)
+        return None
+    quantity = match.group("quantity").casefold().replace("ё", "е")
+    if quantity.isdigit():
+        value = int(quantity)
+        return (value, value)
+    range_match = re.fullmatch(r"(\d+)[-–](\d+)", quantity)
+    if range_match:
+        low, high = (int(part) for part in range_match.groups())
+        return (min(low, high), max(low, high))
+    word_value = _DISTANCE_WORD_VALUES.get(quantity)
+    return (word_value, word_value) if word_value is not None else None
+
+
+def _proximity_distance_qualifier(relation_text: str) -> str | None:
+    match = re.search(
+        rf"(?P<quantity>\d+(?:[-–]\d+)?|{_PROXIMITY_NUMERAL})\s+квартал\w*",
+        relation_text,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return None
+    quantity = match.group("quantity").casefold().replace("ё", "е")
+    if quantity.isdigit() or re.fullmatch(r"\d+[-–]\d+", quantity):
+        return None
+    if quantity in _DISTANCE_WORD_VALUES:
+        return None
+    return _DISTANCE_QUALIFIER_EQUIVALENTS.get(quantity, quantity)
+
+
+def _direct_relation_right_gap_is_valid(gap: str, relation_text: str) -> bool:
+    relation = _normalize_place_match_text(relation_text)
+    if re.search(r"\b(?:гранич|межу|соседств|соседнич|соприкаса|стыку)", relation):
+        preposition = r"(?:с|со|з|із|зі)"
+    elif re.search(r"\b(?:примык|приляга)", relation):
+        preposition = r"(?:к|ко|до)"
+    elif _PROXIMITY_DISTANCE_CUE_RE.search(relation):
+        preposition = r"(?:от|від|до)"
+    elif re.search(r"\b(?:соседн|сусід|смежн|суміжн)", relation):
+        preposition = r"(?:с|со|з|із|зі|к|ко|до)?"
+    elif re.search(r"\b(?:рядом|по соседству|поруч|поряд)", relation):
+        preposition = r"(?:с|со|з|із|зі)?"
+    elif re.search(r"\b(?:недалек|неподалек|близк|близьк)", relation):
+        preposition = r"(?:от|від|к|ко|до)?"
+    elif re.search(
+        r"\b(?:поблизости|поблизу|вблизи|навпроти|напротив|за углом|в шаге|біля)", relation
+    ):
+        preposition = r"(?:от|від|с|со|з|із|зі)?"
+    else:
+        preposition = r"(?:с|со|з|із|зі|к|ко|от|від|до)?"
+
+    return bool(
+        re.fullmatch(
+            rf"\s*{preposition}\s*(?:{_PROXIMITY_PLACE_DESCRIPTOR}\s*)*[,.!?;:—–-]*\s*",
+            gap,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _direct_relation_left_gap_is_valid(gap: str) -> bool:
+    return bool(
+        re.fullmatch(
+            r"\s*(?:[,—–-]\s*)?(?:(?:котор\w*|який\w*|що)\s+)?"
+            r"(?:(?:наход\w*|знаход\w*|располож\w*|розташ\w*|располага\w*|"
+            r"леж\w*|сто\w*|проход\w*|ид\w*|явля\w*|быва\w*|находящ\w*|"
+            r"расположенн\w*|розташован\w*)\s+)?",
+            gap,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _postposed_relation_pair(
+    sentence: str,
+    relation: re.Match[str],
+    mentions: tuple[_ResolvedPlaceMention, ...],
+) -> tuple[_ResolvedPlaceMention, _ResolvedPlaceMention] | None:
+    preceding = [mention for mention in mentions if mention.end <= relation.start()]
+    if len(preceding) < 2:
+        return None
+    first, second = preceding[-2:]
+    list_connector = sentence[first.end : second.start]
+    if not re.fullmatch(
+        rf"\s*(?:,|и|та)\s*(?:{_PROXIMITY_PLACE_DESCRIPTOR}\s*)*",
+        list_connector,
+        re.IGNORECASE,
+    ):
+        return None
+
+    relation_prefix = sentence[second.end : relation.start()]
+    relation_text = relation.group(0)
+    if not _direct_relation_left_gap_is_valid(relation_prefix):
+        return None
+
+    relation_tail = sentence[relation.end() :]
+    if _PROXIMITY_ADJACENCY_CUE_RE.search(relation_text):
+        tail_is_clear = bool(
+            re.fullmatch(
+                rf"\s*(?:{_PROXIMITY_PLACE_DESCRIPTOR}\s*)*[,.!?;:—–-]*\s*",
+                relation_tail,
+                re.IGNORECASE,
+            )
+            or re.fullmatch(
+                r"\s+друг\s+(?:с|к|от)\s+друг\w*\s*[,.!?;:—–-]*\s*",
+                relation_tail,
+                re.IGNORECASE,
+            )
+        )
+    elif _PROXIMITY_DISTANCE_CUE_RE.search(relation_text):
+        tail_is_clear = bool(
+            re.fullmatch(r"\s+друг\s+от\s+друг\w*\s*[,.!?;:—–-]*\s*", relation_tail, re.IGNORECASE)
+        )
+    else:
+        tail_is_clear = bool(
+            re.fullmatch(
+                r"\s*(?:(?:друг\s+(?:с|к|от)\s+друг\w*|друг\s+друг\w*)\s*)?"
+                r"[,.!?;:—–-]*\s*",
+                relation_tail,
+                re.IGNORECASE,
+            )
+        )
+    return (first, second) if tail_is_clear else None
+
+
+def _inverse_relation_pairs(
+    sentence: str,
+    relation: re.Match[str],
+    mentions: tuple[_ResolvedPlaceMention, ...],
+) -> tuple[tuple[_ResolvedPlaceMention, _ResolvedPlaceMention], ...]:
+    """Handle "near A is B" forms when the relation precedes both places."""
+    if any(mention.end <= relation.start() for mention in mentions):
+        return ()
+    following = [mention for mention in mentions if mention.start >= relation.end()]
+    if len(following) < 2:
+        return ()
+    target, subject = following[:2]
+    target_gap = sentence[relation.end() : target.start]
+    subject_gap = sentence[target.end : subject.start]
+    if not _direct_relation_right_gap_is_valid(target_gap, relation.group(0)):
+        return ()
+    subject_pattern = (
+        rf"\s*(?:[,—–-]\s*)?(?:наход\w*|знаход\w*|располож\w*|розташ\w*|"
+        rf"располага\w*|леж\w*|сто\w*|явля\w*|быва\w*)\s+"
+        rf"(?:{_PROXIMITY_PLACE_DESCRIPTOR}\s*)*"
+    )
+    if not re.fullmatch(subject_pattern, subject_gap, re.IGNORECASE):
+        return ()
+    pairs = [(target, subject)]
+    previous = subject
+    for additional in following[2:]:
+        list_connector = sentence[previous.end : additional.start]
+        if not re.fullmatch(
+            rf"\s*(?:,|и|та)\s*(?:{_PROXIMITY_PLACE_DESCRIPTOR}\s*)*",
+            list_connector,
+            re.IGNORECASE,
+        ):
+            break
+        pairs.append((target, additional))
+        previous = additional
+    return tuple(pairs)
+
+
+def _explicit_place_relations(
+    text: str,
+    place_resolver: Any | None,
+) -> tuple[_ExplicitPlaceRelation, ...]:
+    """Extract only profile-place pairs directly linked by a proximity predicate."""
+    relations: list[_ExplicitPlaceRelation] = []
+    for raw_sentence in re.split(r"(?<=[.!?;])\s+|\n+", text):
+        sentence = _normalize_place_match_text(raw_sentence)
+        mentions = _resolved_place_mentions(sentence, place_resolver)
+        if len({item.canonical_name for item in mentions}) < 2:
+            continue
+        for cue in _PROXIMITY_RELATION_RE.finditer(sentence):
+            candidates: list[tuple[_ResolvedPlaceMention, _ResolvedPlaceMention]] = []
+            left_mentions = [item for item in mentions if item.end <= cue.start()]
+            right_mentions = [item for item in mentions if item.start >= cue.end()]
+            if left_mentions and right_mentions:
+                left, right = left_mentions[-1], right_mentions[0]
+                left_gap = sentence[left.end : cue.start()]
+                right_gap = sentence[cue.end() : right.start]
+                if _direct_relation_left_gap_is_valid(
+                    left_gap
+                ) and _direct_relation_right_gap_is_valid(right_gap, cue.group(0)):
+                    candidates.append((left, right))
+                    previous = right
+                    for additional in right_mentions[1:]:
+                        list_connector = sentence[previous.end : additional.start]
+                        if not re.fullmatch(
+                            rf"\s*(?:,|и|та)\s*(?:{_PROXIMITY_PLACE_DESCRIPTOR}\s*)*",
+                            list_connector,
+                            re.IGNORECASE,
+                        ):
+                            break
+                        candidates.append((left, additional))
+                        previous = additional
+
+            postposed_pair = _postposed_relation_pair(sentence, cue, mentions)
+            if postposed_pair is not None:
+                candidates.append(postposed_pair)
+            candidates.extend(_inverse_relation_pairs(sentence, cue, mentions))
+
+            for first, second in candidates:
+                places = frozenset((first.canonical_name, second.canonical_name))
+                if len(places) != 2:
+                    continue
+                start = max(0, min(first.start, second.start) - 40)
+                end = min(len(sentence), max(first.end, second.end) + 24)
+                relation_context = sentence[start:end]
+                if (
+                    _PROXIMITY_CONTRADICTION_RE.search(relation_context)
+                    or _PROXIMITY_NEGATED_SPECIFIC_RE.search(relation_context)
+                    or _PROXIMITY_UNCERTAINTY_RE.search(relation_context)
+                ):
+                    continue
+                relations.append(
+                    _ExplicitPlaceRelation(
+                        places=places,
+                        kind=_proximity_relation_kind(cue.group(0)),
+                        distance_blocks=_proximity_distance_blocks(cue.group(0)),
+                        distance_qualifier=_proximity_distance_qualifier(cue.group(0)),
+                    )
+                )
+    return tuple(dict.fromkeys(relations))
+
+
+def _source_explicitly_relates_places(
+    source_text: str,
+    expected_relation: _ExplicitPlaceRelation,
+    place_resolver: Any | None,
+) -> bool:
+    """Require a positive source relation connecting the exact same place pair."""
+    for source_relation in _explicit_place_relations(source_text, place_resolver):
+        if source_relation.places != expected_relation.places:
+            continue
+        # A general claim of nearness does not establish that two places are
+        # opposite, across the street, around the corner, or exactly distanced.
+        if expected_relation.kind == "proximity" and source_relation.kind == "distance":
+            if source_relation.distance_blocks is None or source_relation.distance_blocks[1] > 2:
+                continue
+        elif expected_relation.kind != "proximity" and (
+            source_relation.kind != expected_relation.kind
+            or (
+                expected_relation.kind == "distance"
+                and (
+                    source_relation.distance_blocks != expected_relation.distance_blocks
+                    or (
+                        expected_relation.distance_blocks is None
+                        and source_relation.distance_qualifier
+                        != expected_relation.distance_qualifier
+                    )
+                )
+            )
+        ):
+            continue
+        return True
+    return False
+
+
 _MONTHS_RU = (
     "января",
     "февраля",
@@ -237,6 +787,9 @@ def validate_article_draft(
         config = PublicationEditorialConfig()
 
     from src.publication.article_quote_allowlist import build_article_quote_allowlist
+
+    original_support_by_id = context.support_by_id
+    place_resolver = resolve_article_place_resolver(context)
 
     quote_allowlist = build_article_quote_allowlist(
         context,
@@ -632,6 +1185,70 @@ def validate_article_draft(
 
         if has_unknown or not valid_supports:
             continue
+
+        proximity_assertions = [
+            (claim.text, claim.cited_support_ids) for claim in claim_atoms if claim.text.strip()
+        ]
+        # Claim Atoms may omit an editorial connective or contain only one of
+        # several reader-facing relations. Always validate each full sentence
+        # against the unit's own citations; relation parsing binds its cue to a
+        # directly linked profile-place pair within that sentence.
+        for sentence in _split_sentences_safe(unit_text):
+            if _PROXIMITY_RELATION_RE.search(sentence):
+                proximity_assertions.append((sentence, cited_ids))
+        reported_proximity_findings: set[tuple[frozenset[str], frozenset[str]]] = set()
+        for assertion_text, assertion_support_ids in proximity_assertions:
+            if not _PROXIMITY_RELATION_RE.search(assertion_text):
+                continue
+            expected_relations = _explicit_place_relations(assertion_text, place_resolver)
+            for expected_relation in expected_relations:
+                supported_relation = False
+                for support_id in assertion_support_ids:
+                    support = original_support_by_id.get(support_id)
+                    if (
+                        support is None
+                        or support.publication_use != "PUBLISH"
+                        or support.evidence_kind == "resident_question"
+                        or (
+                            material_projection is not None
+                            and (
+                                support.story_id in material_projection.suppressed_story_ids
+                                or material_projection.actions_by_support_id.get(support_id)
+                                == "SUPPRESS_PROMOTION_ONLY"
+                            )
+                        )
+                    ):
+                        continue
+                    exact_source_text = (support.source_text or support.text).strip()
+                    if _source_explicitly_relates_places(
+                        exact_source_text,
+                        expected_relation,
+                        place_resolver,
+                    ):
+                        supported_relation = True
+                        break
+                if not supported_relation:
+                    finding_key = (
+                        expected_relation.places,
+                        frozenset(assertion_support_ids),
+                    )
+                    if finding_key in reported_proximity_findings:
+                        continue
+                    reported_proximity_findings.add(finding_key)
+                    issues.append(
+                        ArticleValidationIssue(
+                            code="UNSUPPORTED_PROXIMITY_RELATION",
+                            unit_id=unit_id,
+                            message=(
+                                f"Unit {unit_id} asserts proximity between named places without a cited "
+                                "source explicitly relating those same places"
+                            ),
+                            support_ids=tuple(assertion_support_ids),
+                            severity="error",
+                            blocking=True,
+                            claim_text=assertion_text,
+                        )
+                    )
 
         # Check publication policy and temporal roles for title and lead
         if unit_type in ("title", "lead"):

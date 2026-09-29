@@ -849,6 +849,8 @@ def render_article_editorial_brief_context(
     context: ArticleEditorialContext,
     brief: ArticleEditorialBrief,
     material_projection: ArticleMaterialProjection,
+    *,
+    coverage_plan: ArticleCoveragePlan | None = None,
 ) -> tuple[str, ArticleWriterMaterializationStats]:
     """Render only the validated brief and its cited projected evidence for the writer."""
     try:
@@ -865,6 +867,20 @@ def render_article_editorial_brief_context(
     visible_story_ids = {story_id for line in brief.lines for story_id in line.story_ids}
     if visible_story_ids & omitted_story_ids:
         raise ValueError("article editorial brief places an OMIT Story in a narrative line")
+
+    story_geographies = {}
+    if coverage_plan is not None:
+        from src.publication.article_geography import (
+            build_article_story_geography_map,
+            resolve_article_place_resolver,
+        )
+
+        story_geographies = build_article_story_geography_map(
+            context=context,
+            coverage_plan=coverage_plan,
+            material_projection=material_projection,
+            resolver=resolve_article_place_resolver(context),
+        )
 
     blocks: list[str] = []
     if context.edition_name:
@@ -889,6 +905,7 @@ def render_article_editorial_brief_context(
     lines = [
         "ARTICLE EDITORIAL BRIEF",
         "Follow this central line and narrative order. Depth sets space, not eligibility.",
+        "Story geography labels are organizational aids; shared area membership does not establish proximity or distance.",
         f"CENTRAL LINE: {brief.central_line.strip()}",
         "CENTRAL SUPPORTS: " + ", ".join(central_support_ids),
         "NARRATIVE LINES (in order):",
@@ -919,6 +936,17 @@ def render_article_editorial_brief_context(
                 f"\nLINE {line.line_id} depth={line.depth} relation={line.relation}",
                 f"INTENT: {line.editorial_intent.strip()}",
                 f"STORIES: {', '.join(line.story_ids)}",
+                *(
+                    (
+                        "STORY GEOGRAPHY: "
+                        + "; ".join(
+                            f"{story_id}: {story_geographies[story_id].focus or 'not resolved'}"
+                            for story_id in line.story_ids
+                        ),
+                    )
+                    if story_geographies
+                    else ()
+                ),
                 *(
                     (f"GEOGRAPHIC FOCUS: {line.geographic_area_name}",)
                     if line.geographic_area_name
