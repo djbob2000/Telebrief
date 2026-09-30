@@ -1789,7 +1789,7 @@ class ArticleGenerator:
                             attempt_observer=attempt_observer,
                             max_attempts=editor_attempts,
                             quality_report=candidate_quality,
-                            coverage_plan=coverage_plan,
+                            coverage_plan=writer_coverage_plan,
                             material_projection=material_projection,
                             place_resolver=place_resolver,
                         )
