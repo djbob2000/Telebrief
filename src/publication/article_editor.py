@@ -26,7 +26,6 @@ from src.publication.article_models import (
     _strip_internal_handles,
 )
 from src.publication.article_quality import (
-    ARTICLE_WHOLE_DRAFT_FINDING_CODES,
     ArticleReaderQualityFinding,
     ArticleReaderQualityReport,
     diagnose_article_quality,
@@ -37,6 +36,14 @@ from src.publication.article_writer_context import sanitize_writer_source_text
 logger = logging.getLogger(__name__)
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
+_LOCALLY_REPAIRABLE_ARTICLE_FINDINGS = frozenset(
+    {
+        "DIRECTORY_TIMETABLE_SECTION",
+        "THEME_MISMATCHED_SECTION",
+        "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION",
+    }
+)
 
 
 def _reground_support_ids(
@@ -146,9 +153,9 @@ class ArticleEditor:
                 if iss.blocking and iss.unit_id not in ("DRAFT", "")
             ]
             quality_issues = [
-                finding
+                localized
                 for finding in current_quality.repair_findings
-                if finding.code not in ARTICLE_WHOLE_DRAFT_FINDING_CODES
+                for localized in self._localize_article_quality_finding(current_draft, finding)
             ]
             if not blocking_issues and not quality_issues:
                 break
@@ -518,6 +525,80 @@ class ArticleEditor:
 
         return unit_data
 
+    @staticmethod
+    def _localize_article_quality_finding(
+        draft: StructuredArticleDraft,
+        finding: ArticleReaderQualityFinding,
+    ) -> tuple[ArticleReaderQualityFinding, ...]:
+        """Map selected article-wide findings to the text units named by evidence.
+
+        These findings are calculated over section topology and therefore carry
+        ``unit_id=ARTICLE``.  Their support IDs still identify the paragraphs
+        (or sections) that need a bounded copy edit.  Localizing them here lets
+        the normal patch, re-grounding, and Evidence Boundary checks handle the
+        edit without accepting unsupported prose or deleting the underlying
+        Story.
+        """
+        if finding.unit_id not in ("ARTICLE", "DRAFT", ""):
+            return (finding,)
+        if finding.code not in _LOCALLY_REPAIRABLE_ARTICLE_FINDINGS or not finding.support_ids:
+            return ()
+
+        targeted_support_ids = set(finding.support_ids)
+        localized: list[ArticleReaderQualityFinding] = []
+        paragraph_index = 1
+        for section_index, section in enumerate(draft.sections, start=1):
+            section_matches: list[str] = []
+            for paragraph in section.paragraphs:
+                unit_support_ids = tuple(
+                    dict.fromkeys(
+                        (
+                            *paragraph.cited_support_ids,
+                            *(
+                                support_id
+                                for claim in paragraph.claims
+                                for support_id in claim.cited_support_ids
+                            ),
+                        )
+                    )
+                )
+                matching = tuple(
+                    support_id
+                    for support_id in unit_support_ids
+                    if support_id in targeted_support_ids
+                )
+                if matching:
+                    if finding.code == "DIRECTORY_TIMETABLE_SECTION":
+                        localized.append(
+                            ArticleReaderQualityFinding(
+                                code=finding.code,
+                                unit_id=f"P{paragraph_index:03d}",
+                                message=finding.message,
+                                support_ids=matching,
+                                severity=finding.severity,
+                            )
+                        )
+                    else:
+                        section_matches.extend(matching)
+                paragraph_index += 1
+
+            if section_matches:
+                # Theme placement can be repaired without deleting or moving a
+                # Story by retitling its containing section.  The affected
+                # source supports are supplied to the ordinary heading editor,
+                # whose result must still re-ground against those exact sources.
+                localized.append(
+                    ArticleReaderQualityFinding(
+                        code=finding.code,
+                        unit_id=f"H{section_index:03d}",
+                        message=finding.message,
+                        support_ids=tuple(dict.fromkeys(section_matches)),
+                        severity=finding.severity,
+                    )
+                )
+
+        return tuple(localized)
+
     def _build_system_prompt(self) -> str:
         return (
             "Вы — главный выпускающий редактор (Senior Fact-Checking Copy Editor) новостной редакции.\n"
@@ -786,6 +867,24 @@ class ArticleEditor:
                 " -> Передайте подтверждённое локальное различие для одной услуги, места и времени "
                 "как явный контраст. Не обобщайте состояние на весь город, не выводите причину и "
                 "не переносите состояние между адресами."
+            ),
+            "DIRECTORY_TIMETABLE_SECTION": (
+                " -> Сократите каталог адресов и обычных часов работы в этом абзаце. Сохраните "
+                "подтверждённое изменение, сбой или конкретную практическую деталь, если они есть; "
+                "не удаляйте полезный сюжет, не превращайте расписание в новость без основания и "
+                "не добавляйте отсутствующие в источниках факты."
+            ),
+            "THEME_MISMATCHED_SECTION": (
+                " -> Исправьте только заголовок главы: назовите её шире или точнее, чтобы он "
+                "естественно охватывал приведённые ниже подтверждённые сюжеты. Сохраните все сюжеты "
+                "и детали в статье; не маскируйте их удалением или переносом фактов и не объявляйте "
+                "их связанными, если источники этого не подтверждают. Формулируйте заголовок по "
+                "поддержанным ниже темам."
+            ),
+            "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION": (
+                " -> Исправьте только заголовок главы, убрав неподтверждённую привязку к связи и "
+                "назвав подтверждённое ниже содержание нейтрально и конкретно. Не исключайте сюжет "
+                "и не приписывайте ему тему, связь или причинную связь, которой нет в источниках."
             ),
         }
         return instructions.get(code, "")
