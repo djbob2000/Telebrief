@@ -23,6 +23,7 @@ from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import StructuredArticleDraft, _split_sentences_safe
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
+ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v7"
 logger = logging.getLogger(__name__)
 
 # These findings describe article topology that cannot be repaired safely by
@@ -41,8 +42,10 @@ ARTICLE_WHOLE_DRAFT_FINDING_CODES = frozenset(
 _QUOTE_RE = re.compile(r"[«“\"]([^»”\"]{1,240})[»”\"]")
 _PRIVATE_SECTOR_RE = re.compile(r"\b(?:частн\w*|приватн\w*)\s+сектор\w*\b", re.IGNORECASE)
 _PRIVATE_SECTOR_LOCATION_UNCLEAR_RE = re.compile(
-    r"(?:район|часть\s+города|место|участок).{0,35}\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*|известен)\b|"
-    r"\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*)\s+(?:район|часть\s+города|место|участок)\b|"
+    r"(?:район|часть\s+города|место|участок).{0,35}\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*|известен|яс(?:н\w*|ен|на|но|ны)|определ[её]н\w*|обозначен\w*)\b|"
+    r"(?:район|часть\s+города|место|участок).{0,35}\bне(?:извест\w*|яс(?:н\w*|ен|на|но|ны)|указан\w*|уточн[её]н\w*|назван\w*|определ[её]н\w*|обозначен\w*)\b|"
+    r"\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*|известен|яс(?:н\w*|ен|на|но|ны)|определ[её]н\w*|обозначен\w*)\s+(?:район|часть\s+города|место|участок)\b|"
+    r"\bне(?:извест\w*|яс(?:н\w*|ен|на|но|ны)|указан\w*|уточн[её]н\w*|назван\w*|определ[её]н\w*|обозначен\w*)\s+(?:район|часть\s+города|место|участок)\b|"
     r"\bисточник\w*.{0,30}\bне\s+(?:указал\w*|уточнил\w*|назвал\w*)\s+(?:район|место|участок)\b",
     re.IGNORECASE,
 )
@@ -54,6 +57,14 @@ _EXPLICIT_SEPARATE_REPORT_RE = re.compile(
     r"в\s+отдельн\w*\s+(?:сообщени\w*|сигнал\w*|наблюдени\w*))\b",
     re.IGNORECASE,
 )
+_AREA_UMBRELLA_TERM_RE = re.compile(r"\bчаст\w*\b", re.IGNORECASE)
+_AREA_EXPLICIT_CONTRAST_RE = re.compile(
+    r"\b(?:а|но|однако|зато|тогда\s+как|в\s+то\s+же\s+время|между\s+тем|при\s+этом)\b",
+    re.IGNORECASE,
+)
+_AREA_OVERVIEW_MARKER_RE = re.compile(
+    r"\b(?:ситуаци\w*|обстановк\w*|картин\w*|положен\w*)\b", re.IGNORECASE
+)
 _TRAILING_INCOMPLETE_QUANTITY_RE = re.compile(
     r"\b(?:не\s+менее|не\s+более|более|менее|около|примерно|порядка)\s+"
     r"(?:\d+(?:[.,]\d+)?|ноля|одного|одной|одно|двух|две|тр[её]х|четыр[её]х|"
@@ -63,6 +74,11 @@ _TRAILING_INCOMPLETE_QUANTITY_RE = re.compile(
 )
 _STREET_RE = re.compile(
     r"(?:улиц[аеы]|ул\.?|проспект[ае]?|просп\.?|переулк[ае]?|пер\.?|район[ае]?)\s+([а-яёa-z0-9-]+)",
+    re.IGNORECASE,
+)
+_UNSPECIFIED_LOCATION_WORD_RE = re.compile(
+    r"^(?:не|неизвест\w*|неяс(?:н\w*|ен|на|но|ны)|неуказан\w*|"
+    r"неуточн[её]н\w*|неназван\w*|неопредел[её]н\w*|необозначен\w*)$",
     re.IGNORECASE,
 )
 _LOCATION_ID_RE = re.compile(
@@ -258,7 +274,7 @@ class ArticleReaderQualityReport:
         for finding in self.findings:
             by_code[finding.code] = by_code.get(finding.code, 0) + 1
         return {
-            "version": "article-reader-quality-v6",
+            "version": ARTICLE_READER_QUALITY_VERSION,
             "finding_count": len(self.findings),
             "needs_edit": self.needs_edit,
             "counts_by_severity": by_severity,
@@ -462,6 +478,22 @@ def _resolved_entities(text: str, place_resolver: Any | None) -> tuple[Any, ...]
         return ()
 
 
+class _DiagnosisPlaceResolver:
+    """Memoize exact resolver inputs for one article-quality diagnosis only."""
+
+    def __init__(self, resolver: Any) -> None:
+        self._resolver = resolver
+        self._resolved: dict[str, Any] = {}
+
+    def resolve(self, text: str) -> Any:
+        if text not in self._resolved:
+            self._resolved[text] = self._resolver.resolve(text)
+        return self._resolved[text]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._resolver, name)
+
+
 def _entity_text_spans(text: str, entity: Any) -> tuple[tuple[int, int], ...]:
     """Find profile-resolved mentions in reader prose, allowing inflectional endings."""
     terms = tuple(
@@ -495,9 +527,31 @@ def _span_is_quoted_name(text: str, span: tuple[int, int]) -> bool:
     )
 
 
+def _span_is_inside_quote_content(text: str, span: tuple[int, int]) -> bool:
+    start, end = span
+    return any(
+        quote_start <= start and end <= quote_end
+        for quote_start, quote_end in (match.span(1) for match in _QUOTE_RE.finditer(text))
+    )
+
+
 def _entity_position(text: str, entity: Any) -> int | None:
     spans = _entity_text_spans(text, entity)
     return min((start for start, _end in spans), default=None)
+
+
+def _safe_sentence_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Return source offsets for sentences produced by the article-safe splitter."""
+    spans: list[tuple[int, int]] = []
+    search_from = 0
+    for sentence in _split_sentences_safe(text):
+        start = text.find(sentence, search_from)
+        if start < 0:
+            continue
+        end = start + len(sentence)
+        spans.append((start, end))
+        search_from = end
+    return tuple(spans)
 
 
 def _entity_has_specific_area(entity: Any, place_resolver: Any) -> bool:
@@ -566,7 +620,18 @@ def _has_specific_source_area(texts: Sequence[str], place_resolver: Any | None) 
         _entity_has_specific_area(entity, place_resolver)
         for text in texts
         for entity in _resolved_entities(text, place_resolver)
+    ) or any(_has_explicit_source_location(text) for text in texts)
+
+
+def _has_explicit_source_location(text: str) -> bool:
+    """Recognize a named street/district without requiring a city profile."""
+    generic_city_terms = {"город", "города", "городу", "городе", "городом", "city", "town"}
+    has_named_street_or_district = any(
+        match.group(1).casefold() not in generic_city_terms
+        and not _UNSPECIFIED_LOCATION_WORD_RE.fullmatch(match.group(1))
+        for match in _STREET_RE.finditer(text)
     )
+    return has_named_street_or_district
 
 
 def _has_unresolved_private_sector_location(text: str) -> bool:
@@ -1362,6 +1427,8 @@ def diagnose_article_quality(
     place_resolver: Any | None = None,
 ) -> ArticleReaderQualityReport:
     diagnostics_started = perf_counter()
+    if place_resolver is not None:
+        place_resolver = _DiagnosisPlaceResolver(place_resolver)
     phase_started = diagnostics_started
     phase_times: dict[str, float] = {}
 
@@ -1622,14 +1689,16 @@ def diagnose_article_quality(
                     for entity in paragraph_entities
                     if entity.kind == "area" and entity.confidence == "high"
                 ]
-                area_mentions = [
-                    (position, entity)
+                area_mention_spans = [
+                    (start, end, entity)
                     for entity in area_entities
-                    for position, _end in _entity_text_spans(paragraph.text, entity)
+                    for start, end in _entity_text_spans(paragraph.text, entity)
                     if place_resolver.geographic_area_group_keys(entity)
                 ]
+                area_mentions = [(start, entity) for start, _end, entity in area_mention_spans]
                 mismatched_place_entities: list[Any] = []
-                if area_mentions:
+                if area_mention_spans:
+                    sentence_spans = _safe_sentence_spans(paragraph.text)
                     for entity in paragraph_entities:
                         if (
                             entity.kind != "place"
@@ -1637,25 +1706,109 @@ def diagnose_article_quality(
                             or not place_resolver.geographic_area_group_keys(entity)
                         ):
                             continue
-                        place_position = _entity_position(paragraph.text, entity)
-                        if place_position is None:
-                            continue
-                        nearest_area_position, nearest_area = min(
-                            area_mentions,
-                            key=lambda mention: abs(mention[0] - place_position),
-                        )
-                        separation_start, separation_end = sorted(
-                            (nearest_area_position, place_position)
-                        )
-                        if _EXPLICIT_SEPARATE_REPORT_RE.search(
-                            paragraph.text[separation_start:separation_end]
+                        place_area_keys = place_resolver.geographic_area_group_keys(entity)
+                        for place_start, place_end in _entity_text_spans(paragraph.text, entity):
+                            sentence_span = next(
+                                (
+                                    (sentence_start, sentence_end)
+                                    for sentence_start, sentence_end in sentence_spans
+                                    if sentence_start <= place_start and place_end <= sentence_end
+                                ),
+                                None,
+                            )
+                            if sentence_span is None:
+                                continue
+                            sentence_start, sentence_end = sentence_span
+                            sentence_areas = [
+                                mention
+                                for mention in area_mention_spans
+                                if sentence_start <= mention[0] and mention[1] <= sentence_end
+                            ]
+                            if not sentence_areas:
+                                continue
+
+                            preceding_areas = [
+                                mention for mention in sentence_areas if mention[1] <= place_start
+                            ]
+                            if preceding_areas:
+                                nearest_area_start, area_end, nearest_area = max(
+                                    preceding_areas, key=lambda mention: mention[0]
+                                )
+                            else:
+                                nearest_area_start, area_end, nearest_area = min(
+                                    sentence_areas,
+                                    key=lambda mention: abs(mention[0] - place_start),
+                                )
+                            separation_start = min(nearest_area_start, place_start)
+                            separation_end = max(area_end, place_end)
+                            if _EXPLICIT_SEPARATE_REPORT_RE.search(
+                                paragraph.text[separation_start:separation_end]
+                            ):
+                                continue
+                            if not (
+                                place_area_keys
+                                & place_resolver.geographic_area_group_keys(nearest_area)
+                            ):
+                                mismatched_place_entities.append(entity)
+                                break
+                    # A broad area label such as a profile-resolved "part of
+                    # the city" can become an unsupported umbrella for more
+                    # specific areas later in the same sentence. Keep this
+                    # relation narrow: two standalone area reports may be
+                    # contrasted in one sentence without being treated as an
+                    # assignment to a shared district.
+                    for umbrella_start, umbrella_end, umbrella_area in area_mention_spans:
+                        if not _AREA_UMBRELLA_TERM_RE.search(
+                            getattr(umbrella_area, "matched_text", "")
                         ):
                             continue
-                        if not (
-                            place_resolver.geographic_area_group_keys(entity)
-                            & place_resolver.geographic_area_group_keys(nearest_area)
+                        umbrella_sentence = next(
+                            (
+                                (sentence_start, sentence_end)
+                                for sentence_start, sentence_end in sentence_spans
+                                if sentence_start <= umbrella_start and umbrella_end <= sentence_end
+                            ),
+                            None,
+                        )
+                        if umbrella_sentence is None:
+                            continue
+                        if not re.fullmatch(
+                            r"\s*(?:в|во|на|у)\s+",
+                            paragraph.text[umbrella_sentence[0] : umbrella_start],
+                            re.IGNORECASE,
                         ):
-                            mismatched_place_entities.append(entity)
+                            continue
+                        umbrella_keys = place_resolver.geographic_area_group_keys(umbrella_area)
+                        for area_start, area_end, specific_area in area_mention_spans:
+                            if area_start <= umbrella_end:
+                                continue
+                            if not (
+                                umbrella_sentence[0] <= area_start
+                                and area_end <= umbrella_sentence[1]
+                            ):
+                                continue
+                            if umbrella_keys & place_resolver.geographic_area_group_keys(
+                                specific_area
+                            ):
+                                continue
+                            umbrella_relation = paragraph.text[umbrella_end:area_start]
+                            separator = re.search(r"[:—]", umbrella_relation)
+                            if separator is None:
+                                continue
+                            introductory_prefix = umbrella_relation[: separator.start()].strip()
+                            if (
+                                introductory_prefix
+                                and introductory_prefix.casefold()
+                                not in {"город", "города", "городу", "городе", "городом"}
+                                and not _AREA_OVERVIEW_MARKER_RE.search(introductory_prefix)
+                            ):
+                                continue
+                            if _AREA_EXPLICIT_CONTRAST_RE.search(umbrella_relation):
+                                continue
+                            mismatched_place_entities.append(specific_area)
+                            break
+                        if mismatched_place_entities:
+                            break
                 if mismatched_place_entities:
                     findings.append(
                         ArticleReaderQualityFinding(
@@ -1709,7 +1862,7 @@ def diagnose_article_quality(
                                 "между улицами и их временную последовательность."
                             ),
                             support_ids=paragraph_support_ids,
-                            severity="blocking",
+                            severity="repair",
                         )
                     )
 
@@ -1760,6 +1913,7 @@ def diagnose_article_quality(
                     place_resolver,
                 )
                 if not _span_is_quoted_name(paragraph.text, span)
+                and not _span_is_inside_quote_content(paragraph.text, span)
             ]
             if unquoted_provider_mentions:
                 findings.append(

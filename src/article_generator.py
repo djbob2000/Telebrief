@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import hashlib
 import json
@@ -1523,7 +1524,10 @@ class ArticleGenerator:
             writer_input_metadata["materialization"] = materialization_metadata
         writer_input_metadata["material_projection"] = material_projection.to_metadata()
 
-        from src.publication.article_finalization import ArticleFinalizer
+        from src.publication.article_finalization import (
+            ArticleFinalizer,
+            _normalize_grounded_article_prose,
+        )
 
         writer_draft: StructuredArticleDraft | None = None
         writer_error: Exception | None = None
@@ -1577,6 +1581,12 @@ class ArticleGenerator:
                 raw_parsed = self._parse_event_article_response(raw_response)
                 parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
                 draft = StructuredArticleDraft.from_dict(parsed, quote_allowlist=quote_allowlist)
+                draft = _normalize_grounded_article_prose(
+                    draft,
+                    context=article_ctx,
+                    material_projection=material_projection,
+                    place_resolver=place_resolver,
+                )
                 validation_started = perf_counter()
                 validation = validate_article_draft(
                     draft,
@@ -1614,9 +1624,21 @@ class ArticleGenerator:
                 return draft, validation, diagnostics, quality
 
             response = await call_writer()
-            candidate_draft, candidate_val, candidate_diag, candidate_quality = (
-                evaluate_writer_response(response)
+            response_attempt_key = (
+                str(writer_attempt_id)
+                if writer_attempt_id
+                else str(writer_input_metadata["prompt_hash"])
             )
+            self._save_debug_artifact(
+                f"event_writer_response_{response_attempt_key}.txt",
+                response,
+            )
+            (
+                candidate_draft,
+                candidate_val,
+                candidate_diag,
+                candidate_quality,
+            ) = await asyncio.to_thread(evaluate_writer_response, response)
             catastrophic = _is_catastrophic_writer_response(
                 candidate_draft, candidate_val, candidate_diag
             )

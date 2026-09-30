@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections import Counter
@@ -33,12 +34,19 @@ from src.publication.article_models import (
     _split_sentences_safe,
 )
 from src.publication.article_quality import (
-    _QUOTE_RE as _QUALITY_QUOTE_RE,
-)
-from src.publication.article_quality import (
+    _PRIVATE_SECTOR_RE,
+    ARTICLE_READER_QUALITY_VERSION,
     ARTICLE_WHOLE_DRAFT_FINDING_CODES,
     ArticleReaderQualityReport,
+    _citable_support_ids,
+    _has_specific_source_area,
+    _has_unresolved_private_sector_location,
+    _span_is_quoted_name,
+    _supported_provider_mentions,
     diagnose_article_quality,
+)
+from src.publication.article_quality import (
+    _QUOTE_RE as _QUALITY_QUOTE_RE,
 )
 from src.publication.article_recovery import ArticleDeterministicComposer
 from src.publication.article_trace import (
@@ -365,7 +373,7 @@ def _compact_quality_value(value: Any) -> dict[str, Any] | None:
     compact: dict[str, Any] = {
         "version": value.get("version")
         if isinstance(value.get("version"), str)
-        else "article-reader-quality-v6",
+        else ARTICLE_READER_QUALITY_VERSION,
         "finding_count": value.get("finding_count", len(compact_findings)),
         "needs_edit": bool(value.get("needs_edit", False)),
         "counts_by_severity": value.get("counts_by_severity", {}),
@@ -562,7 +570,7 @@ def _quality_rejection_metadata(
     ]
     metadata: dict[str, Any] = {
         "stage": "post_finalization_quality",
-        "quality_version": "article-reader-quality-v6",
+        "quality_version": ARTICLE_READER_QUALITY_VERSION,
         "quality_before_edit": (
             _compact_quality_metadata(quality_report_before_edit)
             if quality_report_before_edit is not None
@@ -762,6 +770,179 @@ def _remove_duplicate_headings(draft: StructuredArticleDraft) -> StructuredArtic
             seen.add(normalized_heading)
         sections.append(section)
     return replace(draft, sections=tuple(sections)) if changed else draft
+
+
+_DIRECT_QUOTE_PAIRS = {"«": "»", "“": "”", "„": "“", '"': '"'}
+
+
+def _direct_quote_content_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Return content ranges enclosed by direct-quote marks in reader prose."""
+    stack: list[tuple[str, int]] = []
+    spans: list[tuple[int, int]] = []
+    for index, character in enumerate(text):
+        if stack:
+            expected_closing, content_start = stack[-1]
+            if character == expected_closing:
+                stack.pop()
+                if not stack:
+                    spans.append((content_start, index))
+                continue
+            if character in _DIRECT_QUOTE_PAIRS and character != expected_closing:
+                stack.append((_DIRECT_QUOTE_PAIRS[character], index + 1))
+            continue
+        if character in _DIRECT_QUOTE_PAIRS:
+            stack.append((_DIRECT_QUOTE_PAIRS[character], index + 1))
+
+    # An unmatched opening quote makes the remaining text unsafe to edit as a name.
+    if stack:
+        spans.append((stack[0][1], len(text)))
+    return tuple(spans)
+
+
+def _span_is_inside_direct_quote(
+    span: tuple[int, int], quote_spans: Sequence[tuple[int, int]]
+) -> bool:
+    start, end = span
+    return any(quote_start <= start and end <= quote_end for quote_start, quote_end in quote_spans)
+
+
+def _deduplicate_overlapping_spans(
+    spans: Sequence[tuple[int, int]],
+) -> tuple[tuple[int, int], ...]:
+    """Keep the longest exact source-backed spelling for each overlapping mention."""
+    ordered = sorted(set(spans))
+    groups: list[list[tuple[int, int]]] = []
+    current: list[tuple[int, int]] = []
+    current_end = -1
+    for span in ordered:
+        start, end = span
+        if current and start >= current_end:
+            groups.append(current)
+            current = []
+        current.append(span)
+        current_end = max(current_end, end)
+    if current:
+        groups.append(current)
+    return tuple(
+        min(group, key=lambda span: (-(span[1] - span[0]), span[0], span[1])) for group in groups
+    )
+
+
+def _normalize_grounded_paragraph_prose(
+    paragraph: ArticleParagraph,
+    *,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection | None,
+    place_resolver: Any | None,
+) -> ArticleParagraph:
+    """Apply narrow, source-grounded provider typography and location framing."""
+    text = paragraph.text
+    if not text:
+        return paragraph
+
+    cited_support_ids = tuple(
+        dict.fromkeys(
+            (
+                *paragraph.cited_support_ids,
+                *(sid for claim in paragraph.claims for sid in claim.cited_support_ids),
+            )
+        )
+    )
+    citable_support_ids = _citable_support_ids(cited_support_ids, context, material_projection)
+    quoted_spans = _direct_quote_content_spans(text)
+    insertions: dict[int, list[tuple[int, str]]] = {}
+
+    provider_spans = _deduplicate_overlapping_spans(
+        tuple(
+            span
+            for _entity_id, span in _supported_provider_mentions(
+                text,
+                citable_support_ids,
+                context,
+                place_resolver,
+            )
+            if 0 <= span[0] < span[1] <= len(text)
+            and not _span_is_quoted_name(text, span)
+            and not _span_is_inside_direct_quote(span, quoted_spans)
+        )
+    )
+    for start, end in provider_spans:
+        insertions.setdefault(start, []).append((2, "«"))
+        insertions.setdefault(end, []).append((0, "»"))
+
+    private_sector_source_texts = []
+    for support_id in citable_support_ids:
+        support = context.support_by_id.get(support_id)
+        if support is None:
+            continue
+        source_text = " ".join((support.text, support.source_text)).strip()
+        if _PRIVATE_SECTOR_RE.search(source_text):
+            private_sector_source_texts.append(source_text)
+
+    if (
+        place_resolver is not None
+        and _has_unresolved_private_sector_location(text)
+        and private_sector_source_texts
+        and not _has_specific_source_area(private_sector_source_texts, place_resolver)
+    ):
+        visible_private_sector = False
+        quoted_private_sector = False
+        for match in _PRIVATE_SECTOR_RE.finditer(text):
+            span = match.span()
+            if _span_is_inside_direct_quote(span, quoted_spans):
+                quoted_private_sector = True
+            else:
+                visible_private_sector = True
+                insertions.setdefault(span[1], []).append((1, " (район в сообщении не указан)"))
+        if quoted_private_sector and not visible_private_sector:
+            stripped_text = text.rstrip()
+            ends_with_terminal_mark = stripped_text.endswith((".", "!", "?", "…"))
+            if (
+                stripped_text.endswith(("»", "”", '"'))
+                and len(stripped_text) > 1
+                and stripped_text[-2] in ".!?…"
+            ):
+                ends_with_terminal_mark = True
+            separator = " " if ends_with_terminal_mark else ". "
+            insertions.setdefault(len(stripped_text), []).append(
+                (1, f"{separator}Район в сообщении не указан.")
+            )
+
+    if not insertions:
+        return paragraph
+
+    for position in sorted(insertions, reverse=True):
+        addition = "".join(value for _order, value in sorted(insertions[position]))
+        text = text[:position] + addition + text[position:]
+    return replace(paragraph, text=text)
+
+
+def _normalize_grounded_article_prose(
+    draft: StructuredArticleDraft,
+    *,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection | None,
+    place_resolver: Any | None,
+) -> StructuredArticleDraft:
+    """Normalize only citable provider names and unlocalized private-sector prose."""
+    changed = False
+    sections: list[ArticleSection] = []
+    for section in draft.sections:
+        paragraphs = tuple(
+            _normalize_grounded_paragraph_prose(
+                paragraph,
+                context=context,
+                material_projection=material_projection,
+                place_resolver=place_resolver,
+            )
+            for paragraph in section.paragraphs
+        )
+        if paragraphs != section.paragraphs:
+            changed = True
+            sections.append(replace(section, paragraphs=paragraphs))
+        else:
+            sections.append(section)
+    return replace(draft, sections=tuple(sections), word_count=0) if changed else draft
 
 
 def _sanitize_phantom_heading_topics(
@@ -1346,7 +1527,8 @@ class ArticleFinalizer:
 
         # 2. Validate writer draft
         if writer_validation is None:
-            writer_validation = validate_article_draft(
+            writer_validation = await asyncio.to_thread(
+                validate_article_draft,
                 writer_draft,
                 context,
                 config=editorial_config,
@@ -1365,7 +1547,8 @@ class ArticleFinalizer:
                 repaired_draft = _sanitize_unsupported_quotes(
                     writer_draft, quote_violations, validation_context
                 )
-                repaired_val = validate_article_draft(
+                repaired_val = await asyncio.to_thread(
+                    validate_article_draft,
                     repaired_draft,
                     context,
                     config=editorial_config,
@@ -1389,13 +1572,15 @@ class ArticleFinalizer:
                 if iss.blocking and iss.unit_id.startswith("P")
             ]
             if claim_violations:
-                repaired_draft = _prune_unsupported_paragraph_claims(
+                repaired_draft = await asyncio.to_thread(
+                    _prune_unsupported_paragraph_claims,
                     writer_draft,
                     claim_violations,
                     validation_context,
                     coverage_plan=coverage_plan,
                 )
-                repaired_val = validate_article_draft(
+                repaired_val = await asyncio.to_thread(
+                    validate_article_draft,
                     repaired_draft,
                     context,
                     config=editorial_config,
@@ -1433,10 +1618,14 @@ class ArticleFinalizer:
                 )
             ]
             if heading_violations:
-                repaired_draft = _sanitize_phantom_heading_topics(
-                    writer_draft, heading_violations, context=validation_context
+                repaired_draft = await asyncio.to_thread(
+                    _sanitize_phantom_heading_topics,
+                    writer_draft,
+                    heading_violations,
+                    context=validation_context,
                 )
-                repaired_val = validate_article_draft(
+                repaired_val = await asyncio.to_thread(
+                    validate_article_draft,
                     repaired_draft,
                     context,
                     config=editorial_config,
@@ -1501,7 +1690,8 @@ class ArticleFinalizer:
                         lead_claims=writer_draft.lead_claims,
                         word_count=writer_draft.word_count,
                     )
-                    repaired_val = validate_article_draft(
+                    repaired_val = await asyncio.to_thread(
+                        validate_article_draft,
                         repaired_draft,
                         context,
                         config=editorial_config,
@@ -1588,11 +1778,19 @@ class ArticleFinalizer:
         # 3b. Merge single-sentence orphan paragraphs (AGENTS.md §0.9)
         writer_draft = _merge_orphan_paragraphs(writer_draft)
         writer_draft = _remove_duplicate_headings(writer_draft)
+        writer_draft = await asyncio.to_thread(
+            _normalize_grounded_article_prose,
+            writer_draft,
+            context=context,
+            material_projection=material_projection,
+            place_resolver=place_resolver,
+        )
 
         # Structural finalization changes the reader-facing draft. Never reuse
         # the validation result from the pre-merge object: the exact object
         # rendered below must pass the Evidence Boundary itself.
-        final_validation = validate_article_draft(
+        final_validation = await asyncio.to_thread(
+            validate_article_draft,
             writer_draft,
             context,
             config=editorial_config,
@@ -1670,7 +1868,8 @@ class ArticleFinalizer:
         # Reader-quality checks run on the exact post-deduplication and
         # post-orphan-merge object that will be rendered.  Factual validation
         # remains separate; quality findings never masquerade as claims.
-        final_quality = diagnose_article_quality(
+        final_quality = await asyncio.to_thread(
+            diagnose_article_quality,
             writer_draft,
             coverage_plan,
             context,
@@ -1874,7 +2073,8 @@ class ArticleFinalizer:
                 fallback_plan,
                 max_sections=editorial_config.article_max_sections,
             )
-            fb_validation = validate_article_draft(
+            fb_validation = await asyncio.to_thread(
+                validate_article_draft,
                 fallback,
                 context,
                 config=editorial_config,
@@ -1886,7 +2086,8 @@ class ArticleFinalizer:
                     f"Deterministic fallback failed validation: {list(fb_validation.violations)}"
                 )
 
-            fallback_quality = diagnose_article_quality(
+            fallback_quality = await asyncio.to_thread(
+                diagnose_article_quality,
                 fallback,
                 fallback_plan,
                 fallback_context,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -230,7 +231,8 @@ class ArticleEditor:
                         )
                     break
 
-                current_draft = self.apply_patches(
+                current_draft = await asyncio.to_thread(
+                    self.apply_patches,
                     current_draft,
                     patches,
                     context=validation_context,
@@ -241,26 +243,45 @@ class ArticleEditor:
                 )
                 patched_unit_ids.extend(patches)
                 self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
-                validation_started = perf_counter()
-                current_val = validate_article_draft(
-                    current_draft,
-                    context,
-                    config=config,
-                    length_profile=length_profile,
-                    material_projection=material_projection,
-                )
-                validation_elapsed = perf_counter() - validation_started
-                quality_elapsed = 0.0
-                if coverage_plan is not None:
-                    quality_started = perf_counter()
-                    current_quality = diagnose_article_quality(
-                        current_draft,
-                        coverage_plan,
+
+                def evaluate_editor_draft(
+                    draft: StructuredArticleDraft = current_draft,
+                    previous_quality: ArticleReaderQualityReport = current_quality,
+                ) -> tuple[
+                    ArticleValidationResult,
+                    ArticleReaderQualityReport,
+                    float,
+                    float,
+                ]:
+                    validation_started = perf_counter()
+                    validation = validate_article_draft(
+                        draft,
                         context,
+                        config=config,
+                        length_profile=length_profile,
                         material_projection=material_projection,
-                        place_resolver=place_resolver,
                     )
-                    quality_elapsed = perf_counter() - quality_started
+                    validation_elapsed = perf_counter() - validation_started
+                    quality_elapsed = 0.0
+                    quality = previous_quality
+                    if coverage_plan is not None:
+                        quality_started = perf_counter()
+                        quality = diagnose_article_quality(
+                            draft,
+                            coverage_plan,
+                            context,
+                            material_projection=material_projection,
+                            place_resolver=place_resolver,
+                        )
+                        quality_elapsed = perf_counter() - quality_started
+                    return validation, quality, validation_elapsed, quality_elapsed
+
+                (
+                    current_val,
+                    current_quality,
+                    validation_elapsed,
+                    quality_elapsed,
+                ) = await asyncio.to_thread(evaluate_editor_draft)
                 self.last_quality_report = current_quality
                 logger.info(
                     "ArticleEditor pass %d timings: evidence_validation=%.2fs "
