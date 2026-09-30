@@ -1416,64 +1416,101 @@ class ArticleGenerator:
         is_longitudinal = lookback_hours >= 120
 
         from src.publication.article_composition import build_article_composition_plan
-        from src.publication.article_coverage import build_article_coverage_plan
+        from src.publication.article_coverage import (
+            ArticleCoveragePlan,
+            build_article_coverage_plan,
+        )
         from src.publication.article_material import project_article_material
         from src.publication.article_writer_context import render_article_writer_context_with_stats
 
-        if coverage_plan is None and getattr(article_ctx, "coverage_plan", None) is not None:
-            coverage_plan = article_ctx.coverage_plan
+        def prepare_writer_material() -> tuple[
+            ArticleCoveragePlan,
+            Any,
+            Any,
+            str,
+            dict[str, object],
+            set[str],
+            tuple[str, ...],
+        ]:
+            """Build the CPU-heavy writer context from the frozen article snapshot."""
+            prepared_coverage_plan: ArticleCoveragePlan | None = coverage_plan
+            if (
+                prepared_coverage_plan is None
+                and getattr(article_ctx, "coverage_plan", None) is not None
+            ):
+                prepared_coverage_plan = article_ctx.coverage_plan
 
-        if coverage_plan is None:
-            if is_longitudinal and article_ctx.story_cards:
-                from src.publication.story_threads import (
-                    build_longitudinal_coverage_plan,
-                    cluster_stories_into_threads,
-                    extract_story_thread_maps,
-                )
+            if prepared_coverage_plan is None:
+                if is_longitudinal and article_ctx.story_cards:
+                    from src.publication.story_threads import (
+                        build_longitudinal_coverage_plan,
+                        cluster_stories_into_threads,
+                        extract_story_thread_maps,
+                    )
 
-                story_dates_map, story_sups_map = extract_story_thread_maps(
-                    article_ctx.support_index
-                )
-                threads = cluster_stories_into_threads(
-                    cards=article_ctx.story_cards,
-                    story_dates=story_dates_map,
-                    story_support_ids=story_sups_map,
-                )
-                coverage_plan = build_longitudinal_coverage_plan(threads)
-            else:
-                coverage_plan = build_article_coverage_plan(
-                    article_ctx.story_cards,
-                    article_ctx,
-                    develop_story_budget=develop_story_budget,
-                )
+                    story_dates_map, story_sups_map = extract_story_thread_maps(
+                        article_ctx.support_index
+                    )
+                    threads = cluster_stories_into_threads(
+                        cards=article_ctx.story_cards,
+                        story_dates=story_dates_map,
+                        story_support_ids=story_sups_map,
+                    )
+                    prepared_coverage_plan = build_longitudinal_coverage_plan(threads)
+                else:
+                    prepared_coverage_plan = build_article_coverage_plan(
+                        article_ctx.story_cards,
+                        article_ctx,
+                        develop_story_budget=develop_story_budget,
+                    )
 
-        material_projection = project_article_material(article_ctx)
-        composition_plan = build_article_composition_plan(
-            coverage_plan,
-            article_ctx,
+            if prepared_coverage_plan is None:
+                raise ValueError("article writer coverage plan was not prepared")
+            material_projection = project_article_material(article_ctx)
+            composition_plan = build_article_composition_plan(
+                prepared_coverage_plan,
+                article_ctx,
+                material_projection,
+            )
+            context_str, materialization_stats = render_article_writer_context_with_stats(
+                article_ctx,
+                prepared_coverage_plan,
+                material_projection=material_projection,
+                composition_plan=composition_plan,
+            )
+            writer_exposed_support_ids = _writer_exposed_citable_support_ids(
+                article_ctx,
+                prepared_coverage_plan,
+                material_projection,
+            )
+            writer_quote_allowlist = build_article_quote_allowlist(
+                article_ctx,
+                excluded_support_ids=set(article_ctx.support_by_id) - writer_exposed_support_ids,
+                excluded_story_ids=material_projection.suppressed_story_ids,
+                candidate_text_by_support_id=material_projection.text_by_support_id,
+            )
+            context_str = _replace_writer_quote_allowlist(context_str, writer_quote_allowlist)
+            if materialization_stats is None:
+                raise ValueError("article writer context did not return materialization statistics")
+            return (
+                prepared_coverage_plan,
+                material_projection,
+                composition_plan,
+                context_str,
+                materialization_stats.to_metadata(),
+                writer_exposed_support_ids,
+                writer_quote_allowlist,
+            )
+
+        (
+            writer_coverage_plan,
             material_projection,
-        )
-        context_str, materialization_stats = render_article_writer_context_with_stats(
-            article_ctx,
-            coverage_plan,
-            material_projection=material_projection,
-            composition_plan=composition_plan,
-        )
-        writer_exposed_support_ids = _writer_exposed_citable_support_ids(
-            article_ctx,
-            coverage_plan,
-            material_projection,
-        )
-        writer_quote_allowlist = build_article_quote_allowlist(
-            article_ctx,
-            excluded_support_ids=set(article_ctx.support_by_id) - writer_exposed_support_ids,
-            excluded_story_ids=material_projection.suppressed_story_ids,
-            candidate_text_by_support_id=material_projection.text_by_support_id,
-        )
-        context_str = _replace_writer_quote_allowlist(context_str, writer_quote_allowlist)
-        if materialization_stats is None:
-            raise ValueError("article writer context did not return materialization statistics")
-        materialization_metadata = materialization_stats.to_metadata()
+            composition_plan,
+            context_str,
+            materialization_metadata,
+            writer_exposed_support_ids,
+            writer_quote_allowlist,
+        ) = await asyncio.to_thread(prepare_writer_material)
         system_prompt = self._build_event_article_system_prompt(
             length_profile=length_profile,
             is_longitudinal=is_longitudinal,
@@ -1496,7 +1533,7 @@ class ArticleGenerator:
 
         self.logger.info(
             "Article writer materialized input: stories=%d context_chars=%d prompt_chars=%d",
-            len(getattr(coverage_plan, "stories", ())),
+            len(writer_coverage_plan.stories),
             len(context_str),
             len(system_prompt) + len(user_prompt),
         )
@@ -1509,7 +1546,7 @@ class ArticleGenerator:
                 f"{system_prompt}\0{user_prompt}".encode("utf-8")
             ).hexdigest(),
             "article_writer_prompt_version": ARTICLE_WRITER_VERSION,
-            "coverage_story_count": len(coverage_plan.stories),
+            "coverage_story_count": len(writer_coverage_plan.stories),
             "writer_exposed_citable_support_count": len(writer_exposed_support_ids),
             "composition": composition_plan.to_metadata(),
         }
@@ -1579,7 +1616,9 @@ class ArticleGenerator:
             ]:
                 evaluation_started = perf_counter()
                 raw_parsed = self._parse_event_article_response(raw_response)
-                parsed = _ground_draft_in_coverage_plan(raw_parsed, coverage_plan, article_ctx)
+                parsed = _ground_draft_in_coverage_plan(
+                    raw_parsed, writer_coverage_plan, article_ctx
+                )
                 draft = StructuredArticleDraft.from_dict(parsed, quote_allowlist=quote_allowlist)
                 draft = _normalize_grounded_article_prose(
                     draft,
@@ -1599,7 +1638,7 @@ class ArticleGenerator:
                 coverage_started = perf_counter()
                 diagnostics = diagnose_article_coverage(
                     draft,
-                    coverage_plan,
+                    writer_coverage_plan,
                     context=article_ctx,
                     excluded_story_ids=material_projection.suppressed_story_ids,
                 )
@@ -1607,7 +1646,7 @@ class ArticleGenerator:
                 quality_started = perf_counter()
                 quality = diagnose_article_quality(
                     draft,
-                    coverage_plan,
+                    writer_coverage_plan,
                     article_ctx,
                     material_projection=material_projection,
                     place_resolver=place_resolver,
@@ -1896,7 +1935,7 @@ class ArticleGenerator:
             writer_error=writer_error,
             writer_attempt_id=writer_attempt_id,
             context=article_ctx,
-            coverage_plan=coverage_plan,
+            coverage_plan=writer_coverage_plan,
             editorial_config=editorial_config,
             length_profile=length_profile,
             attempt_observer=attempt_observer,
