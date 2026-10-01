@@ -38,7 +38,9 @@ from src.publication.article_models import (
 from src.publication.article_quality import (
     ArticleReaderQualityFinding,
     ArticleReaderQualityReport,
+    _citable_support_ids,
     _direct_speech_spans,
+    _projected_support_themes,
     diagnose_article_quality,
 )
 from src.publication.article_quality_policy import (
@@ -408,7 +410,12 @@ class ArticleEditor:
                 logger.warning("ArticleEditor could not build unit context for issues; stopping")
                 break
 
-            registry = self._build_pass_registry(current_draft, current_quality, validation_context)
+            registry = self._build_pass_registry(
+                current_draft,
+                current_quality,
+                validation_context,
+                material_projection,
+            )
             system_prompt = self._build_system_prompt()
             user_prompt = self._build_user_prompt(
                 prompt_data,
@@ -2173,11 +2180,10 @@ class ArticleEditor:
         draft: StructuredArticleDraft,
         quality: ArticleReaderQualityReport,
         context: ArticleEditorialContext,
+        material_projection: ArticleMaterialProjection | None,
     ) -> _ArticlePassRegistry:
-        from src.publication.article_context import article_support_theme_hints
         from src.publication.article_quality import (
             _ARTICLE_SECTION_THEME_PATTERNS,
-            _ARTICLE_STORY_THEME_PATTERNS,
             _article_themes,
         )
 
@@ -2213,25 +2219,36 @@ class ArticleEditor:
             sid: _article_themes(section.heading, _ARTICLE_SECTION_THEME_PATTERNS)
             for sid, section in sections.items()
         }
-        family_themes = {
-            "water": "utilities",
-            "power": "utilities",
-            "gas": "utilities",
-            "heating": "utilities",
-            "telecom": "connectivity",
-        }
         for unit_id in targeted:
-            support_ids = _paragraph_support_ids(paragraphs[unit_id])
+            # Quality findings are built from citable evidence. Keep this
+            # structural allowlist on the same evidence boundary so one stale,
+            # contextual, or projection-suppressed citation cannot disable
+            # structural edits for every otherwise repairable paragraph.
+            support_ids = _citable_support_ids(
+                _paragraph_support_ids(paragraphs[unit_id]),
+                context,
+                material_projection,
+            )
+            support_ids = tuple(
+                support_id
+                for support_id in support_ids
+                if (support := context.support_by_id.get(support_id)) is not None
+                and (
+                    sanitize_writer_source_text(support.text)
+                    or sanitize_writer_source_text(support.source_text)
+                )
+            )
+            if not support_ids:
+                continue
             source_supports[unit_id] = support_ids
             themes: set[str] = set()
             for support_id in support_ids:
-                support = context.support_by_id.get(support_id)
-                if support is None or support.publication_use != "PUBLISH":
-                    continue
-                themes.update(_article_themes(support.text, _ARTICLE_STORY_THEME_PATTERNS))
                 themes.update(
-                    family_themes.get(theme, theme)
-                    for theme in article_support_theme_hints(support)
+                    _projected_support_themes(
+                        support_id,
+                        context,
+                        material_projection,
+                    )
                 )
             compatible = {sid for sid, heading in heading_themes.items() if themes & heading}
             # Keeping the source section permits a first-pass split; a fresh
