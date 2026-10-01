@@ -23,3 +23,7 @@ class PublicationEvidence:
     source_item_id: int
     source_role: str
     observed_at: dt.datetime
+    # Explicit reply-parent context is retained separately from the reply fact.
+    # It may explain a subject/place, but must never ground the reply's claim.
+    reply_parent_context_text: str = ""
+    reply_parent_item_id: int | None = None

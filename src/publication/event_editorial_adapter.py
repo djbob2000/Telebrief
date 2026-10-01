@@ -112,6 +112,7 @@ class EventEditorialAdapter:
         all_observations_with_time: list[
             tuple[OperationalObservationPayload, dt.datetime, Sequence[str]]
         ] = []
+        run = await self.repo.get_run_by_id(conn, run_id)
 
         for _rank, inp in enumerate(inputs, start=1):
             # 1. Fetch story revision event_payload
@@ -147,7 +148,8 @@ class EventEditorialAdapter:
                 """
                 SELECT f.id, f.text_content, s.id, s.platform, s.name, s.role, s.url,
                        s.external_id, si.id, sir.id, si.canonical_url, si.author_name,
-                       COALESCE(si.published_at, si.first_collected_at, f.created_at)
+                       COALESCE(si.published_at, si.first_collected_at, f.created_at),
+                       si.parent_item_id
                 FROM source_fragments f
                 JOIN source_item_revisions sir ON sir.id = f.source_item_revision_id
                 JOIN source_items si ON si.id = sir.source_item_id
@@ -158,6 +160,34 @@ class EventEditorialAdapter:
                 (inp.fragment_ids or [0],),
             )
             frag_rows = await f_cur.fetchall()
+
+            # Reply-parent text is separate context, read only from the latest
+            # immutable parent revision visible at this frozen publication
+            # snapshot. Never resolve against a mutable latest/head revision.
+            parent_item_ids = list(
+                dict.fromkeys(
+                    int(f_row[13])
+                    for f_row in frag_rows
+                    if len(f_row) > 13 and f_row[13] is not None
+                )
+            )
+            parent_text_by_item_id: dict[int, str] = {}
+            if run is not None and parent_item_ids:
+                parent_cur = await conn.execute(
+                    """
+                    SELECT DISTINCT ON (sir.source_item_id)
+                           sir.source_item_id, sir.text_content
+                    FROM source_item_revisions sir
+                    WHERE sir.source_item_id = ANY(%s)
+                      AND sir.collected_at <= %s
+                    ORDER BY sir.source_item_id, sir.collected_at DESC, sir.id DESC
+                    """,
+                    (parent_item_ids, run.snapshot_at),
+                )
+                for parent_row in await parent_cur.fetchall():
+                    parent_text = " ".join(str(parent_row[1] or "").split()).strip()
+                    if parent_text:
+                        parent_text_by_item_id[int(parent_row[0])] = parent_text[:200]
 
             card_source_refs: list[str] = []
             frag_id_to_ref: dict[int, str] = {}
@@ -178,7 +208,13 @@ class EventEditorialAdapter:
                     canon_url,
                     author_name,
                     collected_at,
-                ) = f_row
+                ) = f_row[:13]
+                parent_item_id = f_row[13] if len(f_row) > 13 else None
+                reply_parent_text = (
+                    parent_text_by_item_id.get(int(parent_item_id), "")
+                    if parent_item_id is not None
+                    else ""
+                )
 
                 ref_key = f"{platform}:source:{src_id}:item:{item_id}:rev:{rev_id}:frag:{fid}"
                 card_source_refs.append(ref_key)
@@ -196,6 +232,12 @@ class EventEditorialAdapter:
                     "observed_at": obs_time,
                     "source_ref": ref_key,
                     "source_text": ftext,
+                    "reply_parent_context_text": reply_parent_text,
+                    "reply_parent_item_id": (
+                        int(parent_item_id)
+                        if parent_item_id is not None and reply_parent_text
+                        else None
+                    ),
                 }
 
                 if ref_key not in records:
@@ -237,6 +279,8 @@ class EventEditorialAdapter:
                                 source_item_id=meta["source_item_id"],
                                 source_role=meta["source_role"],
                                 observed_at=meta["observed_at"],
+                                reply_parent_context_text=meta["reply_parent_context_text"],
+                                reply_parent_item_id=meta["reply_parent_item_id"],
                             )
             elif frag_rows:
                 facts = payload.key_facts if (payload and payload.key_facts) else []
@@ -257,6 +301,8 @@ class EventEditorialAdapter:
                                 source_item_id=meta["source_item_id"],
                                 source_role=meta["source_role"],
                                 observed_at=meta["observed_at"],
+                                reply_parent_context_text=meta["reply_parent_context_text"],
+                                reply_parent_item_id=meta["reply_parent_item_id"],
                             )
                 else:
                     for fid, meta in frag_meta_map.items():
@@ -274,6 +320,8 @@ class EventEditorialAdapter:
                             source_item_id=meta["source_item_id"],
                             source_role=meta["source_role"],
                             observed_at=meta["observed_at"],
+                            reply_parent_context_text=meta["reply_parent_context_text"],
+                            reply_parent_item_id=meta["reply_parent_item_id"],
                         )
 
             # 3. Build StoryCard
@@ -481,7 +529,6 @@ class EventEditorialAdapter:
                 story_cards.append(card)
 
         # Build CitySituationRollup for digest publication runs
-        run = await self.repo.get_run_by_id(conn, run_id)
         city_rollup = None
         if run is not None and run.publication_type in (
             "digest_grouped",

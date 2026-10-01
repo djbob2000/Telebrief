@@ -459,6 +459,16 @@ def _render_article_story_packets(
             compact_lines.append(
                 f"  support={support.support_id} framing={framing} {temporal} fact={raw_fact}"
             )
+            parent_context = _compact_text(
+                sanitize_writer_source_text(support.reply_parent_context_text), 240
+            )
+            if parent_context:
+                context_line = (
+                    "reply_parent_context (subject/place only; not a status or answer)="
+                    + parent_context
+                )
+                full_lines.append(f"    {context_line}")
+                compact_lines.append(f"    {context_line}")
 
         if not selected_supports:
             full_lines.append("  support=none fact=No citable support was materialized.")
@@ -561,6 +571,11 @@ def render_article_writer_context_with_stats(
                 "- Trace trajectory evolution with precise effective-time anchors when those times are supplied. observed_at is report chronology, not an event start.\n"
                 "- Finish on a supported development, consequence, or unresolved question when the material provides one; do not use a fixed closing heading or repeat the lead's premise."
             )
+    blocks.append(
+        "REPLY-PARENT CONTEXT RULE: Separately labeled reply-parent context may identify only "
+        "the subject or location of its linked reply. It is not an answer or a service-status fact; "
+        "ground availability and other claims only in the reply's cited fact/source."
+    )
 
     if coverage_plan is not None and include_coverage_plan:
         blocks.append(
@@ -691,7 +706,7 @@ def render_article_writer_context_with_stats(
     # available in ArticleEditorialContext for traceability, but repeating
     # their prose in the LLM prompt needlessly multiplies token usage.
     grouped_supports: list[list[ArticleSupport]] = []
-    groups_by_key: dict[tuple[str, str, str, str, str], list[ArticleSupport]] = {}
+    groups_by_key: dict[tuple[str, str, str, str, str, str], list[ArticleSupport]] = {}
     for sup in context.support_index:
         if sup.publication_use == "EXCLUDE":
             continue
@@ -724,6 +739,7 @@ def render_article_writer_context_with_stats(
             sup.support_kind,
             sup.publication_use,
             _support_framing(sup),
+            _compact_text(sanitize_writer_source_text(sup.reply_parent_context_text), 240),
         )
         group = groups_by_key.get(group_key)
         if group is None:
@@ -760,19 +776,29 @@ def render_article_writer_context_with_stats(
         lines.append(f"fact={_compact_text(fact_text, _SUPPORT_FACT_MAX_CHARS)}")
         if source_text:
             lines.append(f"source={_compact_text(source_text, _SUPPORT_SOURCE_MAX_CHARS)}")
+        parent_context = _compact_text(
+            sanitize_writer_source_text(sup.reply_parent_context_text), 240
+        )
+        if parent_context:
+            lines.append(
+                "reply_parent_context (subject/place only; not a status or answer)="
+                f"{parent_context}"
+            )
         support_blocks.append("\n".join(lines))
 
-        compact_support_blocks.append(
-            "\n".join(
-                [
-                    f"[SUPPORT {support_ids}]",
-                    f"kind={sup.support_kind} publication_use={sup.publication_use}",
-                    f"evidence_kind={sup.evidence_kind} source_roles={roles}",
-                    f"framing={_support_framing(sup)}",
-                    f"fact={_compact_text(fact_text, _SUPPORT_COMPACT_FACT_MAX_CHARS)}",
-                ]
+        compact_lines = [
+            f"[SUPPORT {support_ids}]",
+            f"kind={sup.support_kind} publication_use={sup.publication_use}",
+            f"evidence_kind={sup.evidence_kind} source_roles={roles}",
+            f"framing={_support_framing(sup)}",
+            f"fact={_compact_text(fact_text, _SUPPORT_COMPACT_FACT_MAX_CHARS)}",
+        ]
+        if parent_context:
+            compact_lines.append(
+                "reply_parent_context (subject/place only; not a status or answer)="
+                + parent_context
             )
-        )
+        compact_support_blocks.append("\n".join(compact_lines))
 
     holistic_stats: ArticleWriterMaterializationStats | None = None
     if coverage_plan is not None and materialization_mode == "holistic":
@@ -1049,6 +1075,16 @@ def render_article_editorial_brief_context(
                     f"cited_by={', '.join(dict.fromkeys(references))}",
                     " ".join(temporal_fields),
                     f"fact={fact}",
+                    *(
+                        (
+                            "reply_parent_context (subject/place only; not a status or answer)="
+                            + _compact_text(
+                                sanitize_writer_source_text(support.reply_parent_context_text), 240
+                            ),
+                        )
+                        if support.reply_parent_context_text
+                        else ()
+                    ),
                 )
             )
         )

@@ -107,6 +107,10 @@ class ArticleSupport:
     evidence_kind: str = "established_fact"
     source_roles: tuple[str, ...] = ()
     story_id: str = ""
+    # Reply-parent text is name/context-only; it is not evidence for the
+    # operational state stated by the reply itself.
+    reply_parent_context_text: str = ""
+    reply_parent_item_id: int | None = None
 
 
 def _support_framing(support: ArticleSupport) -> str:
@@ -231,6 +235,11 @@ class ArticleEditorialContext:
             lines.append(f"fact={sup.text}")
             if sup.source_text:
                 lines.append(f"source={sup.source_text}")
+            if sup.reply_parent_context_text:
+                lines.append(
+                    "reply_parent_context (subject/place only; not a status or answer)="
+                    + sup.reply_parent_context_text
+                )
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks).strip()
 
@@ -249,6 +258,8 @@ def _support_semantic_key(support: ArticleSupport) -> tuple[str, ...]:
         support.effective_until.isoformat() if support.effective_until else "",
         support.temporal_role,
         "\x1f".join(support.source_roles),
+        support.reply_parent_context_text,
+        str(support.reply_parent_item_id or ""),
     )
 
 
@@ -430,12 +441,20 @@ def build_article_editorial_context(
                 publication_use=evi.publication_use,  # "PUBLISH" or "CONTEXT"
                 source_refs=(evi.source_ref,) if evi.source_ref else (),
                 fragment_ids=(evi.fragment_id,) if evi.fragment_id else (),
-                source_item_ids=(evi.source_item_id,) if evi.source_item_id else (),
+                source_item_ids=tuple(
+                    dict.fromkeys(
+                        item_id
+                        for item_id in (evi.source_item_id, evi.reply_parent_item_id)
+                        if item_id
+                    )
+                ),
                 observed_at=evi.observed_at,
                 temporal_role=temporal_role,
                 evidence_kind=evi.kind,
                 source_roles=(evi.source_role,) if evi.source_role else (),
                 story_id=f"story:{evi.story_id}" if evi.story_id is not None else "",
+                reply_parent_context_text=evi.reply_parent_context_text,
+                reply_parent_item_id=evi.reply_parent_item_id,
             ),
         )
 

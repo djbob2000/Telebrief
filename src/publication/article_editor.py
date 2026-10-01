@@ -403,12 +403,92 @@ class ArticleEditor:
             ids.extend(claim_ids)
             return list(dict.fromkeys(ids))
 
-        if "TITLE" in issues_by_unit:
-            t_sups = unit_supports(
+        def current_title_repair_supports() -> list[str]:
+            """Find current-window article evidence for repairing a historical title.
+
+            A title that cites only historical supports cannot be repaired by
+            rephrasing those same supports: the validator will still correctly
+            reject it for lacking current-window evidence. Offer the editor
+            only relevant, current-window supports already used elsewhere in
+            this draft, then constrain re-grounding to those same IDs.
+            """
+            from src.publication.article_claims import _stem
+            from src.publication.article_semantic_support import _STOPWORDS
+
+            draft_support_ids: list[str] = list(draft.cited_support_ids)
+            for claim in (*draft.title_claims, *draft.lead_claims):
+                draft_support_ids.extend(claim.cited_support_ids)
+            for section in draft.sections:
+                for claim in section.heading_claims:
+                    draft_support_ids.extend(claim.cited_support_ids)
+                for paragraph in section.paragraphs:
+                    draft_support_ids.extend(paragraph.cited_support_ids)
+                    for claim in paragraph.claims:
+                        draft_support_ids.extend(claim.cited_support_ids)
+            draft_support_ids = list(dict.fromkeys(draft_support_ids))
+
+            historical_text = [draft.title]
+            for support_id in unit_supports(
                 list(draft.title_support_ids),
                 [sid for claim in draft.title_claims for sid in claim.cited_support_ids],
-                issues_by_unit["TITLE"],
+                issues_by_unit.get("TITLE", []),
+            ):
+                support = context.support_by_id.get(support_id)
+                if support and support.temporal_role == "HISTORICAL_CONTEXT":
+                    historical_text.extend((support.text, support.source_text))
+
+            token_re = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
+
+            def distinctive_stems(value: str) -> set[str]:
+                stems: set[str] = set()
+                for token in token_re.findall(value or ""):
+                    normalized = token.casefold().replace("ё", "е")
+                    if len(normalized) < 3 or normalized in _STOPWORDS:
+                        continue
+                    stems.add(_stem(normalized))
+                return stems
+
+            title_stems = distinctive_stems(" ".join(historical_text))
+            if not title_stems:
+                return []
+
+            scored: list[tuple[int, str]] = []
+            for support_id in draft_support_ids:
+                support = context.support_by_id.get(support_id)
+                if (
+                    support is None
+                    or support.publication_use != "PUBLISH"
+                    or support.temporal_role != "CURRENT_WINDOW"
+                ):
+                    continue
+                overlap = len(
+                    title_stems & distinctive_stems(f"{support.text} {support.source_text}")
+                )
+                if overlap:
+                    scored.append((overlap, support_id))
+
+            # Keep the editor's task small and focused. The lexical filter is
+            # only used to select candidate evidence; apply_patches still
+            # performs the normal grounded, support-limited re-grounding.
+            scored.sort(key=lambda item: (-item[0], draft_support_ids.index(item[1])))
+            return [support_id for _, support_id in scored[:6]]
+
+        if "TITLE" in issues_by_unit:
+            title_has_unframed_history = any(
+                getattr(issue, "code", "") == "HISTORICAL_CONTEXT_UNFRAMED"
+                for issue in issues_by_unit["TITLE"]
             )
+            if title_has_unframed_history:
+                # The candidate title must be grounded in today's article
+                # material. Keeping the old historical IDs in the allowed set
+                # would let the title retain the stale claim and fail again.
+                t_sups = current_title_repair_supports()
+            else:
+                t_sups = unit_supports(
+                    list(draft.title_support_ids),
+                    [sid for claim in draft.title_claims for sid in claim.cited_support_ids],
+                    issues_by_unit["TITLE"],
+                )
             unit_data.append(
                 {
                     "unit_id": "TITLE",
@@ -691,11 +771,22 @@ class ArticleEditor:
                     blocks.append(f"  Следующий абзац: {reader_context['next_paragraph']}")
             blocks.append("Замечания валидатора:")
             if utype == "title":
-                blocks.append(
-                    "  ⚠️ ВНИМАНИЕ ДЛЯ ЗАГОЛОВКА (TITLE): Заголовок ОБЯЗАН быть в статье (ЗАПРЕЩЕНО возвращать [DELETE]!). "
-                    "Удалите любые конкретные цифры, даты, проценты и неподтвержденные названия. "
-                    "Напишите общий заголовок о ситуации в городе (например: «Ситуация со светом и городские будни Бердянска»)."
-                )
+                if any(
+                    getattr(issue, "code", "") == "HISTORICAL_CONTEXT_UNFRAMED" for issue in issues
+                ):
+                    blocks.append(
+                        "  ⚠️ ВНИМАНИЕ ДЛЯ ЗАГОЛОВКА (TITLE): Заголовок ОБЯЗАН быть в статье "
+                        "(ЗАПРЕЩЕНО возвращать [DELETE]!). Перепишите его только по сегодняшним "
+                        "подтверждениям ниже; не используйте общую формулировку, если она не "
+                        "подкреплена этими материалами. Не добавляйте неподтверждённые даты, "
+                        "цифры, названия или городской масштаб."
+                    )
+                else:
+                    blocks.append(
+                        "  ⚠️ ВНИМАНИЕ ДЛЯ ЗАГОЛОВКА (TITLE): Заголовок ОБЯЗАН быть в статье (ЗАПРЕЩЕНО возвращать [DELETE]!). "
+                        "Удалите любые конкретные цифры, даты, проценты и неподтвержденные названия. "
+                        "Напишите общий заголовок о ситуации в городе (например: «Ситуация со светом и городские будни Бердянска»)."
+                    )
             elif utype == "lead":
                 blocks.append(
                     "  ⚠️ ВНИМАНИЕ ДЛЯ ЛИДА (LEAD): Вводный абзац ОБЯЗАН быть в статье (ЗАПРЕЩЕНО возвращать [DELETE] или пустую строку!). "
@@ -748,7 +839,17 @@ class ArticleEditor:
                 elif iss.code == "QUESTION_CONTEXT_OVERCLAIM":
                     msg += " -> ВАЖНО: запрещено утверждать вопрос жителей из чата как установленный факт. Используйте вопросительную или исследовательскую формулировку («Что известно о...», «Вопросы жителей о...») либо перепишите по реальным подтвержденным фактам!"
                 elif iss.code == "HISTORICAL_CONTEXT_UNFRAMED":
-                    msg += " -> ВАЖНО: если событие длится уже несколько дней или произошло ранее, обязательно добавьте маркер продолжения («по-прежнему», «продолжаются», «сохраняются») либо сфокусируйте формулировку строго на событиях сегодняшнего дня!"
+                    if utype == "title":
+                        msg += (
+                            " -> ВАЖНО: замените заголовок формулировкой только о сегодняшнем "
+                            "материале. Для этой правки ниже приведены текущие подтверждения; "
+                            "исторические основания намеренно не разрешены для нового заголовка. "
+                            "Не переносите в него состояние из прошлых дней и не обобщайте его "
+                            "на весь город. Используйте только темы и детали, которые прямо "
+                            "подтверждены источниками ниже."
+                        )
+                    else:
+                        msg += " -> ВАЖНО: если событие длится уже несколько дней или произошло ранее, обязательно добавьте маркер продолжения («по-прежнему», «продолжаются», «сохраняются») либо сфокусируйте формулировку строго на событиях сегодняшнего дня!"
                 elif iss.code == "PHANTOM_HEADING_TOPIC":
                     msg += " -> ВАЖНО: скорректируйте заголовок раздела, удалив из перечисления после двоеточия темы, которые фактически не освещены в тексте абзацев!"
                 elif iss.code == "LEAKED_META_OMISSION":
@@ -764,7 +865,12 @@ class ArticleEditor:
                 has_roster_finding = any(
                     getattr(issue, "code", "") == "OVERLOADED_ROSTER_PARAGRAPH" for issue in issues
                 )
-                support_lines = supports if has_roster_finding else supports[:5]
+                has_historical_title_finding = utype == "title" and any(
+                    getattr(issue, "code", "") == "HISTORICAL_CONTEXT_UNFRAMED" for issue in issues
+                )
+                support_lines = (
+                    supports if has_roster_finding or has_historical_title_finding else supports[:5]
+                )
                 for s_text in support_lines:
                     blocks.append(f"  - {s_text}")
 

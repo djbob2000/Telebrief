@@ -142,6 +142,48 @@ _HEADING_EDITORIAL_FILLER = {
     "также",
 }
 
+
+def _remaining_proper_name_blockers(
+    text: str,
+    base_blockers: tuple[str, ...],
+    supports: list[ArticleSupport],
+    *,
+    allowed_context_terms: tuple[str, ...],
+    prepared_context: Any,
+) -> tuple[str, ...]:
+    """Allow explicit reply-parent text to resolve names only.
+
+    The base blockers are calculated from the cited reply evidence. Rechecking
+    name matches with the linked parent text can only remove a proper-name
+    blocker; the parent text never participates in content, status, quantity,
+    causality, or other claim matching.
+    """
+    if not base_blockers:
+        return ()
+    reply_texts = [
+        value for support in supports for value in (support.text, support.source_text) if value
+    ]
+    parent_contexts = [
+        support.reply_parent_context_text
+        for support in supports
+        if (
+            support.publication_use == "PUBLISH"
+            and support.evidence_kind != "resident_question"
+            and support.reply_parent_context_text.strip()
+        )
+    ]
+    if not parent_contexts:
+        return base_blockers
+    with_parent_context = assess_semantic_support(
+        text,
+        [*reply_texts, *parent_contexts],
+        allowed_context_terms=allowed_context_terms,
+        prepared_context=prepared_context,
+    )
+    resolved_by_parent = set(with_parent_context.blocking_proper_names)
+    return tuple(name for name in base_blockers if name in resolved_by_parent)
+
+
 _WEEKLY_EXPANSION_RE = re.compile(
     r"\b(?:хроник[а-я]*\s+недел[а-я]*|итог[а-я]*\s+недел[а-я]*|событи[а-я]*\s+недел[а-я]*|обзор[а-я]*\s+недел[а-я]*|за\s+недел[а-я]*)\b",
     re.IGNORECASE,
@@ -1376,6 +1418,26 @@ def validate_article_draft(
                     all_known_draft_supports=all_edition_support_texts,
                     direct_quote_allowlist=quote_allowlist,
                 )
+                claim_supports = [
+                    support_map[sid] for sid in claim.cited_support_ids if sid in support_map
+                ]
+                unresolved_proper_names = _remaining_proper_name_blockers(
+                    claim.text,
+                    assessment.blocking_proper_names,
+                    claim_supports,
+                    allowed_context_terms=allowed_context_terms,
+                    prepared_context=prepared_edition_context,
+                )
+                parent_grounded_name_stems = {
+                    _stem(name)
+                    for name in assessment.blocking_proper_names
+                    if name not in unresolved_proper_names
+                }
+                remaining_semantic_terms = tuple(
+                    term
+                    for term in assessment.blocking_semantic_terms
+                    if _stem(term) not in parent_grounded_name_stems
+                )
 
                 if not assessment.supported:
                     if any(
@@ -1391,12 +1453,12 @@ def validate_article_draft(
                                 claim_text=claim.text,
                             )
                         )
-                    elif assessment.blocking_proper_names:
+                    elif unresolved_proper_names:
                         issues.append(
                             ArticleValidationIssue(
                                 code="UNSUPPORTED_PROPER_NAME",
                                 unit_id=unit_id,
-                                message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported proper names {assessment.blocking_proper_names}",
+                                message=f"Unit {unit_id} claim atom '{claim.text}' contains unsupported proper names {unresolved_proper_names}",
                                 support_ids=claim.cited_support_ids,
                                 unsupported_claims=assessment.unsupported_concrete_claims,
                                 claim_text=claim.text,
@@ -1453,12 +1515,9 @@ def validate_article_draft(
                     else:
                         is_blocking = bool(
                             assessment.unsupported_concrete_claims
-                            or assessment.blocking_proper_names
+                            or unresolved_proper_names
                             or assessment.blocking_critical_terms
-                            or (
-                                assessment.blocking_semantic_terms
-                                and unit_type not in ("title", "lead")
-                            )
+                            or (remaining_semantic_terms and unit_type not in ("title", "lead"))
                         )
                         issues.append(
                             ArticleValidationIssue(
@@ -1559,14 +1618,21 @@ def validate_article_draft(
                 allowed_context_terms=unit_context_terms,
                 prepared_context=prepared_edition_context,
             )
-            if unit_semantic.blocking_proper_names:
+            unresolved_unit_proper_names = _remaining_proper_name_blockers(
+                unit_text,
+                unit_semantic.blocking_proper_names,
+                valid_supports,
+                allowed_context_terms=unit_context_terms,
+                prepared_context=prepared_edition_context,
+            )
+            if unresolved_unit_proper_names:
                 issues.append(
                     ArticleValidationIssue(
                         code="UNSUPPORTED_PROPER_NAME",
                         unit_id=unit_id,
                         message=(
                             f"Unit {unit_id} reader-facing text contains unsupported proper names "
-                            f"{unit_semantic.blocking_proper_names}"
+                            f"{unresolved_unit_proper_names}"
                         ),
                         support_ids=cited_ids,
                     )
