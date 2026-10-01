@@ -291,6 +291,7 @@ settings:
     editorial_repair_max_output_tokens: 131072
 
     editorial_api_timeout: 900
+    article_generation_timeout_seconds: 1200
     save_debug_artifacts: true
 
   # Weekly Long-Read Articles (Итоги недели)

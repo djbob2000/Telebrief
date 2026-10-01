@@ -281,12 +281,15 @@ def _render_composition_plan(
     suppressed = set(composition_plan.suppressed_story_ids)
     groups_by_id = {group.group_id: group for group in composition_plan.groups}
     lines = [
-        "ARTICLE COMPOSITION ROADMAP",
-        "Depth controls space, not eligibility. Exact facts, attribution, and time fields are in each Story packet.",
+        f"ARTICLE COMPOSITION ROADMAP version={composition_plan.version}",
+        "Depth controls space, not eligibility. Every listed visible Story belongs to exactly one group; packets remain authoritative for exact claims, attribution, and time fields.",
+        "The line and group sequence is the preferred reading order, not a required order. Reorder whole thematic lines, and groups within a line, when it improves the article; keep each group under its listed thematic line and preserve its place and time boundaries.",
+        "A thematic line can contain several independent groups: sharing a service heading means a shared topic only, not a relation. Do not synthesize across groups.",
         "A named line is an evidence-compatible thematic home for its listed groups; do not move a group into a differently themed chapter based only on broad card tags.",
-        "A line without a heading has no reliable shared theme. Keep those Stories factually separate and use a neutral city-life passage if they do not fit a named chapter.",
-        "A GROUP relation=independent means the Stories have no supported cross-story relation; keep their facts distinct even if they share a broad section.",
-        "Only relation labels other than independent describe a deterministic support-backed relation between Stories.",
+        "A line without a heading has no reliable shared theme. Keep its groups factually separate and use a neutral city-life passage if they do not fit a named chapter.",
+        "Only a non-independent GROUP relation supports synthesis across its listed Stories. relation=independent keeps its Story separate from other groups. Keep every claim traceable to the member's packet.",
+        "For localized_contrast, preserve which place has which condition; for temporal_progression, keep the supported periods distinct. Connect a practical_consequence only as stated in its evidence.",
+        "Use the STORY GEOGRAPHY INDEX and each Story packet to keep locations attached to their Story. Treat profile-resolved aliases as the same place, but retain each claim's source and time. If a Story names separate or ambiguous areas, do not assign it to one area or use it to imply that places are near each other.",
         "Do not infer a shared neighborhood, proximity, adjacency, or distance from ordering or shared area labels.",
     ]
     for narrative_line in composition_plan.narrative_lines:

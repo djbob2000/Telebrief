@@ -6,12 +6,19 @@ import asyncio
 import json
 import logging
 import re
+from collections import Counter
 from time import perf_counter
 from typing import Any, Callable, Mapping
 
-from src.ai_providers import AIProvider
+from src.ai_providers import AIProvider, capture_provider_attempts
 from src.publication.article_context import ArticleEditorialContext
 from src.publication.article_coverage import ArticleCoveragePlan
+from src.publication.article_coverage_diagnostics import diagnose_article_coverage
+from src.publication.article_finalization import (
+    ArticleAssessmentCheckpoint,
+    ArticleCheckpointObserver,
+    article_assessment_input_fingerprint,
+)
 from src.publication.article_material import (
     ArticleMaterialProjection,
     materialize_article_validation_context,
@@ -28,7 +35,12 @@ from src.publication.article_models import (
 from src.publication.article_quality import (
     ArticleReaderQualityFinding,
     ArticleReaderQualityReport,
+    _direct_speech_spans,
     diagnose_article_quality,
+)
+from src.publication.article_quality_policy import (
+    ArticleQualityPolicyError,
+    article_quality_policy,
 )
 from src.publication.article_validator import ArticleValidationResult, validate_article_draft
 from src.publication.article_writer_context import sanitize_writer_source_text
@@ -43,13 +55,30 @@ _MAX_EDITOR_SUPPORTS = 64
 _MAX_EDITOR_SUPPORT_CONTEXT_CHARS = 32_000
 _MAX_EDITOR_SUPPORT_PACKET_CHARS = 4_000
 
-_LOCALLY_REPAIRABLE_ARTICLE_FINDINGS = frozenset(
-    {
-        "DIRECTORY_TIMETABLE_SECTION",
-        "THEME_MISMATCHED_SECTION",
-        "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION",
-    }
-)
+
+def _preserves_existing_direct_quotes(original: str, replacement: str) -> bool:
+    """Allow removing speech; preserve its exact words and permit typographic names.
+
+    A new quote may wrap text that already appeared unquoted in the original
+    unit (for example, the provider-name typography repair). A shortened or
+    altered existing quote is rejected unless that exact wording independently
+    appeared outside any original quote.
+    """
+    original_spans = _direct_speech_spans(original)
+    original_quotes = Counter(span.content for span in original_spans)
+    replacement_quotes = Counter(span.content for span in _direct_speech_spans(replacement))
+    extra_quotes = replacement_quotes - original_quotes
+    for quote in extra_quotes:
+        quote_spans = tuple(match.span() for match in re.finditer(re.escape(quote), original))
+        if not any(
+            not any(
+                old_quote.full_span[0] <= start and end <= old_quote.full_span[1]
+                for old_quote in original_spans
+            )
+            for start, end in quote_spans
+        ):
+            return False
+    return True
 
 
 def _reground_support_ids(
@@ -120,6 +149,8 @@ class ArticleEditor:
         self.temperature = temperature
         self.max_output_tokens = min(max_output_tokens, 32768)
         self.last_attempt_count = 0
+        self.last_provider_attempts: list[dict[str, Any]] = []
+        self.last_assessment: ArticleAssessmentCheckpoint | None = None
         self.last_patched_unit_ids: tuple[str, ...] = ()
         self.last_quality_report = ArticleReaderQualityReport()
 
@@ -139,6 +170,8 @@ class ArticleEditor:
         coverage_plan: ArticleCoveragePlan | None = None,
         material_projection: ArticleMaterialProjection | None = None,
         place_resolver: Any | None = None,
+        assessment: ArticleAssessmentCheckpoint | None = None,
+        checkpoint_observer: ArticleCheckpointObserver | None = None,
     ) -> tuple[StructuredArticleDraft, ArticleValidationResult]:
         """Apply targeted editorial corrections to units with blocking validation issues."""
         current_draft = draft
@@ -146,6 +179,7 @@ class ArticleEditor:
         current_quality = quality_report or ArticleReaderQualityReport()
         self.last_quality_report = current_quality
         patched_unit_ids: list[str] = []
+        self.last_provider_attempts = []
         self.last_attempt_count = 0
         self.last_patched_unit_ids = ()
         no_op_patch_signatures: dict[str, set[str]] = {}
@@ -156,9 +190,96 @@ class ArticleEditor:
             else context
         )
 
+        max_attempts = min(max_attempts, 2)
+        input_fingerprint = await asyncio.to_thread(
+            article_assessment_input_fingerprint,
+            context,
+            coverage_plan,
+            config,
+            length_profile,
+            material_projection,
+            place_resolver,
+        )
+        reusable_assessment = assessment is not None and assessment.matches(
+            draft, input_fingerprint
+        )
+        if reusable_assessment and assessment is not None:
+            current_val, current_quality = assessment.validation, assessment.quality
+        elif max_attempts > 0:
+            current_val = await asyncio.to_thread(
+                validate_article_draft,
+                draft,
+                context,
+                config=config,
+                length_profile=length_profile,
+                material_projection=material_projection,
+            )
+            if coverage_plan is not None:
+                current_quality = await asyncio.to_thread(
+                    diagnose_article_quality,
+                    draft,
+                    coverage_plan,
+                    context,
+                    material_projection=material_projection,
+                    place_resolver=place_resolver,
+                )
+        self.last_assessment = (
+            ArticleAssessmentCheckpoint(
+                current_draft,
+                current_val,
+                current_quality,
+                input_fingerprint,
+            )
+            if reusable_assessment or max_attempts > 0
+            else None
+        )
+        if reusable_assessment:
+            self.last_assessment = assessment
+        self.last_quality_report = current_quality
+
+        def blocking_keys(
+            validation: ArticleValidationResult, quality: ArticleReaderQualityReport
+        ) -> dict[tuple[Any, ...], str]:
+            return {
+                **{
+                    (
+                        "evidence",
+                        issue.code,
+                        issue.unit_id,
+                        tuple(sorted(issue.support_ids)),
+                        issue.claim_text,
+                        repr(issue.unsupported_claims),
+                    ): issue.unit_id
+                    for issue in validation.issues
+                    if issue.blocking
+                },
+                **{
+                    (
+                        "quality",
+                        finding.code,
+                        finding.unit_id,
+                        tuple(sorted(finding.support_ids)),
+                        finding.message,
+                    ): finding.unit_id
+                    for finding in quality.blocking_findings
+                },
+            }
+
+        def actionable_keys(
+            validation: ArticleValidationResult, quality: ArticleReaderQualityReport
+        ) -> set[tuple[Any, ...]]:
+            return {
+                (issue.code, issue.unit_id, tuple(sorted(issue.support_ids)))
+                for issue in validation.issues
+                if issue.blocking
+            } | {
+                (finding.code, localized.unit_id, tuple(sorted(localized.support_ids)))
+                for finding in quality.repair_findings
+                for localized in self._localize_article_quality_finding(current_draft, finding)
+            }
+
         for attempt in range(1, max_attempts + 1):
             attempt_started = perf_counter()
-            self.last_attempt_count = attempt
             blocking_issues = [
                 iss
                 for iss in current_val.issues
@@ -225,24 +346,31 @@ class ArticleEditor:
                 )
 
             previous_draft = current_draft
+            previous_actionable = actionable_keys(current_val, current_quality)
             previous_val = current_val
             previous_quality = current_quality
+            previous_assessment = self.last_assessment
             previous_patched_unit_ids = list(patched_unit_ids)
             response: str | None = None
             unit_outcomes: dict[str, dict[str, str]] = {}
             requested_units = {unit["unit_id"] for unit in prompt_data}
             try:
-                response = await self.provider.chat_completion(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    model=self.model,
-                    temperature=self.temperature,
-                    max_tokens=self.max_output_tokens,
-                    reasoning_effort="none",
-                    response_format={"type": "json_object"},
-                )
+                self.last_attempt_count += 1
+                with capture_provider_attempts(self.provider) as counts:
+                    try:
+                        response = await self.provider.chat_completion(
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_prompt},
+                            ],
+                            model=self.model,
+                            temperature=self.temperature,
+                            max_tokens=self.max_output_tokens,
+                            reasoning_effort="none",
+                            response_format={"type": "json_object"},
+                        )
+                    finally:
+                        self.last_provider_attempts.append(counts.to_metadata())
                 patches = self._parse_editor_response(response)
                 patches = {
                     unit_id: value
@@ -265,7 +393,14 @@ class ArticleEditor:
                             obs_att_id,
                             "failed",
                             error_kind="empty_patches",
-                            metadata={"unit_outcomes": self._compact_unit_outcomes(unit_outcomes)},
+                            metadata={
+                                "unit_outcomes": self._compact_unit_outcomes(unit_outcomes),
+                                "provider_attempts": self.last_provider_attempts[-1]
+                                if self.last_provider_attempts
+                                else None,
+                                "logical_editor_invocation": self.last_attempt_count,
+                                "pass_elapsed_seconds": round(perf_counter() - attempt_started, 3),
+                            },
                         )
                     self._save_attempt_debug_artifact(
                         save_debug_artifact,
@@ -307,7 +442,14 @@ class ArticleEditor:
                             obs_att_id,
                             "failed",
                             error_kind="repeated_no_op_patches",
-                            metadata={"unit_outcomes": self._compact_unit_outcomes(unit_outcomes)},
+                            metadata={
+                                "unit_outcomes": self._compact_unit_outcomes(unit_outcomes),
+                                "provider_attempts": self.last_provider_attempts[-1]
+                                if self.last_provider_attempts
+                                else None,
+                                "logical_editor_invocation": self.last_attempt_count,
+                                "pass_elapsed_seconds": round(perf_counter() - attempt_started, 3),
+                            },
                         )
                     self._save_attempt_debug_artifact(
                         save_debug_artifact,
@@ -385,6 +527,8 @@ class ArticleEditor:
 
                 validation_elapsed = 0.0
                 quality_elapsed = 0.0
+                if actually_changed and checkpoint_observer is not None:
+                    checkpoint_observer("editor_candidate", current_draft, None)
                 if actually_changed:
                     (
                         current_val,
@@ -392,7 +536,126 @@ class ArticleEditor:
                         validation_elapsed,
                         quality_elapsed,
                     ) = await asyncio.to_thread(evaluate_editor_draft)
+                new_blockers = (
+                    blocking_keys(current_val, current_quality).keys()
+                    - blocking_keys(previous_val, previous_quality).keys()
+                )
+                quarantine_units = {
+                    blocking_keys(current_val, current_quality)[key]
+                    for key in new_blockers
+                    if key[0] == "evidence"
+                }
+                for key in new_blockers:
+                    if key[0] != "quality":
+                        continue
+                    finding = next(
+                        finding
+                        for finding in current_quality.blocking_findings
+                        if (
+                            "quality",
+                            finding.code,
+                            finding.unit_id,
+                            tuple(sorted(finding.support_ids)),
+                            finding.message,
+                        )
+                        == key
+                    )
+                    localized = self._localize_article_quality_finding(current_draft, finding)
+                    # A support_units policy may explicitly identify the changed
+                    # paragraphs behind an article-wide structural finding.
+                    if localized:
+                        quarantine_units.update(item.unit_id for item in localized)
+                    else:
+                        quarantine_units.add(finding.unit_id)
+                if new_blockers:
+                    # Only an explicit changed unit is safe to attribute. An
+                    # ARTICLE/DRAFT finding or an unchanged unit rolls back the
+                    # entire batch; no guessed subset or combinatorial search.
+                    if quarantine_units <= set(actually_changed):
+                        retained_patches = {
+                            unit: text
+                            for unit, text in patches.items()
+                            if unit not in quarantine_units
+                        }
+                        retained_outcomes: dict[str, dict[str, str]] = {}
+                        current_draft = await asyncio.to_thread(
+                            self.apply_patches,
+                            previous_draft,
+                            retained_patches,
+                            context=validation_context,
+                            allowed_support_ids_by_unit={
+                                unit["unit_id"]: tuple(unit["prompt_support_ids"])
+                                for unit in prompt_data
+                            },
+                            patch_outcomes=retained_outcomes,
+                        )
+                        # Exactly one validation of the remainder, including
+                        # the all-quarantined case; never validate per unit.
+                        (
+                            current_val,
+                            current_quality,
+                            elapsed_val,
+                            elapsed_quality,
+                        ) = await asyncio.to_thread(
+                            evaluate_editor_draft, current_draft, previous_quality
+                        )
+                        validation_elapsed += elapsed_val
+                        quality_elapsed += elapsed_quality
+                        if (
+                            blocking_keys(current_val, current_quality).keys()
+                            - blocking_keys(previous_val, previous_quality).keys()
+                        ):
+                            quarantine_units = set(actually_changed)
+                            current_draft, current_val, current_quality = (
+                                previous_draft,
+                                previous_val,
+                                previous_quality,
+                            )
+                    else:
+                        quarantine_units = set(actually_changed)
+                        current_draft, current_val, current_quality = (
+                            previous_draft,
+                            previous_val,
+                            previous_quality,
+                        )
+                    for unit_id in quarantine_units:
+                        unit_outcomes[unit_id]["status"] = "rejected"
+                        unit_outcomes[unit_id]["reason"] = "new_blocker_quarantined"
+                    actually_changed = [
+                        unit for unit in actually_changed if unit not in quarantine_units
+                    ]
+                    patched_unit_ids = previous_patched_unit_ids + actually_changed
+                    self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
+
+                coverage = (
+                    await asyncio.to_thread(
+                        diagnose_article_coverage,
+                        current_draft,
+                        coverage_plan,
+                        context=context,
+                        excluded_story_ids=(
+                            material_projection.suppressed_story_ids
+                            if material_projection is not None
+                            else ()
+                        ),
+                    )
+                    if coverage_plan is not None
+                    else None
+                )
+                self.last_assessment = ArticleAssessmentCheckpoint(
+                    current_draft,
+                    current_val,
+                    current_quality,
+                    input_fingerprint,
+                    coverage,
+                )
                 self.last_quality_report = current_quality
+                if checkpoint_observer is not None:
+                    checkpoint_observer("editor", current_draft, self.last_assessment)
+                made_progress = bool(
+                    {key for key in previous_actionable if key[1] in requested_units}
+                    - actionable_keys(current_val, current_quality)
+                )
                 previous_attempt_feedback = {
                     unit_id: dict(outcome) for unit_id, outcome in unit_outcomes.items()
                 }
@@ -415,6 +678,11 @@ class ArticleEditor:
                         error_kind=error_kind,
                         metadata={
                             "editor_status": "succeeded" if is_clean else "partial",
+                            "provider_attempts": self.last_provider_attempts[-1]
+                            if self.last_provider_attempts
+                            else None,
+                            "logical_editor_invocation": self.last_attempt_count,
+                            "pass_elapsed_seconds": round(perf_counter() - attempt_started, 3),
                             "requested_units": sorted(requested_units),
                             "patched_units": actually_changed,
                             "unit_outcomes": self._compact_unit_outcomes(unit_outcomes),
@@ -438,6 +706,9 @@ class ArticleEditor:
                     current_quality,
                 )
 
+                if not actually_changed or not made_progress:
+                    logger.info("ArticleEditor stopped after no measurable targeted progress")
+                    break
                 if current_val.is_valid and not current_quality.needs_edit:
                     logger.info("ArticleEditor successfully resolved all validation issues!")
                     break
@@ -456,6 +727,8 @@ class ArticleEditor:
                         remaining_issues[:10],
                     )
 
+            except TimeoutError:
+                raise
             except Exception as exc:
                 # Keep text, Evidence Boundary result, and quality report as
                 # one transaction. A failed validation/diagnostic must not
@@ -464,6 +737,7 @@ class ArticleEditor:
                 current_val = previous_val
                 current_quality = previous_quality
                 self.last_quality_report = current_quality
+                self.last_assessment = previous_assessment
                 patched_unit_ids = previous_patched_unit_ids
                 self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
                 for outcome in unit_outcomes.values():
@@ -488,7 +762,14 @@ class ArticleEditor:
                         obs_att_id,
                         "failed",
                         error_kind=type(exc).__name__,
-                        metadata={"unit_outcomes": self._compact_unit_outcomes(unit_outcomes)},
+                        metadata={
+                            "unit_outcomes": self._compact_unit_outcomes(unit_outcomes),
+                            "provider_attempts": self.last_provider_attempts[-1]
+                            if self.last_provider_attempts
+                            else None,
+                            "logical_editor_invocation": self.last_attempt_count,
+                            "pass_elapsed_seconds": round(perf_counter() - attempt_started, 3),
+                        },
                     )
                 self._save_attempt_debug_artifact(
                     save_debug_artifact,
@@ -1030,9 +1311,10 @@ class ArticleEditor:
         edit without accepting unsupported prose or deleting the underlying
         Story.
         """
+        policy = article_quality_policy(finding.code)
         if finding.unit_id not in ("ARTICLE", "DRAFT", ""):
             return (finding,)
-        if finding.code not in _LOCALLY_REPAIRABLE_ARTICLE_FINDINGS or not finding.support_ids:
+        if policy.repair_scope != "support_units" or not finding.support_ids:
             return ()
 
         targeted_support_ids = set(finding.support_ids)
@@ -1059,7 +1341,11 @@ class ArticleEditor:
                     if support_id in targeted_support_ids
                 )
                 if matching:
-                    if finding.code == "DIRECTORY_TIMETABLE_SECTION":
+                    if finding.code in {
+                        "DIRECTORY_TIMETABLE_SECTION",
+                        "MULTI_SENTENCE_ADDRESS_STATUS_ROSTER",
+                        "REPEATED_CENTRAL_THESIS",
+                    }:
                         localized.append(
                             ArticleReaderQualityFinding(
                                 code=finding.code,
@@ -1097,6 +1383,7 @@ class ArticleEditor:
             "ПРАВИЛА РЕДАКТИРОВАНИЯ:\n"
             "1. ПРЯМАЯ РЕЧЬ И КАВЫЧКИ (UNSUPPORTED_DIRECT_QUOTE):\n"
             "   - Кавычки вокруг реплики или целой фразы допустимы только для дословной цитаты из источника. Кавычки вокруг подтверждённого названия компании, провайдера или бренда — типографское оформление имени, а не прямая речь; сохраняйте их.\n"
+            "   - Никогда не меняйте, не исправляйте и не сокращайте слова внутри уже существующей прямой цитаты. Чтобы сжать или объединить реплики, уберите кавычки и передайте смысл косвенной речью; каждую оставленную цитату сверяйте пословно с источником.\n"
             "   - Если не подтверждена именно прямая речь, передайте её естественной косвенной речью через «что» со строчной буквы (например: «житель сообщил, что...»). Не снимайте типографские кавычки с подтверждённого названия внутри этой фразы.\n"
             "   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО оставлять двоеточие перед текстом без кавычек (например: «житель признался: Звук генераторов...» — это грубая грамматическая ошибка).\n\n"
             "2. ИМЕНА СОБСТВЕННЫЕ И ТОПОНИМЫ (UNSUPPORTED_PROPER_NAME / UNSUPPORTED_LOCATION):\n"
@@ -1125,7 +1412,7 @@ class ArticleEditor:
             "   - Сохраняйте естественный журналистский стиль и связность с остальным текстом статьи.\n"
             "   - Не добавляйте никаких новых фактов или деталей, которых нет в предоставленных подтверждениях.\n"
             "   - Проверяйте русскую грамматику, управление, согласование и пунктуацию в каждом редактируемом фрагменте. Исправляйте неестественные формулировки, сохраняя все подтверждённые факты, временные различия, географию и атрибуцию.\n"
-            "   - Обычно исправляйте только проблемную фразу. ИСКЛЮЧЕНИЕ: для QUOTE_ROLL_PARAGRAPH и OVERLOADED_ROSTER_PARAGRAPH следуйте специальной инструкции замечания и при необходимости перепишите весь целевой абзац; общее правило малой правки на эти два типа замечаний не распространяется.\n"
+            "   - Обычно исправляйте только проблемную фразу. ИСКЛЮЧЕНИЕ: для QUOTE_ROLL_PARAGRAPH, OVERLOADED_ROSTER_PARAGRAPH и MULTI_SENTENCE_ADDRESS_STATUS_ROSTER следуйте специальной инструкции замечания и при необходимости перепишите весь целевой абзац; общее правило малой правки на эти три типа замечаний не распространяется.\n"
             "   - Отредактируйте ТОЛЬКО запрошенные фрагменты.\n\n"
             "10. ПОВТОРЫ И ЗАЦИКЛИВАНИЕ (REPEATED_CONTENT_LOOP):\n"
             "   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО повторять одно и то же или почти идентичное предложение несколько раз подряд. Если абзац зациклился — оставьте мысль ровно один раз в грамотной формулировке и удалите повторы.\n\n"
@@ -1398,6 +1685,7 @@ class ArticleEditor:
 
     @staticmethod
     def _quality_repair_instruction(code: str) -> str:
+        policy = article_quality_policy(code)
         instructions = {
             "OVERLOADED_ROSTER_PARAGRAPH": (
                 " -> Перепишите весь целевой абзац, опираясь на все относящиеся к нему подтверждения "
@@ -1411,10 +1699,22 @@ class ArticleEditor:
                 "исключения и атрибуцию. Не придумывайте район, близость мест, общий контраст, "
                 "хронологию, причину или общее условие и не переносите состояние между адресами."
             ),
+            "MULTI_SENTENCE_ADDRESS_STATUS_ROSTER": (
+                " -> Проверьте целевой абзац: если однотипные предложения действительно можно "
+                "связать подтверждённым локальным контрастом или последовательностью, соберите их "
+                "в естественный текст. Сохраните каждое место и состояние; не выводите близость, "
+                "общую причину, хронологию или связь без подтверждения. Если это лишь полезный "
+                "перечень независимых наблюдений и связи нет, оставьте его без изменений."
+            ),
             "CROSS_SECTION_REPETITION": (
                 " -> Оставьте повторяющееся утверждение в части, где оно лучше всего подтверждено; "
                 "в этом целевом фрагменте удалите повтор или сохраните только новое поддержанное "
                 "состояние, время либо последствие. Соседние части статьи не редактируйте."
+            ),
+            "REPEATED_CENTRAL_THESIS": (
+                " -> В этом целевом абзаце уберите только повтор центральной мысли, если он не "
+                "добавляет подтверждённое состояние, период или последствие. Сохраните новые "
+                "поддержанные подробности и не меняйте остальные части статьи."
             ),
             "DUPLICATE_ARTICLE_HEADING": (
                 " -> Локально уточните только этот заголовок по подтверждённому содержанию раздела, "
@@ -1431,13 +1731,25 @@ class ArticleEditor:
             ),
             "QUOTE_ROLL_PARAGRAPH": (
                 " -> Перепишите весь целевой абзац: после правки в нём должно остаться не более двух "
-                "дословных прямых цитат, каждая точно подтверждена текстом источников ниже. Если "
+                "дословных прямых цитат, каждая точно подтверждена текстом источников ниже. "
+                "Не меняйте, не исправляйте и не сокращайте слова внутри сохранённой прямой цитаты; "
+                "если реплику нужно сжать, передайте её косвенной речью без кавычек. Если "
                 "исходных цитат больше двух, оставьте не более двух и передайте остальные сообщения "
                 "естественной косвенной речью с подтверждённой атрибуцией. Кавычки вокруг "
                 "подтверждённых названий компаний и провайдеров — типографское оформление имён, "
                 "а не цитаты; сохраняйте такие названия в кавычках, и они не входят в лимит двух "
                 "цитат. Сохраните все подтверждённые факты и детали, не меняя их смысл или степень "
                 "определённости."
+            ),
+            "CONSECUTIVE_DIRECT_SPEECH_ROLL": (
+                " -> Уберите перечисление прямых реплик: синтезируйте сообщения плавной косвенной "
+                "речью с географией, временными различиями и естественной атрибуцией. Сохраните "
+                "не более одной подходящей прямой цитаты, только если её слова дословно подтверждены "
+                "источником. Не меняйте ни одного слова внутри сохранённой цитаты; остальные реплики "
+                "перескажите без кавычек. Кавычки вокруг подтверждённых названий организаций, "
+                "провайдеров и мест — оформление имён, а не прямая речь; сохраняйте такие названия. "
+                "Не добавляйте факты, причины, географию или связь между сообщениями, которой нет "
+                "в подтверждениях."
             ),
             "ARTICLE_PLACE_AREA_MISMATCH": (
                 " -> Перепишите этот абзац так, чтобы каждый ориентир и каждая улица относились "
@@ -1502,8 +1814,21 @@ class ArticleEditor:
                 "перестроив при необходимости предложение. Не добавляйте иных деталей, не меняйте "
                 "смысл или степень уверенности источника и сохраните остальной подтверждённый текст."
             ),
+            "MISSING_DEVELOP_STORY": (
+                " -> Только если этот существующий абзац находится в запланированной для сюжета "
+                "главе, естественно добавьте недостающую ключевую линию по указанным support IDs. "
+                "Не превращайте абзац в перечень, не переписывайте несвязанный сюжет, не добавляйте "
+                "факты и не создавайте filler. Если сюжет нельзя органично встроить в этот абзац, "
+                "сохраните его текущую формулировку. Любые прямые цитаты оставляйте дословно; "
+                "сжатие выполняйте косвенной речью."
+            ),
         }
-        return instructions.get(code, "")
+        instruction = instructions.get(code)
+        if instruction is None and policy.repair_scope in {"unit", "support_units", "story_unit"}:
+            raise ArticleQualityPolicyError(
+                f"Reader-quality repair policy has no editor instruction: {code!r}"
+            )
+        return instruction or ""
 
     def _parse_editor_response(self, response: str) -> dict[str, str]:
         """Extract unit_id -> edited_text mapping from model response."""
@@ -1602,11 +1927,15 @@ class ArticleEditor:
             raw_t = patches["TITLE"].strip()
             if raw_t.upper() not in ("", "[DELETE]", "DELETE", "NONE", "NULL", "[УДАЛИТЬ]"):
                 candidate_title = _normalize_homoglyphs(_strip_internal_handles(raw_t))
+                quotes_preserved = _preserves_existing_direct_quotes(draft.title, candidate_title)
+                if not quotes_preserved:
+                    record_outcome("TITLE", "rejected", "direct_quote_words_changed", raw_t)
+                    candidate_title = ""
                 regrounded_title_sups = (
                     _reground_support_ids(
                         candidate_title, context, allowed_ids("TITLE", tuple(title_sups))
                     )
-                    if context is not None
+                    if candidate_title and context is not None
                     else ()
                 )
                 if regrounded_title_sups:
@@ -1621,7 +1950,7 @@ class ArticleEditor:
                         raw_t,
                         title,
                     )
-                else:
+                elif quotes_preserved:
                     record_outcome(
                         "TITLE", "rejected", "replacement_not_grounded_in_visible_supports", raw_t
                     )
@@ -1634,13 +1963,17 @@ class ArticleEditor:
         if "LEAD" in patches:
             raw_l = patches["LEAD"]
             candidate_lead = _normalize_homoglyphs(_strip_internal_handles(raw_l))
+            quotes_preserved = _preserves_existing_direct_quotes(draft.lead, candidate_lead)
+            if not quotes_preserved:
+                record_outcome("LEAD", "rejected", "direct_quote_words_changed", raw_l)
+                candidate_lead = ""
             regrounded_lead_sups = (
                 _reground_support_ids(
                     candidate_lead,
                     context,
                     allowed_ids("LEAD", tuple(draft.lead_support_ids)),
                 )
-                if context is not None
+                if candidate_lead and context is not None
                 else ()
             )
             if regrounded_lead_sups:
@@ -1659,7 +1992,7 @@ class ArticleEditor:
                     raw_l,
                     lead,
                 )
-            else:
+            elif quotes_preserved:
                 record_outcome(
                     "LEAD", "rejected", "replacement_not_grounded_in_visible_supports", raw_l
                 )
@@ -1673,6 +2006,15 @@ class ArticleEditor:
             h_sups = sec.heading_support_ids
             if h_id in patches:
                 candidate_heading = _normalize_homoglyphs(_strip_internal_handles(patches[h_id]))
+                quotes_preserved = _preserves_existing_direct_quotes(sec.heading, candidate_heading)
+                if not quotes_preserved:
+                    record_outcome(
+                        h_id,
+                        "rejected",
+                        "direct_quote_words_changed",
+                        patches[h_id],
+                    )
+                    candidate_heading = ""
                 regrounded_heading_sups = (
                     _reground_support_ids(
                         candidate_heading,
@@ -1680,7 +2022,7 @@ class ArticleEditor:
                         allowed_ids(h_id, tuple(sec.heading_support_ids)),
                         minimum_shared_stems=1,
                     )
-                    if context is not None
+                    if candidate_heading and context is not None
                     else ()
                 )
                 if regrounded_heading_sups:
@@ -1695,7 +2037,7 @@ class ArticleEditor:
                         patches[h_id],
                         heading,
                     )
-                else:
+                elif quotes_preserved:
                     record_outcome(
                         h_id,
                         "rejected",
@@ -1734,73 +2076,24 @@ class ArticleEditor:
                     "NONE",
                     "NULL",
                 ):
-                    # AGENTS.md 0.3, 0.7: do not drop substantive paragraphs with valid supports.
-                    # If supports exist, synthesize safe factual sentences from evidence instead of deleting.
-                    if context and existing_supports:
-                        sup_texts = [
-                            context.support_by_id[s_id].text
-                            for s_id in existing_supports
-                            if s_id in context.support_by_id and context.support_by_id[s_id].text
-                        ]
-                        if sup_texts:
-                            from src.publication.article_recovery import (
-                                _clean_support_text_for_reader,
-                                _normalize_for_dedup,
-                            )
-
-                            existing_norms = {
-                                _normalize_for_dedup(p.text)
-                                for s in new_sections
-                                for p in s.paragraphs
-                            } | {_normalize_for_dedup(p.text) for p in new_paragraphs}
-                            safe_sentences: list[str] = []
-                            for st in sup_texts[:3]:
-                                cleaned_s = _clean_support_text_for_reader(st.strip())
-                                if (
-                                    cleaned_s
-                                    and _normalize_for_dedup(cleaned_s) not in existing_norms
-                                ):
-                                    safe_sentences.append(cleaned_s)
-                            if safe_sentences:
-                                safe_text = " ".join(safe_sentences)
-                                sentences = _split_sentences_safe(safe_text)
-                                claims = tuple(
-                                    ArticleClaimAtom(
-                                        text=sentence,
-                                        cited_support_ids=existing_supports,
-                                    )
-                                    for sentence in (sentences or [safe_text])
-                                )
-                                new_paragraphs.append(
-                                    ArticleParagraph(
-                                        text=safe_text,
-                                        cited_support_ids=existing_supports,
-                                        claims=claims,
-                                    )
-                                )
-                                record_outcome(
-                                    p_id,
-                                    "applied" if safe_text != para.text else "no_op",
-                                    "safe_evidence_rewrite"
-                                    if safe_text != para.text
-                                    else "text_unchanged",
-                                    raw_patch,
-                                    safe_text,
-                                )
-                            else:
-                                record_outcome(
-                                    p_id,
-                                    "applied",
-                                    "deleted_duplicate_or_unavailable_text",
-                                    raw_patch,
-                                )
-                            p_idx += 1
-                            continue
-                    record_outcome(p_id, "applied", "deleted_by_editor_request", raw_patch)
+                    record_outcome(
+                        p_id, "rejected", "whole_paragraph_deletion_not_allowed", raw_patch
+                    )
+                    new_paragraphs.append(para)
                     p_idx += 1
                     continue
 
                 candidate_text = _normalize_homoglyphs(_strip_internal_handles(raw_patch))
+                if not _preserves_existing_direct_quotes(para.text, candidate_text):
+                    record_outcome(
+                        p_id,
+                        "rejected",
+                        "direct_quote_words_changed",
+                        raw_patch,
+                    )
+                    new_paragraphs.append(para)
+                    p_idx += 1
+                    continue
                 p_sups = (
                     _reground_support_ids(
                         candidate_text,

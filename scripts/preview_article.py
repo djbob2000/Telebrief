@@ -23,7 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.bootstrap import build_infrastructure
 from src.config_loader import load_config
-from src.publication.article_preview import build_article_preview_from_run
+from src.publication.article_preview import (
+    ArticleRunPreviewOutcome,
+    build_article_preview_from_run,
+)
 from src.publication.facade import build_publication_preview
 from src.runtime import install_runtime
 from src.timezones import get_timezone, normalize_timezone_name
@@ -70,6 +73,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--run-id must be a positive integer")
     if args.run_id is None and args.diagnostics_output is not None:
         parser.error("--diagnostics-output is available only with --run-id")
+    if (
+        args.run_id is not None
+        and args.output is not None
+        and args.diagnostics_output is not None
+        and args.output.resolve() == args.diagnostics_output.resolve()
+    ):
+        parser.error("--output and --diagnostics-output must use different paths")
     return args
 
 
@@ -90,51 +100,38 @@ def _snapshot_at(date_value: str | None, timezone: str) -> dt.datetime | None:
 
 async def main() -> None:
     args = parse_args()
+    if args.run_id is not None:
+        await _run_frozen_run_preview(args)
+        return
+
     config = load_config()
     infra = await build_infrastructure(config.database)
     install_runtime(infra)
 
     try:
-        if args.run_id is not None:
-            article_preview = await build_article_preview_from_run(
-                args.run_id,
-                config=config,
-                expected_edition_slug=args.edition,
-            )
-            article = article_preview.markdown
-            if args.diagnostics_output is not None:
-                args.diagnostics_output.parent.mkdir(parents=True, exist_ok=True)
-                args.diagnostics_output.write_text(
-                    json.dumps(article_preview.diagnostics, ensure_ascii=False, indent=2) + "\n",
-                    encoding="utf-8",
-                )
-                print(f"Diagnostics saved to {args.diagnostics_output}", file=sys.stderr)
-        else:
-            edition_slug = args.edition or "berdyansk"
-            snapshot_at = None
-            if args.date is not None:
-                edition_timezone = await _load_edition_timezone(infra, edition_slug)
-                snapshot_at = _snapshot_at(args.date, edition_timezone)
-            publication_preview = await build_publication_preview(
-                publication_type="daily_article",
-                edition_slug=edition_slug,
-                snapshot_at=snapshot_at,
-                lookback_hours=args.hours if args.hours is not None else 24,
-                config=config,
-            )
-            parts = [
-                f"# {publication_preview.title}"
-                if publication_preview.title
-                else "# Вечерняя статья"
-            ]
-            if publication_preview.lead and not (
-                publication_preview.body
-                and publication_preview.body.startswith(publication_preview.lead)
-            ):
-                parts.extend(["", publication_preview.lead])
-            if publication_preview.body:
-                parts.extend(["", publication_preview.body])
-            article = "\n".join(parts).rstrip() + "\n"
+        edition_slug = args.edition or "berdyansk"
+        snapshot_at = None
+        if args.date is not None:
+            edition_timezone = await _load_edition_timezone(infra, edition_slug)
+            snapshot_at = _snapshot_at(args.date, edition_timezone)
+        publication_preview = await build_publication_preview(
+            publication_type="daily_article",
+            edition_slug=edition_slug,
+            snapshot_at=snapshot_at,
+            lookback_hours=args.hours if args.hours is not None else 24,
+            config=config,
+        )
+        parts = [
+            f"# {publication_preview.title}" if publication_preview.title else "# Вечерняя статья"
+        ]
+        if publication_preview.lead and not (
+            publication_preview.body
+            and publication_preview.body.startswith(publication_preview.lead)
+        ):
+            parts.extend(["", publication_preview.lead])
+        if publication_preview.body:
+            parts.extend(["", publication_preview.body])
+        article = "\n".join(parts).rstrip() + "\n"
 
         if args.output is not None:
             args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +141,108 @@ async def main() -> None:
             print(article, end="")
     finally:
         await infra.close()
+
+
+async def _run_frozen_run_preview(args: argparse.Namespace) -> None:
+    run_id = int(args.run_id)
+    infra = None
+    outcome: ArticleRunPreviewOutcome | None = None
+    try:
+        config = load_config()
+        infra = await build_infrastructure(config.database)
+        install_runtime(infra)
+        outcome = await build_article_preview_from_run(
+            run_id,
+            config=config,
+            expected_edition_slug=args.edition,
+        )
+    except Exception as exc:
+        outcome = _failed_no_draft_outcome(run_id, exc)
+    finally:
+        if infra is not None:
+            try:
+                await infra.close()
+            except Exception as exc:
+                if outcome is None:
+                    outcome = _failed_no_draft_outcome(run_id, exc)
+                else:
+                    diagnostics = dict(outcome.diagnostics)
+                    diagnostics["cleanup_failure"] = {"exception_type": type(exc).__name__}
+                    status = "failed" if outcome.status == "accepted" else outcome.status
+                    if status == "failed":
+                        diagnostics["failure"] = {"exception_type": type(exc).__name__}
+                    outcome = ArticleRunPreviewOutcome(
+                        status=status,
+                        candidate=outcome.candidate,
+                        diagnostics=diagnostics,
+                        error=outcome.error or exc,
+                    )
+
+    if outcome is None:
+        outcome = _failed_no_draft_outcome(run_id, RuntimeError("preview did not return"))
+
+    article = _render_frozen_run_outcome(outcome)
+    if args.diagnostics_output is not None:
+        args.diagnostics_output.parent.mkdir(parents=True, exist_ok=True)
+        args.diagnostics_output.write_text(
+            json.dumps(outcome.diagnostics, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"Diagnostics saved to {args.diagnostics_output}", file=sys.stderr)
+    elif outcome.status != "accepted":
+        print(json.dumps(outcome.diagnostics, ensure_ascii=False, indent=2), file=sys.stderr)
+
+    if args.output is not None:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(article, encoding="utf-8")
+        print(f"Preview saved to {args.output}")
+    else:
+        print(article, end="")
+
+    if outcome.status != "accepted":
+        failure = outcome.diagnostics.get("failure")
+        reason = (
+            str(failure.get("reason") or failure.get("exception_type") or "unknown")
+            if isinstance(failure, dict)
+            else "unknown"
+        )
+        print(f"Frozen article preview {outcome.status}: {reason}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def _failed_no_draft_outcome(
+    run_id: int,
+    error: Exception,
+) -> ArticleRunPreviewOutcome:
+    return ArticleRunPreviewOutcome(
+        status="failed",
+        candidate=None,
+        diagnostics={
+            "schema_version": "article-run-preview-v2",
+            "status": "failed",
+            "run_id": run_id,
+            "failure": {"exception_type": type(error).__name__},
+        },
+        error=error,
+    )
+
+
+def _render_frozen_run_outcome(outcome: ArticleRunPreviewOutcome) -> str:
+    """Label nonaccepted candidate prose and explain when no draft was captured."""
+    if outcome.status == "accepted" and outcome.candidate is not None:
+        return outcome.candidate.markdown
+
+    label = (
+        "REJECTED PREVIEW — DO NOT PUBLISH"
+        if outcome.status == "rejected"
+        else "FAILED PREVIEW — DO NOT PUBLISH"
+    )
+    if outcome.candidate is None:
+        return (
+            f"# {label}\n\n"
+            "No draft candidate was produced for this frozen run. See the diagnostics output.\n"
+        )
+    return f"# {label}\n\n{outcome.candidate.markdown.lstrip()}"
 
 
 async def _load_edition_timezone(infra: object, edition_slug: str) -> str:

@@ -7,7 +7,10 @@ import os
 import re
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence
 from urllib.parse import urlparse, urlunparse
 
@@ -297,6 +300,68 @@ def extract_retry_after(exc: BaseException) -> float | None:
     return None
 
 
+@dataclass
+class ProviderAttemptCounts:
+    """Call-local API attempt accounting, without request/response payloads.
+
+    Transport means an explicit API request start, not a successful response or
+    a TCP connection. OpenAI-compatible clients disable hidden SDK retries.
+    """
+
+    slot_attempt_count: int = 0
+    transport_attempt_count: int = 0
+    complete: bool = True
+    started_at: float = field(default_factory=time.monotonic)
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "slot_attempt_count": self.slot_attempt_count,
+            "transport_attempt_count": self.transport_attempt_count,
+            "complete": self.complete,
+            "elapsed_seconds": round(time.monotonic() - self.started_at, 3),
+        }
+
+
+_provider_attempt_counts: ContextVar[ProviderAttemptCounts | None] = ContextVar(
+    "provider_attempt_counts", default=None
+)
+
+
+def _provider_attempts_instrumented(provider: Any) -> bool:
+    if type(provider) is ProviderCascade:
+        return all(_provider_attempts_instrumented(slot[1]) for slot in provider.providers)
+    # Subclass overrides/custom providers cannot promise these exact callsites.
+    return type(provider) in (OpenAIProvider, GoogleProvider, OllamaProvider, AnthropicProvider)
+
+
+@contextmanager
+def capture_provider_attempts(provider: Any) -> Iterator[ProviderAttemptCounts]:
+    """Capture exact known retry/slot request starts for one logical call.
+
+    ContextVar isolation prevents concurrent calls from sharing mutable last
+    metadata. Unknown paths report incomplete observed counts rather than an
+    invented total. Cancellation retains the counts reached before it arrived.
+    """
+    counts = ProviderAttemptCounts(complete=_provider_attempts_instrumented(provider))
+    token = _provider_attempt_counts.set(counts)
+    try:
+        yield counts
+    finally:
+        _provider_attempt_counts.reset(token)
+
+
+def _record_provider_slot_attempt() -> None:
+    counts = _provider_attempt_counts.get()
+    if counts is not None:
+        counts.slot_attempt_count += 1
+
+
+def _record_provider_transport_attempt() -> None:
+    counts = _provider_attempt_counts.get()
+    if counts is not None:
+        counts.transport_attempt_count += 1
+
+
 class AIProvider(ABC):
     """Abstract base class for AI providers."""
 
@@ -401,6 +466,7 @@ class ProviderCascade(AIProvider):
             or 300.0
         )
         async with asyncio.timeout(slot_timeout):
+            _record_provider_slot_attempt()
             response = await provider.chat_completion(
                 messages=messages,
                 model=selected_model,
@@ -508,6 +574,7 @@ class ProviderCascade(AIProvider):
                 if has_more_slots and slot_timeout > 240.0:
                     slot_timeout = 240.0
                 async with asyncio.timeout(slot_timeout):
+                    _record_provider_slot_attempt()
                     response = await provider.chat_completion(
                         messages=messages,
                         model=selected_model,
@@ -543,6 +610,7 @@ class ProviderCascade(AIProvider):
                         )
                         await asyncio.sleep(quota_retry_after)
                         try:
+                            _record_provider_slot_attempt()
                             retry_response = await provider.chat_completion(
                                 messages=messages,
                                 model=selected_model,
@@ -793,6 +861,7 @@ class OpenAIProvider(AIProvider):
                     max_gateway_retries = 1
                     for gateway_attempt in range(max_gateway_retries + 1):
                         try:
+                            _record_provider_transport_attempt()
                             response = await self.client.chat.completions.create(**create_kwargs)
                             break
                         except OpenAIBadRequestError as exc:
@@ -925,6 +994,7 @@ class OpenAIProvider(AIProvider):
                 )
                 create_kwargs["extra_body"]["reasoning"] = {"effort": "low"}
                 try:
+                    _record_provider_transport_attempt()
                     return await self.client.chat.completions.create(**create_kwargs)
                 except OpenAIBadRequestError as exc:
                     self.logger.warning("retry with effort='low' failed: %s", exc)
@@ -936,6 +1006,7 @@ class OpenAIProvider(AIProvider):
                 )
                 create_kwargs["extra_body"]["reasoning"] = {"effort": "low"}
                 try:
+                    _record_provider_transport_attempt()
                     return await self.client.chat.completions.create(**create_kwargs)
                 except OpenAIBadRequestError as exc:
                     self.logger.warning("retry with effort='low' failed: %s", exc)
@@ -952,6 +1023,7 @@ class OpenAIProvider(AIProvider):
             )
             create_kwargs.pop("reasoning_effort")
             try:
+                _record_provider_transport_attempt()
                 return await self.client.chat.completions.create(**create_kwargs)
             except OpenAIBadRequestError as exc:
                 self.logger.warning("retry without reasoning_effort failed: %s", exc)
@@ -965,6 +1037,7 @@ class OpenAIProvider(AIProvider):
             if not create_kwargs["extra_body"]:
                 create_kwargs.pop("extra_body")
             try:
+                _record_provider_transport_attempt()
                 return await self.client.chat.completions.create(**create_kwargs)
             except OpenAIBadRequestError as exc:
                 self.logger.warning("retry without extra_body.reasoning failed: %s", exc)
@@ -972,6 +1045,7 @@ class OpenAIProvider(AIProvider):
         if "response_format" in create_kwargs:
             create_kwargs.pop("response_format")
             try:
+                _record_provider_transport_attempt()
                 return await self.client.chat.completions.create(**create_kwargs)
             except OpenAIBadRequestError as exc:
                 self.logger.warning("retry without response_format failed: %s", exc)
@@ -979,6 +1053,7 @@ class OpenAIProvider(AIProvider):
         if "max_completion_tokens" in create_kwargs:
             create_kwargs["max_tokens"] = create_kwargs.pop("max_completion_tokens")
             try:
+                _record_provider_transport_attempt()
                 return await self.client.chat.completions.create(**create_kwargs)
             except OpenAIBadRequestError as exc:
                 self.logger.warning("retry with max_tokens failed: %s", exc)
@@ -1053,6 +1128,7 @@ class GoogleProvider(AIProvider):
             prompt_chars,
         )
         _t0 = time.monotonic()
+        _record_provider_transport_attempt()
         response = await self.client.chat.completions.create(**create_kwargs)
         _elapsed = time.monotonic() - _t0
         result = _extract_chat_completion_text(response, self.logger, "Google Gemini")
@@ -1104,6 +1180,7 @@ class OllamaProvider(AIProvider):
         )
 
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            _record_provider_transport_attempt()
             async with session.post(url, json=payload) as resp:
                 if resp.status != 200:
                     body = await resp.text()
@@ -1197,6 +1274,7 @@ class AnthropicProvider(AIProvider):
             payload["temperature"] = temperature
 
         async with aiohttp.ClientSession(timeout=self.timeout) as session:
+            _record_provider_transport_attempt()
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
                     body = await resp.text()

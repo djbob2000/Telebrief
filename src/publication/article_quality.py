@@ -21,25 +21,20 @@ from src.publication.article_coverage_diagnostics import diagnose_article_covera
 from src.publication.article_geography import resolve_article_place_area_map
 from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import StructuredArticleDraft, _split_sentences_safe
+from src.publication.article_quality_policy import (
+    article_quality_policy,
+    article_quality_policy_metadata,
+    validate_article_quality_severity,
+)
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
-ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v10"
+ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v11"
 logger = logging.getLogger(__name__)
 
-# These findings describe article topology that cannot be repaired safely by
-# replacing one paragraph. ArticleEditor does not target them; finalization
-# rejects unresolved blocking findings and records repair-level findings for
-# observability.
-ARTICLE_WHOLE_DRAFT_FINDING_CODES = frozenset(
-    {
-        "REPEATED_CENTRAL_THESIS",
-        "DIRECTORY_TIMETABLE_SECTION",
-        "MULTI_SENTENCE_ADDRESS_STATUS_ROSTER",
-        "THEME_MISMATCHED_SECTION",
-        "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION",
-    }
-)
-_QUOTE_RE = re.compile(r"[«“\"]([^»”\"]{1,240})[»”\"]")
+_QUOTE_RE = re.compile(r"[«“„\"]([^»”\"]+)[»”\"]")
+_DIRECT_QUOTE_SPAN_RE = re.compile(r"(?P<opening>«|“|„|\")(?P<text>[^«»“”„\"]+)(?P<closing>»|”|\")")
+_DIRECT_QUOTE_PAIRS = {"«": "»", "“": "”", "„": "“", '"': '"'}
+_QUOTE_LIST_GAP_RE = re.compile(r"\s*[,;]\s*(?:(?:и|или)\s*)?", re.IGNORECASE)
 _QUOTED_NAME_CUE_RE = re.compile(
     r"\b(?:магазин\w*|супермаркет\w*|маркетплейс\w*|торгов\w*\s+центр\w*|"
     r"трц|тц|бренд\w*|торгов\w*\s+мар\w*|сеть\w*|кафе|ресторан\w*|"
@@ -278,15 +273,21 @@ class ArticleReaderQualityFinding:
     unit_id: str
     message: str
     support_ids: tuple[str, ...] = ()
-    severity: QualitySeverity = "warning"
+    severity: QualitySeverity | None = None
+
+    def __post_init__(self) -> None:
+        severity = validate_article_quality_severity(self.code, self.severity)
+        object.__setattr__(self, "severity", severity)
 
     def to_metadata(self) -> dict[str, object]:
+        policy = article_quality_policy_metadata(self.code)
         return {
             "code": self.code,
             "unit_id": self.unit_id,
             "message": self.message,
             "support_ids": list(self.support_ids),
             "severity": self.severity,
+            **policy,
         }
 
 
@@ -296,11 +297,20 @@ class ArticleReaderQualityReport:
 
     @property
     def repair_findings(self) -> tuple[ArticleReaderQualityFinding, ...]:
-        return tuple(f for f in self.findings if f.severity in {"repair", "blocking"})
+        return tuple(
+            finding
+            for finding in self.findings
+            if article_quality_policy(finding.code).publication_effect
+            in {"repair_recommended", "block_publication", "readiness_incomplete"}
+        )
 
     @property
     def blocking_findings(self) -> tuple[ArticleReaderQualityFinding, ...]:
-        return tuple(f for f in self.findings if f.severity == "blocking")
+        return tuple(
+            finding
+            for finding in self.findings
+            if article_quality_policy(finding.code).publication_effect == "block_publication"
+        )
 
     @property
     def needs_edit(self) -> bool:
@@ -811,6 +821,73 @@ def _direct_quote_count(
     return sum(1 for match in _QUOTE_RE.finditer(text) if match.span(1) not in name_spans)
 
 
+@dataclass(frozen=True)
+class _DirectSpeechSpan:
+    full_span: tuple[int, int]
+    content_span: tuple[int, int]
+    quote_type: tuple[str, str]
+    content: str
+
+
+def _direct_speech_spans(
+    text: str,
+    supported_name_spans: Sequence[tuple[int, int]] = (),
+) -> tuple[_DirectSpeechSpan, ...]:
+    """Return well-paired direct-speech quotes, excluding supported names."""
+    name_spans = set(supported_name_spans)
+    spans: list[_DirectSpeechSpan] = []
+    for match in _DIRECT_QUOTE_SPAN_RE.finditer(text):
+        opening = match.group("opening")
+        closing = match.group("closing")
+        content_span = match.span("text")
+        if _DIRECT_QUOTE_PAIRS.get(opening) != closing or content_span in name_spans:
+            continue
+        spans.append(
+            _DirectSpeechSpan(
+                full_span=match.span(),
+                content_span=content_span,
+                quote_type=(opening, closing),
+                content=match.group("text"),
+            )
+        )
+    return tuple(spans)
+
+
+def _has_consecutive_direct_speech_roll(
+    text: str,
+    supported_name_spans: Sequence[tuple[int, int]] = (),
+) -> bool:
+    """Detect adjacent speech spans joined only by list punctuation.
+
+    A quote-count threshold is a separate, weaker heuristic.  This finding
+    requires well-formed quote pairs and no intervening prose between at least
+    two speech spans. Supported organization and place names are omitted before
+    examining the spans.
+    """
+    spans = _direct_speech_spans(text, supported_name_spans)
+    if len(spans) < 2:
+        return False
+
+    valid_quote_types = set(_DIRECT_QUOTE_PAIRS.items())
+    run_length = 1
+    for previous, current in zip(spans, spans[1:]):
+        if (
+            previous.quote_type not in valid_quote_types
+            or current.quote_type not in valid_quote_types
+        ):
+            run_length = 1
+            continue
+        gap = text[previous.full_span[1] : current.full_span[0]]
+        if _QUOTE_LIST_GAP_RE.fullmatch(gap):
+            # Mixed valid typography is still direct speech.
+            run_length += 1
+            if run_length >= 2:
+                return True
+        else:
+            run_length = 1
+    return False
+
+
 def _has_specific_source_area(texts: Sequence[str], place_resolver: Any | None) -> bool:
     return any(
         _entity_has_specific_area(entity, place_resolver)
@@ -1297,18 +1374,10 @@ def _patch_target_for_missing_story(
                 if draft_section.paragraphs:
                     prior = sum(len(s.paragraphs) for s in draft.sections[: index - 1])
                     return f"P{prior + 1:03d}"
-    # A heading cannot receive a missing story's prose.  Select an existing
-    # paragraph wherever one exists, then the lead/title as content-bearing
-    # units.  This keeps every finding patchable without inventing an empty H
-    # target.
-    prior = 0
-    for draft_section in draft.sections:
-        if draft_section.paragraphs:
-            return f"P{prior + 1:03d}"
-        prior += len(draft_section.paragraphs)
-    # LEAD is the only body-capable editor target left when the draft has no
-    # paragraphs; TITLE can change a headline but cannot add missing coverage.
-    return "LEAD"
+    # Do not aim a missing-story repair at an unrelated paragraph or the lead.
+    # Without an existing paragraph in the planned section there is no safe
+    # targeted edit unit; finalization will keep this as a readiness diagnostic.
+    return "ARTICLE"
 
 
 def _diagnose_contradictions(
@@ -1689,7 +1758,7 @@ def diagnose_article_quality(
                 unit_id=target_id,
                 message="Заголовок повторяет название статьи или другой главы; уточните его тему.",
                 support_ids=tuple(dict.fromkeys(support_ids)),
-                severity="blocking",
+                severity="repair",
             )
         )
     finish_phase("headings")
@@ -1821,7 +1890,7 @@ def diagnose_article_quality(
                                 "свяжите соседние сюжеты плавным переходом и сохраните детали."
                             ),
                             support_ids=_support_ids_for_unit(paragraph),
-                            severity="blocking",
+                            severity="repair",
                         )
                     )
             run_start = max(run_end, run_start + 1)
@@ -1857,12 +1926,27 @@ def diagnose_article_quality(
                     ArticleReaderQualityFinding(
                         code="QUOTE_ROLL_PARAGRAPH",
                         unit_id=f"P{p_idx:03d}",
-                        message="В одном абзаце больше двух прямых цитат; объедините сообщения косвенной речью.",
+                        message=(
+                            "В одном абзаце больше двух цитируемых фрагментов; проверьте, "
+                            "не превратился ли текст в перечень прямой речи."
+                        ),
                         support_ids=_support_ids_for_unit(paragraph),
-                        # The editor should repair this locally, but an
-                        # unresolved quote roll violates the reader-facing
-                        # quote contract and must not pass finalization.
-                        severity="blocking",
+                        severity="repair",
+                    )
+                )
+            if _has_consecutive_direct_speech_roll(
+                paragraph.text,
+                supported_name_quote_spans,
+            ):
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="CONSECUTIVE_DIRECT_SPEECH_ROLL",
+                        unit_id=f"P{p_idx:03d}",
+                        message=(
+                            "Несколько прямых реплик следуют подряд и разделены только "
+                            "перечислительной пунктуацией; синтезируйте их косвенной речью."
+                        ),
+                        support_ids=_support_ids_for_unit(paragraph),
                     )
                 )
             p_idx += 1
@@ -2102,7 +2186,7 @@ def diagnose_article_quality(
                             support_ids=tuple(
                                 support.support_id for support in private_sector_supports
                             ),
-                            severity="blocking",
+                            severity="repair",
                         )
                     )
 
@@ -2128,7 +2212,7 @@ def diagnose_article_quality(
                             "а не прямая речь. Не расширяйте сокращение без опоры в источнике."
                         ),
                         support_ids=paragraph_support_ids,
-                        severity="blocking",
+                        severity="repair",
                     )
                 )
             if _TRAILING_INCOMPLETE_QUANTITY_RE.search(paragraph.text):
@@ -2143,7 +2227,7 @@ def diagnose_article_quality(
                             "остальной подтверждённый факт."
                         ),
                         support_ids=paragraph_support_ids,
-                        severity="blocking",
+                        severity="repair",
                     )
                 )
             p_idx += 1
@@ -2417,12 +2501,7 @@ def diagnose_article_quality(
             else:
                 existing[0].extend(duplicate_support_ids)
                 existing[1].update(repeated_story_ids)
-    for unit_id, (repeated_support_ids, repeated_story_ids) in repetition_findings.items():
-        major_story_repeated = any(
-            coverage_plan.by_story_id.get(story_id) is not None
-            and coverage_plan.by_story_id[story_id].prominence == "DEVELOP"
-            for story_id in repeated_story_ids
-        )
+    for unit_id, (repeated_support_ids, _repeated_story_ids) in repetition_findings.items():
         findings.append(
             ArticleReaderQualityFinding(
                 code="CROSS_SECTION_REPETITION",
@@ -2432,7 +2511,7 @@ def diagnose_article_quality(
                     "состояния, времени или последствия."
                 ),
                 support_ids=tuple(dict.fromkeys(repeated_support_ids)),
-                severity="blocking" if major_story_repeated else "repair",
+                severity="repair",
             )
         )
     finish_phase("cross_section_repetition")
@@ -2508,7 +2587,7 @@ def diagnose_article_quality(
                         "и концовке без нового состояния, периода или последствия."
                     ),
                     support_ids=tuple(dict.fromkeys(repeated_thesis_supports)),
-                    severity="blocking",
+                    severity="repair",
                 )
             )
     finish_phase("central_thesis")

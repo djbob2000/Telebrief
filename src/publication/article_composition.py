@@ -27,6 +27,7 @@ ArticleCompositionRelation = Literal[
 ]
 # Kept as a source-compatibility alias; the public shared name is ArticleCompositionRelation.
 CompositionRelation = ArticleCompositionRelation
+ARTICLE_COMPOSITION_VERSION = "v1"
 
 _STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 _POWER_GRID_OFFICE_RE = re.compile(r"\bрэс(?:а|у|ом|е|ах)?\b", re.IGNORECASE)
@@ -52,6 +53,11 @@ _UNCLASSIFIED_LINE_INTENT = (
     "These supported Stories have no reliable shared theme in the available evidence. "
     "Keep their facts distinct; do not place them under a specific service heading or "
     "imply a connection between them."
+)
+_MULTI_GROUP_LINE_INTENT = (
+    "Develop the shared thematic chapter at its assigned depth; use natural transitions "
+    "without implying a shared event, cause, place, or timeline. Keep independent groups "
+    "distinct and synthesize only within groups whose relation is supported."
 )
 _PRACTICAL_BRIDGE_PATTERN = re.compile(
     r"\b(?:поэтому|так\s+что|из-за\s+чего|в\s+результате\s+чего|"
@@ -134,6 +140,10 @@ class ArticleCompositionPlan:
     suppressed_story_ids: tuple[str, ...] = ()
 
     @property
+    def version(self) -> str:
+        return ARTICLE_COMPOSITION_VERSION
+
+    @property
     def group_by_story_id(self) -> dict[str, ArticleCompositionGroup]:
         return {story_id: group for group in self.groups for story_id in group.story_ids}
 
@@ -148,6 +158,8 @@ class ArticleCompositionPlan:
 
     def to_metadata(self) -> dict[str, object]:
         return {
+            "version": self.version,
+            "order_is_advisory": True,
             "line_count": len(self.narrative_lines),
             "group_count": len(self.groups),
             "suppressed_story_ids": list(self.suppressed_story_ids),
@@ -687,6 +699,8 @@ def build_article_composition_plan(
             )
         else:
             line_record.group_ids.append(group_id)
+            if line_record.heading_hint is not None:
+                line_record.narrative_intent = _MULTI_GROUP_LINE_INTENT
             if depth_order[prominence] > depth_order[line_record.prominence]:
                 line_record.prominence = prominence
 

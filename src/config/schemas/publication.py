@@ -83,6 +83,7 @@ class ArticleConfig:
     editorial_audit_max_output_tokens: int = 32_768
     editorial_repair_max_output_tokens: int = 8_192
     editorial_api_timeout: int = 300
+    article_generation_timeout_seconds: int = 1200
     telegraph_access_token: str | None = None
     save_debug_artifacts: bool = False
     debug_artifact_dir: str = "data/debug/editorial"

@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import datetime as dt
+import hashlib
+import json
 import logging
 import re
 from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from time import perf_counter
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Mapping, Protocol
+from uuid import uuid4
 
 from src.config_loader import PublicationEditorialConfig
 from src.publication.article_context import ArticleEditorialContext, ArticleSupport
@@ -37,7 +41,6 @@ from src.publication.article_models import (
 from src.publication.article_quality import (
     _PRIVATE_SECTOR_RE,
     ARTICLE_READER_QUALITY_VERSION,
-    ARTICLE_WHOLE_DRAFT_FINDING_CODES,
     ArticleReaderQualityReport,
     _citable_support_ids,
     _has_specific_source_area,
@@ -48,6 +51,11 @@ from src.publication.article_quality import (
 )
 from src.publication.article_quality import (
     _QUOTE_RE as _QUALITY_QUOTE_RE,
+)
+from src.publication.article_quality_policy import (
+    ARTICLE_QUALITY_FINDING_POLICIES,
+    ARTICLE_WHOLE_DRAFT_FINDING_CODES,
+    article_quality_policy,
 )
 from src.publication.article_recovery import ArticleDeterministicComposer
 from src.publication.article_trace import (
@@ -67,6 +75,111 @@ from src.publication.errors import (
 logger = logging.getLogger(__name__)
 
 
+# Bump when Evidence Boundary validation semantics change. Reader-quality has
+# its own version; the canonical policy content is fingerprinted separately.
+ARTICLE_ASSESSMENT_VALIDATOR_VERSION = "article_evidence_boundary_v1"
+
+
+def _assessment_input_value(value: Any) -> Any:
+    """Serialize actual validation inputs, retaining full provenance/options."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    if is_dataclass(value) and not isinstance(value, type):
+        return {
+            field.name: _assessment_input_value(getattr(value, field.name))
+            for field in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {str(key): _assessment_input_value(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_assessment_input_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_assessment_input_value(item) for item in value), key=repr)
+    if isinstance(value, re.Pattern):
+        return {"pattern": value.pattern, "flags": value.flags}
+    # Unknown opaque inputs cannot prove equality, even for the same instance:
+    # hidden mutable state might have changed. Force fresh assessment instead.
+    return {"type": f"{type(value).__module__}.{type(value).__qualname__}", "opaque": uuid4().hex}
+
+
+def article_assessment_input_fingerprint(
+    context: ArticleEditorialContext,
+    coverage_plan: ArticleCoveragePlan | None,
+    config: PublicationEditorialConfig | None,
+    length_profile: ArticleLengthProfile | None,
+    material_projection: ArticleMaterialProjection | None,
+    place_resolver: Any | None,
+) -> str:
+    """Identity of all inputs consumed by evidence, quality and coverage checks.
+
+    Profile *content* protects against changes to aliases/geography without an
+    edition-id change. No report may be reused using rendered-text equality.
+    """
+    from src.publication.article_validator import resolve_article_place_resolver
+
+    evidence_resolver = resolve_article_place_resolver(context)
+
+    def resolver_input(resolver: Any) -> Any:
+        if resolver is None:
+            return None
+        profile = getattr(resolver, "_profile", None)
+        return {
+            "type": f"{type(resolver).__module__}.{type(resolver).__qualname__}",
+            "profile": profile if profile is not None else resolver,
+        }
+
+    inputs = {
+        "context": context,
+        "coverage_plan": coverage_plan,
+        "config": config or PublicationEditorialConfig(),
+        "length_profile": length_profile,
+        "material_projection": material_projection,
+        "geography": resolver_input(place_resolver),
+        "evidence_geography": resolver_input(evidence_resolver),
+        "validator_version": ARTICLE_ASSESSMENT_VALIDATOR_VERSION,
+        "quality_version": ARTICLE_READER_QUALITY_VERSION,
+        "policy": ARTICLE_QUALITY_FINDING_POLICIES,
+    }
+    serialized = json.dumps(
+        _assessment_input_value(inputs),
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class ArticleAssessmentCheckpoint:
+    """Exact assessed candidate, safe or blocked; kept in memory for preview.
+
+    Observers must never persist full prose in ordinary production metadata.
+    ``publishable`` is only about this checkpoint and these fingerprinted inputs.
+    """
+
+    draft: StructuredArticleDraft
+    validation: ArticleValidationResult
+    quality: ArticleReaderQualityReport
+    input_fingerprint: str
+    coverage: ArticleCoverageDiagnostics | None = None
+
+    def matches(self, draft: StructuredArticleDraft, input_fingerprint: str) -> bool:
+        return self.draft == draft and self.input_fingerprint == input_fingerprint
+
+    @property
+    def publishable(self) -> bool:
+        return self.validation.is_valid and not self.quality.blocking_findings
+
+
+# Optional synchronous in-memory preview hook; no production persistence.
+ArticleCheckpointObserver = Callable[
+    [str, StructuredArticleDraft, ArticleAssessmentCheckpoint | None], None
+]
+
+
 def _unresolved_whole_draft_findings(
     *reports: ArticleReaderQualityReport | None,
 ) -> tuple[str, ...]:
@@ -77,6 +190,7 @@ def _unresolved_whole_draft_findings(
             if report is not None
             for finding in report.blocking_findings
             if finding.code in ARTICLE_WHOLE_DRAFT_FINDING_CODES
+            and article_quality_policy(finding.code).publication_effect == "block_publication"
         )
     )
 
@@ -312,6 +426,18 @@ def _build_final_metadata(
     }
     if quality_report is not None:
         meta["reader_quality"] = _compact_quality_metadata(quality_report)
+        readiness_findings = [
+            finding
+            for finding in quality_report.findings
+            if article_quality_policy(finding.code).publication_effect == "readiness_incomplete"
+        ]
+        meta["editorial_acceptance"] = {
+            "status": "incomplete" if readiness_findings else "complete",
+            "diagnostic_codes": list(dict.fromkeys(f.code for f in readiness_findings)),
+            "unresolved_story_count": len(readiness_findings),
+            "unresolved_story_unit_ids": list(dict.fromkeys(f.unit_id for f in readiness_findings)),
+            "coverage_veto_applied": False,
+        }
     if quality_report_before_edit is not None:
         compact_before = _compact_quality_metadata(quality_report_before_edit)
         meta["quality_before_edit"] = compact_before
@@ -341,6 +467,9 @@ def _compact_quality_metadata(report: ArticleReaderQualityReport) -> dict[str, A
                 "unit_id": finding.unit_id,
                 "severity": finding.severity,
                 "support_ids": list(finding.support_ids),
+                "finding_class": article_quality_policy(finding.code).finding_class,
+                "repair_scope": article_quality_policy(finding.code).repair_scope,
+                "publication_effect": article_quality_policy(finding.code).publication_effect,
             }
             for finding in report.findings
         ],
@@ -399,8 +528,18 @@ def _compact_quality_value(value: Any) -> dict[str, Any] | None:
             code = finding.get("code")
             unit_id = finding.get("unit_id")
             severity = finding.get("severity")
-            if all(isinstance(item, str) for item in (code, unit_id, severity)):
-                compact_findings.append({"code": code, "unit_id": unit_id, "severity": severity})
+            if isinstance(code, str) and isinstance(unit_id, str) and isinstance(severity, str):
+                policy = article_quality_policy(code)
+                compact_findings.append(
+                    {
+                        "code": code,
+                        "unit_id": unit_id,
+                        "severity": severity,
+                        "finding_class": policy.finding_class,
+                        "repair_scope": policy.repair_scope,
+                        "publication_effect": policy.publication_effect,
+                    }
+                )
     compact: dict[str, Any] = {
         "version": value.get("version")
         if isinstance(value.get("version"), str)
@@ -488,6 +627,11 @@ def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, A
         "as_of_utc",
         "edition_timezone",
         "editor_retry_count",
+        "writer_invocation_count",
+        "editor_invocation_count",
+        "editor_invocation_limit",
+        "generation_timeout_seconds",
+        "writer_stage_elapsed_seconds",
         "editor_patched_unit_ids",
         "editor_failure_type",
         "editor_fallback_to_original",
@@ -498,6 +642,31 @@ def _safe_writer_metadata(writer_metadata: dict[str, Any] | None) -> dict[str, A
     result: dict[str, Any] = {
         key: writer_metadata[key] for key in scalar_keys if key in writer_metadata
     }
+
+    def compact_provider_attempts(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+        return {
+            key: value[key]
+            for key in (
+                "slot_attempt_count",
+                "transport_attempt_count",
+                "complete",
+                "elapsed_seconds",
+            )
+            if key in value and isinstance(value[key], (int, float, bool))
+        }
+
+    writer_counts = compact_provider_attempts(writer_metadata.get("writer_provider_attempts"))
+    if writer_counts is not None:
+        result["writer_provider_attempts"] = writer_counts
+    editor_counts = writer_metadata.get("editor_provider_attempts")
+    if isinstance(editor_counts, list):
+        result["editor_provider_attempts"] = [
+            compact
+            for item in editor_counts[:2]
+            if (compact := compact_provider_attempts(item)) is not None
+        ]
     for key in ("quality", "quality_before_edit", "quality_after_edit"):
         compact_quality = _compact_quality_value(writer_metadata.get(key))
         if compact_quality is not None:
@@ -643,27 +812,7 @@ def _quality_rejection_metadata(
 
 def _safe_quality_finding_message(code: str) -> str:
     """Return a useful diagnostic label without embedding article/source prose."""
-    messages = {
-        "CONTRADICTORY_SERVICE_STATE": "Opposing service states need an explicit localized contrast.",
-        "THEME_MISMATCHED_SECTION": "A section contains a story from a different theme.",
-        "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION": "A story in the connectivity section lacks a clear thematic link.",
-        "DUPLICATE_ARTICLE_HEADING": "A heading repeats the title or another section heading.",
-        "UNDEVELOPED_LEAD_PROMISE": "The lead promises a key storyline that the article does not develop.",
-        "ARTICLE_INVENTORY_RHYTHM": "Several one-fact paragraphs read as an inventory.",
-        "QUOTE_ROLL_PARAGRAPH": "A paragraph contains more than two direct quotes.",
-        "ARTICLE_PLACE_AREA_MISMATCH": "A paragraph assigns a place or street to the wrong area.",
-        "ARTICLE_AREA_BEFORE_STREET_ORDER": "A paragraph introduces a street before its area.",
-        "PRIVATE_SECTOR_AREA_UNSPECIFIED": "Private-sector reporting needs an explicit note when its area is unknown.",
-        "UNQUOTED_COMMERCIAL_PROVIDER_NAME": "A supported provider name needs typographic quotation marks.",
-        "INCOMPLETE_QUANTITY_PHRASE": "A quantity is missing its unit or counted noun.",
-        "OVERLOADED_ROSTER_PARAGRAPH": "A paragraph lists unrelated addresses and states without comparison.",
-        "MULTI_SENTENCE_ADDRESS_STATUS_ROSTER": "Similar address-and-status sentences need a coherent localized contrast.",
-        "DIRECTORY_TIMETABLE_SECTION": "A section reads like a directory or routine timetable.",
-        "CROSS_SECTION_REPETITION": "A supported fact repeats in another section without a new detail.",
-        "REPEATED_CENTRAL_THESIS": "The article repeats its central point without new development.",
-        "MISSING_DEVELOP_STORY": "A key planned storyline is missing from the article.",
-    }
-    return messages.get(code, f"Reader-quality finding: {code}.")
+    return article_quality_policy(code).description
 
 
 def _sanitize_unsupported_quotes(
@@ -1229,37 +1378,6 @@ def _deduplicate_draft_content(
     )
 
 
-_QUOTE_RE = re.compile(r"\u00ab[^\u00bb]+\u00bb")
-
-
-def _detect_chat_roll_paragraphs(
-    draft: StructuredArticleDraft,
-    max_quotes_per_paragraph: int = 3,
-) -> list[tuple[int, int, int]]:
-    """Detect paragraphs with excessive consecutive direct quotes (AGENTS.md §0.6).
-
-    Returns list of (section_idx, paragraph_idx, quote_count) for paragraphs
-    exceeding the quote threshold. These are logged as warnings for editorial review.
-    """
-    violations: list[tuple[int, int, int]] = []
-    for si, sec in enumerate(draft.sections):
-        for pi, para in enumerate(sec.paragraphs):
-            quote_count = len(_QUOTE_RE.findall(para.text))
-            if quote_count > max_quotes_per_paragraph:
-                violations.append((si, pi, quote_count))
-                logger.warning(
-                    "Chat-roll detected: section %d paragraph %d has %d direct quotes "
-                    "(max %d per AGENTS.md 0.6). Consider rewriting with indirect speech. "
-                    "Text preview: %.80s...",
-                    si,
-                    pi,
-                    quote_count,
-                    max_quotes_per_paragraph,
-                    para.text[:80],
-                )
-    return violations
-
-
 def _prune_unsupported_paragraph_claims(
     draft: StructuredArticleDraft,
     claim_violations: Sequence[ArticleValidationIssue],
@@ -1523,18 +1641,22 @@ class ArticleFinalizer:
         quality_report_after_edit: ArticleReaderQualityReport | None = None,
         material_projection: ArticleMaterialProjection | None = None,
         place_resolver: Any | None = None,
+        writer_assessment: ArticleAssessmentCheckpoint | None = None,
+        checkpoint_observer: ArticleCheckpointObserver | None = None,
     ) -> ArticleFinalizationResult:
         """Validate writer output, trigger recovery if needed, and assert final invariants.
 
-        ``writer_validation`` is produced immediately after parsing the writer
-        response. Reusing it avoids repeating the expensive Evidence Boundary
-        pass when no writer-side repair changed the draft.
+        Only ``writer_assessment`` proves ownership of the exact structured
+        draft and input fingerprint. Loose validation/quality arguments remain
+        accepted for compatibility and diagnostics but cannot authorize reuse.
         """
         validation_context = (
             materialize_article_validation_context(context, material_projection)
             if material_projection is not None
             else context
         )
+        if isinstance(writer_error, TimeoutError):
+            raise writer_error
         # 1. Handle writer failure / error
         if writer_error is not None or writer_draft is None:
             if attempt_observer:
@@ -1588,7 +1710,22 @@ class ArticleFinalizer:
                 place_resolver=place_resolver,
             )
 
-        input_writer_draft = writer_draft
+        input_fingerprint = await asyncio.to_thread(
+            article_assessment_input_fingerprint,
+            context,
+            coverage_plan,
+            editorial_config,
+            length_profile,
+            material_projection,
+            place_resolver,
+        )
+        if writer_assessment is not None and writer_assessment.matches(
+            writer_draft, input_fingerprint
+        ):
+            writer_validation = writer_assessment.validation
+        else:
+            # Legacy loose reports lack proof of their draft/input ownership.
+            writer_validation = None
 
         # 2. Validate writer draft
         if writer_validation is None:
@@ -1807,7 +1944,8 @@ class ArticleFinalizer:
                             else None
                         ),
                         "editor_attempt_count": _safe_writer_metadata(writer_metadata).get(
-                            "editor_retry_count", 0
+                            "editor_retry_count",
+                            0,
                         ),
                         "patched_unit_ids": _safe_writer_metadata(writer_metadata).get(
                             "editor_patched_unit_ids", []
@@ -1837,7 +1975,6 @@ class ArticleFinalizer:
             )
 
         # 3. Writer draft is valid; apply deterministic structural improvements
-        pre_finalization_draft = writer_draft
         # 3a. Deduplicate identical sentences within paragraphs and duplicate cross-section paragraphs
         writer_draft = _deduplicate_draft_content(writer_draft)
 
@@ -1852,18 +1989,18 @@ class ArticleFinalizer:
             place_resolver=place_resolver,
         )
 
+        if checkpoint_observer is not None:
+            checkpoint_observer("finalization_candidate", writer_draft, None)
+
         # Structural finalization may change the reader-facing draft. Reuse
         # validation only if the full structured value remains identical;
         # otherwise the rendered value must pass a fresh Evidence Boundary check.
         evidence_started = perf_counter()
-        reused_writer_validation = (
-            writer_draft == pre_finalization_draft and writer_validation is not None
+        reused_writer_validation = writer_assessment is not None and writer_assessment.matches(
+            writer_draft, input_fingerprint
         )
-        if reused_writer_validation:
-            # The finalization transforms preserve the complete frozen draft
-            # value (including claim atoms and provenance). This validation
-            # was produced for that same value with the same context/options.
-            final_validation = writer_validation
+        if reused_writer_validation and writer_assessment is not None:
+            final_validation = writer_assessment.validation
         else:
             final_validation = await asyncio.to_thread(
                 validate_article_draft,
@@ -1916,7 +2053,8 @@ class ArticleFinalizer:
                             else None
                         ),
                         "editor_attempt_count": _safe_writer_metadata(writer_metadata).get(
-                            "editor_retry_count", 0
+                            "editor_retry_count",
+                            0,
                         ),
                         "patched_unit_ids": _safe_writer_metadata(writer_metadata).get(
                             "editor_patched_unit_ids", []
@@ -1950,16 +2088,12 @@ class ArticleFinalizer:
         # post-orphan-merge object that will be rendered.  Factual validation
         # remains separate; quality findings never masquerade as claims.
         quality_started = perf_counter()
-        # The post-edit report is paired with the incoming writer draft by the
-        # canonical caller. Reuse it only when no repair or finalization step
-        # changed that full structured draft; all diagnostic inputs below are
-        # the same context, plan, projection, and resolver passed to that caller.
-        if (
-            quality_report_after_edit is not None
-            and input_writer_draft == pre_finalization_draft
-            and writer_draft == pre_finalization_draft
+        # Only a checkpoint establishes equality of the complete draft,
+        # support mappings and every validation/quality input.
+        if writer_assessment is not None and writer_assessment.matches(
+            writer_draft, input_fingerprint
         ):
-            final_quality = quality_report_after_edit
+            final_quality = writer_assessment.quality
             reused_quality_report = True
         else:
             final_quality = await asyncio.to_thread(
@@ -1976,6 +2110,32 @@ class ArticleFinalizer:
             reused_quality_report,
             perf_counter() - quality_started,
         )
+        excluded_story_ids = (
+            material_projection.suppressed_story_ids if material_projection is not None else ()
+        )
+        if (
+            writer_assessment is not None
+            and writer_assessment.matches(writer_draft, input_fingerprint)
+            and writer_assessment.coverage is not None
+        ):
+            ai_diag = writer_assessment.coverage
+        else:
+            ai_diag = await asyncio.to_thread(
+                diagnose_article_coverage,
+                writer_draft,
+                coverage_plan,
+                context=context,
+                excluded_story_ids=excluded_story_ids,
+            )
+        final_assessment = ArticleAssessmentCheckpoint(
+            writer_draft,
+            final_validation,
+            final_quality,
+            input_fingerprint,
+            ai_diag,
+        )
+        if checkpoint_observer is not None:
+            checkpoint_observer("finalization", writer_draft, final_assessment)
         if final_quality.blocking_findings:
             logger.info(
                 "Finalized article draft failed reader-quality gate: %s",
@@ -2020,19 +2180,6 @@ class ArticleFinalizer:
                 ),
             )
 
-        # 3b. Detect chat-roll patterns for editorial logging (AGENTS.md §0.6)
-        _detect_chat_roll_paragraphs(writer_draft, max_quotes_per_paragraph=2)
-
-        # 3c. Diagnose coverage
-        excluded_story_ids = (
-            material_projection.suppressed_story_ids if material_projection is not None else ()
-        )
-        ai_diag = diagnose_article_coverage(
-            writer_draft,
-            coverage_plan,
-            context=context,
-            excluded_story_ids=excluded_story_ids,
-        )
         ai_covered = tuple(ai_diag.covered_story_ids)
 
         eligible_story_ids = set(coverage_plan.story_ids) - set(excluded_story_ids)

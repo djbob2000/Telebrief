@@ -381,6 +381,10 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
         "editorial_repair_max_output_tokens", min(editorial_audit_max_output_tokens, 8_192)
     )
 
+    article_generation_timeout_seconds = _positive_budget(
+        "article_generation_timeout_seconds", 1200
+    )
+
     editorial_api_timeout = raw.get("editorial_api_timeout", 300)
     if (
         isinstance(editorial_api_timeout, bool)
@@ -429,6 +433,7 @@ def _parse_article_config(settings_dict: dict) -> ArticleConfig:
         editorial_audit_max_output_tokens=editorial_audit_max_output_tokens,
         editorial_repair_max_output_tokens=editorial_repair_max_output_tokens,
         editorial_api_timeout=editorial_api_timeout,
+        article_generation_timeout_seconds=article_generation_timeout_seconds,
         telegraph_access_token=token.strip() if token else None,
         save_debug_artifacts=save_debug_artifacts,
         debug_artifact_dir=debug_artifact_dir.strip(),
@@ -691,5 +696,5 @@ def _parse_publication_editorial_config(settings_dict: dict) -> PublicationEdito
             raw.get("digest_allow_deterministic_fallback", False)
         ),
         article_editor_enabled=bool(raw.get("article_editor_enabled", False)),
-        article_editor_max_attempts=_val_pos_int("article_editor_max_attempts", 2),
+        article_editor_max_attempts=_val_nonneg_int("article_editor_max_attempts", 2),
     )

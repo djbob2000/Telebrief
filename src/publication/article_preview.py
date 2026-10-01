@@ -6,10 +6,17 @@ import datetime as dt
 import logging
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import Any, Literal
 
 from src.article_generator import ArticleGenerator
 from src.config_loader import Config
+from src.publication.article_finalization import (
+    ArticleAssessmentCheckpoint,
+    ArticleCheckpointObserver,
+    _compact_quality_value,
+)
+from src.publication.article_models import StructuredArticleDraft
+from src.publication.errors import ArticlePublicationRejected
 from src.publication.event_editorial_adapter import EventEditorialAdapter
 from src.publication.policies import ARTICLE_PUBLICATION_TYPES
 from src.publication.repository import PublicationRepository
@@ -19,18 +26,27 @@ from src.timezones import get_timezone, normalize_timezone_name
 logger = logging.getLogger(__name__)
 
 
+ArticlePreviewStatus = Literal["accepted", "rejected", "failed"]
+
+
 @dataclass(frozen=True)
-class ArticleRunPreview:
-    """Article text and safe diagnostics generated from a frozen publication run."""
+class ArticlePreviewCandidate:
+    """In-memory candidate prose paired with the checkpoint assessment, if any."""
 
     run_id: int
-    publication_type: str
-    edition_slug: str
-    snapshot_at: dt.datetime
     title: str
     lead: str
     body: str
-    diagnostics: dict[str, object]
+    checkpoint_stage: str
+    publication_type: str | None = None
+    edition_slug: str | None = None
+    snapshot_at: dt.datetime | None = None
+    draft: StructuredArticleDraft | None = field(default=None, repr=False, compare=False)
+    assessment: ArticleAssessmentCheckpoint | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def markdown(self) -> str:
@@ -41,6 +57,16 @@ class ArticleRunPreview:
         if self.body:
             parts.extend(["", self.body])
         return "\n".join(parts).rstrip() + "\n"
+
+
+@dataclass(frozen=True)
+class ArticleRunPreviewOutcome:
+    """Typed dry-run result; the error is retained but excluded from safe metadata."""
+
+    status: ArticlePreviewStatus
+    candidate: ArticlePreviewCandidate | None
+    diagnostics: dict[str, object]
+    error: Exception | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -54,6 +80,57 @@ class _CapturedAttempt:
     error_kind: str | None = None
     writer_metadata: dict[str, Any] = field(default_factory=dict)
     final_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class _CapturedCheckpoint:
+    stage: str
+    draft: StructuredArticleDraft
+    assessment: ArticleAssessmentCheckpoint | None
+
+
+class _MemoryCheckpointObserver:
+    """Keep exact checkpoint drafts and assessments in process memory only."""
+
+    def __init__(self) -> None:
+        self.checkpoints: list[_CapturedCheckpoint] = []
+        self.assessment_pair_mismatch_count = 0
+
+    def __call__(
+        self,
+        stage: str,
+        draft: StructuredArticleDraft,
+        assessment: ArticleAssessmentCheckpoint | None,
+    ) -> None:
+        captured_assessment = assessment
+        captured_draft = draft
+        if assessment is not None:
+            if assessment.matches(draft, assessment.input_fingerprint):
+                captured_draft = assessment.draft
+            else:
+                captured_assessment = None
+                self.assessment_pair_mismatch_count += 1
+        self.checkpoints.append(
+            _CapturedCheckpoint(
+                stage=stage,
+                draft=captured_draft,
+                assessment=captured_assessment,
+            )
+        )
+
+    def diagnostics(self) -> list[dict[str, object]]:
+        return [
+            {
+                "stage": checkpoint.stage,
+                "assessment_available": checkpoint.assessment is not None,
+                **(
+                    {"assessment": _assessment_metadata(checkpoint.assessment)}
+                    if checkpoint.assessment is not None
+                    else {}
+                ),
+            }
+            for checkpoint in self.checkpoints
+        ]
 
 
 class _MemoryGenerationAttemptObserver:
@@ -119,12 +196,56 @@ class _MemoryGenerationAttemptObserver:
 
 
 def _safe_writer_metadata(value: Any) -> dict[str, Any]:
-    """Apply the article finalizer's explicit metadata allowlist."""
+    """Keep only safe invocation and provider-attempt counters and durations."""
     if not isinstance(value, dict):
         return {}
-    from src.publication.article_finalization import _safe_writer_metadata as safe_metadata
 
-    return safe_metadata(value)
+    scalar_keys = {
+        "attempt",
+        "attempt_number",
+        "logical_writer_invocation",
+        "logical_editor_invocation",
+        "writer_invocation_count",
+        "editor_invocation_count",
+        "editor_invocation_limit",
+        "generation_timeout_seconds",
+        "writer_stage_elapsed_seconds",
+        "pass_elapsed_seconds",
+    }
+    result = {
+        key: value[key]
+        for key in scalar_keys
+        if key in value and isinstance(value[key], (int, float))
+    }
+
+    def compact_attempt(value: Any) -> dict[str, int | float | bool] | None:
+        if not isinstance(value, dict):
+            return None
+        return {
+            key: value[key]
+            for key in (
+                "slot_attempt_count",
+                "transport_attempt_count",
+                "complete",
+                "elapsed_seconds",
+            )
+            if key in value and isinstance(value[key], (int, float, bool))
+        }
+
+    for key in ("provider_attempts", "writer_provider_attempts"):
+        compact = compact_attempt(value.get(key))
+        if compact is not None:
+            result[key] = compact
+
+    for key in ("editor_provider_attempts",):
+        attempts = value.get(key)
+        if isinstance(attempts, list):
+            compact_attempts = [
+                compact for item in attempts[:2] if (compact := compact_attempt(item)) is not None
+            ]
+            if compact_attempts:
+                result[key] = compact_attempts
+    return result
 
 
 def _safe_final_metadata(value: Any) -> dict[str, Any]:
@@ -134,9 +255,6 @@ def _safe_final_metadata(value: Any) -> dict[str, Any]:
     from src.publication.article_finalization import (
         _compact_composition_value,
         _compact_quality_value,
-    )
-    from src.publication.article_finalization import (
-        _safe_writer_metadata as safe_writer_metadata,
     )
 
     result: dict[str, Any] = {
@@ -160,6 +278,7 @@ def _safe_final_metadata(value: Any) -> dict[str, Any]:
         )
         if key in value and isinstance(value[key], (str, int, float, bool, type(None)))
     }
+    result.update(_safe_writer_metadata(value))
     for key in (
         "reader_quality",
         "quality_before_edit",
@@ -174,7 +293,7 @@ def _safe_final_metadata(value: Any) -> dict[str, Any]:
     if composition is not None:
         result["composition"] = composition
 
-    writer = safe_writer_metadata(value.get("writer_attempt"))
+    writer = _safe_writer_metadata(value.get("writer_attempt"))
     if writer:
         result["writer_attempt"] = writer
 
@@ -202,98 +321,315 @@ async def build_article_preview_from_run(
     *,
     config: Config,
     expected_edition_slug: str | None = None,
-) -> ArticleRunPreview:
-    """Generate an article from a run's sealed inputs without changing publication state."""
-    runtime = get_runtime()
-    repo = PublicationRepository()
-    adapter = EventEditorialAdapter(uow=runtime.uow, repo=repo)
+) -> ArticleRunPreviewOutcome:
+    """Replay sealed inputs and return an in-memory accepted/rejected/failed result."""
+    attempts = _MemoryGenerationAttemptObserver()
+    checkpoints = _MemoryCheckpointObserver()
+    run_details: dict[str, object] = {"run_id": run_id}
+    generator: ArticleGenerator | None = None
 
-    async with runtime.uow.transaction() as conn:
-        run = await repo.get_run_by_id(conn, run_id)
-        if run is None:
-            raise ValueError(f"publication run {run_id} not found")
-        if run.publication_type not in ARTICLE_PUBLICATION_TYPES:
-            raise ValueError(
-                f"publication run {run_id} has unsupported article preview type "
-                f"{run.publication_type!r}"
+    try:
+        runtime = get_runtime()
+        repo = PublicationRepository()
+        adapter = EventEditorialAdapter(uow=runtime.uow, repo=repo)
+
+        async with runtime.uow.transaction() as conn:
+            run = await repo.get_run_by_id(conn, run_id)
+            if run is None:
+                raise ValueError(f"publication run {run_id} not found")
+            if run.publication_type not in ARTICLE_PUBLICATION_TYPES:
+                raise ValueError(
+                    f"publication run {run_id} has unsupported article preview type "
+                    f"{run.publication_type!r}"
+                )
+            run_details.update(
+                {
+                    "publication_type": run.publication_type,
+                    "snapshot_at": run.snapshot_at.isoformat(),
+                }
             )
 
-        edition_cursor = await conn.execute(
-            "SELECT slug, timezone FROM editions WHERE id = %s",
-            (run.edition_id,),
-        )
-        edition_row = await edition_cursor.fetchone()
-        if edition_row is None or not edition_row[0]:
-            raise ValueError(f"publication run {run_id} has no edition")
-        edition_slug = str(edition_row[0]).strip()
-        if expected_edition_slug is not None and expected_edition_slug != edition_slug:
-            raise ValueError(
-                f"requested edition {expected_edition_slug!r} conflicts with frozen run "
-                f"edition {edition_slug!r}"
+            edition_cursor = await conn.execute(
+                "SELECT slug, timezone FROM editions WHERE id = %s",
+                (run.edition_id,),
             )
-        timezone_name = str(edition_row[1]).strip() if edition_row[1] else ""
-        if not timezone_name:
-            raise ValueError(f"publication run {run_id} edition is missing timezone")
-        try:
-            timezone_name = normalize_timezone_name(timezone_name)
-            get_timezone(timezone_name)
-        except ValueError as exc:
-            raise ValueError(
-                f"publication run {run_id} edition has invalid timezone {timezone_name!r}"
-            ) from exc
+            edition_row = await edition_cursor.fetchone()
+            if edition_row is None or not edition_row[0]:
+                raise ValueError(f"publication run {run_id} has no edition")
+            edition_slug = str(edition_row[0]).strip()
+            run_details["edition_slug"] = edition_slug
+            if expected_edition_slug is not None and expected_edition_slug != edition_slug:
+                raise ValueError(
+                    f"requested edition {expected_edition_slug!r} conflicts with frozen run "
+                    f"edition {edition_slug!r}"
+                )
+            timezone_name = str(edition_row[1]).strip() if edition_row[1] else ""
+            if not timezone_name:
+                raise ValueError(f"publication run {run_id} edition is missing timezone")
+            try:
+                timezone_name = normalize_timezone_name(timezone_name)
+                get_timezone(timezone_name)
+            except ValueError as exc:
+                raise ValueError(
+                    f"publication run {run_id} edition has invalid timezone {timezone_name!r}"
+                ) from exc
+            run_details["edition_timezone"] = timezone_name
 
-        inputs = await repo.load_sealed_inputs(conn, run_id)
-        if not inputs:
-            raise ValueError(f"publication run {run_id} has no sealed inputs")
-        frozen = await adapter.adapt_inputs_on(
-            conn,
-            run_id,
-            inputs=inputs,
-            include_anchor_publications=False,
-        )
+            inputs = await repo.load_sealed_inputs(conn, run_id)
+            if not inputs:
+                raise ValueError(f"publication run {run_id} has no sealed inputs")
+            frozen = await adapter.adapt_inputs_on(
+                conn,
+                run_id,
+                inputs=inputs,
+                include_anchor_publications=False,
+            )
 
-    article_context = getattr(frozen.analysis, "article_context", None)
-    if article_context is not None and article_context.edition_timezone != timezone_name:
-        # Guard the adapter's legacy UTC default: replay must use the stored
-        # edition zone, and missing timezone data must never pass silently.
-        frozen = replace(
+        article_context = getattr(frozen.analysis, "article_context", None)
+        if article_context is not None and article_context.edition_timezone != timezone_name:
+            # Guard the adapter's legacy UTC default: replay must use the stored
+            # edition zone, and missing timezone data must never pass silently.
+            frozen = replace(
+                frozen,
+                analysis=replace(
+                    frozen.analysis,
+                    article_context=replace(article_context, edition_timezone=timezone_name),
+                ),
+            )
+
+        # Frozen replay is a dry-run: isolate config from the caller and disable
+        # production prompt/draft artifact writes on this generator instance.
+        preview_config = deepcopy(config)
+        preview_config.settings.article.save_debug_artifacts = False
+        generator = ArticleGenerator(config=preview_config, logger=logger)
+        checkpoint_observer: ArticleCheckpointObserver = checkpoints
+        title, lead, body = await generator.generate_from_frozen_input(
             frozen,
-            analysis=replace(
-                frozen.analysis,
-                article_context=replace(article_context, edition_timezone=timezone_name),
+            attempt_observer=attempts,
+            checkpoint_observer=checkpoint_observer,
+        )
+
+        captured = checkpoints.checkpoints[-1] if checkpoints.checkpoints else None
+        candidate = (
+            _candidate_from_checkpoint(run_details, captured)
+            if captured is not None
+            else _candidate_from_returned_text(run_details, title, lead, body)
+        )
+        return ArticleRunPreviewOutcome(
+            status="accepted",
+            candidate=candidate,
+            diagnostics=_preview_diagnostics(
+                run_details,
+                attempts,
+                checkpoints,
+                generator=generator,
+                status="accepted",
             ),
         )
+    except ArticlePublicationRejected as exc:
+        return ArticleRunPreviewOutcome(
+            status="rejected",
+            candidate=_candidate_from_checkpoint(
+                run_details,
+                checkpoints.checkpoints[-1] if checkpoints.checkpoints else None,
+            ),
+            diagnostics=_preview_diagnostics(
+                run_details,
+                attempts,
+                checkpoints,
+                generator=generator,
+                status="rejected",
+                error=exc,
+            ),
+            error=exc,
+        )
+    except Exception as exc:
+        return ArticleRunPreviewOutcome(
+            status="failed",
+            candidate=_candidate_from_checkpoint(
+                run_details,
+                checkpoints.checkpoints[-1] if checkpoints.checkpoints else None,
+            ),
+            diagnostics=_preview_diagnostics(
+                run_details,
+                attempts,
+                checkpoints,
+                generator=generator,
+                status="failed",
+                error=exc,
+            ),
+            error=exc,
+        )
 
-    observer = _MemoryGenerationAttemptObserver()
-    # Production may persist prompt/draft debug artifacts under the mounted data
-    # directory. Frozen replay is a dry-run, so keep that setting isolated from
-    # the caller and disable those writes for this generator instance.
-    preview_config = deepcopy(config)
-    preview_config.settings.article.save_debug_artifacts = False
-    generator = ArticleGenerator(config=preview_config, logger=logger)
-    title, lead, body = await generator.generate_from_frozen_input(
-        frozen,
-        attempt_observer=observer,
+
+def _candidate_from_checkpoint(
+    run_details: dict[str, object],
+    checkpoint: _CapturedCheckpoint | None,
+) -> ArticlePreviewCandidate | None:
+    if checkpoint is None:
+        return None
+    draft = checkpoint.draft
+    return ArticlePreviewCandidate(
+        run_id=_preview_run_id(run_details),
+        publication_type=(
+            str(run_details["publication_type"]) if "publication_type" in run_details else None
+        ),
+        edition_slug=(str(run_details["edition_slug"]) if "edition_slug" in run_details else None),
+        snapshot_at=_snapshot_from_run_details(run_details),
+        title=draft.title,
+        lead=draft.lead,
+        body=draft.render_markdown(),
+        checkpoint_stage=checkpoint.stage,
+        draft=draft,
+        assessment=checkpoint.assessment,
     )
 
-    return ArticleRunPreview(
-        run_id=run.id,
-        publication_type=run.publication_type,
-        edition_slug=edition_slug,
-        snapshot_at=run.snapshot_at,
+
+def _candidate_from_returned_text(
+    run_details: dict[str, object],
+    title: str,
+    lead: str,
+    body: str,
+) -> ArticlePreviewCandidate:
+    return ArticlePreviewCandidate(
+        run_id=_preview_run_id(run_details),
+        publication_type=(
+            str(run_details["publication_type"]) if "publication_type" in run_details else None
+        ),
+        edition_slug=str(run_details["edition_slug"]) if "edition_slug" in run_details else None,
+        snapshot_at=_snapshot_from_run_details(run_details),
         title=title,
         lead=lead,
         body=body,
-        diagnostics={
-            "schema_version": "article-run-preview-v1",
-            "run_id": run.id,
-            "publication_type": run.publication_type,
-            "edition_slug": edition_slug,
-            "snapshot_at": run.snapshot_at.isoformat(),
-            "edition_timezone": timezone_name,
-            "generation": observer.to_metadata(),
-        },
+        checkpoint_stage="returned_without_checkpoint",
     )
 
 
-__all__ = ["ArticleRunPreview", "build_article_preview_from_run"]
+def _snapshot_from_run_details(run_details: dict[str, object]) -> dt.datetime | None:
+    snapshot_at = run_details.get("snapshot_at")
+    if not isinstance(snapshot_at, str):
+        return None
+    try:
+        return dt.datetime.fromisoformat(snapshot_at)
+    except ValueError:
+        return None
+
+
+def _preview_run_id(run_details: dict[str, object]) -> int:
+    run_id = run_details.get("run_id")
+    if isinstance(run_id, int) and not isinstance(run_id, bool):
+        return run_id
+    raise ValueError("preview outcome is missing its run ID")
+
+
+def _assessment_metadata(assessment: ArticleAssessmentCheckpoint) -> dict[str, object]:
+    validation = assessment.validation
+    result: dict[str, object] = {
+        "publishable": assessment.publishable,
+        "validation": {
+            "is_valid": validation.is_valid,
+            "issue_count": len(validation.issues),
+            "issues": [
+                {
+                    "code": issue.code,
+                    "unit_id": issue.unit_id,
+                    "severity": issue.severity,
+                    "blocking": issue.blocking,
+                }
+                for issue in validation.issues
+            ],
+        },
+    }
+    quality = _compact_quality_value(assessment.quality.to_metadata())
+    if quality is not None:
+        result["reader_quality"] = quality
+    if assessment.coverage is not None:
+        coverage = assessment.coverage
+        result["coverage"] = {
+            "planned_story_count": coverage.planned_story_count,
+            "covered_story_count": coverage.covered_story_count,
+            "story_coverage": coverage.story_coverage,
+            "develop_story_coverage": coverage.develop_story_coverage,
+            "weave_story_coverage": coverage.weave_story_coverage,
+            "brief_story_coverage": coverage.brief_story_coverage,
+            "planned_detail_support_count": coverage.planned_detail_support_count,
+            "covered_detail_support_count": coverage.covered_detail_support_count,
+            "detail_support_coverage": coverage.detail_support_coverage,
+        }
+    return result
+
+
+def _preview_diagnostics(
+    run_details: dict[str, object],
+    attempts: _MemoryGenerationAttemptObserver,
+    checkpoints: _MemoryCheckpointObserver,
+    *,
+    status: ArticlePreviewStatus,
+    generator: ArticleGenerator | None = None,
+    error: Exception | None = None,
+) -> dict[str, object]:
+    diagnostics: dict[str, object] = {
+        "schema_version": "article-run-preview-v2",
+        "status": status,
+        **run_details,
+        "generation": {
+            "attempts": attempts.to_metadata(),
+            "checkpoints": checkpoints.diagnostics(),
+            "assessment_pair_mismatch_count": checkpoints.assessment_pair_mismatch_count,
+        },
+    }
+    if generator is not None:
+        provider_attempts = _compact_generation_provider_attempts(
+            getattr(generator, "last_generation_provider_attempts", None)
+        )
+        if provider_attempts is not None:
+            diagnostics["provider_attempts"] = provider_attempts
+    if error is not None:
+        failure: dict[str, object] = {"exception_type": type(error).__name__}
+        if isinstance(error, ArticlePublicationRejected):
+            failure["reason"] = error.reason
+            failure["error_kind"] = error.error_kind
+            safe_metadata = _safe_final_metadata(error.metadata)
+            if safe_metadata:
+                failure["rejection_metadata"] = safe_metadata
+        diagnostics["failure"] = failure
+    return diagnostics
+
+
+def _compact_generation_provider_attempts(value: Any) -> dict[str, object] | None:
+    if not isinstance(value, dict):
+        return None
+
+    def compact(item: Any) -> dict[str, int | float | bool] | None:
+        if not isinstance(item, dict):
+            return None
+        return {
+            key: item[key]
+            for key in (
+                "slot_attempt_count",
+                "transport_attempt_count",
+                "complete",
+                "elapsed_seconds",
+            )
+            if key in item and isinstance(item[key], (int, float, bool))
+        }
+
+    result: dict[str, object] = {}
+    if "writer" in value:
+        result["writer"] = compact(value.get("writer"))
+    editor_attempts = value.get("editor")
+    if isinstance(editor_attempts, list):
+        result["editor"] = [
+            compact_attempt
+            for item in editor_attempts[:2]
+            if (compact_attempt := compact(item)) is not None
+        ]
+    return result
+
+
+__all__ = [
+    "ArticlePreviewCandidate",
+    "ArticlePreviewStatus",
+    "ArticleRunPreviewOutcome",
+    "build_article_preview_from_run",
+]

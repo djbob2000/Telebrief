@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from src.ai_providers import (
     AIProvider,
     ProviderCascadeError,
+    capture_provider_attempts,
     create_provider,
     ensure_provider_cascade,
 )
@@ -48,13 +49,17 @@ from src.publication.article_coverage_diagnostics import (
     ArticleCoverageDiagnostics,
     diagnose_article_coverage,
 )
+from src.publication.article_finalization import (
+    ArticleAssessmentCheckpoint,
+    ArticleCheckpointObserver,
+    article_assessment_input_fingerprint,
+)
 from src.publication.article_length import (
     ArticleLengthProfile,
     derive_article_length_profile,
 )
 from src.publication.article_models import StructuredArticleDraft
 from src.publication.article_quality import (
-    ARTICLE_WHOLE_DRAFT_FINDING_CODES,
     ArticleReaderQualityReport,
     diagnose_article_quality,
 )
@@ -635,6 +640,8 @@ class ArticleGenerator:
 
     def __init__(self, config: Config, logger: logging.Logger):
         self.config = config
+        # Compact diagnostic snapshots survive deadline cancellation for explicit preview.
+        self.last_generation_provider_attempts: dict[str, Any] = {}
         self.logger = logger
         raw_provider: AIProvider = create_provider(
             provider_name=config.settings.ai_provider,
@@ -1248,6 +1255,8 @@ class ArticleGenerator:
         self,
         frozen_input: Any,
         attempt_observer: Any | None = None,
+        *,
+        checkpoint_observer: ArticleCheckpointObserver | None = None,
     ) -> Tuple[str, str, str]:
         """Generate article directly from a sealed FrozenEditorialInput."""
         if (
@@ -1258,6 +1267,7 @@ class ArticleGenerator:
             return await self.generate_from_event_article_context(
                 frozen_input.analysis.article_context,
                 attempt_observer=attempt_observer,
+                checkpoint_observer=checkpoint_observer,
             )
 
         return await self.generate_from_analysis_and_bundle(
@@ -1382,11 +1392,48 @@ class ArticleGenerator:
 служебные комментарии или пояснения о формате ответа.
 """
 
-    async def generate_from_event_article_context(  # noqa: C901
+    async def generate_from_event_article_context(
         self,
         article_ctx: ArticleEditorialContext,
         coverage_plan: Any | None = None,
         attempt_observer: Any | None = None,
+        *,
+        checkpoint_observer: ArticleCheckpointObserver | None = None,
+    ) -> Tuple[str, str, str]:
+        """Own the sole deadline from frozen preparation to assessed final draft.
+
+        Nested provider request timeouts retain their configured bounds; outer
+        task cancellation additionally bounds every queue wait, retry and
+        failover by the remaining generation budget. CancelledError must pass
+        through all stage Exception handlers. A timeout never reaches fallback.
+        Already-running read-only to_thread evaluation may finish after task
+        cancellation; no subsequent stage or provider request is started.
+        """
+        timeout_seconds = self.config.settings.article.article_generation_timeout_seconds
+        if isinstance(timeout_seconds, bool) or timeout_seconds <= 0:
+            raise ValueError("article_generation_timeout_seconds must be a positive integer")
+        self.last_generation_provider_attempts = {"writer": None, "editor": []}
+        deadline = asyncio.get_running_loop().time() + timeout_seconds
+        async with asyncio.timeout_at(deadline):
+            result = await self._generate_from_event_article_context(
+                article_ctx,
+                coverage_plan,
+                attempt_observer,
+                checkpoint_observer=checkpoint_observer,
+            )
+            # Also cover a final synchronous transform that exhausts the budget
+            # before the event loop can deliver its cancellation callback.
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError("Article generation deadline exhausted")
+            return result
+
+    async def _generate_from_event_article_context(  # noqa: C901
+        self,
+        article_ctx: ArticleEditorialContext,
+        coverage_plan: Any | None = None,
+        attempt_observer: Any | None = None,
+        *,
+        checkpoint_observer: ArticleCheckpointObserver | None = None,
     ) -> Tuple[str, str, str]:
         """Synthesize long-form editorial article directly from ArticleEditorialContext in one LLM call."""
         if article_ctx is None:
@@ -1518,7 +1565,7 @@ class ArticleGenerator:
         user_prompt = (
             f"РЕДАКЦИОННЫЙ МАТЕРИАЛ И ФАКТЫ:\n\nBEGIN ARTICLE MATERIAL\n{context_str}\nEND ARTICLE MATERIAL\n\n"
             "ЗАДАНИЕ ВЫПУСКАЮЩЕМУ РЕДАКТОРУ:\n"
-            "Перед вами детерминированный план покрытия и подтверждающие его Story-пакеты. План задаёт темы, состав Story и редакционную глубину, но не содержит готовой центральной линии и не задаёт обязательный порядок строк или разделов. Факты, время и атрибуцию берите из пакетов; DEVELOP определяют главные линии, WEAVE обогащают их уместными деталями, BRIEF предлагает короткие дополнительные сюжеты. План — редакционный материал, а не квота: включайте каждый DEVELOP, а WEAVE и BRIEF — когда они помогают понять жизнь города в это окно и имеют естественное место в рассказе. Не опускайте содержательное местное сообщение только потому, что оно короткое, неофициальное или подтверждено одним источником. Но не добавляйте отдельной строкой статический адрес, ориентир или ответ на частный вопрос, если они не относятся к событию, изменению услуги или другой линии статьи; не приклеивайте такой остаток к последнему разделу ради охвата. Пишите цельный лонгрид с естественными переходами, не пересказывая свидетельства по одному.\n"
+            "Перед вами детерминированный план покрытия и подтверждающие его Story-пакеты. План задаёт темы, состав Story и редакционную глубину, но не содержит готовой центральной линии. Порядок строк и групп — рекомендуемый, но не обязательный: меняйте его ради связного повествования, сохраняя тематические линии и границы мест и времени внутри групп. Факты, время и атрибуцию берите из пакетов; DEVELOP определяют главные линии, WEAVE обогащают их уместными деталями, BRIEF предлагает короткие дополнительные сюжеты. План — редакционный материал, а не квота: включайте каждый DEVELOP, а WEAVE и BRIEF — когда они помогают понять жизнь города в это окно и имеют естественное место в рассказе. Не опускайте содержательное местное сообщение только потому, что оно короткое, неофициальное или подтверждено одним источником. Но не добавляйте отдельной строкой статический адрес, ориентир или ответ на частный вопрос, если они не относятся к событию, изменению услуги или другой линии статьи; не приклеивайте такой остаток к последнему разделу ради охвата. Пишите цельный лонгрид с естественными переходами, не пересказывая свидетельства по одному.\n"
             "1. НАЧНИТЕ с конкретного подтверждённого события или детали, которая помогает представить жизнь города в это окно. Развивайте повествование через содержательно связанные темы и их подтверждённые последствия. Завершите значимой деталью или открытым вопросом, оставшимся в материалах, без повторения лида и без прогноза. Не придумывайте сцену или общий тезис, если их не подтверждают факты. Заголовок основывайте только на подтверждённых публикационных фактах текущего окна; не включайте в него исторический контекст, прежнее событие или длительность.\n"
             "2. Используйте тематические и географические подсказки плана как навигацию, а не жёсткий порядок. Не соединяйте разные районы, события или услуги лишь потому, что они отмечены рядом в плане либо произошли близко по времени. Связывайте только фактически родственные материалы; если такой связи нет, сохраните самостоятельные темы отдельно. Географическая метка не разрешает переносить сведения, которых нет в источниках. Не называйте районы близкими и не выводите расстояния без прямой опоры. В частности, «Центральная» в «улица Центральная» — имя улицы, а не указание на центральное положение; не пишите «на этой центральной улице». Общее впечатление жителя, что проблема охватила весь город, передавайте именно как его впечатление и не противопоставляйте локальному сообщению как установленное противоречие, если речь не об одной услуге, месте и времени.\n"
             "3. СИНТЕЗИРУЙТЕ только сообщения об одном сюжете. Различия по улицам, домам и времени передавайте как локальную неоднородность. Не превращайте текст в адресный реестр и не переносите состояние одной услуги на другую. Сохраняйте предмет абзаца: сведения об электроснабжении и работе электросетевой организации не присоединяйте к абзацу об оптоволокне или домашнем интернете. При смене услуги начинайте новый абзац и помещайте его в соответствующую тематическую часть; связка «при этом» сама по себе не делает темы одной. Не связывайте два наблюдения только потому, что они произошли рядом по времени или месту. Короткий полезный сюжет включайте один раз, если он естественно дополняет тему; если связи нет, не создавайте переход и не переносите его в последний раздел по остаточному принципу.\n"
@@ -1543,9 +1590,12 @@ class ArticleGenerator:
             "prompt_chars": len(system_prompt) + len(user_prompt),
             "context_hash": hashlib.sha256(context_str.encode("utf-8")).hexdigest(),
             "prompt_hash": hashlib.sha256(
-                f"{system_prompt}\0{user_prompt}".encode("utf-8")
+                f"{system_prompt}\0{user_prompt}\0composition={composition_plan.version}".encode(
+                    "utf-8"
+                )
             ).hexdigest(),
             "article_writer_prompt_version": ARTICLE_WRITER_VERSION,
+            "article_composition_version": composition_plan.version,
             "coverage_story_count": len(writer_coverage_plan.stories),
             "writer_exposed_citable_support_count": len(writer_exposed_support_ids),
             "composition": composition_plan.to_metadata(),
@@ -1570,6 +1620,7 @@ class ArticleGenerator:
         writer_error: Exception | None = None
         writer_attempt_id = 0
         writer_validation: ArticleValidationResult | None = None
+        writer_assessment: ArticleAssessmentCheckpoint | None = None
         writer_quality_before_edit: ArticleReaderQualityReport | None = None
         writer_quality_after_edit: ArticleReaderQualityReport | None = None
         quote_allowlist = writer_quote_allowlist
@@ -1582,6 +1633,7 @@ class ArticleGenerator:
                 metadata={"attempt": 1, **writer_input_metadata},
             )
 
+        writer_stage_started = perf_counter()
         try:
             article_temp = getattr(
                 getattr(self.config.settings, "article", None), "temperature", 0.3
@@ -1607,16 +1659,33 @@ class ArticleGenerator:
             )
 
             async def call_writer() -> str:
-                return await self.provider.chat_completion(
-                    messages=messages,
-                    model=self.model,
-                    temperature=article_temp,
-                    max_tokens=writer_max_tokens,
-                    reasoning_effort=writer_reasoning_effort,
+                with capture_provider_attempts(self.provider) as counts:
+                    try:
+                        return await self.provider.chat_completion(
+                            messages=messages,
+                            model=self.model,
+                            temperature=article_temp,
+                            max_tokens=writer_max_tokens,
+                            reasoning_effort=writer_reasoning_effort,
+                        )
+                    finally:
+                        self.last_generation_provider_attempts["writer"] = counts.to_metadata()
+
+            def parse_writer_response(raw_response: str) -> StructuredArticleDraft:
+                raw_parsed = self._parse_event_article_response(raw_response)
+                parsed = _ground_draft_in_coverage_plan(
+                    raw_parsed, writer_coverage_plan, article_ctx
+                )
+                draft = StructuredArticleDraft.from_dict(parsed, quote_allowlist=quote_allowlist)
+                return _normalize_grounded_article_prose(
+                    draft,
+                    context=article_ctx,
+                    material_projection=material_projection,
+                    place_resolver=place_resolver,
                 )
 
             def evaluate_writer_response(
-                raw_response: str,
+                draft: StructuredArticleDraft,
             ) -> tuple[
                 StructuredArticleDraft,
                 ArticleValidationResult,
@@ -1624,17 +1693,6 @@ class ArticleGenerator:
                 ArticleReaderQualityReport,
             ]:
                 evaluation_started = perf_counter()
-                raw_parsed = self._parse_event_article_response(raw_response)
-                parsed = _ground_draft_in_coverage_plan(
-                    raw_parsed, writer_coverage_plan, article_ctx
-                )
-                draft = StructuredArticleDraft.from_dict(parsed, quote_allowlist=quote_allowlist)
-                draft = _normalize_grounded_article_prose(
-                    draft,
-                    context=article_ctx,
-                    material_projection=material_projection,
-                    place_resolver=place_resolver,
-                )
                 validation_started = perf_counter()
                 validation = validate_article_draft(
                     draft,
@@ -1681,12 +1739,33 @@ class ArticleGenerator:
                 f"event_writer_response_{response_attempt_key}.txt",
                 response,
             )
+            input_fingerprint = await asyncio.to_thread(
+                article_assessment_input_fingerprint,
+                article_ctx,
+                writer_coverage_plan,
+                editorial_config,
+                length_profile,
+                material_projection,
+                place_resolver,
+            )
+            candidate_draft = await asyncio.to_thread(parse_writer_response, response)
+            if checkpoint_observer is not None:
+                checkpoint_observer("writer_candidate", candidate_draft, None)
             (
                 candidate_draft,
                 candidate_val,
                 candidate_diag,
                 candidate_quality,
-            ) = await asyncio.to_thread(evaluate_writer_response, response)
+            ) = await asyncio.to_thread(evaluate_writer_response, candidate_draft)
+            writer_assessment = ArticleAssessmentCheckpoint(
+                candidate_draft,
+                candidate_val,
+                candidate_quality,
+                input_fingerprint,
+                candidate_diag,
+            )
+            if checkpoint_observer is not None:
+                checkpoint_observer("writer", candidate_draft, writer_assessment)
             catastrophic = _is_catastrophic_writer_response(
                 candidate_draft, candidate_val, candidate_diag
             )
@@ -1745,7 +1824,21 @@ class ArticleGenerator:
                 )
                 attempt_1_meta["coverage_retry_suppressed"] = True
             writer_meta = attempt_1_meta
+            writer_meta["writer_provider_attempts"] = self.last_generation_provider_attempts[
+                "writer"
+            ]
+            writer_meta["writer_stage_elapsed_seconds"] = round(
+                perf_counter() - writer_stage_started, 3
+            )
             writer_meta["editor_retry_count"] = 0
+            writer_meta["writer_invocation_count"] = 1
+            writer_meta["editor_invocation_count"] = 0
+            writer_meta["editor_invocation_limit"] = min(
+                getattr(editorial_config, "article_editor_max_attempts", 2), 2
+            )
+            writer_meta["generation_timeout_seconds"] = (
+                self.config.settings.article.article_generation_timeout_seconds
+            )
             writer_meta["editor_patched_unit_ids"] = []
 
             if candidate_val.is_valid and not candidate_quality.needs_edit:
@@ -1786,28 +1879,40 @@ class ArticleGenerator:
                             model=self.model,
                             max_output_tokens=editor_max_tokens,
                         )
-                        editor_attempts = getattr(
-                            editorial_config, "article_editor_max_attempts", 2
+                        editor_attempts = min(
+                            getattr(editorial_config, "article_editor_max_attempts", 2), 2
                         )
-                        edited_draft, edited_val = await editor.edit_draft(
-                            candidate_draft,
-                            candidate_val,
-                            article_ctx,
-                            config=editorial_config,
-                            length_profile=length_profile,
-                            attempt_observer=attempt_observer,
-                            max_attempts=editor_attempts,
-                            quality_report=candidate_quality,
-                            coverage_plan=writer_coverage_plan,
-                            material_projection=material_projection,
-                            place_resolver=place_resolver,
-                            save_debug_artifact=self._save_debug_artifact,
-                            debug_artifact_prefix=f"event_editor_{response_attempt_key}",
-                        )
+                        try:
+                            edited_draft, edited_val = await editor.edit_draft(
+                                candidate_draft,
+                                candidate_val,
+                                article_ctx,
+                                config=editorial_config,
+                                length_profile=length_profile,
+                                attempt_observer=attempt_observer,
+                                max_attempts=editor_attempts,
+                                quality_report=candidate_quality,
+                                coverage_plan=writer_coverage_plan,
+                                material_projection=material_projection,
+                                place_resolver=place_resolver,
+                                assessment=writer_assessment,
+                                checkpoint_observer=checkpoint_observer,
+                                save_debug_artifact=self._save_debug_artifact,
+                                debug_artifact_prefix=f"event_editor_{response_attempt_key}",
+                            )
+                        finally:
+                            self.last_generation_provider_attempts["editor"] = list(
+                                editor.last_provider_attempts
+                            )
+                            writer_meta["editor_provider_attempts"] = list(
+                                editor.last_provider_attempts
+                            )
                         # ArticleEditor already recomputes quality after each
                         # accepted patch. Reuse its final report instead of
                         # running the article-wide composition analysis again.
                         edited_quality = editor.last_quality_report
+                    except TimeoutError:
+                        raise
                     except Exception as editor_exc:
                         writer_meta["editor_retry_count"] = (
                             editor.last_attempt_count if editor is not None else 0
@@ -1815,6 +1920,7 @@ class ArticleGenerator:
                         writer_meta["editor_patched_unit_ids"] = (
                             list(editor.last_patched_unit_ids) if editor is not None else []
                         )
+                        writer_meta["editor_invocation_count"] = writer_meta["editor_retry_count"]
                         writer_meta["editor_failure_type"] = type(editor_exc).__name__
                         writer_meta["editor_fallback_to_original"] = candidate_val.is_valid
                         writer_meta["editor_outcome"] = (
@@ -1843,88 +1949,21 @@ class ArticleGenerator:
                         writer_meta["editor_retry_count"] = editor.last_attempt_count
                         writer_meta["editor_patched_unit_ids"] = list(editor.last_patched_unit_ids)
                         writer_meta["quality_after_edit"] = edited_quality.to_metadata()
-                        original_repair_finding_count = len(candidate_quality.repair_findings)
-                        original_finding_keys = {
-                            (finding.code, finding.unit_id, frozenset(finding.support_ids))
-                            for finding in candidate_quality.findings
-                            if finding.severity == "blocking"
-                        }
-                        edited_finding_keys = {
-                            (finding.code, finding.unit_id, frozenset(finding.support_ids))
-                            for finding in edited_quality.findings
-                            if finding.severity == "blocking"
-                        }
-                        introduced_quality_findings = bool(
-                            edited_finding_keys - original_finding_keys
+                        writer_meta["editor_invocation_count"] = editor.last_attempt_count
+                        writer_draft = edited_draft
+                        writer_validation = edited_val
+                        writer_quality_after_edit = edited_quality
+                        writer_assessment = editor.last_assessment
+                        writer_error = None
+                        writer_meta["editor_outcome"] = (
+                            "accepted"
+                            if edited_val.is_valid and not edited_quality.needs_edit
+                            else "assessed_partial_checkpoint"
                         )
-                        repair_findings_reduced = len(edited_quality.repair_findings) < len(
-                            candidate_quality.repair_findings
-                        )
-                        unresolved_whole_draft_blocker = any(
-                            finding.severity == "blocking"
-                            and finding.code in ARTICLE_WHOLE_DRAFT_FINDING_CODES
-                            for finding in edited_quality.findings
-                        )
-                        editor_result_acceptable = (
-                            edited_val.is_valid
-                            and not introduced_quality_findings
-                            and not unresolved_whole_draft_blocker
-                            and (not edited_quality.needs_edit or repair_findings_reduced)
-                        )
-                        if editor_result_acceptable:
-                            writer_draft = edited_draft
-                            writer_error = None
-                            writer_validation = edited_val
-                            writer_quality_after_edit = edited_quality
-                            candidate_quality = edited_quality
-                            if edited_quality.needs_edit:
-                                writer_meta["editor_outcome"] = "accepted_partial_repair"
-                                self.logger.warning(
-                                    "ArticleEditor reduced repair findings from %d to %d; "
-                                    "accepting the fact-valid partial repair",
-                                    original_repair_finding_count,
-                                    len(edited_quality.repair_findings),
-                                )
-                            else:
-                                writer_meta["editor_outcome"] = "accepted"
-                                self.logger.info(
-                                    "ArticleEditor successfully resolved validation issues; draft accepted"
-                                )
-                        else:
-                            if not edited_val.is_valid and edited_quality.needs_edit:
-                                editor_failure_type = "evidence_boundary_and_quality_invalid"
-                            elif not edited_val.is_valid:
-                                editor_failure_type = "evidence_boundary_invalid_result"
-                            elif unresolved_whole_draft_blocker:
-                                editor_failure_type = "whole_draft_blocking_quality_remains"
-                            elif introduced_quality_findings:
-                                editor_failure_type = "new_quality_findings"
-                            else:
-                                editor_failure_type = "quality_findings_not_reduced"
-                            writer_meta["editor_failure_type"] = editor_failure_type
-                            writer_meta["editor_fallback_to_original"] = candidate_val.is_valid
-                            writer_meta["editor_outcome"] = (
-                                "original_candidate_preserved"
-                                if candidate_val.is_valid
-                                else "candidate_remains_invalid"
-                            )
-                            writer_draft = candidate_draft
-                            writer_validation = candidate_val
-                            writer_quality_after_edit = candidate_quality
-                            if candidate_val.is_valid:
-                                writer_error = None
-                                self.logger.warning(
-                                    "ArticleEditor result was rejected (%s); "
-                                    "discarding the patch and preserving the Evidence Boundary-safe "
-                                    "writer draft",
-                                    editor_failure_type,
-                                )
-                            else:
-                                self.logger.error(
-                                    "ArticleEditor result was rejected (%s) and the original writer "
-                                    "draft is fact-invalid; retaining fail-closed validation",
-                                    editor_failure_type,
-                                )
+                        # Keeping a safe local improvement is independent from
+                        # publication readiness. Finalizer owns the hard gates.
+        except TimeoutError:
+            raise
         except Exception as exc:
             self.logger.warning(
                 "Event article writer execution failed (%s: %s)",
@@ -1937,11 +1976,26 @@ class ArticleGenerator:
                         writer_attempt_id,
                         status="failed",
                         error_kind="provider_cascade_error",
-                        metadata={"exception_type": type(exc).__name__},
+                        metadata={
+                            "exception_type": type(exc).__name__,
+                            "writer_invocation_count": 1,
+                            "writer_provider_attempts": self.last_generation_provider_attempts.get(
+                                "writer"
+                            ),
+                            "writer_stage_elapsed_seconds": round(
+                                perf_counter() - writer_stage_started, 3
+                            ),
+                        },
                     )
                 raise
             writer_error = exc
-            writer_meta = None
+            writer_meta = {
+                "writer_invocation_count": int(
+                    self.last_generation_provider_attempts.get("writer") is not None
+                ),
+                "writer_provider_attempts": self.last_generation_provider_attempts.get("writer"),
+                "writer_stage_elapsed_seconds": round(perf_counter() - writer_stage_started, 3),
+            }
 
         finalization_result = await ArticleFinalizer().finalize(
             writer_draft=writer_draft,
@@ -1954,6 +2008,8 @@ class ArticleGenerator:
             attempt_observer=attempt_observer,
             writer_metadata=writer_meta,
             writer_validation=writer_validation,
+            writer_assessment=writer_assessment,
+            checkpoint_observer=checkpoint_observer,
             quality_report=writer_quality_before_edit,
             quality_report_after_edit=writer_quality_after_edit,
             material_projection=material_projection,

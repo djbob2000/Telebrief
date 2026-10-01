@@ -291,7 +291,9 @@ Quotation marks mean exact primary-source wording.
 - Never translate text inside quotation marks and still present it as the original quote.
 - Never merge or shorten a direct quote while pretending it is exact.
 - If translation, correction, or compression is needed, use indirect speech.
-- Avoid "chat rolls": never dump consecutive direct quotes separated by commas («...», «...», «...»). Synthesize multiple community reports into smooth narrative prose with geography and timelines, reserving 1–2 authentic direct quotes per section for vivid human reactions with natural attribution lead-ins.
+- Keep the words in every retained direct quote immutable during targeted editing; remove a quote into indirect speech rather than rewriting its contents.
+- Avoid "chat rolls": never dump consecutive direct-speech spans joined only by list punctuation (for example, «...», «...», «...»). Synthesize multiple community reports into smooth narrative prose with geography and timelines, reserving 1–2 authentic direct quotes per section for vivid human reactions with natural attribution lead-ins.
+- A quote-count heuristic that finds more than two quote spans requests local repair; it does not by itself establish a chat roll or block publication. The structural chat-roll finding requires at least two well-paired direct-speech spans separated only by list punctuation, with no intervening prose. Supported organization and place names in typographic quotes are not direct speech and do not count toward that structural finding.
 
 ### Claim Atoms
 
@@ -308,9 +310,15 @@ Event-First article generation uses one main LLM writer call followed by determi
 
 When the writer draft contains isolated factual or stylistic validation issues (such as non-allowlisted quotes, unverified proper names, or over-specified causes), a targeted copy-editor (`ArticleEditor`, enabled via `article_editor_enabled: true`) performs precise unit-level patching (`Targeted Patching` on units such as `LEAD` or specific paragraphs) without rewriting the entire draft. The patched draft is re-validated strictly against the Evidence Boundary.
 
+Reader-quality findings use one explicit policy registry for finding class, severity, repair scope, and publication effect. This registry does not replace or weaken the Evidence Boundary validator; factual findings remain governed by `article_validator`. Unknown reader-quality codes are policy/configuration errors, not safe findings.
+
+Only Evidence Boundary safety failures or findings that demonstrate materially misleading or unreadable published prose may block publication. A raw quote/address count, a run of one-sentence paragraphs from distinct Stories, cosmetic heading or provider-name typography, or incomplete-quantity grammar cue cannot block by itself. Compound structural checks may block when they establish a multi-place service roster without narrative relation or a section dominated by source-backed routine directory material. A report that says only “private sector” remains publishable when it is honestly attributed and its unspecified district is clarified. An asserted wrong area remains a geographic safety blocker.
+
 Evidence Boundary is fail-closed for unverified assertions: the published article must never contain ungrounded facts.
 
-Safe writer output that meets the Evidence Boundary is published as an authentic journalistic long read. When substantive material exists, minor validation issues on specific paragraphs are resolved through targeted editing (`ArticleEditor`) or pruning of ungrounded sentences, rather than discarding the entire publication or appending synthetic filler. If an article cannot be verified, the pipeline fails closed (`ArticlePublicationRejected`). Never dump raw fragments or append artificial filler paragraphs to compensate for missing coverage.
+Safe writer output that meets the Evidence Boundary is published as an authentic journalistic long read. When substantive material exists, isolated reader-quality issues on specific paragraphs are offered to `ArticleEditor` within its configured attempt budget and edits are re-validated through the Evidence Boundary. A missing `DEVELOP` storyline is a readiness diagnostic: attempt a targeted repair only when a suitable existing unit exists; if it remains missing or no suitable unit exists, report editorial acceptance as incomplete. Do not turn the finding or a numerical coverage percentage into a publication veto, and do not append filler to compensate. If an article cannot be verified, the pipeline fails closed (`ArticlePublicationRejected`). Never dump raw fragments or append artificial filler paragraphs to compensate for missing coverage.
+
+Frozen-run preview (`scripts/preview_article.py --run-id`) is a read-only replay and never delivers or changes publication state. Its typed result is `accepted`, `rejected`, or `failed`; writer, editor, and finalization checkpoints stay in process memory and retain their exact assessment when one is available. Safe diagnostics must omit article and source prose. Write requested Markdown and diagnostics outputs on both success and failure; label rejected candidate text `REJECTED PREVIEW — DO NOT PUBLISH`, explain when no draft exists, retain production exceptions in the typed result, and exit nonzero without printing raw exception text. Preview must not enable prompt/draft debug artifact persistence.
 
 ## 0.8 Reader hierarchy, not destructive selection
 
@@ -354,6 +362,10 @@ Agents must not make changes whose effect is to:
 - convert a broad local article into a directory of services;
 - convert a broad local article into vague high-level commentary with little concrete city life;
 - weaken hard Evidence Boundary checks merely to make an article pass;
+- promote a quote-count heuristic alone into a publication blocker, or rewrite words inside a retained direct quote;
+- turn a raw address or quote count, repeated headings or thesis, provider-name typography, incomplete-quantity grammar, or a missing district in a faithfully attributed community report into a publication blocker;
+- weaken structural blockers for an address/status roster without narrative relation or source-backed routine directory material dominating a section;
+- turn a missing major-storyline readiness diagnostic or a numerical article coverage percentage into a publication veto, or append filler to compensate;
 - strengthen verification so aggressively that legitimate community news disappears;
 - reintroduce claim-first per-message LLM explosion as the default processing architecture;
 - hardcode one city's geography or examples into generic production prompt logic;
