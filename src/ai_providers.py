@@ -411,12 +411,14 @@ class ProviderCascade(AIProvider):
         logger: logging.Logger,
         *,
         cooldown_seconds: float = 900.0,
+        slot_timeout_cap: float | None = 240.0,
     ):
         self.providers = [
             (slot[0], slot[1], slot[2] if len(slot) == 3 else None) for slot in providers
         ]
         self.logger = logger
         self.cooldown_seconds = cooldown_seconds
+        self.slot_timeout_cap = slot_timeout_cap
         self.last_metadata: dict[str, Any] = {}
 
     def next_slot_name(self, slot_name: str | None) -> str | None:
@@ -571,8 +573,12 @@ class ProviderCascade(AIProvider):
                     or 300.0
                 )
                 has_more_slots = slot_index + 1 < len(available_slots)
-                if has_more_slots and slot_timeout > 240.0:
-                    slot_timeout = 240.0
+                if (
+                    has_more_slots
+                    and self.slot_timeout_cap is not None
+                    and slot_timeout > self.slot_timeout_cap
+                ):
+                    slot_timeout = self.slot_timeout_cap
                 async with asyncio.timeout(slot_timeout):
                     _record_provider_slot_attempt()
                     response = await provider.chat_completion(
@@ -1333,6 +1339,7 @@ def create_provider(  # noqa: C901
     ollama_base_url: str = "http://localhost:11434",
     api_timeout: int = 300,
     reasoning_effort: str | None = None,
+    cascade_slot_timeout_cap: float | None = 240.0,
 ) -> AIProvider:
     """
     Factory function to create an AI provider.
@@ -1350,6 +1357,7 @@ def create_provider(  # noqa: C901
         ollama_base_url: Ollama server URL (for 'ollama' provider)
         api_timeout: HTTP request timeout in seconds
         reasoning_effort: Optional reasoning effort hint for models supporting it
+        cascade_slot_timeout_cap: Maximum timeout for each nonfinal provider-cascade slot
 
     Returns:
         AIProvider instance
@@ -1415,7 +1423,7 @@ def create_provider(  # noqa: C901
             )
         if len(slots) == 1:
             return slots[0][1]
-        return ProviderCascade(slots, logger)
+        return ProviderCascade(slots, logger, slot_timeout_cap=cascade_slot_timeout_cap)
 
     if name == "openrouter":
         if not openrouter_api_key:
@@ -1465,7 +1473,7 @@ def create_provider(  # noqa: C901
                         m,
                     )
                 )
-            return ProviderCascade(slots, logger)
+            return ProviderCascade(slots, logger, slot_timeout_cap=cascade_slot_timeout_cap)
 
         return OpenAIProvider(
             api_key=openrouter_api_key,

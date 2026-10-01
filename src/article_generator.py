@@ -660,6 +660,7 @@ class ArticleGenerator:
             ollama_base_url=config.settings.ollama_base_url,
             api_timeout=config.settings.article.editorial_api_timeout,
             reasoning_effort=config.settings.reasoning_effort,
+            cascade_slot_timeout_cap=config.settings.article.editorial_api_timeout,
         )
         self.provider: AIProvider = ensure_provider_cascade(
             raw_provider, logger=logger, slot_name=config.settings.ai_provider

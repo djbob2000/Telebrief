@@ -21,9 +21,10 @@
 - Structural operations in one editor response form one atomic batch. Resolve all positional IDs against its immutable base; re-ground changed prose and assess the complete candidate.
 - Keep Evidence Boundary, attribution, exact direct quotes, time, service state, geography, and useful single-source local reports intact.
 - Do not change Event clustering, Gate, Analysis, eligibility, digest, delivery, database schema, or require backfill.
-- User requested no TDD and no new automated tests. Use focused static checks, offline/manual contract inspection, and one final frozen-run preview for article run 257 on the live `telebrief-app` after deployment.
+- User requested no TDD and no new automated tests. Use focused static checks and offline/manual contract inspection. Run a frozen preview for article run 257 after deployment; a further preview is justified only after a concrete code defect is identified and fixed, never to fish for a lucky draft.
+- Article provider-cascade slots honor the configured `editorial_api_timeout`; the existing shared 1200-second generation deadline still bounds the whole article. Other `create_provider` consumers retain the generic 240-second nonfinal-slot cap.
 - Keep the spec and plan tracked despite the repository ignore rule for `docs/superpowers/`; stage them explicitly in the single final commit.
-- Commit, push, deploy, and run the server preview only after all implementation work and review are complete. The preview is read-only and does not deliver the article.
+- Commit, push, deploy, and run the server preview only after all implementation work and review are complete. A targeted follow-up preview after this failed attempt is limited to verifying the confirmed article-slot-timeout fix. Preview is read-only and does not deliver the article.
 
 ## Review Focus
 
@@ -143,7 +144,7 @@ Tasks 1–3 have disjoint file ownership and can be implemented concurrently aft
 - [ ] Review the complete behavior against the 14 manual acceptance scenarios in the spec. Record any unmet editorial scenario as a concrete readiness defect; passing safety checks alone is not editorial acceptance.
 - [ ] Stage explicit changed paths plus `git add -f docs/superpowers/specs/2026-10-01-article-structural-editing-design.md docs/superpowers/plans/2026-10-01-article-structural-editing.md`; exclude `docs/superpowers/.DS_Store`.
 - [ ] Make one integrated commit on `dev`, push `dev`, and wait for the existing deployment workflow to complete successfully.
-- [ ] Confirm the live `telebrief-app` revision, then run exactly once from the local checkout: `ssh -i /Users/air/Downloads/ssh-key-2026-08-05.key -o BatchMode=yes opc@92.5.58.200 'docker exec telebrief-app python -u scripts/preview_article.py --run-id 257 --output /tmp/article-run-257-structural.md --diagnostics-output /tmp/article-run-257-structural.json'`. Retrieve and manually review the full article text and diagnostics. Do not send or publish it. Report the actual text, remaining editorial defects, and result to the user.
+- [ ] Confirm the deployed `telebrief-app` revision before each preview. Run the initial frozen preview once; if it rejects due to a concrete code defect, fix and deploy that defect before one targeted follow-up preview of run 257. Retrieve and manually review the full article text and diagnostics. Do not send or publish either preview. Report the actual text, remaining editorial defects, and result to the user.
 
 ## Self-Review
 
