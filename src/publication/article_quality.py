@@ -23,7 +23,7 @@ from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import StructuredArticleDraft, _split_sentences_safe
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
-ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v9"
+ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v10"
 logger = logging.getLogger(__name__)
 
 # These findings describe article topology that cannot be repaired safely by
@@ -49,6 +49,13 @@ _QUOTED_NAME_CUE_RE = re.compile(
     r"проспект\w*|просп\.?|переул\w*|пер\.?|район\w*|микрорайон\w*|"
     r"пос[её]лок\w*|село|город\w*|площад\w*|парк\w*|набережн\w*|"
     r"перекр[её]ст\w*|остановк\w*|вокзал\w*|мост\w*)\s*$",
+    re.IGNORECASE,
+)
+_QUOTED_RENAMED_NAME_CUE_RE = re.compile(
+    r"\b(?:переходит|перейд[её]т|переш[её]л|переходить)\s+(?:в|на)\s*$|"
+    r"\b(?:переименован\w*|переимену\w*|сменил\s+назван\w*|"
+    r"сменит\s+назван\w*|меняет\s+назван\w*)\s+"
+    r"(?:в|на|под\s+(?:назван\w*|имен\w*))\s*$",
     re.IGNORECASE,
 )
 _QUOTED_PLACE_CUE_RE = re.compile(
@@ -657,7 +664,7 @@ def _profile_entity_is_a_proper_name(entity: Any) -> bool:
 
 
 def _source_contains_quoted_name(quoted_text: str, source_texts: Sequence[str]) -> bool:
-    """Require the short name itself to occur in cited source text for syntax-based matches."""
+    """Require the exact short name to occur in cited source text for syntax matches."""
     normalized_name = re.sub(
         r"\s+",
         " ",
@@ -665,12 +672,14 @@ def _source_contains_quoted_name(quoted_text: str, source_texts: Sequence[str]) 
     )
     if not normalized_name or len(normalized_name) > 80 or len(normalized_name.split()) > 6:
         return False
+    name_pattern = re.compile(r"(?<!\w)" + re.escape(normalized_name) + r"(?!\w)")
     return any(
-        normalized_name
-        in re.sub(
-            r"\s+",
-            " ",
-            unicodedata.normalize("NFKC", source_text).casefold().replace("ё", "е"),
+        name_pattern.search(
+            re.sub(
+                r"\s+",
+                " ",
+                unicodedata.normalize("NFKC", source_text).casefold().replace("ё", "е"),
+            )
         )
         for source_text in source_texts
         if source_text
@@ -702,8 +711,8 @@ def _supported_non_speech_name_quote_spans(
     A quote is excluded only when the same high-confidence profile entity is cited and
     resolved in prose with an adjacent name/location cue, or the cited source contains
     the exact short name and prose gives it clear business/organization syntax (including
-    a contiguous named-place list). Source support or entity resolution alone never
-    reclassifies quoted wording as a name.
+    a contiguous named-place list or an explicit rename target). Source support or entity
+    resolution alone never reclassifies quoted wording as a name.
     """
     cited_texts: list[str] = []
     cited_entities: dict[tuple[str, str], Any] = {}
@@ -770,6 +779,10 @@ def _supported_non_speech_name_quote_spans(
         prefix = text[max(0, quote_match.start() - 48) : quote_match.start()]
         cue_match = _QUOTED_NAME_CUE_RE.search(prefix)
         has_immediate_name_cue = cue_match is not None and cue_match.end() == len(prefix)
+        rename_cue_match = _QUOTED_RENAMED_NAME_CUE_RE.search(prefix)
+        has_immediate_rename_cue = rename_cue_match is not None and rename_cue_match.end() == len(
+            prefix
+        )
         is_adjacent_name_list_item = previous_syntax_name_quote_end is not None and bool(
             re.fullmatch(
                 r"\s*(?:,\s*(?:и\s+|или\s+)?|и\s+|или\s+|/\s*)",
@@ -778,7 +791,7 @@ def _supported_non_speech_name_quote_spans(
             )
         )
         is_supported_named_list_item = (
-            has_immediate_name_cue or is_adjacent_name_list_item
+            has_immediate_name_cue or has_immediate_rename_cue or is_adjacent_name_list_item
         ) and _source_contains_quoted_name(quote_match.group(1), cited_texts)
         if is_supported_named_list_item:
             syntax_name_spans.add(span)

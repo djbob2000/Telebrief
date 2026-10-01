@@ -36,6 +36,9 @@ from src.publication.article_writer_context import sanitize_writer_source_text
 logger = logging.getLogger(__name__)
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_MAX_HEADING_SECTION_PARAGRAPH_CHARS = 1_500
+_MAX_HEADING_SECTION_CONTEXT_CHARS = 18_000
+_MAX_HEADING_CONTEXT_SUPPORTS = 64
 
 _LOCALLY_REPAIRABLE_ARTICLE_FINDINGS = frozenset(
     {
@@ -366,18 +369,40 @@ class ArticleEditor:
         """Collect current text, cited supports, and issues for each target unit."""
         unit_data: list[dict[str, Any]] = []
 
+        def editor_visible_support(support_id: str) -> bool:
+            support = context.support_by_id.get(support_id)
+            if support is None or support.publication_use != "PUBLISH":
+                return False
+            if material_projection is None:
+                return bool(
+                    sanitize_writer_source_text((support.text or "").strip())
+                    or sanitize_writer_source_text((support.source_text or "").strip())
+                )
+            if (
+                material_projection.actions_by_support_id.get(support_id)
+                == "SUPPRESS_PROMOTION_ONLY"
+            ):
+                return False
+            return bool(
+                sanitize_writer_source_text(
+                    material_projection.text_by_support_id.get(support_id, "").strip()
+                )
+            )
+
         def support_text(support_id: str) -> str:
             support = context.support_by_id.get(support_id)
-            if support is None:
+            if support is None or not editor_visible_support(support_id):
                 return ""
-            fact = (support.text or "").strip()
+            fact = sanitize_writer_source_text((support.text or "").strip())
             if material_projection is not None:
                 if (
                     material_projection.actions_by_support_id.get(support_id)
                     == "SUPPRESS_PROMOTION_ONLY"
                 ):
                     return ""
-                projected = material_projection.text_by_support_id.get(support_id, "").strip()
+                projected = sanitize_writer_source_text(
+                    material_projection.text_by_support_id.get(support_id, "").strip()
+                )
                 if not projected:
                     return ""
                 return projected
@@ -402,6 +427,110 @@ class ArticleEditor:
             ids.extend(unit_ids)
             ids.extend(claim_ids)
             return list(dict.fromkeys(ids))
+
+        def heading_section_context(
+            section: ArticleSection,
+        ) -> tuple[tuple[tuple[int, str, tuple[str, ...]], ...], int, int]:
+            """Return bounded section prose for a heading repair.
+
+            Heading/theme decisions need the actual section body, not only its
+            heading citations. Include every paragraph slot, sanitize direct
+            contact details, and make any text truncation explicit.
+            """
+            included: list[tuple[int, str, tuple[str, ...]]] = []
+            remaining_chars = _MAX_HEADING_SECTION_CONTEXT_CHARS
+            truncated_paragraphs = 0
+            omitted_paragraphs = 0
+            for paragraph_index, paragraph in enumerate(section.paragraphs, start=1):
+                # Article text may itself contain a phone number or URL. Keep
+                # editor context subject to the same privacy filter as source
+                # excerpts; this does not alter the stored draft text.
+                text = " ".join(sanitize_writer_source_text(paragraph.text).split()).strip()
+                paragraph_support_ids = tuple(
+                    support_id
+                    for support_id in dict.fromkeys(
+                        (
+                            *paragraph.cited_support_ids,
+                            *(
+                                support_id
+                                for claim in paragraph.claims
+                                for support_id in claim.cited_support_ids
+                            ),
+                        )
+                    )
+                    if editor_visible_support(support_id)
+                )
+                was_truncated = False
+                if len(text) > _MAX_HEADING_SECTION_PARAGRAPH_CHARS:
+                    text = text[: _MAX_HEADING_SECTION_PARAGRAPH_CHARS - 3].rstrip() + "..."
+                    was_truncated = True
+                if len(text) > remaining_chars:
+                    if remaining_chars > 3:
+                        text = text[: remaining_chars - 3].rstrip() + "..."
+                        was_truncated = True
+                    else:
+                        text = "[текст абзаца не показан: достигнут лимит контекста]"
+                        omitted_paragraphs += 1
+                if was_truncated:
+                    truncated_paragraphs += 1
+                if text.startswith("[текст абзаца не показан"):
+                    included.append((paragraph_index, text, paragraph_support_ids))
+                    continue
+                included.append((paragraph_index, text, paragraph_support_ids))
+                remaining_chars = max(0, remaining_chars - len(text))
+            return tuple(included), omitted_paragraphs, truncated_paragraphs
+
+        def section_heading_supports(
+            section: ArticleSection,
+            unit_issues: list[Any],
+        ) -> list[str]:
+            """Keep required heading evidence first, then all section evidence."""
+            paragraph_support_ids: list[str] = []
+            for paragraph in section.paragraphs:
+                paragraph_support_ids.extend(paragraph.cited_support_ids)
+                paragraph_support_ids.extend(
+                    support_id
+                    for claim in paragraph.claims
+                    for support_id in claim.cited_support_ids
+                )
+            return unit_supports(
+                [*section.heading_support_ids, *paragraph_support_ids],
+                [
+                    support_id
+                    for claim in section.heading_claims
+                    for support_id in claim.cited_support_ids
+                ],
+                unit_issues,
+            )
+
+        def heading_supports_for_prompt(
+            section: ArticleSection,
+            support_ids: list[str],
+            unit_issues: list[Any],
+        ) -> list[str]:
+            """Show targeted supports first, then at least one per paragraph."""
+            prioritized: list[str] = []
+            for issue in unit_issues:
+                prioritized.extend(getattr(issue, "support_ids", ()) or ())
+            prioritized.extend(section.heading_support_ids)
+            paragraph_support_ids: list[list[str]] = []
+            for paragraph in section.paragraphs:
+                ids = list(paragraph.cited_support_ids)
+                ids.extend(
+                    support_id
+                    for claim in paragraph.claims
+                    for support_id in claim.cited_support_ids
+                )
+                paragraph_support_ids.append(list(dict.fromkeys(ids)))
+            prioritized.extend(ids[0] for ids in paragraph_support_ids if ids)
+            prioritized.extend(support_id for ids in paragraph_support_ids for support_id in ids)
+            prioritized.extend(support_ids)
+            available = {
+                support_id for support_id in support_ids if editor_visible_support(support_id)
+            }
+            return [
+                support_id for support_id in dict.fromkeys(prioritized) if support_id in available
+            ][:_MAX_HEADING_CONTEXT_SUPPORTS]
 
         def current_title_repair_supports() -> list[str]:
             """Find current-window article evidence for repairing a historical title.
@@ -535,32 +664,37 @@ class ArticleEditor:
         for s_idx, sec in enumerate(draft.sections, start=1):
             h_id = f"H{s_idx:03d}"
             if h_id in issues_by_unit:
-                h_sups = unit_supports(
-                    list(sec.heading_support_ids),
-                    [sid for claim in sec.heading_claims for sid in claim.cited_support_ids],
-                    issues_by_unit[h_id],
+                h_sups = section_heading_supports(sec, issues_by_unit[h_id])
+                h_prompt_sups = heading_supports_for_prompt(sec, h_sups, issues_by_unit[h_id])
+                visible_h_sups = [sid for sid in h_sups if editor_visible_support(sid)]
+                section_paragraphs, omitted_paragraphs, truncated_paragraph = (
+                    heading_section_context(sec)
                 )
                 unit_data.append(
                     {
                         "unit_id": h_id,
                         "unit_type": "heading",
-                        "text": sec.heading,
+                        "text": sanitize_writer_source_text(sec.heading),
                         "reader_context": {
-                            "article_title": draft.title,
+                            "article_title": sanitize_writer_source_text(draft.title),
                             "other_section_headings": tuple(
-                                other_section.heading
+                                sanitize_writer_source_text(other_section.heading)
                                 for other_index, other_section in enumerate(draft.sections, start=1)
                                 if other_index != s_idx
                             ),
+                            "section_paragraphs": section_paragraphs,
+                            "section_paragraphs_omitted": omitted_paragraphs,
+                            "section_paragraph_truncated": truncated_paragraph,
                         },
                         "support_ids": h_sups,
                         "supports": [
-                            rendered
-                            for sid in h_sups
+                            f"[{sid}] {rendered}"
+                            for sid in h_prompt_sups
                             if sid in context.support_by_id
                             for rendered in (support_text(sid),)
                             if rendered
                         ],
+                        "supports_omitted": max(0, len(visible_h_sups) - len(h_prompt_sups)),
                         "issues": issues_by_unit[h_id],
                     }
                 )
@@ -574,12 +708,14 @@ class ArticleEditor:
                         issues_by_unit[p_id],
                     )
                     reader_context = {
-                        "section_heading": sec.heading,
+                        "section_heading": sanitize_writer_source_text(sec.heading),
                         "previous_paragraph": (
-                            sec.paragraphs[paragraph_index - 1].text if paragraph_index > 0 else ""
+                            sanitize_writer_source_text(sec.paragraphs[paragraph_index - 1].text)
+                            if paragraph_index > 0
+                            else ""
                         ),
                         "next_paragraph": (
-                            sec.paragraphs[paragraph_index + 1].text
+                            sanitize_writer_source_text(sec.paragraphs[paragraph_index + 1].text)
                             if paragraph_index + 1 < len(sec.paragraphs)
                             else ""
                         ),
@@ -719,7 +855,7 @@ class ArticleEditor:
             "10. ПОВТОРЫ И ЗАЦИКЛИВАНИЕ (REPEATED_CONTENT_LOOP):\n"
             "   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО повторять одно и то же или почти идентичное предложение несколько раз подряд. Если абзац зациклился — оставьте мысль ровно один раз в грамотной формулировке и удалите повторы.\n\n"
             "11. СООТВЕТСТВИЕ ПОДТЕМ В ЗАГОЛОВКАХ РАЗДЕЛОВ (PHANTOM_HEADING_TOPIC):\n"
-            "   - Если заголовок раздела содержит конкретное перечисление подтем после двоеточия (например: «Тема: подтема А, подтема Б и подтема В»), текст абзацев раздела ОБЯЗАН раскрывать ВСЕ перечисленные подтемы. Запрещено анонсировать темы, о которых в абзацах нет ни слова. Если тема не освещена — удалите её из заголовка или скорректируйте заголовок раздела.\n\n"
+            "   - Если заголовок раздела содержит конкретное перечисление подтем после двоеточия (например: «Тема: подтема А, подтема Б и подтема В»), сначала сверьте ВСЕ перечисленные подтемы с показанными ниже абзацами всего этого раздела и их подтверждениями. Если абзацы раскрывают тему другими словами, сохраните её. Если тема действительно отсутствует, удалите только её из заголовка или замените заголовок более точным. Не удаляйте тему только из-за иной формулировки в тексте и не добавляйте в абзацы новые факты. Если контекст раздела явно помечен как сокращённый, не считайте невидимую часть доказательством отсутствия темы.\n\n"
             "ФОРМАТ ОТВЕТА (строго валидный JSON):\n"
             "{\n"
             '  "units": {\n'
@@ -769,6 +905,33 @@ class ArticleEditor:
                     blocks.append(f"  Предыдущий абзац: {reader_context['previous_paragraph']}")
                 if reader_context.get("next_paragraph"):
                     blocks.append(f"  Следующий абзац: {reader_context['next_paragraph']}")
+                if reader_context.get("section_paragraphs"):
+                    blocks.append(
+                        "  Абзацы целевого раздела для проверки тем и связности "
+                        "(это контекст, изменять можно только заголовок):"
+                    )
+                    for paragraph_index, paragraph_text, support_ids in reader_context[
+                        "section_paragraphs"
+                    ]:
+                        citation_label = ", ".join(support_ids) if support_ids else "нет ID"
+                        blocks.append(
+                            f"    Абзац {paragraph_index} [support IDs: {citation_label}]: "
+                            f"{paragraph_text}"
+                        )
+                    if reader_context.get("section_paragraphs_omitted") or reader_context.get(
+                        "section_paragraph_truncated"
+                    ):
+                        omitted = reader_context.get("section_paragraphs_omitted", 0)
+                        truncated = reader_context.get("section_paragraph_truncated", False)
+                        blocks.append(
+                            "    Контекст раздела сокращён: "
+                            f"текст полностью не показан в {omitted} абзацах; "
+                            f"текст сокращён в {truncated} абзацах; "
+                            f"лимиты — {_MAX_HEADING_SECTION_PARAGRAPH_CHARS} символов на абзац "
+                            f"и {_MAX_HEADING_SECTION_CONTEXT_CHARS} символов на раздел. "
+                            "Не считайте тему отсутствующей только потому, что она могла попасть "
+                            "в не показанную часть."
+                        )
             blocks.append("Замечания валидатора:")
             if utype == "title":
                 if any(
@@ -796,6 +959,12 @@ class ArticleEditor:
                 is_quality = isinstance(iss, ArticleReaderQualityFinding)
                 msg = f"  • [{'READER_QUALITY' if is_quality else 'FACTUAL'}:{iss.code}] {iss.message}"
                 if is_quality:
+                    if iss.code == "MISSING_DETAIL_SUPPORT":
+                        detail_message = iss.message.replace(
+                            "сохраните её, если она помогает читателю понять повседневные последствия.",
+                            "обязательно включите её в целевой абзац.",
+                        )
+                        msg = "  • [READER_QUALITY:MISSING_DETAIL_SUPPORT] " + detail_message
                     msg += f" (severity={iss.severity})"
                     if iss.support_ids:
                         msg += (
@@ -869,10 +1038,19 @@ class ArticleEditor:
                     getattr(issue, "code", "") == "HISTORICAL_CONTEXT_UNFRAMED" for issue in issues
                 )
                 support_lines = (
-                    supports if has_roster_finding or has_historical_title_finding else supports[:5]
+                    supports
+                    if utype == "heading" or has_roster_finding or has_historical_title_finding
+                    else supports[:5]
                 )
                 for s_text in support_lines:
                     blocks.append(f"  - {s_text}")
+                if utype == "heading" and u.get("supports_omitted"):
+                    blocks.append(
+                        "  Дополнительные подтверждения раздела не показаны: "
+                        f"{u['supports_omitted']}; лимит — {_MAX_HEADING_CONTEXT_SUPPORTS} "
+                        "источников. Поддержки, относящиеся непосредственно к замечанию и "
+                        "заголовку, перечислены первыми."
+                    )
 
                 # Check topical overlap using stemming
                 from src.publication.article_claims import _stem
@@ -885,11 +1063,18 @@ class ArticleEditor:
                         _stem(w.lower()) for w in tok_re.findall(s_text) if len(w) >= 3
                     }
                 if text_stems and support_stems and not (text_stems & support_stems):
-                    blocks.append(
-                        "\n⚠️ ВНИМАНИЕ: Текущий текст недостаточно согласован с источниками. "
-                        "Перепишите этот абзац заново (2–3 предложения), опираясь строго на факты из источников ниже. "
-                        "НЕ удаляйте абзац!"
-                    )
+                    if utype == "heading":
+                        blocks.append(
+                            "\n⚠️ Заголовок слабо совпадает по словам с подтверждениями раздела. "
+                            "При редактуре заголовка ориентируйтесь на реальные подтемы в абзацах "
+                            "выше; не переписывайте и не удаляйте абзацы."
+                        )
+                    else:
+                        blocks.append(
+                            "\n⚠️ ВНИМАНИЕ: Текущий текст недостаточно согласован с источниками. "
+                            "Перепишите этот абзац заново (2–3 предложения), опираясь строго на факты из источников ниже. "
+                            "НЕ удаляйте абзац!"
+                        )
             else:
                 blocks.append(
                     '\n(Подтверждающих фактов в источниках нет — верните "" или "[DELETE]", чтобы удалить фрагмент)'
@@ -1005,6 +1190,13 @@ class ArticleEditor:
                 " -> Исправьте только заголовок главы, убрав неподтверждённую привязку к связи и "
                 "назвав подтверждённое ниже содержание нейтрально и конкретно. Не исключайте сюжет "
                 "и не приписывайте ему тему, связь или причинную связь, которой нет в источниках."
+            ),
+            "MISSING_DETAIL_SUPPORT": (
+                " -> ОБЯЗАТЕЛЬНО включите в этот целевой абзац конкретную деталь, указанную "
+                "замечанием и подтверждённую источником ниже. Формулировка «если деталь помогает» "
+                "не означает, что её можно опустить: добавьте её компактно, естественно и по теме, "
+                "перестроив при необходимости предложение. Не добавляйте иных деталей, не меняйте "
+                "смысл или степень уверенности источника и сохраните остальной подтверждённый текст."
             ),
         }
         return instructions.get(code, "")
