@@ -1596,6 +1596,15 @@ class ArticleGenerator:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ]
+            debug_attempt_key = (
+                str(writer_attempt_id)
+                if writer_attempt_id
+                else str(writer_input_metadata["prompt_hash"])
+            )
+            self._save_debug_artifact(
+                f"event_writer_input_{debug_attempt_key}.json",
+                {"messages": messages, "metadata": writer_input_metadata},
+            )
 
             async def call_writer() -> str:
                 return await self.provider.chat_completion(
@@ -1792,6 +1801,8 @@ class ArticleGenerator:
                             coverage_plan=writer_coverage_plan,
                             material_projection=material_projection,
                             place_resolver=place_resolver,
+                            save_debug_artifact=self._save_debug_artifact,
+                            debug_artifact_prefix=f"event_editor_{response_attempt_key}",
                         )
                         # ArticleEditor already recomputes quality after each
                         # accepted patch. Reuse its final report instead of
@@ -1836,10 +1847,12 @@ class ArticleGenerator:
                         original_finding_keys = {
                             (finding.code, finding.unit_id, frozenset(finding.support_ids))
                             for finding in candidate_quality.findings
+                            if finding.severity == "blocking"
                         }
                         edited_finding_keys = {
                             (finding.code, finding.unit_id, frozenset(finding.support_ids))
                             for finding in edited_quality.findings
+                            if finding.severity == "blocking"
                         }
                         introduced_quality_findings = bool(
                             edited_finding_keys - original_finding_keys

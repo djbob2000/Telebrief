@@ -8,6 +8,7 @@ import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from time import perf_counter
 from typing import Any, Literal, Protocol
 
 from src.config_loader import PublicationEditorialConfig
@@ -339,6 +340,7 @@ def _compact_quality_metadata(report: ArticleReaderQualityReport) -> dict[str, A
                 "code": finding.code,
                 "unit_id": finding.unit_id,
                 "severity": finding.severity,
+                "support_ids": list(finding.support_ids),
             }
             for finding in report.findings
         ],
@@ -352,7 +354,36 @@ def _compact_validation_metadata(result: ArticleValidationResult) -> dict[str, A
         "issue_codes_and_units": [
             f"{issue.code}:{issue.unit_id}" for issue in result.issues if issue.blocking
         ],
+        "blocking_issues": [
+            {
+                "code": issue.code,
+                "unit_id": issue.unit_id,
+                "message": _safe_validation_finding_message(issue.code),
+                "support_ids": list(issue.support_ids),
+            }
+            for issue in result.issues
+            if issue.blocking
+        ],
     }
+
+
+def _safe_validation_finding_message(code: str) -> str:
+    """Describe a validation failure without copying draft or source text."""
+    if code.startswith("UNSUPPORTED_"):
+        return "A reader-facing claim is not grounded in its cited evidence."
+    if code in {"UNKNOWN_SUPPORT_ID", "UNKNOWN_CLAIM_SUPPORT_ID"}:
+        return "The draft references a support ID unavailable in the article context."
+    if code in {"MISSING_SUPPORT:title", "MISSING_SUPPORT:lead", "MISSING_SUPPORT:paragraph"}:
+        return "A reader-facing unit is missing its required evidence citation."
+    if code == "CLAIM_SUPPORT_MISMATCH":
+        return "Unit citations and claim-level citations do not match."
+    if code == "PHANTOM_HEADING_TOPIC":
+        return "A section heading promises a topic that its body does not cover."
+    if code == "SECTION_COUNT_OUT_OF_BOUNDS":
+        return "The article has too few or too many sections."
+    if code == "WORD_COUNT_OUT_OF_BOUNDS":
+        return "The article is outside its configured word-count range."
+    return f"Evidence Boundary finding: {code}."
 
 
 def _compact_quality_value(value: Any) -> dict[str, Any] | None:
@@ -565,7 +596,13 @@ def _quality_rejection_metadata(
 ) -> dict[str, Any]:
     safe_writer_metadata = _safe_writer_metadata(writer_metadata)
     unresolved = [
-        {"code": finding.code, "unit_id": finding.unit_id, "severity": finding.severity}
+        {
+            "code": finding.code,
+            "unit_id": finding.unit_id,
+            "severity": finding.severity,
+            "message": _safe_quality_finding_message(finding.code),
+            "support_ids": list(finding.support_ids),
+        }
         for finding in report.blocking_findings
     ]
     metadata: dict[str, Any] = {
@@ -602,6 +639,31 @@ def _quality_rejection_metadata(
             if key in safe_writer_metadata:
                 metadata[key] = safe_writer_metadata[key]
     return metadata
+
+
+def _safe_quality_finding_message(code: str) -> str:
+    """Return a useful diagnostic label without embedding article/source prose."""
+    messages = {
+        "CONTRADICTORY_SERVICE_STATE": "Opposing service states need an explicit localized contrast.",
+        "THEME_MISMATCHED_SECTION": "A section contains a story from a different theme.",
+        "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION": "A story in the connectivity section lacks a clear thematic link.",
+        "DUPLICATE_ARTICLE_HEADING": "A heading repeats the title or another section heading.",
+        "UNDEVELOPED_LEAD_PROMISE": "The lead promises a key storyline that the article does not develop.",
+        "ARTICLE_INVENTORY_RHYTHM": "Several one-fact paragraphs read as an inventory.",
+        "QUOTE_ROLL_PARAGRAPH": "A paragraph contains more than two direct quotes.",
+        "ARTICLE_PLACE_AREA_MISMATCH": "A paragraph assigns a place or street to the wrong area.",
+        "ARTICLE_AREA_BEFORE_STREET_ORDER": "A paragraph introduces a street before its area.",
+        "PRIVATE_SECTOR_AREA_UNSPECIFIED": "Private-sector reporting needs an explicit note when its area is unknown.",
+        "UNQUOTED_COMMERCIAL_PROVIDER_NAME": "A supported provider name needs typographic quotation marks.",
+        "INCOMPLETE_QUANTITY_PHRASE": "A quantity is missing its unit or counted noun.",
+        "OVERLOADED_ROSTER_PARAGRAPH": "A paragraph lists unrelated addresses and states without comparison.",
+        "MULTI_SENTENCE_ADDRESS_STATUS_ROSTER": "Similar address-and-status sentences need a coherent localized contrast.",
+        "DIRECTORY_TIMETABLE_SECTION": "A section reads like a directory or routine timetable.",
+        "CROSS_SECTION_REPETITION": "A supported fact repeats in another section without a new detail.",
+        "REPEATED_CENTRAL_THESIS": "The article repeats its central point without new development.",
+        "MISSING_DEVELOP_STORY": "A key planned storyline is missing from the article.",
+    }
+    return messages.get(code, f"Reader-quality finding: {code}.")
 
 
 def _sanitize_unsupported_quotes(
@@ -1526,6 +1588,8 @@ class ArticleFinalizer:
                 place_resolver=place_resolver,
             )
 
+        input_writer_draft = writer_draft
+
         # 2. Validate writer draft
         if writer_validation is None:
             writer_validation = await asyncio.to_thread(
@@ -1773,6 +1837,7 @@ class ArticleFinalizer:
             )
 
         # 3. Writer draft is valid; apply deterministic structural improvements
+        pre_finalization_draft = writer_draft
         # 3a. Deduplicate identical sentences within paragraphs and duplicate cross-section paragraphs
         writer_draft = _deduplicate_draft_content(writer_draft)
 
@@ -1787,16 +1852,31 @@ class ArticleFinalizer:
             place_resolver=place_resolver,
         )
 
-        # Structural finalization changes the reader-facing draft. Never reuse
-        # the validation result from the pre-merge object: the exact object
-        # rendered below must pass the Evidence Boundary itself.
-        final_validation = await asyncio.to_thread(
-            validate_article_draft,
-            writer_draft,
-            context,
-            config=editorial_config,
-            length_profile=length_profile,
-            material_projection=material_projection,
+        # Structural finalization may change the reader-facing draft. Reuse
+        # validation only if the full structured value remains identical;
+        # otherwise the rendered value must pass a fresh Evidence Boundary check.
+        evidence_started = perf_counter()
+        reused_writer_validation = (
+            writer_draft == pre_finalization_draft and writer_validation is not None
+        )
+        if reused_writer_validation:
+            # The finalization transforms preserve the complete frozen draft
+            # value (including claim atoms and provenance). This validation
+            # was produced for that same value with the same context/options.
+            final_validation = writer_validation
+        else:
+            final_validation = await asyncio.to_thread(
+                validate_article_draft,
+                writer_draft,
+                context,
+                config=editorial_config,
+                length_profile=length_profile,
+                material_projection=material_projection,
+            )
+        logger.info(
+            "Final article Evidence Boundary check: reused_writer_result=%s elapsed=%.3fs",
+            reused_writer_validation,
+            perf_counter() - evidence_started,
         )
         if not final_validation.is_valid:
             logger.warning(
@@ -1869,13 +1949,32 @@ class ArticleFinalizer:
         # Reader-quality checks run on the exact post-deduplication and
         # post-orphan-merge object that will be rendered.  Factual validation
         # remains separate; quality findings never masquerade as claims.
-        final_quality = await asyncio.to_thread(
-            diagnose_article_quality,
-            writer_draft,
-            coverage_plan,
-            context,
-            material_projection=material_projection,
-            place_resolver=place_resolver,
+        quality_started = perf_counter()
+        # The post-edit report is paired with the incoming writer draft by the
+        # canonical caller. Reuse it only when no repair or finalization step
+        # changed that full structured draft; all diagnostic inputs below are
+        # the same context, plan, projection, and resolver passed to that caller.
+        if (
+            quality_report_after_edit is not None
+            and input_writer_draft == pre_finalization_draft
+            and writer_draft == pre_finalization_draft
+        ):
+            final_quality = quality_report_after_edit
+            reused_quality_report = True
+        else:
+            final_quality = await asyncio.to_thread(
+                diagnose_article_quality,
+                writer_draft,
+                coverage_plan,
+                context,
+                material_projection=material_projection,
+                place_resolver=place_resolver,
+            )
+            reused_quality_report = False
+        logger.info(
+            "Final article reader-quality check: reused_post_edit_report=%s elapsed=%.3fs",
+            reused_quality_report,
+            perf_counter() - quality_started,
         )
         if final_quality.blocking_findings:
             logger.info(

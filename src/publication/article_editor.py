@@ -7,7 +7,7 @@ import json
 import logging
 import re
 from time import perf_counter
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from src.ai_providers import AIProvider
 from src.publication.article_context import ArticleEditorialContext
@@ -39,6 +39,9 @@ _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 _MAX_HEADING_SECTION_PARAGRAPH_CHARS = 1_500
 _MAX_HEADING_SECTION_CONTEXT_CHARS = 18_000
 _MAX_HEADING_CONTEXT_SUPPORTS = 64
+_MAX_EDITOR_SUPPORTS = 64
+_MAX_EDITOR_SUPPORT_CONTEXT_CHARS = 32_000
+_MAX_EDITOR_SUPPORT_PACKET_CHARS = 4_000
 
 _LOCALLY_REPAIRABLE_ARTICLE_FINDINGS = frozenset(
     {
@@ -129,6 +132,8 @@ class ArticleEditor:
         config: Any | None = None,
         length_profile: Any | None = None,
         attempt_observer: Any | None = None,
+        save_debug_artifact: Callable[[str, Any], None] | None = None,
+        debug_artifact_prefix: str = "article_editor",
         max_attempts: int = 2,
         quality_report: ArticleReaderQualityReport | None = None,
         coverage_plan: ArticleCoveragePlan | None = None,
@@ -141,6 +146,10 @@ class ArticleEditor:
         current_quality = quality_report or ArticleReaderQualityReport()
         self.last_quality_report = current_quality
         patched_unit_ids: list[str] = []
+        self.last_attempt_count = 0
+        self.last_patched_unit_ids = ()
+        no_op_patch_signatures: dict[str, set[str]] = {}
+        previous_attempt_feedback: dict[str, dict[str, Any]] = {}
         validation_context = (
             materialize_article_validation_context(context, material_projection)
             if material_projection is not None
@@ -185,13 +194,17 @@ class ArticleEditor:
                 validation_context,
                 material_projection=material_projection,
             )
+            prompt_data = self._bound_prompt_supports(prompt_data)
             if not prompt_data:
                 logger.warning("ArticleEditor could not build unit context for issues; stopping")
                 break
 
             system_prompt = self._build_system_prompt()
             user_prompt = self._build_user_prompt(
-                prompt_data, attempt=attempt, max_passes=max_attempts
+                prompt_data,
+                attempt=attempt,
+                max_passes=max_attempts,
+                previous_attempt_feedback=previous_attempt_feedback,
             )
 
             obs_att_id = 0
@@ -214,6 +227,10 @@ class ArticleEditor:
             previous_draft = current_draft
             previous_val = current_val
             previous_quality = current_quality
+            previous_patched_unit_ids = list(patched_unit_ids)
+            response: str | None = None
+            unit_outcomes: dict[str, dict[str, str]] = {}
+            requested_units = {unit["unit_id"] for unit in prompt_data}
             try:
                 response = await self.provider.chat_completion(
                     messages=[
@@ -227,7 +244,6 @@ class ArticleEditor:
                     response_format={"type": "json_object"},
                 )
                 patches = self._parse_editor_response(response)
-                requested_units = {unit["unit_id"] for unit in prompt_data}
                 patches = {
                     unit_id: value
                     for unit_id, value in patches.items()
@@ -235,10 +251,75 @@ class ArticleEditor:
                 }
                 if not patches:
                     logger.warning("ArticleEditor returned no valid unit patches")
+                    unit_outcomes = {
+                        unit_id: {
+                            "status": "no_op",
+                            "reason": "no_valid_patch_returned",
+                            "attempted_text": "",
+                        }
+                        for unit_id in requested_units
+                    }
+                    previous_attempt_feedback = unit_outcomes
                     if attempt_observer is not None:
                         await attempt_observer.attempt_finished(
-                            obs_att_id, "failed", error_kind="empty_patches"
+                            obs_att_id,
+                            "failed",
+                            error_kind="empty_patches",
+                            metadata={"unit_outcomes": self._compact_unit_outcomes(unit_outcomes)},
                         )
+                    self._save_attempt_debug_artifact(
+                        save_debug_artifact,
+                        debug_artifact_prefix,
+                        attempt,
+                        user_prompt,
+                        response,
+                        current_draft,
+                        unit_outcomes,
+                        current_val,
+                        current_quality,
+                    )
+                    break
+
+                prompt_units_by_id = {unit["unit_id"]: unit for unit in prompt_data}
+                for unit_id, patch_text in tuple(patches.items()):
+                    prompt_unit = prompt_units_by_id[unit_id]
+                    signature = self._patch_signature(
+                        patch_text,
+                        original_text=prompt_unit["text"],
+                        support_ids=prompt_unit["prompt_support_ids"],
+                    )
+                    if signature in no_op_patch_signatures.get(unit_id, set()):
+                        unit_outcomes[unit_id] = {
+                            "status": "no_op",
+                            "reason": "repeated_identical_no_op_patch",
+                            "attempted_text": patch_text,
+                        }
+                        del patches[unit_id]
+
+                if not patches:
+                    logger.warning(
+                        "ArticleEditor pass %d repeated only previously rejected/no-op patches; stopping",
+                        attempt,
+                    )
+                    previous_attempt_feedback = unit_outcomes
+                    if attempt_observer is not None:
+                        await attempt_observer.attempt_finished(
+                            obs_att_id,
+                            "failed",
+                            error_kind="repeated_no_op_patches",
+                            metadata={"unit_outcomes": self._compact_unit_outcomes(unit_outcomes)},
+                        )
+                    self._save_attempt_debug_artifact(
+                        save_debug_artifact,
+                        debug_artifact_prefix,
+                        attempt,
+                        user_prompt,
+                        response,
+                        current_draft,
+                        unit_outcomes,
+                        current_val,
+                        current_quality,
+                    )
                     break
 
                 current_draft = await asyncio.to_thread(
@@ -248,11 +329,27 @@ class ArticleEditor:
                     context=validation_context,
                     preserve_unmatched_supports=False,
                     allowed_support_ids_by_unit={
-                        unit["unit_id"]: tuple(unit["support_ids"]) for unit in prompt_data
+                        unit["unit_id"]: tuple(unit["prompt_support_ids"]) for unit in prompt_data
                     },
+                    patch_outcomes=unit_outcomes,
                 )
-                patched_unit_ids.extend(patches)
+                actually_changed = [
+                    unit_id
+                    for unit_id, outcome in unit_outcomes.items()
+                    if outcome.get("status") == "applied"
+                ]
+                patched_unit_ids.extend(actually_changed)
                 self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
+                for unit_id, outcome in unit_outcomes.items():
+                    if outcome.get("status") != "applied":
+                        prompt_unit = prompt_units_by_id[unit_id]
+                        no_op_patch_signatures.setdefault(unit_id, set()).add(
+                            self._patch_signature(
+                                outcome.get("attempted_text", ""),
+                                original_text=prompt_unit["text"],
+                                support_ids=prompt_unit["prompt_support_ids"],
+                            )
+                        )
 
                 def evaluate_editor_draft(
                     draft: StructuredArticleDraft = current_draft,
@@ -286,13 +383,19 @@ class ArticleEditor:
                         quality_elapsed = perf_counter() - quality_started
                     return validation, quality, validation_elapsed, quality_elapsed
 
-                (
-                    current_val,
-                    current_quality,
-                    validation_elapsed,
-                    quality_elapsed,
-                ) = await asyncio.to_thread(evaluate_editor_draft)
+                validation_elapsed = 0.0
+                quality_elapsed = 0.0
+                if actually_changed:
+                    (
+                        current_val,
+                        current_quality,
+                        validation_elapsed,
+                        quality_elapsed,
+                    ) = await asyncio.to_thread(evaluate_editor_draft)
                 self.last_quality_report = current_quality
+                previous_attempt_feedback = {
+                    unit_id: dict(outcome) for unit_id, outcome in unit_outcomes.items()
+                }
                 logger.info(
                     "ArticleEditor pass %d timings: evidence_validation=%.2fs "
                     "quality=%.2fs pass_elapsed=%.2fs",
@@ -312,7 +415,9 @@ class ArticleEditor:
                         error_kind=error_kind,
                         metadata={
                             "editor_status": "succeeded" if is_clean else "partial",
-                            "patched_units": list(patches.keys()),
+                            "requested_units": sorted(requested_units),
+                            "patched_units": actually_changed,
+                            "unit_outcomes": self._compact_unit_outcomes(unit_outcomes),
                             "remaining_violations": list(current_val.violations),
                             "remaining_quality_findings": [
                                 f"{finding.code}:{finding.unit_id}"
@@ -320,6 +425,18 @@ class ArticleEditor:
                             ],
                         },
                     )
+
+                self._save_attempt_debug_artifact(
+                    save_debug_artifact,
+                    debug_artifact_prefix,
+                    attempt,
+                    user_prompt,
+                    response,
+                    current_draft,
+                    unit_outcomes,
+                    current_val,
+                    current_quality,
+                )
 
                 if current_val.is_valid and not current_quality.needs_edit:
                     logger.info("ArticleEditor successfully resolved all validation issues!")
@@ -347,13 +464,43 @@ class ArticleEditor:
                 current_val = previous_val
                 current_quality = previous_quality
                 self.last_quality_report = current_quality
+                patched_unit_ids = previous_patched_unit_ids
+                self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
+                for outcome in unit_outcomes.values():
+                    if outcome.get("status") == "applied":
+                        outcome["status"] = "rejected"
+                        outcome["reason"] = "validation_error_rolled_back"
                 logger.warning("ArticleEditor pass %d encountered error: %s", attempt, exc)
+                if not unit_outcomes:
+                    unit_outcomes = {
+                        unit_id: {
+                            "status": "rejected",
+                            "reason": f"editor_pass_error:{type(exc).__name__}",
+                            "attempted_text": "",
+                        }
+                        for unit_id in requested_units
+                    }
+                previous_attempt_feedback = {
+                    unit_id: dict(outcome) for unit_id, outcome in unit_outcomes.items()
+                }
                 if attempt_observer is not None:
                     await attempt_observer.attempt_finished(
                         obs_att_id,
                         "failed",
                         error_kind=type(exc).__name__,
+                        metadata={"unit_outcomes": self._compact_unit_outcomes(unit_outcomes)},
                     )
+                self._save_attempt_debug_artifact(
+                    save_debug_artifact,
+                    debug_artifact_prefix,
+                    attempt,
+                    user_prompt,
+                    response,
+                    current_draft,
+                    unit_outcomes,
+                    current_val,
+                    current_quality,
+                )
                 break
 
         return current_draft, current_val
@@ -410,6 +557,14 @@ class ArticleEditor:
             if source and source != fact:
                 return f"{fact}\nПервичный источник: {source}" if fact else source
             return fact or source
+
+        def support_packets(support_ids: list[str] | tuple[str, ...]) -> list[dict[str, str]]:
+            packets: list[dict[str, str]] = []
+            for support_id in dict.fromkeys(support_ids):
+                rendered = support_text(support_id)
+                if rendered:
+                    packets.append({"support_id": support_id, "text": rendered})
+            return packets
 
         # Index units across draft
         # 1. Title
@@ -624,13 +779,7 @@ class ArticleEditor:
                     "unit_type": "title",
                     "text": draft.title,
                     "support_ids": t_sups,
-                    "supports": [
-                        rendered
-                        for sid in t_sups
-                        if sid in context.support_by_id
-                        for rendered in (support_text(sid),)
-                        if rendered
-                    ],
+                    "support_packets": support_packets(t_sups),
                     "issues": issues_by_unit["TITLE"],
                 }
             )
@@ -648,13 +797,7 @@ class ArticleEditor:
                     "unit_type": "lead",
                     "text": draft.lead,
                     "support_ids": lead_sups,
-                    "supports": [
-                        rendered
-                        for sid in lead_sups
-                        if sid in context.support_by_id
-                        for rendered in (support_text(sid),)
-                        if rendered
-                    ],
+                    "support_packets": support_packets(lead_sups),
                     "issues": issues_by_unit["LEAD"],
                 }
             )
@@ -687,13 +830,7 @@ class ArticleEditor:
                             "section_paragraph_truncated": truncated_paragraph,
                         },
                         "support_ids": h_sups,
-                        "supports": [
-                            f"[{sid}] {rendered}"
-                            for sid in h_prompt_sups
-                            if sid in context.support_by_id
-                            for rendered in (support_text(sid),)
-                            if rendered
-                        ],
+                        "support_packets": support_packets(h_prompt_sups),
                         "supports_omitted": max(0, len(visible_h_sups) - len(h_prompt_sups)),
                         "issues": issues_by_unit[h_id],
                     }
@@ -726,13 +863,7 @@ class ArticleEditor:
                             "unit_type": "paragraph",
                             "text": p.text,
                             "support_ids": p_sups,
-                            "supports": [
-                                rendered
-                                for sid in p_sups
-                                if sid in context.support_by_id
-                                for rendered in (support_text(sid),)
-                                if rendered
-                            ],
+                            "support_packets": support_packets(p_sups),
                             "issues": issues_by_unit[p_id],
                             "reader_context": reader_context,
                         }
@@ -740,6 +871,150 @@ class ArticleEditor:
                 p_idx += 1
 
         return unit_data
+
+    @staticmethod
+    def _bound_prompt_supports(unit_contexts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Choose bounded, identifiable evidence packets for each requested unit.
+
+        Finding-specific supports are first, followed by the other support
+        packets allowed for the unit. The exact IDs and text returned here are
+        the only ones shown to the editor and later allowed for re-grounding.
+        """
+        bounded_units: list[dict[str, Any]] = []
+        for unit in unit_contexts:
+            packets_by_id = {
+                packet["support_id"]: packet
+                for packet in unit.get("support_packets", ())
+                if packet.get("support_id") and packet.get("text")
+            }
+            finding_support_ids = [
+                support_id
+                for issue in unit.get("issues", ())
+                for support_id in (getattr(issue, "support_ids", ()) or ())
+            ]
+            ordered_ids = list(
+                dict.fromkeys(
+                    (*finding_support_ids, *unit.get("support_ids", ()), *packets_by_id.keys())
+                )
+            )
+            selected: list[dict[str, str]] = []
+            shown_chars = 0
+            for support_id in ordered_ids:
+                packet = packets_by_id.get(support_id)
+                if packet is None or len(selected) >= _MAX_EDITOR_SUPPORTS:
+                    continue
+                remaining_chars = _MAX_EDITOR_SUPPORT_CONTEXT_CHARS - shown_chars
+                packet_chars = len(f"[{support_id}] {packet['text']}")
+                if len(packet["text"]) > _MAX_EDITOR_SUPPORT_PACKET_CHARS:
+                    continue
+                if remaining_chars < packet_chars:
+                    break
+                text = packet["text"]
+                selected.append({"support_id": support_id, "text": text})
+                shown_chars += packet_chars
+
+            shown_ids = tuple(packet["support_id"] for packet in selected)
+            omitted_finding_supports = sum(
+                support_id not in shown_ids for support_id in dict.fromkeys(finding_support_ids)
+            )
+            omitted_count = max(0, len(packets_by_id) - len(selected))
+            copied = dict(unit)
+            copied["prompt_support_ids"] = shown_ids
+            copied["prompt_supports"] = [
+                f"[{packet['support_id']}] {packet['text']}" for packet in selected
+            ]
+            copied["supports"] = copied["prompt_supports"]
+            copied["support_packets_omitted"] = omitted_count
+            copied["finding_supports_omitted"] = omitted_finding_supports
+            reader_context = dict(copied.get("reader_context") or {})
+            if reader_context.get("section_paragraphs"):
+                reader_context["section_paragraphs"] = tuple(
+                    (
+                        paragraph_index,
+                        paragraph_text,
+                        tuple(sid for sid in support_ids if sid in shown_ids),
+                    )
+                    for paragraph_index, paragraph_text, support_ids in reader_context[
+                        "section_paragraphs"
+                    ]
+                )
+                copied["reader_context"] = reader_context
+            bounded_units.append(copied)
+        return bounded_units
+
+    @staticmethod
+    def _patch_signature(
+        text: str,
+        *,
+        original_text: str = "",
+        support_ids: tuple[str, ...] | list[str] = (),
+    ) -> str:
+        normalized_text = " ".join(_normalize_homoglyphs(text or "").casefold().split())
+        normalized_original = " ".join(
+            _normalize_homoglyphs(original_text or "").casefold().split()
+        )
+        return json.dumps(
+            [normalized_text, normalized_original, tuple(support_ids)],
+            ensure_ascii=False,
+        )
+
+    @staticmethod
+    def _compact_unit_outcomes(
+        outcomes: Mapping[str, Mapping[str, str]],
+    ) -> dict[str, dict[str, str]]:
+        """Keep raw attempted prose out of persistent attempt metadata."""
+        return {
+            unit_id: {
+                "status": outcome.get("status", "unknown"),
+                "reason": outcome.get("reason", ""),
+            }
+            for unit_id, outcome in outcomes.items()
+        }
+
+    @staticmethod
+    def _save_attempt_debug_artifact(
+        callback: Callable[[str, Any], None] | None,
+        prefix: str,
+        attempt: int,
+        prompt: str,
+        response: str | None,
+        draft: StructuredArticleDraft,
+        unit_outcomes: Mapping[str, Mapping[str, str]],
+        validation_result: ArticleValidationResult,
+        quality_report: ArticleReaderQualityReport,
+    ) -> None:
+        if callback is None:
+            return
+        payload = {
+            "attempt": attempt,
+            "prompt": prompt,
+            "response": response,
+            "patched_draft": draft.render_markdown(),
+            "unit_outcomes": {unit_id: dict(value) for unit_id, value in unit_outcomes.items()},
+            "validation_findings": [
+                {
+                    "code": issue.code,
+                    "unit_id": issue.unit_id,
+                    "message": issue.message,
+                    "blocking": issue.blocking,
+                }
+                for issue in validation_result.issues
+            ],
+            "quality_findings": [
+                {
+                    "code": finding.code,
+                    "unit_id": finding.unit_id,
+                    "message": finding.message,
+                    "severity": finding.severity,
+                }
+                for finding in quality_report.repair_findings
+            ],
+        }
+        try:
+            callback(f"{prefix}_pass_{attempt}", payload)
+        except Exception as exc:
+            # Diagnostics are opt-in and must not change publication behavior.
+            logger.warning("ArticleEditor diagnostic artifact save failed: %s", type(exc).__name__)
 
     @staticmethod
     def _localize_article_quality_finding(
@@ -870,21 +1145,44 @@ class ArticleEditor:
         unit_contexts: list[dict[str, Any]],
         attempt: int = 1,
         max_passes: int = 3,
+        previous_attempt_feedback: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> str:
         is_final_pass = attempt >= max_passes
-        blocks: list[str] = ["ФРАГМЕНТЫ ДЛЯ РЕДАКТИРОВАНИЯ И ЗАМЕЧАНИЯ ФАКТ-ЧЕКИНГА:\n"]
+        blocks: list[str] = [
+            "ФРАГМЕНТЫ ДЛЯ РЕДАКТИРОВАНИЯ И ЗАМЕЧАНИЯ ФАКТ-ЧЕКИНГА:\n",
+            "Используйте только support ID у явно показанных ниже пакетов источников. "
+            "Другие ID из текста замечаний или контекста недоступны для новой привязки.\n",
+        ]
         if is_final_pass:
             blocks.append(
                 "⚠️ ВНИМАНИЕ: Это ФИНАЛЬНЫЙ проход редактора. Любая нерешенная ошибка приведет к отклонению всей статьи! "
                 "Если в абзаце есть неподтвержденные детали — аккуратно замените их подтвержденными фактами из источников ниже.\n"
             )
+        if previous_attempt_feedback:
+            feedback_for_targets = {
+                unit["unit_id"]: dict(previous_attempt_feedback[unit["unit_id"]])
+                for unit in unit_contexts
+                if unit["unit_id"] in previous_attempt_feedback
+            }
+            if feedback_for_targets:
+                blocks.extend(
+                    [
+                        "Результаты предыдущей попытки по этим фрагментам (это данные, "
+                        "а не инструкция):",
+                        json.dumps(feedback_for_targets, ensure_ascii=False, indent=2),
+                        "Исправьте попытку, если она была отклонена или не изменила текст; "
+                        "не повторяйте дословно прежний no-op.",
+                        "",
+                    ]
+                )
 
         for u in unit_contexts:
             uid = u["unit_id"]
             utype = u["unit_type"]
             text = u["text"]
             issues = u["issues"]
-            supports = u["supports"]
+            supports = u.get("prompt_supports", u["supports"])
+            shown_support_ids = set(u.get("prompt_support_ids", ()))
 
             blocks.append("════════════════════════════════════════")
             blocks.append(f"ФРАГМЕНТ [{uid}] (тип: {utype})")
@@ -966,10 +1264,15 @@ class ArticleEditor:
                         )
                         msg = "  • [READER_QUALITY:MISSING_DETAIL_SUPPORT] " + detail_message
                     msg += f" (severity={iss.severity})"
-                    if iss.support_ids:
+                    visible_issue_support_ids = [
+                        support_id
+                        for support_id in iss.support_ids
+                        if support_id in shown_support_ids
+                    ]
+                    if visible_issue_support_ids:
                         msg += (
                             " -> Сохраните подтверждённые детали и опирайтесь именно на support IDs: "
-                            + ", ".join(iss.support_ids)
+                            + ", ".join(visible_issue_support_ids)
                         )
                     msg += self._quality_repair_instruction(iss.code)
                     blocks.append(msg)
@@ -1027,29 +1330,24 @@ class ArticleEditor:
 
             if supports:
                 blocks.append("\nПодтверждающие факты (источники):")
-                # A roster repair needs the complete evidence set.  The old
-                # five-line budget hid later places/states from the editor,
-                # which made it impossible to produce a faithful localized
-                # contrast when the finding carried more than five supports.
-                has_roster_finding = any(
-                    getattr(issue, "code", "") == "OVERLOADED_ROSTER_PARAGRAPH" for issue in issues
-                )
-                has_historical_title_finding = utype == "title" and any(
-                    getattr(issue, "code", "") == "HISTORICAL_CONTEXT_UNFRAMED" for issue in issues
-                )
-                support_lines = (
-                    supports
-                    if utype == "heading" or has_roster_finding or has_historical_title_finding
-                    else supports[:5]
-                )
-                for s_text in support_lines:
+                for s_text in supports:
                     blocks.append(f"  - {s_text}")
-                if utype == "heading" and u.get("supports_omitted"):
+                omitted_supports = u.get("support_packets_omitted", 0) + u.get(
+                    "supports_omitted", 0
+                )
+                if omitted_supports:
                     blocks.append(
-                        "  Дополнительные подтверждения раздела не показаны: "
-                        f"{u['supports_omitted']}; лимит — {_MAX_HEADING_CONTEXT_SUPPORTS} "
-                        "источников. Поддержки, относящиеся непосредственно к замечанию и "
-                        "заголовку, перечислены первыми."
+                        "  Часть допустимых пакетов источников не показана из-за бюджета: "
+                        f"{omitted_supports}; лимиты — {_MAX_EDITOR_SUPPORTS} пакетов, "
+                        f"{_MAX_EDITOR_SUPPORT_PACKET_CHARS} символов на пакет и "
+                        f"{_MAX_EDITOR_SUPPORT_CONTEXT_CHARS} символов суммарно. "
+                        "Используйте только перечисленные выше ID."
+                    )
+                if u.get("finding_supports_omitted"):
+                    blocks.append(
+                        "  ВАЖНО: часть ID из целевого замечания не имеет показанного пакета "
+                        f"источника ({u['finding_supports_omitted']}); не ссылайтесь на них и "
+                        "не восстанавливайте по ним детали."
                     )
 
                 # Check topical overlap using stemming
@@ -1079,6 +1377,12 @@ class ArticleEditor:
                 blocks.append(
                     '\n(Подтверждающих фактов в источниках нет — верните "" или "[DELETE]", чтобы удалить фрагмент)'
                 )
+                if u.get("finding_supports_omitted"):
+                    blocks.append(
+                        "  ВАЖНО: часть ID из целевого замечания не имеет показанного пакета "
+                        f"источника ({u['finding_supports_omitted']}); не ссылайтесь на них и "
+                        "не восстанавливайте по ним детали."
+                    )
             blocks.append("")
 
         blocks.append(
@@ -1251,6 +1555,7 @@ class ArticleEditor:
         *,
         preserve_unmatched_supports: bool = False,
         allowed_support_ids_by_unit: Mapping[str, tuple[str, ...]] | None = None,
+        patch_outcomes: dict[str, dict[str, str]] | None = None,
     ) -> StructuredArticleDraft:
         """Apply targeted text patches while preserving structure and valid provenance.
 
@@ -1264,6 +1569,21 @@ class ArticleEditor:
         """
         if not patches:
             return draft
+
+        def record_outcome(
+            unit_id: str,
+            status: str,
+            reason: str,
+            attempted_text: str,
+            result_text: str = "",
+        ) -> None:
+            if patch_outcomes is not None:
+                patch_outcomes[unit_id] = {
+                    "status": status,
+                    "reason": reason,
+                    "attempted_text": attempted_text,
+                    "result_text": result_text,
+                }
 
         def allowed_ids(unit_id: str, fallback: tuple[str, ...]) -> tuple[str, ...]:
             if allowed_support_ids_by_unit is not None:
@@ -1293,6 +1613,20 @@ class ArticleEditor:
                     title = candidate_title
                     title_sups = regrounded_title_sups
                     title_claims = (ArticleClaimAtom(text=title, cited_support_ids=title_sups),)
+                    changed = title != draft.title or title_sups != draft.title_support_ids
+                    record_outcome(
+                        "TITLE",
+                        "applied" if changed else "no_op",
+                        "text_or_supports_changed" if changed else "text_unchanged",
+                        raw_t,
+                        title,
+                    )
+                else:
+                    record_outcome(
+                        "TITLE", "rejected", "replacement_not_grounded_in_visible_supports", raw_t
+                    )
+            else:
+                record_outcome("TITLE", "rejected", "title_deletion_not_allowed", raw_t)
 
         lead = draft.lead
         lead_claims = draft.lead_claims
@@ -1316,6 +1650,18 @@ class ArticleEditor:
                 lead_claims = tuple(
                     ArticleClaimAtom(text=s, cited_support_ids=lead_sups)
                     for s in (lead_sentences or [lead])
+                )
+                changed = lead != draft.lead or lead_sups != draft.lead_support_ids
+                record_outcome(
+                    "LEAD",
+                    "applied" if changed else "no_op",
+                    "text_or_supports_changed" if changed else "text_unchanged",
+                    raw_l,
+                    lead,
+                )
+            else:
+                record_outcome(
+                    "LEAD", "rejected", "replacement_not_grounded_in_visible_supports", raw_l
                 )
 
         p_idx = 1
@@ -1341,6 +1687,21 @@ class ArticleEditor:
                     heading = candidate_heading
                     h_sups = regrounded_heading_sups
                     heading_claims = (ArticleClaimAtom(text=heading, cited_support_ids=h_sups),)
+                    changed = heading != sec.heading or h_sups != sec.heading_support_ids
+                    record_outcome(
+                        h_id,
+                        "applied" if changed else "no_op",
+                        "text_or_supports_changed" if changed else "text_unchanged",
+                        patches[h_id],
+                        heading,
+                    )
+                else:
+                    record_outcome(
+                        h_id,
+                        "rejected",
+                        "replacement_not_grounded_in_visible_supports",
+                        patches[h_id],
+                    )
 
             new_paragraphs: list[ArticleParagraph] = []
             for para in sec.paragraphs:
@@ -1417,8 +1778,25 @@ class ArticleEditor:
                                         claims=claims,
                                     )
                                 )
+                                record_outcome(
+                                    p_id,
+                                    "applied" if safe_text != para.text else "no_op",
+                                    "safe_evidence_rewrite"
+                                    if safe_text != para.text
+                                    else "text_unchanged",
+                                    raw_patch,
+                                    safe_text,
+                                )
+                            else:
+                                record_outcome(
+                                    p_id,
+                                    "applied",
+                                    "deleted_duplicate_or_unavailable_text",
+                                    raw_patch,
+                                )
                             p_idx += 1
                             continue
+                    record_outcome(p_id, "applied", "deleted_by_editor_request", raw_patch)
                     p_idx += 1
                     continue
 
@@ -1435,6 +1813,12 @@ class ArticleEditor:
                 if not p_sups:
                     # Reject unsupported replacement prose. The original unit
                     # remains intact so final validation still sees its claims.
+                    record_outcome(
+                        p_id,
+                        "rejected",
+                        "replacement_not_grounded_in_visible_supports",
+                        raw_patch,
+                    )
                     new_paragraphs.append(para)
                     p_idx += 1
                     continue
@@ -1454,6 +1838,14 @@ class ArticleEditor:
                 if deduped_s and len(deduped_s) < len(sentences):
                     text = " ".join(deduped_s)
                     sentences = deduped_s
+                changed = text != para.text or tuple(p_sups) != existing_supports
+                record_outcome(
+                    p_id,
+                    "applied" if changed else "no_op",
+                    "text_or_supports_changed" if changed else "text_unchanged",
+                    raw_patch,
+                    text,
+                )
                 claims = tuple(
                     ArticleClaimAtom(text=sentence, cited_support_ids=p_sups)
                     for sentence in (sentences or [text])
@@ -1485,6 +1877,11 @@ class ArticleEditor:
                     heading_generation_origin=sec.heading_generation_origin,
                 )
             )
+
+        if patch_outcomes is not None and not any(
+            outcome.get("status") == "applied" for outcome in patch_outcomes.values()
+        ):
+            return draft
 
         calc_words = (
             len(title.split())

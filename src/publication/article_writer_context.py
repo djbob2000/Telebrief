@@ -306,13 +306,34 @@ def _render_composition_plan(
             if narrative_line.heading_hint
             else ""
         )
-        lines.append(
-            f"\nLINE {narrative_line.line_id} depth={narrative_line.prominence}{heading}: "
-            f"{_compact_text(narrative_line.narrative_intent, 240)}"
-        )
+        lines.append(f"\nLINE {narrative_line.line_id} depth={narrative_line.prominence}{heading}")
+        lines.append(f"  NARRATIVE INTENT: {_compact_text(narrative_line.narrative_intent, 240)}")
         for group in visible_groups:
-            role = _compact_text(group.relation.replace("_", " "), 100)
-            lines.append(f"  GROUP {group.group_id} relation={group.relation} role={role}")
+            visible_members = [
+                member
+                for member in group.members
+                if member.story_id in plan_by_id and member.story_id not in suppressed
+            ]
+            lines.append(
+                f"  GROUP {group.group_id} relation={group.relation} lead={group.lead_story_id}"
+            )
+            if group.relation == "independent":
+                lines.append(
+                    "    Keep this Story distinct; the plan records no supported relation "
+                    "to another Story."
+                )
+            else:
+                lines.append(
+                    "    Synthesize only the supported relation named above; keep each "
+                    "member's facts and support traceable to its packet."
+                )
+            lines.append("    GROUP MEMBERS:")
+            for member in visible_members:
+                item = plan_by_id[member.story_id]
+                lines.append(
+                    f"    - {member.story_id} depth={member.prominence}: "
+                    f"{_compact_text(item.topic, 180)}"
+                )
     lines.append(
         "Time fields: effective_from/effective_until describe event or service time; "
         "observed_at describes when a report was made and does not establish an event start."
@@ -376,6 +397,7 @@ def _render_article_story_packets(
 
     packets: list[str] = []
     compact_packets: list[str] = []
+    packet_story_ids: list[str] = []
     packets_with_citable_support = 0
     citable_support_count = 0
     group_by_story_id = composition_plan.group_by_story_id if composition_plan is not None else {}
@@ -476,6 +498,35 @@ def _render_article_story_packets(
 
         packets.append("\n".join(full_lines))
         compact_packets.append("\n".join(compact_lines))
+        packet_story_ids.append(item.story_id)
+
+    if composition_plan is not None:
+        packet_index_by_story_id = {
+            story_id: index for index, story_id in enumerate(packet_story_ids)
+        }
+        composition_order: dict[str, int] = {}
+        groups_by_id = {group.group_id: group for group in composition_plan.groups}
+        for narrative_line in composition_plan.narrative_lines:
+            for group_id in narrative_line.group_ids:
+                group = groups_by_id.get(group_id)
+                if group is None:
+                    continue
+                for member in group.members:
+                    if (
+                        member.story_id in packet_index_by_story_id
+                        and member.story_id not in composition_order
+                    ):
+                        composition_order[member.story_id] = len(composition_order)
+
+        packets_in_plan_order = sorted(
+            range(len(packets)),
+            key=lambda index: (
+                composition_order.get(packet_story_ids[index], len(composition_order)),
+                index,
+            ),
+        )
+        packets = [packets[index] for index in packets_in_plan_order]
+        compact_packets = [compact_packets[index] for index in packets_in_plan_order]
 
     return (
         packets,
