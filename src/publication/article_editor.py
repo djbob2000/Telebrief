@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 from collections import Counter
+from dataclasses import asdict, dataclass, replace
 from time import perf_counter
-from typing import Any, Callable, Mapping
+from types import MappingProxyType
+from typing import Any, Callable, Literal, Mapping, cast
 
 from src.ai_providers import AIProvider, capture_provider_attempts
 from src.publication.article_context import ArticleEditorialContext
@@ -54,6 +57,89 @@ _MAX_HEADING_CONTEXT_SUPPORTS = 64
 _MAX_EDITOR_SUPPORTS = 64
 _MAX_EDITOR_SUPPORT_CONTEXT_CHARS = 32_000
 _MAX_EDITOR_SUPPORT_PACKET_CHARS = 4_000
+ARTICLE_STRUCTURAL_OUTCOME_REASONS = frozenset(
+    {
+        "no_authorized_structural_sources",
+        "required_support_budget_exceeded",
+        "required_support_unavailable",
+        "required_support_packet_exceeded",
+        "complete_article_context_budget_exceeded",
+        "invalid_operation_payload",
+        "stale_base_fingerprint",
+        "base_topology_changed",
+        "duplicate_operation_id",
+        "conflicting_source_operations",
+        "unauthorized_or_unknown_source",
+        "conflicting_text_and_structural_edits",
+        "invalid_move",
+        "missing_recomposed_paragraphs",
+        "invalid_new_section",
+        "new_section_not_authorized",
+        "new_section_theme_has_existing_destination",
+        "unauthorized_or_unknown_destination",
+        "conflicting_heading_and_structural_edits",
+        "invalid_insertion_anchor",
+        "conflicting_or_unresolved_insertion_anchor",
+        "direct_quote_words_changed",
+        "replacement_not_grounded_in_source_supports",
+        "new_heading_not_grounded_in_source_supports",
+        "paragraph_identity_integrity_failed",
+        "new_blocker_atomic_rollback",
+        "assessment_error_atomic_rollback",
+        "awaiting_assessment",
+        "candidate_assessed",
+        "structure_unchanged",
+        "editor_pass_error_atomic_rollback",
+        "empty_section_heading_fact_requires_preservation",
+    }
+)
+
+_STRUCTURAL_FINDING_CODES = frozenset(
+    {"THEME_MISMATCHED_SECTION", "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION"}
+)
+
+
+@dataclass(frozen=True)
+class ArticleStructuralOperation:
+    """An explicit operation; claims and provenance are always assigned locally."""
+
+    operation_id: str
+    kind: Literal["move", "recompose", "create_section"]
+    source_unit_ids: tuple[str, ...]
+    destination_section_id: str | None
+    destination_before_unit_id: str | None
+    heading: str | None
+    paragraph_texts: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ArticlePassRegistry:
+    """Immutable positional identities and permissions for one exact editor base."""
+
+    base_fingerprint: str
+    sections: Mapping[str, ArticleSection]
+    paragraphs: Mapping[str, ArticleParagraph]
+    paragraph_sections: Mapping[str, str]
+    source_support_ids: Mapping[str, tuple[str, ...]]
+    destinations: Mapping[str, frozenset[str]]
+    new_section_sources: frozenset[str]
+
+
+def _draft_fingerprint(draft: StructuredArticleDraft) -> str:
+    return hashlib.sha256(
+        json.dumps(asdict(draft), ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _paragraph_support_ids(paragraph: ArticleParagraph) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            (
+                *paragraph.cited_support_ids,
+                *(sid for c in paragraph.claims for sid in c.cited_support_ids),
+            )
+        )
+    )
 
 
 def _preserves_existing_direct_quotes(original: str, replacement: str) -> bool:
@@ -153,6 +239,7 @@ class ArticleEditor:
         self.last_assessment: ArticleAssessmentCheckpoint | None = None
         self.last_patched_unit_ids: tuple[str, ...] = ()
         self.last_quality_report = ArticleReaderQualityReport()
+        self.last_structural_operations: list[dict[str, Any]] = []
 
     async def edit_draft(
         self,
@@ -182,6 +269,7 @@ class ArticleEditor:
         self.last_provider_attempts = []
         self.last_attempt_count = 0
         self.last_patched_unit_ids = ()
+        self.last_structural_operations = []
         no_op_patch_signatures: dict[str, set[str]] = {}
         previous_attempt_feedback: dict[str, dict[str, Any]] = {}
         validation_context = (
@@ -320,6 +408,7 @@ class ArticleEditor:
                 logger.warning("ArticleEditor could not build unit context for issues; stopping")
                 break
 
+            registry = self._build_pass_registry(current_draft, current_quality, validation_context)
             system_prompt = self._build_system_prompt()
             user_prompt = self._build_user_prompt(
                 prompt_data,
@@ -327,6 +416,20 @@ class ArticleEditor:
                 max_passes=max_attempts,
                 previous_attempt_feedback=previous_attempt_feedback,
             )
+            structural_context, structural_context_reason = self._structural_prompt_context(
+                current_draft, registry, validation_context, user_prompt, system_prompt
+            )
+            if structural_context is not None:
+                user_prompt += structural_context
+            elif registry.source_support_ids:
+                self.last_structural_operations.append(
+                    {
+                        "attempt": attempt,
+                        "status": "skipped",
+                        "reason": structural_context_reason,
+                        "source_unit_ids": sorted(registry.source_support_ids),
+                    }
+                )
 
             obs_att_id = 0
             if attempt_observer is not None:
@@ -337,6 +440,7 @@ class ArticleEditor:
                     metadata={
                         "strategy": "article_editor",
                         "attempt": attempt,
+                        "structural_operations": list(self.last_structural_operations),
                         "units": list(issues_by_unit.keys()),
                         "violations": [
                             f"{getattr(iss, 'code', 'QUALITY')}:{getattr(iss, 'unit_id', '')}"
@@ -351,6 +455,13 @@ class ArticleEditor:
             previous_quality = current_quality
             previous_assessment = self.last_assessment
             previous_patched_unit_ids = list(patched_unit_ids)
+            rollback_draft, rollback_val, rollback_quality = (
+                previous_draft,
+                previous_val,
+                previous_quality,
+            )
+            rollback_assessment = previous_assessment
+            rollback_patched_unit_ids = list(previous_patched_unit_ids)
             response: str | None = None
             unit_outcomes: dict[str, dict[str, str]] = {}
             requested_units = {unit["unit_id"] for unit in prompt_data}
@@ -371,13 +482,40 @@ class ArticleEditor:
                         )
                     finally:
                         self.last_provider_attempts.append(counts.to_metadata())
+                operation_error: str | None = None
+                try:
+                    operations = self._parse_structural_operations(response)
+                except ValueError as exc:
+                    operations = ()
+                    operation_error = str(exc)
+                    self.last_structural_operations.append(
+                        {
+                            "attempt": attempt,
+                            "status": "rejected",
+                            "reason": operation_error,
+                        }
+                    )
+                if operations:
+                    self.last_structural_operations.extend(
+                        self._operation_metadata(
+                            operation, attempt, "proposed", "awaiting_assessment"
+                        )
+                        for operation in operations
+                    )
+                    if structural_context is None:
+                        operation_error = structural_context_reason
+                    elif (
+                        self._response_object(response).get("base_fingerprint")
+                        != registry.base_fingerprint
+                    ):
+                        operation_error = "stale_base_fingerprint"
                 patches = self._parse_editor_response(response)
                 patches = {
                     unit_id: value
                     for unit_id, value in patches.items()
                     if unit_id in requested_units
                 }
-                if not patches:
+                if not patches and not operations and operation_error is None:
                     logger.warning("ArticleEditor returned no valid unit patches")
                     unit_outcomes = {
                         unit_id: {
@@ -395,6 +533,7 @@ class ArticleEditor:
                             error_kind="empty_patches",
                             metadata={
                                 "unit_outcomes": self._compact_unit_outcomes(unit_outcomes),
+                                "structural_operations": list(self.last_structural_operations),
                                 "provider_attempts": self.last_provider_attempts[-1]
                                 if self.last_provider_attempts
                                 else None,
@@ -431,7 +570,7 @@ class ArticleEditor:
                         }
                         del patches[unit_id]
 
-                if not patches:
+                if not patches and not operations and operation_error is None:
                     logger.warning(
                         "ArticleEditor pass %d repeated only previously rejected/no-op patches; stopping",
                         attempt,
@@ -444,6 +583,7 @@ class ArticleEditor:
                             error_kind="repeated_no_op_patches",
                             metadata={
                                 "unit_outcomes": self._compact_unit_outcomes(unit_outcomes),
+                                "structural_operations": list(self.last_structural_operations),
                                 "provider_attempts": self.last_provider_attempts[-1]
                                 if self.last_provider_attempts
                                 else None,
@@ -627,6 +767,99 @@ class ArticleEditor:
                     patched_unit_ids = previous_patched_unit_ids + actually_changed
                     self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
 
+                # Legacy text patches have now passed their original quarantine
+                # path. This exact checkpoint is the rollback base for structure.
+                structure_base = current_draft
+                structure_val = current_val
+                structure_quality = current_quality
+                structure_changed = False
+                rollback_draft, rollback_val, rollback_quality = (
+                    structure_base,
+                    structure_val,
+                    structure_quality,
+                )
+                rollback_assessment = ArticleAssessmentCheckpoint(
+                    structure_base, structure_val, structure_quality, input_fingerprint
+                )
+                rollback_patched_unit_ids = list(patched_unit_ids)
+                self.last_assessment = rollback_assessment
+                if operations:
+                    if operation_error is None:
+                        try:
+                            candidate, origins = await asyncio.to_thread(
+                                self.apply_structural_operations,
+                                structure_base,
+                                operations,
+                                registry,
+                                validation_context,
+                                text_patched_unit_ids=frozenset(actually_changed),
+                            )
+                            if checkpoint_observer is not None:
+                                checkpoint_observer("editor_candidate", candidate, None)
+                            (
+                                candidate_val,
+                                candidate_quality,
+                                elapsed_val,
+                                elapsed_quality,
+                            ) = await asyncio.to_thread(
+                                evaluate_editor_draft, candidate, structure_quality
+                            )
+                            validation_elapsed += elapsed_val
+                            quality_elapsed += elapsed_quality
+                            base_blockers = self._mapped_blocking_keys(
+                                structure_val, structure_quality, self._identity_map(structure_base)
+                            )
+                            candidate_blockers = self._mapped_blocking_keys(
+                                candidate_val, candidate_quality, origins
+                            )
+                            if candidate_blockers - base_blockers:
+                                operation_error = "new_blocker_atomic_rollback"
+                            else:
+                                current_draft, current_val, current_quality = (
+                                    candidate,
+                                    candidate_val,
+                                    candidate_quality,
+                                )
+                                structure_changed = candidate != structure_base
+                        except TimeoutError:
+                            raise
+                        except ValueError as exc:
+                            # Only locally defined reason codes enter metadata.
+                            operation_error = (
+                                str(exc)
+                                if str(exc) in ARTICLE_STRUCTURAL_OUTCOME_REASONS
+                                else "assessment_error_atomic_rollback"
+                            )
+                        except Exception:
+                            operation_error = "assessment_error_atomic_rollback"
+                    if operation_error is not None:
+                        current_draft, current_val, current_quality = (
+                            structure_base,
+                            structure_val,
+                            structure_quality,
+                        )
+                    self.last_structural_operations.extend(
+                        self._operation_metadata(
+                            operation,
+                            attempt,
+                            "skipped"
+                            if structural_context is None
+                            else "rejected"
+                            if operation_error
+                            else "applied",
+                            operation_error
+                            or (
+                                "candidate_assessed" if structure_changed else "structure_unchanged"
+                            ),
+                        )
+                        for operation in operations
+                    )
+                    if structure_changed:
+                        patched_unit_ids.extend(
+                            f"op:{operation.operation_id}" for operation in operations
+                        )
+                        self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
+
                 coverage = (
                     await asyncio.to_thread(
                         diagnose_article_coverage,
@@ -656,6 +889,12 @@ class ArticleEditor:
                     {key for key in previous_actionable if key[1] in requested_units}
                     - actionable_keys(current_val, current_quality)
                 )
+                if structure_changed:
+                    # A split may need the second pass to move its isolated
+                    # paragraph even before the thematic finding disappears.
+                    made_progress = True
+                    no_op_patch_signatures.clear()
+                    previous_attempt_feedback = {}
                 previous_attempt_feedback = {
                     unit_id: dict(outcome) for unit_id, outcome in unit_outcomes.items()
                 }
@@ -686,6 +925,7 @@ class ArticleEditor:
                             "requested_units": sorted(requested_units),
                             "patched_units": actually_changed,
                             "unit_outcomes": self._compact_unit_outcomes(unit_outcomes),
+                            "structural_operations": list(self.last_structural_operations),
                             "remaining_violations": list(current_val.violations),
                             "remaining_quality_findings": [
                                 f"{finding.code}:{finding.unit_id}"
@@ -706,7 +946,7 @@ class ArticleEditor:
                     current_quality,
                 )
 
-                if not actually_changed or not made_progress:
+                if not (actually_changed or structure_changed) or not made_progress:
                     logger.info("ArticleEditor stopped after no measurable targeted progress")
                     break
                 if current_val.is_valid and not current_quality.needs_edit:
@@ -733,15 +973,21 @@ class ArticleEditor:
                 # Keep text, Evidence Boundary result, and quality report as
                 # one transaction. A failed validation/diagnostic must not
                 # return a patched draft paired with stale assessment data.
-                current_draft = previous_draft
-                current_val = previous_val
-                current_quality = previous_quality
+                current_draft = rollback_draft
+                current_val = rollback_val
+                current_quality = rollback_quality
                 self.last_quality_report = current_quality
-                self.last_assessment = previous_assessment
-                patched_unit_ids = previous_patched_unit_ids
+                self.last_assessment = rollback_assessment
+                patched_unit_ids = rollback_patched_unit_ids
+                for operation_outcome in self.last_structural_operations:
+                    if operation_outcome.get("attempt") == attempt and operation_outcome.get(
+                        "status"
+                    ) in {"applied", "proposed"}:
+                        operation_outcome["status"] = "rejected"
+                        operation_outcome["reason"] = "editor_pass_error_atomic_rollback"
                 self.last_patched_unit_ids = tuple(dict.fromkeys(patched_unit_ids))
                 for outcome in unit_outcomes.values():
-                    if outcome.get("status") == "applied":
+                    if outcome.get("status") == "applied" and current_draft == previous_draft:
                         outcome["status"] = "rejected"
                         outcome["reason"] = "validation_error_rolled_back"
                 logger.warning("ArticleEditor pass %d encountered error: %s", attempt, exc)
@@ -764,6 +1010,7 @@ class ArticleEditor:
                         error_kind=type(exc).__name__,
                         metadata={
                             "unit_outcomes": self._compact_unit_outcomes(unit_outcomes),
+                            "structural_operations": list(self.last_structural_operations),
                             "provider_attempts": self.last_provider_attempts[-1]
                             if self.last_provider_attempts
                             else None,
@@ -1345,6 +1592,8 @@ class ArticleEditor:
                         "DIRECTORY_TIMETABLE_SECTION",
                         "MULTI_SENTENCE_ADDRESS_STATUS_ROSTER",
                         "REPEATED_CENTRAL_THESIS",
+                        "THEME_MISMATCHED_SECTION",
+                        "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION",
                     }:
                         localized.append(
                             ArticleReaderQualityFinding(
@@ -1360,8 +1609,7 @@ class ArticleEditor:
                 paragraph_index += 1
 
             if section_matches:
-                # Theme placement can be repaired without deleting or moving a
-                # Story by retitling its containing section.  The affected
+                # Other support-scoped findings can target the heading. The affected
                 # source supports are supplied to the ordinary heading editor,
                 # whose result must still re-ground against those exact sources.
                 localized.append(
@@ -1388,7 +1636,7 @@ class ArticleEditor:
             "   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО оставлять двоеточие перед текстом без кавычек (например: «житель признался: Звук генераторов...» — это грубая грамматическая ошибка).\n\n"
             "2. ИМЕНА СОБСТВЕННЫЕ И ТОПОНИМЫ (UNSUPPORTED_PROPER_NAME / UNSUPPORTED_LOCATION):\n"
             "   - Если имя, аббревиатура, название стороннего города или организации выдуманы и отсутствуют в подтверждениях ниже — удалите их.\n"
-            "   - СОХРАНЕНИЕ ПОДТВЕРЖДЕННЫХ ТОПОНИМОВ И ОРИЕНТИРОВ (AGENTS.md 0.4): Если название района, улицы, ориентира (например, Лиски, район Химиков, супермаркет «Зеркальный») присутствует в источниках ниже — ОБЯЗАТЕЛЬНО СОХРАНЯЙТЕ его! КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО заменять подтвержденные топонимы абстрактными клише вроде «в одном из районов города» или «в неназванном месте».\n"
+            "   - СОХРАНЕНИЕ ПОДТВЕРЖДЕННЫХ ТОПОНИМОВ И ОРИЕНТИРОВ (AGENTS.md 0.4): Если название района, улицы, ориентира присутствует в источниках ниже — ОБЯЗАТЕЛЬНО СОХРАНЯЙТЕ его! КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО заменять подтвержденные топонимы абстрактными клише вроде «в одном из районов города» или «в неназванном месте».\n"
             "   - Если слово с заглавной буквы не в начале предложения отмечено как неподтвержденное, но сам объект есть в источниках, переведите его в строчные буквы (например, «военный городок»).\n\n"
             "3. КОНКРЕТНЫЕ ФАКТЫ И ЧИСЛА (UNSUPPORTED_CONCRETE_CLAIM):\n"
             "   - Если цифра, цена, процент или дата выдуманы и отсутствуют в источниках — удалите неподтвержденную цифру.\n"
@@ -1418,7 +1666,9 @@ class ArticleEditor:
             "   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО повторять одно и то же или почти идентичное предложение несколько раз подряд. Если абзац зациклился — оставьте мысль ровно один раз в грамотной формулировке и удалите повторы.\n\n"
             "11. СООТВЕТСТВИЕ ПОДТЕМ В ЗАГОЛОВКАХ РАЗДЕЛОВ (PHANTOM_HEADING_TOPIC):\n"
             "   - Если заголовок раздела содержит конкретное перечисление подтем после двоеточия (например: «Тема: подтема А, подтема Б и подтема В»), сначала сверьте ВСЕ перечисленные подтемы с показанными ниже абзацами всего этого раздела и их подтверждениями. Если абзацы раскрывают тему другими словами, сохраните её. Если тема действительно отсутствует, удалите только её из заголовка или замените заголовок более точным. Не удаляйте тему только из-за иной формулировки в тексте и не добавляйте в абзацы новые факты. Если контекст раздела явно помечен как сокращённый, не считайте невидимую часть доказательством отсутствия темы.\n\n"
-            "ФОРМАТ ОТВЕТА (строго валидный JSON):\n"
+            "Структурные operations допустимы только при явно предоставленном структурном режиме. "
+            "Читайте полный текст только для ориентации и не расширяйте список разрешённых единиц.\n"
+            "ФОРМАТ ОТВЕТА (строго валидный JSON; operations и base_fingerprint добавляются только в структурном режиме):\n"
             "{\n"
             '  "units": {\n'
             '    "<unit_id>": "Исправленный текст фрагмента...",\n'
@@ -1796,15 +2046,15 @@ class ArticleEditor:
                 "не добавляйте отсутствующие в источниках факты."
             ),
             "THEME_MISMATCHED_SECTION": (
-                " -> Исправьте только заголовок главы: назовите её шире или точнее, чтобы он "
-                "естественно охватывал приведённые ниже подтверждённые сюжеты. Сохраните все сюжеты "
-                "и детали в статье; не маскируйте их удалением или переносом фактов и не объявляйте "
-                "их связанными, если источники этого не подтверждают. Формулируйте заголовок по "
-                "поддержанным ниже темам."
+                " -> Исправьте тематическое размещение указанного абзаца. При доступном "
+                "структурном режиме перенесите его без изменений либо разделите смешанные темы "
+                "по разрешённой операции, сохраняя факты, детали и атрибуцию. Не создавайте "
+                "связь между независимыми сообщениями. Если структура недоступна, измените только "
+                "целевой текст по его подтверждениям и сохраните естественное место сюжета."
             ),
             "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION": (
-                " -> Исправьте только заголовок главы, убрав неподтверждённую привязку к связи и "
-                "назвав подтверждённое ниже содержание нейтрально и конкретно. Не исключайте сюжет "
+                " -> Исправьте тематическое размещение целевого абзаца только в разрешённых "
+                "границах структурного режима; неизвестная тема не разрешает домыслы. Сохраните сюжет "
                 "и не приписывайте ему тему, связь или причинную связь, которой нет в источниках."
             ),
             "MISSING_DETAIL_SUPPORT": (
@@ -1829,6 +2079,646 @@ class ArticleEditor:
                 f"Reader-quality repair policy has no editor instruction: {code!r}"
             )
         return instruction or ""
+
+    @staticmethod
+    def _operation_metadata(
+        operation: ArticleStructuralOperation, attempt: int, status: str, reason: str
+    ) -> dict[str, Any]:
+        return {
+            "attempt": attempt,
+            "operation_id": operation.operation_id,
+            "kind": operation.kind,
+            "source_unit_ids": list(operation.source_unit_ids),
+            "destination_section_id": operation.destination_section_id
+            or (f"new:{operation.operation_id}" if operation.kind == "create_section" else None),
+            "destination_before_unit_id": operation.destination_before_unit_id,
+            "status": status,
+            "reason": reason,
+        }
+
+    @staticmethod
+    def _response_object(response: str) -> dict[str, Any]:
+        cleaned = (response or "").strip()
+        match = _JSON_BLOCK_RE.search(cleaned)
+        if match:
+            cleaned = match.group(1)
+        try:
+            value = json.loads(cleaned)
+        except (ValueError, TypeError):
+            start, end = cleaned.find("{"), cleaned.rfind("}")
+            if start < 0 or end <= start:
+                return {}
+            try:
+                value = json.loads(cleaned[start : end + 1])
+            except (ValueError, TypeError):
+                return {}
+        return value if isinstance(value, dict) else {}
+
+    @classmethod
+    def _parse_structural_operations(cls, response: str) -> tuple[ArticleStructuralOperation, ...]:
+        raw = cls._response_object(response).get("operations", [])
+        if not isinstance(raw, list):
+            raise ValueError("invalid_operation_payload")
+        operations: list[ArticleStructuralOperation] = []
+        fields = set(ArticleStructuralOperation.__dataclass_fields__)
+        for item in raw:
+            if not isinstance(item, dict) or set(item) - fields:
+                raise ValueError("invalid_operation_payload")
+            operation_id = item.get("operation_id")
+            kind = item.get("kind")
+            sources = item.get("source_unit_ids")
+            texts = item.get("paragraph_texts", [])
+            if (
+                not isinstance(operation_id, str)
+                or re.fullmatch(r"[A-Za-z0-9_-]{1,64}", operation_id) is None
+                or not isinstance(kind, str)
+                or kind not in {"move", "recompose", "create_section"}
+                or not isinstance(sources, list)
+                or not sources
+                or not all(
+                    isinstance(value, str) and re.fullmatch(r"P[0-9]{3,}", value)
+                    for value in sources
+                )
+                or not isinstance(texts, list)
+                or not all(isinstance(value, str) and value.strip() for value in texts)
+                or any(
+                    item.get(key) is not None and not isinstance(item[key], str)
+                    for key in ("destination_section_id", "destination_before_unit_id", "heading")
+                )
+            ):
+                raise ValueError("invalid_operation_payload")
+            if (
+                item.get("destination_section_id") is not None
+                and re.fullmatch(r"H[0-9]{3,}", item["destination_section_id"]) is None
+            ) or (
+                item.get("destination_before_unit_id") is not None
+                and re.fullmatch(r"P[0-9]{3,}", item["destination_before_unit_id"]) is None
+            ):
+                raise ValueError("invalid_operation_payload")
+            operations.append(
+                ArticleStructuralOperation(
+                    operation_id=operation_id,
+                    kind=cast(Literal["move", "recompose", "create_section"], kind),
+                    source_unit_ids=tuple(sources),
+                    destination_section_id=item.get("destination_section_id"),
+                    destination_before_unit_id=item.get("destination_before_unit_id"),
+                    heading=item.get("heading"),
+                    paragraph_texts=tuple(texts),
+                )
+            )
+        return tuple(operations)
+
+    @staticmethod
+    def _build_pass_registry(
+        draft: StructuredArticleDraft,
+        quality: ArticleReaderQualityReport,
+        context: ArticleEditorialContext,
+    ) -> _ArticlePassRegistry:
+        from src.publication.article_context import article_support_theme_hints
+        from src.publication.article_quality import (
+            _ARTICLE_SECTION_THEME_PATTERNS,
+            _ARTICLE_STORY_THEME_PATTERNS,
+            _article_themes,
+        )
+
+        sections: dict[str, ArticleSection] = {}
+        paragraphs: dict[str, ArticleParagraph] = {}
+        paragraph_sections: dict[str, str] = {}
+        index = 1
+        for section_index, section in enumerate(draft.sections, 1):
+            section_id = f"H{section_index:03d}"
+            sections[section_id] = section
+            for paragraph in section.paragraphs:
+                unit_id = f"P{index:03d}"
+                paragraphs[unit_id] = paragraph
+                paragraph_sections[unit_id] = section_id
+                index += 1
+        targeted: set[str] = set()
+        for finding in quality.repair_findings:
+            if finding.code not in _STRUCTURAL_FINDING_CODES:
+                continue
+            for unit_id, paragraph in paragraphs.items():
+                support_match = set(_paragraph_support_ids(paragraph)).intersection(
+                    finding.support_ids
+                )
+                if finding.unit_id == unit_id or (
+                    support_match
+                    and finding.unit_id in {"ARTICLE", "DRAFT", "", paragraph_sections[unit_id]}
+                ):
+                    targeted.add(unit_id)
+        source_supports: dict[str, tuple[str, ...]] = {}
+        destinations: dict[str, frozenset[str]] = {}
+        new_section_sources: set[str] = set()
+        heading_themes = {
+            sid: _article_themes(section.heading, _ARTICLE_SECTION_THEME_PATTERNS)
+            for sid, section in sections.items()
+        }
+        family_themes = {
+            "water": "utilities",
+            "power": "utilities",
+            "gas": "utilities",
+            "heating": "utilities",
+            "telecom": "connectivity",
+        }
+        for unit_id in targeted:
+            support_ids = _paragraph_support_ids(paragraphs[unit_id])
+            source_supports[unit_id] = support_ids
+            themes: set[str] = set()
+            for support_id in support_ids:
+                support = context.support_by_id.get(support_id)
+                if support is None or support.publication_use != "PUBLISH":
+                    continue
+                themes.update(_article_themes(support.text, _ARTICLE_STORY_THEME_PATTERNS))
+                themes.update(
+                    family_themes.get(theme, theme)
+                    for theme in article_support_theme_hints(support)
+                )
+            compatible = {sid for sid, heading in heading_themes.items() if themes & heading}
+            # Keeping the source section permits a first-pass split; a fresh
+            # second-pass registry can then move the isolated misplaced unit.
+            destinations[unit_id] = frozenset(compatible | {paragraph_sections[unit_id]})
+            represented = set().union(*heading_themes.values()) if heading_themes else set()
+            if themes - represented:
+                new_section_sources.add(unit_id)
+        return _ArticlePassRegistry(
+            _draft_fingerprint(draft),
+            MappingProxyType(sections),
+            MappingProxyType(paragraphs),
+            MappingProxyType(paragraph_sections),
+            MappingProxyType(source_supports),
+            MappingProxyType(destinations),
+            frozenset(new_section_sources),
+        )
+
+    def _structural_prompt_context(
+        self,
+        draft: StructuredArticleDraft,
+        registry: _ArticlePassRegistry,
+        context: ArticleEditorialContext,
+        user_prompt: str,
+        system_prompt: str,
+    ) -> tuple[str | None, str]:
+        from src.publication.article_context import article_support_theme_hints
+        from src.publication.article_writer_context import ARTICLE_WRITER_CONTEXT_MAX_CHARS
+
+        if not registry.source_support_ids:
+            return None, "no_authorized_structural_sources"
+        packets: list[dict[str, Any]] = []
+        support_chars = 0
+        required = tuple(
+            dict.fromkeys(sid for ids in registry.source_support_ids.values() for sid in ids)
+        )
+        if len(required) > _MAX_EDITOR_SUPPORTS:
+            return None, "required_support_budget_exceeded"
+        for support_id in required:
+            support = context.support_by_id.get(support_id)
+            if support is None or support.publication_use != "PUBLISH":
+                return None, "required_support_unavailable"
+            text = sanitize_writer_source_text(support.text)
+            source = sanitize_writer_source_text(support.source_text)
+            if not (text or source):
+                return None, "required_support_unavailable"
+            packet = {
+                "support_id": support_id,
+                "text": text,
+                "source_text": source,
+                "evidence_kind": support.evidence_kind,
+                "temporal_role": support.temporal_role,
+                "observed_at": support.observed_at.isoformat() if support.observed_at else None,
+                "effective_from": support.effective_from.isoformat()
+                if support.effective_from
+                else None,
+                "effective_until": support.effective_until.isoformat()
+                if support.effective_until
+                else None,
+                "theme_hints": article_support_theme_hints(support),
+            }
+            size = len(json.dumps(packet, ensure_ascii=False))
+            if size > _MAX_EDITOR_SUPPORT_PACKET_CHARS:
+                return None, "required_support_packet_exceeded"
+            support_chars += size
+            if support_chars > _MAX_EDITOR_SUPPORT_CONTEXT_CHARS:
+                return None, "required_support_budget_exceeded"
+            packets.append(packet)
+        article = {
+            "TITLE": draft.title,
+            "LEAD": draft.lead,
+            "sections": [
+                {
+                    "section_id": sid,
+                    "heading": section.heading,
+                    "paragraphs": [
+                        {"unit_id": pid, "text": paragraph.text}
+                        for pid, paragraph in registry.paragraphs.items()
+                        if registry.paragraph_sections[pid] == sid
+                    ],
+                }
+                for sid, section in registry.sections.items()
+            ],
+        }
+        payload = {
+            "base_fingerprint": registry.base_fingerprint,
+            "complete_read_only_article": article,
+            "authorized_sources": {
+                pid: {
+                    "support_ids": ids,
+                    "destination_section_ids": sorted(registry.destinations[pid]),
+                    "create_section_allowed": pid in registry.new_section_sources,
+                    "reason": "targeted_thematic_finding",
+                }
+                for pid, ids in registry.source_support_ids.items()
+            },
+            "required_support_packets": packets,
+        }
+        block = (
+            "\nСТРУКТУРНЫЙ РЕЖИМ: полный текст ниже дан только для ориентации. "
+            "Менять разрешено только authorized_sources. Верните base_fingerprint точно и "
+            "operations: список объектов с operation_id, kind (move/recompose/create_section), "
+            "source_unit_ids, destination_section_id, destination_before_unit_id, heading, "
+            "paragraph_texts. MOVE: один исходный абзац, без нового текста/заголовка. "
+            "RECOMPOSE: один или несколько разрешённых абзацев, один существующий раздел, "
+            "один или несколько новых абзацев. Для разделения смешанного абзаца можно сначала "
+            "пересобрать его в исходной секции; следующий проход отдельно перенесёт часть. "
+            "CREATE_SECTION: только явно разрешённый источник и только когда существующей "
+            "подходящей главы нет; destination_section_id=null, подтверждённый heading и абзацы. "
+            "Новый раздел встанет сразу после последней исходной секции; его ID new:<operation_id>. "
+            "Вставляйте перед неизменяемым базовым destination_before_unit_id или в конец (null). "
+            "При общей позиции вставки операции применяются в порядке списка operations. "
+            "Не ссылайтесь на новые/перемещаемые абзацы как anchors. Не редактируйте один source "
+            "дважды и не совмещайте его с units text patch. Не назначайте claims/support IDs. "
+            "Сохраняйте слова оставленных прямых цитат дословно, атрибуцию, время, географию "
+            "и подтверждённые детали. Тематические hints не доказывают связи и не являются фактами. "
+            "Если структура не требует исправления, верните operations=[].\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+        # Same configured model as the writer; there is no provider token-window
+        # API. This combined character cap is a conservative proxy, including
+        # instructions/envelope and four characters per reserved output token.
+        if (
+            len(system_prompt) + len(user_prompt) + len(block) + 4 * self.max_output_tokens
+            > ARTICLE_WRITER_CONTEXT_MAX_CHARS
+        ):
+            return None, "complete_article_context_budget_exceeded"
+        return block, "complete_context_available"
+
+    @staticmethod
+    def _identity_map(draft: StructuredArticleDraft) -> dict[str, str]:
+        result = {"TITLE": "TITLE", "LEAD": "LEAD"}
+        index = 1
+        for section_index, section in enumerate(draft.sections, 1):
+            result[f"H{section_index:03d}"] = f"H{section_index:03d}"
+            for _ in section.paragraphs:
+                result[f"P{index:03d}"] = f"P{index:03d}"
+                index += 1
+        return result
+
+    @staticmethod
+    def _mapped_blocking_keys(
+        validation: ArticleValidationResult,
+        quality: ArticleReaderQualityReport,
+        origins: Mapping[str, str],
+    ) -> set[tuple[Any, ...]]:
+        # Message wording can contain positional IDs; compare factual content
+        # and stable origins, rather than a heading/paragraph's shifted number.
+        return {
+            (
+                "evidence",
+                issue.code,
+                origins.get(issue.unit_id, issue.unit_id),
+                tuple(sorted(issue.support_ids)),
+                issue.claim_text,
+                repr(issue.unsupported_claims),
+            )
+            for issue in validation.issues
+            if issue.blocking
+        } | {
+            (
+                "quality",
+                finding.code,
+                origins.get(finding.unit_id, finding.unit_id),
+                tuple(sorted(finding.support_ids)),
+                re.sub(
+                    r"\b[PH][0-9]{3,}\b",
+                    lambda match: origins.get(match.group(0), match.group(0)),
+                    finding.message,
+                ),
+            )
+            for finding in quality.blocking_findings
+        }
+
+    def apply_structural_operations(
+        self,
+        draft: StructuredArticleDraft,
+        operations: tuple[ArticleStructuralOperation, ...],
+        registry: _ArticlePassRegistry,
+        context: ArticleEditorialContext,
+        *,
+        text_patched_unit_ids: frozenset[str] = frozenset(),
+    ) -> tuple[StructuredArticleDraft, dict[str, str]]:
+        """Resolve the complete batch against the immutable base before assembly.
+
+        This method creates a candidate only; edit_draft assesses it completely
+        and owns the atomic acceptance/rollback checkpoint.
+        """
+        used_sources: set[str] = set()
+        operation_ids: set[str] = set()
+        insertions: dict[tuple[str, str | None], list[tuple[str, ArticleParagraph]]] = {}
+        new_sections: dict[str, ArticleSection] = {}
+        new_section_after: dict[str, str] = {}
+        # Text patches cannot change topology, so the pass IDs still identify
+        # the accepted pre-structure checkpoint, even when its text changed.
+        current_paragraphs: dict[str, ArticleParagraph] = {}
+        current_sections = {f"H{i:03d}": section for i, section in enumerate(draft.sections, 1)}
+        index = 1
+        for section in draft.sections:
+            for paragraph in section.paragraphs:
+                current_paragraphs[f"P{index:03d}"] = paragraph
+                index += 1
+        if not text_patched_unit_ids and _draft_fingerprint(draft) != registry.base_fingerprint:
+            raise ValueError("stale_base_fingerprint")
+        if any(
+            paragraph != registry.paragraphs.get(pid)
+            for pid, paragraph in current_paragraphs.items()
+            if pid not in text_patched_unit_ids
+        ):
+            raise ValueError("stale_base_fingerprint")
+        if set(current_paragraphs) != set(registry.paragraphs) or set(current_sections) != set(
+            registry.sections
+        ):
+            raise ValueError("base_topology_changed")
+        for operation in operations:
+            if operation.operation_id in operation_ids:
+                raise ValueError("duplicate_operation_id")
+            operation_ids.add(operation.operation_id)
+            sources = set(operation.source_unit_ids)
+            if len(sources) != len(operation.source_unit_ids) or sources & used_sources:
+                raise ValueError("conflicting_source_operations")
+            if not sources <= registry.source_support_ids.keys():
+                raise ValueError("unauthorized_or_unknown_source")
+            if sources & text_patched_unit_ids:
+                raise ValueError("conflicting_text_and_structural_edits")
+            source_sections = {registry.paragraph_sections[pid] for pid in sources}
+            destination = operation.destination_section_id
+            if operation.kind == "move":
+                if len(sources) != 1 or operation.paragraph_texts or operation.heading is not None:
+                    raise ValueError("invalid_move")
+            elif not operation.paragraph_texts:
+                raise ValueError("missing_recomposed_paragraphs")
+            if operation.kind == "create_section":
+                if (
+                    destination is not None
+                    or operation.destination_before_unit_id is not None
+                    or not operation.heading
+                ):
+                    raise ValueError("invalid_new_section")
+                if not sources <= registry.new_section_sources:
+                    raise ValueError("new_section_not_authorized")
+                destination = f"new:{operation.operation_id}"
+                source_order = list(registry.sections)
+                new_section_after[destination] = max(source_sections, key=source_order.index)
+            elif (
+                destination not in registry.sections
+                or any(destination not in registry.destinations[pid] for pid in sources)
+                or operation.heading is not None
+            ):
+                raise ValueError("unauthorized_or_unknown_destination")
+            if (
+                source_sections.intersection(text_patched_unit_ids)
+                or destination in text_patched_unit_ids
+            ):
+                raise ValueError("conflicting_heading_and_structural_edits")
+            anchor = operation.destination_before_unit_id
+            if anchor is not None and (
+                anchor not in registry.paragraphs
+                or registry.paragraph_sections[anchor] != destination
+            ):
+                raise ValueError("invalid_insertion_anchor")
+            used_sources.update(sources)
+        # Anchors must be immutable base paragraphs; references to another
+        # operation's source would introduce unresolved/cyclic insertion order.
+        if any(
+            op.destination_before_unit_id in used_sources | text_patched_unit_ids
+            for op in operations
+        ):
+            raise ValueError("conflicting_or_unresolved_insertion_anchor")
+        for operation in operations:
+            destination = operation.destination_section_id or f"new:{operation.operation_id}"
+            allowed = tuple(
+                dict.fromkeys(
+                    sid
+                    for pid in operation.source_unit_ids
+                    for sid in registry.source_support_ids[pid]
+                )
+            )
+            if any(
+                sid not in context.support_by_id
+                or context.support_by_id[sid].publication_use != "PUBLISH"
+                for sid in allowed
+            ):
+                raise ValueError("required_support_unavailable")
+            if operation.kind == "move":
+                replacements = [
+                    (operation.source_unit_ids[0], current_paragraphs[operation.source_unit_ids[0]])
+                ]
+            else:
+                base_prose = "\n".join(
+                    registry.paragraphs[pid].text for pid in operation.source_unit_ids
+                )
+                output_prose = "\n".join((*operation.paragraph_texts, operation.heading or ""))
+                if not _preserves_existing_direct_quotes(base_prose, output_prose):
+                    raise ValueError("direct_quote_words_changed")
+                replacements = []
+                for ordinal, raw_text in enumerate(operation.paragraph_texts, 1):
+                    text = _strip_internal_handles(raw_text.strip())
+                    supports = _reground_support_ids(text, context, allowed)
+                    if not supports:
+                        raise ValueError("replacement_not_grounded_in_source_supports")
+                    claims = tuple(
+                        ArticleClaimAtom(
+                            sentence, _reground_support_ids(sentence, context, supports)
+                        )
+                        for sentence in (_split_sentences_safe(text) or [text])
+                    )
+                    replacements.append(
+                        (
+                            f"op:{operation.operation_id}:P{ordinal}",
+                            ArticleParagraph(
+                                text=text,
+                                cited_support_ids=supports,
+                                claims=claims,
+                                generation_origin="AI",
+                            ),
+                        )
+                    )
+                if operation.kind == "create_section":
+                    heading = _strip_internal_handles((operation.heading or "").strip())
+                    supports = _reground_support_ids(
+                        heading, context, allowed, minimum_shared_stems=1
+                    )
+                    if not supports:
+                        raise ValueError("new_heading_not_grounded_in_source_supports")
+                    from src.publication.article_quality import (
+                        _ARTICLE_SECTION_THEME_PATTERNS,
+                        _article_themes,
+                        _projected_support_themes,
+                    )
+
+                    heading_themes = _article_themes(heading, _ARTICLE_SECTION_THEME_PATTERNS)
+                    source_themes = set().union(
+                        *(_projected_support_themes(sid, context, None) for sid in allowed)
+                    )
+                    if not heading_themes.intersection(source_themes) or any(
+                        heading_themes.issubset(
+                            _article_themes(section.heading, _ARTICLE_SECTION_THEME_PATTERNS)
+                        )
+                        for section in registry.sections.values()
+                    ):
+                        raise ValueError("new_section_theme_has_existing_destination")
+                    new_sections[destination] = ArticleSection(
+                        heading=heading,
+                        heading_support_ids=supports,
+                        heading_claims=(ArticleClaimAtom(heading, supports),),
+                    )
+            insertions.setdefault((destination, operation.destination_before_unit_id), []).extend(
+                replacements
+            )
+        ordered: list[tuple[str, ArticleSection]] = []
+        for sid, section in current_sections.items():
+            ordered.append((sid, section))
+            ordered.extend(
+                (new_id, new_sections[new_id])
+                for new_id, after in new_section_after.items()
+                if after == sid
+            )
+        output_sections: list[ArticleSection] = []
+        origins = {"TITLE": "TITLE", "LEAD": "LEAD"}
+        emitted: list[str] = []
+        index = 1
+        for sid, section in ordered:
+            units: list[tuple[str, ArticleParagraph]] = []
+            for pid, paragraph in current_paragraphs.items():
+                if registry.paragraph_sections[pid] != sid:
+                    continue
+                units.extend(insertions.get((sid, pid), ()))
+                if pid not in used_sources:
+                    units.append((pid, paragraph))
+            units.extend(insertions.get((sid, None), ()))
+            if not units:
+                # A factual heading is itself supported reader content. Decline
+                # the batch when an empty section could lose its unique fact;
+                # ordinary thematic labels may be removed deterministically.
+                from src.domain.service_taxonomy import detect_service_families
+                from src.publication.article_claims import extract_concrete_claims
+                from src.publication.article_quality import _ARTICLE_SECTION_THEME_PATTERNS
+
+                surviving_supports = {
+                    support_id
+                    for pid, paragraph in current_paragraphs.items()
+                    if pid not in used_sources
+                    for support_id in _paragraph_support_ids(paragraph)
+                } | {
+                    support_id
+                    for units_at_anchor in insertions.values()
+                    for _, paragraph in units_at_anchor
+                    for support_id in _paragraph_support_ids(paragraph)
+                }
+                heading_unique_supports = set(section.heading_support_ids) - surviving_supports
+                heading_has_fact = bool(extract_concrete_claims(section.heading))
+                heading_has_state = bool(detect_service_families(section.heading)) and bool(
+                    re.search(
+                        r"\b(?:нет|есть|работ\w*|восстанов\w*|отключ\w*|авари\w*|закры\w*|откры\w*|возобнов\w*|прекрат\w*)",
+                        section.heading,
+                        re.IGNORECASE,
+                    )
+                )
+                heading_remainder = section.heading
+                for _, pattern in _ARTICLE_SECTION_THEME_PATTERNS:
+                    heading_remainder = pattern.sub(" ", heading_remainder)
+                # Delete only a recognized thematic label. Any remaining
+                # content word may carry its own assertion or named detail.
+                heading_remainder = re.sub(
+                    r"\b(?:и|в|на|о|об|с|для|город\w*|местн\w*|коммунальн\w*|"
+                    r"повседневн\w*|жизн\w*|ситуаци\w*)\b",
+                    " ",
+                    heading_remainder,
+                    flags=re.IGNORECASE,
+                )
+                heading_has_other_content = bool(
+                    re.search(r"[A-Za-zА-Яа-яЁёІіЇїЄєҐґ]", heading_remainder)
+                )
+                if (
+                    heading_unique_supports
+                    or heading_has_fact
+                    or heading_has_state
+                    or heading_has_other_content
+                ):
+                    raise ValueError("empty_section_heading_fact_requires_preservation")
+                elif sid in registry.sections and any(
+                    registry.paragraph_sections[pid] == sid for pid in used_sources
+                ):
+                    continue
+            evidence_ids = tuple(
+                dict.fromkeys(
+                    (
+                        *section.heading_support_ids,
+                        *(
+                            sid
+                            for _, paragraph in units
+                            for sid in _paragraph_support_ids(paragraph)
+                        ),
+                    )
+                )
+            )
+            unchanged_section = (
+                sid in registry.sections
+                and tuple(paragraph for _, paragraph in units) == section.paragraphs
+                and not any(destination == sid for destination, _ in insertions)
+                and not any(registry.paragraph_sections[pid] == sid for pid in used_sources)
+            )
+            output_sections.append(
+                section
+                if unchanged_section
+                else replace(
+                    section,
+                    paragraphs=tuple(paragraph for _, paragraph in units),
+                    cited_evidence_ids=evidence_ids,
+                )
+            )
+            origins[f"H{len(output_sections):03d}"] = sid
+            for identity, _ in units:
+                origins[f"P{index:03d}"] = identity
+                emitted.append(identity)
+                index += 1
+        expected_base = set(registry.paragraphs) - used_sources
+        expected_base.update(op.source_unit_ids[0] for op in operations if op.kind == "move")
+        if {pid for pid in emitted if pid in registry.paragraphs} != expected_base or len(
+            emitted
+        ) != len(set(emitted)):
+            raise ValueError("paragraph_identity_integrity_failed")
+        candidate = replace(
+            draft,
+            sections=tuple(output_sections),
+            word_count=(
+                len(draft.title.split())
+                + len(draft.lead.split())
+                + sum(
+                    len(paragraph.text.split())
+                    for section in output_sections
+                    for paragraph in section.paragraphs
+                )
+            ),
+            cited_evidence_ids=tuple(
+                dict.fromkeys(
+                    (
+                        *draft.cited_evidence_ids,
+                        *draft.title_support_ids,
+                        *draft.lead_support_ids,
+                        *(sid for section in output_sections for sid in section.cited_evidence_ids),
+                    )
+                )
+            ),
+        )
+        return candidate, origins
 
     def _parse_editor_response(self, response: str) -> dict[str, str]:
         """Extract unit_id -> edited_text mapping from model response."""
@@ -1863,6 +2753,8 @@ class ArticleEditor:
 
         patches: dict[str, str] = {}
         for k, v in raw_units.items():
+            if k in {"operations", "base_fingerprint"}:
+                continue
             if isinstance(k, str) and isinstance(v, str):
                 patches[k.strip()] = _normalize_homoglyphs(v.strip())
             elif isinstance(k, str) and isinstance(v, dict) and "text" in v:

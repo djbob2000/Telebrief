@@ -308,7 +308,11 @@ Claim Atoms are validation metadata, not sentence templates.
 
 Event-First article generation uses one main LLM writer call followed by deterministic Evidence Boundary validation.
 
-When the writer draft contains isolated factual or stylistic validation issues (such as non-allowlisted quotes, unverified proper names, or over-specified causes), a targeted copy-editor (`ArticleEditor`, enabled via `article_editor_enabled: true`) performs precise unit-level patching (`Targeted Patching` on units such as `LEAD` or specific paragraphs) without rewriting the entire draft. The patched draft is re-validated strictly against the Evidence Boundary.
+When the writer draft contains isolated factual or stylistic validation issues (such as non-allowlisted quotes, unverified proper names, over-specified causes, or a localized thematic mismatch), the existing targeted copy-editor (`ArticleEditor`, enabled via `article_editor_enabled: true`) may patch specific units or propose bounded structural operations; it does not rewrite the entire draft. `MOVE` transfers one unchanged paragraph into an existing section, preserving its text, claims, supports, origin, and provenance. `SPLIT` is expressed as `RECOMPOSE`: explicitly authorized paragraphs may be replaced with one or more paragraphs in an existing section, or in a `CREATE_SECTION` only when no supported existing destination fits. Rewritten prose is regrounded from its actual text against only the explicitly authorized eligible supports; the editor cannot supply Claim Atoms or support IDs. Structural operations may touch only pass-authorized units and destinations. Their positional IDs are immutable for that pass and bound to the full base-draft fingerprint; a later editor call receives a fresh registry.
+
+All structural operations returned in one response are resolved against the same immutable base before application and form one atomic batch. The complete resulting draft is assessed, including Evidence Boundary and reader-quality checks. Any operation error, new blocker, ambiguous/global finding, or assessment error rolls back the entire structural batch to the exact pre-structure checkpoint. If the response also contains legacy text patches, only those already accepted at that checkpoint remain. Text-only patches keep their existing per-unit quarantine behavior. Each editor call re-validates the exact resulting draft and checkpoint; an unsafe final candidate still fails closed.
+
+Generation remains limited to one writer call and at most two calls to this existing editor, under the shared generation deadline. There is no extra planner, writer retry, or per-operation model call. Structural editing is skipped with a safe outcome if the complete article context or required eligible support context cannot fit the current budgets; a truncated article must never be presented as complete context.
 
 Reader-quality findings use one explicit policy registry for finding class, severity, repair scope, and publication effect. This registry does not replace or weaken the Evidence Boundary validator; factual findings remain governed by `article_validator`. Unknown reader-quality codes are policy/configuration errors, not safe findings.
 
@@ -318,7 +322,7 @@ Evidence Boundary is fail-closed for unverified assertions: the published articl
 
 Safe writer output that meets the Evidence Boundary is published as an authentic journalistic long read. When substantive material exists, isolated reader-quality issues on specific paragraphs are offered to `ArticleEditor` within its configured attempt budget and edits are re-validated through the Evidence Boundary. A missing `DEVELOP` storyline is a readiness diagnostic: attempt a targeted repair only when a suitable existing unit exists; if it remains missing or no suitable unit exists, report editorial acceptance as incomplete. Do not turn the finding or a numerical coverage percentage into a publication veto, and do not append filler to compensate. If an article cannot be verified, the pipeline fails closed (`ArticlePublicationRejected`). Never dump raw fragments or append artificial filler paragraphs to compensate for missing coverage.
 
-Frozen-run preview (`scripts/preview_article.py --run-id`) is a read-only replay and never delivers or changes publication state. Its typed result is `accepted`, `rejected`, or `failed`; writer, editor, and finalization checkpoints stay in process memory and retain their exact assessment when one is available. Safe diagnostics must omit article and source prose. Write requested Markdown and diagnostics outputs on both success and failure; label rejected candidate text `REJECTED PREVIEW — DO NOT PUBLISH`, explain when no draft exists, retain production exceptions in the typed result, and exit nonzero without printing raw exception text. Preview must not enable prompt/draft debug artifact persistence.
+Frozen-run preview (`scripts/preview_article.py --run-id`) is a read-only replay and never delivers or changes publication state. Its typed result is `accepted`, `rejected`, or `failed`; writer, editor, and finalization checkpoints stay in process memory and retain their exact assessment when one is available. Safe diagnostics may include only allowlisted operation metadata and non-factual composition counts; they must omit article prose, source prose, headings, and other candidate text. Write requested Markdown and diagnostics outputs on both success and failure; label rejected candidate text `REJECTED PREVIEW — DO NOT PUBLISH`, explain when no draft exists, retain production exceptions in the typed result, and exit nonzero without printing raw exception text. Preview must not enable prompt/draft debug artifact persistence.
 
 ## 0.8 Reader hierarchy, not destructive selection
 
@@ -335,6 +339,8 @@ It should **not** feel like every source item has equal importance.
 It should also **not** discard smaller legitimate material merely because it is not dramatic enough for a newspaper front page.
 
 Selection controls presentation priority, editorial depth, and ranking within the coverage plan; it does not discard legitimate sealed candidate stories.
+
+Support-level topic hints guide where individual evidence belongs in the prose; they are advisory navigation, not facts, causal links, geography, or publication eligibility. A Story retains one canonical composition membership even when its separate supports fit different thematic passages. Breadth, missing detail, and missing DEVELOP material remain editorial readiness concerns: they do not create a numerical coverage quota, publication veto, or reason to add filler.
 
 The correct goal is:
 
@@ -366,6 +372,10 @@ Agents must not make changes whose effect is to:
 - turn a raw address or quote count, repeated headings or thesis, provider-name typography, incomplete-quantity grammar, or a missing district in a faithfully attributed community report into a publication blocker;
 - weaken structural blockers for an address/status roster without narrative relation or source-backed routine directory material dominating a section;
 - turn a missing major-storyline readiness diagnostic or a numerical article coverage percentage into a publication veto, or append filler to compensate;
+- treat a support-level topic hint as proof of a service state, causal relation, shared chronology, geographic relation, or publication eligibility;
+- change article eligibility or require corroboration because an ArticleSupport has a topic hint, or suppress a useful legitimate single-source community report for lack of corroboration;
+- use structural editing to change units outside the current pass's explicit allowlist, reuse stale positional IDs, transfer old Claim Atoms to rewritten prose, or partially apply a structural batch after any operation or full-candidate assessment failure;
+- add a planner, second writer call, per-operation model call, or editor call beyond the two-call budget or shared generation deadline;
 - strengthen verification so aggressively that legitimate community news disappears;
 - reintroduce claim-first per-message LLM explosion as the default processing architecture;
 - hardcode one city's geography or examples into generic production prompt logic;
@@ -733,6 +743,10 @@ Anchors guide writer quality. Missing an editorial-quality anchor should normall
 
 Hard rejection remains the job of Evidence Boundary violations.
 
+`ArticleSupport` may carry an optional service-subject hint projected from structured `service_access.service_state`. Only exact keys map to known families: `water_supply` → `water`, `power_supply` → `power`, `gas_supply` → `gas`, `heating` → `heating`, and `connectivity` → `telecom`. The hint preserves the structured subject key and label; a generic family is never inferred from a localized label or `dimension`. Unknown subjects remain unmapped. Existing lexical service-family hints may also be derived from that support's text, so one support can have several advisory themes. These hints describe navigation for the writer, not the truth of a claim, service availability, or a relationship between supports.
+
+Keep one canonical composition group per Story. Evaluate a thematic mismatch from the supports cited by the actual paragraph, not from the Story's overall topic. Unknown themes alone do not establish an error. A mixed-theme bridge is recognized only when the prose and one cited projected support that carries both themes express the same causal or temporal connection; contrast phrasing alone is not enough. Such composition findings use the existing non-blocking repair/readiness policy and cannot create an eligibility gate.
+
 ## 6.4 Adaptive article size
 
 Do not enforce one fixed long-read length.
@@ -740,6 +754,8 @@ Do not enforce one fixed long-read length.
 Thin days should remain concise. Rich days may expand substantially when evidence supports it.
 
 Current product direction for rich city-life coverage allows materially more room than the earlier `800–1400 / 3–5 sections` selective-article design. Follow the current `ArticleLengthProfile` implementation/config and the latest city-life long-read spec when changing concrete defaults.
+
+For the daily rich profile, the soft upper target is `min(config.article_max_words, profile.hard_max_words)` (up to 2400 words with the current configuration). Do not enforce a lower target. The composition richness summary exposes only counts of distinct planned support themes, DEVELOP lines, and distinct normalized detail anchors; these counts are editorial context, not word quotas, coverage guarantees, or publication gates. Existing hard word and section limits retain their current semantics, and other profile targets remain unchanged.
 
 Do not pad thin days with filler.
 
@@ -760,6 +776,8 @@ Hard blockers include, where applicable:
 - epistemic upgrades;
 - question-context overclaims;
 - meaningful new factual content absent from supports.
+
+Structural editing must preserve the same boundary. A `MOVE` keeps the paragraph and all its evidence metadata unchanged. `RECOMPOSE` builds claim metadata from the resulting prose and the operation's explicit union of eligible source supports; matching support IDs alone do not validate new wording. Direct-quote words remain immutable, although a supported paraphrase may use indirect speech. Run Evidence Boundary, quote, geography, service-state, and reader-quality/structural checks on the complete candidate after each structural batch. If that candidate has a new blocker, cannot be assessed exactly, or has a finding that cannot be mapped reliably to a changed unit, restore the exact pre-structure checkpoint. This rollback preserves a safe base; it does not weaken fail-closed publication when the final candidate itself is unsafe.
 
 Low lexical overlap alone must not be treated as proof that a faithful paraphrase is false.
 
@@ -787,9 +805,17 @@ Do not force Claim Atoms to contain every editorial connective phrase.
 
 Do not let the writer hide an unsupported fact in prose merely by keeping it out of Claim Atoms.
 
+For structural edits, the editor returns prose and bounded operations, not Claim Atoms or support IDs. The server rebuilds claims for rewritten paragraphs from the actual output and re-grounds them only to the operation's authorized eligible supports. A successful candidate must retain an exact full-draft assessment; paragraph-local review alone is insufficient.
+
 ## 6.7 Single-call budget and fail-closed publication
 
-Event-First article generation uses one main generative writer attempt, followed by Evidence Boundary validation and optional targeted copy-editing (`ArticleEditor`) for isolated issues.
+Event-First article generation uses one writer call, followed by Evidence Boundary validation and optional targeted copy-editing (`ArticleEditor`) for isolated issues. The editor may be called at most twice, and both calls share the generation deadline. Do not add a planner, a second writer call, or a per-operation model call.
+
+Before each editor call, construct an immutable pass-local registry of structural unit IDs bound to the fingerprint of the complete base draft. Resolve every source, destination, and insertion reference against that same base before changing anything; IDs are not stable across passes. Give the editor the complete article as read-only orientation plus an explicit allowlist of editable units and permitted destinations. Required support packets must be eligible and fit the current limits (64 packets, 32,000 characters total, and 4,000 characters per packet), along with the full prompt/context budget. If the complete article or required supports do not fit, skip the structural operation with a safe reason; never silently truncate the context and call it complete.
+
+Apply one response's structural operations atomically, then assess the complete candidate and retain a checkpoint for that exact draft and input fingerprint. On an operation conflict, new blocker, ambiguous/global finding, or assessment error, roll the structural batch back to its exact pre-structure checkpoint. A subsequent editor pass builds a fresh registry and must assess its own exact result. Structural rollback is not partial positional quarantine; existing text-only patch quarantine remains in force.
+
+Safe preview diagnostics may report allowlisted structural operation metadata (such as operation type, status, and safe reason/identifier) and composition counts, but must never persist article prose, source text, heading text, or candidate text in ordinary metadata. Frozen-run preview remains read-only for publication and delivery.
 
 If validation fails or cannot be resolved:
 

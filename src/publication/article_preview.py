@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import re
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
@@ -195,6 +196,55 @@ class _MemoryGenerationAttemptObserver:
         }
 
 
+def _safe_structural_operations(value: Any) -> list[dict[str, Any]]:
+    """Allow only operation codes and syntactically valid pass-local IDs."""
+    from src.publication.article_editor import ARTICLE_STRUCTURAL_OUTCOME_REASONS
+
+    if not isinstance(value, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status")
+        reason = item.get("reason")
+        if (
+            not isinstance(status, str)
+            or status not in {"proposed", "applied", "rejected", "skipped"}
+            or not isinstance(reason, str)
+            or reason not in ARTICLE_STRUCTURAL_OUTCOME_REASONS
+        ):
+            continue
+        compact: dict[str, Any] = {"status": status, "reason": reason}
+        if isinstance(item.get("attempt"), int) and item["attempt"] in {1, 2}:
+            compact["attempt"] = item["attempt"]
+        operation_id = item.get("operation_id")
+        if isinstance(operation_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", operation_id):
+            compact["operation_id"] = operation_id
+        if isinstance(item.get("kind"), str) and item["kind"] in {
+            "move",
+            "recompose",
+            "create_section",
+        }:
+            compact["kind"] = item["kind"]
+        sources = item.get("source_unit_ids")
+        if isinstance(sources, list) and all(
+            isinstance(source, str) and re.fullmatch(r"P[0-9]{3,}", source) for source in sources
+        ):
+            compact["source_unit_ids"] = sources
+        for key, pattern in (
+            ("destination_section_id", r"(?:H[0-9]{3,}|new:[A-Za-z0-9_-]{1,64})"),
+            ("destination_before_unit_id", r"P[0-9]{3,}"),
+        ):
+            destination = item.get(key)
+            if destination is None or (
+                isinstance(destination, str) and re.fullmatch(pattern, destination)
+            ):
+                compact[key] = destination
+        result.append(compact)
+    return result
+
+
 def _safe_writer_metadata(value: Any) -> dict[str, Any]:
     """Keep only safe invocation and provider-attempt counters and durations."""
     if not isinstance(value, dict):
@@ -217,6 +267,33 @@ def _safe_writer_metadata(value: Any) -> dict[str, Any]:
         for key in scalar_keys
         if key in value and isinstance(value[key], (int, float))
     }
+
+    operations = _safe_structural_operations(value.get("structural_operations"))
+    if operations:
+        result["structural_operations"] = operations
+    profile = value.get("length_profile")
+    if isinstance(profile, dict):
+        result["length_profile"] = {
+            key: profile[key]
+            for key in (
+                "target_min_words",
+                "target_max_words",
+                "target_min_sections",
+                "target_max_sections",
+                "hard_min_words",
+                "hard_max_words",
+                "thematic_line_count",
+                "develop_line_count",
+                "detail_anchor_count",
+            )
+            if isinstance(profile.get(key), int)
+        }
+        if isinstance(profile.get("richness"), str) and profile["richness"] in {
+            "thin",
+            "standard",
+            "rich",
+        }:
+            result["length_profile"]["richness"] = profile["richness"]
 
     def compact_attempt(value: Any) -> dict[str, int | float | bool] | None:
         if not isinstance(value, dict):

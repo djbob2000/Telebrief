@@ -258,10 +258,22 @@ class EventEditorialAdapter:
 
             # Build PublicationEvidence items
             from src.processing.operational_semantics import normalize_berdyansk_toponyms
-            from src.publication.evidence import PublicationEvidence
+            from src.publication.evidence import (
+                SERVICE_SUBJECT_FAMILY_BY_KEY,
+                PublicationEvidence,
+                ServiceSubjectHint,
+            )
 
             if payload and payload.evidence_items:
                 for item_idx, evi in enumerate(payload.evidence_items):
+                    service_subject_hint = None
+                    if evi.kind == "service_access" and evi.service_state is not None:
+                        service_state = evi.service_state
+                        service_subject_hint = ServiceSubjectHint(
+                            subject_key=service_state.subject_key,
+                            subject_label=service_state.subject_label,
+                            family=SERVICE_SUBJECT_FAMILY_BY_KEY.get(service_state.subject_key),
+                        )
                     for fid in evi.source_fragment_ids:
                         if fid in frag_meta_map:
                             meta = frag_meta_map[fid]
@@ -281,6 +293,7 @@ class EventEditorialAdapter:
                                 observed_at=meta["observed_at"],
                                 reply_parent_context_text=meta["reply_parent_context_text"],
                                 reply_parent_item_id=meta["reply_parent_item_id"],
+                                service_subject_hint=service_subject_hint,
                             )
             elif frag_rows:
                 facts = payload.key_facts if (payload and payload.key_facts) else []

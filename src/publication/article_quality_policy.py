@@ -55,14 +55,14 @@ _POLICIES: dict[str, ArticleQualityFindingPolicy] = {
         "repair",
         "support_units",
         "repair_recommended",
-        "A section contains a story from a different theme.",
+        "A paragraph cites support whose known theme does not fit the section.",
     ),
     "UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION": ArticleQualityFindingPolicy(
         "theme_placement",
         "repair",
         "support_units",
         "repair_recommended",
-        "A story in the connectivity section lacks a clear thematic link.",
+        "A paragraph in the connectivity section has no known thematic link.",
     ),
     "DUPLICATE_ARTICLE_HEADING": ArticleQualityFindingPolicy(
         "article_structure",

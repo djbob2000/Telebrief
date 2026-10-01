@@ -6,6 +6,23 @@ import datetime as dt
 from dataclasses import dataclass
 from typing import Literal
 
+SERVICE_SUBJECT_FAMILY_BY_KEY: dict[str, str] = {
+    "water_supply": "water",
+    "power_supply": "power",
+    "gas_supply": "gas",
+    "heating": "heating",
+    "connectivity": "telecom",
+}
+
+
+@dataclass(frozen=True)
+class ServiceSubjectHint:
+    """Optional advisory topic copied from structured service-state evidence."""
+
+    subject_key: str
+    subject_label: str
+    family: str | None
+
 
 @dataclass(frozen=True)
 class PublicationEvidence:
@@ -27,3 +44,4 @@ class PublicationEvidence:
     # It may explain a subject/place, but must never ground the reply's claim.
     reply_parent_context_text: str = ""
     reply_parent_item_id: int | None = None
+    service_subject_hint: ServiceSubjectHint | None = None

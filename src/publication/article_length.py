@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Literal
 
 from src.config_loader import PublicationEditorialConfig
 from src.publication.article_context import ArticleEditorialContext
+
+if TYPE_CHECKING:
+    from src.publication.article_composition import ArticleCompositionRichnessSummary
 
 _STORY_ID_RE = re.compile(r"story:(\d+)")
 
@@ -28,11 +31,16 @@ class ArticleLengthProfile:
     target_max_sections: int
     hard_min_words: int
     hard_max_words: int
+    thematic_line_count: int = 0
+    develop_line_count: int = 0
+    detail_anchor_count: int = 0
 
 
 def derive_article_length_profile(
     context: ArticleEditorialContext,
     config: PublicationEditorialConfig,
+    *,
+    richness_summary: ArticleCompositionRichnessSummary | None = None,
 ) -> ArticleLengthProfile:
     """Derive deterministic article richness bucket and soft editorial targets."""
     supports = context.supports if hasattr(context, "supports") else context.support_index
@@ -57,7 +65,7 @@ def derive_article_length_profile(
         lookback_hours = int(delta.total_seconds() // 3600)
 
     if lookback_hours >= 336:
-        return ArticleLengthProfile(
+        profile = ArticleLengthProfile(
             richness="rich",
             target_min_words=3000,
             target_max_words=4500,
@@ -67,7 +75,7 @@ def derive_article_length_profile(
             hard_max_words=max(5000, hard_max),
         )
     elif lookback_hours >= 120:
-        return ArticleLengthProfile(
+        profile = ArticleLengthProfile(
             richness="rich",
             target_min_words=1500,
             target_max_words=2500,
@@ -76,9 +84,8 @@ def derive_article_length_profile(
             hard_min_words=800,
             hard_max_words=max(3000, hard_max),
         )
-
-    if is_thin:
-        return ArticleLengthProfile(
+    elif is_thin:
+        profile = ArticleLengthProfile(
             richness="thin",
             target_min_words=350,
             target_max_words=min(800, hard_max),
@@ -88,7 +95,7 @@ def derive_article_length_profile(
             hard_max_words=hard_max,
         )
     elif is_standard:
-        return ArticleLengthProfile(
+        profile = ArticleLengthProfile(
             richness="standard",
             target_min_words=700,
             target_max_words=min(1400, max(hard_max, 1600)),
@@ -98,7 +105,7 @@ def derive_article_length_profile(
             hard_max_words=max(hard_max, 1600),
         )
     else:
-        return ArticleLengthProfile(
+        profile = ArticleLengthProfile(
             richness="rich",
             target_min_words=1200,
             target_max_words=2000,
@@ -107,3 +114,18 @@ def derive_article_length_profile(
             hard_min_words=min(400, config.article_min_words),
             hard_max_words=max(hard_max, 2200),
         )
+
+    if profile.richness == "rich" and lookback_hours < 120:
+        profile = replace(
+            profile,
+            target_max_words=min(config.article_max_words, profile.hard_max_words),
+        )
+
+    if richness_summary is not None:
+        profile = replace(
+            profile,
+            thematic_line_count=richness_summary.thematic_line_count,
+            develop_line_count=richness_summary.develop_line_count,
+            detail_anchor_count=richness_summary.detail_anchor_count,
+        )
+    return profile

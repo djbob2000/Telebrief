@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Literal
 
 from src.city_context import CityContextResolver
@@ -27,7 +27,7 @@ ArticleCompositionRelation = Literal[
 ]
 # Kept as a source-compatibility alias; the public shared name is ArticleCompositionRelation.
 CompositionRelation = ArticleCompositionRelation
-ARTICLE_COMPOSITION_VERSION = "v1"
+ARTICLE_COMPOSITION_VERSION = "v2"
 
 _STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 _POWER_GRID_OFFICE_RE = re.compile(r"\bрэс(?:а|у|ом|е|ах)?\b", re.IGNORECASE)
@@ -192,6 +192,93 @@ class ArticleCompositionPlan:
                 for group in self.groups
             ],
         }
+
+
+@dataclass(frozen=True)
+class ArticleCompositionRichnessSummary:
+    """Count-only description of the planned article's thematic/detail breadth."""
+
+    thematic_line_count: int
+    develop_line_count: int
+    detail_anchor_count: int
+
+
+def _normalized_projected_support_text(text: str) -> str:
+    """Normalize surface punctuation/spacing while preserving word order."""
+    return " ".join(re.findall(r"\w+", text.casefold().replace("ё", "е")))
+
+
+def build_article_composition_richness_summary(
+    coverage_plan: ArticleCoveragePlan,
+    composition_plan: ArticleCompositionPlan,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection,
+) -> ArticleCompositionRichnessSummary:
+    """Summarize known themes, DEVELOP lines, and distinct projected detail anchors."""
+    from src.publication.article_context import article_support_theme_hints
+
+    composition_support_ids = {
+        support_id
+        for group in composition_plan.groups
+        for member in group.members
+        for support_id in member.support_ids
+    }
+    planned_support_ids = {
+        support_id
+        for story in coverage_plan.stories
+        for support_id in (*story.support_ids, *story.detail_support_ids)
+        if support_id in composition_support_ids
+    }
+
+    def projected_support(support_id: str) -> ArticleSupport | None:
+        support = context.support_by_id.get(support_id)
+        projected_text = material_projection.text_by_support_id.get(support_id, "").strip()
+        if (
+            support is None
+            or support.publication_use != "PUBLISH"
+            or support.evidence_kind == "resident_question"
+            or material_projection.actions_by_support_id.get(support_id)
+            not in {"KEEP", "TRIM_DIRECTORY"}
+            or not projected_text
+        ):
+            return None
+        return replace(support, text=projected_text, source_text="")
+
+    themes: set[str] = set()
+    for support_id in planned_support_ids:
+        support = projected_support(support_id)
+        if support is not None:
+            themes.update(article_support_theme_hints(support))
+
+    group_by_id = {group.group_id: group for group in composition_plan.groups}
+    develop_line_count = sum(
+        1
+        for line in composition_plan.narrative_lines
+        if any(
+            member.prominence == "DEVELOP"
+            for group_id in line.group_ids
+            if (group := group_by_id.get(group_id)) is not None
+            for member in group.members
+        )
+    )
+
+    detail_anchor_texts: set[str] = set()
+    for story in coverage_plan.stories:
+        for support_id in story.detail_support_ids:
+            if support_id not in composition_support_ids:
+                continue
+            support = projected_support(support_id)
+            if support is None:
+                continue
+            normalized_text = _normalized_projected_support_text(support.text)
+            if normalized_text:
+                detail_anchor_texts.add(normalized_text)
+
+    return ArticleCompositionRichnessSummary(
+        thematic_line_count=len(themes),
+        develop_line_count=develop_line_count,
+        detail_anchor_count=len(detail_anchor_texts),
+    )
 
 
 def _story_id_from_support_id(support_id: str) -> str:

@@ -11,9 +11,14 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from src.domain.operational_state import ResolvedObservation
+from src.domain.service_taxonomy import detect_service_families
 from src.editorial_models import SourceRecord, StoryCard
 from src.publication.digest_contracts import GENERIC_FALLBACK_TOPICS
-from src.publication.evidence import PublicationEvidence
+from src.publication.evidence import (
+    SERVICE_SUBJECT_FAMILY_BY_KEY,
+    PublicationEvidence,
+    ServiceSubjectHint,
+)
 
 _FRAG_ID_RE = re.compile(r":frag:(\d+)")
 _ITEM_ID_RE = re.compile(r":item:(\d+)")
@@ -111,6 +116,41 @@ class ArticleSupport:
     # operational state stated by the reply itself.
     reply_parent_context_text: str = ""
     reply_parent_item_id: int | None = None
+    service_subject_hint: ServiceSubjectHint | None = None
+
+
+def article_support_theme_hints(support: ArticleSupport) -> tuple[str, ...]:
+    """Return advisory service themes from exact structured and lexical evidence."""
+    themes = set(detect_service_families(support.text))
+    if support.service_subject_hint is not None:
+        structured_family = SERVICE_SUBJECT_FAMILY_BY_KEY.get(
+            support.service_subject_hint.subject_key
+        )
+        if structured_family is not None:
+            themes.add(structured_family)
+    return tuple(sorted(themes))
+
+
+def article_support_topic_context_lines(support: ArticleSupport) -> tuple[str, ...]:
+    """Render only unmapped structured subjects and known themes as advisory context."""
+    context_lines: list[str] = []
+    service_hint = support.service_subject_hint
+    if (
+        service_hint is not None
+        and SERVICE_SUBJECT_FAMILY_BY_KEY.get(service_hint.subject_key) is None
+    ):
+        context_lines.append(
+            "opaque_service_subject (unmapped navigation context; not a fact or family): "
+            f"subject_key={json.dumps(service_hint.subject_key, ensure_ascii=False)} "
+            f"subject_label={json.dumps(service_hint.subject_label, ensure_ascii=False)}"
+        )
+
+    themes = article_support_theme_hints(support)
+    if themes:
+        context_lines.append(
+            "topic_hints (advisory navigation only; not facts): " + ", ".join(themes)
+        )
+    return tuple(context_lines)
 
 
 def _support_framing(support: ArticleSupport) -> str:
@@ -226,6 +266,7 @@ class ArticleEditorialContext:
                 f"evidence_kind={sup.evidence_kind} source_roles={roles}",
                 f"framing={_support_framing(sup)}",
             ]
+            lines.extend(article_support_topic_context_lines(sup))
             if sup.observed_at:
                 lines.append(f"observed_at={sup.observed_at.isoformat()}")
             if sup.effective_from:
@@ -246,6 +287,16 @@ class ArticleEditorialContext:
 
 def _support_semantic_key(support: ArticleSupport) -> tuple[str, ...]:
     """Return the reader-facing identity used to consolidate repeated provenance."""
+    service_hint = support.service_subject_hint
+    service_hint_key = (
+        ""
+        if service_hint is None
+        else json.dumps(
+            (service_hint.subject_key, service_hint.subject_label, service_hint.family),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
     return (
         support.text,
         support.source_text,
@@ -260,6 +311,7 @@ def _support_semantic_key(support: ArticleSupport) -> tuple[str, ...]:
         "\x1f".join(support.source_roles),
         support.reply_parent_context_text,
         str(support.reply_parent_item_id or ""),
+        service_hint_key,
     )
 
 
@@ -455,6 +507,7 @@ def build_article_editorial_context(
                 story_id=f"story:{evi.story_id}" if evi.story_id is not None else "",
                 reply_parent_context_text=evi.reply_parent_context_text,
                 reply_parent_item_id=evi.reply_parent_item_id,
+                service_subject_hint=evi.service_subject_hint,
             ),
         )
 

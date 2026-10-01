@@ -11,11 +11,15 @@ import datetime as dt
 import logging
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from time import perf_counter
 from typing import Any, Literal, Sequence
 
-from src.publication.article_context import ArticleEditorialContext, ArticleSupport
+from src.publication.article_context import (
+    ArticleEditorialContext,
+    ArticleSupport,
+    article_support_theme_hints,
+)
 from src.publication.article_coverage import ArticleCoveragePlan
 from src.publication.article_coverage_diagnostics import diagnose_article_coverage
 from src.publication.article_geography import resolve_article_place_area_map
@@ -259,12 +263,120 @@ _ARTICLE_STORY_THEME_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ),
 )
 
+_ARTICLE_THEME_BY_SERVICE_FAMILY: dict[str, str] = {
+    "power": "utilities",
+    "water": "utilities",
+    "gas": "utilities",
+    "heating": "utilities",
+    "lift": "utilities",
+    "municipal": "utilities",
+    "telecom": "connectivity",
+    "transport": "transport",
+    "urban_transport": "transport",
+    "education": "education",
+    "education_culture": "education",
+    "sports": "education",
+    "health": "healthcare",
+    "economy": "commerce",
+}
+_SUPPORTED_THEME_BRIDGE_RE = re.compile(
+    r"\b(?:из-за(?:\s+этого)?|поскольку|так\s+как|поэтому|вследствие|"
+    r"в\s+результате(?:\s+чего)?|после(?:\s+этого)?)\b",
+    re.IGNORECASE,
+)
+
 
 def _article_themes(
     text: str,
     patterns: Sequence[tuple[str, re.Pattern[str]]],
 ) -> set[str]:
     return {theme for theme, pattern in patterns if pattern.search(text)}
+
+
+def _projected_support_themes(
+    support_id: str,
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection | None,
+) -> set[str]:
+    support = context.support_by_id.get(support_id)
+    if support is None:
+        return set()
+    projected_text = (
+        material_projection.text_by_support_id.get(support_id, "")
+        if material_projection is not None
+        else support.text
+    ).strip()
+    if not projected_text:
+        return set()
+
+    projected_support = replace(support, text=projected_text, source_text="")
+    themes = _article_themes(projected_text, _ARTICLE_STORY_THEME_PATTERNS)
+    themes.update(
+        _ARTICLE_THEME_BY_SERVICE_FAMILY[family]
+        for family in article_support_theme_hints(projected_support)
+        if family in _ARTICLE_THEME_BY_SERVICE_FAMILY
+    )
+    if support.evidence_kind == "commercial_offer":
+        themes.add("commerce")
+    return themes
+
+
+def _supported_theme_bridge_support_ids(
+    paragraph: object,
+    paragraph_support_ids: Sequence[str],
+    themes_by_support_id: dict[str, set[str]],
+    heading_themes: set[str],
+    context: ArticleEditorialContext,
+    material_projection: ArticleMaterialProjection | None,
+) -> set[str]:
+    """Return supports covered by a relation stated across themes in one source."""
+    if not heading_themes:
+        return set()
+
+    claims = tuple(getattr(paragraph, "claims", ()))
+    candidate_units: list[tuple[str, tuple[str, ...]]] = []
+    if claims:
+        candidate_units.extend(
+            (
+                str(claim.text),
+                tuple(sid for sid in claim.cited_support_ids if sid in paragraph_support_ids),
+            )
+            for claim in claims
+        )
+    else:
+        candidate_units.append(
+            (str(getattr(paragraph, "text", "") or ""), tuple(paragraph_support_ids))
+        )
+
+    supported_ids: set[str] = set()
+    for prose, cited_ids in candidate_units:
+        themes = {
+            theme
+            for support_id in cited_ids
+            for theme in themes_by_support_id.get(support_id, set())
+        }
+        if len(themes) < 2 or not themes.intersection(heading_themes):
+            continue
+        prose_bridges = set(_SUPPORTED_THEME_BRIDGE_RE.findall(prose.casefold()))
+        if not prose_bridges:
+            continue
+        for source_support_id in cited_ids:
+            source_themes = themes_by_support_id.get(source_support_id, set())
+            if len(source_themes) < 2 or not source_themes.intersection(heading_themes):
+                continue
+            source_text = (
+                material_projection.text_by_support_id.get(source_support_id, "")
+                if material_projection is not None
+                else context.support_by_id[source_support_id].text
+            ).casefold()
+            if any(bridge in source_text for bridge in prose_bridges):
+                supported_ids.update(
+                    support_id
+                    for support_id in cited_ids
+                    if themes_by_support_id.get(support_id, set()).issubset(source_themes)
+                )
+                break
+    return supported_ids
 
 
 @dataclass(frozen=True)
@@ -1586,39 +1698,11 @@ def _diagnose_theme_mismatched_sections(
     context: ArticleEditorialContext,
     material_projection: ArticleMaterialProjection | None,
 ) -> tuple[ArticleReaderQualityFinding, ...]:
-    story_texts: dict[str, list[str]] = {}
-    story_supports: dict[str, list[ArticleSupport]] = {}
-    for support in context.support_index:
-        story_id = _support_story_id(support)
-        if not story_id or not _projected_support_is_citable(
-            support.support_id, context, material_projection
-        ):
-            continue
-        text = (
-            material_projection.text_by_support_id.get(support.support_id, "")
-            if material_projection is not None
-            else support.text
-        ).strip()
-        if not text:
-            continue
-        story_texts.setdefault(story_id, []).append(text)
-        story_supports.setdefault(story_id, []).append(support)
-
-    story_themes: dict[str, set[str]] = {}
-    for story in coverage_plan.stories:
-        supports = story_supports.get(story.story_id, [])
-        if supports and all(item.evidence_kind == "commercial_offer" for item in supports):
-            story_themes[story.story_id] = {"commerce"}
-            continue
-        story_text = " ".join((story.topic, *story_texts.get(story.story_id, ())))
-        story_themes[story.story_id] = _article_themes(story_text, _ARTICLE_STORY_THEME_PATTERNS)
-
-    mismatched_support_ids: list[str] = []
-    unclassified_connectivity_support_ids: list[str] = []
+    del coverage_plan  # Theme compatibility is resolved from paragraph citations, not Story totals.
+    findings: list[ArticleReaderQualityFinding] = []
+    paragraph_index = 1
     for section in draft.sections:
         heading_themes = _article_themes(section.heading, _ARTICLE_SECTION_THEME_PATTERNS)
-        if not heading_themes:
-            continue
         for paragraph in section.paragraphs:
             support_ids = _citable_support_ids(
                 (
@@ -1632,55 +1716,68 @@ def _diagnose_theme_mismatched_sections(
                 context,
                 material_projection,
             )
-            paragraph_story_ids = _claim_story_ids(support_ids, context)
-            for story_id in paragraph_story_ids:
-                if story_id not in story_themes:
-                    continue
-                themes = story_themes.get(story_id, set())
-                if themes and not themes.intersection(heading_themes):
-                    mismatched_support_ids.extend(
-                        support_id
-                        for support_id in support_ids
-                        if _support_story_id(context.support_by_id[support_id]) == story_id
-                    )
-                elif not themes and heading_themes == {"connectivity"}:
-                    # Unknown classification is a placement uncertainty, not
-                    # grounds to drop a supported community Story. Keep every
-                    # cited Story in the coverage model and request repair only.
-                    unclassified_connectivity_support_ids.extend(
-                        support_id
-                        for support_id in support_ids
-                        if _support_story_id(context.support_by_id[support_id]) == story_id
-                    )
+            if not support_ids:
+                paragraph_index += 1
+                continue
 
-    findings: list[ArticleReaderQualityFinding] = []
-    if mismatched_support_ids:
-        findings.append(
-            ArticleReaderQualityFinding(
-                code="THEME_MISMATCHED_SECTION",
-                unit_id="ARTICLE",
-                message=(
-                    "В тематической главе есть самостоятельный сюжет из другой сферы; перенесите его "
-                    "в подходящее место или измените композицию, сохранив исходные факты."
-                ),
-                support_ids=tuple(dict.fromkeys(mismatched_support_ids)),
-                severity="repair",
+            themes_by_support_id: dict[str, set[str]] = {}
+            for support_id in support_ids:
+                themes = _projected_support_themes(
+                    support_id,
+                    context,
+                    material_projection,
+                )
+                themes_by_support_id[support_id] = themes
+
+            bridged_support_ids = _supported_theme_bridge_support_ids(
+                paragraph,
+                support_ids,
+                themes_by_support_id,
+                heading_themes,
+                context,
+                material_projection,
             )
-        )
-    if unclassified_connectivity_support_ids:
-        findings.append(
-            ArticleReaderQualityFinding(
-                code="UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION",
-                unit_id="ARTICLE",
-                message=(
-                    "В главе о связи есть поддержанный сюжет без распознаваемой тематической связи. "
-                    "Перекомпонуйте его в подходящую или нейтральную часть, сохранив факты и опору "
-                    "на источник; не исключайте сюжет из-за неясной классификации."
-                ),
-                support_ids=tuple(dict.fromkeys(unclassified_connectivity_support_ids)),
-                severity="repair",
+            mismatched_support_ids = tuple(
+                support_id
+                for support_id in support_ids
+                if heading_themes
+                and themes_by_support_id[support_id]
+                and not themes_by_support_id[support_id].intersection(heading_themes)
+                and support_id not in bridged_support_ids
             )
-        )
+            if mismatched_support_ids:
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="THEME_MISMATCHED_SECTION",
+                        unit_id=f"P{paragraph_index:03d}",
+                        message=(
+                            "Абзац опирается на материал с известной темой, не совпадающей с "
+                            "заголовком раздела; перенесите его или уточните композицию, сохранив "
+                            "подтверждённые факты."
+                        ),
+                        support_ids=mismatched_support_ids,
+                        severity="repair",
+                    )
+                )
+
+            unclassified_support_ids = tuple(
+                support_id for support_id in support_ids if not themes_by_support_id[support_id]
+            )
+            if unclassified_support_ids and heading_themes == {"connectivity"}:
+                findings.append(
+                    ArticleReaderQualityFinding(
+                        code="UNCLASSIFIED_STORY_IN_CONNECTIVITY_SECTION",
+                        unit_id=f"P{paragraph_index:03d}",
+                        message=(
+                            "В абзаце главы о связи нет известной тематической подсказки. "
+                            "Оставьте неопределённую тему нейтрально размещённой; не исключайте "
+                            "подтверждённое сообщение только из-за неясной классификации."
+                        ),
+                        support_ids=unclassified_support_ids,
+                        severity="repair",
+                    )
+                )
+            paragraph_index += 1
     return tuple(findings)
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
@@ -11,6 +12,8 @@ from src.publication.article_context import (
     ArticleEditorialContext,
     ArticleSupport,
     _support_framing,
+    article_support_theme_hints,
+    article_support_topic_context_lines,
 )
 from src.publication.article_coverage import ArticleCoveragePlan
 from src.timezones import get_timezone, normalize_timezone_name
@@ -145,6 +148,45 @@ def _compact_text(text: str, max_chars: int) -> str:
     if max_chars <= 3:
         return cleaned[:max_chars]
     return cleaned[: max_chars - 3].rstrip() + "..."
+
+
+def _support_topic_hint_lines(support: ArticleSupport) -> tuple[str, ...]:
+    return article_support_topic_context_lines(support)
+
+
+def _group_topic_hint_lines(supports: Sequence[ArticleSupport]) -> tuple[str, ...]:
+    if not supports:
+        return ()
+    signatures = {
+        (
+            support.service_subject_hint,
+            article_support_theme_hints(support),
+            article_support_topic_context_lines(support),
+        )
+        for support in supports
+    }
+    if len(signatures) != 1:
+        return ()
+    return _support_topic_hint_lines(supports[0])
+
+
+def _support_topic_group_key(support: ArticleSupport) -> tuple[str, str]:
+    hint = support.service_subject_hint
+    structured_hint = (
+        "none"
+        if hint is None
+        else json.dumps(
+            (hint.subject_key, hint.subject_label, hint.family),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
+    derived_hints = json.dumps(
+        article_support_theme_hints(support),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return structured_hint, derived_hints
 
 
 def _support_story_id(support_id: str) -> str:
@@ -484,6 +526,9 @@ def _render_article_story_packets(
             compact_lines.append(
                 f"  support={support.support_id} framing={framing} {temporal} fact={raw_fact}"
             )
+            topic_hint_lines = _support_topic_hint_lines(support)
+            full_lines.extend(f"    {line}" for line in topic_hint_lines)
+            compact_lines.extend(f"    {line}" for line in topic_hint_lines)
             parent_context = _compact_text(
                 sanitize_writer_source_text(support.reply_parent_context_text), 240
             )
@@ -760,7 +805,7 @@ def render_article_writer_context_with_stats(
     # available in ArticleEditorialContext for traceability, but repeating
     # their prose in the LLM prompt needlessly multiplies token usage.
     grouped_supports: list[list[ArticleSupport]] = []
-    groups_by_key: dict[tuple[str, str, str, str, str, str], list[ArticleSupport]] = {}
+    groups_by_key: dict[tuple[str, ...], list[ArticleSupport]] = {}
     for sup in context.support_index:
         if sup.publication_use == "EXCLUDE":
             continue
@@ -794,6 +839,7 @@ def render_article_writer_context_with_stats(
             sup.publication_use,
             _support_framing(sup),
             _compact_text(sanitize_writer_source_text(sup.reply_parent_context_text), 240),
+            *_support_topic_group_key(sup),
         )
         group = groups_by_key.get(group_key)
         if group is None:
@@ -820,6 +866,8 @@ def render_article_writer_context_with_stats(
             f"evidence_kind={sup.evidence_kind} source_roles={roles}",
             f"framing={_support_framing(sup)}",
         ]
+        topic_hint_lines = _group_topic_hint_lines(group)
+        lines.extend(topic_hint_lines)
 
         if sup.observed_at:
             lines.append(f"observed_at={sup.observed_at.isoformat()}")
@@ -845,8 +893,9 @@ def render_article_writer_context_with_stats(
             f"kind={sup.support_kind} publication_use={sup.publication_use}",
             f"evidence_kind={sup.evidence_kind} source_roles={roles}",
             f"framing={_support_framing(sup)}",
-            f"fact={_compact_text(fact_text, _SUPPORT_COMPACT_FACT_MAX_CHARS)}",
         ]
+        compact_lines.extend(topic_hint_lines)
+        compact_lines.append(f"fact={_compact_text(fact_text, _SUPPORT_COMPACT_FACT_MAX_CHARS)}")
         if parent_context:
             compact_lines.append(
                 "reply_parent_context (subject/place only; not a status or answer)="
@@ -1121,27 +1170,20 @@ def render_article_editorial_brief_context(
             raise ValueError(
                 f"article editorial brief cites support for omitted Story {story_id!r}"
             )
-        evidence_blocks.append(
-            "\n".join(
-                (
-                    f"[SUPPORT {support_id}] story={story_id} kind={support.evidence_kind} "
-                    f"framing={_support_framing(support)}",
-                    f"cited_by={', '.join(dict.fromkeys(references))}",
-                    " ".join(temporal_fields),
-                    f"fact={fact}",
-                    *(
-                        (
-                            "reply_parent_context (subject/place only; not a status or answer)="
-                            + _compact_text(
-                                sanitize_writer_source_text(support.reply_parent_context_text), 240
-                            ),
-                        )
-                        if support.reply_parent_context_text
-                        else ()
-                    ),
-                )
+        evidence_lines = [
+            f"[SUPPORT {support_id}] story={story_id} kind={support.evidence_kind} "
+            f"framing={_support_framing(support)}",
+            f"cited_by={', '.join(dict.fromkeys(references))}",
+            " ".join(temporal_fields),
+        ]
+        evidence_lines.extend(_support_topic_hint_lines(support))
+        evidence_lines.append(f"fact={fact}")
+        if support.reply_parent_context_text:
+            evidence_lines.append(
+                "reply_parent_context (subject/place only; not a status or answer)="
+                + _compact_text(sanitize_writer_source_text(support.reply_parent_context_text), 240)
             )
-        )
+        evidence_blocks.append("\n".join(evidence_lines))
         rendered_support_ids.add(support_id)
 
     lines.append(
