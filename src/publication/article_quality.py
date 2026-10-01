@@ -23,7 +23,7 @@ from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import StructuredArticleDraft, _split_sentences_safe
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
-ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v8"
+ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v9"
 logger = logging.getLogger(__name__)
 
 # These findings describe article topology that cannot be repaired safely by
@@ -54,6 +54,21 @@ _QUOTED_NAME_CUE_RE = re.compile(
 _QUOTED_PLACE_CUE_RE = re.compile(
     r"\b(?:в|на|у|возле|около|рядом\s+с|район\w*|микрорайон\w*|"
     r"улиц\w*|набережн\w*|остановк\w*|площад\w*|кос\w*)\s*$",
+    re.IGNORECASE,
+)
+_QUOTED_PROVIDER_SERVICE_CUE_RE = re.compile(
+    r"\b(?:provider\w*|operator\w*|network\w*|internet\w*|"
+    r"mobile\s+(?:internet\w*|network\w*|communicat\w*)|"
+    r"fiber\w*|fibre\w*|connectivity|"
+    r"провайдер\w*|оператор\w*|сет\w*|интернет\w*|"
+    r"мобильн\w*\s+(?:интернет\w*|связ\w*|сет\w*)|"
+    r"оптоволокн\w*|волоконн\w*|связ\w*|тариф\w*)\s*$",
+    re.IGNORECASE,
+)
+_QUOTED_PROVIDER_USAGE_PREPOSITION_RE = re.compile(r"\b(?:на|у|от|через)\s*$", re.IGNORECASE)
+_QUOTED_PROVIDER_SERVICE_AFTER_RE = re.compile(
+    r"^\s*(?:интернет\w*|оптоволокн\w*|волоконн\w*|связ\w*|сет\w*|"
+    r"тариф\w*|подключ\w*|работ\w*|доступ\w*)\b",
     re.IGNORECASE,
 )
 _QUOTED_LOCATION_PREPOSITION_RE = re.compile(
@@ -662,6 +677,20 @@ def _source_contains_quoted_name(quoted_text: str, source_texts: Sequence[str]) 
     )
 
 
+def _provider_quote_has_adjacent_service_syntax(text: str, quote_match: re.Match[str]) -> bool:
+    """Recognize a cited provider name in explicit nearby service syntax only."""
+    prefix = text[max(0, quote_match.start() - 56) : quote_match.start()]
+    suffix = text[quote_match.end() : min(len(text), quote_match.end() + 72)]
+    if _QUOTED_PROVIDER_SERVICE_CUE_RE.search(prefix):
+        return True
+    if _QUOTED_PROVIDER_SERVICE_AFTER_RE.search(suffix):
+        return True
+    # Local usage such as «на „Фениксе“» or «от „Миранды“» names the
+    # provider in a service construction. The exact profile match and cited
+    # support are still required by the caller.
+    return bool(_QUOTED_PROVIDER_USAGE_PREPOSITION_RE.search(prefix))
+
+
 def _supported_non_speech_name_quote_spans(
     text: str,
     support_ids: Sequence[str],
@@ -711,6 +740,23 @@ def _supported_non_speech_name_quote_spans(
             )
             if has_name_cue or has_place_cue:
                 profile_name_spans.add(span)
+
+    # Provider names also appear naturally as «на Фениксе», «от Миранды» or
+    # «оптоволокно „Миранда“». These are names only when the high-confidence
+    # cited profile match above is exact and nearby syntax identifies a
+    # provider/service use; quoted speech remains countable by default.
+    provider_ids = {
+        key
+        for key in supported_profile_ids
+        if getattr(prose_entities[key], "kind", "") == "provider"
+    }
+    for quote_match in _QUOTE_RE.finditer(text):
+        span = quote_match.span(1)
+        if any(
+            span in _entity_text_spans(text, prose_entities[entity_id])
+            for entity_id in provider_ids
+        ) and _provider_quote_has_adjacent_service_syntax(text, quote_match):
+            profile_name_spans.add(span)
 
     syntax_name_spans: set[tuple[int, int]] = set()
     previous_syntax_name_quote_end: int | None = None
