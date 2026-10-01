@@ -690,10 +690,11 @@ def _merge_orphan_paragraphs(
                     continue
                 merged_text = prev.text.rstrip() + " " + " ".join(kept_p)
                 if len(_QUALITY_QUOTE_RE.findall(merged_text)) > 2:
-                    # The editor may already have removed a quote roll from
-                    # `prev`; merging this orphan back in must not recreate it.
-                    # Keep the paragraph separate and let the quality gate
-                    # evaluate the exact prose rather than silently degrading it.
+                    # This merge has no cited-support/profile context to distinguish
+                    # quoted names from speech, so use the raw quote-span count as a
+                    # conservative upper bound. The quality gate below classifies
+                    # grounded names; this guard only prevents merging three or more
+                    # quoted spans into one paragraph.
                     merged_paras.append(p)
                     logger.info(
                         "Kept orphan paragraph separate to avoid creating a quote roll: %.60s...",

@@ -23,7 +23,7 @@ from src.publication.article_material import ArticleMaterialProjection
 from src.publication.article_models import StructuredArticleDraft, _split_sentences_safe
 
 QualitySeverity = Literal["repair", "warning", "blocking"]
-ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v7"
+ARTICLE_READER_QUALITY_VERSION = "article-reader-quality-v8"
 logger = logging.getLogger(__name__)
 
 # These findings describe article topology that cannot be repaired safely by
@@ -40,6 +40,25 @@ ARTICLE_WHOLE_DRAFT_FINDING_CODES = frozenset(
     }
 )
 _QUOTE_RE = re.compile(r"[«“\"]([^»”\"]{1,240})[»”\"]")
+_QUOTED_NAME_CUE_RE = re.compile(
+    r"\b(?:магазин\w*|супермаркет\w*|маркетплейс\w*|торгов\w*\s+центр\w*|"
+    r"трц|тц|бренд\w*|торгов\w*\s+мар\w*|сеть\w*|кафе|ресторан\w*|"
+    r"бар\w*|аптек\w*|гостиниц\w*|отел\w*|санатор\w*|клиник\w*|"
+    r"компани\w*|фирм\w*|сервис\w*|провайдер\w*|оператор\w*|"
+    r"служб\w*|пункт\w*\s+(?:выдач\w*|при[её]м\w*)|рын\w*|улиц\w*|ул\.?|"
+    r"проспект\w*|просп\.?|переул\w*|пер\.?|район\w*|микрорайон\w*|"
+    r"пос[её]лок\w*|село|город\w*|площад\w*|парк\w*|набережн\w*|"
+    r"перекр[её]ст\w*|остановк\w*|вокзал\w*|мост\w*)\s*$",
+    re.IGNORECASE,
+)
+_QUOTED_PLACE_CUE_RE = re.compile(
+    r"\b(?:в|на|у|возле|около|рядом\s+с|район\w*|микрорайон\w*|"
+    r"улиц\w*|набережн\w*|остановк\w*|площад\w*|кос\w*)\s*$",
+    re.IGNORECASE,
+)
+_QUOTED_LOCATION_PREPOSITION_RE = re.compile(
+    r"\b(?:в|во|на|у|около|возле|за|перед|из|с|о|об)\s*$", re.IGNORECASE
+)
 _PRIVATE_SECTOR_RE = re.compile(r"\b(?:частн\w*|приватн\w*)\s+сектор\w*\b", re.IGNORECASE)
 _PRIVATE_SECTOR_LOCATION_UNCLEAR_RE = re.compile(
     r"(?:район|часть\s+города|место|участок).{0,35}\bне\s+(?:указан\w*|уточн[её]н\w*|назван\w*|известен|яс(?:н\w*|ен|на|но|ны)|определ[её]н\w*|обозначен\w*)\b|"
@@ -607,12 +626,130 @@ def _supported_provider_mentions(
     return tuple(sorted(mentions))
 
 
-def _direct_quote_count(text: str, provider_mentions: Sequence[tuple[str, tuple[int, int]]]) -> int:
-    """Count quoted speech, excluding a supported brand name in typographic quotes."""
-    brand_spans = {
-        span for _entity_id, span in provider_mentions if _span_is_quoted_name(text, span)
+def _profile_entity_is_a_proper_name(entity: Any) -> bool:
+    """Return whether the edition profile resolved a high-confidence named entity."""
+    kind = getattr(entity, "kind", "")
+    if kind == "provider":
+        return getattr(entity, "confidence", "") == "high"
+    if kind == "area":
+        return getattr(entity, "confidence", "") == "high"
+    return (
+        kind == "place"
+        and getattr(entity, "confidence", "") == "high"
+        and bool(getattr(entity, "object_type", ""))
+        and getattr(entity, "object_type", "") != "city"
+    )
+
+
+def _source_contains_quoted_name(quoted_text: str, source_texts: Sequence[str]) -> bool:
+    """Require the short name itself to occur in cited source text for syntax-based matches."""
+    normalized_name = re.sub(
+        r"\s+",
+        " ",
+        unicodedata.normalize("NFKC", quoted_text).casefold().replace("ё", "е").strip(),
+    )
+    if not normalized_name or len(normalized_name) > 80 or len(normalized_name.split()) > 6:
+        return False
+    return any(
+        normalized_name
+        in re.sub(
+            r"\s+",
+            " ",
+            unicodedata.normalize("NFKC", source_text).casefold().replace("ё", "е"),
+        )
+        for source_text in source_texts
+        if source_text
+    )
+
+
+def _supported_non_speech_name_quote_spans(
+    text: str,
+    support_ids: Sequence[str],
+    context: ArticleEditorialContext,
+    place_resolver: Any | None,
+) -> tuple[tuple[int, int], ...]:
+    """Find quoted names grounded as entities, while leaving supported speech countable.
+
+    A quote is excluded only when the same high-confidence profile entity is cited and
+    resolved in prose with an adjacent name/location cue, or the cited source contains
+    the exact short name and prose gives it clear business/organization syntax (including
+    a contiguous named-place list). Source support or entity resolution alone never
+    reclassifies quoted wording as a name.
+    """
+    cited_texts: list[str] = []
+    cited_entities: dict[tuple[str, str], Any] = {}
+    for support_id in support_ids:
+        support = context.support_by_id.get(support_id)
+        if support is None:
+            continue
+        source_text = " ".join((support.text, support.source_text)).strip()
+        if not source_text:
+            continue
+        cited_texts.append(source_text)
+        for entity in _resolved_entities(source_text, place_resolver):
+            if _profile_entity_is_a_proper_name(entity):
+                cited_entities.setdefault((entity.kind, entity.entity_id), entity)
+
+    prose_entities = {
+        (entity.kind, entity.entity_id): entity
+        for entity in _resolved_entities(text, place_resolver)
+        if _profile_entity_is_a_proper_name(entity)
     }
-    return sum(1 for match in _QUOTE_RE.finditer(text) if match.span(1) not in brand_spans)
+    supported_profile_ids = cited_entities.keys() & prose_entities.keys()
+    profile_name_spans: set[tuple[int, int]] = set()
+    for entity_id in supported_profile_ids:
+        entity = prose_entities[entity_id]
+        for span in _entity_text_spans(text, entity):
+            if not _span_is_quoted_name(text, span):
+                continue
+            prefix = text[max(0, span[0] - 48) : span[0]]
+            name_cue_match = _QUOTED_NAME_CUE_RE.search(prefix)
+            place_cue_match = _QUOTED_PLACE_CUE_RE.search(prefix)
+            has_name_cue = name_cue_match is not None and name_cue_match.end() == len(prefix)
+            has_place_cue = getattr(entity, "kind", "") in {"place", "area"} and (
+                place_cue_match is not None and place_cue_match.end() == len(prefix)
+            )
+            if has_name_cue or has_place_cue:
+                profile_name_spans.add(span)
+
+    syntax_name_spans: set[tuple[int, int]] = set()
+    previous_syntax_name_quote_end: int | None = None
+    for quote_match in _QUOTE_RE.finditer(text):
+        span = quote_match.span(1)
+        if span in profile_name_spans:
+            # Profile resolution alone can also match a place mentioned in speech;
+            # only explicit name syntax may start an unprofiled adjacent-name list.
+            previous_syntax_name_quote_end = None
+            continue
+        prefix = text[max(0, quote_match.start() - 48) : quote_match.start()]
+        cue_match = _QUOTED_NAME_CUE_RE.search(prefix)
+        has_immediate_name_cue = cue_match is not None and cue_match.end() == len(prefix)
+        is_adjacent_name_list_item = previous_syntax_name_quote_end is not None and bool(
+            re.fullmatch(
+                r"\s*(?:,\s*(?:и\s+|или\s+)?|и\s+|или\s+|/\s*)",
+                text[previous_syntax_name_quote_end : quote_match.start()],
+                re.IGNORECASE,
+            )
+        )
+        is_supported_named_list_item = (
+            has_immediate_name_cue or is_adjacent_name_list_item
+        ) and _source_contains_quoted_name(quote_match.group(1), cited_texts)
+        if is_supported_named_list_item:
+            syntax_name_spans.add(span)
+            previous_syntax_name_quote_end = quote_match.end()
+        else:
+            previous_syntax_name_quote_end = None
+
+    return tuple(sorted(profile_name_spans | syntax_name_spans))
+
+
+def _direct_quote_count(
+    text: str,
+    supported_name_spans: Sequence[tuple[int, int]] = (),
+) -> int:
+    """Count quoted speech, excluding only grounded typographic names."""
+    name_spans = set(supported_name_spans)
+    return sum(1 for match in _QUOTE_RE.finditer(text) if match.span(1) not in name_spans)
 
 
 def _has_specific_source_area(texts: Sequence[str], place_resolver: Any | None) -> bool:
@@ -1644,13 +1781,19 @@ def diagnose_article_quality(
                 context,
                 material_projection,
             )
-            provider_mentions = _supported_provider_mentions(
+            supported_name_quote_spans = _supported_non_speech_name_quote_spans(
                 paragraph.text,
                 paragraph_support_ids,
                 context,
                 place_resolver,
             )
-            if _direct_quote_count(paragraph.text, provider_mentions) > 2:
+            if (
+                _direct_quote_count(
+                    paragraph.text,
+                    supported_name_quote_spans,
+                )
+                > 2
+            ):
                 findings.append(
                     ArticleReaderQualityFinding(
                         code="QUOTE_ROLL_PARAGRAPH",
