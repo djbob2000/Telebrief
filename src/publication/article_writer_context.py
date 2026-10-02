@@ -30,11 +30,12 @@ _SUPPORT_STORY_ID_RE = re.compile(r"story:(?:[^:]+|\d+)")
 # Keep the writer request compact enough that the model has room for a
 # coherent article response.  The complete ArticleEditorialContext remains
 # available to deterministic validation; this is only the prompt projection.
-# Both production writer models have approximately a 1M-token context window.
-# Keep a large margin for the system prompt, request envelope, tokenizer
-# expansion, and the 65,536-token Event-First writer completion ceiling while
-# allowing broad city-life editions to retain every selected Story packet.
-ARTICLE_WRITER_CONTEXT_MAX_CHARS = 500_000
+# The configured primary and fallback writer models each advertise a
+# 1,048,576-token context window. This is a character ceiling, not a token
+# estimate: the provider remains the authority on tokenized request fit. Keep
+# the existing completion ceiling and fail explicitly if the complete dossier
+# exceeds this character budget.
+ARTICLE_WRITER_CONTEXT_MAX_CHARS = 999_999
 ARTICLE_WRITER_CONTEXT_VERSION = "event-article-context-v3-compact-evidence-inventory"
 _SUPPORT_FACT_MAX_CHARS = 900
 _SUPPORT_SOURCE_MAX_CHARS = 1_800
